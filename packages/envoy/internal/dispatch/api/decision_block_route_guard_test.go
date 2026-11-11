@@ -36,7 +36,9 @@ const (
 //
 // Everything else that takes a `body` string is held to the check itself
 // (TestEveryRouteThatTakesABodyRefusesADecisionBlock), so a writer added later is held to it
-// without being named anywhere.
+// without being named anywhere, and a route carrying that prose in a member of its own is held
+// to it by name (decisionBlockProseFields), so neither kind is left out of the claim this map
+// makes.
 var decisionBlockExempt = map[string]string{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": "the body is one JSON object, held to contracts.DispatchHandoffBodyMax and stored exactly as sent (handoffs.go); every reader is given its fields as JSON and none of it as Markdown, so no decision card is ever drawn from it",
 
@@ -53,6 +55,19 @@ var decisionBlockExempt = map[string]string{
 	"PATCH /api/v1/asks/{id}":          "an edit's question and options are held by validateAskWording against the ask as it will be stored, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
 	"POST /api/v1/asks/{id}/answer":    "refusing a person's answer text would stop the one act this issue exists to protect; the text is held to contracts.DispatchEventBodyMax (ask_transitions.go)",
 	"POST /api/v1/asks/{id}/resolve":   "a resolution's reason is a person's or a session's own wording on an ask that already reached a person, left alone by the same decision (dispatch://INFRA-1201/artifact/decisions-md)",
+}
+
+// decisionBlockProseFields names every POST or PATCH route whose person-facing prose rides in a
+// member other than `body`, with the field its refusal is worded for. The walk above reads a
+// route by the `body` string on its request type, so a route here is outside it altogether:
+// without this table the claim decisionBlockExempt makes — that it names every route carrying a
+// person's prose this rule leaves unrefused — would be false of a route neither map named.
+//
+// A route here is held to the check by TestARouteWhoseProseIsNotABodyReachesTheCheck: it is a
+// route the server serves, it carries no `body` of its own, which is what put it here rather
+// than in the walk, and it reaches the shared check the same way a body route does.
+var decisionBlockProseFields = map[string]string{
+	"POST /api/v1/artifacts/{id}/reviews": "reason",
 }
 
 // decisionBlockGuardSees are the three writes the issue exists for, named so the guard cannot
@@ -97,7 +112,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 
 	var unchecked, unshaped, stale []string
 	for _, name := range slices.Sorted(maps.Keys(routes)) {
-		checks := decisionBlockChecked(graph, routes[name])
+		checks := decisionBlockChecked(graph, routes[name], "")
 		reason, exempt := decisionBlockExempt[name]
 		shape, shaped := routeShapes[name]
 		switch {
@@ -132,6 +147,37 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 	}
 }
 
+// TestARouteWhoseProseIsNotABodyReachesTheCheck holds the routes of decisionBlockProseFields to
+// the same check the body routes are held to, the way the walk above holds them: the route is
+// one the server serves, its prose rides in a member of its own rather than in a `body`, which
+// is what keeps the walk from reading it, and the handler it mounts reaches
+// blockBoundError(itemblocks.Check(...)) over that member by name. The name is read because a
+// handler reaches other writers' checks through what it calls — the review answers its approval
+// ask, and the ask writes are walked with it — so a walk that took any check would pass a
+// handler that checks nothing of its own. A route named here that stops reaching the check
+// fails this test, so the rule cannot be lifted off it by an edit to the handler alone.
+func TestARouteWhoseProseIsNotABodyReachesTheCheck(t *testing.T) {
+	graph := copyLockGraph(t)
+	routes := decisionBlockRouteHandlers(t, graph)
+	for _, name := range slices.Sorted(maps.Keys(decisionBlockProseFields)) {
+		field := decisionBlockProseFields[name]
+		handlers, mounted := routes[name]
+		if !mounted {
+			t.Errorf("decisionBlockProseFields names %s, which the server does not serve: delete the line, or point it at the row that replaced it", name)
+			continue
+		}
+		if shape, shaped := routeShapes[name]; shaped && requestCarriesBody(shape.Request) {
+			t.Errorf("%s takes a `body` string, so the walk already holds it: delete its line from decisionBlockProseFields", name)
+		}
+		if !decisionBlockChecked(graph, handlers, field) {
+			t.Errorf("%s carries a person's prose in `%s` and never reaches %s(%s(...)):\n"+
+				"Call blockBoundError(itemblocks.Check(%q, <the %s>)) in the handler, as the body routes do, "+
+				"since a decision block written there draws the card nobody can answer just as one in a body does.",
+				name, field, sharedBodyRefusal, sharedBodyCheck, field, field)
+		}
+	}
+}
+
 // TestTheDecisionBlockGuardSeesWhatItGuards holds the guard to what it must see, so that a walk
 // that found nothing — a table it could not read, a handler it could not follow — could not pass
 // as a server that checks everything: the three writes the issue exists for are in its inventory,
@@ -149,7 +195,7 @@ func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 		if !shaped || !requestCarriesBody(shape.Request) {
 			t.Errorf("the guard reads no body string on %s, the route that stores one", name)
 		}
-		if !decisionBlockChecked(graph, handlers) {
+		if !decisionBlockChecked(graph, handlers, "") {
 			t.Errorf("the guard does not reach %s(%s(...)) from %s, which calls it", sharedBodyRefusal, sharedBodyCheck, name)
 		}
 	}
@@ -236,7 +282,12 @@ func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lo
 // package api. A call is followed as the copy-lock graph resolves it, plus every function handed
 // to it as an argument, whatever the callee does with it; a function of another package is not
 // walked, since the helper is unexported and no path to it leaves this one.
-func decisionBlockChecked(graph *lockGraph, handlers []*lockFunction) bool {
+//
+// field is the name the check must be called with, or "" for a check of any field. A handler
+// reaches plenty of other writers' checks through what it calls — a review answers its ask, and
+// an ask's own writes are walked with it — so a route whose prose rides in a member of its own
+// is read for that member's name, and a check of someone else's field is no check of it.
+func decisionBlockChecked(graph *lockGraph, handlers []*lockFunction, field string) bool {
 	walked := map[*lockFunction]bool{}
 	var runs func(fn *lockFunction) bool
 	runs = func(fn *lockFunction) bool {
@@ -245,7 +296,7 @@ func decisionBlockChecked(graph *lockGraph, handlers []*lockFunction) bool {
 		}
 		walked[fn] = true
 		for _, call := range ownCalls(fn) {
-			if checksABody(graph, call) {
+			if checksAField(graph, call, field) {
 				return true
 			}
 			for _, callee := range graph.callees(call) {
@@ -271,23 +322,38 @@ func decisionBlockChecked(graph *lockGraph, handlers []*lockFunction) bool {
 	return false
 }
 
-// checksABody reports whether call is the shared check worded by the shared helper:
-// blockBoundError over a call of itemblocks.Check, which is how all six callers write it today.
-// The check is read inside the helper's arguments rather than beside it, so that a route holding
-// its answer in a variable first is read the same way, and so that a call of either one without
-// the other — a body checked and refused in words of its own, or the helper handed an error no
-// check made — is no check of a body.
-func checksABody(graph *lockGraph, call *ast.CallExpr) bool {
+// checksAField reports whether call is the shared check worded by the shared helper:
+// blockBoundError over a call of itemblocks.Check, which is how all seven callers write it
+// today. The check is read inside the helper's arguments rather than beside it, so that a route
+// holding its answer in a variable first is read the same way, and so that a call of either one
+// without the other — a body checked and refused in words of its own, or the helper handed an
+// error no check made — is no check of a body.
+//
+// Where field is not "", the check must name it: its first argument, the field the refusal is
+// worded for, is read as the text it stands for (literalText), and a check of another field is
+// passed over.
+func checksAField(graph *lockGraph, call *ast.CallExpr, field string) bool {
 	if calledFunctionName(graph, call) != sharedBodyRefusal {
 		return false
 	}
 	checked := false
 	for _, argument := range call.Args {
 		ast.Inspect(argument, func(node ast.Node) bool {
-			if inner, ok := node.(*ast.CallExpr); ok && calledFunctionName(graph, inner) == sharedBodyCheck {
-				checked = true
+			inner, ok := node.(*ast.CallExpr)
+			if !ok || calledFunctionName(graph, inner) != sharedBodyCheck {
+				return !checked
 			}
-			return !checked
+			if field == "" {
+				checked = true
+				return false
+			}
+			if len(inner.Args) > 0 {
+				if checkedField, read := literalText(inner.Args[0], decisionBlockGuardPkg, graph.constants); read && checkedField == field {
+					checked = true
+					return false
+				}
+			}
+			return true
 		})
 	}
 	return checked

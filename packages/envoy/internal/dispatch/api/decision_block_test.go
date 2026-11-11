@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,14 +15,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// decisionWriteRoutes and decisionWritePaths are what the table below must drive: the eight
-// routes a decision block can be written on, under every actor each of them takes - both a
-// person and an agent, but for the two replies only the session, which is the one writer those
-// routes have. The test counts what it drove against these numbers, so a table left empty, or a
-// row dropped from it, fails rather than passes in silence.
+// decisionWriteRoutes and decisionWritePaths are what the table below must drive: the nine
+// routes a decision block can be written on, under every actor and every shape each of them
+// takes - both a person and an agent, but for the two replies only the session, which is the
+// one writer those routes have, and for the review only the person, the one writer that route
+// has. The comment route is driven twice over as well, as the comment it stores and as the
+// reply under an ask it stores. The test counts what it drove against these numbers, so a table
+// left empty, or a row dropped from it, fails rather than passes in silence.
 const (
-	decisionWriteRoutes = 8
-	decisionWritePaths  = 14
+	decisionWriteRoutes = 9
+	decisionWritePaths  = 16
 )
 
 // decisionSession is the live session the fixture's mention and targeted message are delivered
@@ -38,62 +41,85 @@ const decisionSessions = `[{"session_id":"s1","title":"Planner","capabilities":[
 const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
 	"Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n:::"
 
+// decisionRefusal is the whole refusal a body is answered with for the decision block its block
+// at position, of type blockType, holds, named for the field the writer wrote it in. The wording
+// is spelled out here, as itemblocks/decision_test.go spells it out for the package that writes
+// it, rather than formatted from the string the server formats it from, so the text a writer
+// reads is read back against a text this test holds.
+func decisionRefusal(field string, position int, blockType string) string {
+	return fmt.Sprintf("%s block %d (%s) holds a decision block, which nobody can answer where it stands: "+
+		"ask the question in the issue's own document, as a decision block there, or open an ask with "+
+		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+		field, position, blockType)
+}
+
 // decisionPlacements are the places a decision block stands in a body - at the top, in a quote,
-// in a list item and inside a callout - each with the whole refusal every route answers it with.
-// The wording is spelled out here rather than formatted from the same string the server formats
-// it from, so the text a writer reads is read back against a text this test holds, and the
-// position and block type each refusal names are the top-level block that holds the decision
-// block, which is the decision block's own type only where it stands at the top.
+// in a list item and inside a callout - each with the block the refusal names: the top-level
+// block that holds the decision block, which is the decision block's own type only where it
+// stands at the top.
+//
+// The whole matrix is driven on decisionMatrixRoute alone, and every other write path drives the
+// first of them. What a placement tests is the one check each route reaches (itemblocks.Check),
+// whose answer to every placement itemblocks/decision_test.go holds already, and that each route
+// reaches it is what the static guard proves (decision_block_route_guard_test.go); driving the
+// matrix again per route re-ran one function up to fourteen times over for one assertion. The
+// matrix stays on one real route so the suite still shows a nested block refused through the
+// server rather than in the package alone.
 var decisionPlacements = []struct {
-	name string
-	body string
-	want string
+	name      string
+	body      string
+	blockType string
+	position  int
 }{
 	{
-		name: "at the top of the body",
-		body: theDecisionBlock + "\n",
-		want: "body block 1 (ask) holds a decision block, which nobody can answer where it stands: " +
-			"ask the question in the issue's own document, as a decision block there, or open an ask with " +
-			"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+		name:      "at the top of the body",
+		body:      theDecisionBlock + "\n",
+		blockType: "ask",
+		position:  1,
 	},
 	{
-		name: "in a quote",
-		body: "Lead text.\n\n> :::ask{urgency=\"med\"}\n> Which transport should we expose?\n> :::\n",
-		want: "body block 2 (blockquote) holds a decision block, which nobody can answer where it stands: " +
-			"ask the question in the issue's own document, as a decision block there, or open an ask with " +
-			"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+		name:      "in a quote",
+		body:      "Lead text.\n\n> :::ask{urgency=\"med\"}\n> Which transport should we expose?\n> :::\n",
+		blockType: "blockquote",
+		position:  2,
 	},
 	{
 		name: "in a list item",
 		body: "Lead text.\n\n- Context for the question\n\n  :::ask{urgency=\"med\"}\n" +
 			"  Which transport should we expose?\n  :::\n",
-		want: "body block 2 (bullet_list) holds a decision block, which nobody can answer where it stands: " +
-			"ask the question in the issue's own document, as a decision block there, or open an ask with " +
-			"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+		blockType: "bullet_list",
+		position:  2,
 	},
 	{
 		name: "inside a callout",
 		body: "Lead text.\n\nMore lead text.\n\n:::callout{kind=\"note\" title=\"Decide\"}\nA note.\n\n" +
 			theDecisionBlock + "\n:::\n",
-		want: "body block 3 (callout) holds a decision block, which nobody can answer where it stands: " +
-			"ask the question in the issue's own document, as a decision block there, or open an ask with " +
-			"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+		blockType: "callout",
+		position:  3,
 	},
 }
 
-// decisionFixture is one of everything the eight write paths write to or through: the issue, the
-// project document a comment on a document stands on - an issue's own spec is commented on
+// decisionMatrixRoute is the one route the whole placement matrix is driven on: the issue
+// comment, the write this rule exists for and the one every writer reaches first.
+const decisionMatrixRoute = "POST /api/v1/issues/{key}/comments"
+
+// decisionFixture is one of everything the sixteen write paths write to or through: the issue,
+// the project document a comment on a document stands on - an issue's own spec is commented on
 // through the issue's routes, not the document's (ARTIFACT_LINKED) - the comment the edit route
-// rewrites, the mention and the targeted message the live session replies to, and alice's own
-// agent token, which is how an agent writes on the three routes that require the person scope.
+// rewrites, the mention and the targeted message the live session replies to, the issue's own
+// spec, which is the document the header review reviews, the open ask a reply hangs under, and
+// alice's own agent token, which is how an agent writes on the three routes that require the
+// person scope.
 type decisionFixture struct {
 	handler  http.Handler
 	database *store.Store
 	issue    string
 	document string
+	spec     string
 	edited   string
 	mention  string
 	direct   string
+	ask      string
 	token    string
 }
 
@@ -105,10 +131,11 @@ func newDecisionFixture(t *testing.T) *decisionFixture {
 	listener, _ := newBroadcastListener(t, decisionSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createInteractionIssue(t, handler, "DECIDE", "Decision blocks", "before")
-	fixture := &decisionFixture{handler: handler, database: database, issue: issue.Key}
+	fixture := &decisionFixture{handler: handler, database: database, issue: issue.Key, spec: issue.PrimaryArtifactID}
 
 	fixture.document = decisionProjectDocument(t, handler, "DECIDE")
 	fixture.edited = createThreadComment(t, handler, issue.Key, map[string]any{"body": "before the edit"}, "alice").ID
+	fixture.ask = openAskAs(t, handler, issue.Key, decisionSession, "Which transport should we expose?")
 	fixture.mention = decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Can this ship?", "mentions": []map[string]any{{"target": "session:" + decisionSession}},
 	})).ID
@@ -143,20 +170,22 @@ func decisionSessionActor() map[string]any {
 	return map[string]any{"kind": "session", "id": decisionSession}
 }
 
-// storedByTheWritePaths is everything the eight write paths store, read back as a reader reads
+// storedByTheWritePaths is everything the sixteen write paths store, read back as a reader reads
 // it and counted as rows of the store as well: the issue's comments and messages, the spec's
-// comments, the session's messages and the broadcasts - a broadcast writes one message per
-// recipient, so a row written by either is counted twice over - with the edited comment's body
-// byte for byte beside them.
+// comments and its reviews, the session's messages and the broadcasts - a broadcast writes one
+// message per recipient, so a row written by either is counted twice over - with the edited
+// comment's body byte for byte beside them.
 type storedByTheWritePaths struct {
 	IssueComments    int
 	DocumentComments int
 	IssueMessages    int
 	SessionMessages  int
 	Broadcasts       int
+	SpecReviews      int
 	CommentRows      int
 	MessageRows      int
 	BroadcastRows    int
+	ReviewRows       int
 	EditedBody       string
 }
 
@@ -175,10 +204,12 @@ func (f *decisionFixture) stored(t *testing.T) storedByTheWritePaths {
 		IssueMessages:    count("/api/v1/issues/" + f.issue + "/messages"),
 		SessionMessages:  count("/api/v1/agents/" + decisionSession + "/messages"),
 		Broadcasts:       count("/api/v1/broadcasts"),
+		SpecReviews:      count("/api/v1/artifacts/" + f.spec + "/reviews"),
 	}
 	if err := f.database.Pool.QueryRow(context.Background(), `
-		select (select count(*) from comments), (select count(*) from messages), (select count(*) from broadcasts)
-	`).Scan(&stored.CommentRows, &stored.MessageRows, &stored.BroadcastRows); err != nil {
+		select (select count(*) from comments), (select count(*) from messages),
+		       (select count(*) from broadcasts), (select count(*) from artifact_reviews)
+	`).Scan(&stored.CommentRows, &stored.MessageRows, &stored.BroadcastRows, &stored.ReviewRows); err != nil {
 		t.Fatalf("count the stored rows: %v", err)
 	}
 	stored.EditedBody = decodeBody[commentRead](t, dispatchRequest(t, f.handler,
@@ -187,81 +218,97 @@ func (f *decisionFixture) stored(t *testing.T) storedByTheWritePaths {
 }
 
 // decisionWrite is one write path under one actor: send writes body the way that actor writes on
-// that route, and answers what the route said.
+// that route, and answers what the route said. field is the member the body rides in, which is
+// the first word of the refusal that route answers it with: `body` on every route that stores
+// one, `reason` on the review, whose person's prose rides there (reviews.go).
 type decisionWrite struct {
 	route string
 	actor string
+	field string
 	send  func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder
 }
 
-// decisionWrites is the table: the eight routes of the requirement, each under the actors it
+// decisionWrites is the table: the nine routes of the requirement, each under the actors it
 // takes. A person writes as alice does from a browser. An agent writes as the route lets it: as
 // a session, with the deployment's shared token and its own id in actor, on the five routes that
 // take a session actor, and under its person's own agent token, which carries the person scope,
 // on the three that require it - the comment edit, the issue-less send to a session and the
 // broadcast. The two replies have no person's form at all: both refuse a caller that is not a
 // session (403 REPLY_FORBIDDEN) before any body is read, since a reply answers a delivery
-// attempt made to a session.
+// attempt made to a session. The header review has no agent's form either: a review is a
+// person's act, and an agent writing one is refused before its reason is read.
+//
+// The comment route stands twice over for its two shapes: the comment it stores, and the reply
+// posted under an open ask (ask_id), which the same check holds, since it runs before the ask
+// is resolved and no branch of the handler reaches the store around it.
 func decisionWrites() []decisionWrite {
 	return []decisionWrite{
-		{"POST /api/v1/issues/{key}/comments", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/comments", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
 				map[string]any{"body": body}, "alice")
 		}},
-		{"POST /api/v1/issues/{key}/comments", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/comments", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
 				map[string]any{"body": body, "actor": decisionSessionActor()})
 		}},
-		{"POST /api/v1/artifacts/{id}/comments", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/comments", "a person replying under an ask", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
+				map[string]any{"body": body, "ask_id": f.ask}, "alice")
+		}},
+		{"POST /api/v1/artifacts/{id}/comments", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.document+"/comments",
 				map[string]any{"body": body}, "alice")
 		}},
-		{"POST /api/v1/artifacts/{id}/comments", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/artifacts/{id}/comments", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.document+"/comments",
 				map[string]any{"body": body, "actor": decisionSessionActor()})
 		}},
-		{"PATCH /api/v1/comments/{id}", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"PATCH /api/v1/comments/{id}", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/comments/"+f.edited,
 				map[string]any{"body": body}, "alice")
 		}},
-		{"PATCH /api/v1/comments/{id}", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"PATCH /api/v1/comments/{id}", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return agentRequest(t, f.handler, http.MethodPatch, "/api/v1/comments/"+f.edited+"?session="+actingSession,
 				map[string]any{"body": body}, f.token)
 		}},
-		{"POST /api/v1/comments/{id}/reply", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/comments/{id}/reply", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/comments/"+f.mention+"/reply",
 				map[string]any{"actor": decisionSessionActor(), "attempt": 1, "body": body})
 		}},
-		{"POST /api/v1/issues/{key}/messages", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/messages", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/messages",
 				map[string]any{"body": body}, "alice")
 		}},
-		{"POST /api/v1/issues/{key}/messages", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/messages", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/messages",
 				map[string]any{"body": body, "actor": decisionSessionActor()})
 		}},
-		{"POST /api/v1/agents/{session_id}/messages", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/agents/{session_id}/messages", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/agents/"+decisionSession+"/messages",
 				map[string]any{"body": body, "delivery": "btw"}, "alice")
 		}},
-		{"POST /api/v1/agents/{session_id}/messages", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/agents/{session_id}/messages", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return agentRequest(t, f.handler, http.MethodPost,
 				"/api/v1/agents/"+decisionSession+"/messages?session="+actingSession,
 				map[string]any{"body": body, "delivery": "btw"}, f.token)
 		}},
-		{"POST /api/v1/messages/{id}/reply", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/messages/{id}/reply", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/messages/"+f.direct+"/reply",
 				map[string]any{"actor": decisionSessionActor(), "attempt": 1, "body": body})
 		}},
-		{"POST /api/v1/broadcasts", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/broadcasts", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return postBroadcast(t, f.handler, map[string]any{
 				"body": body, "delivery": "btw", "session_ids": []string{decisionSession},
 			}, "alice")
 		}},
-		{"POST /api/v1/broadcasts", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/broadcasts", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return agentRequest(t, f.handler, http.MethodPost, "/api/v1/broadcasts?session="+actingSession, map[string]any{
 				"body": body, "delivery": "btw", "session_ids": []string{decisionSession},
 			}, f.token)
+		}},
+		{"POST /api/v1/artifacts/{id}/reviews", "a person", "reason", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.spec+"/reviews",
+				map[string]any{"state": "changes_requested", "reason": body}, "alice")
 		}},
 	}
 }
@@ -277,13 +324,13 @@ func assertDecisionBlockRefused(t *testing.T, request string, response *httptest
 	}
 }
 
-// Every route that stores a comment, a message or a broadcast body refuses a decision block
-// written into it, wherever it stands in that body and whoever writes it: 400
+// Every route that stores a comment, a message, a broadcast body or a review's reason refuses a
+// decision block written into it, wherever it stands in that body and whoever writes it: 400
 // DECISION_BLOCK_IN_BODY, worded once by itemblocks.DecisionBlock, the same text on every route
-// (INFRA-1201). Nothing is stored by a refusal: the issue's comments and messages, the spec's
-// comments, the session's messages and the broadcasts are counted before and after each row, as
-// a reader reads them and as rows of the store, and the edited comment's body is read back byte
-// for byte.
+// but for the field it names (INFRA-1201). Nothing is stored by a refusal: the issue's comments
+// and messages, the spec's comments and its reviews, the session's messages and the broadcasts
+// are counted before and after each row, as a reader reads them and as rows of the store, and
+// the edited comment's body is read back byte for byte.
 func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
 	f := newDecisionFixture(t)
 	// Every write below is refused, so the store never moves: one snapshot before the first of
@@ -293,10 +340,14 @@ func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
 	drove, routes := 0, map[string]struct{}{}
 	for _, write := range decisionWrites() {
 		t.Run(write.route+" as "+write.actor, func(t *testing.T) {
-			for _, placement := range decisionPlacements {
+			placements := decisionPlacements[:1]
+			if write.route == decisionMatrixRoute {
+				placements = decisionPlacements
+			}
+			for _, placement := range placements {
 				t.Run(placement.name, func(t *testing.T) {
-					assertDecisionBlockRefused(t, write.route+" as "+write.actor,
-						write.send(t, f, placement.body), placement.want)
+					assertDecisionBlockRefused(t, write.route+" as "+write.actor, write.send(t, f, placement.body),
+						decisionRefusal(write.field, placement.position, placement.blockType))
 				})
 			}
 			if after := f.stored(t); after != before {
@@ -389,10 +440,8 @@ var decisionRefusedParse = []struct{ name, body string }{
 }
 
 // decisionAtTheTop is the whole refusal a body holding its decision block as its first block is
-// answered with, spelled out here as the placements above spell theirs out.
-const decisionAtTheTop = "body block 1 (ask) holds a decision block, which nobody can answer where it stands: " +
-	"ask the question in the issue's own document, as a decision block there, or open an ask with " +
-	"`dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+// answered with, named for the field the writer wrote it in.
+func decisionAtTheTop(field string) string { return decisionRefusal(field, 1, "ask") }
 
 // A body the parser refuses is refused for its decision block too, in the same words and under
 // the same code: every write route answers one such body so, and the comment route answers one of
@@ -408,7 +457,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 	for _, write := range decisionWrites() {
 		t.Run(write.route+" as "+write.actor, func(t *testing.T) {
 			assertDecisionBlockRefused(t, write.route+" as "+write.actor,
-				write.send(t, f, onEveryRoute.body), decisionAtTheTop)
+				write.send(t, f, onEveryRoute.body), decisionAtTheTop(write.field))
 			if after := f.stored(t); after != before {
 				t.Fatalf("%s as %s stored something: %+v, want the %+v it found",
 					write.route, write.actor, after, before)
@@ -419,7 +468,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 		t.Run("a comment holding "+refused.name, func(t *testing.T) {
 			assertDecisionBlockRefused(t, "POST /api/v1/issues/{key}/comments", dispatchRequest(t, f.handler,
 				http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
-				map[string]any{"body": refused.body}, "alice"), decisionAtTheTop)
+				map[string]any{"body": refused.body}, "alice"), decisionAtTheTop("body"))
 		})
 	}
 }
@@ -442,6 +491,29 @@ func TestACommentOfLoneCarriageReturnsIsStoredByteForByte(t *testing.T) {
 	}
 	if after := f.stored(t); after.IssueComments != before.IssueComments+1 || after.CommentRows != before.CommentRows+1 {
 		t.Fatalf("the store holds %+v, want the one comment more than the %+v it found", after, before)
+	}
+}
+
+// A review's reason that holds no decision block is written as it was before the rule: the
+// header review stores it, the reviews list reads it back whole, and the store holds the one
+// review more than it did. The route runs the one check the body routes run, so the only prose
+// it refuses is the card nobody can answer (INFRA-1201).
+func TestAReviewReasonWithoutADecisionBlockIsStillWritten(t *testing.T) {
+	f := newDecisionFixture(t)
+	before := f.stored(t)
+	const reason = "Name the rollback path, and say which transport the gateway keeps."
+	written := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.spec+"/reviews",
+		map[string]any{"state": "changes_requested", "reason": reason}, "alice")
+	if written.Code != http.StatusCreated {
+		t.Fatalf("the review answered %d %s, want the reason stored", written.Code, written.Body.String())
+	}
+	reviews := decodeBody[[]model.ArtifactReview](t, dispatchRequest(t, f.handler,
+		http.MethodGet, "/api/v1/artifacts/"+f.spec+"/reviews", nil, "alice"))
+	if len(reviews) != 1 || reviews[0].Reason == nil || *reviews[0].Reason != reason {
+		t.Fatalf("the reviews list reads %+v, want the one review holding %q", reviews, reason)
+	}
+	if after := f.stored(t); after.SpecReviews != before.SpecReviews+1 || after.ReviewRows != before.ReviewRows+1 {
+		t.Fatalf("the store holds %+v, want the one review more than the %+v it found", after, before)
 	}
 }
 
@@ -471,10 +543,7 @@ func TestADocumentWriteStillTakesADecisionBlockTheBodyRoutesRefuse(t *testing.T)
 
 	assertDecisionBlockRefused(t, "POST /api/v1/issues/{key}/comments", dispatchRequest(t, handler,
 		http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
-		map[string]any{"body": content}, "alice"),
-		"body block 2 (ask) holds a decision block, which nobody can answer where it stands: "+
-			"ask the question in the issue's own document, as a decision block there, or open an ask with "+
-			"`dispatch ask`; to show a decision block as an example, put it in a fenced code block")
+		map[string]any{"body": content}, "alice"), decisionRefusal("body", 2, "ask"))
 
 	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/DOCASK/artifacts",
 		map[string]any{"name": "refused.md", "content": decisionRefusedParse[0].body}, "alice")

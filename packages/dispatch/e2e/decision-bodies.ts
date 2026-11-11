@@ -9,26 +9,17 @@
 import { expect, type Locator } from "@playwright/test";
 
 import type { Actor } from "../web/src/api/types";
+import { authorLiteral } from "./inbox-threads";
 import { sql } from "./psql";
+import { sqlLiteral } from "./seed";
 
 /** The one line the card draws under a decision block a reader meets in a body. */
 export const TEXT_ONLY_LINE =
   "This question is text: it must be opened as an ask before anyone can answer it.";
 
-/** `text` as a SQL string literal, with every quote of its own doubled. psql interpolates no
- *  variable inside a quoted literal, so a body's `:::ask` reaches Postgres as written. */
-function literal(text: string): string {
-  return `'${text.replaceAll("'", "''")}'`;
-}
-
-/** A jsonb author literal for a SQL seed. */
-function authorLiteral(author: Actor): string {
-  return `jsonb_build_object('kind', ${literal(author.kind)}, 'id', ${literal(author.id)})`;
-}
-
 /** A uuid column's value, or SQL null where the row carries none. */
 function uuidLiteral(id: string | undefined): string {
-  return id === undefined ? "null" : `${literal(id)}::uuid`;
+  return id === undefined ? "null" : `${sqlLiteral(id)}::uuid`;
 }
 
 /**
@@ -53,13 +44,14 @@ export async function seedDecisionBody({
   issueKey: string;
   replyTo?: string;
 }): Promise<string> {
-  const turn = askId === undefined ? "null" : literal(author.kind === "user" ? "agent" : "human");
+  const turn =
+    askId === undefined ? "null" : sqlLiteral(author.kind === "user" ? "agent" : "human");
   // The insert stands in a CTE the statement selects from: psql prints an `INSERT 0 1` status
   // line under the rows an `insert ... returning` answers with, and a `select` is the id alone.
   const seeded = await sql(`
     with seeded as (
       insert into comments (issue_key, author, body, ask_id, reply_to, turn)
-      values (${literal(issueKey)}, ${authorLiteral(author)}, ${literal(body)},
+      values (${sqlLiteral(issueKey)}, ${authorLiteral(author)}, ${sqlLiteral(body)},
               ${uuidLiteral(askId)}, ${uuidLiteral(replyTo)}, ${turn})
       returning id
     )
@@ -86,7 +78,7 @@ export async function seedDecisionMessage({
   const seeded = await sql(`
     with seeded as (
       insert into messages (issue_key, author, body)
-      values (${literal(issueKey)}, ${authorLiteral(author)}, ${literal(body)})
+      values (${sqlLiteral(issueKey)}, ${authorLiteral(author)}, ${sqlLiteral(body)})
       returning id
     )
     select id from seeded
