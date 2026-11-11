@@ -229,7 +229,8 @@ const (
 	// trimWaits is the settings gone, in an acknowledgement that carried none or in the middle
 	// of a sweep: the interval loop ends and run waits for settings it may run by again. A pod
 	// lives through `enabled: false` and the operator turning it back on, and through a daemon
-	// rolled back below contract 60 and the roll-forward after it, and keeps its trimmer.
+	// rolled back to a release without this work and the roll-forward after it, and keeps its
+	// trimmer.
 	trimWaits
 	// trimOff is the one final ending: volumeFaultLimit recovered panics in a row have switched
 	// the trimmer off, and nothing starts another before the launcher process restarts (fault).
@@ -678,19 +679,21 @@ const (
 	volumeReportFaultRunes = 2000
 	// volumeReportTrimmerRunes bounds the two strings this package mints rather than reads off
 	// the pod: the trimmer's identifier, which randomID writes as 32 hex characters, and what
-	// raised the episode, which is one of shimwire's three words. Neither can be long today,
-	// and both are cut all the same, because the daemon renders them into the sentence the
-	// architect's session reads (internal/workflow's volumeNoticeReason) and that sentence's
-	// safety must rest on the bound this package applied rather than on the sender being
-	// Legion's own launcher: the frame's own rule leaves both unchecked
-	// (shimwire.LauncherVolumeReport.Validate), so anything holding a launcher token could
-	// write them. A hundred runes keeps every value this package writes whole.
+	// raised the episode, which is one of shimwire's three words. Neither can be long today, so
+	// the cut changes no value this package writes; it is here so that every string of the
+	// report leaves this launcher under a bound this package chose, as the pod's own strings do.
+	// It is no protection of the sentence the architect's session reads, and is not meant as
+	// one: a bound the launcher applies runs only where the sender is this launcher. That
+	// sentence is protected where it is built, by the daemon's own quoting
+	// (internal/workflow's volumeNoticeReason), and its size by the frame's own line limit
+	// (shimwire.MaxFrameBytes), since the frame's rule checks only that the identifier is present
+	// and the episode at least 1 (shimwire.LauncherVolumeReport.Validate).
 	volumeReportTrimmerRunes = 100
 )
 
 // bound is the report as the bound above lets it be carried: every list cut to its cap with the
 // report saying how many entries it left out, and every string cut in runes with an ellipsis, as
-// runtime.PodEnd cuts — the strings the pod chose, and the two this package mints with them
+// runtime.PodEnd cuts — the strings the pod chose, and the two this package mints beside them
 // (volumeReportTrimmerRunes). It is the one place either report is bounded — a sweep's (report)
 // and the switched-off trimmer's (switchOff) — and it copies rather than cutting in place,
 // because the sizes belong to the walk the trimmer keeps for the hour.

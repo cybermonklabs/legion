@@ -708,7 +708,8 @@ func plantEntries(t *testing.T, f *trimFixture, count int) {
 // A pod keeps its trimmer for the life of the pod: an answer that carries no settings stops the
 // sweeping, and the next answer that carries settings starts it again, in the same launcher
 // process and under the same trimmer identifier. That is `enabled: false` and the operator
-// turning it back on, and a daemon rolled back below contract 60 and the roll-forward after it —
+// turning it back on, and a daemon rolled back to a release without this work and the
+// roll-forward after it —
 // neither of which replaces a pod, which is why the settings are no part of the pod shape record.
 // A trimmer that ended with the first such answer would leave the volume of a pod that lives for
 // days unguarded with nothing told to anybody.

@@ -902,9 +902,10 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // newline in such a name must be text inside the sentence and not a line of its own, with
 // nothing to mark it as data. The trimmer's identifier and what raised its episode are rendered
 // the same way, although the launcher mints the one and takes the other from one of three
-// constants: the frame's own rule leaves both unchecked (shimwire.LauncherVolumeReport.Validate),
-// so the sentence's safety rests on this daemon rather than on the sender being Legion's own
-// launcher. The structured Volume member keeps the raw name, which is data a reader computes
+// constants: the frame's own rule checks only that the identifier is present and reads neither
+// one's contents (shimwire.LauncherVolumeReport.Validate), so the sentence's safety rests on
+// this daemon rather than on the sender being Legion's own launcher. The structured Volume
+// member keeps the raw name, which is data a reader computes
 // with rather than prose.
 //
 // How many entries each list carries is the launcher's bound (internal/launcher's bound), and

@@ -1829,13 +1829,17 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 
 #### Rolling back below the release that trims an issue pod's volume
 
-The release that added the cache trimmer (daemon API contract 67) added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
-A daemon of an earlier release knows neither, and it decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a `volume-near-full` row still queued when that image is pinned can never be decoded.
+The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
+Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-2009`, which declared 69 when this was written, and a forward merge before it landed could still move that number while `main`'s own moved past it.
+So the release before it is `main`'s own 68 at the time of writing, and the rule below applies to a rollback to it.
+A daemon of any release without that entry knows neither, and it decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a `volume-near-full` row still queued when that image is pinned can never be decoded.
 
 **That row does not fail alone, and that is the part worth knowing before the rollback.**
 `WaitingNotices` reads every waiting notice row of the project, a row on its retry backoff included (`record/store.go`), `pacedCatchUps` returns on the first row it cannot decode (`daemon/daemon.go`), and its one caller is the daemon's state read.
 So one such row fails `GET /legion/v1/state` for the whole project — the state the controller reads, the state `legion state` prints, and the state every architect's `read_state` and every after-merge check depend on — and it fails on every attempt, since the row has no attempt cap and no dead letter.
 This is the chain `store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql` records as this repository's own incident; the trimmer is on by default and writes this notice on exactly the pods that are in trouble, so a deployment that has run it is likely to hold such a row.
+The same row breaks one more reader of that set: `releaseWaiting` (`daemon/notice_exceptions.go`), which releases the notices a ready architect is owed, returns on the first row it cannot decode as well, so every architect that becomes ready logs `release the notices waiting for ready architects` at Error for the whole project, and the notices it would have released wait out their own backoff instead.
+Delivery itself is not held, since `earlierNoticeFor` passes over a row it cannot decode, and the delete below ends both effects.
 
 No migration of that earlier release deletes these rows, so unlike the `waiting-for-slot` row above this one is the operator's.
 Run this with the daemon stopped, before the earlier image is pinned:

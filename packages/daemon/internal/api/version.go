@@ -983,22 +983,28 @@ package api
 // What the wire survives is not what the store survives, and a reader of this entry about to
 // change this number needs the second as well. The same change adds the architect notice kind
 // `volume-near-full` and the `volume` member of the notice payload, and an outbox payload is
-// decoded strictly, so a daemon pinned below 67 can decode no such row. That row does not fail
+// decoded strictly, so a daemon of any release without this entry can decode no such row: every
+// release of main before this change lands, the one just before it included. The bound is named
+// by the entry and not by a number because a forward merge can move the number, as the history
+// below records, and a number written into prose stays where it was. That row does not fail
 // alone: `WaitingNotices` reads every waiting notice row of the project, `pacedCatchUps`
 // returns on the first it cannot decode, and its one caller is the state read, so one row fails
 // `GET /legion/v1/state` for the whole project until somebody deletes it — the chain
 // `store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql` records as this
-// repository's own incident. No migration of an earlier release deletes these rows, so the
-// rollback is an operator's one statement with the daemon stopped, written down where an
-// operator reads it (docs/kubernetes.md, "Rolling back below the release that trims an issue
-// pod's volume").
+// repository's own incident — and `releaseWaiting`, the other reader of that set, fails on it the
+// same way. No migration of an earlier release deletes these rows, so the rollback is an
+// operator's: one statement with the daemon stopped, and a `runtime.kubernetes.volume_trim`
+// block taken out of `legion.yaml`, since an earlier loader refuses that key by name, both
+// written down where an operator reads them (docs/kubernetes.md, "Rolling back below the release
+// that trims an issue pod's volume").
 // (The base carried 64 at the read that first chose a number for this change, 2026-11-11, and
 // 65 was declared by three open pull requests then and 66 by a fourth, so it took 67 and held
 // that through two forward merges. main reached 68 later the same day, which is the one thing
-// the hold rule moves for, so this change now takes 69. It is held from here: a later forward merge keeps both sides' entries and leaves
-// this number alone, as it keeps both sides of validNoticeKinds, and it moves again only when
-// main's own DaemonAPIVersion reaches or passes it, because renumbering changes this branch's
-// own diff, and a renumber made after a result stands against this head costs the tester a
-// round rather than a commit. So do not re-derive a number from this line at the next merge:
-// read main's own DaemonAPIVersion alone, and move this one only when that number reaches 69.)
+// the hold rule moves for, so this change now takes 69. It is held from here: a later forward
+// merge keeps both sides' entries and leaves this number alone, as it keeps both sides of
+// validNoticeKinds, and it moves again only when main's own DaemonAPIVersion reaches or passes
+// it, because renumbering changes this branch's own diff, and a renumber made after a result
+// stands against this head costs the tester a round rather than a commit. So do not re-derive a
+// number from this line at the next merge: read main's own DaemonAPIVersion alone, and move this
+// one only when that number reaches 69.)
 const DaemonAPIVersion = 69
