@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
   createAsk,
   createIssue,
@@ -613,6 +614,49 @@ test("live: a fresh page load opens the socket at the current head and stays wit
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
+  // The page's clock, installed before the first byte of the load and paused on the spot, so the
+  // only time this page ever sees is the time this row spends below. One fresh load is the whole
+  // of what this row measures, and the shell arms pollers that refetch on cadences of their own
+  // - the agent registry every `AGENT_REGISTRY_POLL_MS`, the Inbox's credential list on the same
+  // 15 s. On the wall clock those ticks land while a slow machine is still settling the load,
+  // and a request the load never made joins the set: that is how this row failed on a loaded CI
+  // runner after passing on three quieter ones (dispatch://INFRA-1109). A poll fifteen seconds
+  // after a load is the poller doing its job and no part of what the load asked for. On a paused
+  // clock no cadence is ever reached, because the page's own time stops at `pageTimeWindow`
+  // below, a third of the shortest of them - so the set holds the requests of the load however
+  // slowly the machine runs.
+  //
+  // Paused, the page runs nothing that waits on a timer, so every wait of this row spends its
+  // clock rather than the machine's: a step at a time, since a timer armed between two steps
+  // needs a step after it, and a single jump the length of the window would leave none. The
+  // step is a quarter of the shortest wait the load makes (the dwell below), and the window is
+  // 2.5 times the 2,000 ms of page time the whole load was measured to need, of which 1,000 ms
+  // is the paint.
+  //
+  // `pauseAt` is the only call that stops the clock, and it is the only one that can refuse:
+  // it fast-forwards to the moment it is given and throws "Cannot fast-forward to the past" for
+  // a moment already gone (`ClockController._innerFastForwardTo`, playwright-core's
+  // coreBundle.js). The clock runs from the install - the injected clock resumes itself
+  // (`inject()`, same file) - so pausing AT the installed moment is a race the machine wins
+  // whenever it spends a millisecond between the two calls, and it loses a loaded run on the
+  // setup rather than on the set. The pause is therefore a minute ahead of the install, which
+  // the gap between these two lines cannot reach: the row is killed at 60 s (`testTimeout`,
+  // e2e/playwright.config.ts), so a gap that long never gets here to be measured. Moving the
+  // clock forward fires any armed timer once; none is armed here, because this runs on the
+  // blank page before the navigation, and the pollers are armed after it and count their
+  // cadence from the paused clock.
+  const pageClockStart = Date.now();
+  const pauseAhead = 60_000;
+  await page.clock.install({ time: pageClockStart });
+  await page.clock.pauseAt(pageClockStart + pauseAhead);
+  const clockStep = DWELL_MS / 4;
+  const pageTimeWindow = AGENT_REGISTRY_POLL_MS / 3;
+  let pageTimeSpent = 0;
+  const spendPageTime = async (): Promise<void> => {
+    if (pageTimeSpent >= pageTimeWindow) return;
+    pageTimeSpent += clockStep;
+    await page.clock.runFor(clockStep);
+  };
   const apiRequestPaths: string[] = [];
   page.on("request", (request) => {
     // Called for every request of a cold load this row measures, so the cheap string test comes
@@ -630,22 +674,35 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     (socket) => new URL(socket.url()).pathname === "/ws/live"
   );
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(page.getByText("Backlog message 4")).toBeVisible();
+  // The page paints the backlog once React's own work has run, which waits a page timer like
+  // everything else here, so the wait for it spends the clock too.
+  await expect
+    .poll(
+      async () => {
+        await spendPageTime();
+        return page.getByText("Backlog message 4").isVisible();
+      },
+      {
+        intervals: [50, 50, 100, 100, 250],
+        message: "the backlog paints once the load's own page timers are spent",
+      }
+    )
+    .toBe(true);
   await socketOpened;
 
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly these on a fresh load, and nothing else. A set rather than a count, and waited for
-  // rather than read at an instant: the page issues the last requests of its first load within
-  // a few milliseconds of painting the message this row waits for, so a count taken the moment
-  // that message appears can be one request short, which is how this row failed in CI - 20
-  // against 21. The wait ends on the set itself, so a panel that starts eagerly fetching
-  // before its tab is ever opened still trips this immediately instead of only breaking some
-  // looser upper bound, and a failure names the request that is missing or extra instead of
-  // leaving a reader to work out which of 21 a count of 20 dropped. The Conversation pages no
-  // event log at all now that the history is the Activity tab's, and the Activity panel is
-  // unmounted until its tab is opened.
+  // Exactly these on a fresh load, and nothing else. A set rather than a count, so a panel that
+  // starts eagerly fetching before its tab is ever opened trips this immediately instead of only
+  // breaking some looser upper bound, and a failure names the request that is missing or extra
+  // instead of leaving a reader to work out which of 21 a count of 20 dropped. It is judged at
+  // the end of the load rather than at the instant the backlog paints, because the load's last
+  // requests - the read mark and what that write refreshes - wait on the reader's dwell, a page
+  // timer the row spends below; a reading taken as the message appears is one request short,
+  // which is how this row failed in CI, 20 against 21. The Conversation pages no event log at
+  // all now that the history is the Activity tab's, and the Activity panel is unmounted until
+  // its tab is opened.
   const firstLoad = [
     // The one read the page makes for its viewer, which carries the shell every page draws and
     // the issue this address names (`web/src/api/queries.ts`, `readLanding`). Everything that
@@ -677,15 +734,42 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // the viewer's state read again once that write lands.
     `/api/v1/me/issues/${issue.key}/state`,
     "/api/v1/me/state",
-    // The credential requests waiting on the viewer, which the Inbox count adds up on every
-    // page. The landing carries this part too, and the page reads it all the same: a null there
-    // says "Dispatch could not read it" as well as "there is nothing to read", and only this
-    // route tells the two apart (`web/src/api/queries.ts`, `seedShell`).
-    "/api/v1/credential-requests?approver=me",
     // The one block-schema fetch every document surface shares for the session.
     "/api/v1/schema/blocks",
+    // The credential requests the Inbox counts are NOT in this set, and a measurement is why.
+    // The landing carries that list - this harness runs a broker, which answers it - and seeds
+    // it under this route's own key (`seedShell`), where the client's 30,000 ms `staleTime`
+    // (`web/src/main.tsx`) leaves it fresh, so no reader of it fetches on mount. The read that
+    // used to stand in this set arrived 15.8 s and 16.0 s after the load in two measured runs of
+    // this row: the first tick of that list's own 15-second poll, which is the cadence the agent
+    // registry polls on as well. The fifteen-second wait this row used to end on took whichever
+    // of those two ticks reached it first, which is how `/api/v1/agents` joined a set the load
+    // never asked for (dispatch://INFRA-1109). A Dispatch whose landing answers null for the
+    // list leaves that key unseeded, and its own fresh load does read this route, since nothing
+    // but the route tells "could not read it" from "nothing to read"; that is a deployment with
+    // no secrets broker, which this harness is not.
   ].sort();
-  await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
+  // The tail of the load waits on a timer of the page as well: the read mark rides the reader's
+  // dwell on the newest card (`DWELL_MS`), and the event read and the viewer-state read that
+  // write triggers follow it.
+  await expect
+    .poll(
+      async () => {
+        await spendPageTime();
+        return [...apiRequestPaths].sort();
+      },
+      { intervals: [50, 50, 100, 100, 250] }
+    )
+    .toEqual(firstLoad);
+
+  // The rest of the window, spent with the set already whole: three more seconds of the page's
+  // own time in which the load may ask for nothing. This is the half of the claim the wait above
+  // cannot make on its own - that wait ends the moment the set matches, so a request landing a
+  // moment later would go unseen - and the window is the page's own time rather than the
+  // machine's, so no poll of the shell's can fall inside it however long the machine takes to
+  // spend it.
+  while (pageTimeSpent < pageTimeWindow) await spendPageTime();
+  expect([...apiRequestPaths].sort()).toEqual(firstLoad);
 
   await alice.close();
 });
