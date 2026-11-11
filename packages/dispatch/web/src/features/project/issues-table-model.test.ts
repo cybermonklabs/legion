@@ -496,6 +496,51 @@ test("an issue Legion works is never under In progress or Needs review", () => {
   );
 });
 
+// In progress, Needs review and Retro name a Dispatch status and a Legion phase both, and the
+// bar's segment under the status name holds only what Legion does not run. The name says so
+// where a daemon serves the project, and nowhere else.
+test("a status named like a phase says it holds the issues Legion does not run", () => {
+  const rows = buildItems(
+    [
+      issue("CORE-1", { labels: ["legion"], status: "in_progress" }),
+      issue("CORE-2", { status: "in_progress" }),
+      issue("CORE-3", { status: "needs_review" }),
+      issue("CORE-4", { status: "retro" }),
+      issue("CORE-5", { status: "todo" }),
+    ],
+    (actor) => actor.id,
+    [],
+    undefined,
+    null
+  );
+  const named = (legion: boolean) =>
+    Object.fromEntries(
+      countIssueStates(rows, legion).map(({ column, id, label, count }) => [
+        `${column}:${id}`,
+        `${label} ${count}`,
+      ])
+    );
+
+  // The issue Legion works is under the phase, which is named as it always was; the three
+  // statuses say what they hold, and a status that names no phase is left alone.
+  expect(named(true)).toEqual({
+    "status:todo": "Todo 1",
+    "status:in_progress": "In progress · not in Legion 1",
+    "phase:implementing": "Implementing 1",
+    "status:needs_review": "Needs review · not in Legion 1",
+    "status:retro": "Retro · not in Legion 1",
+  });
+
+  // No daemon serves the project, so there is nothing to tell apart.
+  expect(named(false)).toEqual({
+    "status:todo": "Todo 1",
+    "status:in_progress": "In progress 1",
+    "phase:implementing": "Implementing 1",
+    "status:needs_review": "Needs review 1",
+    "status:retro": "Retro 1",
+  });
+});
+
 test("time in phase preserves elapsed units and unknown or future entry times", () => {
   const now = Date.now();
   for (const [minutes, expected] of [

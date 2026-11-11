@@ -814,12 +814,24 @@ function segmentOf(item: Item): string {
 }
 const isLegionManaged = (issue: Pick<IssueSummary, "labels">) => hasLabel(issue, "legion");
 
+/** The Dispatch statuses that read as a Legion phase as well: a segment under one of these
+ *  names holds only the issues Legion does not run, and says so where a daemon serves the
+ *  project. Every other status — Triage, Todo, Blocked, Done — names no phase, so its segment
+ *  needs no telling apart. */
+const STATUSES_NAMED_LIKE_A_PHASE: readonly string[] = ["in_progress", "needs_review", "retro"];
+/** What a segment of those statuses is called, where Legion serves the project. */
+export const NOT_IN_LEGION = "not in Legion";
+
 /**
  * The bar's segments, in the order the work runs (`LIFECYCLE_ORDER`), each issue counted once.
  * An empty segment is left out, so the bar shows the project as it is rather than the whole
  * lifecycle every time.
+ *
+ * `legion` says whether a Legion daemon serves this project. Where one does, a status segment
+ * whose name is also a phase's says which of the two it is, because an issue Legion runs is
+ * never counted under the Dispatch status of the same name (`segmentOf`).
  */
-export function countIssueStates(items: readonly Item[]): IssueStateCount[] {
+export function countIssueStates(items: readonly Item[], legion = false): IssueStateCount[] {
   const counts = new Map<string, number>();
   for (const item of items) {
     const segment = segmentOf(item);
@@ -835,7 +847,10 @@ export function countIssueStates(items: readonly Item[]): IssueStateCount[] {
           column,
           count,
           id,
-          label: statusText(id),
+          label:
+            legion && STATUSES_NAMED_LIKE_A_PHASE.includes(id)
+              ? `${statusText(id)} · ${NOT_IN_LEGION}`
+              : statusText(id),
           // A status segment is the issues Legion does not hold: its phase is none.
           picks: { phase: [NO_PHASE], status: [id] },
         },

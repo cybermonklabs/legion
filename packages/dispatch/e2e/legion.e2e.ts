@@ -34,7 +34,8 @@ test("the issues table shows the daemon's phases and issue facts @legion @phone"
     await page.goto(`/projects/${LEGION_PROJECT}`);
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table).toBeVisible();
-    await expect(page.locator("[data-legion-slots]")).toHaveText("2/4 slots");
+    // The bar over the table is titled by what it counts; the slots in use are the Legion tab's.
+    await expect(page.locator("[data-issues-counted]")).toHaveText("5 issues");
     await page.getByRole("button", { name: "Columns", exact: true }).click();
     for (const name of ["Slot", "Roles", "CI"]) {
       await page.getByRole("checkbox", { name, exact: true }).check();

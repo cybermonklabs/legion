@@ -282,7 +282,9 @@ export function IssueTableStatus({
 }): ReactNode {
   // Only the states with issues behind them: an empty phase is neither a segment nor a legend
   // item. The order is the lifecycle's, from `countIssueStates`.
-  const shown = countIssueStates(items).filter(({ count }) => count > 0);
+  const shown = countIssueStates(items, hasLegion).filter(({ count }) => count > 0);
+  /** What the bar counts, which is what its title says: every issue in one of its segments. */
+  const counted = shown.reduce((sum, { count }) => sum + count, 0);
   const widths = segmentWidths(shown.map(({ count }) => count));
   const filterOf = (column: string) =>
     (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
@@ -318,45 +320,47 @@ export function IssueTableStatus({
       <div
         className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
       >
-        {hasLegion && board ? (
-          <>
-            <span data-legion-slots>
-              <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>
-                {board.header.slots_in_use}/{board.header.slot_cap ?? "?"}
-              </b>{" "}
-              slots
-            </span>
-            {board.header.read_ok && board.header.read_at ? (
-              <span data-legion-read-at>
-                <InfoHint label="About these counts">
-                  Slots counts the workers at work. The second number is the most workers the daemon
-                  runs at once. The bar below counts every issue on this page. Each colour is one
-                  phase, and its width is its share of the issues. The list under the bar names each
-                  colour. Press a colour to show only that phase. Dispatch read the daemon at{" "}
-                  <time dateTime={board.header.read_at}>
-                    {new Date(board.header.read_at).toLocaleString()}
-                  </time>
-                  .
-                </InfoHint>
-              </span>
+        {/* What the bar counts, not what the daemon runs: the Legion tab says how many slots
+            are in use, and a count of workers beside a bar of issues read as the bar's own. */}
+        <span className="flex items-baseline gap-1" data-issues-bar-title>
+          <span data-issues-counted>
+            <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>
+              {counted.toLocaleString("en-US")}
+            </b>{" "}
+            {counted === 1 ? "issue" : "issues"}
+          </span>
+          <InfoHint label="About these counts">
+            The bar counts every issue on this page once. Each colour is one phase or status, and
+            its width is its share. The list under the bar names each colour. Press a colour to show
+            only those issues.
+            {hasLegion && board?.header.read_ok && board.header.read_at ? (
+              <>
+                {" "}
+                Dispatch read the daemon at{" "}
+                <time dateTime={board.header.read_at}>
+                  {new Date(board.header.read_at).toLocaleString()}
+                </time>
+                .
+              </>
+            ) : null}
+          </InfoHint>
+        </span>
+        {hasLegion && board && !(board.header.read_ok && board.header.read_at) ? (
+          <span role="status" className={`text-xs ${dangerText}`} data-legion-read-error>
+            {board.header.read_at ? (
+              <>
+                Stale since{" "}
+                <time dateTime={board.header.read_at}>
+                  {new Date(board.header.read_at).toLocaleString()}
+                </time>
+              </>
             ) : (
-              <span role="status" className={`text-xs ${dangerText}`} data-legion-read-error>
-                {board.header.read_at ? (
-                  <>
-                    Stale since{" "}
-                    <time dateTime={board.header.read_at}>
-                      {new Date(board.header.read_at).toLocaleString()}
-                    </time>
-                  </>
-                ) : (
-                  "Stale: the daemon has never answered"
-                )}
-                {board.header.read_error ? (
-                  <InfoHint label="About the stale data">{board.header.read_error}</InfoHint>
-                ) : null}
-              </span>
+              "Stale: the daemon has never answered"
             )}
-          </>
+            {board.header.read_error ? (
+              <InfoHint label="About the stale data">{board.header.read_error}</InfoHint>
+            ) : null}
+          </span>
         ) : null}
       </div>
       {/* The bar is colour alone: at fifteen phases a segment is too narrow for a word, and a
