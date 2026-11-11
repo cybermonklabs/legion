@@ -709,6 +709,30 @@ func main() {
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
+	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
+	// functions set it from the deploy on, and this labels the rows stored before it, in
+	// committed batches of its own (20261109120100 holds the cursor it records its place in).
+	//
+	// In the background, where the document_search fill above blocks the boot: a label costs
+	// about 253 bytes of heap and 4.9 KiB of growth in the vector index, and the pass is one to
+	// two hours on a deployment of a million rows (INFRA-988, store.EmbeddingProjectKeyBatch), so
+	// a boot that waited for it would outlast any rollout. What waiting would buy is nothing a
+	// search needs: an unlabelled row is invisible to the column's own predicate, which is worse
+	// than the release before this one, so a project-scoped meaning search is answered by the
+	// owner each arm joins, as that release answered it, until this pass records itself done
+	// (api/search.go, meaningProjectScope), and every batch moves rows onto the faster predicate
+	// the pass exists for. A failure is logged and the process serves on, for the same reason.
+	//
+	// Here, among the loops, and not beside the document_search fill above, because it needs the
+	// lease pool, which is opened below that: one process of a roll fills and the other skips,
+	// since two of them would each pay the same hours for one result. The process that skipped
+	// tries again every five minutes until the labelling is over, so a holder killed mid-pass
+	// costs the fill that wait rather than lasting until something next boots
+	// (api.RunEmbeddingProjectKeyFill, which says why the retry is written there and not taken
+	// from duty's loops). It is the one leased caller here that stops of its own accord, so its
+	// goroutine and its connection of the lease pool go back for good once the rows are labelled.
+	go api.RunEmbeddingProjectKeyFill(ctx, database, leases)
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
 	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
 	go documentService.RunSettlementResumption(ctx, leases)

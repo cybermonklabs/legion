@@ -395,21 +395,28 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // (docs.RunSettlementResumption), the repair of closed and reopened issues' asks
 // (api.RunIssueAskRepair), one per delivery durable for the consumers' reconciliation
 // (delivery.consumerLease, a name each for delivery-events and delivery-jobs), the server
-// process registry's prune (processes.RunPrune) and the display tree fill (texttreefill.Run) -
-// taken by sixteen callers, since each delivery intake takes its own durable's name from a bind
-// poll of its own, so sixteen callers can be inside Exclusive at once. The suggestion outcome
-// sweep is not among them: it takes no lease, since the cursor row each of its pages holds for
-// update serialises two processes by itself (api/suggestion_outcomes.go). Sixteen connections
-// are exactly those sixteen: the headroom is zero, not one, and the next leased loop added here
-// makes a seventeenth caller that waits for a connection rather than failing, for as long as the
-// longest pass then holding one - which is why cmd/dispatch counts its leased callers against
-// this number (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so that caller fails a
-// test instead. They cannot come from the shared pool: a lease is held for the whole pass, which
-// is minutes for the compaction and hours for the first display tree fill of a version, and the
-// shared pool's sharedPoolSize connections are what every request reads through. The document
+// process registry's prune (processes.RunPrune), the embeddings project_key fill
+// (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.Run) - taken by
+// seventeen callers, since each delivery intake takes its own durable's name from a bind poll
+// of its own, so seventeen callers can be inside Exclusive at once. The embeddings fill is the
+// one that is no loop of a cadence: it labels in a single pass of one to two hours and holds a
+// connection for the whole of it, tries for its lease again every five minutes while another
+// process is making that pass, and gives its connection back for good once the rows stored
+// before migration 20261109120000 are labelled - which is why it is counted here like any other
+// caller, since the hours it holds one are exactly the window in which every other caller must
+// still find a connection of its own. The suggestion outcome sweep is not among them: it takes
+// no lease, since the cursor row each of its pages holds for update serialises two processes by
+// itself (api/suggestion_outcomes.go). Seventeen connections are exactly those seventeen: the
+// headroom is zero, not one, and the next leased loop added here makes an eighteenth caller
+// that waits for a connection rather than failing, for as long as the longest pass then holding
+// one - which is why cmd/dispatch counts its leased callers against this number
+// (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so that caller fails a test instead.
+// They cannot come from the shared pool: a lease is held for the whole pass, which is minutes
+// for the compaction and hours for the first display tree fill of a version, and the shared
+// pool's sharedPoolSize connections are what every request reads through. The document
 // compaction and the display tree fill hold only their lease here: each reads and writes on a
 // pool of its own (Pool.Compaction, Pool.TextTrees).
-const LeasePoolSize = 16
+const LeasePoolSize = 17
 
 // Leases is where a periodic maintenance loop takes the connection it holds its lease on, so that
 // only one process runs each pass (duty.Exclusive). The lease is a session-level advisory lock, so

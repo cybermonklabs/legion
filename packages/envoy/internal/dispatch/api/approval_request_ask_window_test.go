@@ -5,22 +5,24 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An approval request opens an ask, and meaning search ranks that ask by the windows of its
-// parts. Those windows are written in the request's own transaction, stamped with the state the
-// parts are in, so the moment the request answers the ask is windowed and current: the
-// block-index tick's window arm owes it nothing (refs.ItemsOwedWindows), a window covers every
-// part, and once the embed queue has run each of those windows holds a vector of the text it
-// stands at. A request that left its windows to the tick would answer with the ask listed as
-// owed and no window row to embed, so the ask would be unreachable by meaning until a tick
-// caught up - up to docs.BlockIndexReconcileInterval (30 seconds) after the write.
-func TestAnApprovalRequestLeavesItsAskWindowedAndCurrent(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+// parts. The request writes the parts and leaves their windows to the block-index tick's
+// window arm, as every write of an item's blocks does (refs.recordItemIndexed, INFRA-988): it
+// answers with the ask listed as owed its windows and no window row to embed, one pass of the
+// reconciliation writes them, stamped with the state the parts are in, and once the embed
+// queue has run each of those windows holds a vector of the text it stands at. Until that
+// pass - up to docs.BlockIndexReconcileInterval (30 s) after the request, and a tick every 2 s
+// while the arm has a full batch - the ask is unreachable by meaning search.
+func TestAnApprovalRequestLeavesItsAskToTheWindowArm(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "APPRW", "Window the request's ask", "A spec")
 
 	requested := sessionRequest(t, handler, http.MethodPost,
@@ -45,19 +47,33 @@ func TestAnApprovalRequestLeavesItsAskWindowedAndCurrent(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	ownerKey := refs.ItemAsk.WindowOwnerKey(askID)
+	if windows := itemWindowIDs(t, database, refs.ItemAsk, askID); len(windows) != 0 {
+		t.Fatalf("the request left the windows %v of ask %s, want none: the window arm writes an item's windows",
+			windows, askID)
+	}
 	owed, err := refs.ItemsOwedWindows(ctx, database.Pool, refs.ItemAsk, "", 50)
 	if err != nil {
 		t.Fatalf("list the asks owed their windows: %v", err)
 	}
-	if slices.Contains(owed, askID) {
-		t.Fatalf("the window arm is owed ask %s the request has just written: %v", askID, owed)
+	if !slices.Contains(owed, askID) {
+		t.Fatalf("the window arm is not owed ask %s, which the request has just written and nobody has windowed: %v",
+			askID, owed)
 	}
 
 	parts := askPartBlockIDs(t, database, askID)
 	if len(parts) == 0 {
 		t.Fatalf("the ask %s the request opened holds no indexed part", askID)
 	}
-	ownerKey := refs.ItemAsk.WindowOwnerKey(askID)
+
+	if _, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+		t.Fatalf("one pass of the block-index reconciliation: %v", err)
+	}
+	if owed, err := refs.ItemsOwedWindows(ctx, database.Pool, refs.ItemAsk, "", 50); err != nil {
+		t.Fatalf("list the asks owed their windows: %v", err)
+	} else if slices.Contains(owed, askID) {
+		t.Fatalf("the window arm is still owed ask %s after one pass of the reconciliation: %v", askID, owed)
+	}
 	processAllPending(t, database, &fakeEmbedder{})
 
 	var windows, current int

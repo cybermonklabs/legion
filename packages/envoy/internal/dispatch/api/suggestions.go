@@ -500,11 +500,20 @@ func (s *server) runRelatedCheck(
 // picked the terms, the meaning query over them, which leaves out the owners excluded names. Its
 // reason is empty when it answered and names why it did not otherwise; ctx ends at the meaning
 // allowance.
+//
+// A meaning search this stage's own context ended, and one the server ended itself at
+// searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
+// not answer, so the check answers by keywords alone and says so (INFRA-148). Which of the two
+// clocks ran out first is not the caller's business, and only one of them shows in ctx: a
+// statement Postgres ended arrives as SQLSTATE 57014 (meaningStatementEnded) and may arrive
+// while this stage's own context is still live, so the reason is read from the error too. Were
+// it not, the bound this server holds on its own query would reach the writer as "meaning search
+// failed", which is what the check says when something broke.
 func (s *server) relatedMeaningStage(
 	ctx context.Context, project, text string, pick *relatedPick, excluded []string,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || meaningStatementEnded(err) {
 			reason = relatedReasonMeaningTimeout
 		}
 		if err != nil {
@@ -535,7 +544,9 @@ func (s *server) relatedMeaningStage(
 // relatedMeaningSearch runs the check's meaning statement in a read transaction of its own
 // (beginMeaningScan), so that the check's meaning query reads the index as search's own does: it
 // runs the same arms, and searchMeaningScan, which that transaction sets, is what either of them
-// needs of the index scan (searchMeaningScan says what each setting is for).
+// needs of the index scan (searchMeaningScan says what each setting is for) - the bound the
+// server holds on the statement included, which its caller reports as the meaning search not
+// answering (relatedMeaningStage).
 func (s *server) relatedMeaningSearch(
 	ctx context.Context, project string, picked relatedTerms, vector []float32, excluded []string,
 ) (model.SearchResponse, error) {
@@ -544,8 +555,35 @@ func (s *server) relatedMeaningSearch(
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	return s.relatedSearch(ctx, tx, relatedMeaningStatement, project, picked, excluded,
+	// The flag is read only where it can change the statement, as search reads it
+	// (runMeaningSearch): a check naming no project runs the unscoped one either way.
+	filled := project != "" && embeddingProjectKeysFilled(ctx, tx)
+	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project, filled), project, picked, excluded,
 		embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
+}
+
+// relatedMeaningStatementFor is the meaning statement for a check of project, filled being what
+// embeddingProjectKeysFilled answered in the check's own transaction: the unscoped one, whose
+// arms carry no project predicate, where no project is named; the scoped one, whose meaning
+// arms read `e.project_key = $2`, where one is named and the fill has labelled the rows stored
+// before that column; and the joined one, whose arms read the owner each of them joins, until
+// it has - which is the only one of the three a row the fill has not reached can answer.
+// Search picks among the same three the same way (meaningStatementFor); meaningProjectScope
+// argues why there are three statements rather than one predicate.
+//
+// It takes no filtered case, where search's chooser does: a search narrowing by status, author
+// or updated_since has to run the joined statement, whose comment arm applies those three
+// inside its candidate limit, and no check can narrow by them at all - the check's own q binds
+// all three empty (relatedQOpener), which is the same q every statement here opens with.
+func relatedMeaningStatementFor(project string, filled bool) relatedStatement {
+	switch {
+	case project == "":
+		return relatedMeaningStatement
+	case filled:
+		return relatedMeaningScopedStatement
+	default:
+		return relatedMeaningJoinedStatement
+	}
 }
 
 // relatedSearch runs one of the check's two statements with the parameters search passes its own

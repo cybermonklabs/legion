@@ -547,6 +547,12 @@ type issueDetail struct {
 	Artifacts []artifactRead      `json:"artifacts"`
 	OpenAsks  []issueOpenAsk      `json:"open_asks"`
 	Children  []model.IssueChild  `json:"children"`
+	// DesignGates is the document each of this issue's Legion design-gate steps records
+	// (design_gates, PUT /api/v1/issues/{key}/design-gates), in the order a gate runs the
+	// steps. An issue whose gates record nothing carries [], as the route's own answer does:
+	// the record Dispatch holds is part of the issue, and a missing list would say the read
+	// never asked rather than that no gate names a document here.
+	DesignGates []issueDesignGate `json:"design_gates"`
 	// ReferencedByCount is what the header's `Referenced by (N)` control names. The page
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
@@ -595,6 +601,11 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	first.Queue(issueChildrenStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := scanIssueChildren(rows)
 		read.Children = scanned
+		return err
+	})
+	first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
+		scanned, err := scanIssueDesignGates(rows)
+		read.DesignGates = scanned
 		return err
 	})
 	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
@@ -827,4 +838,30 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 		children = append(children, child)
 	}
 	return children, rows.Err()
+}
+
+// issueDesignGatesStatement reads the documents an issue's design-gate steps record, $1 the
+// issue's key and $2 the steps in the order a gate runs them, which is the order the read
+// answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
+// (issue_design_gates.go). The order is a parameter rather than a case expression built into
+// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
+// carries returns no row, which is what the issue read's first batch requires of every
+// statement beside the issue row's.
+const issueDesignGatesStatement = `
+		select step, artifact_id from design_gates where issue = $1
+		order by array_position($2::text[], step)
+	`
+
+// scanIssueDesignGates reads the rows issueDesignGatesStatement returns. An issue whose gates
+// record no document keeps a non-nil empty list, which the response carries as [].
+func scanIssueDesignGates(rows pgx.Rows) ([]issueDesignGate, error) {
+	gates := []issueDesignGate{}
+	for rows.Next() {
+		var gate issueDesignGate
+		if err := rows.Scan(&gate.Step, &gate.ArtifactID); err != nil {
+			return nil, err
+		}
+		gates = append(gates, gate)
+	}
+	return gates, rows.Err()
 }
