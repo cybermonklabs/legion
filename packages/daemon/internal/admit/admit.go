@@ -1438,6 +1438,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// after the tree is open: a root with an opened lifecycle is no tree's to adopt
 				// whatever the mark says (workflow's RanAsRoot), and its own record says it is
 				// a root (record.ChildOpen).
+				// Read before it goes: a root this hand-over carried in from another tree is one
+				// the first task below is not for (workflow.ArchitectStartTask).
+				carried := issue.HandedOverFrom != ""
 				issue.HandedOverFrom = ""
 				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
@@ -1457,26 +1460,33 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err != nil {
 					return admitted, released, fmt.Errorf("name the decisions on %s while nobody in its tree could hear them: %w", issue.Key, err)
 				}
-				// A tree whose architect has never run is launched by this very start, and the
-				// start carries its first task, as a phase worker's start carries its phase's: it
-				// is the one thing that tells that architect, in the turn its own launch begins,
-				// that this tree is its to take up (workflow.ArchitectStartTask). Without it the
-				// daemon launched a fresh architect with nothing at all, and the first thing it
-				// was ever given was the catch-up its ready writes, which states the tree and
-				// leaves the first act to be inferred; a root measured that way held its slot with
-				// an idle architect that had neither claimed it nor registered its design gate.
+				// A tree nobody has ever architected is launched by this very start, and the start
+				// carries its first task, as a phase worker's start carries its phase's: it is the
+				// one thing that tells that architect, in the turn its own launch begins, that
+				// this tree is its to take up (workflow.ArchitectStartTask). Without it the daemon
+				// launched a fresh architect with nothing at all, and the first thing it was ever
+				// given was the catch-up its ready writes, which states the tree and leaves the
+				// first act to be inferred; a root measured that way held its slot with an idle
+				// architect that had neither claimed it nor registered its design gate.
 				//
-				// A tree whose architect claim exists is told by that catch-up as before: its
-				// session is relaunched or resumed rather than created here, so it may still hold
-				// a task of its own that this one would be refused behind, and it is no longer a
-				// session born with an empty context. What such a start carries is what it always
-				// carried, the decisions its tree is owed and nothing else.
+				// Three roots are not that, and each is told by its catch-up as before, its start
+				// carrying what such a start always carried — the decisions its tree is owed and
+				// nothing else. A tree whose architect claim exists has a session that is
+				// relaunched or resumed rather than created here: it is not born with an empty
+				// context, and it may still hold a task of its own that this one would be refused
+				// behind. A root holding design-gate rows has had a spec registered under them,
+				// and a root a hand-over carried in from another tree stands at a phase it brought
+				// with its gates: neither is told to decompose a tree and register a spec again
+				// (internal/prompts/roles/architect-root.md, the two paragraphs on a root a
+				// catch-up calls `carried` or `handed_over`: "decompose nothing and release no
+				// child").
 				task := decided
 				launches, err := a.store.ArchitectLaunches(ctx, tx, []string{issue.Tree})
 				if err != nil {
 					return admitted, released, fmt.Errorf("read whether %s's architect has run: %w", issue.Key, err)
 				}
-				if _, ran := launches[issue.Tree]; !ran {
+				_, ran := launches[issue.Tree]
+				if !ran && !carried && len(facts.Gates[issue.Tree].Rows) == 0 {
 					task = workflow.ArchitectStartTask(issue, a.engine.GatedSteps(), decided)
 				}
 				// The architect start is not one of the starts that wait for a slot: this very

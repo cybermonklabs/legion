@@ -25,7 +25,13 @@ func TestArchitectStartTask(t *testing.T) {
 		{
 			name:  "a deployment that gates the spec",
 			steps: []record.DesignStep{record.DesignStepSpec},
-			want:  lead + " request approval of that spec and register its design gate." + tail,
+			want:  lead + " request approval of its primary document and register that step of its design gate." + tail,
+		},
+		{
+			name:  "a deployment that gates two steps names both documents",
+			steps: []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria},
+			want: lead + " request approval of each document this deployment gates and register each of their steps of its design gate: " +
+				"its decisions document and its Verification document." + tail,
 		},
 		{
 			name: "a deployment that gates no step",
@@ -36,7 +42,7 @@ func TestArchitectStartTask(t *testing.T) {
 			steps:   []record.DesignStep{record.DesignStepSpec},
 			decided: "A person decided on the tree: dispatch://LEGION-208/spec (design-approved by user:alice).",
 			want: "A person decided on the tree: dispatch://LEGION-208/spec (design-approved by user:alice).\n\n" +
-				lead + " request approval of that spec and register its design gate." + tail,
+				lead + " request approval of its primary document and register that step of its design gate." + tail,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
