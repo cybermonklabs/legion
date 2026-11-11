@@ -818,6 +818,19 @@ func requireRefusedNeedsRebuild(t *testing.T, err error, room *crdt.Doc, before 
 	}
 }
 
+// requireRefusedBusy requires err to be the pressure's own refusal, 4503 DOC_BUSY, which the
+// editor keeps the edit and retries, and room to hold before, byte for byte.
+func requireRefusedBusy(t *testing.T, err error, room *crdt.Doc, before []byte) {
+	t.Helper()
+	var refusal *websocket.PeerClose
+	if !errors.As(err, &refusal) || refusal.Code != contracts.DocumentBusyCloseCode || refusal.Reason != contracts.DocumentBusyCloseReason {
+		t.Fatalf("the hook answered %v, want %d %q", err, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
+	}
+	if !bytes.Equal(crdt.EncodeStateAsUpdateV1(room, nil), before) {
+		t.Fatal("the room's document changed for an update the hook refused")
+	}
+}
+
 // gcFrameFrom is one client's frame of n GC structs of one clock each, from clock 0.
 func gcFrameFrom(client uint64, n int) []byte {
 	f := newV1Frame(1).group(n, client, 0)
@@ -845,20 +858,47 @@ const (
 	nearTheCap = 1 << 10
 )
 
-// fillToStructs takes room to count structs with frames of GC structs the hook admits, each a
-// client of its own so that none leaves a clock gap behind it (gcFillClient). It is how a test
-// reaches the decode cap without its fixture meeting the byte bound on the way.
+// fillToStructs takes room to count structs as its next load's decode meets them
+// (structCeiling) with frames of GC structs the hook admits, each a client of its own so that
+// none leaves a clock gap behind it (gcFillClient). It is how a test reaches the decode cap
+// without its fixture meeting the byte bound on the way.
+//
+// Each frame carries what one apply may integrate into the room as it stands, which the fill
+// asks the hook's own allowance for rather than writing the figure again: the structs' half of
+// what the decode cap leaves above the room, the other half being the splits'
+// (peerApplyAllowance). So a fill near the cap halves its way in - a frame of the whole
+// headroom is refused DOC_NEEDS_REBUILD, since the apply that carried it could still cut what
+// the other half is kept for - and its last frames are a struct or two each.
 func fillToStructs(t *testing.T, service *Service, room *crdt.Doc, count int) {
 	t.Helper()
-	for client := uint64(gcFillClient); room.StructCount() < count; client++ {
-		n := min(count-room.StructCount(), gcFillFrameStructs)
+	for client := uint64(gcFillClient); structCeiling(room) < uint64(count); client++ {
+		held := structCeiling(room)
+		allowed := peerApplyAllowance(0, 0, 0, held, false, peerPressure{}).budget.Structs
+		n := min(count-int(held), gcFillFrameStructs, allowed)
 		if err, called := weighInto(service, room, gcFrameFrom(client, n)); err != nil || !called {
 			t.Fatalf("a frame of %d GC structs into a room of %d structs was answered %v (applied %t), want it admitted",
-				n, room.StructCount(), err, called)
+				n, held, err, called)
 		}
 	}
-	if held := room.StructCount(); held != count {
+	if held := structCeiling(room); held != uint64(count) {
 		t.Fatalf("the fill left the room holding %d structs, want %d", held, count)
+	}
+}
+
+// fillRoomToStructs takes room to count structs as its next load's decode meets them
+// (structCeiling) by applying frames of GC structs to the room itself, outside the hook. It is
+// for the one fixture the hook cannot build: a room already holding a backlog it will not drain
+// refuses every update once the decode cap leaves less than that drain's splits
+// (refusedStuckBacklog), which is the rule the one test that uses this is about, so its room is
+// carried to the cap by hand.
+func fillRoomToStructs(t *testing.T, room *crdt.Doc, count int) {
+	t.Helper()
+	for client := uint64(gcFillClient); structCeiling(room) < uint64(count); client++ {
+		n := min(count-int(structCeiling(room)), gcFillFrameStructs)
+		if err := crdt.ApplyUpdateV1(room, gcFrameFrom(client, n), nil); err != nil {
+			t.Fatalf("a frame of %d GC structs into a room of %d structs was refused by the room itself: %v",
+				n, structCeiling(room), err)
+		}
 	}
 }
 
@@ -1342,11 +1382,13 @@ func TestEveryRefusalThatClosesABrowserLogsWhyItRefusedIt(t *testing.T) {
 // A browser cannot take its room's own state past the decode cap: ygo decodes at most
 // maxUpdateItems structs in one update, and a room's whole state is one update to the next load
 // that reads it, so a room whose state held more could never be loaded again. The apply's
-// allowance of structs is what is left of the cap above what the room already holds
-// (crdt.Doc.StructCount), so a frame that would take the room one struct past it is refused and
-// taken back out whole, while the frame that takes the room to the cap exactly is admitted. A
-// delete-only frame that cuts no item the room holds integrates nothing and splits nothing, and
-// is admitted at the cap.
+// allowance of structs is the structs' half of what is left of the cap above the structs the
+// room's next load meets (structCeiling, peerApplyAllowance), so a frame that would take the
+// room one struct past the cap is refused and taken back out whole, and so is the frame that
+// would take it to the cap exactly: the other half of the headroom is the splits', which the
+// same apply could still make and which no count of what it carries would see. A frame within
+// the structs' half is admitted. A delete-only frame that cuts no item the room holds
+// integrates nothing and splits nothing, and is admitted at the cap.
 //
 // The close is 4413 DOC_NEEDS_REBUILD and not the document's own DOC_TOO_LARGE: a room at the
 // cap refuses every update that adds a struct, so the person's next edit is refused as well and
@@ -1367,8 +1409,16 @@ func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 			refused: true,
 		},
 		{
-			name:   "GC structs to the cap",
-			update: func(held int) []byte { return gcFrameFrom(7, maxUpdateItems-held) },
+			name:    "GC structs to the cap, which leaves the splits' half nothing",
+			update:  func(held int) []byte { return gcFrameFrom(7, maxUpdateItems-held) },
+			refused: true,
+		},
+		{
+			name: "GC structs to what the structs' half of the headroom allows",
+			update: func(held int) []byte {
+				headroom := maxUpdateItems - held
+				return gcFrameFrom(7, headroom-headroom/2)
+			},
 		},
 		{
 			name:   "delete ranges, which integrate nothing",
@@ -1850,11 +1900,11 @@ func (f v1Frame) done() []byte { return slices.Clone(f.Bytes()) }
 // its next load, and nothing refused the update that caused it. A person broke a document by
 // deleting one character inside a word.
 //
-// The allowance now bounds an apply's splits by the figure it bounds its structs by, the decode
-// cap's own headroom (peerApplyAllowance), so the delete is refused with the close that offers
-// the rebuild and the room is left at the cap, byte for byte as it was. A delete of whole items,
-// which cuts nothing, is still admitted at the cap, so a document that has reached it can still
-// be trimmed.
+// The allowance now bounds an apply's splits by a figure of their own, the splits' half of the
+// decode cap's headroom (peerApplyAllowance), so the delete is refused with the close that
+// offers the rebuild and the room is left at the cap, byte for byte as it was. A delete of
+// whole items, which cuts nothing, is still admitted at the cap, so a document that has reached
+// it can still be trimmed.
 func TestADeleteWhoseSplitsWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
 	defer runtime.KeepAlive(replica)
@@ -1884,6 +1934,110 @@ func TestADeleteWhoseSplitsWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.
 		len(cut), refused.Split, maxUpdateItems)
 	if err, called := weighInto(service, room, deleteRangesFrom(gcFillClient, 64)); err != nil || !called {
 		t.Fatalf("a frame of 64 whole-item delete ranges was answered %v (applied %t), want it admitted at the cap", err, called)
+	}
+}
+
+// The pressure lets an update cut up to pressureSplits of the items the room holds, so that a
+// person can still cut a full document back down, and that figure bounded one update alone: the
+// review drove 5,000 updates of four mid-run deletes each into one room with the budget full
+// throughout, every one was admitted, and the room went from 10 structs to 40,010
+// (TestR6Finding3PressureSplitsHaveNoCumulativeBound, dispatch://INFRA-179, review 6's finding
+// 3). What bounds it across the whole pressure now is the room's own mark: the ceiling it stood
+// at as the pressure first weighed one of its updates, and pressureGrowth structs above it
+// (splitsUnderPressure).
+//
+// This drives one room to that reach under one pressure and holds four things: a person's cuts
+// are admitted far past the hundred shrinking updates A4 drives before the reach is met; the
+// room grows by the allowance and no further, the update past it refused with the transient
+// close the editor retries; a delete of whole items, which cuts nothing, is admitted above the
+// reach, so a full document can still be shortened however long the pressure has run; and the
+// end of the pressure clears the mark, so the room takes cuts again under the next one.
+func TestThePressureBoundsARoomsGrowthAcrossItAndTheEndOfItClearsTheMark(t *testing.T) {
+	// The hundred shrinking updates A4 drives on a full server
+	// (TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks), all into this one room rather than
+	// ten each over ten rooms, which is the heavier reading of what a person's editing needs.
+	const shrinks = 100
+	// Two pressures' worth of cuts and more, each at a character of its own, so no cut falls
+	// where an earlier one did: a cut inside the run splits the item it lands in at both edges,
+	// and one at the edge of a cut already made would split it at one.
+	const cuts = 4 * pressureGrowth
+	service, room, replica := peerUpdateRoom(t, "# "+strings.Repeat("a", 3*cuts+16)+"\n\nOne paragraph.\n", 0)
+	defer runtime.KeepAlive(replica)
+	browser, text := peerDocument(t, room)
+	made := 0
+	// cut is a person's next delete of one character inside the run, as the editor sends it: the
+	// whole of what the browser holds that the room does not, so a cut the room refused is in
+	// the next update too, which is what the editor's retry does. The character of the made'th
+	// cut sits at visible index 2*made+1 once the earlier ones are gone.
+	cut := func() []byte {
+		browser.Transact(func(txn *crdt.Transaction) { text.Delete(txn, 2*made+1, 1) })
+		made++
+		return crdt.EncodeStateAsUpdateV1(browser, room.StateVector())
+	}
+	// drive sends cuts until one is refused, and is how many were admitted, what the room grew
+	// by and the refusal.
+	drive := func(t *testing.T, what string) (admitted int, grown uint64, refusal error) {
+		t.Helper()
+		marked := structCeiling(room)
+		for range cuts {
+			before := crdt.EncodeStateAsUpdateV1(room, nil)
+			err, called := weighInto(service, room, cut())
+			if err == nil && called {
+				admitted++
+				continue
+			}
+			requireRefusedBusy(t, err, room, before)
+			return admitted, structCeiling(room) - marked, err
+		}
+		t.Fatalf("%s: all %d cuts were admitted, want the pressure to refuse one once the room had grown by %d structs", what, cuts, pressureGrowth)
+		return 0, 0, nil
+	}
+
+	fillRoomBudget(t, &service.budget)
+	admitted, grown, refusal := drive(t, "the first pressure")
+	t.Logf("under one pressure %d of a person's cuts inside a word were admitted, against the %d shrinking updates A4 drives, and the room grew by %d structs of the %d allowed; the next was refused: %v",
+		admitted, shrinks, grown, pressureGrowth, refusal)
+	if admitted < shrinks {
+		t.Fatalf("the pressure admitted %d cuts, want at least the %d shrinking updates a person's editing needs", admitted, shrinks)
+	}
+	if grown > pressureGrowth || grown+2*pressureSplits < pressureGrowth {
+		t.Fatalf("the room grew by %d structs under the pressure, want the %d of its allowance, within the splits one update may make",
+			grown, pressureGrowth)
+	}
+
+	// The pressure ends, which clears the mark, and the room takes cuts again at once and under
+	// the pressure that follows. The budget's charges are left where the fill put them, so the
+	// new limit is what lowers full and the limit of one byte what raises it again
+	// (roomBudget.unlock, roomBudget.swept).
+	service.budget.setLimit(roomBudgetBytes)
+	if service.underPressure("room") {
+		t.Fatal("the budget is still full after its limit rose past its charges")
+	}
+	// The browser holds the cut the pressure refused, so this update carries it beside the next,
+	// as the editor's retry does.
+	if err, called := weighInto(service, room, cut()); err != nil || !called {
+		t.Fatalf("a cut once the pressure had ended was answered %v (applied %t), want it admitted", err, called)
+	}
+	service.budget.setLimit(1)
+	service.budget.swept(false)
+	if !service.budget.full.Load() {
+		t.Fatal("the budget is not full after its limit fell under its charges and its sweep found nothing to close")
+	}
+	again, grownAgain, refusedAgain := drive(t, "the second pressure")
+	t.Logf("under the next pressure the same room admitted %d cuts and grew by %d structs, from a mark taken afresh; the next was refused: %v",
+		again, grownAgain, refusedAgain)
+	if again < shrinks {
+		t.Fatalf("the second pressure admitted %d cuts, want at least the %d a person's editing needs: the mark of the first pressure was not cleared", again, shrinks)
+	}
+	// A delete of whole items cuts nothing, so it needs no split at all: it is admitted with the
+	// room at its reach and the pressure refusing every cut, which is what keeps R3's promise
+	// that a full document can still be cut back down however long the pressure has run.
+	held := room.StructCount()
+	if err, called := weighInto(service, room, peerDeletingAll(t, room)); err != nil || !called {
+		t.Fatalf("a delete of the whole of the room's text at the pressure's reach was answered %v (applied %t), want it admitted", err, called)
+	}
+	if after := room.StructCount(); after > held {
+		t.Fatalf("the delete of whole items left the room holding %d structs, up from %d: it cut items rather than covering them", after, held)
 	}
 }
 
@@ -1953,9 +2107,10 @@ func TestABrowsersUpdateCarryingAnEmbedIsRefused(t *testing.T) {
 // stands, deliberately - the parked content is another sender's and the sender that filled the
 // gap can neither see it nor send less of it. No error says so, so the room reads its own state
 // instead: a queue that holds something, holds no fewer than the fewest this room has seen since
-// it was last empty, and a decode cap that leaves less than the splits the drain can make - one
-// for each parked struct and two for each parked delete range, which cuts the items its two
-// edges fall in (refusedStuckBacklog).
+// it was last empty, and a drain whose splits - one for each parked struct and two for each
+// parked delete range, which cuts the items its two edges fall in - are more than the apply
+// that fills the gap may make, which is the splits' half of what the decode cap leaves above
+// the room (refusedStuckBacklog, peerApplyAllowance).
 //
 // The same standing queue in a room with headroom refuses nothing, which is what the third test
 // is for: there the drain cannot be refused for its splits at all, so a queue that is not
@@ -1986,7 +2141,10 @@ func TestABrowsersUpdateIntoARoomWhoseBacklogWillNotDrainIsRefused(t *testing.T)
 	}
 	// The same queue in the same room once the room is at the decode cap: the drain of its one
 	// parked range can cut two items and the cap leaves nothing, so the next browser is closed.
-	fillToStructs(t, service, room, maxUpdateItems)
+	// The fill is applied to the room itself, since this room is the one the hook refuses: its
+	// queue has stopped falling, and a fill through the hook would be closed by the very rule
+	// under test as soon as the cap left less than the drain's two splits (fillRoomToStructs).
+	fillRoomToStructs(t, room, maxUpdateItems)
 	before := crdt.EncodeStateAsUpdateV1(room, nil)
 	update := deleteRangesFrom(gcFillClient, 1)
 	err, called := weighInto(service, room, update)

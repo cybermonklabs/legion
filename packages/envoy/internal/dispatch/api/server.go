@@ -1477,23 +1477,20 @@ func (s *server) publish(events ...model.Event) {
 	}
 }
 
-// begin opens one of the API's transactions, on the write limit its request took at its entry
-// (holdWriteLimit), or one of its own for a caller that holds none - a server task, a test that
-// calls begin directly. The limit is taken before any connection and before any lock, so a
-// caller the pool has no room for waits holding nothing and the connections the limit leaves
-// stay free for the callers that take one without a transaction - the room workers' durable
-// appends among them (apiWriteLimit).
+// begin opens one of the API's transactions on a slot of the API's write limit, which the
+// transaction holds until it ends (limitedTx) - a request that opens two in turn holds one at a
+// time. The slot is taken before any connection and before any lock, so a caller the pool has no
+// room for waits holding nothing and the connections the limit leaves stay free for the callers
+// that take one without a transaction - the room workers' durable appends among them
+// (apiWriteLimit). A request's entry only probed the limit, holding nothing of it, so a request
+// whose body is still arriving holds no slot (holdWriteLimit).
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	release := writeGrantFrom(ctx)
-	if release == nil {
-		taken, err := s.writes.take(ctx)
-		if err != nil {
-			return nil, err
-		}
-		release = taken
+	release, err := s.writes.take(ctx)
+	if err != nil {
+		return nil, err
 	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {

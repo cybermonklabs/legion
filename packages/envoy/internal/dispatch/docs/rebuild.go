@@ -34,12 +34,24 @@ type RebuildReport struct {
 // between them.
 const smallestReplacementAdds = 3
 
-// smallestReplacementBytes is what that same smallest replacement adds to a room's state: the one
-// character it inserts, which is one byte of content, and the structs it splits, whose own bytes
-// the state carries as the item headers ygo writes for them. It is deliberately small - a
-// document is near the state cap only when a one-character edit would pass it - so that the
-// rebuild offer answers a document a person cannot edit, and not one with room left in it.
-const smallestReplacementBytes = 64
+// nearTheStateCap is how much state headroom a document may have and still be offered the
+// rebuild: the bytes a browser's own update may add past the document bound (maxPeerByteCreep,
+// 64 KiB).
+//
+// It was 64 bytes, a write's smallest replacement - one character inserted and the headers of the
+// structs it splits - which asked whether a one-character edit would pass the cap. That is not what the room refuses. The hook refuses a browser's update whose content
+// passes what is left of the cap (ruleStateCap, DOC_NEEDS_REBUILD), so a room with 10 KiB of
+// headroom drops a person's 20 KiB paste and the editor offers the rebuild - and the route then
+// answered 409 DOCUMENT_LIVE, because 10 KiB is far more than 64 bytes. The person's edit was
+// dropped and the remedy offered failed (dispatch://INFRA-179, review 6's finding 4, reproduced
+// by TestR6Finding4StateCapRefusalYetNotNearACap).
+//
+// The figure is the room's own: 64 KiB is what a browser may add past the document bound, so a
+// room with less than that above its state is one whose person meets the refusal for an ordinary
+// edit, and a room with more than that is one whose refusals are of pastes larger than any
+// allowance a full document has - those are the document bound's business, and a rebuild would
+// not help them.
+const nearTheStateCap = maxPeerByteCreep
 
 // nearACap reports whether doc, a document's decoded history or its live room, stands so near a
 // cap that it must be rebuilt, and why. Near the decode cap means a write's smallest replacement
@@ -80,9 +92,9 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 	if tracked > held {
 		held = tracked
 	}
-	if held+smallestReplacementBytes > maxRoomStateBytes {
-		return fmt.Sprintf("the document's live state holds %d bytes, and a write's smallest replacement, %d more, would carry it past the %d one room may hold",
-			held, smallestReplacementBytes, maxRoomStateBytes), true, nil
+	if held+nearTheStateCap > maxRoomStateBytes {
+		return fmt.Sprintf("the document's live state holds %d bytes, within %d of the %d one room may hold, so the room refuses a browser's ordinary edit",
+			held, nearTheStateCap, maxRoomStateBytes), true, nil
 	}
 	if scans, err := rescan(state); err == nil && scans+honestHandoffScans >= roomScanTotal {
 		return fmt.Sprintf("a re-scan of the document's live state scans %d items, within %d of the %d a room's history may scan",

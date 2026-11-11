@@ -513,7 +513,11 @@ func (w *liveWrite) coverFork(ctx context.Context, bytes int64) error {
 // than against each wait: the deadline is taken from when the request began (WithCallerRequest),
 // so a write that meets both of the waits a caller's write can meet - the API's write limiter
 // and this slot - is answered within fifteen seconds of its arrival whichever of them it spends
-// the time at, and a wait that starts past the bound is refused at once. It bounds the WAITS
+// the time at, and a wait that starts past the bound is refused at once where what it waits for
+// is held. A free slot is no wait at all: the API's limiter takes one without waiting before it
+// reads this bound, so a request's later transaction is served while slots are free however long
+// the request has run, which is what a bound on waiting means (api's writeLimiter.take,
+// dispatch://INFRA-179, review 6's finding 5). It bounds the WAITS
 // alone: once the write holds what it waited for, its work runs under the caller's own context
 // as before, so no apply and no commit is cut short by this.
 //

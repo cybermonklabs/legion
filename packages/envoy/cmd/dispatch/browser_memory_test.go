@@ -2023,7 +2023,11 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 		if short <= 0 {
 			break
 		}
-		frame := min(short, gcFillFrame)
+		// One apply may integrate the structs' half of what the cap leaves above the room, since
+		// the other half is the splits' and ygo counts the two apart (docs' peerApplyAllowance,
+		// dispatch://INFRA-179, review 6's finding 1). A frame of the whole headroom is refused
+		// once the room is past half the cap, which is where this fill spends most of its time.
+		frame := min(short-short/2, gcFillFrame)
 		requireApplied(t, filling, gcFrame(fillClient, frame, 1), fmt.Sprintf("an update of %d GC structs", frame))
 		fillClient++
 	}
@@ -2046,7 +2050,17 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	}
 	// What the cap admits: the frame that reaches it exactly, and a frame of delete ranges,
 	// which integrates nothing of its own whatever the room already holds.
-	requireApplied(t, filling, gcFrame(fillClient+1, left, 1), fmt.Sprintf("an update of %d GC structs, to the cap exactly", left))
+	// The frame that reaches the cap is the structs' half of what is left, sent until nothing is:
+	// each apply takes half the remaining headroom, so the room reaches the cap in a few frames
+	// rather than one, and none of them leaves the splits' half with nothing.
+	for short := left; short > 0; short = int(maxUpdateItemsForTest - structsOf(t, filling)) {
+		fillClient++
+		requireApplied(t, filling, gcFrame(fillClient, short-short/2, 1), fmt.Sprintf("an update of %d GC structs, toward the cap", short-short/2))
+		if short-short/2 == 0 {
+			break
+		}
+	}
+	fillClient++
 	requireApplied(t, filling, deleteRangesFrame(fillClient+2, 64), "an update of 64 delete ranges into a room at the cap")
 	atTheCap := canonicalState(t, filling.state(t))
 	capped, err := docs.StateStructsForTest(atTheCap)
@@ -3463,7 +3477,8 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	// writes wait for: weighed at its own cost a fork of a mebibyte takes 42,493,360 bytes of the
 	// calibration's 600,000,000-byte pool, fourteen at a time, and over this burst not one holder
 	// waited the tenth of a second a grant's release is logged at (docs' loadSlotLogged) - what
-	// the writes wait for is the write limit at the request's entry, and then the two processors.
+	// the writes wait for is the write limit their transaction takes (api's server.begin; the
+	// request's entry only probes it and holds nothing), and then the two processors.
 	// And how many of the burst's writes apply is the pod's to decide and not this drive's: a
 	// caller is answered 503 once its request has spent the server's bound (docs.WriteWaitBound,
 	// docs.WriteRequestBound), so the applied count is what the pod finishes inside it - 14 to 17
@@ -5170,4 +5185,14 @@ func (p *memoryServer) roomHolding(t *testing.T, artifactID string) string {
 		t.Fatalf("decode what holds %s open: %v: %s", artifactID, err, answer.body)
 	}
 	return read.Holding
+}
+
+// structsOf is the structs the room's state holds now, as this drive's fill loop reads them.
+func structsOf(t *testing.T, open *browser) int64 {
+	t.Helper()
+	held, err := docs.StateStructsForTest(canonicalState(t, open.state(t)))
+	if err != nil {
+		t.Fatalf("count the room's structs: %v", err)
+	}
+	return held
 }

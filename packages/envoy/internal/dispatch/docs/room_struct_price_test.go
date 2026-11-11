@@ -130,12 +130,12 @@ func TestAResidentRoomsHeapPerStructItHolds(t *testing.T) {
 // update deletes every other one of them, which leaves the room a struct for each. It is half a
 // million and not the 1,100,000 of the reviewer's room because that room's 1,100,002 structs
 // are past the 1,048,576 ygo decodes in one update: its stored state could never be loaded
-// again, which is the defect crdt.ApplyBudget.Split was cut for - every browser's allowance
-// now carries what is left of the decode cap above what the room holds, splits included, so the
-// hook refuses that delete with DOC_NEEDS_REBUILD and leaves the room as it was
-// (peerApplyAllowance). Half a million leaves the room about 500,002 structs after the same
-// cut, split-dense by the same wide margin - the state term under-charges it just as badly -
-// and well inside the cap.
+// again, which is the defect crdt.ApplyBudget.Split was cut for - every browser's allowance now
+// divides what is left of the decode cap above what the room holds between the structs it
+// carries and the items it splits, so the hook refuses that delete with DOC_NEEDS_REBUILD and
+// leaves the room as it was (peerApplyAllowance). Half a million leaves the room about 500,002
+// structs after the same cut, split-dense by the same wide margin - the state term
+// under-charges it just as badly - and well inside the cap.
 const splitDenseRun = 500_000
 
 // splitDenseState is the state of a room whose first paragraph took a run of run characters in
@@ -213,16 +213,22 @@ func splitEveryOtherCharacter(client crdt.ClientID, run int) []byte {
 // the room's two copies (TestAResidentRoomsHeapPerStructItHolds measured that price on this
 // very shape among others). Before the second term the room was charged its tracked state
 // alone, far under that, which is the under-charge this holds against.
+//
+// The charge counts the room's ceiling and not its store alone (structCeiling): the run is 488
+// chunks of 1,024 characters, 499,712 in all, while the delete frame names every other clock up
+// to the 500,000 asked for, so its last 144 ranges name clocks the room does not hold and park.
+// The room stores them and its next load decodes them, so the budget is charged for them too.
 func TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	const run = splitDenseRun
 	before, cut := splitDenseRoom(t, run)
 	room := loadAndType(t, before, [][]byte{cut})
 	structs := int64(room.live.StructCount())
+	ceiling := int64(structCeiling(room.live))
 	tracked := room.replica.roomStateBytes()
 	charged := chargedWeight(room.charge)
-	t.Logf("a run of %d characters with every other one deleted leaves the room %d structs tracked at %d bytes of state: its state term charges %d bytes and its struct term %d, and it is charged %d",
-		run, structs, tracked, tracked*bytesOfHeapAStateByte*roomCopies, structs*bytesOfHeapAStruct*roomCopies, charged)
+	t.Logf("a run of %d characters with every other one deleted leaves the room %d structs, a ceiling of %d with what its delete frame parked, tracked at %d bytes of state: its state term charges %d bytes and its struct term %d, and it is charged %d",
+		run, structs, ceiling, tracked, tracked*bytesOfHeapAStateByte*roomCopies, ceiling*bytesOfHeapAStruct*roomCopies, charged)
 	if structs < run/2 {
 		t.Fatalf("the room holds %d structs after the delete, want the %d the splits make: this is no longer the split-dense shape", structs, run/2)
 	}
@@ -230,9 +236,9 @@ func TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap(t *testing.T) {
 		t.Errorf("the room is charged %d bytes for the %d structs its two copies hold, under the %d those structs measure: the budget under-charges a split-dense room",
 			charged, structs, want)
 	}
-	if charged != roomWeight(tracked, structs) {
-		t.Errorf("the room is charged %d bytes, want the %d its %d tracked bytes of state and its %d structs come to (roomWeight)",
-			charged, roomWeight(tracked, structs), tracked, structs)
+	if charged != roomWeight(tracked, ceiling) {
+		t.Errorf("the room is charged %d bytes, want the %d its %d tracked bytes of state and its ceiling of %d structs come to (roomWeight)",
+			charged, roomWeight(tracked, ceiling), tracked, ceiling)
 	}
 }
 

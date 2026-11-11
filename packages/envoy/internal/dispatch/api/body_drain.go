@@ -35,26 +35,48 @@ func (s *server) drainTime() time.Duration {
 	return bodyDrainLimit
 }
 
-// readFor bounds a drain of the body of the request w answers to drainTime from now, a read
-// deadline on its connection (http.ResponseController.SetReadDeadline), past which a read fails
-// and the drain ends; it answers what lifts the bound, which the drain calls only once the body has
-// reached its end. Lifted, the connection has no read deadline, which is what it has between
-// requests on this server, whose http.Server sets no ReadTimeout (cmd/dispatch): a deadline left in
-// place there would end the read net/http keeps on an idle connection once the body has ended, and
-// cancel the request's context under its answer. A drain that ends short of the body's end - its
-// read failed, or the body ran past the route's limit - leaves the deadline in place, since net/http
-// reads on after the answer itself: it discards up to 256 KiB more of a body whose Content-Length
-// leaves that little unread before it writes the answer's header, and again when it closes the body
-// once the handler returns. With the deadline those reads end where the drain's did and the
-// connection closes; lifted, a client that stopped sending would hold the connection open after its
-// answer, and withhold the answer itself where its body ran past the limit. A writer with no
-// connection of its own (a test's recorder) bounds nothing.
+// readDeadline is the read deadline of the connection a request arrived over
+// (http.ResponseController.SetReadDeadline), which is the only bound a read of its body has: this
+// server's http.Server sets no ReadTimeout (cmd/dispatch), deliberately, because its event stream
+// is long-lived. A writer with no connection of its own (a test's recorder) takes no deadline,
+// which set reports, and such a request's reads are bounded by nothing. The drain holds one
+// (readFor) and so does the body a handler reads (deadlinedBody), which resets it as the body
+// arrives.
+type readDeadline struct {
+	controller *http.ResponseController
+}
+
+func newReadDeadline(w http.ResponseWriter) readDeadline {
+	return readDeadline{controller: http.NewResponseController(w)}
+}
+
+// set bounds the reads that follow at at, and reports whether the connection took the bound.
+func (d readDeadline) set(at time.Time) bool {
+	return d.controller.SetReadDeadline(at) == nil
+}
+
+// lift leaves the connection with no read deadline, which is what it has between requests: a
+// deadline left there would end the read net/http keeps on an idle connection once the body has
+// ended, and cancel the request's context under its answer.
+func (d readDeadline) lift() {
+	_ = d.controller.SetReadDeadline(time.Time{})
+}
+
+// readFor bounds a drain of the body of the request w answers to drainTime from now, past which a
+// read fails and the drain ends; it answers what lifts the bound, which the drain calls only once
+// the body has reached its end. A drain that ends short of the body's end - its read failed, or
+// the body ran past the route's limit - leaves the deadline in place, since net/http reads on
+// after the answer itself: it discards up to 256 KiB more of a body whose Content-Length leaves
+// that little unread before it writes the answer's header, and again when it closes the body once
+// the handler returns. With the deadline those reads end where the drain's did and the connection
+// closes; lifted, a client that stopped sending would hold the connection open after its answer,
+// and withhold the answer itself where its body ran past the limit.
 func (s *server) readFor(w http.ResponseWriter) (lift func()) {
-	controller := http.NewResponseController(w)
-	if err := controller.SetReadDeadline(time.Now().Add(s.drainTime())); err != nil {
+	deadline := newReadDeadline(w)
+	if !deadline.set(time.Now().Add(s.drainTime())) {
 		return func() {}
 	}
-	return func() { _ = controller.SetReadDeadline(time.Time{}) }
+	return deadline.lift
 }
 
 // expectsContinue reports whether r's client asked to be told to continue before it sends its body

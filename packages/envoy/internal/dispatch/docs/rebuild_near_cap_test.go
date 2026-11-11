@@ -1390,3 +1390,46 @@ func structsAndRendering(t *testing.T, state []byte) (structs uint64, rendered i
 	crdt.RunGC(doc)
 	return structs, len(rendering), countRoomStructs(doc)
 }
+
+// The rebuild offer answers what the room refuses. A room whose state stands within a browser's
+// own creep allowance of the state cap refuses that browser's ordinary edit with
+// DOC_NEEDS_REBUILD, and the dashboard offers the rebuild; before this the route answered that
+// offer 409, because nearACap asked only whether a one-character edit would pass the cap
+// (dispatch://INFRA-179, review 6's finding 4). The two readings now agree: what the hook
+// refuses, the route accepts.
+func TestADocumentTheRoomRefusesAnOrdinaryEditIsNearTheStateCap(t *testing.T) {
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
+	defer runtime.KeepAlive(replica)
+	for _, row := range []struct {
+		name     string
+		headroom int64
+		paste    int
+		refused  bool
+		wantNear bool
+	}{
+		{name: "10 KiB of headroom, a 20 KiB paste", headroom: 10 << 10, paste: 20 << 10, refused: true, wantNear: true},
+		{name: "one byte inside the creep allowance, a keystroke", headroom: maxPeerByteCreep - 1, paste: 1, refused: false, wantNear: true},
+		{name: "the creep allowance exactly, a keystroke", headroom: maxPeerByteCreep, paste: 1, refused: false, wantNear: false},
+		{name: "a mebibyte of headroom, a 20 KiB paste", headroom: 1 << 20, paste: 20 << 10, refused: false, wantNear: false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			tracked := int64(maxRoomStateBytes) - row.headroom
+			service.chargeLoadedRoom("room", replica, tracked)
+			update := peerTyping(t, room, strings.Repeat("p", row.paste))
+			err, applied := weighInto(service, room, update)
+			var closed *websocket.PeerClose
+			refused := errors.As(err, &closed) && closed.Reason == contracts.DocumentNeedsRebuildCloseReason
+			why, near, nearErr := nearACap(context.Background(), room, 1, tracked)
+			if nearErr != nil {
+				t.Fatalf("read how near the caps the room stands: %v", nearErr)
+			}
+			t.Logf("%d bytes of headroom, a %d-byte paste: refused=%t applied=%t near=%t why=%q", row.headroom, row.paste, refused, applied, near, why)
+			if refused != row.refused {
+				t.Errorf("the room refused the paste DOC_NEEDS_REBUILD: %t, want %t (%v)", refused, row.refused, err)
+			}
+			if near != row.wantNear {
+				t.Errorf("nearACap answers near=%t, want %t: the rebuild offer and the room's refusal must agree", near, row.wantNear)
+			}
+		})
+	}
+}

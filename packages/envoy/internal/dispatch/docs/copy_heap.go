@@ -394,9 +394,11 @@ func holdFreeLoad(bytes int64) func() {
 // (structsAfter). It is the room's tracked state bytes and the structs the room holds at
 // copyWeight - the bytes of the stored state the room's load decoded plus the updates its
 // observer has drained (roomStateBytes), which the service already holds and reads off the
-// room's listing without a lock, an encode or a read of the store, and ygo's own count of the
-// structs live holds (crdt.Doc.StructCount), which a split-dense copy is as heavy in the pool
-// by as it is in the budget.
+// room's listing without a lock, an encode or a read of the store, and the room's struct
+// ceiling (structCeiling), ygo's own count of the structs live holds with what it has parked,
+// which a split-dense copy is as heavy in the pool by as it is in the budget. The ceiling and
+// not the store's count alone: a copy carries the room's pending queue with its store, so a
+// room holding a parked backlog costs the pool what that backlog costs it.
 //
 // A document no room's load listed is tracked at nothing, and nothing here can name its size
 // without encoding it, so a copy of one takes a whole slot: the writes that reach this on such a
@@ -404,7 +406,7 @@ func holdFreeLoad(bytes int64) func() {
 // evicted, and one slot is what every taker took before this was weighed at all.
 func (s *Service) copyOfRoom(live *crdt.Doc) int64 {
 	if tracked := s.roomStateBytes(live); tracked > 0 {
-		return copyWeight(int64(tracked), int64(live.StructCount()))
+		return copyWeight(int64(tracked), int64(structCeiling(live)))
 	}
 	return loadSlotBytes
 }

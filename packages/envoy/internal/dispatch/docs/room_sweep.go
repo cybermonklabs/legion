@@ -10,14 +10,16 @@ import (
 
 // chargeLoadedRoom charges room's newly loaded instance, whose replica has just published its
 // load's rendering (keepReplica), at stateBytes, the bytes of the stored state that load
-// decoded, and at the structs the room's document holds, and hands the replica the charge its
-// drains raise from then on (renderedReplica.chargeAdded). Both figures are in hand: the load
-// read the state, decoded it into the room and decoded it again into the replica, and the
-// struct count is ygo's own walk of the handful of client slices (crdt.Doc.StructCount), so the
-// budget charges the room what its two copies were built from without encoding either
-// (roomWeight).
+// decoded, and at the structs the room's stored state holds, and hands the replica the charge
+// its drains raise from then on (renderedReplica.chargeAdded). Both figures are in hand: the
+// load read the state, decoded it into the room and decoded it again into the replica, and the
+// struct figure is the room's ceiling, ygo's own walk of the handful of client slices with what
+// the load parked beside it (structCeiling, crdt.Doc.StructCount), so the budget charges the
+// room what its two copies were built from without encoding either (roomWeight). The ceiling
+// and not the store's count alone: a load parks what its stored history parked, and those
+// structs are in both copies and in the state the next load decodes.
 func (s *Service) chargeLoadedRoom(room string, replica *renderedReplica, stateBytes int64) *roomCharge {
-	charge := s.budget.load(room, stateBytes, int64(replica.live.StructCount()))
+	charge := s.budget.load(room, stateBytes, int64(structCeiling(replica.live)))
 	replica.state.Store(stateBytes)
 	replica.charge.Store(charge)
 	return charge
@@ -43,7 +45,7 @@ func (s *Service) rebaseRoomState(room string, stateBytes int64) {
 		return
 	}
 	weighing.state.Store(stateBytes)
-	weighing.roomCharge().weigh(stateBytes, int64(live.StructCount()))
+	weighing.roomCharge().weigh(stateBytes, int64(structCeiling(live)))
 }
 
 // sweepRooms is the budget's sweep (roomBudget.sweep): while the budget is over its limit
