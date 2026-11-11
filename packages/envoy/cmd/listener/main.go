@@ -503,8 +503,9 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // gone, unbound, or whose info read did not answer is still 503, since a listener that receives
 // nothing is not the case the 200 is for. That answer is 200 "degraded" and not 503, because the
 // probes act on /healthz: the ECS container health check is curl -sf /healthz, every 30 s with 3
-// retries (infra/aws/rendering/listener.go:202-203), on a service of one task
-// (infra/aws/webhooklistener.go:227), and GKE's readiness probe reads it too
+// retries (infra/aws/rendering/listener.go, the healthCheck entry of
+// ListenerContainerDefinitions), on a service of one task (infra/aws/webhooklistener.go,
+// DesiredCount), and GKE's readiness probe reads it too
 // (infra/gcp/dispatch_kube.go, readyProbe). A 503 would replace, or unroute, the only listener
 // there is, and its replacement rebuilds into the same failing rewatch with cold caches that warm
 // up empty, whose fanout then acknowledges general-topic messages as unmatched and loses them
