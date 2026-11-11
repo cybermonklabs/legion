@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { issueAddress, pathToTarget, presetPath } from "./issue-address";
+import { conversationStatePath, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
 
@@ -37,6 +37,41 @@ test("each preset's address is the one its tab carries", () => {
   expect(presetPath("CORE-1", "tree")).toBe("/issues/CORE-1");
   expect(presetPath("CORE-1", "checks")).toBe("/issues/CORE-1/verification");
   expect(presetPath("CORE-1", "spec")).toBe("/issues/CORE-1/spec");
+});
+
+// Two of the conversation's four states are addresses of their own, so picking one is
+// navigation - but only from an address those two can stand in for. From a preset the move
+// would drop the preset, the `?q=` that narrows it and the document it has open, so there the
+// state is the panel's alone (R19).
+test("a picked state opens an address only where the state is the address", () => {
+  expect(conversationStatePath({ key: "CORE-1", kind: "issue" }, "everything")).toBe(
+    "/issues/CORE-1/activity"
+  );
+  expect(conversationStatePath({ key: "CORE-1", kind: "activity" }, "words")).toBe(
+    "/issues/CORE-1/conversation"
+  );
+  expect(conversationStatePath({ key: "CORE-1", kind: "conversation" }, "everything")).toBe(
+    "/issues/CORE-1/activity"
+  );
+  // The two states that name no address never open one, wherever they are picked.
+  expect(conversationStatePath({ key: "CORE-1", kind: "issue" }, "questions")).toBeUndefined();
+  expect(conversationStatePath({ key: "CORE-1", kind: "activity" }, "pinned")).toBeUndefined();
+  // Every address that opens something besides the conversation keeps it, in every state.
+  const elsewhere = [
+    { key: "CORE-1", kind: "spec" },
+    { key: "CORE-1", kind: "plan" },
+    { key: "CORE-1", kind: "verification" },
+    { key: "CORE-1", kind: "decisions" },
+    { key: "CORE-1", kind: "children" },
+    { key: "CORE-1", kind: "collaborators" },
+    { key: "CORE-1", kind: "artifacts" },
+    { key: "CORE-1", kind: "artifact", slug: "plan-md" },
+  ] as const;
+  for (const route of elsewhere) {
+    for (const state of ["everything", "pinned", "questions", "words"] as const) {
+      expect(conversationStatePath(route, state), `${route.kind} at ${state}`).toBeUndefined();
+    }
+  }
 });
 
 test("the address says which preset it opens and which node it names", () => {

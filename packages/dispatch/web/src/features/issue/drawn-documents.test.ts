@@ -2,14 +2,26 @@ import { expect, test } from "bun:test";
 
 import type { Artifact } from "../../api/types";
 import type { IssueTab } from "../refs/routes";
-import { drawnDocumentIds, drawnDocuments, editedDocument } from "./drawn-documents";
+import { type DrawnDocuments, drawnDocuments, editedDocument } from "./drawn-documents";
 
 /**
  * One document has one editor and never a second (`document-stage.tsx`). The page and its
- * panels both read `drawnDocuments`, so the rows below hold that one answer to the rule: a
- * document a panel draws never also gets the page's own editor for an edited row, whichever
- * address is open and whichever panels have been opened.
+ * panels both read `drawnDocuments`, so the rows below hold that one answer to the rule: one
+ * document is named by one field of it, and a document a panel draws never also gets the
+ * page's own editor for an edited row, whichever address is open and whichever panels have
+ * been opened.
  */
+
+/** How many of the page's four drawing sites draw the document `id`. Each field a panel reads
+ *  mounts one editor, so two sites are two editors - two sockets - on one document.
+ *  It counts the fields themselves: `drawn-documents.ts`'s own id set is what `editedDocument`
+ *  reads, so a test that asked it would be asking the implementation its own question, and a
+ *  set holds one entry for a document two panels drew. */
+function drawingSites(drawn: DrawnDocuments, id: string): number {
+  return [drawn.plan, drawn.selected, drawn.spec, drawn.verification].filter(
+    (document) => document?.id === id
+  ).length;
+}
 
 function artifact(id: string, kind: Artifact["kind"] = "doc"): Artifact {
   return {
@@ -82,7 +94,12 @@ test("a panel the reader never opened draws nothing, and an artifact that is no 
     spec,
     verification,
   });
-  expect(drawnDocumentIds(shut).size).toBe(0);
+  expect(shut).toEqual({
+    plan: undefined,
+    selected: undefined,
+    spec: undefined,
+    verification: undefined,
+  });
   const blob = drawnDocuments({
     activated: { ...none, artifacts: true },
     otherDocument: true,
@@ -94,23 +111,55 @@ test("a panel the reader never opened draws nothing, and an artifact that is no 
   expect(blob.selected).toBeUndefined();
 });
 
-test("a document a panel draws never also gets the page's own editor, at any address", () => {
+// The defect the count above catches: with every panel opened and `/artifacts/plan-md` the
+// address, the plan was named by `plan` and by `selected` both, so the Plan panel and the
+// address's own panel each mounted an editor on it - two sockets on one document. The
+// address's own document wins, and the preset's panel yields (`drawn-documents.ts`).
+test("a document the address opens is drawn by that one panel and by no preset's as well", () => {
+  const everyTab = Object.fromEntries(TABS.map((tab) => [tab, true])) as Record<IssueTab, boolean>;
+  const open = { activated: everyTab, otherDocument: true, plan, spec, verification };
+
+  const openPlan = drawnDocuments({ ...open, selected: plan });
+  expect(openPlan.selected).toBe(plan);
+  expect(openPlan.plan).toBeUndefined();
+  expect(drawingSites(openPlan, "plan")).toBe(1);
+
+  // The Verification document is an artifact of the issue too, and the same rule holds for it.
+  const openChecks = drawnDocuments({ ...open, selected: verification });
+  expect(openChecks.selected).toBe(verification);
+  expect(openChecks.verification).toBeUndefined();
+  expect(drawingSites(openChecks, "verification")).toBe(1);
+
+  // A row of that document still takes the one editor the address's panel draws, rather than
+  // getting the page's own.
+  expect(editedDocument(openPlan, "plan", [spec, plan, verification])).toBeUndefined();
+});
+
+test("one document is named by one field and gets one editor, at any address", () => {
   const artifacts = [spec, plan, verification, notes, picture];
+  // Every address the page distinguishes: its own and `/spec`, and an `/artifacts/<slug>` on
+  // each kind of artifact it can name - a document of its own, the two a preset keeps open, an
+  // artifact that is no document, and one that has not loaded yet.
+  const addresses = [
+    { otherDocument: false, selected: spec },
+    { otherDocument: true, selected: notes },
+    { otherDocument: true, selected: plan },
+    { otherDocument: true, selected: verification },
+    { otherDocument: true, selected: picture },
+    { otherDocument: true, selected: undefined },
+  ];
   for (const activated of everyActivation()) {
-    for (const otherDocument of [false, true]) {
-      const selected = otherDocument ? notes : spec;
-      const drawn = drawnDocuments({
-        activated,
-        otherDocument,
-        plan,
-        selected,
-        spec,
-        verification,
-      });
-      const ids = drawnDocumentIds(drawn);
+    for (const address of addresses) {
+      const drawn = drawnDocuments({ activated, ...address, plan, spec, verification });
+      for (const document of artifacts) {
+        expect(
+          drawingSites(drawn, document.id),
+          `${document.id} is drawn by two panels at ${address.selected?.id ?? "no document"}`
+        ).toBeLessThanOrEqual(1);
+      }
       for (const editing of artifacts.map((held) => held.id)) {
         const edited = editedDocument(drawn, editing, artifacts);
-        if (ids.has(editing)) {
+        if (drawingSites(drawn, editing) > 0) {
           expect(edited, `${editing} is drawn by a panel and by the page as well`).toBeUndefined();
         } else {
           expect(edited?.id, `${editing} is edited in a document no panel draws`).toBe(editing);

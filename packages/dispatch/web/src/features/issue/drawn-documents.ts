@@ -42,22 +42,46 @@ export interface OpenDocuments {
   readonly verification: Artifact | undefined;
 }
 
-/** Which document each panel of the page draws. One place decides it, so no two panels can
- *  come to draw the same document and no row can be left with none. */
+/**
+ * Which document each panel of the page draws. One place decides it, so no two panels can
+ * come to draw the same document and no row can be left with none.
+ *
+ * THE RULE: ONE DOCUMENT IS NAMED BY ONE FIELD, and the address's own document wins. A reader
+ * at `/artifacts/<slug>` opened that document, and the panel that address opens is where its
+ * one editor is drawn; every preset panel below yields the document the address already
+ * holds, rather than taking a second socket on it (the spec's panel yielded the whole address
+ * before, and the plan's and the Verification's now yield it their own document: with the
+ * Plan preset opened and `/artifacts/plan-md` the address, the plan was named twice and two
+ * panels mounted an editor on it).
+ *
+ * `claim` is that rule, in one place: a field takes an artifact only where no field above it
+ * took it already, so the fields are filled in the order the rule ranks them and nothing can
+ * be named twice however the guards below change.
+ */
 export function drawnDocuments(open: OpenDocuments): DrawnDocuments {
-  return {
-    plan: open.activated.plan ? open.plan : undefined,
-    selected:
-      open.activated.artifacts && open.otherDocument && open.selected?.kind === "doc"
-        ? open.selected
-        : undefined,
-    spec: open.activated.spec && !open.otherDocument ? open.spec : undefined,
-    verification: open.activated.verification ? open.verification : undefined,
+  const taken = new Set<string>();
+  const claim = (artifact: Artifact | undefined): Artifact | undefined => {
+    if (artifact === undefined || taken.has(artifact.id)) return undefined;
+    taken.add(artifact.id);
+    return artifact;
   };
+  // The address's own document first, then the presets, each with its own mount condition.
+  const selected = claim(
+    open.activated.artifacts && open.otherDocument && open.selected?.kind === "doc"
+      ? open.selected
+      : undefined
+  );
+  const spec = claim(open.activated.spec && !open.otherDocument ? open.spec : undefined);
+  const plan = claim(open.activated.plan ? open.plan : undefined);
+  const verification = claim(open.activated.verification ? open.verification : undefined);
+  return { plan, selected, spec, verification };
 }
 
-/** The id of every document `drawn` holds an editor for. */
-export function drawnDocumentIds(drawn: DrawnDocuments): ReadonlySet<string> {
+/** The id of every document `drawn` holds an editor for. It is this module's own, and no
+ *  oracle: a test that read it to decide what the panels draw would be asking the
+ *  implementation its own question, and a set of ids holds one entry for a document two
+ *  panels drew (`drawn-documents.test.ts` counts the drawing sites instead). */
+function drawnDocumentIds(drawn: DrawnDocuments): ReadonlySet<string> {
   return new Set(
     [drawn.plan, drawn.selected, drawn.spec, drawn.verification]
       .filter((artifact): artifact is Artifact => artifact !== undefined)

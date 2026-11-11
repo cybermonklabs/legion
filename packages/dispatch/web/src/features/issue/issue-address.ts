@@ -80,6 +80,31 @@ const ROUTE_CONVERSATION_STATES: Readonly<Record<string, ConversationState>> = {
   conversation: "words",
 };
 
+/**
+ * The address picking `state` opens from `route`, or undefined where picking it opens no
+ * address and the page holds the state for the address the reader is on.
+ *
+ * Two of the four states are addresses of their own, and the page draws more at them than the
+ * panel does: `/activity` puts the issue's whole history in the page's column. Picking one of
+ * those is navigation only from an address those two can stand in for - the issue's own, and
+ * the two they already name - because every other address opens something besides the
+ * conversation: a preset's document, the children, the collaborators, one turn. Picking a
+ * state there would drop the preset, the `?q=` and the document the reader has open, so there
+ * the state is the panel's alone (R19; picking Questions used to send a reader of the Spec
+ * preset to the bare `/conversation`, and picking Words or Everything still did).
+ */
+export function conversationStatePath(
+  route: IssueRoute,
+  state: ConversationState
+): string | undefined {
+  const kind = state === "everything" ? "activity" : state === "words" ? "conversation" : undefined;
+  if (kind === undefined) return undefined;
+  const ownsTheState =
+    route.kind === "issue" || ROUTE_CONVERSATION_STATES[route.kind] !== undefined;
+  if (!ownsTheState) return undefined;
+  return buildIssuePath({ key: route.key, kind });
+}
+
 /** A positive integer `?v=` holds, or undefined for anything else. */
 function pinnedVersion(search: string): number | undefined {
   const value = new URLSearchParams(search).get("v") ?? "";

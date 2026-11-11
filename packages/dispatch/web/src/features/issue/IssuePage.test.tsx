@@ -36,7 +36,7 @@ import type {
 } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
-import { MarginSlotProvider } from "../margin/margin-slot";
+import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "../margin/margin-slot";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
@@ -319,6 +319,18 @@ function CurrentRoute() {
   return <output data-testid="current-route">{`${location.pathname}${location.search}`}</output>;
 }
 
+/** A stand-in for the shell's margin, which draws whatever the page put in the slot the way
+ *  `MarginSheet` does (`features/margin/margin-slot.tsx`). A row mounts one to watch the panel
+ *  move between the margin's column and the page's own. */
+function StandInMargin(): ReactNode {
+  const fill = useMarginSlotFill();
+  return (
+    <aside data-testid="stand-in-margin">
+      <FilledMarginSlot fill={fill}>{null}</FilledMarginSlot>
+    </aside>
+  );
+}
+
 function renderIssuePage(
   path = "/issues/CORE-1",
   navigateTo?: string,
@@ -327,19 +339,23 @@ function renderIssuePage(
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   }),
   /** Whether the shell's margin is keeping a column for the page's panel. No margin is
-   *  mounted here, so the default is the state a collapsed margin and a phone both leave the
-   *  page in: the page draws its panel itself (`features/margin/margin-slot.tsx`). */
-  marginDrawsPanel = false
+   *  mounted here by default, so the default is the state a collapsed margin and a phone both
+   *  leave the page in: the page draws its panel itself (`features/margin/margin-slot.tsx`). */
+  marginDrawsPanel = false,
+  /** Whether a stand-in for the shell's margin is mounted at all. Off by default: with none
+   *  mounted, a page that hands its panel to the margin draws it nowhere, which is what the
+   *  rows below read. */
+  margin = false
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const view = render(
+  const tree = (drawsSlot: boolean) => (
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <DocumentRuntime.Provider value={runtime.runtime}>
             <MarginProvider>
-              <MarginSlotProvider drawsSlot={marginDrawsPanel}>
+              <MarginSlotProvider drawsSlot={drawsSlot}>
                 <CurrentRoute />
                 {navigateTo === undefined ? null : (
                   <Link to={navigateTo}>Navigate to test route</Link>
@@ -347,6 +363,7 @@ function renderIssuePage(
                 <Routes>
                   <Route path="/issues/:key/*" element={<IssuePage />} />
                 </Routes>
+                {margin ? <StandInMargin /> : null}
               </MarginSlotProvider>
             </MarginProvider>
           </DocumentRuntime.Provider>
@@ -354,8 +371,15 @@ function renderIssuePage(
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const view = render(tree(marginDrawsPanel));
   window.setTimeout(runtime.sync);
-  return { ...view, runtime };
+  return {
+    ...view,
+    runtime,
+    /** Shows the shell's margin, or collapses it again: the shell answers whether the margin
+     *  keeps a column for the page's panel, and the reader's own control moves that answer. */
+    showMargin: (drawsSlot: boolean) => view.rerender(tree(drawsSlot)),
+  };
 }
 
 /** happy-dom answers every media query against its own 1024 px window, which is a width the
@@ -1442,7 +1466,10 @@ test("IssuePage preserves an in-progress Conversation composer draft across a pr
     expect(composer.value).toBe("Draft in progress");
 
     await openPreset("Spec");
-    // The panel's own control is the way back to the conversation now that the tabs are gone.
+    // From a preset the panel's own control opens no address: it would drop the preset, the
+    // filter and the document the reader has open (R19). The way back to the conversation's
+    // own address is the Tree preset that address belongs to, and then the control.
+    await openPreset("Tree");
     await user.click(screen.getByRole("option", { name: "What people said" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/conversation")
@@ -2793,6 +2820,107 @@ test("IssuePage carries the filter into the address a conversation state names",
         "/issues/CORE-1/activity?q=socket"
       )
     );
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Words and Everything are addresses of their own, and picking one from a preset used to send
+// the reader to the bare `/conversation` or `/activity`: the preset gone, the `?q=` cleared
+// and the document they were reading closed. From a preset the state is the panel's alone
+// (R19, `issue-address.ts`'s `conversationStatePath`).
+test("IssuePage keeps the preset and the filter when Words or Everything is picked", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/spec?q=socket");
+
+  try {
+    await expectPreset("Spec");
+    for (const name of ["Everything", "What people said"]) {
+      const states = await screen.findByRole("listbox", { name: "Conversation" });
+      await user.click(within(states).getByRole("option", { name }));
+
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?q=socket");
+      await expectPreset("Spec");
+      expect(
+        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+          name,
+        })
+      ).toHaveAttribute("aria-selected", "true");
+    }
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// `/activity` is the Everything state's own address, and the issue's whole history in the
+// page's column is what that state draws there. Picking Questions keeps the address now, so
+// the history goes with the state rather than standing under a panel showing the questions
+// alone (`IssuePresetPanels.tsx`).
+test("IssuePage hides the activity list when a state other than Everything is picked", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/activity");
+
+  try {
+    await screen.findByTestId("issue-header");
+    const activity = document.getElementById("issue-activity-panel") as HTMLElement;
+    expect(activity).not.toHaveAttribute("hidden");
+
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await user.click(within(states).getByRole("option", { name: "Questions" }));
+
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity");
+    expect(activity).toHaveAttribute("hidden");
+
+    // Everything brings it back, and it was kept mounted all along.
+    await user.click(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Everything",
+      })
+    );
+    expect(document.getElementById("issue-activity-panel")).toBe(activity);
+    expect(activity).not.toHaveAttribute("hidden");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The panel moves between the shell's margin and the page's own column as the reader shows the
+// margin and collapses it again. It is one panel, drawn once and moved (`IssuePage`'s
+// `panelStage`): drawn afresh in each host, every move remounted it, and a message the reader
+// had typed - which `MentionComposer` holds in its own state - went with it.
+test("IssuePage keeps a message typed under the collapsed margin when the margin is shown", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  setViewport(1280);
+  const view = renderIssuePage(
+    "/issues/CORE-1/conversation",
+    undefined,
+    undefined,
+    undefined,
+    false,
+    true
+  );
+
+  try {
+    const column = await screen.findByTestId("issue-margin");
+    const composer = await within(column).findByLabelText<HTMLTextAreaElement>("Comment");
+    await user.type(composer, "half a thought");
+    expect(composer).toHaveValue("half a thought");
+
+    act(() => view.showMargin(true));
+
+    const inTheMargin = await screen.findByTestId("issue-margin");
+    expect(within(await screen.findByTestId("stand-in-margin")).getByTestId("issue-margin")).toBe(
+      inTheMargin
+    );
+    const moved = within(inTheMargin).getByLabelText<HTMLTextAreaElement>("Comment");
+    expect(moved).toBe(composer);
+    expect(moved).toHaveValue("half a thought");
   } finally {
     view.unmount();
     restore();

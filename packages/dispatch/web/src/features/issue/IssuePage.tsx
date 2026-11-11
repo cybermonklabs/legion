@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
@@ -26,7 +27,6 @@ import { conversationScrollport } from "../conversation/use-follow-latest";
 import { useFillMarginSlot, useMarginDrawsSlot } from "../margin/margin-slot";
 import { statusText } from "../project/board-model";
 import {
-  buildIssuePath,
   buildReferencePath,
   documentRoute,
   type IssueRoute,
@@ -42,10 +42,10 @@ import { drawnDocuments, editedDocument } from "./drawn-documents";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueBody } from "./IssueBody";
 import { IssueHeader } from "./IssueHeader";
-import { IssueMarginPanel } from "./IssueMargin";
+import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
-import { issueAddress } from "./issue-address";
+import { conversationStatePath, issueAddress } from "./issue-address";
 import { artifactsBySlug, documentOfNode } from "./issue-artifacts";
 import { PresetToolbar } from "./PresetToolbar";
 import { type ConversationState, NODE_TYPE_NAMES, sentenceCase } from "./page-words";
@@ -163,6 +163,37 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // (`features/margin/margin-slot.tsx`), so the panel is drawn exactly once and the properties
   // are read at every width and under either preference (R11, R12).
   const marginDrawsPanel = useMarginDrawsSlot();
+  // The panel's one stage: an element held for the life of the page, which this page draws the
+  // panel into and which is *appended* into whichever host is on the screen - the margin's
+  // column, or the page's own. It is the move an open document makes between its hosts
+  // (`document-stage.tsx`): the panel keeps one React parent through it, so nothing in it is
+  // unmounted and nothing in it is lost - an unsent message in the conversation's composer, an
+  // open blocked-by edit, the Subscribers, Collaborators and References lists a reader opened.
+  // Drawing it again in each host instead remounted all of that whenever the margin was
+  // collapsed or shown.
+  const panelStage = useMemo(() => {
+    const stage = document.createElement("div");
+    // No box of its own: the panel is a child of whichever host draws it, as it was when each
+    // host drew one of its own.
+    stage.className = "contents";
+    return stage;
+  }, []);
+  // The ref both hosts hold the stage by, and the whole of the move: each takes the stage as
+  // it is drawn, and lets go of it only while it is still the one holding it. React detaches
+  // the host that is going before it attaches the one that is arriving, so a collapse that
+  // swaps them hands the stage over inside one commit, with nothing in it unmounted.
+  const holdPanel = useCallback(
+    (host: HTMLElement | null) => {
+      if (host === null) return;
+      host.append(panelStage);
+      return () => {
+        // Off the page while no host draws it - the margin keeps the column and is not
+        // mounted at all - rather than thrown away.
+        if (panelStage.parentElement === host) panelStage.remove();
+      };
+    },
+    [panelStage]
+  );
   const details = issue.data;
   const focusedNode = useFocusedNode();
   // Nothing has the focus until the tree lands, and a reader on no node is reading the issue,
@@ -190,20 +221,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     panelScroll.current[activeTab] = port === undefined ? window.scrollY : port.scrollTop;
   }, [activeTab]);
 
-  // Two of the four states are addresses of their own, and the page draws more at them than
-  // the panel does - `/activity` puts the issue's whole history in the page's column - so
-  // picking one of those is navigation, and it carries the `?q=` that narrows what the reader
-  // is reading. The other two name no address at all: they are held for the address the
-  // reader is on, which keeps their preset, their filter and the document they have open
-  // (R19; picking Questions used to send a reader of the Spec preset to the bare
-  // `/conversation`).
+  // Which address a picked state opens, where it opens one at all: the two states that are
+  // addresses of their own, picked from an address they can stand in for
+  // (`issue-address.ts`'s `conversationStatePath`). Everywhere else the state is the panel's
+  // own and is held for the address the reader is on, which keeps their preset, their `?q=`
+  // and the document they have open; a move that does open an address carries that `?q=`
+  // with it.
   const pickState = useCallback(
     (next: ConversationState) => {
-      const kind =
-        next === "everything" ? "activity" : next === "words" ? ("conversation" as const) : null;
-      const to = kind === null ? pathname : buildIssuePath({ key: route.key, kind });
-      setPicked({ at: to, state: next });
-      if (to === pathname) {
+      const to = conversationStatePath(route, next);
+      setPicked({ at: to ?? pathname, state: next });
+      if (to === undefined || to === pathname) {
         // Nothing navigates, so the list this state narrows is mounted here: a reader who has
         // never opened the conversation would otherwise pick a state with nothing under it.
         setActivatedTabs((open) => (open.conversation ? open : { ...open, conversation: true }));
@@ -215,7 +243,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       const rest = query.toString();
       navigate(`${to}${rest === "" ? "" : `?${rest}`}`);
     },
-    [address.filter, navigate, pathname, recordScroll, route.key]
+    [address.filter, navigate, pathname, recordScroll, route]
   );
   // The Conversation's first placement runs as a child layout effect, before the restore below
   // in the same commit, so a position recorded while the tab showed only its loading text is
@@ -285,37 +313,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // `/issues/<key>/collaborators`, the address the Collaborators tab answered, opens the
   // panel's list of everyone who worked the issue (R19); every other address leaves it shut.
   const opensCollaborators = route.kind === "collaborators";
-  // What the margin draws: this page's panel wherever the margin keeps a column for it, and
-  // the margin's own cards alone wherever the page is drawing that panel in its own column
-  // instead. Both are the same `IssueMarginPanel`, because the margin holds the open composer
-  // inside it and a wrapper that changed shape as the margin collapsed would remount it and
-  // throw away an unsent comment (`IssueMargin.tsx`'s `cardsOnly`).
+  // What the margin draws: its own cards, and - wherever it keeps a column for this page's
+  // panel - the host that panel is moved into under them (`IssueMargin.tsx`'s
+  // `IssueMarginCards`). The panel itself is drawn once, below, and never a second time here:
+  // it is one element moved between the two hosts, so the margin opening and closing throws
+  // away neither an unsent comment nor anything else a reader has started in it.
   const panel = useCallback(
     (conversation: ReactNode) =>
       details === undefined ? (
         conversation
       ) : (
-        <IssueMarginPanel
-          cardsOnly={!marginDrawsPanel}
-          conversation={conversation}
-          conversationList={marginDrawsPanel ? conversationList : undefined}
-          conversationState={conversationState}
-          focused={focused}
-          isClosed={details.closed_at !== null}
-          issue={details}
-          onConversationState={pickState}
-          openCollaborators={opensCollaborators}
-        />
+        <IssueMarginCards conversation={conversation} panelHost={holdPanel} />
       ),
-    [
-      conversationList,
-      conversationState,
-      details,
-      focused,
-      marginDrawsPanel,
-      opensCollaborators,
-      pickState,
-    ]
+    [details, holdPanel]
   );
   useFillMarginSlot(panel);
 
@@ -524,22 +534,32 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           }
         />
         {/* Wherever the shell's margin draws no panel of its own - at the width it is a sheet,
-          and while the reader has collapsed it to its rail - the panel is drawn here, under
-          the identity block: the properties, the facts of the focused node and the
+          and while the reader has collapsed it to its rail - the panel's stage is held here,
+          under the identity block: the properties, the facts of the focused node and the
           conversation are read at every width and under either preference with nothing
           opened (R11, R12). */}
         {marginDrawsPanel ? null : (
-          <div className="mb-3">
-            <IssueMarginPanel
-              conversationList={conversationList}
-              conversationState={conversationState}
-              focused={focused}
-              isClosed={isClosed}
-              issue={issue.data}
-              onConversationState={pickState}
-              openCollaborators={opensCollaborators}
-            />
-          </div>
+          <div
+            className="mb-3 flex min-w-0 flex-col gap-3"
+            data-testid="issue-margin"
+            ref={holdPanel}
+          />
+        )}
+        {/* The panel itself, drawn once for the life of the page into its own stage, which the
+          host above or the margin's own holds (`panelStage`). It is rendered here, in the
+          page's tree, wherever it is placed: a reader moving between the two hosts keeps their
+          unsent message, their open blocked-by edit and every list they opened in it. */}
+        {createPortal(
+          <IssueMarginPanel
+            conversationList={conversationList}
+            conversationState={conversationState}
+            focused={focused}
+            isClosed={isClosed}
+            issue={issue.data}
+            onConversationState={pickState}
+            openCollaborators={opensCollaborators}
+          />,
+          panelStage
         )}
         <IssuePresetPanels
           activatedTabs={activatedTabs}
@@ -547,6 +567,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           artifactRoute={artifactRoute}
           askId={askId}
           commentId={commentId}
+          conversationState={conversationState}
           diffs={diffs}
           documents={documents}
           editedDocument={edited}

@@ -7,6 +7,7 @@ import type { DocumentToolbar } from "../doc/ProofDocument";
 import { PlanTab } from "../plan/PlanTab";
 import type { IssueRoute, IssueTab } from "../refs/routes";
 import type { DrawnDocuments } from "./drawn-documents";
+import type { ConversationState } from "./page-words";
 import { RoleDocumentPanel } from "./RoleDocumentPanel";
 import { SpecRequirements } from "./SpecRequirements";
 import { StagedDocument } from "./StagedDocument";
@@ -32,6 +33,7 @@ export function IssuePresetPanels({
   artifactRoute,
   askId,
   commentId,
+  conversationState,
   diffs,
   documents,
   editedDocument,
@@ -56,6 +58,10 @@ export function IssuePresetPanels({
   artifactRoute: Extract<IssueRoute, { kind: "artifact" }> | undefined;
   askId: string | undefined;
   commentId: string | undefined;
+  /** Which state the conversation is in, which is the reader's pick wherever they made one
+   *  (`IssuePage`'s `pickState`). The Activity list below is the Everything state's own, so
+   *  it is what says whether that list is drawn. */
+  conversationState: ConversationState;
   /** Which documents are drawn against their previous version. */
   diffs: ReadonlySet<string>;
   /** Which document each panel below draws (`drawn-documents.ts`). */
@@ -85,6 +91,12 @@ export function IssuePresetPanels({
   verificationArtifact: Artifact | undefined;
 }): ReactNode {
   const { plan, selected, spec, verification } = documents;
+  // The issue's whole history, which is the Everything state's own reading of the
+  // conversation and what `/activity` opens in the page's column. A reader there who picks
+  // Questions or Pinned keeps their address (`IssuePage`'s `pickState`), so the history goes
+  // with the state that drew it rather than standing under a panel showing the questions
+  // alone; it stays mounted, and Everything brings it back.
+  const drawsActivity = activeTab === "activity" && conversationState === "everything";
   return (
     <>
       <div aria-hidden={activeTab !== "spec"} hidden={activeTab !== "spec"} id="issue-spec-panel">
@@ -190,11 +202,7 @@ export function IssuePresetPanels({
           showDiff={false}
         />
       )}
-      <div
-        aria-hidden={activeTab !== "activity"}
-        hidden={activeTab !== "activity"}
-        id="issue-activity-panel"
-      >
+      <div aria-hidden={!drawsActivity} hidden={!drawsActivity} id="issue-activity-panel">
         {activatedTabs.activity ? <ActivityTab issueKey={issueKey} state={state} /> : null}
       </div>
     </>
