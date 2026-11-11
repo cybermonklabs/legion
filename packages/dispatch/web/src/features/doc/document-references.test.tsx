@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, jest, test } from "bun:test";
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -216,6 +217,7 @@ test("a #id the author left a hyphen on draws its title over the id alone", asyn
 });
 
 test("a key no issue holds and a #id no question declares are left as the author wrote them", async () => {
+  jest.useFakeTimers();
   await warmMarkdownRenderer();
   const queryClient = seededQueryClient();
   const { editors, sync, view } = renderProofDocument({ queryClient });
@@ -228,9 +230,10 @@ test("a key no issue holds and a #id no question declares are left as the author
       editors[0]?.references?.onKeys(["#q9", "CORE-404"]);
     });
 
-    await Bun.sleep(20);
+    await tick(20);
     expect(drawnTitles(editors[0]?.references)).toEqual({ "#q9": null, "CORE-404": null });
   } finally {
+    realClock();
     view.unmount();
   }
 });

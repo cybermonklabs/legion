@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { snippetSource } from "../../__tests__/display-trees";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { AskRead, DisplayTree, IssueReferenceSummary } from "../../api/types";
@@ -293,6 +294,7 @@ test("an ask's unfurl card shows its question once, even when the question ends 
 });
 
 test("an ask's unfurl card never borrows its issue's status, and reads no issue, while the ask loads", async () => {
+  jest.useFakeTimers();
   const getAsk = spyOn(api, "getAsk").mockReturnValue(Promise.withResolvers<AskRead>().promise);
   const getIssue = spyOn(api, "getIssue");
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
@@ -304,13 +306,14 @@ test("an ask's unfurl card never borrows its issue's status, and reads no issue,
   try {
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
     // The ask has not answered: the card says what it is, not the issue's status.
-    await Bun.sleep(20);
+    await tick(20);
     const card = within(view.container).getByRole("link");
     expect(card.textContent).toBe("dispatch://CORE-1/ask/ask-1");
     expect(card.textContent).not.toContain("in_progress");
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();
   } finally {
+    realClock();
     view.unmount();
     getAsk.mockRestore();
     getIssue.mockRestore();

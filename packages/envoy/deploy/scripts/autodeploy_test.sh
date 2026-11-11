@@ -147,9 +147,28 @@ case "$*" in
     ;;
 esac
 EOF
-# The health check's three-second waits pass at once, so a check that never passes fails in no time.
+# The health check's three-second waits pass at once, so a check that never passes fails in no
+# time. A case whose subject is how long the deployer takes, such as the poll of the migration
+# key against its deadline, sets AUTODEPLOY_TEST_SLEEP_REAL=1 and gets the real sleep instead;
+# every other case keeps its speed.
 cat >"$bin/sleep" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${AUTODEPLOY_TEST_SLEEP_REAL:-}" == 1 ]]; then
+  exec /bin/sleep "$@"
+fi
+EOF
+# timeout records the bound a database client container was given and then runs it, so a case can
+# read what each try for the migration key was allowed. It bounds nothing itself: whatever the
+# duration, 0 (pg_client's unbounded) included, the command runs as it would have, so every case
+# runs as it did before this stand-in existed. Only a container run is recorded, because the
+# deployer also bounds its compose and manifest runs this way, and a case that reaches no client
+# reads an empty argument log as proof that nothing ran.
+cat >"$bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$2 $3" == "docker run" ]]; then
+  printf 'timeout %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
+fi
+exec "${@:2}"
 EOF
 # The fake libpq, which splits a URL as libpq does rather than as the deployer does: the
 # credentials run to the first @ before the first /, a raw ? included, and a query key or value is
@@ -309,7 +328,7 @@ source "$AUTODEPLOY_TEST_TOOLS/libpq.sh"
 connection_password pg_dump "$@" || exit 1
 printf 'backup'
 EOF
-chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$tools/psql" "$tools/pg_dump"
+chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools/psql" "$tools/pg_dump"
 
 deploy_once() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
@@ -565,6 +584,61 @@ fi
 if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
   [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer deployed, or backed up for a deploy, behind a migration key it could not take'
+fi
+
+# What ends that poll is the deadline, and the count of tries is only the bound behind it, for a
+# run whose sleep returns early. With a real second between two tries the deadline comes first: a
+# three-second deadline holds three or four tries, nowhere near the sixty the counter allows. A
+# poll that had lost its deadline would run all sixty here, over a minute, and the count below is
+# what says which of the two bounds ended this one.
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(SCHEMA_READ_DEADLINE=3 AUTODEPLOY_TEST_SLEEP_REAL=1 deploy_once); then
+  fail 'deployer deployed behind a key no session released under a three-second deadline'
+fi
+no_secret 'the poll its deadline ended'
+tries=$(grep -cF "$schema_try" "$argv" || true)
+if ((tries < 2 || tries >= 10)); then
+  fail "deployer made $tries tries for the migration key under a three-second deadline, a real second apart: the count of tries ended its poll, not the deadline"
+fi
+if grep -qF "$schema_read" "$argv"; then
+  fail 'deployer read the applied set while another session held the migration key'
+fi
+if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]] || [[ -s "$log" ]]; then
+  fail 'deployer did not report the unreadable schema version and stop once its deadline had passed'
+fi
+
+# Each try is bounded by what the deadline leaves, never by a fresh minute of its own: a try that
+# started a second before the deadline would otherwise end a minute past it, while the script's
+# comments and store.go promise a read that ends inside the deadline. The timeout stand-in
+# recorded the bound every client container was given, so this reads those bounds back.
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(SCHEMA_READ_DEADLINE=3 AUTODEPLOY_TEST_SLEEP_REAL=1 deploy_once); then
+  fail 'deployer deployed behind a key no session released under a three-second deadline'
+fi
+no_secret 'the bounds the tries were given'
+bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
+if [[ -z "$bounds" ]]; then
+  fail 'no container run of the schema read recorded the bound it was given'
+fi
+if [[ $(printf '%s\n' "$bounds" | wc -l) -ne $(grep -cF "$schema_try" "$argv") ]]; then
+  fail 'the bounds recorded are not one for each try for the migration key'
+fi
+while IFS= read -r bound; do
+  if ((bound < 1 || bound > 3)); then
+    fail "a try for the migration key was given $bound seconds under a three-second deadline: 0 is unbounded to pg_client, and anything past the deadline is a fresh timeout that outlives it"
+  fi
+done <<<"$bounds"
+# And the default deadline is what it was for an operator: against a free key the first try still
+# gets the whole minute, and no try gets more.
+fresh_env
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment it read the schema for'
+fi
+first=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk 'NR == 1 {print $2}' || true)
+if ((first < 1 || first > 60)); then
+  fail "the first try for the migration key was given $first seconds, not the minute the default deadline leaves it"
 fi
 
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and

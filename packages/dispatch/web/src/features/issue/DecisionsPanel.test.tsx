@@ -9,6 +9,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type {
   Artifact,
+  AskRead,
   Comment,
   Decision,
   DecisionKeep,
@@ -367,6 +368,68 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
     expect(within(waiting).getByTestId("decision-quote").textContent).toBe("A log is enough.");
   } finally {
     read.mockRestore();
+  }
+});
+
+// Each block of an answer that carried no reading cites what its own markdown holds and nothing
+// the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
+// `#q2` another block cites is no reference of this one: read from the whole decision, the
+// escaped `\#q2` below would be painted into a link to an ask this block never named.
+test("a block of an answer with no reading cites its own markdown, not the decision's", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      heading: "Name the region",
+      text: "## Name the region\n\nIt answers #q2.\n\nWrite \\#q2 for the literal.",
+      text_tree: undefined,
+    })
+  );
+  const questions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: documentId,
+    questions: [{ ask: askId, block_id: "q2", reference: `dispatch://CORE-1/ask/${askId}` }],
+  });
+  // The link reads the ask it names, so the row answers that read rather than leaving it to
+  // reach a network no test serves.
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    answers: [],
+    ask: {
+      block_id: "q2",
+      id: askId,
+      issue_key: "CORE-1",
+      kind: "question",
+      options: [],
+      question: "Which region?",
+      state: "open",
+    } as unknown as IssueAskRow,
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  } as unknown as AskRead);
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    const cited = await waitFor(() => {
+      const found = waiting.querySelector<HTMLElement>("a[data-dispatch-ref]");
+      if (found === null) {
+        throw new Error("the `#q2` of the block that cites it is still plain text");
+      }
+      return found;
+    });
+    expect(cited.getAttribute("data-dispatch-ref")).toBe(`dispatch://CORE-1/ask/${askId}`);
+    // The link stands in the block whose own markdown cites the question, and the reference
+    // draws under the ask's own title rather than under the `#q2` the author wrote.
+    expect(cited.closest("p")?.textContent).toContain("It answers");
+    // The literal stands in the block that wrote it escaped, and that block links nothing.
+    const literal = await waitFor(() => within(waiting).getByText(/Write #q2 for the literal/));
+    expect(literal.querySelector("a[data-dispatch-ref]")).toBeNull();
+    expect(waiting.querySelectorAll("a[data-dispatch-ref]")).toHaveLength(1);
+  } finally {
+    getAsk.mockRestore();
+    questions.mockRestore();
   }
 });
 
