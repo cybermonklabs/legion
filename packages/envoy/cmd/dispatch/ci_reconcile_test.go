@@ -33,10 +33,11 @@ const (
 	ciReconcileReviewerApp = "5341243"
 )
 
-// ciReconcilePassInterval is the loop's period for this test's process and, with it, the bound
-// every one of its passes runs under: the two are one setting (cmd/dispatch/cireconcile.go,
-// ciReconciler), and a pass that outlives the bound ends where it stands, having read no head
-// whole (cireconcile/pass.go, Pass and walk.visitHeadOverREST).
+// ciReconcilePassInterval is the loop's period for the process of this row and of the cursor
+// row beside it (ci_reconcile_cursor_test.go) and, with it, the bound every one of their passes
+// runs under: the two are one setting (cmd/dispatch/cireconcile.go, ciReconciler), and a pass
+// that outlives the bound ends where it stands, having read no head whole (cireconcile/pass.go,
+// Pass and walk.visitHeadOverREST).
 //
 // The bound has to cover the gap the pass leaves between its REST reads, because that gap is
 // cut from the bound itself: nine tenths of it divided by the REST work the pass before it
@@ -52,7 +53,9 @@ const (
 // the same work and the same 7% (INFRA-1075).
 //
 // Five seconds is past that knee: the gaps stop at the 1.5s the cap allows and the work of a
-// pass, 30ms here and 120ms under eight busy loops on two cores, has the other 3.5s.
+// pass, 30ms here and 120ms under eight busy loops on two cores, has the other 3.5s. The cursor
+// row's order is sized against this same bound, by the reads a pass of it may send
+// (ciReconcileCursorPassReads), so the two rows move together.
 const ciReconcilePassInterval = 5 * time.Second
 
 // The CI reconcile pass is a loop of the real envoy-dispatch binary, so this proves it there:
