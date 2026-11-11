@@ -36,7 +36,8 @@ type editMessageInput struct {
 // lock, and applies the refusals in the order every write of this change takes them: the author
 // first, so a caller that is not the author learns nothing else about the post; then the kind,
 // since only a message on an issue is edited or deleted; then a post already deleted, since a
-// delete is final. verb names the write in each refusal.
+// delete is final. verb names the write in the author's refusal, and past names it in the kind's:
+// "edit" and "edited", "delete" and "deleted". One word with a "d" after it reads as "editd".
 //
 // The row lock is `for no key update`, the lock every other writer of a messages row takes
 // (lockReplyParentMessage): the body is no key column, and a reply's insert takes the row
@@ -45,7 +46,7 @@ type editMessageInput struct {
 //
 // ok is false once it has written the refusal.
 func (s *server) lockedMessageForCorrection(
-	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, verb string,
+	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, verb, past string,
 ) (model.Message, bool) {
 	unlocked, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
@@ -73,7 +74,7 @@ func (s *server) lockedMessageForCorrection(
 	}
 	if message.IssueKey == nil {
 		writeError(w, "NOT_AN_ISSUE_MESSAGE", http.StatusConflict,
-			"only a message on an issue is "+verb+"d: this one belongs to a conversation")
+			"only a message on an issue is "+past+": this one belongs to a conversation")
 		return model.Message{}, false
 	}
 	if message.DeletedAt != nil {
@@ -113,7 +114,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	message, ok := s.lockedMessageForCorrection(w, r, tx, actor, "edit")
+	message, ok := s.lockedMessageForCorrection(w, r, tx, actor, "edit", "edited")
 	if !ok {
 		return
 	}
@@ -180,7 +181,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	message, ok := s.lockedMessageForCorrection(w, r, tx, actor, "delete")
+	message, ok := s.lockedMessageForCorrection(w, r, tx, actor, "delete", "deleted")
 	if !ok {
 		return
 	}

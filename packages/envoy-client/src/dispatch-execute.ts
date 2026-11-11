@@ -2915,7 +2915,7 @@ function askSummary(
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   return [
     `Question: ${ask.question}`,

@@ -11526,6 +11526,66 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  test("an ask's deleted reply reads as deleted, and never as an empty body", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/asks/aaaaaaaa-0000-4000-8000-000000000043") {
+        return response({
+          ask: {
+            id: "aaaaaaaa-0000-4000-8000-000000000043",
+            issue_key: "DSP-42",
+            author: { kind: "session", id: "author-1" },
+            question: "Which day is meant?",
+            options: [],
+            multiple: false,
+            urgency: "high",
+            state: "open",
+            answer: null,
+            created_at: "2026-09-09T00:00:00Z",
+          },
+          replies: [
+            {
+              id: "c-kept",
+              issue_key: "DSP-42",
+              author: { kind: "user", id: "sami" },
+              body: "The first note stands.",
+              ask_id: "aaaaaaaa-0000-4000-8000-000000000043",
+              created_at: "2026-09-09T01:00:00Z",
+            },
+            {
+              id: "c-withdrawn",
+              issue_key: "DSP-42",
+              author: { kind: "user", id: "sami" },
+              body: "",
+              ask_id: "aaaaaaaa-0000-4000-8000-000000000043",
+              created_at: "2026-09-09T02:00:00Z",
+              deleted_at: "2026-09-09T03:00:00Z",
+              deleted_by: { kind: "user", id: "sami" },
+            },
+          ],
+          answers: [],
+        });
+      }
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("ask"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://DSP-42/ask/aaaaaaaa-0000-4000-8000-000000000043" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toContain("c-kept · user sami\nBody: The first note stands.");
+    expect(result.text).toContain("c-withdrawn · user sami\nDeleted by user sami at 2026-09-09T03:00:00Z");
+    expect(result.text).not.toContain("Body: \n");
+  });
+
   test("says the position is unavailable, and why, when Dispatch could not read the document", async () => {
     const anchor = {
       artifact_id: "artifact-42",
