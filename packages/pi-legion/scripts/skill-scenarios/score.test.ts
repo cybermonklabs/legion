@@ -4960,102 +4960,160 @@ const toldReviewerOfPush = (commit: string, at?: string, sender?: string) =>
  * learns the loop closed. */
 const toldArchitectOfHead = (commit: string, at = "2026-09-30T17:42:00.000Z") =>
   sentTo("architect", `I approved the head the fix landed on, ${commit}.`, at, SECOND_SESSION);
-/** The commits of the run's own remote: the head the reviewer approved, a commit that changes
- * the threads' two files alone, one that changes the code with them, and one that changes only
- * the first of the two files.
+/** The run's own remote, built once as this module is read, and its four commits: the head the
+ * reviewer approved, a commit that changes the two documents, one that changes the code too, and
+ * one above the approved head that changes one document alone.
  *
- * The ids are written here and the commits below are made to match, rather than read back from
- * the repository as it is built. Every fixture of this file names them as the module body runs,
- * while the repository itself is made in the hook that drains the stagings: a `bun test -t
- * <pattern>` that selects no row of this file runs no hook of it, and a repository made in the
- * body would be left behind, which is the staging rule at the top of this file. One author, one
- * committer, one date and one message make one id, so the ids are the same on every host, and
- * the staging refuses a repository whose commits are not these — naming the id git made, which
- * is the id to write here when a fixture's own content changes. */
-const FIX_COMMITS = {
-  approved: "a4d68ec975261ac0d83e83a307852a133ee4a6ab",
-  fixed: "608d83e811ae1137ec28b28a6fe71a62f86fc101",
-  withCode: "b1d9182246629fa64475695765b210b3c9b1bcfe",
-  docOnly: "488d2070378f6103ca4deb87096b7fd4818dae94",
-};
+ * Two things make the ids what they are, and the second is why literals were refused.
+ *
+ * First, the git this builds with is given an environment of its own rather than the process's.
+ * A Legion pane carries `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`,
+ * `GIT_COMMITTER_EMAIL` and a `GIT_CONFIG_COUNT` set of `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`
+ * pairs, and git reads those over the `-c` settings a caller passes, while `GIT_CONFIG_GLOBAL`
+ * blocks the global file and none of them. So a seed that inherited them committed under
+ * whichever identity its host carried: measured on 2026-11-11, one pod made
+ * `a4d68ec975261ac0…`, a GitHub runner `b50d021dc49f9cd8…` and a second pod
+ * `3d06d7372cdfc7c5…`, from one tree and one date.
+ *
+ * Second, the ids are read from the repository rather than written here. A literal id asserts
+ * nothing a fixture needs — the fixtures need the commits of their own remote, whatever they are
+ * — and it is a fact about one host, which is what reddened CI at `adc231d52ea7`. The
+ * environment isolation is what the suite pins instead, below: the same seed built under a
+ * hostile identity gives the same ids.
+ *
+ * It is built in the module body because the fixtures below name its commits as they are read,
+ * before any hook runs, and it is removed on exit however this process ends, so a
+ * `bun test -t <pattern>` that selects no row of this file leaves nothing behind. The clones go
+ * to the runs that asked for them in the staging, where the runs directory exists. */
+const fixDir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-threads-"));
+process.on("exit", () => rmSync(fixDir, { recursive: true, force: true }));
 /** The date every commit of that repository is authored and committed at, in git's own raw
- * format: a commit's id is its tree, its parent, its message and its two timestamps, so the one
- * date is what the ids above are read against. */
+ * format, so two runs of this file on one host make one repository rather than two. */
 const FIX_DATE = "@1759251600 +0000";
-/** Each run that asked for a clone of that repository, which the staging below gives a bare one
- * of in its own directory, as rig.sh's worker_fixture leaves one. Each run names itself through
- * `remoteFor` as the module body runs, and the body is over before the hook drains this staging,
- * so no list of the runs is kept by hand — the one written here had gone out of order and had to
- * be edited for every fixture added. */
-const fixClones: string[] = [];
-const fix = { ...FIX_COMMITS, remoteFor: (name: string) => fixClones.push(name) };
-stagings.push(() => {
-  const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-threads-"));
-  // One identity, no signing and no CRLF translation for every commit, which is what makes each
-  // id the one FIX_COMMITS names: GIT_CONFIG_GLOBAL below blocks a user's own configuration and
-  // not a system one, and any of these settings read from a system file would move every id.
+/** The environment a seed's git runs in: the caller's, less every variable git reads a commit's
+ * identity or its configuration from, plus the ones this seed names. `GIT_CONFIG_COUNT` and its
+ * numbered pairs are deleted whatever the count says, since one left behind is a setting this
+ * seed never asked for. */
+const seedGitEnv = (env: Record<string, string | undefined>) => {
+  const own: Record<string, string | undefined> = { ...env };
+  for (const name of [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+  ])
+    delete own[name];
+  for (const key of Object.keys(own)) if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) delete own[key];
+  return {
+    ...own,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_DATE: FIX_DATE,
+    GIT_COMMITTER_DATE: FIX_DATE,
+  };
+};
+const seedGit = (dir: string, env: Record<string, string | undefined>, args: string[]) => {
   const settings = [
     "user.name=t",
     "user.email=t@example.invalid",
     "commit.gpgsign=false",
     "core.autocrlf=false",
   ];
-  const git = (...args: string[]) => {
-    const result = Bun.spawnSync(
-      ["git", ...settings.flatMap((setting) => ["-c", setting]), "-C", dir, ...args],
-      {
-        env: {
-          ...process.env,
-          GIT_CONFIG_GLOBAL: "/dev/null",
-          GIT_AUTHOR_DATE: FIX_DATE,
-          GIT_COMMITTER_DATE: FIX_DATE,
-        },
-      }
-    );
-    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
-    return result.stdout.toString().trim();
-  };
-  const write = (file: string, text: string) => {
-    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
-    writeFileSync(path.join(dir, file), text);
-  };
-  const committed = (name: keyof typeof FIX_COMMITS) => {
-    const made = git("rev-parse", "HEAD");
-    if (made !== FIX_COMMITS[name])
-      throw new Error(
-        `the ${name} commit of the threads-closed remote is ${made}, while every fixture of this file names ${FIX_COMMITS[name]}: write ${made} into FIX_COMMITS.${name}`
-      );
-  };
-  git("init", "-q", "-b", "legion/LWEVAL-1", "--object-format=sha1");
-  write("greet.ts", 'export const greet = (name: string) => "Hello, " + name.trim() + "!";\n');
-  write("docs/cli.md", "It prints the name exactly as it was given, spaces and all.\n");
-  write(".github/workflows/greet.yml", "# Runs on every pull request and on every push to main.\n");
-  git("add", "-A");
-  git("commit", "-qm", "the approved head");
-  committed("approved");
-  write("docs/cli.md", "It trims the spaces around the name.\n");
-  write(".github/workflows/greet.yml", "# Runs on every pull request.\n");
-  git("commit", "-qam", "docs: the two text fixes");
-  committed("fixed");
-  write("greet.ts", 'export const greet = (name: string) => "Hi, " + name.trim() + "!";\n');
-  git("commit", "-qam", "feat: and the code too");
-  committed("withCode");
+  const result = Bun.spawnSync(
+    ["git", ...settings.flatMap((setting) => ["-c", setting]), "-C", dir, ...args],
+    { env: seedGitEnv(env) }
+  );
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+  return result.stdout.toString().trim();
+};
+const fixGit = (...args: string[]) => seedGit(fixDir, process.env, args);
+const fixWrite = (file: string, text: string) => {
+  mkdirSync(path.dirname(path.join(fixDir, file)), { recursive: true });
+  writeFileSync(path.join(fixDir, file), text);
+};
+const fixCommits = (() => {
+  fixGit("init", "-q", "-b", "legion/LWEVAL-1", "--object-format=sha1");
+  fixWrite("greet.ts", 'export const greet = (name: string) => "Hello, " + name.trim() + "!";\n');
+  fixWrite("docs/cli.md", "It prints the name exactly as it was given, spaces and all.\n");
+  fixWrite(
+    ".github/workflows/greet.yml",
+    "# Runs on every pull request and on every push to main.\n"
+  );
+  fixGit("add", "-A");
+  fixGit("commit", "-qm", "the approved head");
+  const approved = fixGit("rev-parse", "HEAD");
+  fixWrite("docs/cli.md", "It trims the spaces around the name.\n");
+  fixWrite(".github/workflows/greet.yml", "# Runs on every pull request.\n");
+  fixGit("commit", "-qam", "docs: the two text fixes");
+  const fixed = fixGit("rev-parse", "HEAD");
+  fixWrite("greet.ts", 'export const greet = (name: string) => "Hi, " + name.trim() + "!";\n');
+  fixGit("commit", "-qam", "feat: and the code too");
+  const withCode = fixGit("rev-parse", "HEAD");
   // A commit of its own above the approved head that fixes one of the two documents: the push
   // whose diff is a subset of the threads' files, which is a run that left a thread's sentence
   // false. It is made on a branch of its own, so its diff against the approved head is that one
   // file and no other.
-  git("checkout", "-q", "-b", "one-file", FIX_COMMITS.approved);
-  write("docs/cli.md", "It trims the spaces around the name.\n");
-  git("commit", "-qam", "docs: one of the two text fixes");
-  committed("docOnly");
-  git("checkout", "-q", "legion/LWEVAL-1");
+  fixGit("checkout", "-q", "-b", "one-file", approved);
+  fixWrite("docs/cli.md", "It trims the spaces around the name.\n");
+  fixGit("commit", "-qam", "docs: one of the two text fixes");
+  const docOnly = fixGit("rev-parse", "HEAD");
+  fixGit("checkout", "-q", "legion/LWEVAL-1");
+  return { approved, fixed, withCode, docOnly };
+})();
+/** Each run that asked for a clone of that repository, which the staging below gives a bare one
+ * of in its own directory, as rig.sh's worker_fixture leaves one. Each run names itself through
+ * `remoteFor` as the module body runs, and the body is over before the hook drains this staging,
+ * so no list of the runs is kept by hand — the one written here had gone out of order and had to
+ * be edited for every fixture added. */
+const fixClones: string[] = [];
+const fix = { ...fixCommits, remoteFor: (name: string) => fixClones.push(name) };
+stagings.push(() => {
   for (const name of fixClones) {
     const remote = path.join(runs, name, "remote.git");
     mkdirSync(path.dirname(remote), { recursive: true });
-    git("clone", "-q", "--bare", dir, remote);
+    fixGit("clone", "-q", "--bare", fixDir, remote);
   }
-  rmSync(dir, { recursive: true, force: true });
 });
+// Catches: a seed that commits under whatever identity its own environment carries. Git reads
+// `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` and a
+// `GIT_CONFIG_COUNT` set of `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` pairs over the `-c` settings
+// a caller passes, and a Legion pane exports all of them, so a seed that inherits its process's
+// environment makes a different commit on every host: measured on 2026-11-11, `a4d68ec975261ac0…`
+// in one pod, `b50d021dc49f9cd8…` on a GitHub runner and `3d06d7372cdfc7c5…` in a second pod,
+// from one tree and one date. This builds the same seed twice under two hostile environments and
+// requires one answer from both, which is the property the fixtures rest on: the ids are the
+// repository's own, so what must hold is that the repository is the same wherever it is built.
+test("the seed's commits are the same under any environment its host carries", () => {
+  const built = (env: Record<string, string | undefined>) => {
+    const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-seed-"));
+    try {
+      seedGit(dir, env, ["init", "-q", "-b", "legion/LWEVAL-1", "--object-format=sha1"]);
+      writeFileSync(path.join(dir, "greet.ts"), "the seed's one file\n");
+      seedGit(dir, env, ["add", "-A"]);
+      seedGit(dir, env, ["commit", "-qm", "the approved head"]);
+      return seedGit(dir, env, ["rev-parse", "HEAD"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const hostile = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "A Pane",
+    GIT_AUTHOR_EMAIL: "pane@example.invalid",
+    GIT_COMMITTER_NAME: "A Pane",
+    GIT_COMMITTER_EMAIL: "pane@example.invalid",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "user.name",
+    GIT_CONFIG_VALUE_0: "Another Pane",
+  };
+  const bare = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))
+  );
+  expect(built(hostile)).toBe(built(bare));
+}, 60_000);
 const pushed = (sha: string) =>
   `2026-09-30T17:35:00.000Z refs/heads/legion/LWEVAL-1 ${fix.approved} ${sha}\n`;
 /** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,
