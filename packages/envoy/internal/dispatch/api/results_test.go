@@ -64,8 +64,8 @@ const (
 	newHeadCommit = "2222222222222222222222222222222222222222"
 	mergeCommit   = "3333333333333333333333333333333333333333"
 	// integrationCommit is on the integration branch an issue's pull request merged into and
-	// on no other branch: the commit an after-merge result of that issue reads current at and
-	// a default-branch result of it does not.
+	// on no other branch: an after-merge result of that issue at this commit stands at a basis,
+	// and a default-branch result of it does not.
 	integrationCommit = "4444444444444444444444444444444444444444"
 	// strayCommit is on no branch at all: a commit built and never landed.
 	strayCommit = "5555555555555555555555555555555555555555"
@@ -1376,7 +1376,8 @@ func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsA
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
 	})
-	// The repository is readable, so a result at no attributed head is older rather than unknown.
+	// The repository is readable, so a result at no attributed head is `other_commit` rather
+	// than `unknown`.
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
 	})
@@ -1558,8 +1559,8 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
 	})
-	// Both repositories read, so a commit heading no pull request Dispatch knows is older there
-	// rather than unknown.
+	// Both repositories read, so a commit heading no pull request Dispatch knows is
+	// `other_commit` there rather than `unknown`.
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
 	})
@@ -1671,9 +1672,9 @@ func openPullAt(number int, issueKey string) func(repo, sha string) string {
 // readThroughGitHub is resultsGitHub's twin for the read-time read-through: a Dispatch holding
 // an App key, the server its handler mounts — whose commitPulls cache a test moves — and the
 // GitHub it reads. The App is installed on repos and on nothing else, every repository it can
-// read answers `main` as its default branch (so a commit heading no pull request is `older`
-// rather than `unknown`), each pull request's commit messages are an empty page, and one commit's
-// pull requests are the fake's, which counts the asks.
+// read answers `main` as its default branch (so a commit heading no pull request is
+// `other_commit` rather than `unknown`), each pull request's commit messages are an empty
+// page, and one commit's pull requests are the fake's, which counts the asks.
 func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Store, *server, *commitPullsFake) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1819,7 +1820,7 @@ func TestAResultsReadReadsThroughNeitherAnUnseenRepositoryNorAKnownHead(t *testi
 }
 
 // What a superseded result costs: one GitHub call, once, and not again while the answer stands.
-// A check with two results — the newer at the head of a pull request Dispatch holds, the older
+// A check with two results — the newer at the head of a pull request Dispatch holds, the earlier
 // at a commit it holds none for — is the state a push past a recorded head leaves behind. The
 // superseded commit heads no row Dispatch keeps, so the first read asks GitHub about it, and
 // GitHub answers by naming the pull request at the head it has now: an answer about that commit
@@ -1833,8 +1834,8 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 	issue := issueInRepository(t, handler, "RESP", "acme/widgets", "Pushed past")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
-	// The older result, recorded while GitHub named no pull request for its commit, so nothing is
-	// stored for that commit.
+	// The earlier result, recorded while GitHub named no pull request for its commit, so nothing
+	// is stored for that commit.
 	superseded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
 	// The push: the pull request's head moves, Dispatch holds that row, and the next result of the
 	// same check is recorded there.

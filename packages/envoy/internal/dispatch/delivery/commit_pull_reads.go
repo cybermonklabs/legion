@@ -21,7 +21,7 @@ import (
 // request Dispatch knows — for ever, since nothing about such a commit is stored. Five minutes
 // is the span every other answer about a commit is believed for (BranchCommitStaleAfter) and
 // the one the reconcile re-reads an open head on (PullRequestHeadStaleAfter), so a pull request
-// opened at a recorded commit is read as that result's current head within it.
+// opened at a recorded commit is read as that result's basis within it.
 const CommitPullReadStaleAfter = 5 * time.Minute
 
 // CommitPullSettledFor is how long the answer "GitHub names a pull request for this commit whose
@@ -31,8 +31,8 @@ const CommitPullReadStaleAfter = 5 * time.Minute
 // an hour rather than one every CommitPullReadStaleAfter, and a pull request opened later with
 // its head at that commit is seen within an hour rather than never. The second cost is the one
 // an unbounded settling got wrong — a commit a push left behind is a commit a later pull request
-// can open at — and an hour of `older` on such a result is one refetch's wait away from current,
-// where never is a restart away.
+// can open at — and an hour of `other_commit` on such a result is one refetch's wait away from
+// `at_basis`, where never is a restart away.
 const CommitPullSettledFor = time.Hour
 
 // CommitPullReads is the moment before which one commit of one repository is not read through
@@ -44,8 +44,8 @@ const CommitPullSettledFor = time.Hour
 // Only the read-time read-through records here, and the one a recorded result makes
 // (api/results.go's readThroughPullRequests) must not: a result recorded while no pull request
 // carries its commit would leave a fresh read behind, and the read a moment after the pull
-// request opened would be refused a read-through of its own and answer `older` — which is the
-// whole of what dispatch://INFRA-1240 repairs.
+// request opened would be refused a read-through of its own and answer `other_commit` — which
+// is the whole of what dispatch://INFRA-1240 repairs.
 //
 // One decision, one lock: Claim tests the moment held and records the next one together, so no
 // caller can hold the two apart and two reads that ask at once cannot both be granted. One

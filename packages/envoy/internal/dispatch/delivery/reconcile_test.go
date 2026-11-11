@@ -712,7 +712,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	}
 	atOld, err := HeadAttributedTo(ctx, pool, key, headWas)
 	if err != nil || atOld {
-		t.Fatalf("HeadAttributedTo(%s, the head it left) = %v, %v; want false: a result there is older",
+		t.Fatalf("HeadAttributedTo(%s, the head it left) = %v, %v; want false: that commit is no basis",
 			key, atOld, err)
 	}
 	atNew, err := HeadAttributedTo(ctx, pool, key, headNow)
@@ -744,9 +744,9 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 // rule this build judges by has judged it (AttributionRuleVersion), so a row an older rule
 // judged is offered once more; nothing else ever revisits a merged row, and a recorded result
 // reads through only for a commit no head Dispatch knows — so without this the row keeps no
-// issue for good and every `before_merge` result at that head reads `older` for ever, which is
-// the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131 for
-// INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
+// issue for good and every `before_merge` result at that head stands at no basis for ever,
+// which is the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131
+// for INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
 func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -792,7 +792,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	}
 	attributed, err := HeadAttributedTo(ctx, pool, own, sha)
 	if err != nil || !attributed {
-		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result there reads current",
+		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result stands at it",
 			own, attributed, err)
 	}
 }

@@ -18,8 +18,8 @@ import (
 )
 
 // A pull request's head is what a recorded check result is measured against: a `before_merge`
-// result is current while its commit is the head of an open pull request, or the final head of
-// a merged one, attributed to the check's own issue. pull_request_heads holds that head for
+// result's commit is compared with the head of an open pull request, or the final head of a
+// merged one, attributed to the check's own issue. pull_request_heads holds that head for
 // every pull request Dispatch has seen an event for, in any repository and by any author — not
 // the merged population delivery_pull_requests keeps — and the issue Dispatch's own attribution
 // picks for it (attribution.go): the first issue its ranked sources name that resolves to the
@@ -134,7 +134,7 @@ func markHeadNotStored(err error) error {
 // otherwise delete an attribution an earlier, fuller read made — on a merged row for good,
 // since the reconcile's merged arm takes a merged row only until the current rule has judged it
 // (ListStalePullRequestHeads) and a complete write judges it, so that issue's results at its
-// own merged head would read `older` for ever. An incomplete write never carries an issue of
+// own merged head would stand at no basis for ever. An incomplete write never carries an issue of
 // its own, so keeping the stored pair costs it nothing. A write that did read every source and
 // found nobody is complete, and clears: GitHub's answer is the whole truth about the row.
 //
@@ -159,8 +159,8 @@ func markHeadNotStored(err error) error {
 // branch is measured — once the integration branch has itself landed on the default branch and
 // been deleted — no compare read can show that commit on the base branch, because the branch is
 // gone, and the default branch holds only a squash of it. Without the row written here such a
-// result could never read `current`. Only a merged row writes one: GitHub answers a test-merge
-// commit for an open pull request too, and that commit is on no branch at all.
+// result could never stand at its base branch. Only a merged row writes one: GitHub answers a
+// test-merge commit for an open pull request too, and that commit is on no branch at all.
 //
 // The row is written whether or not the `where` guard above applied this write's facts. The
 // guard is about which event's facts the row keeps, not about whether the merge happened, and
@@ -174,9 +174,9 @@ func markHeadNotStored(err error) error {
 // which is right for every answer it writes: those are answers a compare read can earn again a
 // moment later. This one can never be earned again — the paragraph above is the whole argument
 // that nothing proves it once the base branch is gone — so a seed lost behind a Warn line
-// leaves every `after_merge` result of that issue reading `older` for good, with the merged
-// head row stored beside it as if all was well. Failing the write instead puts that in front
-// of the caller: the reconcile logs it and leaves the row for its next pass
+// leaves every `after_merge` result of that issue standing at no basis for good, with the
+// merged head row stored beside it as if all was well. Failing the write instead puts that in
+// front of the caller: the reconcile logs it and leaves the row for its next pass
 // (reconcilePullRequestHeads), and the results read's read-through hands it back to the route
 // (ReadThroughCommitPulls). Both statements are `on conflict … do update`, so a write made
 // again writes the same pair and costs nothing.
@@ -511,7 +511,7 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 // is no basis a result stands at, the reconcile keeps no such row in its passes
 // (ListStalePullRequestHeads takes the open and the merged), and a pull request closed at a
 // commit does not stop another being opened from the same head. Counting one would leave every
-// result at that commit `older` for good.
+// result at that commit standing at no basis for good.
 //
 // repoFull is the canonical name of the repository (refs.CanonicalRepo), compared without case,
 // as every other comparison of a repository here is (refs.CanonicalRepoSQL): a row written from
@@ -539,8 +539,8 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
 // into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
 // issue is measured against (api/results_comparison.go). An issue whose pull request merged
-// into an integration branch has reached that branch and no other, so a result of it is
-// current at a commit that branch's history carries, where the repository's default branch
+// into an integration branch has reached that branch and no other, so a result of it at a
+// commit that branch's history carries stands at that branch. The repository's default branch
 // answers nothing about the work until the integration branch itself lands. The merged row
 // last updated answers: event_at is the pull request's updated_at as its newest event carried
 // it, which is the time of the merge only until a later event of that pull request (an edit, a
@@ -601,7 +601,7 @@ const (
 // round every five minutes; a merged row is written once more at most, by an envelope or a
 // read-through, and a recorded result reads through only for a commit no head Dispatch knows.
 // So a merged row left credited to nobody stays that way, and every `before_merge` result at
-// that head reads `older` for ever: a merge delivered by a `pull_request` envelope naming no
+// that head stands at no basis for ever: a merge delivered by a `pull_request` envelope naming no
 // head repository is one such row (recordPullRequestHead attributes nobody, since it cannot
 // tell this repository's branch from a fork's), and so is every pull request merged under an
 // older attribution rule that credited nobody — a title naming another repository's issue first
@@ -750,9 +750,9 @@ type headAttributionResult struct {
 // one and a pull request no candidate of which resolves here attributes nobody; and neither
 // does a pull request whose head is not in this repository, since on a public repository anyone
 // may open one from a fork at any commit of their choosing — including an earlier one that
-// already carries a recorded pass — and title it after an issue, which would make that older
-// result current again. Either way the row is still written, since the reconcile and the head
-// itself are wanted either way, but with no issue and the source "none".
+// already carries a recorded pass — and title it after an issue, which would make that commit
+// a basis the recorded pass stands at again. Either way the row is still written, since the
+// reconcile and the head itself are wanted either way, but with no issue and the source "none".
 //
 // The head is tested before any candidate is taken, since a fork's head attributes nobody
 // whatever the title names. This is the one place it is tested (headInOwnRepository), and the
@@ -952,7 +952,7 @@ func repositoryUnreadable(err error) bool {
 
 // ReadThroughCommitPulls teaches Dispatch the pull requests GitHub names for one commit
 // (`GET /repos/{o}/{r}/commits/{sha}/pulls`) and writes each one's head row, so a result
-// recorded at the head of a pull request no event has reached Dispatch for is current at once.
+// recorded at the head of a pull request no event has reached Dispatch for stands at it at once.
 // It answers how many rows it wrote and whether any pull request it saw has sha as its head
 // (atHead). A repository the App cannot read writes nothing and comes back as the App's own
 // error, which each caller logs at Info and carries on from (api/results.go's

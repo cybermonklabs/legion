@@ -264,7 +264,7 @@ func (c *Branches) DefaultBranchOf(
 // out under the name it passed. A row is keyed by a branch, so the name has to come from
 // somewhere before the cache can be asked at all, and without this the first unreadable moment
 // would turn every `default_branch` result, and every `after_merge` result of an issue Dispatch
-// holds no merge of, from current to unknown for BranchCommitStaleAfter — even where the
+// holds no merge of, from `at_basis` to `unknown` for BranchCommitStaleAfter — even where the
 // permanent yes is stored. A default branch renamed while the App cannot be read leaves that
 // answer under the old name, which is the same staleness the retention rule already accepts of
 // a yes. Where this process has resolved no name for the repository at all, a caller that names

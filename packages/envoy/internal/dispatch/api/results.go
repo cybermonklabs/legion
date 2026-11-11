@@ -240,7 +240,8 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	// The read-through runs before the event: the Verification tab refetches on
 	// result.recorded, and no later event refreshes it, so a tab that read the results before
-	// the pull request row landed would show this result older until something else happened.
+	// the pull request row landed would show this result standing at no basis until something
+	// else happened.
 	s.readThroughPullRequests(r.Context(), check.IssueKey, result.CommitSHA, checkRepo)
 	s.publish(event)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{

@@ -530,9 +530,9 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // merged arm is the backstop for an envelope that arrived but said too little, and for a rule
 // that has changed since: an envelope naming no head repository attributes nobody, only
 // GitHub's own answer, which always names `head.repo`, can attribute that row, and a merged row
-// is the one row no other writer ever revisits before a result at its head reads `older` for
-// good. A rate limit stops the batch and fails the pass, as every other GitHub step's does; any
-// other per-row failure is logged and leaves the row for the next pass.
+// is the one row no other writer ever revisits before a result at its head stands at no basis
+// for good. A rate limit stops the batch and fails the pass, as every other GitHub step's does;
+// any other per-row failure is logged and leaves the row for the next pass.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
 	if err != nil {

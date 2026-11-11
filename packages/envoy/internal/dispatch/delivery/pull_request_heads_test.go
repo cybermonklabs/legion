@@ -303,7 +303,7 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 }
 
 // A pull request's title, body and branch are text any account that can open one writes, and an
-// attributed head row is what makes a `before_merge` result read current, so an issue that
+// attributed head row is what a `before_merge` result's commit stands at, so an issue that
 // resolves to another repository attributes nothing: the row is still written, with no issue.
 func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing.T) {
 	fastPageRetries(t)
@@ -343,8 +343,8 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 // pull request its attribution: the attribution walks every candidate the five sources name
 // (attributionCandidates) and takes the first one that resolves to the pull request's own
 // repository (attributionHeld), so the other repository's issue is passed over and the one that
-// belongs here is kept. An attributed head is exactly what makes a `before_merge` result at that
-// head read current (HeadAttributedTo, the question api/results_comparison.go asks). Both writers
+// belongs here is kept. An attributed head is exactly the basis a `before_merge` result at that
+// head stands at (HeadAttributedTo, the question api/results_comparison.go asks). Both writers
 // of the row answer for it: the `pull_request` envelope and the read-through a recorded result
 // makes.
 func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
@@ -501,8 +501,8 @@ func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 // Security, the read-through path: anyone may open a pull request from a fork of a public
 // repository, at any commit of their choosing, with any title. A fork's head is another
 // repository's, so the row is written but attributed to nobody, and a result recorded at that
-// commit is never made current by it.
-func TestAForkPullRequestNamedForACommitMakesNoResultCurrent(t *testing.T) {
+// commit never stands at it.
+func TestAForkPullRequestNamedForACommitIsNoBasisForAResult(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 4)
@@ -541,7 +541,7 @@ func TestAForkPullRequestNamedForACommitMakesNoResultCurrent(t *testing.T) {
 // Security, the envelope path: the same fork, reported by a `pull_request` event. An envelope
 // that names no head repository at all — one an older publisher made — attributes nobody
 // either, and leaves the row unstamped for the reconcile to settle from GitHub's own answer.
-func TestAForkPullRequestEnvelopeMakesNoResultCurrent(t *testing.T) {
+func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 5)
@@ -873,7 +873,8 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	}
 	attributed, err := HeadAttributedTo(ctx, pool, issue, mergedHead)
 	if err != nil || !attributed {
-		t.Fatalf("HeadAttributedTo(%s) after the pass = %v, %v; want true: a result at the merged head is current, not older", issue, attributed, err)
+		t.Fatalf("HeadAttributedTo(%s) after the pass = %v, %v; want true: a result stands at it",
+			issue, attributed, err)
 	}
 	if unread := readHead(t, ctx, pool, "acme/widgets", 62); unread.CheckedAt != nil {
 		t.Fatalf("#62 = %+v, want it never read: it carries an attribution already", unread)
@@ -928,7 +929,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 // its own release workflow, so until it is redeployed every envelope it publishes is such a
 // one — and the merge of a pull request an earlier `opened` envelope attributed and stamped
 // would otherwise land as "attributed to nobody, read already": out of the merged arm, which
-// takes only rows no read has reached, and `older` for good at the issue's own merged head.
+// takes only rows no read has reached, and no basis for good at the issue's own merged head.
 func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -982,7 +983,8 @@ func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testin
 	}
 	attributed, err := HeadAttributedTo(ctx, pool, issue, mergedHead)
 	if err != nil || !attributed {
-		t.Fatalf("HeadAttributedTo(%s) at the merged head = %v, %v; want true: a result there is current, not older", issue, attributed, err)
+		t.Fatalf("HeadAttributedTo(%s) at the merged head = %v, %v; want true: a result stands at it",
+			issue, attributed, err)
 	}
 
 	// And the reconcile is no safety net to lean on here: the row is stamped and attributed, so
@@ -1058,7 +1060,7 @@ func headRepos(t *testing.T, ctx context.Context, pool *store.Pool, number int) 
 // handed that key and can do nothing with it as it stands — the App answers 404 for the old
 // name's installation, so no token is minted and no pull request is read — so it canonicalises
 // the key first (refs.CanonicalRepo): one pass leaves one row, keyed by the name the App can
-// read, attributed to the issue, with the old row gone and a result at that head current.
+// read, attributed to the issue, with the old row gone and a result at that head standing at it.
 func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -1171,9 +1173,9 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 // repository. The stored answer is keyed by a branch, so the branch has to be named before
 // branch_commits can be asked at all, and a check measured against the default branch names
 // none: without the last name this process resolved, the first unreadable moment past the
-// Branches cache's five minutes would turn every such result from current to unknown, although
-// the permanent yes is stored. A commit with no stored answer is unknown there, as it must be:
-// nothing can be asked.
+// Branches cache's five minutes would turn every such result from `at_basis` to `unknown`,
+// although the permanent yes is stored. A commit with no stored answer is unknown there, as it
+// must be: nothing can be asked.
 func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	readable := true
@@ -1298,9 +1300,9 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 // (`Acme/Widgets`) and refs.CanonicalRepo hands a caller's own spelling back where no rename is
 // recorded, while the results read asks under the name repo_projects stores (api's
 // canonicalRepo); branch_commits is keyed by one lowercased name so that the two meet
-// (readBranchCommit). Without it, every squash-merged issue of a repository whose owner writes
-// their name with capitals would read `older` for good once its base branch was deleted, which
-// is the case the seed exists for.
+// (readBranchCommit). Without it, every result of a squash-merged issue of a repository whose
+// owner writes their name with capitals would stand at no basis for good once its base branch
+// was deleted, which is the case the seed exists for.
 func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"
@@ -1366,8 +1368,8 @@ func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
 
 // A merge whose branch seed cannot be written stores no head row and says so. The seed is the
 // one fact nothing can prove later (UpsertPullRequestHead), so a head row stored beside a lost
-// seed would leave every `after_merge` result of that issue reading `older` for good behind a
-// log line nobody reads: the two go in one transaction, and the caller is handed the error to
+// seed would leave every `after_merge` result of that issue standing at no basis for good behind
+// a log line nobody reads: the two go in one transaction, and the caller is handed the error to
 // make of what it will.
 func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
@@ -1555,7 +1557,7 @@ func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
 // and is about a branch rather than about one unlucky call; holding one would make every
 // result measured against that branch read unknown for five minutes over one bad second.
 // Nor is the failure an answer about the commit: it is BranchUnknown, which no later "not on
-// it" may turn into `older` (api/results_comparison.go, of).
+// it" may turn into `other_commit` (api/results_comparison.go, of).
 func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
