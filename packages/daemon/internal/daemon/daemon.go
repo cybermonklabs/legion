@@ -1526,7 +1526,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		},
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(*p.live.Snapshot(), c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, p.live, c) },
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
@@ -1770,7 +1770,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) {
 			continue
 		}
-		if noPluginInstall(s.cfg, c) {
+		if noPluginInstall(s.cfg, s.plan.live, c) {
 			continue
 		}
 		if c.UpdateRound != "" {
@@ -1809,8 +1809,18 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // function); and the API's stale-caller refusal, which would otherwise hold such a worker's
 // grants, its handoff_complete and its ready on a relaunch that never comes
 // (api.Options.NoPluginInstall, api's staleClaim).
-func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
-	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(c.Role)) == runtime.BackendClaude
+//
+// Being one rule, it reads each half from the one configuration that half lives in, and every
+// site hands it both: the runtime name from the configuration the daemon booted on, since
+// `runtime` is fixed for the process and no pod moves to another runtime; and the role's
+// backend from the settings holder at the moment of the call, since `worker_backends` is a
+// launch key a route change moves under the running daemon. Each site reading a configuration
+// of its own is what this signature refuses: the API answering for the backend an operator
+// just set while the stale-plugin pass went on answering for the one the daemon booted on
+// relaunches a claim the machine then charges for the registration that follows.
+func noPluginInstall(boot config.Config, live *config.Live, c supervise.Claim) bool {
+	return boot.Runtime.Name == "kubernetes" &&
+		runtime.Of(live.Snapshot().BackendFor(c.Role)) == runtime.BackendClaude
 }
 
 // reconcileBootOrphans retries only the boot reconciliation, boundedly. A listing error does not
@@ -2170,7 +2180,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Controller:         st,
 		ControllerLaunched: keeping.launchedNow,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(*p.live.Snapshot(), c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, p.live, c) },
 		// The harness a role's claims run on is read as the route asks, like every other value
 		// the live holder keeps. `worker_backends` is a launch key, so between a change and a
 		// role's relaunch this answers for the new harness while the session still runs the old

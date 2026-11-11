@@ -179,6 +179,79 @@ func TestTheFileArmReadsAgainAndTheRouteOverlayStillWins(t *testing.T) {
 	}
 }
 
+// A fixed path is fixed of the snapshot, and not of the route alone. Every settle reads the
+// whole file again, so an operator who edits `project` in `legion.yaml` ahead of a planned
+// restart would otherwise move the value every reader takes from Snapshot — the workflow
+// engine's project, the subject filter and durable names a NATS rebuild opens its consumers on
+// — while admission, intake and the claim tokens stayed on the one the daemon booted on. The
+// settle pins it back and names the path with the reason the route refuses it by, and the
+// daemon runs on the value it booted on until it is restarted.
+//
+// The pin is narrow: `review_round_cap`, a decision key the same edit changed, is applied.
+func TestTheFileArmPinsAFixedPathToTheValueBootSettled(t *testing.T) {
+	// Both projects are in the file from the start, so the one key this edit changes is the
+	// fixed `project` itself and not the `projects` block beside it.
+	body := strings.Replace(minimalFile, "  DEMO: {}", "  DEMO: {}\n  OTHER: {}", 1)
+	live, path := newLive(t, body, nil)
+	if project := live.Snapshot().Project; project != "DEMO" {
+		t.Fatalf("the boot settled project %q, want the file's DEMO", project)
+	}
+
+	rewrite(t, path, strings.Replace(body, "project: DEMO", "project: OTHER", 1)+"review_round_cap: 7\n")
+	applied, refused, err := live.Apply(SourceFile, "", nil)
+
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if project := live.Snapshot().Project; project != "DEMO" {
+		t.Errorf("the settled project after the file edit = %q, want the boot's DEMO: every claim, every record and the registry entry are named by it", project)
+	}
+	if len(refused) != 1 || refused[0].Path != "project" || refused[0].Reason != whyProject {
+		t.Fatalf("the settle refused %+v, want the one pinned path named with its own reason", refused)
+	}
+	if rounds := live.Snapshot().ReviewRoundCap; rounds != 7 {
+		t.Errorf("ReviewRoundCap = %d, want the file's 7: the pin is of the fixed path alone", rounds)
+	}
+	want := Change{
+		Path: "review_round_cap", Old: "3", New: "7", Class: ClassDecision, Outcome: OutcomeAtOnce,
+		Source: SourceFile,
+	}
+	if len(applied) != 1 || applied[0] != want {
+		t.Errorf("applied %+v, want exactly %+v: a pinned path is no change of the daemon's", applied, want)
+	}
+}
+
+// The pin is of every resolution and not of the file arm alone: the route reads the file again
+// too, so a route change of some other key would otherwise settle the file's edited `project`
+// as a side effect of the key its caller asked about. The caller is answered for the paths it
+// named and no others — the file's edit is the file arm's to report, at the settle the watcher
+// makes of it.
+func TestARouteChangeSettlesNoFixedPathTheFileEditedMeanwhile(t *testing.T) {
+	body := strings.Replace(minimalFile, "  DEMO: {}", "  DEMO: {}\n  OTHER: {}", 1)
+	live, path := newLive(t, body, nil)
+
+	rewrite(t, path, strings.Replace(body, "project: DEMO", "project: OTHER", 1))
+	applied, refused, err := live.Apply(SourceRoute, "sami@theorem.dev", map[string]any{"admission_cap": 11})
+
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(refused) != 0 {
+		t.Fatalf("the route refused %+v, want nothing: its caller named one decision path", refused)
+	}
+	if project := live.Snapshot().Project; project != "DEMO" {
+		t.Errorf("the settled project after a route change of another key = %q, want the boot's DEMO", project)
+	}
+	if cap := live.Snapshot().AdmissionCap; cap != 11 {
+		t.Errorf("AdmissionCap = %d, want the route's 11", cap)
+	}
+	for _, change := range applied {
+		if change.Path == "project" {
+			t.Errorf("the route reported %+v, want no change of a path fixed for the process", change)
+		}
+	}
+}
+
 // The file arm carries no overlay of its own: that is the route's arm, and a caller that mixed
 // the two would write a route change nobody recorded.
 func TestTheFileArmRefusesAnOverlayArgument(t *testing.T) {

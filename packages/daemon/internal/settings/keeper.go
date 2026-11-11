@@ -161,6 +161,11 @@ func (k *Keeper) remember(rows []Change) {
 // memory (unstored): the overlay the daemon is running on is the same overlay whether or not a
 // row backs it, so the file's own value takes the key back either way.
 //
+// A key the file edited that is fixed for the process is applied nowhere: the holder pins it
+// back to the value boot settled and names it (config.Live.Apply, pinFixed), and this settle
+// logs those paths once, since no caller asked for the edit and nothing else would say the
+// daemon is still running on its boot value.
+//
 // Nothing this settle reads is forgotten until the holder has settled: an apply runs the whole
 // loader, App key commands included, and the one that fails changes nothing, so the overlay it
 // left standing keeps both the stored row that backs it and the mark that backs an unstored one
@@ -177,9 +182,21 @@ func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 	for _, path := range taken {
 		withdraw[path] = nil
 	}
-	applied, _, err := k.live.Apply(config.SourceFile, "", withdraw)
+	applied, pinned, err := k.live.Apply(config.SourceFile, "", withdraw)
 	if err != nil {
 		return nil, err
+	}
+	if len(pinned) > 0 {
+		// The file edited a key fixed for the process, and the holder pinned it back to the
+		// value boot settled (config's pinFixed). Nothing else reports such an edit: the route
+		// is where a refusal reaches a caller, and this edit asked nobody. So it is named here,
+		// once per settle, with the reason each path's row gives.
+		paths := make([]string, 0, len(pinned))
+		for _, refusal := range pinned {
+			paths = append(paths, refusal.Path)
+		}
+		k.log.Warn("legion settings: the file changed keys this daemon fixed at boot; it goes on running the values it booted on, and the change reaches its next restart",
+			"paths", paths, "refusals", pinned)
 	}
 	for _, path := range unstored {
 		delete(k.unstored, path)

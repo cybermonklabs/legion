@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -580,9 +580,14 @@ func TestTheProjectsBlockChangedThroughTheRouteReachesTheNextMergersLaunch(t *te
 // (internal/settings' Keeper.File), so an operator who renames a file-backed hook, adds one or
 // repoints one moves nothing under the running engine, which goes on firing what boot read.
 //
-// Built from the settings holder at every decision instead, the engine would stand the file's
-// new hook in front of every role it names with no words at all — a hook the loader refuses at
-// boot (config's readHook) — and `whyHooks` is the reason the route refuses the key.
+// Built from the settings holder at every decision instead, the engine would stand a hook in
+// front of every role it names with no words at all — a hook the loader refuses at boot
+// (config's readHook) — and `whyHooks` is the reason the route refuses the key. The settle
+// pins the key too, back to the list boot read (config's pinFixed), so the snapshot the engine's
+// configuration is composed from carries that list, and the line that puts boot's own list on
+// that configuration (openWorkflow) is a second defence. What a running engine is handed after
+// such a reload is read through the engine itself, in workflow_test.go's
+// TestAFileReloadLeavesTheEngineFiringTheHookBootRead.
 func TestAFileReloadLeavesTheEnginesHooksAsBootReadThem(t *testing.T) {
 	live := liveSettings(t, "hooks: [{name: nudge, on: work_back, every: 2, roles: [implementer], prompt_file: nudge.md}]")
 	words := "Say what the round missed."
@@ -604,20 +609,152 @@ func TestAFileReloadLeavesTheEnginesHooksAsBootReadThem(t *testing.T) {
 	}
 
 	// The operator renames the hook and points it at a file of its own, which is the edit this
-	// test is about: nothing reads that file, since nothing reads a hook's file after boot.
+	// test is about: nothing reads that file, since nothing reads a hook's file after boot. The
+	// same edit raises the admission cap, a decision key, so the reload is seen to have happened.
 	setInConfig(t, live, "hooks", "[{name: shove, on: work_back, every: 2, roles: [implementer], prompt_file: shove.md}]")
-	if _, _, err := live.Apply(config.SourceFile, "", map[string]any{}); err != nil {
+	setInConfig(t, live, "admission_cap", "9")
+	_, refused, err := live.Apply(config.SourceFile, "", map[string]any{})
+	if err != nil {
 		t.Fatalf("the file arm of the settings route: %v", err)
 	}
-	if reloaded := live.Snapshot().Hooks; len(reloaded) != 1 || reloaded[0].Name != "shove" {
-		t.Fatalf("the settled configuration's hooks = %+v, want the file's renamed hook: the reload this test is about did not happen", reloaded)
+	if cap := live.Snapshot().AdmissionCap; cap != 9 {
+		t.Fatalf("the settled admission cap = %d, want the file's 9: the reload this test is about did not happen", cap)
+	}
+	if reloaded := live.Snapshot().Hooks; len(reloaded) != 1 || reloaded[0].Name != "nudge" {
+		t.Fatalf("the settled configuration's hooks = %+v, want the one boot read: `hooks` is fixed for the process and the settle pins it", reloaded)
+	}
+	row, _ := config.ClassOf("hooks")
+	if len(refused) != 1 || refused[0].Path != "hooks" || refused[0].Reason != row.Why {
+		t.Fatalf("the settle refused %+v, want the pinned `hooks` named with its own reason", refused)
 	}
 
-	if settings := engineConfig(live.Snapshot(), "", hooks); !reflect.DeepEqual(settings.Hooks, hooks) {
-		t.Fatalf("the engine's hooks after the reload = %+v, want the %+v boot built", settings.Hooks, hooks)
-	}
-	if took := engineConfig(live.Snapshot(), "", nil).Hooks; len(took) != 0 {
+	if took := engineConfig(live.Snapshot(), "").Hooks; len(took) != 0 {
 		t.Fatalf("the engine's configuration took %+v from the settings holder, want no hook of its own: the words of a hook that names a prompt_file are in no configuration at all, and the engine would fire that one saying nothing", took)
+	}
+}
+
+// `project` is fixed for the process: the project token names every claim, every record in the
+// store and the daemon's own registry entry (`whyProject`). The engine's configuration is
+// composed from the settings holder at every decision (engineConfig) and the NATS consumers are
+// reopened from it at every rebuild, so an operator who edits `project:` in `legion.yaml` ahead
+// of a planned restart would otherwise move, at the next settle, the project the engine filters
+// every resume and every status repair by (workflow's resume.go, status_repair.go) and the
+// project the durable consumers' own subject filter is built from — while admission, intake,
+// `dispatchProject` and the claim tokens stayed on the one the daemon booted on. The settle
+// pins it instead (config's pinFixed) and names the path, and the edit reaches the next boot.
+//
+// The same edit widens the RPC window, a rebuild key the NATS holder is named on beside the
+// worker stream (config.Classes' Also), so the settle reopens the consumers: the configuration
+// that reopen was given is the one the consumer spec is read out of (workflowRuntime.connect).
+func TestAFileReloadLeavesTheEnginesProjectAndTheReopenedConsumersOnTheBootProject(t *testing.T) {
+	url := testnats.URL(t)
+	notificationsStreamOn(t, url)
+	w, live, _, opened := bootedNATSHolder(t, url)
+	boot := live.Snapshot().Project
+
+	setInConfig(t, live, "project", "OTHERPROJ")
+	setInConfig(t, live, "worker_rpc_timeout_seconds", "600")
+	applied, refused, err := live.Apply(config.SourceFile, "", map[string]any{})
+
+	if err != nil {
+		t.Fatalf("the file arm of the settings route: %v", err)
+	}
+	row, _ := config.ClassOf("project")
+	if len(refused) != 1 || refused[0].Path != "project" || refused[0].Reason != row.Why {
+		t.Fatalf("the settle refused %+v, want the pinned `project` named with its own reason", refused)
+	}
+	if _, moved := changeOf(applied, "project"); moved {
+		t.Fatalf("the settle applied %+v, want no change of the project the daemon is running on", applied)
+	}
+	if project := live.Snapshot().Project; project != boot {
+		t.Fatalf("the settled project = %q, want the boot's %q", project, boot)
+	}
+	if project := engineConfig(live.Snapshot(), "").Project; project != boot {
+		t.Fatalf("the engine's project after the reload = %q, want the boot's %q: it owns none of the work the daemon is running on any other", project, boot)
+	}
+
+	opens := opened()
+	if len(opens) != 2 {
+		t.Fatalf("the holder opened %d times, want the boot's and the reload's: the rebuild this test reads the project out of did not happen", len(opens))
+	}
+	if opens[1].WorkerRPCTimeout != 10*time.Minute {
+		t.Fatalf("the reopened consumers were given the window %s, want the file's 10m: the reload did not reach the rebuild", opens[1].WorkerRPCTimeout)
+	}
+	if opens[1].Project != boot {
+		t.Fatalf("the reopened consumers were given the project %q, want the boot's %q: their durable names and their subject filter are built from it", opens[1].Project, boot)
+	}
+	if w.nats.intake() == nil {
+		t.Fatal("the reopened client carries no durable consumers")
+	}
+}
+
+// passRelaunchBound is how long a stale-plugin relaunch the pass posted is given to leave the
+// claim's ready state. A claim the pass posted nothing to never leaves it, so the bound is
+// what that reading costs and not a race: generous enough that a loaded machine reads a
+// relaunch it did post, short enough that the two readings below cost seconds.
+const passRelaunchBound = 5 * time.Second
+
+// `worker_backends` is a launch key an operator moves under the running daemon, and the
+// plugin-install rule reads it (noPluginInstall): under Kubernetes a Claude Code role's plugin
+// is its pod image's own claude-envoy, which no install reaches and no relaunch moves, so that
+// claim is left to the round over its pod. Three readers hold that one rule — this package's
+// stale-plugin pass, the machines' stale registration and the API's stale-caller refusal — and
+// a change of the key reaches them together or not at all. Reading it from two configurations
+// is what that costs: a pass relaunching a worker the machines judge exempt charges the claim
+// for the registration that follows, one relaunch at a time toward failed, and an API answering
+// for the backend an operator just set while the pass answers for the boot's holds that
+// worker's grants, its handoff_complete and its ready on a relaunch nobody started.
+//
+// The rig wires the machines' reading exactly as the daemon wires both of the readings it hands
+// out, which are one call (newPodUpdateRigOn; daemon.go's openSupervision and its API options),
+// so the two answers compared here are the daemon's own. Its boot configuration is the
+// Kubernetes deployment's, as every pod-update rig's is, and the holder is where the key moves:
+// the rule takes the runtime from the boot configuration and the backend from the holder, so
+// the `runtime:` of the holder's own file is read by nobody here.
+func TestALiveWorkerBackendsChangeAnswersTheSameAtTheStalePluginPassAndTheMachines(t *testing.T) {
+	live := liveSettings(t, "worker_backends: {implementer: claude}")
+	rig := newPodUpdateRigOn(t, live,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
+			contract: supervise.PodUpdateContract - 1},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
+			contract: supervise.PodUpdateContract - 1},
+	)
+	// The boot configuration is what a boot on that holder's file resolved, the implementer on
+	// Claude Code among it: the rule takes the runtime from it and the role's backend from the
+	// holder, so at boot the two readings agree, and the route change below is what they must
+	// follow together.
+	rig.s.cfg.WorkerBackends[claim.RoleImplementer] = runtime.BackendClaude
+	// The pass's own answer, read off what it did: a claim it posts nothing to is one whose
+	// launch installs no plugin, and a claim it relaunches is one an install reaches.
+	passLeaves := func(role claim.Role) bool {
+		t.Helper()
+		claims, err := rig.sup.Claims(rig.ctx)
+		if err != nil {
+			t.Fatalf("read the claims for the sweep: %v", err)
+		}
+		rig.s.refreshStalePlugins(claims, "sweep")
+		// A relaunch the pass posted is started on the machine's own goroutine, so the claim is
+		// read until it leaves ready; one still ready when the bound passes is one the pass
+		// posted nothing to, which is the answer this reads.
+		return !testwait.Holds(passRelaunchBound, testwait.Poll, func() bool {
+			return rig.claimOf(role).State != supervise.StateReady
+		})
+	}
+	machinesLeave := func(role claim.Role) bool { return rig.sup.deps.NoPluginInstall(rig.claimOf(role)) }
+
+	// The file puts the implementer on Claude Code, and the tester is on Oh My Pi: the control
+	// that the pass does post a relaunch for a role whose plugin an install reaches.
+	if left, machines := passLeaves(claim.RoleImplementer), machinesLeave(claim.RoleImplementer); !left || !machines {
+		t.Fatalf("the Claude Code worker was left running by the pass: %t, and by the machines' rule: %t; want both, since no install of this deployment reaches its plugin", left, machines)
+	}
+	rig.awaitClaim(claim.RoleTester, "the Oh My Pi worker to be relaunched onto this daemon's plugin",
+		func(c supervise.Claim) bool { return c.State == supervise.StateLaunching })
+
+	// The operator moves the implementer onto Oh My Pi, whose plugin a relaunch does install.
+	apply(t, live, map[string]any{"worker_backends": map[string]any{"implementer": "omp"}})
+
+	if left, machines := passLeaves(claim.RoleImplementer), machinesLeave(claim.RoleImplementer); left || machines {
+		t.Fatalf("after the change the pass left the worker running: %t, and the machines' rule says its launch installs none: %t; want neither, and the two to answer alike whatever they answer", left, machines)
 	}
 }
 

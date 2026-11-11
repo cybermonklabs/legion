@@ -97,7 +97,8 @@ refused naming that number. The split of the one plugin into this package and `@
 number is the one `DaemonAPIVersion` declares, last bumped by contract 69's setting provenance
 (`GET /legion/v1/state` carries `settingSources`, `daemon.commit` and each pull request's
 `requiresChecks`, which a strict reader before 69 refuses, so a caller from a pod below 69 is
-served the state without them), after contract 64's launch spend
+served the state without them), after contract 68's declined answer (`answeredBy` on an
+`awaiting_person` root's `waitingOn` takes a ninth value, `declined`), after contract 64's launch spend
 attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
 issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
 after the attributes the deployment's own `runtime.kubernetes.pod.env` or

@@ -21,7 +21,9 @@ const (
 	// is what the next launch reads the value from.
 	ClassLaunch Class = "launch"
 	// ClassFixed is a value nothing can change under a running daemon: the route refuses the path
-	// by name, with Row.Why.
+	// by name, with Row.Why, and every resolution of the file pins the path back to the value
+	// boot settled (live.go's pinFixed), so no snapshot carries a fixed value the daemon is not
+	// running on and an operator's edit of such a key reaches the next boot and nothing before it.
 	ClassFixed Class = "fixed"
 )
 

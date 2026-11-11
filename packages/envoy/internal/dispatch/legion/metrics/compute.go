@@ -120,8 +120,8 @@ type RoleBar struct {
 	Role string `json:"role" enum:"architect,planner,implementer,tester,reviewer,merger,no_role"`
 	// Hours is the bar's whole time across the finished issues.
 	Hours float64 `json:"hours"`
-	// Issues is how many finished issues spent time on this bar, which is what the median is
-	// taken over.
+	// Issues is how many finished issues hold hours on this bar. The median is taken over every
+	// finished issue, one the role never worked counting as zero, so Issues can be far below the population.
 	Issues              int      `json:"issues"`
 	MedianHoursPerIssue float64  `json:"median_hours_per_issue"`
 	Segments            Segments `json:"segments"`

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -180,13 +181,21 @@ func newPodUpdateRigOn(t *testing.T, live *config.Live, roles ...podUpdateRole) 
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
 	// The supervision is built before the machines are, because the machines are handed one of
 	// its answers: which roles a launch installs no plugin for, which only the daemon's own
-	// configuration knows (supervise.Deps.NoPluginInstall). A test that moves a role onto another
-	// backend writes rig.s.cfg, and the closure reads it when a registration asks.
+	// configuration knows (supervise.Deps.NoPluginInstall). The rig wires it as the daemon does
+	// (daemon.go's openSupervision and its API options): the runtime name from the configuration
+	// it booted on, which a test that moves the deployment onto another runtime writes as
+	// rig.s.cfg, and the role's backend from the settings holder at every call, which a test
+	// moves with a route change where the rig reads a legion.yaml of its own, and with
+	// rig.backends where it settles the configuration below instead.
 	logs := &syncBuffer{}
 	// The rig's claims run in an issue pod, so its configuration is a Kubernetes deployment's:
 	// that is what the Claude Code role's exemption from the stale-plugin lane is read from,
-	// beside the role's backend (noPluginInstall).
+	// beside the role's backend (noPluginInstall). The backends map is empty rather than nil
+	// because a settled holder of this configuration shares that very map (config.Settled
+	// copies the Config, and a Go map is one map however often it is copied), which is what
+	// lets rig.backends put a role on another backend after the holder was settled.
 	cfg := config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
+		WorkerBackends:  map[claim.Role]runtime.Backend{},
 		PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice}
 	// The machines read their budgets from the holder the caller named, as production builds
 	// them; a rig no test moves a setting under keeps the fixed budgets below and settles its
@@ -216,7 +225,7 @@ func newPodUpdateRigOn(t *testing.T, live *config.Live, roles ...podUpdateRole) 
 		// (staleRegistration), and a rig that left it false would accept every stale registration
 		// whatever the rest of the rule says.
 		PluginRelaunchable: true,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.plan.live, c) },
 	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
@@ -249,6 +258,20 @@ func podUpdateLocator(token claim.Token, issue, pod string) *runtime.Locator {
 			Container: runtime.IssuePodContainer, Generation: 1,
 		},
 	}
+}
+
+// backends puts the roles the map names on the backends it names, as `worker_backends` does.
+// The plugin-install rule reads a role's backend from the settings holder and not from the
+// boot configuration (noPluginInstall), so the entries are written into the map the rig's
+// configuration and its settled holder share rather than a map of their own taking its place.
+// A rig reading a legion.yaml of its own settles that file, not this map: move its backends
+// with a route change (the apply helper of live_settings_test.go).
+func (r *podUpdateRig) backends(on map[claim.Role]runtime.Backend) {
+	r.t.Helper()
+	if r.s.plan.live.Path() != "" {
+		r.t.Fatal("this rig reads its settings from a legion.yaml; move worker_backends through the settings route")
+	}
+	maps.Copy(r.s.cfg.WorkerBackends, on)
 }
 
 // drifts scripts the runtime to report reasons for every claim of the issue that records a
@@ -2006,7 +2029,7 @@ func TestStalePluginLeavesAClaudeWorkerAloneUnderKubernetesAndRelaunchesItUnderT
 					contract: supervise.PodUpdateContract - 1},
 			)
 			rig.s.cfg.Runtime = config.Runtime{Name: tc.runtimeName}
-			rig.s.cfg.WorkerBackends = map[claim.Role]runtime.Backend{claim.RoleImplementer: runtime.BackendClaude}
+			rig.backends(map[claim.Role]runtime.Backend{claim.RoleImplementer: runtime.BackendClaude})
 			claims, err := rig.sup.Claims(rig.ctx)
 			if err != nil {
 				t.Fatalf("read the claims for the sweep: %v", err)
@@ -2198,7 +2221,7 @@ func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) 
 			contract: supervise.PodUpdateContract - 1},
 		readyWorker(claim.RoleTester),
 	)
-	rig.s.cfg.WorkerBackends = map[claim.Role]runtime.Backend{claim.RoleImplementer: runtime.BackendClaude}
+	rig.backends(map[claim.Role]runtime.Backend{claim.RoleImplementer: runtime.BackendClaude})
 	claims, err := rig.sup.Claims(rig.ctx)
 	if err != nil {
 		t.Fatalf("read the claims for the sweep: %v", err)

@@ -236,6 +236,15 @@ func (l *Live) OnChange(fn func(cfg *Config, applied []Change)) {
 // The merged overlay is laid over the file's own document and resolved through the loader. A
 // resolution that fails changes nothing: the error comes back with the pointer and the stored
 // overlay as they were.
+//
+// Every resolution reads the whole file again, whichever arm asked, so what it settles for the
+// fixed paths is pinned back to the value boot settled (pinFixed): no snapshot ever carries a
+// fixed value the daemon is not running on, and the class table's promise that a change of such
+// a key reaches the next boot is true of the snapshot itself rather than of each reader's
+// discipline. The file arm names every path it pinned in refused, with that path's own reason,
+// since the file is where such an edit comes from. The route arm names only what its caller
+// asked for — it refuses a fixed path before resolving, and a path pinned there is a file edit
+// the file arm reports at the settle the watcher makes of it.
 func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Change, refused []Refusal, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -271,7 +280,12 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 	if err != nil {
 		return nil, refused, err
 	}
-	applied = diff(settingsOf(l.settled.Load()), settingsOf(&next), source, by)
+	settled := l.settled.Load()
+	pinned := pinFixed(settled, &next)
+	if source == SourceFile {
+		refused = append(refused, pinned...)
+	}
+	applied = diff(settingsOf(settled), settingsOf(&next), source, by)
 	l.overlay = merged
 	l.settled.Store(&next)
 	for _, observe := range l.observers {
@@ -426,6 +440,75 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 			value = value.Elem()
 		}
 		walkSettings(value, visit)
+	}
+}
+
+// pinFixed puts the value settled holds for every fixed path back into next, and names each
+// path it pinned, with the reason that path's row gives for refusing a change of it.
+//
+// It is what makes ClassFixed true of the snapshot. The route refuses a fixed path by name, but
+// every resolution reads the whole file again (resolve), so an operator's edit of such a key in
+// `legion.yaml` would otherwise settle the moment anything applied — a file settle, or a route
+// change of some other key — and reach every reader that takes its value from Snapshot: the
+// engine's project and the consumer spec the NATS rebuild opens on, the runtime name the
+// plugin-install rule reads, the hooks the engine fires. Pinned here, each of those reads the
+// value the daemon booted on, and a reader that takes a fixed value from the boot configuration
+// of its own is a second defence rather than the only one.
+//
+// Which paths are fixed is Classes and no second list: the walk is walkSettings' own, so a row
+// the table makes fixed is pinned with nothing else edited. Two kinds of fixed path it does not
+// reach, both of them a value the table holds inside another:
+//
+// The fixed rows under `projects` (`projects.<KEY>.memory.mode` and `.instructions`), because
+// the table makes `projects` one value compared whole — Config.Projects is no Block row — and
+// pinning it would pin the whole rebuild-class block with it.
+//
+// And a fixed value inside a block only one of the two readings carries, since there is no
+// settled value to pin or no field to pin it into. Pinning such a block whole instead would
+// hold keys an operator is entitled to change: `runtime.tmux` is a fixed row whose own members
+// are launch keys, and a file that drops the block drops those
+// (TestABlockTheFileDropsReadsAsUnset). What that leaves is the file that swaps the whole
+// `runtime` key, tmux for kubernetes, which is one key carrying the selector and its block
+// (readRuntime): the selector is pinned, so every reader of it goes on reading the runtime the
+// daemon launches into, while the block beside it is the other runtime's and the runtime
+// holder's own rebuild is what meets that. The restart `whyRuntime` names is what settles such
+// an edit, as it was before this pin.
+func pinFixed(settled, next *Config) []Refusal {
+	var pinned []Refusal
+	pinFixedIn(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), &pinned)
+	return pinned
+}
+
+// pinFixedIn is walkSettings' walk over two readings of one block at once: it descends where
+// that walk descends — into a block both readings carry — and where the row is a fixed value
+// it puts the settled reading's value back.
+func pinFixedIn(settled, next reflect.Value, pinned *[]Refusal) {
+	typ := next.Type()
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		row, known := rowOf(typ.Name() + "." + field.Name)
+		if !known {
+			continue
+		}
+		was, now := settled.Field(i), next.Field(i)
+		if row.Block {
+			if was.Kind() == reflect.Pointer {
+				if was.IsNil() || now.IsNil() {
+					continue
+				}
+				was, now = was.Elem(), now.Elem()
+			}
+			pinFixedIn(was, now, pinned)
+			continue
+		}
+		if row.Class != ClassFixed || Render(was) == Render(now) {
+			continue
+		}
+		now.Set(was)
+		*pinned = append(*pinned, Refusal{Path: row.Path, Reason: row.Why})
 	}
 }
 
