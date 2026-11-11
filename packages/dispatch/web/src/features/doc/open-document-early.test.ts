@@ -6,7 +6,7 @@ import { api } from "../../api/client";
 import type { ArtifactText, IssueDetails } from "../../api/types";
 import * as connection from "./connection";
 import * as editor from "./editor";
-import { afterTheFirstBatch, theFirstBatchIsAwaited } from "./first-batch";
+import { afterTheFirstBatch, PAGE_HOLD, theFirstBatchIsAwaited } from "./first-batch";
 import { openDocumentEarly, takeEarlyTextRead } from "./open-document-early";
 
 // The first-batch gate is one page's state, so each row leaves it as it found it: nothing
@@ -182,6 +182,92 @@ test("a document address whose issue names no document lets the held reads go", 
     await waitFor(() => expect(afterTheFirstBatch()).toBe(true));
   } finally {
     for (const spy of [transport, editorChunk, ...reads]) {
+      spy.mockRestore();
+    }
+    client.clear();
+  }
+});
+
+/** The two chunks and the state read every row below holds where they are made. */
+function heldChunks(): { mockRestore: () => void }[] {
+  return [
+    spyOn(connection, "loadDocumentTransport").mockImplementation(() =>
+      Promise.resolve(() => {
+        throw new Error("the boot task connects nothing");
+      })
+    ),
+    spyOn(editor, "loadEditor").mockImplementation(() => undefined),
+  ];
+}
+
+// A reader who leaves the Spec tab and comes back finds the document's surface where they left
+// it: `IssuePage` hides the panel rather than unmounting it, so nothing is built again and no
+// batch is coming. An opening that armed the hold for one would hold every read of every part
+// mounted in the next twenty seconds, and its `staleTime: 0` read would download the whole
+// document over the cache the open editor works from (dispatch://INFRA-341).
+test("coming back to a document this page has built holds no read and reads no text", async () => {
+  const chunks = heldChunks();
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(text);
+  const reads = [
+    spyOn(api, "getIssue").mockResolvedValue(issue),
+    getArtifactText,
+    spyOn(api, "getMyState").mockResolvedValue({}),
+  ];
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    openDocumentEarly(client, "/issues/CORE-77", "");
+    await waitFor(() => expect(takeEarlyTextRead(artifact.id)).toBeDefined());
+    // The surface built the document and is still on the page behind the tab the reader opened.
+    PAGE_HOLD.built(artifact.id);
+    const readsSoFar = getArtifactText.mock.calls.length;
+
+    openDocumentEarly(client, "/issues/CORE-77/children", "");
+    expect(afterTheFirstBatch()).toBe(true);
+
+    openDocumentEarly(client, "/issues/CORE-77/spec", "");
+    expect(afterTheFirstBatch()).toBe(true);
+    await Bun.sleep(20);
+    expect(afterTheFirstBatch()).toBe(true);
+    expect(getArtifactText).toHaveBeenCalledTimes(readsSoFar);
+    expect(takeEarlyTextRead(artifact.id)).toBeUndefined();
+  } finally {
+    PAGE_HOLD.gone(artifact.id);
+    for (const spy of [...chunks, ...reads]) {
+      spy.mockRestore();
+    }
+    client.clear();
+  }
+});
+
+// Both answers of an opening reach this module long after it was asked for, and a navigation in
+// between has started an opening of its own. The earlier address's answer is no longer anyone's:
+// the read it would leave is not the read the current page's admission takes, and the hold it
+// would release is the current page's (dispatch://INFRA-341).
+test("an earlier navigation's late issue answer leaves the current opening alone", async () => {
+  const chunks = heldChunks();
+  const { promise: issueRead, resolve: answerIssue } = Promise.withResolvers<IssueDetails>();
+  const reads = [
+    spyOn(api, "getIssue").mockReturnValue(issueRead),
+    spyOn(api, "getIssueArtifactText").mockRejectedValue(new Error("no such artifact")),
+    spyOn(api, "getArtifactText").mockResolvedValue(text),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+  ];
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    // The address the reader leaves: its slug names no artifact of this issue, so its own answer
+    // is what lets the reads it held go.
+    openDocumentEarly(client, "/issues/CORE-77/artifacts/gone", "");
+    // And the address they are on now, whose document the page is waiting for.
+    openDocumentEarly(client, "/issues/CORE-77/spec", "");
+    expect(afterTheFirstBatch()).toBe(false);
+
+    answerIssue(issue);
+    await waitFor(() => expect(takeEarlyTextRead(artifact.id)).toBeDefined());
+    expect(afterTheFirstBatch()).toBe(false);
+  } finally {
+    for (const spy of [...chunks, ...reads]) {
       spy.mockRestore();
     }
     client.clear();

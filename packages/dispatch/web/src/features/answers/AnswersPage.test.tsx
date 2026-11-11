@@ -181,6 +181,43 @@ test("lists the person's answers and replies newest first with time, owner, ques
   }
 });
 
+// R6 asked for the reply's formatting, not for dead links: a URL or a `dispatch://` reference
+// in a reply is one of the things the reader came to this page to follow. `MarkdownPreview`
+// renders every link as link-styled text by default (`links="inert"`), which is what the move
+// from `MarkdownBody` left this row with (dispatch://INFRA-341).
+test("a link in a reply is a link the reader can follow", async () => {
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
+    page([
+      {
+        ask_id: "ask-2",
+        ask_kind: "question",
+        ask_state: "open",
+        at: "2026-10-08T02:00:00Z",
+        current: false,
+        edited_at: null,
+        kind: "reply",
+        owner: { document: { name: "Design notes", project: "CORE", slug: "design-notes" } },
+        question: "Which colour?",
+        ref: "/projects/CORE/documents/design-notes?ask=ask-2",
+        reply: { body: "See [the palette](https://example.com/palette).", id: "comment-1" },
+      },
+    ])
+  );
+  const { view } = renderPage();
+  try {
+    await view.findByText("Replied:");
+    const row = view.container.querySelector<HTMLElement>('[data-answer-row="ask-2"]');
+    expect(row).not.toBeNull();
+    const link = await waitFor(() =>
+      within(row as HTMLElement).getByRole("link", { name: "the palette" })
+    );
+    expect(link).toHaveAttribute("href", "https://example.com/palette");
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+  }
+});
+
 test("an approval answer offers no Change answer", async () => {
   const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
     page([

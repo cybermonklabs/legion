@@ -20,7 +20,7 @@ import {
 import { AgentName, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath, type DocumentOwner } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
@@ -154,7 +154,7 @@ function AnsweredAsk({
   frame: AskFrame;
   markRef?: DwellRef;
   onChangeAnswer?: () => void;
-  owner: { project: string; slug: string } | undefined;
+  owner: DocumentOwner | undefined;
 }): ReactNode {
   const { answer } = ask;
   const chosen = answer === null ? [] : answerSelected(answer);
@@ -240,7 +240,7 @@ function ResolvedAsk({
   documentLink: boolean;
   edits: AskEdit[];
   frame: AskFrame;
-  owner: { project: string; slug: string } | undefined;
+  owner: DocumentOwner | undefined;
 }): ReactNode {
   const { resolution } = ask;
   const inBlock = frame === "block";
@@ -310,7 +310,7 @@ interface AskCompletionCardProps {
   onChangeAnswer?: () => void;
   /** The project document that owns an ask with no issue, for the header's `dispatch://`
    *  reference; mirrors `AskCardProps.owner`. */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
 }
 
 export function AskCompletionCard({

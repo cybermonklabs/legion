@@ -125,6 +125,25 @@ const NOTATION_CASES: readonly ReaderCase[] = [
     css: `a { background: ${dataUri("stroke='black' stroke-width='2.25'")} center / 100%; }`,
     found: [{ literal: "black", notation: "named" }],
   },
+  {
+    // A custom property's name is whatever follows `--`, and R13 counts every custom property
+    // as a colour declaration: a name starting with an underscore or a digit is one of them.
+    name: "a custom property whose name starts with an underscore",
+    css: "a { --_bg: #aabbcc; }",
+    found: [{ literal: "#aabbcc", notation: "hex6" }],
+  },
+  {
+    name: "a custom property whose name starts with a digit",
+    css: "a { --1x: #aabbcc; }",
+    found: [{ literal: "#aabbcc", notation: "hex6" }],
+  },
+  {
+    // A comment separates the tokens on either side of it, as a browser reads it: dropped
+    // outright, this value read `solidred` and the colour escaped the pin.
+    name: "a named colour a comment is written against with no space",
+    css: "a { border: 1px solid/**/red; }",
+    found: [{ literal: "red", notation: "named" }],
+  },
 ];
 
 /** What a colour notation looks like but is not a colour anyone wrote. */

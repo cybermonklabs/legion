@@ -2588,3 +2588,57 @@ test("IssuePage's header box says a closed issue is closed, where it stands and 
     restore();
   }
 });
+
+// A reader with no pointer must be able to reach the chrome the page is holding. Tab is the one
+// way they have into the header's box, so something in it has to take focus: a `disabled`
+// placeholder takes none and `ChromeAfterTheFirstBatch`'s `onFocusCapture` never fires, which
+// left the header, the tab strip and every issue shortcut out of reach for as long as the hold
+// lasted - up to twenty seconds on a stalled load (dispatch://INFRA-341).
+test("IssuePage hands the held header to a reader who tabs into its box", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-header-box");
+    const held = within(box).getByRole("button", { name: "Pin issue" });
+    expect(held).not.toHaveAttribute("disabled");
+    expect(held).toHaveAttribute("aria-disabled", "true");
+
+    held.focus();
+    expect(await screen.findByTestId("issue-header")).toBeTruthy();
+    expect(await screen.findByRole("combobox", { name: "Status" })).toBeTruthy();
+    // And the reader's own Tab reaches it: nothing before the box in the page's order takes it
+    // away, so the box is where the first Tab of a held page lands.
+    await user.tab();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// And the issue's own keys reach it too. Every binding resolves against a control only the real
+// header and tab strip render, so while the hold stands they would all be withheld: the press
+// is the reader reaching for the chrome, exactly as a pointer press on the box is, and it does
+// what it came for once the chrome it asked for is drawn.
+test("IssuePage's header shortcuts draw the held chrome and then act on it", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    await screen.findByTestId("issue-header-box");
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+
+    await user.keyboard("s");
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await waitFor(() => expect(document.activeElement).toBe(status));
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});

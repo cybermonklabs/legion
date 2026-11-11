@@ -17,7 +17,7 @@ import {
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { askResolutionBadge } from "../refs/actor";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildDispatchReference, itemRoute } from "../refs/routes";
+import { buildDispatchReference, type DocumentOwner, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { askTurnHolder } from "./ask-turn";
@@ -64,7 +64,7 @@ export interface AskHeaderProps {
   leading?: ReactNode;
   /** The project document that owns an ask with no issue, so the header can name the ask's
    *  `dispatch://` reference (only Inbox rows carry `document` themselves). */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
   place: AskHeaderPlace;
   /** The host's own end of the provenance line: the answered and resolved records' own
    *  sentences, `AskCard`'s session handles, the block's `Copied from`. */
@@ -79,14 +79,6 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   high: badgeHigh.text,
   low: badgeLow.text,
   med: badgeMed.text,
-};
-
-/** The provenance line of each place, in that place's own tone and rhythm. */
-const ROW_CLASS: Record<AskHeaderPlace, string> = {
-  answered: `mt-2 text-xs ${calloutSuccessTimestampText}`,
-  block: `mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurfaceMuted}`,
-  card: `@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`,
-  resolved: `mt-2 text-xs ${textMutedOnSurface}`,
 };
 
 /** Whether the header draws its urgency notch, which hangs over the top edge of the card's own
@@ -155,27 +147,31 @@ function NamedAskHeader(props: AskHeaderProps & { ask: Ask }): ReactNode {
   );
 }
 
-function DrawnAskHeader({
-  ask,
-  asker,
-  block,
-  carded = false,
-  children,
-  control,
-  inBlock = false,
-  lastReply,
-  leading,
-  owner,
-  place,
-  trailing,
-}: AskHeaderProps & { asker: AskHeaderAsker | undefined }): ReactNode {
-  const author = ask?.author;
-  const session = author?.kind === "session" ? author : undefined;
+/**
+ * The facts every place draws from the same ask, computed once: the attributes one browser row
+ * reads, the copy control, the urgency mark, the state label and the time it was asked. Pure,
+ * and the only place that reads `carded`, `inBlock` and the block's own fields - so a change to
+ * one place below edits one branch and nothing else.
+ */
+interface AskHeaderFacts {
+  readonly askedAt: ReactNode;
+  readonly attributes: Record<string, string>;
+  readonly copy: ReactNode;
+  readonly notch: ReactNode;
+  /** Whether this header draws who asked, when, and the copy control: the card below a decision
+   *  block draws all three, so the block's own header draws none of them. */
+  readonly provenance: boolean;
+  readonly stateLabel: ReactNode;
+  readonly urgencyPill: ReactNode;
+}
+
+function askHeaderFacts(
+  { ask, block, carded = false, inBlock = false, owner, place }: AskHeaderProps,
+  asker: AskHeaderAsker | undefined
+): AskHeaderFacts {
   const reference = ask === undefined ? undefined : itemRoute("ask", ask, owner);
   const urgency = block?.urgency ?? ask?.urgency;
   const state = block?.state ?? ask?.state;
-  // Who asked, when, and the reference: the card below a decision block draws all three, so the
-  // block's own header draws none of them.
   const provenance = ask !== undefined && !carded;
   const copy = provenance && reference !== undefined ? <CopyRefButton route={reference} /> : null;
 
@@ -208,7 +204,6 @@ function DrawnAskHeader({
         {URGENCY_LABELS[askUrgency(ask.urgency)].toUpperCase()}
       </span>
     );
-
   const stateLabel =
     place === "resolved" && ask?.resolution !== undefined ? (
       <span
@@ -228,124 +223,232 @@ function DrawnAskHeader({
       </span>
     ) : null;
 
-  const askedAt = ask === undefined ? null : <Timestamp at={ask.created_at} />;
-  const turnHolder = place === "card" && ask !== undefined ? askTurnHolder(ask, lastReply) : null;
-  let provenanceNode: ReactNode = null;
-  if (provenance && ask !== undefined && author !== undefined) {
-    if (place === "block") {
-      provenanceNode = (
-        <span className="inline-flex items-center gap-x-2" data-dispatch-ask-asked="">
-          <span aria-hidden="true">·</span>
-          <span>
-            {asker === undefined ? (
-              "asked"
-            ) : (
-              <>
-                asked by <AgentName actor={author} inline />
-              </>
-            )}
-          </span>
-          {asker === undefined ? null : <span aria-hidden="true">·</span>}
-          {askedAt}
-        </span>
-      );
-    } else if (place === "card") {
-      provenanceNode = (
-        // Turn, author and time are one group whose names truncate: a separator that wrapped
-        // left a line opening - or ending - on a bare "·", and the agents are the only parts
-        // that can give up width ("Waiting on you" never does). Below 24rem of line (a phone,
-        // a margin) the turn takes a line of its own with no separator after it, and the
-        // asker and time share the next: beside the turn and the live link's 44 px touch box
-        // the asker's name kept only two letters.
-        <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
-          {turnHolder === null ? null : (
-            <span
-              className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${textSecondaryOnSurface}`}
-              data-testid={`turn-${ask.id}`}
-            >
-              Waiting on {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
-            </span>
-          )}
-          {turnHolder === null ? null : (
-            <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
-              ·
-            </span>
-          )}
-          <span className="flex min-w-0 items-center gap-x-1.5">
-            {session === undefined || control === undefined ? (
-              <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
-                {asker === undefined ? "asked" : <AgentName actor={author} />}
-              </TruncatedText>
-            ) : (
-              // The asker's control keeps its name and opens the session's copy handles; the
-              // component's live link sits beside it, outside the control. `whitespace-pre`
-              // keeps the space before an attribution suffix, which a flex item would drop.
-              <AgentName
-                actor={session}
-                className="flex min-w-0 items-center whitespace-pre"
-                control={(name) =>
-                  control(
-                    <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
-                      {name}
-                    </TruncatedText>
-                  )
-                }
-                kind="control"
-              />
-            )}
-            <span className="shrink-0" aria-hidden="true">
-              ·
-            </span>
-            {askedAt}
-          </span>
-        </span>
-      );
-    } else {
-      provenanceNode = (
-        <>
-          {asker === undefined ? null : (
-            <>
-              <AgentName actor={author} inline />
-              {" · "}
-            </>
-          )}
-          Asked {askedAt}
-        </>
-      );
-    }
-  }
+  return {
+    askedAt: ask === undefined ? null : <Timestamp at={ask.created_at} />,
+    attributes,
+    copy,
+    notch,
+    provenance,
+    stateLabel,
+    urgencyPill,
+  };
+}
 
-  const row = (
+/** The row every place draws, in the order every place draws it; what differs is the provenance
+ *  each writes and the box it stands in. */
+function AskHeaderRow({
+  facts,
+  leading,
+  provenance,
+  trailing,
+}: {
+  facts: AskHeaderFacts;
+  leading: ReactNode;
+  provenance: ReactNode;
+  trailing: ReactNode;
+}): ReactNode {
+  return (
     <>
-      {urgencyPill}
+      {facts.urgencyPill}
       {leading}
-      {stateLabel}
-      {provenanceNode}
-      {copy}
+      {facts.stateLabel}
+      {provenance}
+      {facts.copy}
       {trailing}
     </>
   );
+}
 
-  if (place === "block") {
-    return (
-      <header className={ROW_CLASS.block} {...attributes}>
-        {row}
-      </header>
-    );
+type PlaceProps = AskHeaderProps & {
+  asker: AskHeaderAsker | undefined;
+  facts: AskHeaderFacts;
+};
+
+function DrawnAskHeader(props: AskHeaderProps & { asker: AskHeaderAsker | undefined }): ReactNode {
+  const facts = askHeaderFacts(props, props.asker);
+  if (props.place === "block") {
+    return <BlockAskHeader {...props} facts={facts} />;
   }
+  if (props.place === "card") {
+    return <CardAskHeader {...props} facts={facts} />;
+  }
+  return <RecordAskHeader {...props} facts={facts} />;
+}
+
+/** A decision block's own portalled header: one line, and nothing of its own between the anchor
+ *  and the provenance - the editor holds the question. */
+function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): ReactNode {
+  const author = ask?.author;
   return (
-    <div {...attributes}>
-      {notch}
+    <header
+      className={`mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurfaceMuted}`}
+      {...facts.attributes}
+    >
+      <AskHeaderRow
+        facts={facts}
+        leading={leading}
+        provenance={
+          !facts.provenance || author === undefined ? null : (
+            <span className="inline-flex items-center gap-x-2" data-dispatch-ask-asked="">
+              <span aria-hidden="true">·</span>
+              <span>
+                {asker === undefined ? (
+                  "asked"
+                ) : (
+                  <>
+                    asked by <AgentName actor={author} inline />
+                  </>
+                )}
+              </span>
+              {asker === undefined ? null : <span aria-hidden="true">·</span>}
+              {facts.askedAt}
+            </span>
+          )
+        }
+        trailing={trailing}
+      />
+    </header>
+  );
+}
+
+/** The Inbox card, in both variants: whose turn it is, who asked and when, in one group whose
+ *  names truncate. */
+function CardAskHeader({
+  ask,
+  asker,
+  children,
+  control,
+  facts,
+  inBlock = false,
+  lastReply,
+  leading,
+  trailing,
+}: PlaceProps): ReactNode {
+  const author = ask?.author;
+  const session = author?.kind === "session" ? author : undefined;
+  const turnHolder = ask === undefined ? null : askTurnHolder(ask, lastReply);
+  return (
+    <div {...facts.attributes}>
+      {facts.notch}
+      {ask === undefined ? null : (
+        <AskAnchorHeader ask={ask} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
+      )}
+      {children}
+      <div
+        className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
+      >
+        <AskHeaderRow
+          facts={facts}
+          leading={leading}
+          provenance={
+            !facts.provenance || ask === undefined || author === undefined ? null : (
+              // Turn, author and time are one group whose names truncate: a separator that
+              // wrapped left a line opening - or ending - on a bare "·", and the agents are the
+              // only parts that can give up width ("Waiting on you" never does). Below 24rem of
+              // line (a phone, a margin) the turn takes a line of its own with no separator
+              // after it, and the asker and time share the next: beside the turn and the live
+              // link's 44 px touch box the asker's name kept only two letters.
+              <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
+                {turnHolder === null ? null : (
+                  <span
+                    className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${textSecondaryOnSurface}`}
+                    data-testid={`turn-${ask.id}`}
+                  >
+                    Waiting on{" "}
+                    {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
+                  </span>
+                )}
+                {turnHolder === null ? null : (
+                  <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
+                    ·
+                  </span>
+                )}
+                <span className="flex min-w-0 items-center gap-x-1.5">
+                  {session === undefined || control === undefined ? (
+                    <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
+                      {asker === undefined ? "asked" : <AgentName actor={author} />}
+                    </TruncatedText>
+                  ) : (
+                    // The asker's control keeps its name and opens the session's copy handles;
+                    // the component's live link sits beside it, outside the control.
+                    // `whitespace-pre` keeps the space before an attribution suffix, which a
+                    // flex item would drop.
+                    <AgentName
+                      actor={session}
+                      className="flex min-w-0 items-center whitespace-pre"
+                      control={(name) =>
+                        control(
+                          <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
+                            {name}
+                          </TruncatedText>
+                        )
+                      }
+                      kind="control"
+                    />
+                  )}
+                  <span className="shrink-0" aria-hidden="true">
+                    ·
+                  </span>
+                  {facts.askedAt}
+                </span>
+              </span>
+            )
+          }
+          trailing={trailing}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The answered and resolved records (`AskCompletionCard`): one sentence of provenance, in the
+ *  tone of the frame it stands in. */
+function RecordAskHeader({
+  ask,
+  asker,
+  children,
+  facts,
+  inBlock = false,
+  leading,
+  place,
+  trailing,
+}: PlaceProps): ReactNode {
+  const author = ask?.author;
+  const answered = place === "answered";
+  return (
+    <div {...facts.attributes}>
+      {facts.notch}
       {ask === undefined ? null : (
         <AskAnchorHeader
           ask={ask}
           inBlock={inBlock}
-          quoteSpacing={place === "card" ? "roomy" : "compact"}
-          tone={place === "answered" ? "success" : "surface"}
+          quoteSpacing="compact"
+          tone={answered ? "success" : "surface"}
         />
       )}
       {children}
-      <div className={ROW_CLASS[place]}>{row}</div>
+      <div
+        className={`mt-2 text-xs ${answered ? calloutSuccessTimestampText : textMutedOnSurface}`}
+      >
+        <AskHeaderRow
+          facts={facts}
+          leading={leading}
+          provenance={
+            !facts.provenance || author === undefined ? null : (
+              <>
+                {asker === undefined ? null : (
+                  <>
+                    <AgentName actor={author} inline />
+                    {" · "}
+                  </>
+                )}
+                Asked {facts.askedAt}
+              </>
+            )
+          }
+          trailing={trailing}
+        />
+      </div>
     </div>
   );
 }

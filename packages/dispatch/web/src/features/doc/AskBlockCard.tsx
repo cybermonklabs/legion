@@ -14,7 +14,12 @@ import { AskCompletionCard } from "../inbox/AskCompletionCard";
 import { AskHeader } from "../inbox/AskHeader";
 import { AskOptionList } from "../inbox/AskOptionList";
 import { blockFragment } from "../refs/block-reference";
-import { buildReferencePath, parseNodeReference, shortForm } from "../refs/routes";
+import {
+  buildReferencePath,
+  type DocumentOwner,
+  parseNodeReference,
+  shortForm,
+} from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type AskBlockFacts, type AskBlockHost, askBlockFacts } from "./typed-block-drawing";
 
@@ -29,7 +34,7 @@ export interface AskBlockCardProps {
   onAnswered?: (id: string) => void;
   /** The project document holding the block, for an ask that has no issue to be referenced
    *  under; an issue document's asks carry their `issue_key`. */
-  owner: { project: string; slug: string } | undefined;
+  owner: DocumentOwner | undefined;
   readOnly: boolean;
   /** Whether a resolved block whose indexed ask row is resolved too shows the row's resolution
    *  record: the current document of a closed issue, whose close withdrew the ask. A saved
@@ -167,7 +172,7 @@ export function TextAskBlockCard({ host }: { host: AskBlockHost }): ReactNode {
 export interface PreviewDecisions {
   readonly asks: readonly Ask[];
   readonly onAnswered: (askId: string) => void;
-  readonly owner: { project: string; slug: string } | undefined;
+  readonly owner: DocumentOwner | undefined;
   readonly readOnly: boolean;
   readonly rowResolution: boolean;
 }

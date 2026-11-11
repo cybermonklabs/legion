@@ -17,9 +17,11 @@ import { InboxList } from "./InboxList";
  * The Inbox as a peek over whatever page is open (LEGION-547): the same list, cards and actions
  * as the Inbox page, mounted by the app shell as a sibling of `<main>` so a route change
  * underneath never unmounts the page beneath it - the drawer itself closes instead
- * (`useCloseOnNavigation`), which is also what "open the item" from inside it does. The shell
- * mounts it while it is open and takes it down when it closes, so its chunk is asked for the
- * first time a reader opens it (`features/shell/deferred-shell.ts`).
+ * (`useCloseOnNavigation`), which is also what "open the item" from inside it does. Its chunk is
+ * asked for the first time a reader opens it (`features/shell/deferred-shell.ts`), and from then
+ * on the shell keeps it mounted and tells it whether it is open: a drawer unmounted on each
+ * close would start every peek from an empty filter and an empty search box, which nothing in
+ * the spec asks for (dispatch://INFRA-341). Closed it draws nothing.
  *
  * Its filters, sort, grouping, Inbox-or-Dismissed switch and search text are its own `useState`,
  * never the URL: `Inbox`'s `filter`/`onFilterChange` exist exactly so a peek embedded on, say,
@@ -35,13 +37,27 @@ import { InboxList } from "./InboxList";
  * the thread order, and which bands they folded - is theirs rather than the address's, so the
  * drawer and the page agree.
  */
-export function InboxDrawer({ onClose }: { onClose: () => void }): ReactNode {
+export function InboxDrawer({
+  onClose,
+  open,
+}: {
+  onClose: () => void;
+  /** Whether the peek is showing. Closed, this draws nothing and keeps what the reader last
+   *  narrowed it to. */
+  open: boolean;
+}): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // An empty route is the Inbox as it opens: the reader's own work, newest first, banded by
-  // priority, every thread they have not dismissed, and nothing typed in the search box.
+  // priority, every thread they have not dismissed, and nothing typed in the search box. It is
+  // this component's state and outlives a close, so the peek a reader opens again is the peek
+  // they left.
   const [filter, setFilter] = useState<InboxRoute>({});
-  const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open: true });
-  useCloseOnNavigation(true, onClose);
+  const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open });
+  useCloseOnNavigation(open, onClose);
+
+  if (!open) {
+    return null;
+  }
 
   return (
     <>

@@ -116,32 +116,34 @@ export function Sidebar({
   user: AuthenticatedUser;
 }): ReactNode {
   return (
-    <AfterTheFirstBatch
-      reached={reached}
-      space={
-        <>
-          <HideSidebarControl onHide={onHide} />
-          <p className={`mt-8 text-sm ${railMutedText}`}>Loading navigation…</p>
-        </>
-      }
-    >
-      <SidebarNavigation
-        onHide={onHide}
-        onNavigate={onNavigate}
-        onOpenInboxDrawer={onOpenInboxDrawer}
-        user={user}
-      />
-    </AfterTheFirstBatch>
+    <>
+      {/* Rendered once, by the column itself, never inside the swap below: it is the reader's
+          way off a column they do not want, and a control that is replaced by the press that
+          reaches it is no way off. Inside `AfterTheFirstBatch` the space and the navigation are
+          different element types, so a pointerdown on it drew the navigation and unmounted the
+          button under the pointer - the first press only swapped the column and `onHide` never
+          ran - and a Tab onto it removed the element holding focus, which fell to `<body>`
+          (dispatch://INFRA-341). */}
+      <HideSidebarControl onHide={onHide} />
+      <AfterTheFirstBatch
+        reached={reached}
+        space={<p className={`mt-8 text-sm ${railMutedText}`}>Loading navigation…</p>}
+      >
+        <SidebarNavigation
+          onNavigate={onNavigate}
+          onOpenInboxDrawer={onOpenInboxDrawer}
+          user={user}
+        />
+      </AfterTheFirstBatch>
+    </>
   );
 }
 
 function SidebarNavigation({
-  onHide,
   onNavigate,
   onOpenInboxDrawer,
   user,
 }: {
-  onHide?: () => void;
   onNavigate?: () => void;
   onOpenInboxDrawer?: () => void;
   user: AuthenticatedUser;
@@ -160,151 +162,136 @@ function SidebarNavigation({
   const currentIssue = parseIssuePath(location.pathname)?.key;
   const currentProject = parseProjectPath(location.pathname)?.project;
 
-  const hideControl = <HideSidebarControl onHide={onHide} />;
-
   if (inbox.isPending || pinned.isPending || projects.isPending) {
-    return (
-      <>
-        {hideControl}
-        <p className={`mt-8 text-sm ${railMutedText}`}>Loading navigation…</p>
-      </>
-    );
+    return <p className={`mt-8 text-sm ${railMutedText}`}>Loading navigation…</p>;
   }
   if (inbox.isError || pinned.isError || projects.isError) {
-    return (
-      <>
-        {hideControl}
-        <p className={`mt-8 text-sm ${railDangerText}`}>Could not load navigation.</p>
-      </>
-    );
+    return <p className={`mt-8 text-sm ${railDangerText}`}>Could not load navigation.</p>;
   }
 
   return (
-    <>
-      {hideControl}
-      <nav aria-label="Navigation" className="mt-8 space-y-5">
-        <section className="flex items-center gap-1">
-          <Link
-            className={`mt-1 flex flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
-            onClick={onNavigate}
-            to="/"
-          >
-            <span>Inbox</span>
-            {inboxCount === 0 ? null : (
-              <span
-                className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-              >
-                {inboxCount}
-              </span>
-            )}
-          </Link>
-          {/* The Inbox page is the Inbox already, so there is nothing to peek at from it. */}
-          {onOpenInboxDrawer === undefined || routeIsInbox(location.pathname) ? null : (
-            <button
-              aria-label="Peek at the inbox without leaving this page"
-              className={`mt-1 shrink-0 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
-              onClick={onOpenInboxDrawer}
-              type="button"
+    <nav aria-label="Navigation" className="mt-8 space-y-5">
+      <section className="flex items-center gap-1">
+        <Link
+          className={`mt-1 flex flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+          onClick={onNavigate}
+          to="/"
+        >
+          <span>Inbox</span>
+          {inboxCount === 0 ? null : (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
             >
-              Peek
-            </button>
+              {inboxCount}
+            </span>
           )}
-        </section>
-        <section>
-          <Link
-            aria-current={location.pathname === "/agents" ? "page" : undefined}
-            className={
-              location.pathname === "/agents"
-                ? `mt-1 flex items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railActiveBg} ${railAccentText}`
-                : `mt-1 flex items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`
-            }
-            onClick={onNavigate}
-            to="/agents"
+        </Link>
+        {/* The Inbox page is the Inbox already, so there is nothing to peek at from it. */}
+        {onOpenInboxDrawer === undefined || routeIsInbox(location.pathname) ? null : (
+          <button
+            aria-label="Peek at the inbox without leaving this page"
+            className={`mt-1 shrink-0 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+            onClick={onOpenInboxDrawer}
+            type="button"
           >
-            <span>Agents</span>
-            {unreadReplies === 0 ? null : (
-              <span
-                className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-              >
-                {unreadRepliesLabel(unreadReplies)}
-              </span>
-            )}
-          </Link>
-        </section>
-        <section>
-          <ul className="mt-1 space-y-0.5">
-            <RailRow
-              badge={undefined}
-              detail="Deploys, merges, and pipeline failures"
-              label="Delivery"
-              onNavigate={onNavigate}
-              selected={location.pathname === "/delivery"}
-              to="/delivery"
-            />
-            <RailRow
-              badge={undefined}
-              detail="CI and deploy step timings"
-              label="Pipeline"
-              onNavigate={onNavigate}
-              selected={location.pathname === "/pipeline"}
-              to="/pipeline"
-            />
-          </ul>
-        </section>
-        {pinned.data.length === 0 ? null : (
-          <section>
-            <h2 className={`px-2 text-xs font-semibold tracking-wide uppercase ${railMutedText}`}>
-              Pinned
-            </h2>
-            <ul className="mt-1 space-y-0.5">
-              {pinned.data.map((issue) => (
-                <RailRow
-                  badge={issue.open_asks === 0 ? undefined : issue.open_asks}
-                  detail={issue.title}
-                  key={issue.key}
-                  label={issue.key}
-                  onNavigate={onNavigate}
-                  selected={issue.key === currentIssue}
-                  to={buildIssuePath({ key: issue.key, kind: "issue" })}
-                />
-              ))}
-            </ul>
-          </section>
+            Peek
+          </button>
         )}
+      </section>
+      <section>
+        <Link
+          aria-current={location.pathname === "/agents" ? "page" : undefined}
+          className={
+            location.pathname === "/agents"
+              ? `mt-1 flex items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railActiveBg} ${railAccentText}`
+              : `mt-1 flex items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`
+          }
+          onClick={onNavigate}
+          to="/agents"
+        >
+          <span>Agents</span>
+          {unreadReplies === 0 ? null : (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+            >
+              {unreadRepliesLabel(unreadReplies)}
+            </span>
+          )}
+        </Link>
+      </section>
+      <section>
+        <ul className="mt-1 space-y-0.5">
+          <RailRow
+            badge={undefined}
+            detail="Deploys, merges, and pipeline failures"
+            label="Delivery"
+            onNavigate={onNavigate}
+            selected={location.pathname === "/delivery"}
+            to="/delivery"
+          />
+          <RailRow
+            badge={undefined}
+            detail="CI and deploy step timings"
+            label="Pipeline"
+            onNavigate={onNavigate}
+            selected={location.pathname === "/pipeline"}
+            to="/pipeline"
+          />
+        </ul>
+      </section>
+      {pinned.data.length === 0 ? null : (
         <section>
           <h2 className={`px-2 text-xs font-semibold tracking-wide uppercase ${railMutedText}`}>
-            Projects
+            Pinned
           </h2>
           <ul className="mt-1 space-y-0.5">
-            {projects.data.map((project) => (
+            {pinned.data.map((issue) => (
               <RailRow
-                badge={
-                  project.open_asks === undefined || project.open_asks === 0
-                    ? undefined
-                    : project.open_asks
-                }
-                detail={project.name}
-                key={project.key}
-                label={project.key}
+                badge={issue.open_asks === 0 ? undefined : issue.open_asks}
+                detail={issue.title}
+                key={issue.key}
+                label={issue.key}
                 onNavigate={onNavigate}
-                selected={project.key === currentProject}
-                to={buildProjectPath({ kind: "project", project: project.key })}
+                selected={issue.key === currentIssue}
+                to={buildIssuePath({ key: issue.key, kind: "issue" })}
               />
             ))}
           </ul>
         </section>
-        {user.kind === "user" ? (
-          <div className={`border-t pt-4 ${railBorder}`}>
-            <Link
-              className={`block rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
-              onClick={onNavigate}
-              to="/settings"
-            >
-              Settings
-            </Link>
-          </div>
-        ) : null}
-      </nav>
-    </>
+      )}
+      <section>
+        <h2 className={`px-2 text-xs font-semibold tracking-wide uppercase ${railMutedText}`}>
+          Projects
+        </h2>
+        <ul className="mt-1 space-y-0.5">
+          {projects.data.map((project) => (
+            <RailRow
+              badge={
+                project.open_asks === undefined || project.open_asks === 0
+                  ? undefined
+                  : project.open_asks
+              }
+              detail={project.name}
+              key={project.key}
+              label={project.key}
+              onNavigate={onNavigate}
+              selected={project.key === currentProject}
+              to={buildProjectPath({ kind: "project", project: project.key })}
+            />
+          ))}
+        </ul>
+      </section>
+      {user.kind === "user" ? (
+        <div className={`border-t pt-4 ${railBorder}`}>
+          <Link
+            className={`block rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+            onClick={onNavigate}
+            to="/settings"
+          >
+            Settings
+          </Link>
+        </div>
+      ) : null}
+    </nav>
   );
 }

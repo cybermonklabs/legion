@@ -59,15 +59,11 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
-import { DocumentPreview, documentPreview, takesTheBuiltBlocks } from "./DocumentPreview";
+import { DocumentPreview, documentPreview, theDrawGivesUpTheBuiltBlocks } from "./DocumentPreview";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorConstruction, EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
-import {
-  theDocumentIsAwaitedFromTheServer,
-  theFirstBatchIsAwaited,
-  useAfterTheFirstBatch,
-} from "./first-batch";
+import { NO_HOLD, PAGE_HOLD, useAfterTheFirstBatch } from "./first-batch";
 import { currentAddress, firstScreenAwaits } from "./first-screen";
 import type { Highlight } from "./highlight";
 import { liveTextQueryOptions } from "./live-text";
@@ -83,12 +79,7 @@ import { takeEarlyTextRead } from "./open-document-early";
 import type { PendingState } from "./pending-sync";
 import { createPendingWaiter } from "./pending-waiter";
 import { quoteAnchor } from "./quote-anchor";
-import {
-  keepTheReadersPlace,
-  moveTheScroll,
-  putTheReaderBack,
-  readersBlock,
-} from "./readers-place";
+import { keepTheReadersPlace, putTheReaderBack, readersBlock } from "./readers-place";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
@@ -776,6 +767,9 @@ export function ProofDocument({
       return;
     }
 
+    // What this surface tells the first-batch gate, chosen once: the page's document reports
+    // every step of its load to it, a pane's reports none of them (`first-batch.ts`).
+    const hold = page ? PAGE_HOLD : NO_HOLD;
     let mounted = true;
     let document: DocumentConnection | undefined;
     let editor: EditorHandle | undefined;
@@ -816,9 +810,7 @@ export function ProofDocument({
       // first batch to come either, so the page's other reads stop waiting for one
       // (`first-batch.ts`).
       setEditorBuilding(false);
-      if (page) {
-        theFirstBatchIsAwaited(false);
-      }
+      hold.release();
       setLoadError(error instanceof Error ? error.message : String(error));
     };
     const teardown = () => {
@@ -842,7 +834,9 @@ export function ProofDocument({
       }
       // Whatever the editor drew has gone with it, so the document's own text is what the reader
       // reads again until the next one is built, and paints the whole of itself again while it
-      // waits.
+      // waits. Its blocks are off the page too, so an address that opens this document again
+      // waits for the batch that rebuilds them (`first-batch.ts`).
+      hold.gone(artifact.id);
       setEditorDrawn(false);
       setEditorBuilding(false);
       setEditorHandle((current) => (current === editor ? undefined : current));
@@ -1004,9 +998,7 @@ export function ProofDocument({
             setAdmission(block);
             // The document cannot be opened until a repair or a rebuild answers, so no first
             // batch is coming and the page's other reads stop waiting for one.
-            if (page) {
-              theFirstBatchIsAwaited(false);
-            }
+            hold.release();
             readmitRef.current = () => {
               readmitRef.current = undefined;
               refusals = 0;
@@ -1057,9 +1049,7 @@ export function ProofDocument({
               // The document is here, so the page is no longer waiting on the server for it:
               // what it waits for from now on is the build, which the deadline over the whole
               // load covers (`first-batch.ts`).
-              if (page) {
-                theDocumentIsAwaitedFromTheServer(false);
-              }
+              hold.awaitServer(false);
               // From here the editor is being built, so the draw the reader is reading stops
               // painting the rest of itself into a page this editor is about to replace
               // (`DocumentPreview`).
@@ -1129,15 +1119,9 @@ export function ProofDocument({
           // The socket is open and the document has been asked for. From here the page is
           // waiting on the server alone, which is the one step of this load nothing reports
           // the end of when the answer never comes (`first-batch.ts`).
-          if (page) {
-            theDocumentIsAwaitedFromTheServer(true);
-          }
-          /** The draw's own blocks, indexed by their ids once rather than scanned for in
-           *  every batch (`takesTheBuiltBlocks`), against the element they were indexed
-           *  from, so a draw React has replaced is indexed again. */
-          let theDraw:
-            | { element: HTMLElement; take: (built: readonly string[]) => void }
-            | undefined;
+          hold.awaitServer(true);
+          // The draw's side of every batch of the build below (`DocumentPreview`).
+          const theDrawsBatch = theDrawGivesUpTheBuiltBlocks(parent);
           // The editor is built here, while the socket is admitted and the whole Yjs document
           // arrives, and bound when it has (`onSynced` above). Nothing it is made of depends on
           // the document - Milkdown, the schema's typed blocks, every plugin's view, Dispatch's
@@ -1214,43 +1198,24 @@ export function ProofDocument({
             // reading gives up the blocks the editor has just built, so the frame the
             // browser draws next holds each of them once (dispatch://INFRA-341, R11). The
             // blocks go above the rest of the draw, which is why the editor's root stands
-            // before it in the page. Where the splice is above the top of the screen, the
-            // scroll moves with it: the editor's copy of a block is not the same height as
-            // the draw's once either has painted, and the reader's words must not slide
-            // under them a batch at a time.
+            // before it in the page. What the draw does with a batch is its own
+            // (`theDrawGivesUpTheBuiltBlocks`).
             onBatch: (built) => {
-              const preview = documentPreview(parent.parentElement);
-              /** The draw's turn in this batch, where the reader still has a draw to give
-               *  blocks up from. */
-              let theDrawsTurn: (() => void) | undefined;
-              if (preview !== null) {
-                if (theDraw?.element !== preview) {
-                  theDraw = { element: preview, take: takesTheBuiltBlocks(preview) };
-                }
-                const take = theDraw.take;
-                const before = preview.getBoundingClientRect();
-                theDrawsTurn = () => {
-                  take(built);
-                  if (before.top >= 0 || preview.childElementCount === 0) {
-                    return;
-                  }
-                  moveTheScroll(preview, preview.getBoundingClientRect().bottom - before.bottom);
-                };
-              }
+              const theDrawsTurn = theDrawsBatch(built);
               return () => {
                 // The reader has the editor from here, so the reads the page held behind the
-                // first batch go out now (`first-batch.ts`). Here rather than at the top of
-                // this callback, because the build calls that before it has placed the
-                // batch's blocks or shown the editor's root and this after both
-                // (`@legion/proof-editor`'s `progressive-build.ts`): a gate cleared at the
-                // top let the panels' own render - and the reads it starts - go first at the
-                // task's microtask checkpoint, ahead of the batch it is supposed to follow.
-                // Said on every batch because the first is the only one that changes the
-                // answer, and a batch costs nothing to say it again.
-                if (page) {
-                  theFirstBatchIsAwaited(false);
-                }
-                theDrawsTurn?.();
+                // first batch go out now, and this document is built on the page, so an
+                // address opening it again waits for no batch of its own (`first-batch.ts`).
+                // Here rather than at the top of this callback, because the build calls that
+                // before it has placed the batch's blocks or shown the editor's root and this
+                // after both (`@legion/proof-editor`'s `progressive-build.ts`): a gate cleared
+                // at the top let the panels' own render - and the reads it starts - go first
+                // at the task's microtask checkpoint, ahead of the batch it is supposed to
+                // follow. Said on every batch because the first is the only one that changes
+                // the answer, and a batch costs nothing to say it again.
+                hold.release();
+                hold.built(artifact.id);
+                theDrawsTurn();
               };
             },
             // A pane takes no edits and no comments: a reader who clicks into the text from a

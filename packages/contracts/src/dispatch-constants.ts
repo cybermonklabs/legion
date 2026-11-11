@@ -103,11 +103,15 @@ export const DEFAULT_ISSUE_READ_EVENTS = 10;
 
 /**
  * The options `answer` picked, as a list: the one reading of `AskAnswer.selected`, whose wire
- * schema is a nullish array (see the field). Every reader goes through here, on the page and in
- * the `dispatch` command alike - a reader that coerces it again is a reader that can forget to,
- * and an answer whose `selected` is `null` then throws where it is read as a list.
+ * schema is a nullish array (see the field). Every reader goes through here, on the page, in the
+ * `dispatch` command and in `@legion/envoy-client` alike - a reader that coerces it again is a
+ * reader that can forget to, and an answer whose `selected` is `null` then throws where it is
+ * read as a list. It takes the field rather than the whole answer, since a session answer and an
+ * ask's answer carry it under their own shapes.
  */
-export function answerSelected(answer: Pick<AskAnswer, "selected">): readonly string[] {
+export function answerSelected(
+  answer: Pick<AskAnswer, "selected"> | { readonly selected?: readonly string[] | null }
+): readonly string[] {
   return answer.selected ?? [];
 }
 

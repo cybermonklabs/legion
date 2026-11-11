@@ -209,7 +209,20 @@ function attachTriggers(): () => void {
     // the browser dispatches the move at the new place after the boundary pair. A boundary
     // event with nothing on the other side is not the page moving at all: the pointer has left
     // the window, or the anchor has left the document, and the request goes with it.
-    if (event.relatedTarget !== null && (keptUnderAStillPointer || !theReaderMoved(event))) {
+    //
+    // An open card is kept on one further condition: the reference is still what the pointer is
+    // on. A page that draws something over it - the palette's `fixed inset-0` backdrop, opened
+    // from the keyboard under a resting pointer - sends exactly this boundary pair with the new
+    // layer as its `relatedTarget`, and the card kept then stands above the dialog the reader
+    // asked for, taking the first Escape from it (dispatch://INFRA-341). `thePointerIsOn` asks
+    // both halves, the box and what is painted at that point, which is what tells the page
+    // moving the reference from the page covering it.
+    const kept = previewState();
+    if (
+      event.relatedTarget !== null &&
+      (keptUnderAStillPointer || !theReaderMoved(event)) &&
+      (kept?.phase !== "open" || thePointerIsOn(kept.target.anchor))
+    ) {
       keptUnderAStillPointer = true;
       refPreview.reposition();
       return;

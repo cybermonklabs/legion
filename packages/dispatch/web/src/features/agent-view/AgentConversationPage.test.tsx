@@ -12,6 +12,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   cleanup,
+  // biome-ignore lint/style/noRestrictedImports: user-event's paste carries text, never files, and the row below pastes a picture into the live composer
+  fireEvent,
   type RenderResult,
   render,
   screen,
@@ -1479,7 +1481,8 @@ test("a session with hundreds of commands shows fifty of them", async () => {
 // too, and a BTW is a side question the session answers rather than input it runs. Neither
 // placeholder names commands. The delivery modes are the list's own rows and are offered
 // throughout, since picking one is how a reader leaves BTW without reaching for the header, so
-// both placeholders still name the key that opens them.
+// both placeholders still name the key that opens them. A query no mode and no command matches
+// opens no list at all: an empty listbox says nothing and would take the Enter meant for Send.
 test("no command completion is offered without a command list, for a / mid-message, or in BTW", async () => {
   const user = userEvent.setup();
   const silent = await renderWithCommands();
@@ -1503,7 +1506,7 @@ test("no command completion is offered without a command list, for a / mid-messa
   await waitFor(() => expect(commandOptions()).toEqual(MODE_OPTIONS));
   await type(user, input, "/co");
   await Bun.sleep(50);
-  expect(commandOptions()).toEqual([]);
+  expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 });
 
 // Picking a mode from the list is the header's "Send as" pick: it sets the mode, writes nothing
@@ -1957,6 +1960,59 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
   expect(sendButton()).not.toHaveAttribute("aria-describedby");
   expect(within(composer()).getByText("Enter to send · Shift+Enter for a new line")).toBeTruthy();
   expect(within(composer()).queryByText("Type a message first.")).not.toBeInTheDocument();
+});
+
+// A picture still uploading is not in the draft yet, so a message sent then would go without it
+// and the picture's line would land in the next, empty draft. Send names the upload and takes no
+// press, and the box's Enter stands down with it - it adds a line to the draft, as it does in
+// every composer whose send is a modified Enter - so neither way out sends. The message once the
+// upload lands carries the picture.
+test("the live view's send waits for a pasted picture still uploading, by Send and by Enter", async () => {
+  const user = userEvent.setup();
+  const createAgentMessage = acceptSends();
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  spies.push(
+    spyOn(api, "uploadArtifact").mockImplementation(async () => {
+      await landed;
+      return {
+        artifact: { kind: "image", name: "shot.png", slug: "shot-png" },
+        version: { number: 1 },
+      } as never;
+    })
+  );
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+  const input = await modeSettled("steer");
+
+  await type(user, input, "Look");
+  const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+  // user-event's paste carries text, never files.
+  fireEvent.paste(input, { clipboardData: { files: [file] } });
+
+  const send = await within(composer()).findByRole("button", { name: "Uploading file…" });
+  expect(send.hasAttribute("disabled")).toBe(true);
+  await user.click(send);
+  await user.click(input);
+  await user.keyboard("{Enter}");
+  await Bun.sleep(50);
+  expect(createAgentMessage).not.toHaveBeenCalled();
+  expect(composerInput().value).toBe("Look\n");
+
+  land();
+  const body = `Look\n![shot.png](dispatch://agent/${SESSION}/artifact/shot-png@v1)`;
+  await waitFor(() => expect(composerInput().value).toBe(body));
+  await user.click(composerInput());
+  await user.keyboard("{Enter}");
+  await waitFor(() =>
+    expect(createAgentMessage).toHaveBeenCalledWith(
+      SESSION,
+      { body, delivery: "steer" },
+      keyedAttempt
+    )
+  );
 });
 
 // A send Dispatch refuses is not lost: the message is held on screen with the reason, for Retry or

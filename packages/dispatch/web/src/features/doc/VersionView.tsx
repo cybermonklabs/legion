@@ -7,6 +7,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Ask, BlockSchema } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
+import type { DocumentOwner } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { AskBlockCard } from "./AskBlockCard";
@@ -32,7 +33,7 @@ export interface VersionViewProps {
   createdAt: string | undefined;
   highlight: Highlight | undefined;
   /** The project document shown, for block asks with no issue to be referenced under. */
-  owner: { project: string; slug: string } | undefined;
+  owner: DocumentOwner | undefined;
   version: number;
 }
 

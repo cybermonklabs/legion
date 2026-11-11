@@ -28,6 +28,16 @@ test("each column is remembered on its own", () => {
   expect(window.localStorage.getItem(LAST_SHELL_LAYOUT_KEY)).toBe("rail/shown");
 });
 
+// A dragged width is `startWidth + startX - event.clientX` (`features/margin/Margin.tsx`), and
+// `clientX` is fractional at a non-integer zoom or device pixel ratio. `412.5/shown` fails the
+// pattern the head script reads this value by, so the first paint would lay the server's blocks
+// out at the default 384 px - the re-wrap this record exists to stop (dispatch://INFRA-341).
+test("a fractional width is remembered as a whole number of pixels", () => {
+  rememberShellLayout(false, 412.5, false);
+  expect(window.localStorage.getItem(LAST_SHELL_LAYOUT_KEY)).toBe("413/shown");
+  expect(window.localStorage.getItem(LAST_SHELL_LAYOUT_KEY)).toMatch(/^[0-9]{1,4}\/shown$/);
+});
+
 test("storage that refuses the write is no failure of the shell's", () => {
   const storage = window.localStorage;
   Object.defineProperty(window, "localStorage", {

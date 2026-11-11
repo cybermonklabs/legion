@@ -8,6 +8,7 @@ import { useRenderedMarkdown } from "../refs/useRenderedMarkdown";
 import { BLOCK_ID_ATTRIBUTE } from "./block-id";
 import { leadingBlocks } from "./document-blocks";
 import { firstScreenAwaits, takeFirstScreen } from "./first-screen";
+import { moveTheScroll } from "./readers-place";
 
 /** The class the preview's own element carries, which `styles.css` skips the off-screen blocks
  *  of exactly as it skips the editor's (`content-visibility`). */
@@ -69,6 +70,49 @@ export function takesTheBuiltBlocks(preview: HTMLElement): (built: readonly stri
       const id = block.getAttribute(BLOCK_ID_ATTRIBUTE);
       if (at < built.length || (id !== null && theirs.has(id))) block.remove();
     }
+  };
+}
+
+/** A batch with no draw left to take blocks from: one function rather than one per batch. */
+const NOTHING_TO_GIVE_UP = (): void => undefined;
+
+/**
+ * The draw's side of each batch of the editor's build: the whole handover, for a build whose
+ * editor root is `parent`.
+ *
+ * Given the ids a batch built, it answers what that batch's end does - take those blocks off the
+ * draw, and keep the reader's words where they are. Where the splice is above the top of the
+ * screen the scroll moves with it: the editor's copy of a block is not the same height as the
+ * draw's once either has painted, and the reader's words must not slide under them a batch at a
+ * time. A page with no draw left to give blocks up from answers with nothing to do.
+ *
+ * It is here rather than in `ProofDocument` because every piece of it is this element's: which
+ * element the draw is (`documentPreview`), how a batch is taken off it (`takesTheBuiltBlocks`),
+ * and where the reader stands in it (`moveTheScroll`). The index it keeps is one per build: the
+ * draw's own blocks, indexed by their ids once rather than scanned for in every batch, against
+ * the element they were indexed from, so a draw React has replaced is indexed again.
+ */
+export function theDrawGivesUpTheBuiltBlocks(
+  parent: HTMLElement
+): (built: readonly string[]) => () => void {
+  let theDraw: { element: HTMLElement; take: (built: readonly string[]) => void } | undefined;
+  return (built) => {
+    const preview = documentPreview(parent.parentElement);
+    if (preview === null) {
+      return NOTHING_TO_GIVE_UP;
+    }
+    if (theDraw?.element !== preview) {
+      theDraw = { element: preview, take: takesTheBuiltBlocks(preview) };
+    }
+    const take = theDraw.take;
+    const before = preview.getBoundingClientRect();
+    return () => {
+      take(built);
+      if (before.top >= 0 || preview.childElementCount === 0) {
+        return;
+      }
+      moveTheScroll(preview, preview.getBoundingClientRect().bottom - before.bottom);
+    };
   };
 }
 
@@ -235,18 +279,19 @@ export function DocumentPreview({
   // the source to the literal-text fallback rather than drawing as text.
   const { isFallback, isPending, portals } = useRenderedMarkdown(root, source ?? "", paintBlock, {
     holding,
-    keepAPostedParse: false,
     onRendered: () => {
       drawn.current = source;
       setDrawnOnce(true);
     },
     paintInSlices: paintBlockInSlices,
+    // The one surface that draws a whole document rather than a body: what it holds while the
+    // worker owes it, what becomes of a parse it has moved on from, and whether it takes a
+    // parse made on the reader's own thread are all that policy's (`MARKDOWN_POLICIES`).
+    policy: "document",
     // The draw the editor replaces links nothing: what this document's text cites is drawn by
     // the editor itself, over the blocks it builds (`features/doc/document-references.tsx`),
     // and reading 400,000 characters of it for a link pass twice is the reader's own thread.
     references: NOTHING_TO_LINK,
-    theWorkerOrNothing: true,
-    whilePending: "hold",
   });
 
   return (

@@ -33,6 +33,7 @@ import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ChromeAfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
+import { afterTheFirstBatch, theFirstBatchIsAwaited } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
 import { statusText } from "../project/board-model";
@@ -47,7 +48,9 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { ItemMatchList } from "./ItemMatchList";
+import { issueStatusPillClassName, issueStatusPillDotClassName } from "./issue-header-classes";
 import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
+import { issueTabChunks } from "./issue-tab-list";
 import { stateForIssue } from "./pins";
 import { SpecToolbar } from "./SpecToolbar";
 import { useIssueDetail } from "./useIssueDetail";
@@ -106,26 +109,26 @@ const ArtifactDocument = lazy(() =>
 );
 /** The tab panels, each drawn in the commit its chunk arrives in, for the same reason: the
  *  panel an address names is asked for from that address (`requestTheOpenPagesChunk` in
- *  `app.tsx`), and a reader who opens a tab is waiting for its panel rather than for a space
- *  kept where it will be. */
+ *  `app.tsx`, through this same map), and a reader who opens a tab is waiting for its panel
+ *  rather than for a space kept where it will be. */
 const ActivityTab = chunkComponent(() =>
-  import("../activity/ActivityTab").then((module) => module.ActivityTab)
+  issueTabChunks.activity().then((module) => module.ActivityTab)
 );
 const ChildrenTab = chunkComponent(() =>
-  import("./ChildrenTab").then((module) => module.ChildrenTab)
+  issueTabChunks.children().then((module) => module.ChildrenTab)
 );
 const CollaboratorsTab = chunkComponent(() =>
-  import("./CollaboratorsTab").then((module) => module.CollaboratorsTab)
+  issueTabChunks.collaborators().then((module) => module.CollaboratorsTab)
 );
 const ConversationTab = chunkComponent(() =>
-  import("../conversation/ConversationTab").then((module) => module.ConversationTab)
+  issueTabChunks.conversation().then((module) => module.ConversationTab)
 );
 const DecisionsPanel = chunkComponent(() =>
-  import("./DecisionsPanel").then((module) => module.DecisionsPanel)
+  issueTabChunks.decisions().then((module) => module.DecisionsPanel)
 );
-const PlanTab = chunkComponent(() => import("../plan/PlanTab").then((module) => module.PlanTab));
+const PlanTab = chunkComponent(() => issueTabChunks.plan().then((module) => module.PlanTab));
 const VerificationTab = chunkComponent(() =>
-  import("../verification/VerificationTab").then((module) => module.VerificationTab)
+  issueTabChunks.verification().then((module) => module.VerificationTab)
 );
 
 export function IssuePage(): ReactNode {
@@ -205,15 +208,13 @@ function WhatTheHeaderWouldSay({
           This issue is closed.
         </span>
       )}
-      {/* The status pill at the size the header's own pick stands at, so the pick landing in
-          its place moves nothing beside it. */}
+      {/* The status pill at the size the header's own pick stands at, from the one place both
+          are built from (`issue-header-classes.ts`), so the pick landing in its place moves
+          nothing beside it. */}
       <span
-        className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+        className={`${issueStatusPillClassName} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
       >
-        <span
-          aria-hidden="true"
-          className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-        />
+        <span aria-hidden="true" className={`${issueStatusPillDotClassName} ${statusPillDot}`} />
         <span className="sr-only">Status</span>
         {statusText(issue.status)}
       </span>
@@ -246,6 +247,54 @@ function usableControl(selector: string): HTMLElement | null {
   const disabled =
     (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
   return disabled ? null : node;
+}
+
+/** Focuses the header control `selector` names, answering whether there was one to focus. */
+function focusTheControl(selector: string): boolean {
+  const node = usableControl(selector);
+  node?.focus();
+  return node !== null;
+}
+
+/** Presses it, with the same answer. */
+function pressTheControl(selector: string): boolean {
+  const node = usableControl(selector);
+  node?.click();
+  return node !== null;
+}
+
+/** How many frames a press waits for the chrome it reached for: three seconds at 60 Hz, after
+ *  which it is dropped rather than firing at a control the reader stopped expecting. */
+const REACHING_THE_CHROME_FRAMES = 180;
+
+/**
+ * Does what a binding came to do, drawing the chrome first where the page is still holding it
+ * for the editor's first batch (`features/doc/first-batch.ts`). `act` answers whether it found
+ * its control.
+ *
+ * While that hold stands, the header and the tab strip draw placeholders and no control at all,
+ * so every binding below would be withheld and `s`, `p`, `l`, the title key, Shift+P and every
+ * `t …` chord would do nothing - for up to `LONGEST_HOLD_MS` on a load whose batch never comes.
+ * A pointer reader presses the held box and has the chrome; this is the same reach, made from
+ * the keyboard (`ChromeAfterTheFirstBatch`, dispatch://INFRA-341). The header and the strip
+ * arrive in commits of their own, behind chunks this page asks for only once the hold is
+ * released, so the press waits over the frames after it rather than being dropped at a control
+ * that is not drawn yet.
+ */
+function reachingTheChrome(act: () => boolean): void {
+  if (act() || afterTheFirstBatch()) {
+    return;
+  }
+  theFirstBatchIsAwaited(false);
+  let frames = 0;
+  const look = () => {
+    frames += 1;
+    if (act() || frames >= REACHING_THE_CHROME_FRAMES) {
+      return;
+    }
+    requestAnimationFrame(look);
+  };
+  requestAnimationFrame(look);
 }
 
 /**
@@ -396,29 +445,42 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "status",
       keys: "s",
       label: "Focus the status",
-      run: () => usableControl(STATUS_SELECT)?.focus(),
-      when: () => usableControl(STATUS_SELECT) !== null,
+      run: () => reachingTheChrome(() => focusTheControl(STATUS_SELECT)),
+      when: () => !afterTheFirstBatch() || usableControl(STATUS_SELECT) !== null,
     },
     {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => usableControl(PRIORITY_SELECT)?.focus(),
-      when: () => usableControl(PRIORITY_SELECT) !== null,
+      run: () => reachingTheChrome(() => focusTheControl(PRIORITY_SELECT)),
+      when: () => !afterTheFirstBatch() || usableControl(PRIORITY_SELECT) !== null,
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
-      run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      run: (event) => {
+        // The key, not the event: the press may act a frame or two later, once the header this
+        // page was holding has been drawn.
+        const priority = Number(event.key) as IssuePriority;
+        reachingTheChrome(() => {
+          if (usableControl(PRIORITY_SELECT) === null) {
+            return false;
+          }
+          priorityWrite.submit(priority);
+          return true;
+        });
+      },
+      when: () =>
+        (!afterTheFirstBatch() || usableControl(PRIORITY_SELECT) !== null) &&
+        outsideInputsAndAskCards(),
     },
     {
       id: "labels",
       keys: "l",
       label: "Edit labels",
-      run: () => usableControl(LABELS_TRIGGER)?.click(),
-      when: () => usableControl(LABELS_TRIGGER) !== null,
+      run: () => reachingTheChrome(() => pressTheControl(LABELS_TRIGGER)),
+      when: () => !afterTheFirstBatch() || usableControl(LABELS_TRIGGER) !== null,
     },
     {
       // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
@@ -426,15 +488,16 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.focus(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => reachingTheChrome(() => focusTheControl(TITLE_HEADING)),
+      when: () => !afterTheFirstBatch() || usableControl(TITLE_HEADING) !== null,
     },
     {
       id: "pin",
       keys: "Shift+P",
       label: "Pin or unpin the issue",
-      run: () => usableControl(PIN_TOGGLE)?.click(),
-      when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
+      run: () => reachingTheChrome(() => pressTheControl(PIN_TOGGLE)),
+      when: () =>
+        (!afterTheFirstBatch() || usableControl(PIN_TOGGLE) !== null) && outsideInputsAndAskCards(),
     },
     {
       // `s` and `p` put focus in a native select, where every single-key binding is suspended
@@ -455,8 +518,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: `tab-${tab}`,
       keys,
       label,
-      run: () => document.getElementById(tabButtonId("issue", tab))?.click(),
-      when: () => document.getElementById(tabButtonId("issue", tab)) !== null,
+      run: () =>
+        reachingTheChrome(() => {
+          const button = document.getElementById(tabButtonId("issue", tab));
+          button?.click();
+          return button !== null;
+        }),
+      when: () =>
+        !afterTheFirstBatch() || document.getElementById(tabButtonId("issue", tab)) !== null,
     })),
   ]);
 

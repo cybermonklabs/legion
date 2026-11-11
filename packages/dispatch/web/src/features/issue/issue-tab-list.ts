@@ -23,3 +23,26 @@ export function issueTabs(artifactCount: number): readonly TabDefinition<IssueTa
     { id: "collaborators", label: "Collaborators" },
   ];
 }
+
+/**
+ * The chunk each tab's panel lives in, by the tab it draws. Two readers ask for these: the page
+ * itself, which draws each panel in the commit its chunk arrives in (`IssuePage.tsx`), and the
+ * shell, which asks for the panel an address names as the entry module evaluates (`app.tsx`'s
+ * `requestTheOpenPagesChunk`). They were two lists of the same seven modules, so a tab added to
+ * the page silently lost its early request (dispatch://INFRA-341).
+ *
+ * The Spec and Artifacts tabs are absent: both draw the document surface, whose chunk the page
+ * preloads with its own (`DOCUMENT_ADDRESS_MODULES` in `web/vite.config.ts`).
+ *
+ * An `import()` here adds no static edge, so the shell still takes the list alone: these are
+ * requests for chunks, not imports of them.
+ */
+export const issueTabChunks = {
+  activity: () => import("../activity/ActivityTab"),
+  children: () => import("./ChildrenTab"),
+  collaborators: () => import("./CollaboratorsTab"),
+  conversation: () => import("../conversation/ConversationTab"),
+  decisions: () => import("./DecisionsPanel"),
+  plan: () => import("../plan/PlanTab"),
+  verification: () => import("../verification/VerificationTab"),
+} satisfies Partial<Record<IssueTab, () => Promise<unknown>>>;

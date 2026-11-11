@@ -1,4 +1,4 @@
-import { type ComponentType, type ReactNode, useEffect, useState } from "react";
+import { type ComponentType, type ReactNode, startTransition, useEffect, useState } from "react";
 
 /**
  * A part whose code is a chunk of its own, drawn in the commit that chunk arrives in.
@@ -19,10 +19,20 @@ import { type ComponentType, type ReactNode, useEffect, useState } from "react";
  * A chunk that fails to download is thrown from the render, where the error boundary around the
  * part answers it exactly as it answered a `lazy` whose import rejected, and the tab's reload
  * budget covers it (`features/shell/DeploymentResilience.tsx`).
+ *
+ * `inATransition` is for a part whose own first render is long enough to be worth splitting into
+ * short tasks. The arrival lands in a promise callback, which React gives the default lane, so
+ * the whole of that part's mount would otherwise render in one task that never yields - and a
+ * host that started this component inside `startTransition` (`app.tsx`'s
+ * `IssuePageInATransition`) buys nothing, because the transition it opened is long over by the
+ * time the chunk answers. Under `lazy` the retry after a chunk resolved stayed in the
+ * transition's own lanes; this is that, said here. The space is still committed at the default
+ * lane, so nothing a reader sees arrives later than it does now.
  */
 export function chunkComponent<Props extends object>(
   load: () => Promise<ComponentType<Props>>,
-  space: ReactNode = null
+  space: ReactNode = null,
+  inATransition = false
 ): ComponentType<Props> {
   return function TheChunksPart(props: Props): ReactNode {
     const [arrived, setArrived] = useState<
@@ -32,7 +42,12 @@ export function chunkComponent<Props extends object>(
       let wanted = true;
       void load().then(
         (part) => {
-          if (wanted) setArrived({ part });
+          if (!wanted) return;
+          if (inATransition) {
+            startTransition(() => setArrived({ part }));
+          } else {
+            setArrived({ part });
+          }
         },
         (failure: unknown) => {
           if (wanted) setArrived({ failure });

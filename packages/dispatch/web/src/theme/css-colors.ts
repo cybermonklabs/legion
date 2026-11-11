@@ -223,8 +223,15 @@ const NAMED_COLORS: ReadonlySet<string> = new Set([
   "yellowgreen",
 ]);
 
-/** A property name: `color`, `--custom-property`, `-webkit-anything`. */
-const PROPERTY_NAME_PATTERN = /^-{0,2}[a-z][a-z0-9-]*$/;
+/**
+ * A property name: `color`, `-webkit-anything`, or a custom property.
+ *
+ * A custom property's name is whatever follows `--`, and R13 counts every one of them as a
+ * colour declaration, so this takes them all: `--_bg` and `--1x` are names a stylesheet may
+ * write and a pattern that insisted on a letter first read neither as a declaration, which left
+ * `--_bg: #abc` unpinned (dispatch://INFRA-341, R13).
+ */
+const PROPERTY_NAME_PATTERN = /^(?:--\S+|-?[a-z][a-z0-9-]*)$/;
 
 /** The annotation a pinned literal carries, read from just past the declaration's `;`. */
 const ANNOTATION_PATTERN = /^[ \t]*\/\*\s*([a-z]+-\d{2,3})(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//;
@@ -330,6 +337,11 @@ function readDeclarations(css: string): Declaration[] {
     if (char === "/" && css[index + 1] === "*") {
       const end = css.indexOf("*/", index + 2);
       index = end === -1 ? css.length : end + 2;
+      // A comment separates the tokens on either side of it, as a browser reads it: dropping it
+      // outright read `border: 1px solid/**/red` as `solidred`, where `red` is a colour this
+      // stylesheet writes by hand and nothing pinned it (dispatch://INFRA-341, R13). A space
+      // starts no declaration of its own (`append`).
+      append(" ", index);
       continue;
     }
 

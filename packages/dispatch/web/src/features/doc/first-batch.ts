@@ -136,6 +136,57 @@ export function afterTheFirstBatch(): boolean {
   return !awaited;
 }
 
+/**
+ * The documents a surface on this page has built its blocks for, by artifact id.
+ *
+ * A tab switch leaves the document's surface mounted - the panel is hidden, not unmounted - so
+ * coming back to that tab builds nothing new and no batch is coming. A page that armed the hold
+ * again for it would hold every read of every part mounted in the next twenty seconds behind a
+ * batch that never arrives, which is what `openDocumentEarly` reads this for.
+ */
+const builtOnThePage = new Set<string>();
+
+/** Whether a surface on this page has already built `artifactId`'s blocks. */
+export function theDocumentIsOnThePage(artifactId: string): boolean {
+  return builtOnThePage.has(artifactId);
+}
+
+/**
+ * What the page's own document surface tells this gate. A pane's surface tells it nothing: its
+ * batches, its socket and its blocks are no part of what the page is waiting for, which is why
+ * every report here used to stand behind a `page` test of its own.
+ */
+export interface TheFirstBatchHold {
+  /** The first batch is in, or none is coming: the reads held behind it go out. */
+  release(): void;
+  /** Whether the page is waiting on the server for the document itself. */
+  awaitServer(waiting: boolean): void;
+  /** This surface has built `artifactId`'s blocks. */
+  built(artifactId: string): void;
+  /** This surface has gone, and the blocks it built with it. */
+  gone(artifactId: string): void;
+}
+
+/** The hold the page's own document surface reports to. */
+export const PAGE_HOLD: TheFirstBatchHold = {
+  release: () => theFirstBatchIsAwaited(false),
+  awaitServer: theDocumentIsAwaitedFromTheServer,
+  built: (artifactId) => {
+    builtOnThePage.add(artifactId);
+  },
+  gone: (artifactId) => {
+    builtOnThePage.delete(artifactId);
+  },
+};
+
+/** The hold every other surface reports to: none. */
+export const NO_HOLD: TheFirstBatchHold = {
+  release: () => undefined,
+  awaitServer: () => undefined,
+  built: () => undefined,
+  gone: () => undefined,
+};
+
 /** Tells `listen` whenever the answer above changes; returns the way to stop. */
 export function subscribeToTheFirstBatch(listen: () => void): () => void {
   listeners.add(listen);

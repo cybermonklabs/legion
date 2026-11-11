@@ -25,6 +25,7 @@ import { ReaderIsHere } from "./features/doc/first-batch";
 import { openDocumentEarly } from "./features/doc/open-document-early";
 import { InboxList, importInbox } from "./features/inbox/InboxList";
 import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./features/issue/issue-page-skeleton";
+import { issueTabChunks } from "./features/issue/issue-tab-list";
 import { MarginColumn, ReservedMarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
@@ -36,6 +37,7 @@ import {
   buildInboxPath,
   buildProjectPath,
   type IssueRoute,
+  issueTabForRoute,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -117,10 +119,16 @@ const importDocumentPage = () => import("./features/document/DocumentPage");
  * under the route's `Suspense` (`components/chunk-component.tsx` says what that boundary costs
  * a page whose chunk is already on its way). The space each keeps is the skeleton that
  * boundary drew.
+ *
+ * The issue page's own arrival is committed as a transition, which is what splits its first
+ * render into short tasks (`IssuePageInATransition` below says why that render is the one worth
+ * splitting). The transition that element opens is over by the time this chunk answers, so the
+ * arrival has to say so itself.
  */
 const IssuePage = chunkComponent(
   () => importIssuePage().then((module) => module.IssuePage),
-  <IssuePageFallback />
+  <IssuePageFallback />,
+  true
 );
 const ProjectPage = chunkComponent(
   () => importProjectPage().then((module) => module.ProjectPage),
@@ -133,32 +141,17 @@ const DocumentPage = chunkComponent(
 
 /**
  * The tab panel an issue address opens, where the page keeps that panel in a chunk of its own
- * (`features/issue/IssuePage.tsx`). The Spec and a named artifact open the document surface
- * instead, whose chunk the page preloads with its own (`DOCUMENT_ADDRESS_MODULES` in
+ * (`features/issue/issue-tab-list.ts` holds the one map both this and `IssuePage` read, so a tab
+ * added to the page keeps its early request). The Spec and a named artifact open the document
+ * surface instead, whose chunk the page preloads with its own (`DOCUMENT_ADDRESS_MODULES` in
  * `web/vite.config.ts`), and a tab with no chunk of its own is drawn from the page's.
+ *
+ * The artifact a slug names has not been read yet, so a slug that turns out to be the issue's
+ * primary document reads here as the Artifacts tab - which has no chunk of its own either way.
  */
 function importTheOpenTab(route: IssueRoute): Promise<unknown> | undefined {
-  switch (route.kind) {
-    case "activity":
-      return import("./features/activity/ActivityTab");
-    case "ask":
-    case "comment":
-    case "conversation":
-    case "message":
-      return import("./features/conversation/ConversationTab");
-    case "children":
-      return import("./features/issue/ChildrenTab");
-    case "collaborators":
-      return import("./features/issue/CollaboratorsTab");
-    case "decisions":
-      return import("./features/issue/DecisionsPanel");
-    case "plan":
-      return import("./features/plan/PlanTab");
-    case "verification":
-      return import("./features/verification/VerificationTab");
-    default:
-      return undefined;
-  }
+  const tab = issueTabForRoute(route, undefined);
+  return tab in issueTabChunks ? issueTabChunks[tab as keyof typeof issueTabChunks]() : undefined;
 }
 
 /**
@@ -272,6 +265,10 @@ function IssuePageFallback(): ReactNode {
  * boundary above shows while the page's chunk arrives - and the effect then starts the
  * transition. So the page appears exactly as it does today: the skeleton, then the page, with
  * nothing in between that a reader did not see before.
+ *
+ * This element opens the transition the page's chunk renders inside; the chunk's own arrival
+ * carries it on from there (`chunkComponent`'s `inATransition` above), since the arrival lands
+ * in a promise callback long after this transition has ended.
  */
 function IssuePageInATransition(): ReactNode {
   const [renderThePage, setRenderThePage] = useState(false);
@@ -493,6 +490,13 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
+  // Whether the peek has ever been opened on this load. Once it has, the shell keeps it mounted
+  // through every close, so what the reader narrowed it to is there when they open it again.
+  const [inboxDrawerEverOpened, setInboxDrawerEverOpened] = useState(false);
+  const openTheInboxDrawer = () => {
+    setInboxDrawerEverOpened(true);
+    setInboxDrawerOpen(true);
+  };
   // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
   // bar: this page's actions, the person's recent items, the projects a query names and the
   // hits, with a chip saying what it will act on.
@@ -736,7 +740,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       onClose={() => setNavigationOpen(false)}
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
-      onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
+      onOpenInboxDrawer={openTheInboxDrawer}
       onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
@@ -808,7 +812,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <ShellCounts
                 onOpenInboxDrawer={() => {
                   reachForTheShell();
-                  setInboxDrawerOpen(true);
+                  openTheInboxDrawer();
                 }}
                 reached={shellReached}
               />
@@ -954,12 +958,15 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
           </Suspense>
         ) : null}
-        {inboxDrawerOpen ? (
+        {/* Mounted from the reader's first peek on, closed or open: its chunk is asked for then,
+            and from then on the filter, the search text and the bands it folded are kept, so
+            the peek they open again is the peek they left (dispatch://INFRA-341). */}
+        {inboxDrawerEverOpened ? (
           // The reader is in the peek, so every read inside it goes out now rather than
           // waiting for the editor's first batch (`features/doc/first-batch.ts`).
-          <ReaderIsHere value={true}>
+          <ReaderIsHere value={inboxDrawerOpen}>
             <Suspense fallback={null}>
-              <InboxDrawer onClose={() => setInboxDrawerOpen(false)} />
+              <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
             </Suspense>
           </ReaderIsHere>
         ) : null}

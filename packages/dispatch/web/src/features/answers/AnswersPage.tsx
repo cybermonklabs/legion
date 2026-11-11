@@ -98,13 +98,17 @@ function AnswerRow({
       ) : null}
       {/* The reply is Markdown its author wrote, so it is formatted and then cut, three lines of
           it: the `inline` variant read the first block alone and flattened the rest. `Replied:`
-          is the app's own word and stays beside it, so the quote keeps the row's whole width. */}
+          is the app's own word and stays beside it, so the quote keeps the row's whole width.
+          `links="live"`, because this preview's default is `inert` and a reply's URL or
+          `dispatch://` reference is one of the things the reader came here to follow: R6 asked
+          for the formatting, not for dead links. */}
       {row.kind === "reply" && row.reply !== undefined ? (
         <div className={`mt-2 flex items-baseline gap-1 text-sm ${textPrimaryOnCanvas}`}>
           <span className={`shrink-0 font-medium ${textMutedOnCanvas}`}>Replied:</span>
           <MarkdownPreview
             className="min-w-0 flex-1"
             lines={3}
+            links="live"
             markdown={row.reply.body}
             source={source}
           />

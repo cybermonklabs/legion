@@ -33,7 +33,7 @@ import {
 import type { MentionFieldHandle } from "../conversation/MentionField";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
-import { buildDispatchReference, itemRoute } from "../refs/routes";
+import { buildDispatchReference, type DocumentOwner, itemRoute } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
@@ -68,12 +68,17 @@ const createReply = (
   bounds: WriteBounds
 ): Promise<Comment> => api.createComment(issueKey, input, bounds);
 
+/** The names this card's buttons know their refusals by, which the answer area is typed over:
+ *  a misspelling is then a type error rather than a button whose on-screen reason goes missing
+ *  (`AskAnswerArea.tsx`). */
+type AnswerRefusalName = "answer" | "anyway" | "askBack";
+
 export interface AskCardProps {
   artifactSlug?: string;
   ask: OwnedAsk;
   /** The project document that owns an ask whose read lacks `document` (only Inbox rows carry
    *  it), so the card can still name the ask's `dispatch://` reference. */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
   thread?: "inline" | "collapsed";
   /** `compact` (the margin and the review sheet) renders the same option rows as `full`, but
    *  folds the free-text field and its Answer / Ask back actions behind an **Add a note or answer
@@ -413,7 +418,10 @@ export function AskCard({
       {answerLabel}
     </RefusableButton>
   );
-  const answerActions = ({ reasonId, uploading }: AskAnswerActions): ReactNode =>
+  const answerActions = ({
+    reasonId,
+    uploading,
+  }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
     questionChoice ? (
       <fieldset aria-label="Question-shaped answer" className="flex gap-2">
         <button
@@ -471,14 +479,21 @@ export function AskCard({
       draft={answerDraft}
       fieldRef={answerFieldRef}
       handle="data-ask-answer"
+      issueKey={displayedAsk.issue_key ?? undefined}
       label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
       labelHidden={!reasonRequired}
       onDraftChange={changeDraft}
       placeholder={answerPlaceholder}
+      // Every name the card's buttons know, whichever pair is drawn: a reason that is null
+      // shows no line, so the two the other pair uses cost the card nothing.
       refusals={
         questionChoice
-          ? { anyway: answerRefusal }
-          : { answer: answerRefusal, askBack: changing ? null : clarificationRefusal }
+          ? { answer: null, anyway: answerRefusal, askBack: null }
+          : {
+              answer: answerRefusal,
+              anyway: null,
+              askBack: changing ? null : clarificationRefusal,
+            }
       }
       uploadOwner={uploadOwner}
     />
@@ -496,7 +511,12 @@ export function AskCard({
           frame={frame}
           markRef={answerIsNewest ? markNewest : undefined}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
-          owner={owner}
+          // `askOwner`, not the host's `owner`: in the Inbox and the reading pane the document
+          // is the row's own and the host passes none, and `completed` is the ask read, which
+          // carries no document either - so the header had nothing to build the ask's reference
+          // from and drew no copy-link control at all (dispatch://INFRA-341, R1). The replies
+          // under the same card already take this one.
+          owner={askOwner}
         />
         {unsentAnswer === "" ? null : (
           <div

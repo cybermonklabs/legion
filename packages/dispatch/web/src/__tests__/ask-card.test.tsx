@@ -2290,6 +2290,88 @@ test("a document ask links its project and document page", async () => {
   }
 });
 
+// R1: the same copy-link target everywhere. In the Inbox and the reading pane the document is
+// the row's own and the host passes no owner, and the ask read the answer leaves behind carries
+// none either, so the answered card drew no copy control at all (dispatch://INFRA-341).
+test("an answered project-document ask keeps its copy-link control", async () => {
+  const user = userEvent.setup();
+  const input = ask({
+    artifact_id: "artifact-1",
+    document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+    issue_key: null,
+    options: [{ label: "Ship" }],
+  });
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => answered(input, submission.selected)}
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const reference = "dispatch://CORE/artifact/design-notes/ask/ask-1";
+    expect(view.container.querySelector(`[data-ask-copy="${reference}"]`)).not.toBeNull();
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(view.getByText(/Answered by/)).toBeTruthy());
+
+    expect(view.container.querySelector(`[data-ask-copy="${reference}"]`)).not.toBeNull();
+    expect(view.getByRole("button", { name: `Copy reference ${reference}` })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2: the ask's `@` lists the same sessions the Conversation tab's composer lists, by the same
+// rules. It read no collaborators, so the issue's Legion roles nobody is running were missing
+// from it while the composer under it on the same tab offered them (dispatch://INFRA-341).
+test("the ask's @ picker offers the issue's Not running roles", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [
+      {
+        kind: "session",
+        last_at: null,
+        legion: {
+          replaced_at: null,
+          replaced_by: null,
+          role: "reviewer",
+          role_token: "legion-p-core-1-reviewer",
+          started_at: "2026-10-26T02:00:00Z",
+        },
+        reasons: [],
+        session_id: "new-reviewer",
+        title: "New reviewer",
+      },
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const input = ask();
+  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+
+  try {
+    const field = await view.findByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
+    expect(collaborators).toHaveBeenCalledWith("CORE-1");
+    expect(
+      within(stopped)
+        .getAllByRole("option")
+        .map((option) => option.getAttribute("aria-label"))
+    ).toEqual(["legion-p-core-1-reviewer"]);
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
 test("answering a document ask invalidates the document and projects, not an issue", async () => {
   const user = userEvent.setup();
   const input = ask({

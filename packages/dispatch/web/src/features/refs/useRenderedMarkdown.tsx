@@ -193,6 +193,35 @@ function paintAcrossTasks(
   };
 }
 
+/** Which surface a render is for. */
+export type MarkdownPolicy = "body" | "document";
+
+/**
+ * What each surface's policy decides, in one table rather than three options with one caller.
+ *
+ * - `whilePending`: what the element holds while the parse worker still owes this source its
+ *   formatting. A body holds its own literal text, which the reader reads meanwhile; a document
+ *   holds whatever it has, because its markdown is as long as the page it draws - the reader
+ *   would meet 400,000 characters of syntax in one text node and the page would lay every line
+ *   of it out twice - and its element may already hold the blocks its own server drew.
+ * - `keepAPostedParse`: whether an answer to a source this element has moved on from is still
+ *   worth painting (`markdown-engine.ts`). The streaming turn in the live view needs it: the
+ *   frame the worker is holding is the newest parse its reader can be shown before the stream
+ *   pauses. A document's source does not stream, so an unmount leaves the queue nothing to
+ *   build on the reader's thread for a paint that would be thrown away.
+ * - `theWorkerOrNothing`: whether the element takes the worker's own answer or none at all,
+ *   rather than a parse the page makes on the reader's thread when the worker misses its
+ *   deadline, crashes or cannot be created. A body must end formatted whatever became of the
+ *   worker; a document already has its first screenful drawn with the editor arriving behind it.
+ */
+const MARKDOWN_POLICIES = {
+  body: { keepAPostedParse: true, theWorkerOrNothing: false, whilePending: "source" },
+  document: { keepAPostedParse: false, theWorkerOrNothing: true, whilePending: "hold" },
+} as const satisfies Record<
+  MarkdownPolicy,
+  { keepAPostedParse: boolean; theWorkerOrNothing: boolean; whilePending: "source" | "hold" }
+>;
+
 /** What a surface tells `useRenderedMarkdown` beyond its element, source and paint; each has a
  *  default, so a surface names only what it changes. */
 export interface RenderedMarkdownOptions {
@@ -212,35 +241,16 @@ export interface RenderedMarkdownOptions {
   /** `paint`, a piece at a time (`PaintMarkdownInSlices`), for a body the parse worker parsed;
    *  without one such a body is painted in one go, as every other body is. */
   paintInSlices?: PaintMarkdownInSlices;
-  /** What the element holds while the parse worker still owes this source its formatting:
-   *  `"source"`, the default, the body's own literal text, which the reader reads meanwhile;
-   *  `"hold"` for a surface whose source is no text a reader would read, which keeps whatever
-   *  the element holds instead - a whole document, whose markdown is as long as the page it
-   *  draws, where the reader would meet 400,000 characters of syntax in one text node and the
-   *  page would lay every line of it out twice, and whose element may already hold the blocks
-   *  its own server drew (`features/doc/DocumentPreview.tsx`). */
-  whilePending?: "source" | "hold";
+  /** Which surface this is, which decides three policies that go together and are not a
+   *  caller's to mix (`MARKDOWN_POLICIES`): `"body"`, the default, every comment, ask, message
+   *  and turn; `"document"`, the one surface whose source is a whole document rather than text
+   *  a reader would read as it waits (`features/doc/DocumentPreview.tsx`). */
+  policy?: MarkdownPolicy;
   /** Whether this element draws nothing at all for now and keeps what it holds. A surface passes
    *  it while what is on the screen is not this hook's to replace: the document preview holds the
    *  blocks the server drew until the whole document has been parsed, and holds whatever it has
    *  drawn from the task the editor's build begins in (`features/doc/DocumentPreview.tsx`). */
   holding?: boolean;
-  /** Whether an answer to a source this element has moved on from is still worth painting, by
-   *  keeping the element's place on a parse the worker had already been posted when the render
-   *  was cancelled (`markdown-engine.ts`, `keepAPostedParse`). `true` by default, because the
-   *  streaming turn in the live view needs it: the frame the worker is holding is the newest
-   *  parse its reader can be shown before the stream pauses. A surface whose source does not
-   *  stream passes `false`, so an unmount leaves the queue nothing to build on the reader's
-   *  thread for a paint that would be thrown away and a cache place that would be taken
-   *  (`features/doc/DocumentPreview.tsx`). */
-  keepAPostedParse?: boolean;
-  /** Whether this element takes the worker's own answer or none at all, rather than a parse the
-   *  page makes on the reader's thread when the worker misses its deadline, crashes or cannot
-   *  be created (`markdown-engine.ts`, `theWorkerOrNothing`). `false` by default, because a
-   *  body must end formatted whatever became of the worker; the document preview passes `true`,
-   *  since its source is a whole document and it already has its first screenful drawn with the
-   *  editor arriving behind it. */
-  theWorkerOrNothing?: boolean;
   /** What the link pass may link in the painted text (`ReferenceLinking`): what the surface's
    *  own reading of its source cites and what is known about it (`useTextReferences`). */
   references: ReferenceLinking;
@@ -441,17 +451,16 @@ export function useRenderedMarkdown(
   {
     pictures = "block",
     decorate,
-    keepAPostedParse = true,
     onRendered,
     paintInSlices,
+    policy = "body",
     rawHtml = "refuse",
     references,
     softBreaks = "space",
     holding = false,
-    theWorkerOrNothing = false,
-    whilePending = "source",
   }: RenderedMarkdownOptions
 ): RenderedMarkdown {
+  const { keepAPostedParse, theWorkerOrNothing, whilePending } = MARKDOWN_POLICIES[policy];
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
   const Card = useContext(TextAskCard);
@@ -670,10 +679,9 @@ export function useRenderedMarkdown(
         }
       },
       // What this surface wants of a parse it has moved on from, and of one the worker never
-      // answers: both are the surface's own call (`RenderedMarkdownOptions`), and the defaults
-      // are the live view's - the frame the worker is holding is the newest parse a streaming
-      // turn can be shown before it pauses, and every other body must end formatted whatever
-      // became of the worker.
+      // answers: both are its policy's (`MARKDOWN_POLICIES`), and a body's are the live view's -
+      // the frame the worker is holding is the newest parse a streaming turn can be shown before
+      // it pauses, and every body must end formatted whatever became of the worker.
       { keepAPostedParse, theWorkerOrNothing }
     );
     return cancelRender;

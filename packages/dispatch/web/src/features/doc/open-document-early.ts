@@ -3,16 +3,27 @@ import type { QueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
-import type { ArtifactText } from "../../api/types";
+import type { Artifact, ArtifactText, IssueDetails } from "../../api/types";
 import { parseAheadOfTheRender, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
-import { parseIssuePath } from "../refs/routes";
+import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { loadDocumentTransport } from "./connection";
 import { leadingBlocks } from "./document-blocks";
-import { theFirstBatchIsAwaited } from "./first-batch";
+import { theDocumentIsOnThePage, theFirstBatchIsAwaited } from "./first-batch";
 import { currentAddress, dropFirstScreen, firstScreenAwaits } from "./first-screen";
 import { liveTextQueryOptions } from "./live-text";
 import { blockSchemaQueryOptions } from "./schema";
+
+/** The document an address opens, as the issue names it: the artifact a named slug names, else
+ *  the issue's primary spec. `undefined` for a blob, and for a slug this issue has no artifact
+ *  for, neither of which opens a document at all. */
+function documentOf(issue: IssueDetails, route: IssueRoute): Artifact | undefined {
+  const artifact =
+    route.kind === "artifact"
+      ? (issue.artifacts ?? []).find(({ slug }) => slug === route.slug)
+      : primarySpec(issue);
+  return artifact?.kind === "doc" ? artifact : undefined;
+}
 
 /**
  * Starts what an open document needs, from the address alone, as early as the page knows it:
@@ -88,6 +99,20 @@ export function openDocumentEarly(client: QueryClient, pathname: string, search:
     theFirstBatchIsAwaited(false);
     return;
   }
+  // A document a surface on this page has already built is one the reader is coming back to:
+  // the Spec tab's surface stays mounted while they read another tab (`IssuePage`'s hidden
+  // panels), so coming back builds nothing new and no batch is coming. Answered here, from the
+  // issue this page has read already, because everything below it is work for a document that
+  // is not yet on the screen: the hold would stand until `LONGEST_HOLD_MS` for a batch that
+  // never arrives, and the text read would download the whole document over the live-text cache
+  // the open editor is working from. Before this pull request a tab switch made no request at
+  // all (dispatch://INFRA-341).
+  const cached = client.getQueryData(issueQuery(route.key).queryKey);
+  const built = cached === undefined ? undefined : documentOf(cached, route);
+  if (built !== undefined && theDocumentIsOnThePage(built.id)) {
+    theFirstBatchIsAwaited(false);
+    return;
+  }
   // A document is coming, so the reads the first editable block needs none of wait for its
   // first batch. Said here, before React has rendered anything, because the panels that make
   // them render before the document surface exists (`first-batch.ts`).
@@ -121,23 +146,34 @@ export function openDocumentEarly(client: QueryClient, pathname: string, search:
   // Nothing waits on this promise until the issue read hands it over, so its refusal is
   // answered here rather than left to the window as an unhandled rejection.
   void bySlug?.catch(() => undefined);
+  // The address this call opened. Both answers below reach the module long after they were
+  // asked for, and a navigation in between has started an opening of its own: an answer for an
+  // address this module has moved off replaces the current opening's read and releases its
+  // hold, so the page it belongs to downloads its text a second time (dispatch://INFRA-341).
+  const thisOpening = address;
   void client
     .fetchQuery(issueQuery(route.key))
     .then((issue) => {
-      const artifact =
-        route.kind === "artifact"
-          ? (issue.artifacts ?? []).find(({ slug }) => slug === route.slug)
-          : primarySpec(issue);
-      // A blob artifact, and a slug this issue has no artifact for, open no document.
-      if (artifact?.kind === "doc") {
-        readTheTextEarly(client, artifact.id, serverDrewTheFirstScreen, bySlug);
-      } else {
-        // Nothing to build an editor from, so nothing to hold the page's other reads behind.
-        theFirstBatchIsAwaited(false);
+      if (openedAddress !== thisOpening) {
+        return;
       }
+      const artifact = documentOf(issue, route);
+      // A blob artifact, and a slug this issue has no artifact for, open no document, so there
+      // is nothing to build an editor from and nothing to hold the page's other reads behind.
+      // Nor is there where the page has already built this document, the case the issue in the
+      // cache answered above - asked again here for the opening whose issue was not read yet.
+      if (artifact === undefined || theDocumentIsOnThePage(artifact.id)) {
+        theFirstBatchIsAwaited(false);
+        return;
+      }
+      readTheTextEarly(client, artifact.id, serverDrewTheFirstScreen, bySlug);
     })
     // The issue could not be read, so nothing names a document to read ahead for.
-    .catch(() => theFirstBatchIsAwaited(false));
+    .catch(() => {
+      if (openedAddress === thisOpening) {
+        theFirstBatchIsAwaited(false);
+      }
+    });
   // The other read the page showing this document holds its whole render behind: the reader's
   // own issue state, which `IssuePage` waits for beside the issue itself (`useIssueDetail`) and
   // which the shell otherwise asks for only once it has rendered. The document draws inside

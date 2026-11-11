@@ -247,17 +247,33 @@ function commandNameEnd(text: string, trigger: string): number {
  * the text as a command only from the start of its input, as its terminal does, and only while the
  * caret is still in the command's name. The replaced span is the whole name, so a pick made with
  * the caret inside a name replaces all of it.
+ *
+ * And only while the list has a row for what was typed. The popover is mounted whatever the
+ * session advertises, so without this a session with no commands - or a query no mode and no
+ * command matches - would open an empty "Slash commands" listbox: noise that says nothing and
+ * may take the Enter meant for Send.
  */
-const atMessageStart: Unstable_TriggerMatcher = (text, trigger, cursor) => {
-  if (!text.startsWith(trigger)) return null;
-  const query = text.slice(trigger.length, cursor);
-  if (/\s/u.test(query)) return null;
-  return {
-    endOffset: commandNameEnd(text, trigger),
-    offset: 0,
-    query,
+function theSlashListMatcher(
+  commands: readonly AgentStreamCommand[],
+  modes: readonly MessageDeliveryMode[]
+): Unstable_TriggerMatcher {
+  return (text, trigger, cursor) => {
+    if (!text.startsWith(trigger)) return null;
+    const query = text.slice(trigger.length, cursor);
+    if (/\s/u.test(query)) return null;
+    if (
+      matchingModes(modes, query).length === 0 &&
+      matchingCommands(commands, query).length === 0
+    ) {
+      return null;
+    }
+    return {
+      endOffset: commandNameEnd(text, trigger),
+      offset: 0,
+      query,
+    };
   };
-};
+}
 
 /**
  * A picked command goes into the message as the person would type it at the session's terminal:
@@ -427,13 +443,14 @@ function SlashCommands({
     }),
     [commands, modes]
   );
+  const matcher = useMemo(() => theSlashListMatcher(commands, modes), [commands, modes]);
   return (
     <ComposerPrimitive.Unstable_TriggerPopover
       adapter={adapter}
       aria-label="Slash commands"
       char="/"
       className={`absolute right-0 bottom-full left-0 z-10 mb-2 flex max-h-72 flex-col gap-1 overflow-y-auto rounded-lg border p-1 shadow-lg ${card}`}
-      matcher={atMessageStart}
+      matcher={matcher}
     >
       <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={slashFormatter} />
       <ModePicks onPick={onPickMode} />
@@ -526,6 +543,12 @@ export function AgentThread({
     aui.composer.setText(appendToDraft(aui.composer.getState().text, text))
   );
   const uploadOwner = useMemo(() => ({ session: sessionId }), [sessionId]);
+  // The picture is in the draft only once the upload lands, so a message sent before that would
+  // go without it and the picture's line would join whatever is typed next. Send says the upload
+  // is what holds it, and Enter stands down with it (`submitMode`), so neither way out of this
+  // box sends a message the picture would miss - the rule every upload host keeps
+  // (`packages/dispatch/AGENTS.md`, `MentionComposer`, `AskAnswerArea`).
+  const uploading = upload.pending > 0;
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -610,12 +633,15 @@ export function AgentThread({
               className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
               placeholder={placeholder}
               rows={1}
-              submitMode="enter"
+              // `none` while an upload is out: the key reaches assistant-ui's send directly,
+              // which nothing else here can refuse, so the only way to hold it is to take it
+              // out of the box's own keys until the picture is in the draft.
+              submitMode={uploading ? "none" : "enter"}
             />
             {/* A submit button, so a click and Enter both reach the form's submit, which the
                 composer root turns into assistant-ui's own send: one way out for a message. */}
             <RefusableButton
-              busy={held ? "Send" : undefined}
+              busy={held ? "Send" : uploading ? "Uploading file…" : undefined}
               className="min-h-11"
               describedBy={held ? hintId : undefined}
               refusal={refusal}

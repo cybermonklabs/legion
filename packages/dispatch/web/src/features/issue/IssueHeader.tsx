@@ -73,6 +73,13 @@ import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
+import {
+  issueHeaderFrameClassName,
+  issueKeyBadgeClassName,
+  issueStatusPillClassName,
+  issueStatusPillDotClassName,
+  issueTitleBoxClassName,
+} from "./issue-header-classes";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
@@ -409,7 +416,7 @@ export function IssueHeader({
     // what keeps a child issue's row in the Children tab, which carries the same accessible
     // names, out of their reach.
     <header
-      className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`}
+      className={`${issueHeaderFrameClassName} ${card}`}
       data-issue-header=""
       data-testid="issue-header"
     >
@@ -434,7 +441,7 @@ export function IssueHeader({
         <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
           <div className="flex shrink-0 items-center gap-1 self-start">
             <p
-              className={`rounded-md px-2.5 py-1.5 font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
+              className={`${issueKeyBadgeClassName} font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
             >
               {issue.key}
             </p>
@@ -448,7 +455,7 @@ export function IssueHeader({
               <input
                 aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
                 aria-label="Issue title"
-                className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                className={`${issueTitleBoxClassName} text-[22px] leading-7 font-semibold tracking-tight outline-none ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
                 disabled={isClosed}
                 maxLength={ISSUE_TITLE_MAX}
                 onBlur={() => {
@@ -506,11 +513,11 @@ export function IssueHeader({
           data-testid="issue-state-actions"
         >
           <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+            className={`${issueStatusPillClassName} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
             <span
               aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+              className={`${issueStatusPillDotClassName} ${statusPillDot}`}
             />
             <select
               aria-label="Status"

@@ -233,10 +233,12 @@ async function mountPage(path: string, ...parts: readonly PartName[]): Promise<M
     </MemoryRouter>
   );
   // The boxes `issue-page-skeleton.tsx` draws, which the reader already had in front of them:
-  // a Pin that answers nothing, and the tab strip's own box, which holds no tab and is read by
-  // nothing - it is the strip's size standing there, not a strip.
+  // a Pin that answers nothing - `aria-disabled`, so a reader with no pointer can still tab to
+  // it and be handed the header (`features/doc/AfterTheFirstBatch.tsx`) - and the tab strip's
+  // own box, which holds no tab and is read by nothing: it is the strip's size standing there,
+  // not a strip.
   const firstCommitHadTheBoxes =
-    screen.queryByRole("button", { name: "Pin issue" })?.hasAttribute("disabled") === true &&
+    screen.queryByRole("button", { name: "Pin issue" })?.getAttribute("aria-disabled") === "true" &&
     screen.queryByTestId("issue-tabs-box") !== null &&
     screen.queryAllByRole("tab").length === 0;
 

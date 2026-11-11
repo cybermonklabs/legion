@@ -2,12 +2,13 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createElement } from "react";
+import { createElement, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../api/client";
 import { whoAmIQuery } from "../api/queries";
 import type { CredentialPendingRow, IssueSummary, Project } from "../api/types";
+import { theFirstBatchIsAwaited } from "../features/doc/first-batch";
 import { Sidebar } from "../features/sidebar/Sidebar";
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
@@ -351,5 +352,60 @@ test("sidebar keeps its hide control available while navigation loads", async ()
     getCredentialPending.mockRestore();
     listIssues.mockRestore();
     listProjects.mockRestore();
+  }
+});
+
+// The way off a column the reader does not want has to survive the press that reaches it. While
+// the editor's first batch holds the navigation, a press on this column is the reader reaching
+// for the shell (`app.tsx`'s `onPointerDownCapture`), and a control drawn inside that swap is
+// unmounted by its own pointerdown: the press only drew the navigation and `onHide` never ran
+// (dispatch://INFRA-341).
+test("the held sidebar's hide control is not replaced by the press that reaches it", async () => {
+  const user = userEvent.setup();
+  const reads = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }),
+    spyOn(api, "listIssues").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([]),
+  ];
+  let hideCount = 0;
+  /** The shell's own column: a press anywhere in it is the reader reaching for the shell. */
+  function Column(): ReactNode {
+    const [reached, setReached] = useState(false);
+    return createElement(
+      "div",
+      { onPointerDownCapture: () => setReached(true) },
+      createElement(Sidebar, {
+        onHide: () => {
+          hideCount += 1;
+        },
+        reached,
+        user: { event_head: "0", kind: "user", login: "alice" },
+      })
+    );
+  }
+  theFirstBatchIsAwaited(true);
+  const view = render(
+    createElement(
+      MemoryRouter,
+      { initialEntries: ["/"] },
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+        createElement(Column)
+      )
+    )
+  );
+
+  try {
+    expect(screen.getByText("Loading navigation…")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
+    expect(hideCount).toBe(1);
+    // And the press did reach the shell: the navigation is drawn behind the control.
+    expect(await screen.findByRole("navigation", { name: "Navigation" })).toBeTruthy();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    for (const spy of reads) spy.mockRestore();
   }
 });

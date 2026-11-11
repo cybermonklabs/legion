@@ -1,6 +1,11 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
+import {
+  actorActText,
+  answerSelected,
+  type SessionAnswer,
+  type SessionAnswerRelation,
+} from "@legion/contracts";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
@@ -108,7 +113,7 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
     );
   }
   if (item.kind === "answer") {
-    const selected = item.selected ?? [];
+    const selected = answerSelected(item);
     lines.push(`Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`);
   }
   if (item.text !== "") lines.push(item.text);

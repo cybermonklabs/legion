@@ -16,7 +16,7 @@ import {
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { itemRoute } from "../refs/routes";
+import { type DocumentOwner, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -50,7 +50,7 @@ function AskReply({
   markRef?: DwellRef;
   /** The project document that owns a reply with no issue, so the reply can name its own
    *  `dispatch://` reference (`itemRoute`). */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
 }): ReactNode {
   const reference = itemRoute("comment", comment, owner);
   return (
@@ -156,6 +156,7 @@ export function AskReplyComposer({
         )}
         disabled={sending}
         draft={draft}
+        issueKey={ask.issue_key ?? undefined}
         label="Reply"
         onDraftChange={setDraft}
         refusals={{ reply: refusal }}
@@ -196,7 +197,7 @@ export interface AskThreadProps {
   currentReplyId?: string;
   /** The project document that owns an ask with no issue, so each reply can name its own
    *  `dispatch://` reference (`AskReply`, `itemRoute`). */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
   /** The order the thread reads in: the reader's own choice, which the card holds
    *  (`threads/thread-order.ts`). */
   order: ThreadOrder;

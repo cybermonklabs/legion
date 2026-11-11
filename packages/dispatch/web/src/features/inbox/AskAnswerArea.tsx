@@ -19,9 +19,11 @@ import {
 import type { Draft } from "./draft-store";
 
 /** What the buttons under the area are given: the id of the line already showing each refusal the
- *  host named, and whether a file the field took is still uploading. */
-export interface AskAnswerActions {
-  readonly reasonId: Readonly<Record<string, string>>;
+ *  host named, by the name the host knows it by, and whether a file the field took is still
+ *  uploading. Generic over those names, so a host that reads `reasonId.askBack` where it named
+ *  `askback` is a type error rather than a button that silently loses its description. */
+export interface AskAnswerActions<Name extends string = string> {
+  readonly reasonId: Readonly<Record<Name, string>>;
   readonly uploading: boolean;
 }
 
@@ -39,12 +41,13 @@ export interface AskAnswerActions {
  * mentions at all, so a host whose send is an answer refuses the draft while one survives
  * (`ANSWER_MENTION_REFUSAL`) rather than dropping it silently.
  */
-export function AskAnswerArea({
+export function AskAnswerArea<Name extends string>({
   actions,
   disabled = false,
   draft,
   fieldRef,
   handle,
+  issueKey,
   label,
   labelHidden = false,
   onDraftChange,
@@ -52,7 +55,7 @@ export function AskAnswerArea({
   refusals,
   uploadOwner,
 }: {
-  readonly actions: (state: AskAnswerActions) => ReactNode;
+  readonly actions: (state: AskAnswerActions<Name>) => ReactNode;
   /** The field takes no typing: this ask's own send is out, and the draft on the wire is not the
    *  reader's to write over. */
   readonly disabled?: boolean;
@@ -62,6 +65,10 @@ export function AskAnswerArea({
   readonly fieldRef?: RefObject<MentionFieldHandle | null>;
   /** A bare `data-` attribute for the textarea (`MentionField`'s `handle`). */
   readonly handle?: string;
+  /** The issue this ask is on, where it is on one: the `@` picker reads its collaborators and
+   *  offers the Legion roles nobody is running under "Not running", as the Conversation tab's
+   *  composer does for the same issue. A project-document ask has none and is offered none. */
+  readonly issueKey?: string;
   readonly label: string;
   readonly labelHidden?: boolean;
   readonly onDraftChange: Dispatch<SetStateAction<Draft>>;
@@ -69,7 +76,7 @@ export function AskAnswerArea({
   /** Why each of the host's buttons refuses the draft as it stands, by the name the host knows it
    *  by: each reason is shown on one line under the field, and `actions` is handed that line's id
    *  for the button's `refusalShownBy`. */
-  readonly refusals: Readonly<Record<string, string | null>>;
+  readonly refusals: Readonly<Record<Name, string | null>>;
   /** Where a file pasted or dropped into the box goes: the ask's issue, or its document's
    *  project. Without one the field takes a paste as text. */
   readonly uploadOwner?: ArtifactOwner;
@@ -77,8 +84,14 @@ export function AskAnswerArea({
   // Everything the `@` picker needs, from the one place both its hosts take it
   // (`useMentionOptions`): the registry is kept fresh through the shell's one poller while the
   // picker is open and read again the moment it opens, exactly as the Conversation tab's
-  // composer keeps it. The sessions `@` lists are the same sessions, read the same way.
-  const { listing, onPickerOpenChange, options } = useMentionOptions(true);
+  // composer keeps it. The sessions `@` lists are the same sessions, read the same way - the
+  // issue's stopped roles among them, which this picker left out while the composer under it on
+  // the same tab offered them (dispatch://INFRA-341, R2, `packages/dispatch/AGENTS.md`).
+  const { listing, onPickerOpenChange, options, stoppedOptions } = useMentionOptions(
+    true,
+    undefined,
+    issueKey
+  );
   const ownFieldRef = useRef<MentionFieldHandle>(null);
   const field = fieldRef ?? ownFieldRef;
   const upload = useDraftUpload((text) =>
@@ -88,8 +101,8 @@ export function AskAnswerArea({
   // One area can be on the page twice (a decision block and the margin sheet, a card and its
   // drawer), so the line each button names is this instance's.
   const reasonBase = useId();
-  const reasonId: Record<string, string> = {};
-  for (const name of Object.keys(refusals)) reasonId[name] = `${reasonBase}-${name}`;
+  const reasonId = {} as Record<Name, string>;
+  for (const name of Object.keys(refusals) as Name[]) reasonId[name] = `${reasonBase}-${name}`;
 
   return (
     <div className="space-y-2">
@@ -113,11 +126,12 @@ export function AskAnswerArea({
         onPickerOpenChange={onPickerOpenChange}
         options={options}
         placeholder={placeholder}
+        stoppedOptions={stoppedOptions}
       />
       <DraftUploadStatus upload={upload} />
       {/* The reason a send refuses, on screen beside the draft it was refused over, and the
           description its button carries (`RefusableButton`'s `refusalShownBy`). */}
-      {Object.entries(refusals).map(([name, reason]) =>
+      {(Object.entries(refusals) as [Name, string | null][]).map(([name, reason]) =>
         reason === null ? null : (
           <p className={`text-xs ${textMutedOnSurface}`} id={reasonId[name]} key={name}>
             {reason}

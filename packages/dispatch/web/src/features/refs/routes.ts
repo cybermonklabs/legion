@@ -880,13 +880,21 @@ export function pictureReference(attrs: {
   return { caption: alt === "" ? (named?.slug ?? "") : alt, named, route, source };
 }
 
+/** The project document an item with no issue belongs to: what `itemRoute` needs to name that
+ *  item's reference, and what every surface carrying one down to a header passes. One type
+ *  rather than a hand-written `{ project: string; slug: string }` at each of them. */
+export interface DocumentOwner {
+  readonly project: string;
+  readonly slug: string;
+}
+
 /** The route an ask or comment is referenced by: under its issue when it has one, else under the
  *  project document that owns it. Only Inbox rows carry `document`, so a caller showing a
  *  project document's items names that document; without either there is no reference. */
 export function itemRoute(
   kind: "ask" | "comment",
   item: { id: string; issue_key: string | null },
-  document: { project: string; slug: string } | undefined
+  document: DocumentOwner | undefined
 ): DispatchReferenceRoute | undefined {
   if (item.issue_key !== null) {
     return { id: item.id, key: item.issue_key, kind };

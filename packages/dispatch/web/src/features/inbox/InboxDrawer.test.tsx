@@ -14,15 +14,23 @@ import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 installInboxApiMocks();
 
 /** A harness matching how `app.tsx` mounts the drawer: a trigger the reader's focus starts on,
- *  the drawer itself as a sibling while it is open, state living above both. */
+ *  the drawer itself as a sibling, kept mounted from the first open on and told whether it is
+ *  showing, state living above both. */
 function Harness() {
   const [open, setOpen] = useState(false);
+  const [everOpened, setEverOpened] = useState(false);
   return (
     <>
-      <button onClick={() => setOpen(true)} type="button">
+      <button
+        onClick={() => {
+          setEverOpened(true);
+          setOpen(true);
+        }}
+        type="button"
+      >
         Open inbox
       </button>
-      {open ? <InboxDrawer onClose={() => setOpen(false)} /> : null}
+      {everOpened ? <InboxDrawer onClose={() => setOpen(false)} open={open} /> : null}
     </>
   );
 }
@@ -106,6 +114,56 @@ test("picking an assignee inside the drawer lists that person there, writes noth
     await within(dialog).findByText("Bob's question?");
     expect(screen.getByTestId("location").textContent).toBe("");
     expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// Nothing in the spec asks a peek to forget what the reader narrowed it to. Its filter, its
+// search text and its bands are its own `useState`, which a shell that unmounted it on every
+// close threw away: each open then started from the reader's own work, newest first, with the
+// box empty (dispatch://INFRA-341).
+test("the drawer keeps its filter and its search text across a close", async () => {
+  const user = userEvent.setup();
+  const mine = issueAsk();
+  const bobs = issueAsk({
+    id: "ask-bob",
+    issue: { assignee: "bob", key: "CORE-2", title: "Bob's issue" },
+    issue_key: "CORE-2",
+    question: "Bob's question?",
+  });
+  const rows = [mine, bobs];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  const view = renderDrawer();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    await within(dialog).findByText("Which approach?");
+    await user.click(within(dialog).getByRole("button", { name: "Filter" }));
+    await user.click(within(dialog).getByRole("button", { name: "Filter by assignee" }));
+    await user.click(await screen.findByRole("option", { name: /bob/ }));
+    // Bob is added beside the reader, so both rows are listed under the filter they chose.
+    await within(dialog).findByText("Bob's question?");
+
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Inbox" })).not.toBeInTheDocument()
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const reopened = await screen.findByRole("dialog", { name: "Inbox" });
+    await within(reopened).findByText("Which approach?");
+    // The peek they open again is the peek they left: a drawer that forgot its filter would
+    // list the reader's own work alone, with Bob's question nowhere in it.
+    expect(within(reopened).getByText("Bob's question?")).toBeTruthy();
   } finally {
     view.unmount();
     getAsk.mockRestore();

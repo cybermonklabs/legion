@@ -1,3 +1,5 @@
+import { answerSelected } from "@legion/contracts";
+
 /** Head length, in UTF-16 units, for one-line summaries of event text. */
 const HEAD_LENGTH = 120;
 
@@ -23,7 +25,7 @@ export function askAnswerText(
     | undefined
 ): string {
   if (answer === null || answer === undefined) return "";
-  const selected = (answer.selected ?? []).join(", ");
+  const selected = answerSelected(answer).join(", ");
   const text = answer.text ?? "";
   if (text === "") return selected;
   if (selected === "") return text;

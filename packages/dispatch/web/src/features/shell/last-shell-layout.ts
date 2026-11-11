@@ -40,13 +40,19 @@ export const FIRST_SCREEN_MARGIN_PROPERTY = "--first-screen-margin-inset";
  * pixels otherwise; the sidebar's is `rail` or `shown`. A collapsed column draws no column at
  * all and the shell pads the gutter for the rail instead, so a rail and a width leave different
  * room and cannot be one number.
+ *
+ * The width is rounded because a dragged one is not whole: `Margin.tsx` takes it from
+ * `event.clientX`, which is fractional at a non-integer zoom or device pixel ratio, and
+ * `412.5/shown` fails the pattern `web/index.html` reads this value by (`/^[0-9]{1,4}$/`). The
+ * head script then sets no property and the blocks the server drew are laid out at the default
+ * 384 px - the re-wrap this layout exists to stop (dispatch://INFRA-341, R11).
  */
 export function shellLayoutValue(
   marginCollapsed: boolean,
   marginWidth: number,
   sidebarHidden: boolean
 ): string {
-  return `${marginCollapsed ? "rail" : marginWidth}/${sidebarHidden ? "rail" : "shown"}`;
+  return `${marginCollapsed ? "rail" : Math.round(marginWidth)}/${sidebarHidden ? "rail" : "shown"}`;
 }
 
 /** Writes the layout the shell is drawing. Called whenever any of its three parts changes, so

@@ -322,3 +322,50 @@ test("a reference the page slid out from under the pointer opens after the delay
     getIssue.mockRestore();
   }
 });
+
+// What keeps a card is the reader's pointer, not the anchor's box: the box says only that the
+// page has not moved the reference, which is just as true of a page that drew a layer over it.
+// With a card open and the pointer resting on its reference, Cmd+K draws the palette's
+// `fixed inset-0` backdrop under that still pointer, and the boundary pair the browser sends
+// then carries the backdrop as its `relatedTarget` - the very case this host keeps cards for.
+// Kept, the card stands above the dialog the reader asked for and takes the first Escape from
+// it (dispatch://INFRA-341). So an open card asks `thePointerIsOn` too, which reads what is
+// painted at the pointer's place and not the box alone.
+test("a card is let go when the page draws a dialog over the reference under a still pointer", () => {
+  const getIssue = spyOn(api, "getIssue").mockImplementation(() => new Promise(() => {}));
+  jest.useFakeTimers();
+  const view = render(<Page />);
+  const reference = screen.getByRole("link", { name: "the reference" });
+  const box = { bottom: 40, left: 0, right: 100, top: 20 };
+  let restoreThePage = thePageDraws(reference, box);
+  try {
+    fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
+    fireEvent.pointerOver(reference, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip").textContent).toContain("CORE-1");
+
+    // The palette opens from the keyboard: its backdrop covers the whole page, the reference
+    // keeps the box it had, and the pointer has not moved.
+    const backdrop = document.createElement("div");
+    document.body.append(backdrop);
+    restoreThePage();
+    restoreThePage = thePageDraws(reference, box, backdrop);
+    fireEvent.pointerOut(reference, {
+      clientX: 10,
+      clientY: 30,
+      pointerType: "mouse",
+      relatedTarget: backdrop,
+    });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_CLOSE_DELAY_MS);
+    });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    backdrop.remove();
+  } finally {
+    restoreThePage();
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});

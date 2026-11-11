@@ -35,6 +35,7 @@ const planner: Agent = {
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
 let listAgents: Mock<typeof api.listAgents>;
+let getIssueCollaborators: Mock<typeof api.getIssueCollaborators>;
 let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
 
 beforeEach(() => {
@@ -48,8 +49,16 @@ beforeEach(() => {
     node: graphNode({ id: "ask-1", kind: "ask" }),
   });
   listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
-  // The card's own header reads the issue's subscribers, and a read nothing answers fails the
-  // file (`__tests__/network.ts`): no row here is about subscribers, so the list is empty.
+  // The `@` picker reads the ask's issue for the Legion roles nobody is running, as the
+  // Conversation tab's composer does (`useMentionOptions`); no row here is about those, so the
+  // issue records none. The card's own header reads the issue's subscribers. A read nothing
+  // answers fails the file (`__tests__/network.ts`).
+  getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
   getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
 });
 
@@ -57,6 +66,7 @@ afterEach(() => {
   whoAmI.mockRestore();
   getReferences.mockRestore();
   listAgents.mockRestore();
+  getIssueCollaborators.mockRestore();
   getIssueSubscribers.mockRestore();
 });
 

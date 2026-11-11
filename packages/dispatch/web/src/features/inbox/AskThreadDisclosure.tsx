@@ -3,6 +3,7 @@ import { type ReactNode, useId, useState } from "react";
 import type { ArtifactOwner } from "../../api/client";
 import type { Ask } from "../../api/types";
 import { linkHoverText, linkText } from "../../theme/classes";
+import type { DocumentOwner } from "../refs/routes";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
@@ -22,7 +23,7 @@ interface AskThreadDisclosureProps {
   currentReplyId?: string;
   /** The project document that owns a document ask, so each reply names its own reference
    *  (`AskThread`). */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
   /** The order the thread reads in (`AskThread`), which also places this control and the
    *  composer it reveals: under the question in Newest first, at the foot in Oldest first. */
   order: ThreadOrder;

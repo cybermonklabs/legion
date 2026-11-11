@@ -7,6 +7,11 @@ import {
   tabStripClassName,
 } from "../../components/tab-classes";
 import { borderTransparent, card, skeletonBg, textTransparent } from "../../theme/classes";
+import {
+  issueHeaderFrameClassName,
+  issueKeyBadgeClassName,
+  issueTitleBoxClassName,
+} from "./issue-header-classes";
 import { issueTabs } from "./issue-tab-list";
 
 /**
@@ -43,9 +48,9 @@ import { issueTabs } from "./issue-tab-list";
  */
 export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode {
   return (
-    // The header's own frame: `IssueHeader`'s `mb-3 min-w-0 rounded-xl border p-3`, which is
-    // 26 px of border and padding and 12 px of margin under it.
-    <header className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`} data-testid="issue-header-box">
+    // The header's own frame, from the one place both are built from
+    // (`issue-header-classes.ts`): 26 px of border and padding and 12 px of margin under it.
+    <header className={`${issueHeaderFrameClassName} ${card}`} data-testid="issue-header-box">
       {/* The header's three rows, in the header's own wrapper: below 2xl its title block is
           `basis-full`, so the title, the state controls and the details line each take a row of
           their own, and the box keeps all three. */}
@@ -55,25 +60,29 @@ export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode
               32 px. The placeholder inside is a block, not an inline box, so the line it makes
               is exactly the line the key's own text makes. */}
           <div className="flex shrink-0 items-center gap-1 self-start">
-            <p className="rounded-md px-2.5 py-1.5">
+            <p className={issueKeyBadgeClassName}>
               <span className={`block h-5 w-14 animate-pulse rounded ${skeletonBg}`} />
             </p>
           </div>
           <div className="flex min-w-0 flex-1 items-start gap-2">
-            {/* The title's box: the heading's own `rounded-lg border px-2 py-1 md:py-0` around
-                its 28 px line. */}
-            <h1
-              className={`min-w-0 flex-1 rounded-lg border px-2 py-1 md:py-0 ${borderTransparent}`}
-            >
+            {/* The title's box: the heading's own border and padding around its 28 px line. */}
+            <h1 className={`${issueTitleBoxClassName} ${borderTransparent}`}>
               <span className={`block h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
             </h1>
             {/* The pin's box, at `components/PinButton.tsx`'s own size. It answers no press:
                 a press anywhere in this box hands the reader the header itself
-                (`ChromeAfterTheFirstBatch`), and the control they pressed for comes with it. */}
+                (`ChromeAfterTheFirstBatch`), and the control they pressed for comes with it.
+
+                `aria-disabled` rather than `disabled`, so it is the one thing in this box a Tab
+                reaches. A `disabled` button is out of the tab order, and with the tab strip's
+                placeholders `aria-hidden` the whole held box held nothing focusable: a reader
+                with no pointer tabbed straight past the header and the strip and never fired
+                the focus that hands them over, for as long as the hold lasted
+                (`features/doc/AfterTheFirstBatch.tsx`, dispatch://INFRA-341). */}
             <button
+              aria-disabled="true"
               aria-label="Pin issue"
               className="min-h-11 min-w-11 shrink-0 rounded-lg md:min-h-8 md:min-w-8"
-              disabled
               type="button"
             />
           </div>
