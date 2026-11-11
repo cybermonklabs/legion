@@ -41,9 +41,15 @@ func clusteredTailnetPodSpec(t *testing.T, m *pulumitest.Mocks) map[string]any {
 // the one uid, with the state volume and the serve config. The session listener is a workload of
 // its own now (TestClusteredNatsHubListenerPodMatchesGolden), and the golden is what pins the
 // absence of its container and of its seed volume: it is the whole pod template, so a listener
-// container or a nats-seed volume back in this pod would not match it.
+// container or a nats-seed volume back in this pod would not match it. It prints how many
+// objects the hub rendered and how many containers that pod holds, so a reader of the run knows
+// the set the golden was compared over was not empty.
 func TestClusteredNatsHubTailnetPodMatchesGolden(t *testing.T) {
-	requirePodGolden(t, runClusteredHub(t, clusteredArgs()), clusteredTailnetName, "clustered-hub-tailnet-pod.golden")
+	m := runClusteredHub(t, clusteredArgs())
+	requirePodGolden(t, m, clusteredTailnetName, "clustered-hub-tailnet-pod.golden")
+	pod := clusteredTailnetPodSpec(t, m)
+	t.Logf("%d objects rendered, %d container(s) and %d init container(s) in the tailnet pod",
+		len(m.Registrations()), len(pod["containers"].([]any)), len(pod["initContainers"].([]any)))
 }
 
 // The serve config forwards the Service's NATS port to the hub's client Service and its listener
@@ -150,6 +156,8 @@ func TestClusteredNatsHubTailnetHostJoinsWithTheTagsAndAdvertisesWithNoHealthGat
 	require.Contains(t, command[2], "\nhealth=''\n", "an empty health, which the script reads as no gate")
 	require.Contains(t, command[2], "\nservice=svc:envoy-hub\n")
 	require.Contains(t, command[2], "\ngrace=60\n")
+	t.Logf("%d health setting(s) examined in the advertiser's script, over %d host container(s)",
+		strings.Count(command[2].(string), "\nhealth="), len(template["spec"].(map[string]any)["containers"].([]any)))
 }
 
 // The budget lets one tailnet host go at a time, and selects exactly the Deployment's pods.

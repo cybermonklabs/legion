@@ -36,9 +36,13 @@ func clusteredListenerPodSpec(t *testing.T, m *pulumitest.Mocks) map[string]any 
 
 // The session listener's pod, whole: the listener container alone, as the uid its image's own
 // user has, with the NATS seed from the operator's Secret by reference and nothing of the tailnet
-// host beside it.
+// host beside it. It prints how many objects the hub rendered and how many containers that pod
+// holds, so a reader of the run knows the set the golden was compared over was not empty.
 func TestClusteredNatsHubListenerPodMatchesGolden(t *testing.T) {
-	requirePodGolden(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName, "clustered-hub-listener-pod.golden")
+	m := runClusteredHub(t, clusteredArgs())
+	requirePodGolden(t, m, clusteredListenerName, "clustered-hub-listener-pod.golden")
+	containers := clusteredListenerPodSpec(t, m)["containers"].([]any)
+	t.Logf("%d objects rendered, %d container(s) in the listener pod", len(m.Registrations()), len(containers))
 }
 
 // The Deployment runs one listener, wearing the listener's selector labels, in the hub's
@@ -195,12 +199,15 @@ func TestClusteredNatsHubListenerProbes(t *testing.T) {
 			"periodSeconds": 5.0, "timeoutSeconds": 6.0, "failureThreshold": 2.0,
 		},
 	}
+	read := 0
 	for _, name := range []string{"startupProbe", "livenessProbe", "readinessProbe"} {
 		probe, ok := listener[name]
 		require.True(t, ok, "%s is rendered", name)
 		require.NotNil(t, probe, name)
 		require.Equal(t, want[name], probe, name)
+		read++
 	}
+	t.Logf("%d probe(s) examined on the listener container", read)
 }
 
 // The kubelet spends the listener's preStop hook and its shutdown on SIGTERM inside the pod's one
