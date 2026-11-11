@@ -256,8 +256,8 @@ type PaneInputs struct {
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
 // resolved none, the operator's pane variables sorted, less the composed one (composed), then
 // OTEL_RESOURCE_ATTRIBUTES itself, the operator's own spend attributes with this launch's issue
-// and role written after them (runtime.SpendResourceAttributes), so a pane's spend splits by the
-// issue it was spent on, then the
+// and role written after them (runtime.SpendResourceAttributes), so a pane's attributes name the
+// issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
 // is told: a pane's git and jj are whatever its PATH, the daemon's, gives.
@@ -324,6 +324,11 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 			add(name, in.OperatorEnv[name])
 		}
 	}
+	// The pair is added whatever the composition answers, where the composer's two other callers
+	// skip an empty one (sandbox.composeEntry, daemon.gateEnvironment): every pane carries a role
+	// (runtime.ValidateSpawnSpec refuses a spec without one, and no backend runs the empty role),
+	// so the composition always holds legion.role at least and is never empty. The difference is
+	// deliberate, and a reader need not prove it here.
 	add(runtime.SpendAttributesVariable, runtime.SpendResourceAttributes(in.OperatorEnv[runtime.SpendAttributesVariable], spec))
 	for _, name := range sortedKeys(spec.Env) {
 		if name != "PATH" {

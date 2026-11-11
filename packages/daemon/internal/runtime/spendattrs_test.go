@@ -31,12 +31,17 @@ func liveAttributes(pairs ...string) map[string]string {
 	return attrs
 }
 
-// detectorAttributes is the parse the worker image's Oh My Pi runs over the composed value
-// (@opentelemetry/resources' EnvDetector._parseResourceAttributes, read out of /opt/omp/bin/omp
-// on 2026-11-11), written out here so that each case is checked against what the agent would
-// read rather than against the string the composer happened to build: split on commas, drop a
-// member whose trimmed text is empty, throw on a member that is not exactly one `=`, trim and
-// percent-decode both sides, and assign last-wins.
+// detectorAttributes is the detector's parse over a value the composer wrote: split on commas,
+// drop a member whose trimmed text is empty, throw on a member that is not exactly one `=`, trim
+// and percent-decode both sides, and assign last-wins (@opentelemetry/resources'
+// EnvDetector._parseResourceAttributes, read out of /opt/omp/bin/omp on 2026-11-11), so that
+// each case is checked against what the agent would read rather than against the string the
+// composer happened to build.
+//
+// It is not the detector itself and nothing beyond a composed value should be held to it:
+// url.PathUnescape accepts a percent escape that is not valid UTF-8, such as %FF, where
+// decodeURIComponent throws, and it applies no 255-code-unit bound. SpendAttributesRefusal is
+// the exact model of the detector; this is enough for a value whose escapes the composer wrote.
 func detectorAttributes(t *testing.T, value string) map[string]string {
 	t.Helper()
 	attrs := map[string]string{}
@@ -96,6 +101,15 @@ func TestSpendResourceAttributesAppendsTheLaunchAfterTheOperatorsOwn(t *testing.
 		},
 		{
 			"trailing spaces after a trailing comma", live + ",  ",
+			SpawnSpec{Issue: issue, Role: claim.RoleImplementer},
+			live + "," + launchOnly,
+			liveAttributes("legion.issue", issue, "legion.role", "implementer"),
+		},
+		// A trailing member of the detector's own whitespace, which Go's unicode.IsSpace does not
+		// hold (spendTrailing, spendDetectorSpace): the detector would filter it, and the composer
+		// drops it rather than writing its pairs after it.
+		{
+			"a trailing member of the detector's own whitespace", live + ",\uFEFF",
 			SpawnSpec{Issue: issue, Role: claim.RoleImplementer},
 			live + "," + launchOnly,
 			liveAttributes("legion.issue", issue, "legion.role", "implementer"),
@@ -244,6 +258,20 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 		{"an empty key", "=value", `its member "=value" has an empty key`},
 		{"a member naming legion.issue", "theorem.project=legion,legion.issue=INFRA-1", `its member "legion.issue=INFRA-1" names legion.issue, which the runtime writes into every launch itself`},
 		{"a member naming legion.role, percent-encoded", "legion%2Erole=tester", `its member "legion%2Erole=tester" names legion.role, which the runtime writes into every launch itself`},
+		// The two code points the detector's trim and Go's unicode.IsSpace differ in
+		// (spendDetectorSpace): the detector keeps U+0085 and drops U+FEFF, so each is refused or
+		// accepted by what the detector does with it rather than by what strings.TrimSpace would.
+		{"a member of U+0085 alone, which the detector keeps and throws on",
+			"theorem.project=legion,\u0085",
+			fmt.Sprintf("its member %q does not split on = into exactly one key and one value", "\u0085")},
+		// The reason names the member as the detector's own trim leaves it, so the U+FEFF the
+		// detector drops is gone from the text an operator reads.
+		{"a key of U+FEFF, which the detector trims to empty and throws on",
+			"\uFEFF=v", `its member "=v" has an empty key`},
+		{"a member of U+FEFF alone, which the detector trims to empty and filters away",
+			"theorem.project=legion,\uFEFF", ""},
+		{"a key of U+0085, which the detector keeps as one character and parses",
+			"\u0085=v", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := SpendAttributesRefusal(tc.value); got != tc.want {

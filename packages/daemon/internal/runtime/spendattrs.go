@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -32,18 +33,40 @@ import (
 const SpendAttributesVariable = "OTEL_RESOURCE_ATTRIBUTES"
 
 // SpendIssueAttribute and SpendRoleAttribute are the two attribute keys the daemon writes into
-// SpendAttributesVariable itself, so that a pod's spend splits by the issue it was spent on and
-// the role that spent it. They are named here once, in one place, so that the composer that
-// writes them and the refusal that keeps an operator's own value out of them cannot drift apart.
+// SpendAttributesVariable itself, so that a launch's attributes name the issue it serves and the
+// role it runs, and a spend row grouped by issue follows when the spend collector keeps the
+// two keys, which its theorem.* keep-list drops today (dispatch://INFRA-1835). They are named
+// here once, in one place, so that the composer that writes them and the refusal that keeps an
+// operator's own value out of them cannot drift apart.
 const (
 	SpendIssueAttribute = "legion.issue"
 	SpendRoleAttribute  = "legion.role"
 )
 
+// spendDetectorSpace is the whitespace the detector's own trim drops: ECMAScript's
+// String.prototype.trim set, which is not Go's unicode.IsSpace set. Both were measured in this
+// pod on 2026-11-11 over every code point to U+3100 and U+FEFF — node, keeping those whose
+// one-character string trims to empty, answered `9 a b c d 20 a0 1680 2000…200a 2028 2029 202f
+// 205f 3000 feff`, and unicode.IsSpace answered `9 a b c d 20 85 a0 1680 2000…200a 2028 2029
+// 202f 205f 3000` — so the two sets differ in exactly two code points, and this predicate is
+// unicode.IsSpace with those two taken out and put in.
+//
+// Go trims U+0085 (NEL) where JavaScript does not: `theorem.project=legion,<NEL>` is a member
+// strings.TrimSpace reads as the empty one the detector skips, while the detector keeps it, finds
+// no `=` in it and throws, costing the launch every attribute. JavaScript trims U+FEFF (ZWNBSP)
+// where Go does not: `<ZWNBSP>=v` is a member whose key the detector trims to empty and throws
+// on, and `theorem.project=legion,<ZWNBSP>` one the detector trims to empty and filters away.
+func spendDetectorSpace(r rune) bool {
+	return r == '\uFEFF' || (r != '\u0085' && unicode.IsSpace(r))
+}
+
 // spendTrailing is what SpendResourceAttributes drops off the end of an operator's value before
-// it appends: commas, and the spaces the detector's own trim would drop around the empty member
-// they leave behind.
-const spendTrailing = ", \t\n\v\f\r"
+// it appends: commas, and the whitespace of the detector's own trim (spendDetectorSpace), which
+// is what it would drop around the empty member they leave behind. It is the detector's set and
+// not Go's, so the composer never leaves behind a member the detector will not filter.
+func spendTrailing(r rune) bool {
+	return r == ',' || spendDetectorSpace(r)
+}
 
 // spendHex is the upper-case hex RFC 3986 writes a percent escape in.
 const spendHex = "0123456789ABCDEF"
@@ -76,7 +99,7 @@ const spendHex = "0123456789ABCDEF"
 func SpendResourceAttributes(operator string, spec SpawnSpec) string {
 	issue := spendEncode(spec.Issue)
 	role := spendEncode(string(spec.Role))
-	kept := strings.TrimRight(operator, spendTrailing)
+	kept := strings.TrimRightFunc(operator, spendTrailing)
 
 	var b strings.Builder
 	b.Grow(len(kept) + len(SpendIssueAttribute) + len(issue) + len(SpendRoleAttribute) + len(role) + 4)
@@ -111,16 +134,17 @@ func spendMember(b *strings.Builder, key, value string) {
 // detector skips it, then the split on `=` into exactly two parts, the non-empty key, the
 // percent-decode of each side (a malformed escape and a decoded byte sequence that is not valid
 // UTF-8 both throw in decodeURIComponent), then the 255-code-unit bound on each decoded side,
-// which JavaScript counts in UTF-16 code units. It refuses one thing of its own beyond them: a
-// member whose decoded key is SpendIssueAttribute or SpendRoleAttribute, which the runtime writes
-// into every launch itself and would override without a word.
+// which JavaScript counts in UTF-16 code units. Every trim it makes is the detector's own set and
+// not Go's (spendDetectorSpace). It refuses one thing of its own beyond them: a member whose
+// decoded key is SpendIssueAttribute or SpendRoleAttribute, which the runtime writes into every
+// launch itself and would override without a word.
 //
 // The reason names the member it refuses and what is wrong with it, never the rest of the value:
 // an operator reading it should see the one member to fix, and the attributes of the others are
 // nobody's business to repeat.
 func SpendAttributesRefusal(value string) string {
 	for _, member := range strings.Split(value, ",") {
-		trimmed := strings.TrimSpace(member)
+		trimmed := strings.TrimFunc(member, spendDetectorSpace)
 		if trimmed == "" {
 			continue
 		}
@@ -128,7 +152,7 @@ func SpendAttributesRefusal(value string) string {
 		if len(parts) != 2 {
 			return fmt.Sprintf("its member %q does not split on = into exactly one key and one value", trimmed)
 		}
-		key := strings.TrimSpace(parts[0])
+		key := strings.TrimFunc(parts[0], spendDetectorSpace)
 		if key == "" {
 			return fmt.Sprintf("its member %q has an empty key", trimmed)
 		}
@@ -136,7 +160,7 @@ func SpendAttributesRefusal(value string) string {
 		if problem != "" {
 			return fmt.Sprintf("its member %q has a key with %s", trimmed, problem)
 		}
-		decodedValue, problem := spendDecode(strings.TrimSpace(parts[1]))
+		decodedValue, problem := spendDecode(strings.TrimFunc(parts[1], spendDetectorSpace))
 		if problem != "" {
 			return fmt.Sprintf("its member %q has a value with %s", trimmed, problem)
 		}
@@ -193,6 +217,15 @@ func spendUnreserved(c byte) bool {
 // decoded text, or "" and the problem to name in a refusal — a malformed escape (`%` without two
 // hex digits after it) or escapes that do not decode as UTF-8 (`%FF`, an overlong form, a
 // surrogate half), each of which throws in the detector and costs the launch every attribute.
+//
+// The standard library was measured against this in the review round and does not match.
+// url.PathUnescape gives an escaped byte and a raw one back alike, so a model built on
+// url.PathUnescape(s) alone refuses a raw byte of s that is not valid UTF-8 along with the
+// escapes that are not — and the detector accepts that byte, since process.env has already
+// replaced it with U+FFFD before decodeURIComponent sees it.
+// url.PathUnescape(strings.ToValidUTF8(s, "\uFFFD")) cures that and then measures a different
+// length, since ToValidUTF8 makes one U+FFFD of a whole run of invalid bytes where ranging over
+// the string makes one for each, which is what spendUTF16Len counts.
 func spendDecode(s string) (string, string) {
 	if !strings.ContainsRune(s, '%') {
 		return s, ""

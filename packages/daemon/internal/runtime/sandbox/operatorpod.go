@@ -71,12 +71,17 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 		add(name, claude, false)
 	}
 	add(claudelaunch.SessionVariable, claude, false)
-	// The spend attributes are this runtime's to compose as well, from the operator's own value
-	// and the launch's issue and role (runtime.SpendResourceAttributes, roleOperatorEnv): the
-	// operator writes the attributes its whole deployment is billed under, and the runtime writes
-	// the launch's after them, so a pod's spend splits by the issue it was spent on. A provider
-	// key of that name would be exported over a value every role's agent already starts with.
-	add(runtime.SpendAttributesVariable, "the runtime composes in every pod from the operator's own attributes and the launch's issue and role", true)
+	// The composed names are this runtime's to compose as well, from the operator's own value and
+	// the launch's issue and role (runtime.SpendResourceAttributes, roleOperatorEnv): the operator
+	// writes the attributes its whole deployment is billed under, and the runtime writes the
+	// launch's after them, so a pod's attributes name the issue it serves. A provider key of
+	// such a name would be exported over a value every role's agent already starts with. The names
+	// come from the registry (composed) rather than from a list here, so a second one is covered
+	// by this refusal the day it is added rather than left for an operator's pod to write over;
+	// composed holds the spend attributes alone today, which is what the text names.
+	for _, name := range slices.Sorted(maps.Keys(composed)) {
+		add(name, "the runtime composes in every pod from the operator's own attributes and the launch's issue and role", true)
+	}
 	for _, name := range slices.Sorted(maps.Keys(runtimeOwned)) {
 		add(name, "Legion's runtime sets in every pod", false)
 	}
