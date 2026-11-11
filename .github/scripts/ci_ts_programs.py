@@ -37,4 +37,6 @@ PROGRAMS = [
      "test: Typecheck the GitHub App registration script (bunx tsc --noEmit -p scripts/github-apps)"),
     ("test", "scripts/sessions",
      "test: Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)"),
+    ("test", "scripts/approval-eval",
+     "test: Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)"),
 ]

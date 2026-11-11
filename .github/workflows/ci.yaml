@@ -857,6 +857,8 @@ jobs:
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
+              # The approval-eval statistics: its lint, typecheck and test steps read it.
+              - 'scripts/approval-eval/**'
               # The tools the job installs: jj, mise and Oh My Pi, uv, changie, and the NATS images.
               - *omp_install
               - '.github/actions/install-uv/**'
@@ -3875,6 +3877,16 @@ jobs:
 
       - name: Test the session message-wait script
         run: bun test scripts/sessions
+
+      - name: Lint the approval-eval statistics
+        run: bunx biome check --error-on-warnings scripts/approval-eval
+
+      # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the approval-eval statistics
+        run: bunx tsc --noEmit -p scripts/approval-eval
+
+      - name: Test the approval-eval statistics
+        run: bun test scripts/approval-eval
 
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
