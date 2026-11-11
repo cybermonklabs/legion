@@ -970,8 +970,9 @@ package api
 // left behind when main's 68 passed it at the forward merge of main 0a97f26cfa4f below, and 67 is
 // a gap this branch never held. Three gaps, left so the history reads as it happened.
 //
-// 72: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon's enqueue at
-// READY jumps the merge queue, and can hold a path still while a window runs. `GET
+// 72: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon asks GitHub
+// to put its enqueue at READY at the head of the merge queue, and can hold a path still while a
+// window runs. `GET
 // /legion/v1/state` gains four keys: `mergeJumps`, every live jump mark of the project by issue
 // (the issue, the reason, the controller session that set it and when); `mergeHolds`, every live
 // hold in the list's own order (its paths, its repository — "" for every repository the project
@@ -979,9 +980,10 @@ package api
 // issue whose merge a hold is keeping back, with the moment its ready_merge row is due again;
 // and `mergeJumpRecords`, the newest jump of each repository that has had one (the repository,
 // the issue, the pull request's number and head, the time, the reason, the entries GitHub's
-// queue then held — each with its number, position, jump, state and when GitHub enqueued it —
-// the queue's total count, whether the entries are unknown, and whether GitHub refused the jump,
-// with its answer). None of the four is ever null, so a plugin built before this refuses the
+// queue held just before the request — each with its number, position, jump, state and when
+// GitHub enqueued it — the queue's total count, whether the entries are unknown, and whether a
+// refusal was recorded, with its words; the record is what Legion asked GitHub for and never
+// where a merge stands). None of the four is ever null, so a plugin built before this refuses the
 // state over them: the route serves a caller whose pod's claims record a contract below 72 the
 // state with none of the four keys at all (api's stateFor, withoutMergeMarks), as it serves a
 // caller below 58 one with no `waitingLine`, one below 57 one with no `step`, one below 56 the

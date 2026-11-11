@@ -9,7 +9,7 @@ import (
 // mergeMarkState is a state carrying all four merge-mark keys: two issues marked for a jump, two
 // live holds — one of a named repository and one of every repository the project serves — one
 // merge a hold is keeping back, and the newest jump of each of two repositories, the second of
-// them refused by GitHub. Every key is filled, because the strip below takes all four together
+// them carrying a refusal. Every key is filled, because the strip below takes all four together
 // and a key that was empty in the fixture would be passed by a strip that never ran.
 func mergeMarkState() State {
 	setAt := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)

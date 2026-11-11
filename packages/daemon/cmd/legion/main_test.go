@@ -1687,18 +1687,30 @@ func TestPlainStateNamesTheMergeHoldsAndWhatTheyHold(t *testing.T) {
 
 // An operator reading plain `legion state` is told which issues carry a live jump mark, each
 // with its reason and the session that set it, and the newest jump of each repository that has
-// had one, each with what it went in front of: the entries GitHub's queue held and how long that
-// queue was, a queue GitHub did not answer told apart from an empty one, and a jump GitHub
-// refused named with its answer, since the mark is spent either way. With no mark and no record
-// the line says so.
+// had one, each with the queue it asked to go ahead of: the entries GitHub's queue held before
+// the request and how long that queue was, a queue GitHub did not answer told apart from an
+// empty one, and a record that carries a refusal named with its words, since the mark is spent
+// either way. With no mark and no record the line says so.
+//
+// Every record the line prints with a queue carries no refusal, and `refused` false is no
+// refusal recorded rather than a jump that went through: the record is written before the
+// mutation is sent, so a jump still in flight reads exactly this way. That is why each of those
+// lines says what the jump asked for and never where the merge stands.
 func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	marked := `[{"issue":"LEGION-208","reason":"the release blocker","session":"controller-2","setAt":"2026-11-10T09:00:00Z"}]`
-	displaced := `{"repository":"acme/widgets","issue":"LEGION-207","number":412,"head":"c0ffee1","at":"2026-11-10T08:00:00Z",` +
+	asked := `{"repository":"acme/widgets","issue":"LEGION-207","number":412,"head":"c0ffee1","at":"2026-11-10T08:00:00Z",` +
 		`"reason":"the earlier blocker","entries":[{"number":401,"position":1,"jump":false,"state":"QUEUED","enqueuedAt":"2026-11-10T07:00:00Z"},` +
 		`{"number":402,"position":2,"jump":false,"state":"MERGEABLE","enqueuedAt":"2026-11-10T07:30:00Z"}],` +
 		`"entriesTotal":3,"entriesUnknown":false,"refused":false,"refusal":""}`
+	// A record with no refusal whose queue GitHub never answered, and one of an empty queue:
+	// both are jumps Legion asked for and nothing has been recorded against, which is every
+	// record until a refusal is written, a jump still in flight among them.
+	unread := `{"repository":"acme/widgets","issue":"LEGION-211","number":413,"head":"beefbee","at":"2026-11-10T09:10:00Z",` +
+		`"reason":"the unread queue","entries":[],"entriesTotal":0,"entriesUnknown":true,"refused":false,"refusal":""}`
+	empty := `{"repository":"acme/widgets","issue":"LEGION-212","number":414,"head":"ba5eba11","at":"2026-11-10T09:20:00Z",` +
+		`"reason":"the empty queue","entries":[],"entriesTotal":0,"entriesUnknown":false,"refused":false,"refusal":""}`
 	refused := `{"repository":"zeta/tools","issue":"LEGION-209","number":77,"head":"deadbee","at":"2026-11-10T08:30:00Z",` +
 		`"reason":"the hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"refused":true,` +
 		`"refusal":"the merge queue is not enabled on this repository"}`
@@ -1713,11 +1725,11 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 		name, jumps, records, want string
 	}{
 		{
-			name:    "a mark, a jump that displaced two and a jump GitHub refused",
+			name:    "a mark, a jump asked of two queued and a jump a refusal was recorded against",
 			jumps:   marked,
-			records: `[` + displaced + `,` + refused + `]`,
+			records: `[` + asked + `,` + refused + `]`,
 			want: `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; the newest of each repository: ` +
-				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", in front of 3 queued: #401 QUEUED, #402 MERGEABLE; ` +
+				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", asked to go ahead of 3 queued: #401 QUEUED, #402 MERGEABLE; ` +
 				`zeta/tools LEGION-209 #77 at 2026-11-10T08:30:00Z "the hotfix", the jump did not go through: "the merge queue is not enabled on this repository"` + "\n",
 		},
 		{
@@ -1729,17 +1741,31 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 				`"Legion could not deliver the jump to GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"` + "\n",
 		},
 		{
+			name:    "a jump whose queue GitHub did not answer, with no refusal recorded",
+			jumps:   `[]`,
+			records: `[` + unread + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`acme/widgets LEGION-211 #413 at 2026-11-10T09:10:00Z "the unread queue", asked to go ahead of a queue GitHub did not answer` + "\n",
+		},
+		{
+			name:    "a jump asked of an empty queue, with no refusal recorded",
+			jumps:   `[]`,
+			records: `[` + empty + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`acme/widgets LEGION-212 #414 at 2026-11-10T09:20:00Z "the empty queue", asked to go ahead of an empty queue` + "\n",
+		},
+		{
 			name:    "a mark nothing has spent yet",
 			jumps:   marked,
 			records: `[]`,
 			want:    `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; none has been spent` + "\n",
 		},
 		{
-			name:    "a jump already spent and no mark standing",
+			name:    "a jump already asked for and no mark standing",
 			jumps:   `[]`,
-			records: `[` + displaced + `]`,
+			records: `[` + asked + `]`,
 			want: `merge jumps: no issue is marked; the newest of each repository: ` +
-				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", in front of 3 queued: #401 QUEUED, #402 MERGEABLE` + "\n",
+				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", asked to go ahead of 3 queued: #401 QUEUED, #402 MERGEABLE` + "\n",
 		},
 		{name: "none", jumps: `[]`, records: `[]`, want: "merge jumps: none\n"},
 	} {
@@ -1761,6 +1787,14 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
 			}
+			// The daemon knows what the jump asked for and never where the merge then stood:
+			// the record is written before the mutation is sent, and this line is read long
+			// after. None of these words may reach an operator from it.
+			for _, claimed := range []string{"went ahead of", "in front of", "displaced", "went through", "at the head of"} {
+				if strings.Contains(out.String(), claimed) {
+					t.Fatalf("legion state printed %q, which says %q of a merge whose place in the queue the daemon never read", out.String(), claimed)
+				}
+			}
 		})
 	}
 }
@@ -1768,7 +1802,7 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 // A jump that never reached GitHub is not printed as one GitHub refused. The daemon falls back
 // to the plain submission for any failure of the jump's own mutation, GitHub's refusal and a
 // network failure, a timeout or a 502 alike, and the record keeps `refused` true for both
-// because the jump went ahead of nothing either way; which of the two happened is in the
+// because the jump's own mutation failed either way; which of the two happened is in the
 // refusal's own words, since the record keeps no column for it (`record.MergeJumpRecord`). So
 // the one line an operator reads must not assert who refused: a request Legion could not
 // deliver, printed as "refused by GitHub", tells the operator the repository's merge queue

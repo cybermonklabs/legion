@@ -1,8 +1,8 @@
 // Package daemon: this file holds the controller's marks on one issue's merge as the row that
 // submits that merge reads and spends them (readyMergeMarks, the ghautomerge.Marks of
 // readyMerge): the project's merge holds, which keep a submission back and whose held stretch
-// this closes again, and the issue's jump mark, which sends GitHub's enqueue at the head of the
-// merge queue. The messages and notices each mark is told in are here with them; the submission
+// this closes again, and the issue's jump mark, which asks GitHub's enqueue to go at the head of
+// the merge queue. The messages and notices each mark is told in are here with them; the submission
 // itself is auto_merge.go's.
 package daemon
 
@@ -30,8 +30,8 @@ import (
 // ready_merge row reads it the moment before the submission goes out (ghautomerge.Marks). Two
 // marks reach this seam, and both are the controller's alone: the project's merge holds
 // (record.MergeHold), which keep a submission back while a hold matches a file the pull request
-// changes, and the issue's jump mark (record.MergeJump), which sends GitHub's enqueue at the head
-// of the merge queue in place of the auto-merge arm. ghautomerge knows neither, so every rule
+// changes, and the issue's jump mark (record.MergeJump), which asks GitHub's enqueue to go at the
+// head of the merge queue in place of the auto-merge arm. ghautomerge knows neither, so every rule
 // about which GitHub call is sent stays in that package and every rule about the controller's
 // marks stays here.
 //
@@ -60,7 +60,7 @@ type readyMergeMarks struct {
 	held    *ghautomerge.Held
 	// jumped is the record written when the mark was spent (record.MergeJumpRecord), kept so that
 	// GitHub's refusal of that jump updates the record it wrote rather than building a second one
-	// from values read again: the entries the jump would have displaced are what the refusal has
+	// from values read again: the entries the jump asked to go ahead of are what the refusal has
 	// to keep, and they were read before the mutation and nowhere else.
 	jumped record.MergeJumpRecord
 }
@@ -256,9 +256,9 @@ func (m *readyMergeMarks) closeHeld(ctx context.Context, err error) error {
 // the auto-merge enable, and false where the issue carries no mark or another worker's run spent
 // it first.
 //
-// Nothing of GitHub is read for an issue with no mark. With one, the queue the jump is about to go
+// Nothing of GitHub is read for an issue with no mark. With one, the queue the jump asks to go
 // ahead of is read before anything is sent (ghautomerge.QueueEntries, bounded by jumpQueueRead),
-// because once the enqueue lands the queue it displaced is gone; a read GitHub refused is no
+// because once the enqueue lands the queue as it stood is gone; a read GitHub refused is no
 // failure of the jump (queueBefore).
 //
 // The mark is spent for the submission the run is about to make and never ahead of one
@@ -336,10 +336,10 @@ func (m *readyMergeMarks) Jump(ctx context.Context, branch string) (bool, error)
 // submission in the same attempt: GitHub's own answer where GitHub gave one, and a request no
 // answer of GitHub's came back for where it did not (ghautomerge.JumpFailure). The mark is
 // already spent and the record of the request is already written, so the account of the jump has
-// to carry the failure or a jump GitHub never took would stand as the request alone left it: the
-// record is marked refused in place, keeping the entries the jump would have displaced
+// to carry the failure or a jump that did not take would stand as the request alone left it: the
+// record is marked refused in place, keeping the entries the jump had asked to go ahead of
 // (requirement R4), the issue is told, and the controller's own notice carries the issue, the
-// pull request, the head and what happened.
+// pull request, the head and what came back.
 //
 // Both texts and the record say which of the two it was. A transport failure rendered as
 // GitHub's refusal would tell the controller that GitHub decided something it was never asked,
@@ -404,12 +404,12 @@ func (m *readyMergeMarks) JumpRefused(ctx context.Context, failure ghautomerge.J
 }
 
 // jumpRefusalRecorded is what the record of the jump keeps in Refusal (record.MergeJumpRecord):
-// GitHub's own words where an answer of GitHub's came back — its GraphQL refusal, and the HTTP
-// answer it decides a request with, whatever status that answer carries
-// (ghautomerge.JumpFailure) — and the failure named as a request nothing came back for where
-// none did. Refused is true either way, since the jump went ahead of nothing whichever it was,
-// so these words are where a reader of the record alone tells GitHub's own answer from a jump
-// GitHub may never have seen.
+// GitHub's own words where an answer of GitHub's came back — its GraphQL refusal, the HTTP
+// answer it decides a request with whatever status that answer carries, and a 2xx that carried
+// no data (ghautomerge.JumpFailure) — and the failure named as a request nothing came back for
+// where none did. Refused is true either way, since what is recorded is that the jump's own
+// mutation failed, so these words are where a reader of the record alone tells GitHub's own
+// answer from a jump GitHub may never have seen.
 func jumpRefusalRecorded(failure ghautomerge.JumpFailure) string {
 	if failure.Answered {
 		return failure.Answer
@@ -417,12 +417,13 @@ func jumpRefusalRecorded(failure ghautomerge.JumpFailure) string {
 	return "Legion could not deliver the jump to GitHub: " + failure.Answer
 }
 
-// queueBefore is the merge queue of branch as it stood before this jump, as the record keeps it
-// (record.MergeQueueEntryRecord), GitHub's own count of the whole queue, and whether the read
-// failed. A read GitHub refused is no failure of the jump (requirement R3): the record says its
-// entries are unknown, every other field of it stands, and the enqueue is sent. The queue is
-// read for the account of what the jump displaced and for nothing else, so a jump the controller
-// asked for is never lost to a read that answered nothing.
+// queueBefore is the merge queue of branch as GitHub answered it just before this jump's
+// request, as the record keeps it (record.MergeQueueEntryRecord), GitHub's own count of the
+// whole queue, and whether the read failed. A read GitHub refused is no failure of the jump
+// (requirement R3): the record says its entries are unknown, every other field of it stands, and
+// the enqueue is sent. The queue is read for the account of what the jump asked to go ahead of
+// and for nothing else — it is the queue before the request and says nothing of where the merge
+// then stood — so a jump the controller asked for is never lost to a read that answered nothing.
 //
 // The read runs on a budget of its own (jumpQueueRead) off the row's, so a queue GitHub is slow
 // to answer cannot spend what the mutation and the spend transaction after it need.
@@ -528,7 +529,7 @@ func markSession(session string) string {
 // queue held at that moment, which is whose merge the jump is asked to go ahead of. It is written
 // on the issue because the jump is a decision about this issue's merge that the tree reads here,
 // and it names the queue as it stood because that is the one moment the account can be taken:
-// once the enqueue lands, the queue it displaced is gone.
+// once the enqueue lands, the queue as it was read is gone.
 //
 // It says Legion asked and never that the merge went to the head of the queue, because it is
 // written in the transaction that spends the mark, before the enqueue is sent and long before
@@ -540,41 +541,48 @@ func readyMergeJumpedPost(jumped record.MergeJumpRecord, mark record.MergeJump) 
 }
 
 // readyMergeJumpRefusedPost is the message posted on the issue when the jump did not take
-// (readyMergeMarks.JumpRefused): what happened to it, and what follows it. The mark is spent
-// either way, and the plain submission goes out in the same attempt, so the message says both: a
-// reader of the issue must not take a failed jump for a merge that went ahead of the queue, nor
-// for a merge that was never submitted.
+// (readyMergeMarks.JumpRefused): what Legion asked for, what came back, and what followed. The
+// mark is spent either way, and the plain submission goes out in the same attempt, so the
+// message says both: a reader of the issue must not take a failed jump for a merge that went
+// ahead of the queue, nor for a merge that was never submitted. It says nothing about where the
+// merge now stands in the queue, which GitHub alone knows.
 //
 // GitHub's answer is quoted as GitHub's own only where one came back (ghautomerge.JumpFailure),
-// which is its GraphQL refusal and the HTTP answer it decides a request with, a 502 of GitHub's
-// own edge as much as a 403. A dial that failed, a timeout or a connection closed before any
-// status arrived is a jump nothing came back for, and writing one as GitHub's refusal would put
-// words on the issue that GitHub never said. That case says no answer reached Legion rather than
-// that GitHub answered nothing, because what GitHub did with a request it never answered Legion
-// about is exactly what nobody knows.
+// which is its GraphQL refusal, the HTTP answer it decides a request with — a 502 of GitHub's
+// own edge as much as a 403 — and a 2xx that carried no data. The message quotes that answer and
+// draws no conclusion from it: a 502 means GitHub's edge answered and its API decided nothing,
+// so "GitHub refused" over it would be a verdict nobody has. A dial that failed, a timeout or a
+// connection closed before any status arrived is a jump nothing came back for, and writing one
+// as GitHub's refusal would put words on the issue that GitHub never said. That case says no
+// answer reached Legion rather than that GitHub answered nothing, because what GitHub did with a
+// request it never answered Legion about is exactly what nobody knows.
 func readyMergeJumpRefusedPost(refused record.MergeJumpRecord, failure ghautomerge.JumpFailure) record.MessagePost {
-	lead := fmt.Sprintf("Legion could not send the merge of pull request #%d at READY's head %s to the head of %s's merge queue, and no answer of GitHub's reached Legion: %s.",
+	lead := fmt.Sprintf("Legion asked GitHub to send the merge of pull request #%d at READY's head %s to the head of %s's merge queue, and no answer of GitHub's reached Legion: %s.",
 		refused.Number, refused.Head, refused.Repository, failure.Answer)
 	if failure.Answered {
-		lead = fmt.Sprintf("GitHub refused to send the merge of pull request #%d at READY's head %s to the head of %s's merge queue: %s.",
+		lead = fmt.Sprintf("Legion asked GitHub to send the merge of pull request #%d at READY's head %s to the head of %s's merge queue, and GitHub answered: %s.",
 			refused.Number, refused.Head, refused.Repository, failure.Answer)
 	}
-	return record.MessagePost{Body: lead + " Legion submitted the merge as it does without a mark, in the same attempt, so this merge waits in the queue behind what was already in it. The jump mark is spent: the controller marks the issue again if the merge is still to jump."}
+	return record.MessagePost{Body: lead + " Legion then submitted the merge as it does without a mark, in the same attempt: the merge was submitted and only the jump did not take. The jump mark is spent: the controller marks the issue again if the merge is still to jump."}
 }
 
 // readyMergeJumpRefusedReason is the merge-jump-refused controller notice's reason: the issue, its
-// pull request, READY's head and what became of the jump (requirement R4) — GitHub's own answer
-// where GitHub answered the enqueue, and a jump no answer of GitHub's came back for where it did
-// not. It is the controller's notice and no architect's, since the jump was the controller's
+// pull request, READY's head, what Legion asked GitHub for and what came back (requirement R4) —
+// GitHub's own answer where GitHub answered the enqueue, and no answer at all where it did not.
+// It is the controller's notice and no architect's, since the jump was the controller's
 // instruction and the merge itself is on its way; the controller is the one who decides whether
 // to mark the issue again, and a request that went unanswered is a different decision from a
 // refusal GitHub's own rules gave.
+//
+// It names neither where the merge now stands nor who refused the jump. The daemon knows what it
+// asked, what came back and that it then submitted the plain merge, and a controller told more
+// than that would act on a reading of GitHub's queue nobody made.
 func readyMergeJumpRefusedReason(refused record.MergeJumpRecord, failure ghautomerge.JumpFailure) string {
 	if failure.Answered {
-		return fmt.Sprintf("GitHub refused the jump mark Legion spent on %s: the merge of pull request #%d of %s at READY's head %s was not sent to the head of the merge queue. GitHub answered: %s. Legion submitted the merge without the jump in the same attempt, and the mark is spent.",
+		return fmt.Sprintf("Legion spent %s's jump mark and asked GitHub to send the merge of pull request #%d of %s at READY's head %s to the head of the merge queue. GitHub answered: %s. Legion then submitted the merge without the jump in the same attempt, and the mark is spent.",
 			refused.Issue, refused.Number, refused.Repository, refused.Head, failure.Answer)
 	}
-	return fmt.Sprintf("The jump mark Legion spent on %s did not reach GitHub's merge queue: the merge of pull request #%d of %s at READY's head %s was not sent to the head of the queue. No answer of GitHub's reached Legion: %s. Legion submitted the merge without the jump in the same attempt, and the mark is spent.",
+	return fmt.Sprintf("Legion spent %s's jump mark and asked GitHub to send the merge of pull request #%d of %s at READY's head %s to the head of the merge queue. No answer of GitHub's reached Legion: %s. Legion then submitted the merge without the jump in the same attempt, and the mark is spent.",
 		refused.Issue, refused.Number, refused.Repository, refused.Head, failure.Answer)
 }
 
@@ -582,17 +590,17 @@ func readyMergeJumpRefusedReason(refused record.MergeJumpRecord, failure ghautom
 // requests that stood in it, oldest entry first, up to what the read carried, with GitHub's own
 // count where the queue was longer than that. A queue nobody could read says so rather than
 // reading as an empty one (record.MergeJumpRecord.EntriesUnknown), and an empty queue says the
-// jump displaces nothing, which is the usual case and worth stating.
+// jump was asked of nothing, which is the usual case and worth stating.
 //
 // It is read beside the sentence that asks for the jump, which GitHub has not answered yet
-// (readyMergeJumpedPost), so it names what the queue held and what the merge is asked to go
-// ahead of, never what it has gone ahead of.
+// (readyMergeJumpedPost), so it names what the queue held before the request and what the merge
+// is asked to go ahead of, never where the merge then stands.
 func jumpedQueueNamed(jumped record.MergeJumpRecord) string {
 	switch {
 	case jumped.EntriesUnknown:
-		return "GitHub did not answer what the queue held, so this merge's place in it is unrecorded."
+		return "GitHub did not answer what the queue held, so the request names no queue it was asked of."
 	case len(jumped.Entries) == 0:
-		return "The queue held nothing, so the jump displaces no merge."
+		return "The queue held nothing, so the jump was asked of an empty queue."
 	}
 	numbers := make([]string, 0, len(jumped.Entries))
 	for _, entry := range jumped.Entries {

@@ -150,8 +150,9 @@ const RoleTopicPrefix = "notifications.role."
 // outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
 // cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
 // ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
-// jump mark the daemon spent whose jump did not go through, GitHub having refused it or Legion
-// having failed to deliver it (`merge-jump-refused`, the daemon's
+// jump mark the daemon spent whose jump did not go through, GitHub having answered the request
+// with something other than the jump or nothing having come back at all (`merge-jump-refused`,
+// the daemon's
 // readyMergeMarks.JumpRefused, which tells the controller because the mark was its instruction
 // and only it decides whether to mark the issue again), and the slot wakes admission sends
 // through wakeController, `slot-free`, `todo` and `tick`

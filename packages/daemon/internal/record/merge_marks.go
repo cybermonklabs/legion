@@ -2,11 +2,11 @@ package record
 
 import "time"
 
-// MergeJump is the jump mark of one issue: the controller's standing instruction that the next
-// merge the daemon submits for this issue goes to the head of GitHub's merge queue
+// MergeJump is the jump mark of one issue: the controller's standing instruction that the daemon
+// ask GitHub to put the next merge it submits for this issue at the head of GitHub's merge queue
 // (`enqueuePullRequest` with jump, rather than the auto-merge the daemon arms otherwise). An issue
 // holds at most one, so the record keeps one row per issue and a second set replaces the first
-// (Store.SetMergeJump).
+// (Store.SetMergeJump, which writes only while the issue is still one the daemon runs).
 //
 // The mark is spent, not standing: the transaction that submits the jumping merge deletes it
 // (Store.ClearMergeJump) and reads the deletion's own answer to know the mark was still there when
@@ -15,8 +15,8 @@ import "time"
 //
 // Reason is what the controller said the jump is for, and Session the controller session that set
 // it. Reason is copied into the record of the jump (MergeJumpRecord) when the merge is submitted,
-// so the account of a pull request that went ahead of the queue names the decision after the mark
-// itself is gone; Session is named in the message the daemon posts on the issue then and in its
+// so the account of what Legion asked GitHub for names the decision after the mark itself is
+// gone; Session is named in the message the daemon posts on the issue then and in its
 // log line, and the record keeps no column for it. SetAt is when the mark was set, by the
 // daemon's clock, kept in UTC as every time this package reads is.
 type MergeJump struct {
@@ -57,8 +57,9 @@ type MergeHold struct {
 
 // MergeJumpRecord is the account of the newest jump of one repository: the jump the daemon asked
 // GitHub for when it spent a jump mark, and what the queue looked like at that moment. The record
-// keeps one per (project, repository), because the question it answers is "what last jumped this
-// repository's queue" — a per-issue history would grow without bound and answer nobody.
+// keeps one per (project, repository), because the question it answers is "what did Legion last
+// ask this repository's queue to let through" — a per-issue history would grow without bound and
+// answer nobody.
 //
 // It is the request and not the merge. The daemon writes it in the transaction that spends the
 // mark, which commits before GitHub's enqueue is sent and long before GitHub answers it (the
@@ -86,7 +87,7 @@ type MergeHold struct {
 // merge row's lease gone to another worker, or the repository's row since taken by a newer jump.
 //
 // The record's Issue is not bound to the issue record. An issue is deleted when its tree is
-// cleaned up, and the account of what a jump was to displace must outlive it, so the column
+// cleaned up, and the account of what a jump asked to go ahead of must outlive it, so the column
 // carries the key as text with no foreign key (the migration's own note says so).
 type MergeJumpRecord struct {
 	Repository     string

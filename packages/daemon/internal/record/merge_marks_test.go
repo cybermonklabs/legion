@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // mergeMarkIssue records an issue the marks can hang on: a jump mark references the issue record,
@@ -20,6 +22,18 @@ func mergeMarkIssue(t *testing.T, records *Postgres, tx pgx.Tx, key string) {
 	issue.Tree = key
 	issue.Parent = nil
 	must(t, records.PutIssue(context.Background(), tx, issue))
+}
+
+// setMark writes one jump mark and reads the answer the conditional write gives: true, since
+// every issue these cases seed is one a daemon still runs (Postgres.SetMergeJump). A case that
+// wants the other answer reads it for itself.
+func setMark(t *testing.T, records *Postgres, tx pgx.Tx, jump MergeJump) {
+	t.Helper()
+	wrote, err := records.SetMergeJump(context.Background(), tx, jump)
+	must(t, err)
+	if !wrote {
+		t.Fatalf("the jump mark of %s was not written, want it on an issue still in the workflow", jump.Issue)
+	}
 }
 
 // A jump mark is written per issue and read back two ways: by the issue, which is how the
@@ -38,8 +52,8 @@ func TestAJumpMarkIsReadBackByIssueAndByProjectAndSpentOnce(t *testing.T) {
 		for _, key := range []string{"LEGION-208", "LEGION-209", "INFRA-7"} {
 			mergeMarkIssue(t, records, tx, key)
 		}
-		must(t, records.SetMergeJump(ctx, tx, MergeJump{Issue: "LEGION-208", Reason: "the release waits on it", Session: "controller-1", SetAt: setAt}))
-		must(t, records.SetMergeJump(ctx, tx, MergeJump{Issue: "INFRA-7", Reason: "another project's mark", Session: "controller-2", SetAt: setAt}))
+		setMark(t, records, tx, MergeJump{Issue: "LEGION-208", Reason: "the release waits on it", Session: "controller-1", SetAt: setAt})
+		setMark(t, records, tx, MergeJump{Issue: "INFRA-7", Reason: "another project's mark", Session: "controller-2", SetAt: setAt})
 	})
 
 	inTx(t, st, func(tx pgx.Tx) {
@@ -67,7 +81,7 @@ func TestAJumpMarkIsReadBackByIssueAndByProjectAndSpentOnce(t *testing.T) {
 	})
 
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.SetMergeJump(ctx, tx, MergeJump{Issue: "LEGION-208", Reason: "a later reason", Session: "controller-3", SetAt: setAt.Add(time.Hour)}))
+		setMark(t, records, tx, MergeJump{Issue: "LEGION-208", Reason: "a later reason", Session: "controller-3", SetAt: setAt.Add(time.Hour)})
 		marks, err := records.MergeJumps(ctx, tx, "LEGION")
 		must(t, err)
 		if len(marks) != 1 || marks[0].Reason != "a later reason" || marks[0].Session != "controller-3" {
@@ -96,6 +110,87 @@ func TestAJumpMarkIsReadBackByIssueAndByProjectAndSpentOnce(t *testing.T) {
 		if jump != nil {
 			t.Fatalf("the spent mark reads as %+v, want none", *jump)
 		}
+	})
+}
+
+// The write of a jump mark is conditional on the issue still being one the daemon runs, and it
+// answers whether it wrote. The route checks the same rule before it writes, in a transaction of
+// its own (api's runningMarkIssue), so there is a window between that read and this write; an
+// issue whose departure commits inside it would otherwise take a mark that outlives the
+// departure, to be spent weeks later by whatever merge a re-admission of the issue reached. The
+// window is driven here as the request meets it: the check reads a running issue, the departure
+// commits, and the write then runs in a transaction of its own and must write nothing.
+//
+// The three departures are Stopped's own, the one rule the refusal and the workflow's clear
+// share. The fourth case is an issue the record no longer holds at all, as a tree's cleanup
+// leaves it: there is no issue for a mark to govern, and the insert's own foreign key would
+// refuse it with nothing a caller could act on.
+func TestAJumpMarkIsNotWrittenForAnIssueWhoseDepartureCommitsFirst(t *testing.T) {
+	ctx := context.Background()
+	setAt := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	lingerUntil := setAt.Add(24 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		depart func(*Issue)
+	}{
+		{name: "closed as done", depart: func(issue *Issue) { issue.Status, issue.Phase = "done", phase.Done }},
+		{name: "parked in backlog", depart: func(issue *Issue) { issue.Status = "backlog" }},
+		{name: "lingering after its close", depart: func(issue *Issue) { issue.LingerUntil = &lingerUntil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			records := NewStore()
+			inTx(t, st, func(tx pgx.Tx) { mergeMarkIssue(t, records, tx, "LEGION-208") })
+
+			// The route's own check, in its own transaction: the issue is running, so the
+			// request goes on to the write.
+			inTx(t, st, func(tx pgx.Tx) {
+				issue, err := records.Issue(ctx, tx, "LEGION-208")
+				must(t, err)
+				if Stopped(*issue) {
+					t.Fatal("the seeded issue reads as stopped, want one the daemon still runs")
+				}
+			})
+			// The departure commits in the window that check leaves open.
+			inTx(t, st, func(tx pgx.Tx) {
+				issue, err := records.Issue(ctx, tx, "LEGION-208")
+				must(t, err)
+				tc.depart(issue)
+				must(t, records.PutIssue(ctx, tx, *issue))
+			})
+
+			inTx(t, st, func(tx pgx.Tx) {
+				wrote, err := records.SetMergeJump(ctx, tx, MergeJump{Issue: "LEGION-208",
+					Reason: "a merge this issue will never submit", Session: "controller-1", SetAt: setAt})
+				must(t, err)
+				if wrote {
+					t.Fatal("the write answered that it wrote the mark of an issue that had left the workflow, want false")
+				}
+				mark, err := records.MergeJumpOf(ctx, tx, "LEGION-208")
+				must(t, err)
+				if mark != nil {
+					t.Fatalf("the record holds the mark %+v of an issue that had left the workflow, want none", *mark)
+				}
+			})
+		})
+	}
+
+	t.Run("an issue the record no longer holds", func(t *testing.T) {
+		st := migratedStore(t)
+		records := NewStore()
+		inTx(t, st, func(tx pgx.Tx) {
+			wrote, err := records.SetMergeJump(ctx, tx, MergeJump{Issue: "LEGION-404",
+				Reason: "a merge of an issue that is gone", Session: "controller-1", SetAt: setAt})
+			must(t, err)
+			if wrote {
+				t.Fatal("the write answered that it wrote the mark of an issue the record does not hold, want false")
+			}
+			mark, err := records.MergeJumpOf(ctx, tx, "LEGION-404")
+			must(t, err)
+			if mark != nil {
+				t.Fatalf("the record holds the mark %+v of an issue it does not record, want none", *mark)
+			}
+		})
 	})
 }
 

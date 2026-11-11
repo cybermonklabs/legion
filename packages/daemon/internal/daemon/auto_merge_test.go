@@ -2720,13 +2720,14 @@ func TestAConflictResubmissionNeverJumpsTheMergeQueue(t *testing.T) {
 	}
 }
 
-// The record of a jump is the account of what the merge went ahead of, and it can be taken at one
-// moment only: before the enqueue lands, since the queue the jump displaced is gone once it has.
-// So the queue is read before the mutation, and what that read answered — or that it answered
-// nothing at all — is written with the issue, the repository, the pull request, the head, the
-// time and the controller's reason. One record stands per repository: the newest jump replaces
-// the one before it.
-func TestAJumpRecordNamesTheQueueItWentAheadOf(t *testing.T) {
+// The record of a jump is the account of the queue the merge was asked to go ahead of, and it
+// can be taken at one moment only: before the enqueue lands, since the queue as it stood is gone
+// once it has. So the queue is read before the mutation, and what that read answered — or that
+// it answered nothing at all — is written with the issue, the repository, the pull request, the
+// head, the time and the controller's reason. One record stands per repository: the newest jump
+// replaces the one before it. Nothing in it says where the merge then stood, since at the moment
+// it is written nothing has been sent.
+func TestAJumpRecordNamesTheQueueItAskedToGoAheadOf(t *testing.T) {
 	const reason = "the release waits on this merge"
 	t.Run("the queue is read before the enqueue and recorded with the jump", func(t *testing.T) {
 		github := newQueueGitHub(t, "CLEAN")
@@ -2740,7 +2741,7 @@ func TestAJumpRecordNamesTheQueueItWentAheadOf(t *testing.T) {
 			t.Fatalf("RunOnce: %v", err)
 		}
 		if order := requestOrder(github.requestLog(), "queue", "enqueue"); !order {
-			t.Fatalf("requests %v, want the queue read before the enqueue: once the enqueue lands the queue it displaced is gone", github.requestLog())
+			t.Fatalf("requests %v, want the queue read before the enqueue: once the enqueue lands the queue as it stood is gone", github.requestLog())
 		}
 		jumped := onlyJumpRecord(t, pool, records)
 		switch {
@@ -2751,7 +2752,7 @@ func TestAJumpRecordNamesTheQueueItWentAheadOf(t *testing.T) {
 		case jumped.Reason != reason:
 			t.Fatalf("the jump record's reason %q, want the controller's %q", jumped.Reason, reason)
 		case jumped.Refused || jumped.Refusal != "" || jumped.EntriesUnknown:
-			t.Fatalf("the jump record is refused %t with %q and unknown entries %t, want a jump GitHub took with the queue it read", jumped.Refused, jumped.Refusal, jumped.EntriesUnknown)
+			t.Fatalf("the jump record is refused %t with %q and unknown entries %t, want no refusal recorded and the queue it read", jumped.Refused, jumped.Refusal, jumped.EntriesUnknown)
 		case len(jumped.Entries) != 2 || jumped.Entries[0].Number != 11 || jumped.Entries[1].Number != 12 || jumped.EntriesTotal != 2:
 			t.Fatalf("the jump record holds %v of %d entries, want #11 and #12", jumped.Entries, jumped.EntriesTotal)
 		case jumped.Entries[0].State != "MERGEABLE" || jumped.Entries[0].Position != 1:
@@ -2834,11 +2835,15 @@ func TestAJumpRecordNamesTheQueueItWentAheadOf(t *testing.T) {
 	})
 }
 
-// GitHub refusing the jump spends the mark all the same, and the submission chosen follows in the
-// same attempt: the merge is on its way, behind what was already in the queue. The issue is told
-// what GitHub answered, the record of the jump carries the refusal with the entries the jump would
-// have displaced, and the controller gets a notice of its own — the jump was its instruction. The
-// row is not ended: a refused jump is no refusal of the merge.
+// GitHub answering the jump's own mutation with anything but the jump spends the mark all the
+// same, and the submission chosen follows in the same attempt: the merge was submitted. The
+// issue is told what Legion asked for and what GitHub answered, the record of the jump carries
+// those words with the entries the jump had asked to go ahead of, and the controller gets a
+// notice of its own — the jump was its instruction. The row is not ended: a jump that did not
+// take is no refusal of the merge.
+//
+// Neither text says where the merge then stood. The daemon asked, read GitHub's answer and
+// submitted the plain merge, and GitHub alone knows what its queue did with it.
 func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 	const refusal = "Only administrators can jump the merge queue."
 	github := newQueueGitHub(t, "CLEAN")
@@ -2859,14 +2864,16 @@ func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 	case !jumped.Refused || !strings.Contains(jumped.Refusal, refusal):
 		t.Fatalf("the jump record is refused %t with %q, want GitHub's own answer", jumped.Refused, jumped.Refusal)
 	case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
-		t.Fatalf("the refused jump record holds %v, want the entries it would have displaced", jumped.Entries)
+		t.Fatalf("the refused jump record holds %v, want the entries it had asked to go ahead of", jumped.Entries)
 	}
 	posts := messagePosts(t, pool)
 	if len(posts) != 2 {
-		t.Fatalf("Dispatch messages %q, want the jump's and the refusal's", posts)
+		t.Fatalf("Dispatch messages %q, want the jump's and the failure's", posts)
 	}
-	if !strings.Contains(posts[1], refusal) || !strings.Contains(posts[1], "refused") {
-		t.Fatalf("the refusal posted on the issue %q, want it to say the jump was refused and name GitHub's answer", posts[1])
+	for _, said := range []string{"Legion asked GitHub to send the merge", "GitHub answered: ", refusal, "Legion then submitted the merge"} {
+		if !strings.Contains(posts[1], said) {
+			t.Fatalf("the failure posted on the issue %q, want it to say %q: what Legion asked, what came back, and that the plain merge went out", posts[1], said)
+		}
 	}
 	notices := controllerNotices(t, pool)
 	if len(notices) != 1 || notices[0].kind != string(record.MergeJumpRefusedNotice) {
@@ -2877,6 +2884,16 @@ func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 			t.Fatalf("the controller notice %q, want it to name %q", notices[0].reason, name)
 		}
 	}
+	// What neither text may say: the daemon never read where the merge stands, and a 502 of
+	// GitHub's own edge reaches these same words, so "GitHub refused" would be a verdict nobody
+	// has.
+	for _, told := range []string{posts[1], notices[0].reason} {
+		for _, claimed := range []string{"GitHub refused", "waits in the queue", "behind what was already", "went ahead of", "was not sent to the head"} {
+			if strings.Contains(told, claimed) {
+				t.Fatalf("%q says %q, which is a reading of GitHub's queue the daemon never made", told, claimed)
+			}
+		}
+	}
 	// The row still stands and no merge-refused notice was written: a refused jump never ends
 	// the row.
 	assertMergeRows(t, pool, 1, "merge-refused", 0)
@@ -2884,12 +2901,12 @@ func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 
 // A jump nothing came back for — the enqueue whose connection closed before any status arrived,
 // as a dial that failed or a timeout leaves it — falls back exactly as a refusal does and spends
-// the mark the same way, and everything written about it says what it was: Legion could not
-// deliver the request. Neither the Dispatch post nor the controller's notice puts an answer in
-// GitHub's mouth, and the record of the jump carries the same words beside its Refused, which
-// stands because the jump did not go ahead of the queue whichever way it ended. A controller
-// told GitHub refused would read the repository's merge-queue rules for a failure of the
-// network.
+// the mark the same way, and everything written about it says what it was: Legion asked, and no
+// answer of GitHub's reached it. Neither the Dispatch post nor the controller's notice puts an
+// answer in GitHub's mouth, and the record of the jump carries the same words beside its
+// Refused, which stands because the jump's own mutation failed whichever way it ended. A
+// controller told GitHub refused would read the repository's merge-queue rules for a failure of
+// the network, and one told where the merge stands would be reading a queue nobody looked at.
 func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing.T) {
 	github := newQueueGitHub(t, "CLEAN")
 	github.set(func(g *armableGitHub) {
@@ -2907,33 +2924,38 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing
 	jumped := onlyJumpRecord(t, pool, records)
 	switch {
 	case !jumped.Refused:
-		t.Fatalf("the jump record is refused %t, want it marked: the merge never went ahead of the queue", jumped.Refused)
+		t.Fatalf("the jump record is refused %t, want it marked: the jump's own mutation failed", jumped.Refused)
 	case !strings.Contains(jumped.Refusal, "could not deliver the jump to GitHub") || !strings.Contains(jumped.Refusal, "/graphql"):
 		t.Fatalf("the jump record carries %q, want the failure named as one Legion could not deliver", jumped.Refusal)
 	case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
-		t.Fatalf("the record of the undelivered jump holds %v, want the entries it would have displaced", jumped.Entries)
+		t.Fatalf("the record of the undelivered jump holds %v, want the entries it had asked to go ahead of", jumped.Entries)
 	}
 	posts := messagePosts(t, pool)
 	if len(posts) != 2 {
 		t.Fatalf("Dispatch messages %q, want the jump's and the failure's", posts)
 	}
-	if !strings.Contains(posts[1], "Legion could not send the merge") || !strings.Contains(posts[1], "no answer of GitHub's reached Legion") {
-		t.Fatalf("the failure posted on the issue %q, want it to read as a jump no answer of GitHub's came back for", posts[1])
+	for _, said := range []string{"Legion asked GitHub to send the merge", "no answer of GitHub's reached Legion", "Legion then submitted the merge"} {
+		if !strings.Contains(posts[1], said) {
+			t.Fatalf("the failure posted on the issue %q, want it to say %q: what Legion asked, that nothing came back, and that the plain merge went out", posts[1], said)
+		}
 	}
 	notices := controllerNotices(t, pool)
 	if len(notices) != 1 || notices[0].kind != string(record.MergeJumpRefusedNotice) {
 		t.Fatalf("controller notices %v, want one merge-jump-refused", notices)
 	}
-	for _, name := range []string{"LEGION-208", "#42", "ready-head", "did not reach GitHub", "/graphql"} {
+	for _, name := range []string{"LEGION-208", "#42", "ready-head", "No answer of GitHub's reached Legion", "/graphql"} {
 		if !strings.Contains(notices[0].reason, name) {
 			t.Fatalf("the controller notice %q, want it to name %q", notices[0].reason, name)
 		}
 	}
-	// Nothing GitHub never said is written as GitHub's: neither text calls this a refusal of
-	// GitHub's, and neither quotes it as GitHub's answer.
+	// Nothing GitHub never said is written as GitHub's, and nothing is said of where the merge
+	// stands: neither text calls this a refusal of GitHub's, neither quotes it as GitHub's
+	// answer, and neither places the merge in the queue.
 	for _, told := range []string{posts[1], notices[0].reason} {
-		if strings.Contains(told, "GitHub refused") || strings.Contains(told, "GitHub answered:") {
-			t.Fatalf("%q reads as GitHub's own answer, which GitHub never gave", told)
+		for _, claimed := range []string{"GitHub refused", "GitHub answered:", "waits in the queue", "behind what was already", "went ahead of", "did not reach GitHub's merge queue"} {
+			if strings.Contains(told, claimed) {
+				t.Fatalf("%q says %q, which is either GitHub's word it never gave or a reading of its queue nobody made", told, claimed)
+			}
 		}
 	}
 	// The row still stands and no merge-refused notice was written: a jump that failed is no
@@ -2945,11 +2967,15 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing
 // 401, a 403 — a secondary rate limit among them — or a 429 is GitHub deciding this very
 // request before any document of it is read, and the 500 or 502 GitHub's own edge sends for an
 // API that decided nothing is an answer that reached Legion all the same (ghautomerge's
-// jumpAnswered). The message on the issue, the controller's notice and the record all read as
-// GitHub's answer and quote the status it came with, where the connection closed with no status
+// jumpAnswered). The message on the issue, the controller's notice and the record all quote it
+// as GitHub's answer with the status it came with, where the connection closed with no status
 // above reads as a jump nothing came back for. A controller told nothing was answered would
 // look for a network to repair where GitHub had refused its token, and a 502 written as a
 // request GitHub never answered would sit beside the very words naming GitHub's own status.
+//
+// What the texts quote is the answer and never a verdict drawn from it: a 502 is GitHub's edge
+// saying its API decided nothing, so "GitHub refused" over it would tell a controller of a
+// decision GitHub never made.
 func TestAJumpGitHubRefusedWithAnHTTPStatusReadsAsGitHubsOwnAnswer(t *testing.T) {
 	for _, status := range []int{http.StatusForbidden, http.StatusBadGateway} {
 		t.Run(fmt.Sprintf("GitHub answered %d", status), func(t *testing.T) {
@@ -2974,7 +3000,7 @@ func TestAJumpGitHubRefusedWithAnHTTPStatusReadsAsGitHubsOwnAnswer(t *testing.T)
 			case strings.Contains(jumped.Refusal, "could not deliver"):
 				t.Fatalf("the jump record carries %q, want GitHub's answer and not a failure to deliver", jumped.Refusal)
 			case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
-				t.Fatalf("the refused jump record holds %v, want the entries it would have displaced", jumped.Entries)
+				t.Fatalf("the refused jump record holds %v, want the entries it had asked to go ahead of", jumped.Entries)
 			}
 			posts := messagePosts(t, pool)
 			if len(posts) != 2 {
@@ -2988,10 +3014,14 @@ func TestAJumpGitHubRefusedWithAnHTTPStatusReadsAsGitHubsOwnAnswer(t *testing.T)
 				switch {
 				case !strings.Contains(told, named):
 					t.Fatalf("%q does not name the %s GitHub answered the jump with", told, named)
-				case !strings.Contains(told, "GitHub refused"):
+				case !strings.Contains(told, "GitHub answered"):
 					t.Fatalf("%q does not read as GitHub's own answer, which a %s is", told, named)
+				case !strings.Contains(told, "asked GitHub to send the merge"):
+					t.Fatalf("%q does not say what Legion asked GitHub for before it quotes the answer", told)
 				case strings.Contains(told, "reached Legion"), strings.Contains(told, "did not reach GitHub"):
 					t.Fatalf("%q reads as a jump nothing of GitHub's answered, where GitHub answered %s", told, named)
+				case strings.Contains(told, "GitHub refused"), strings.Contains(told, "waits in the queue"), strings.Contains(told, "went ahead of"):
+					t.Fatalf("%q draws a verdict from the %s GitHub answered, which the daemon has no reading of the queue for", told, named)
 				}
 			}
 			// The row still stands and no merge-refused notice was written: a refused jump is
@@ -3092,13 +3122,21 @@ func jumpRunner(t *testing.T, github *armableGitHub, reason string) (*pgxpool.Po
 	return pool, records, mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return now }), now
 }
 
-// setMergeJump marks issue for the jump, as the controller's route does.
+// setMergeJump marks issue for the jump, as the controller's route does. The write lands only
+// while the issue is still one the daemon runs (record.Store.SetMergeJump), so the answer is
+// read: a seed that wrote nothing would leave the run with no mark to spend.
 func setMergeJump(t *testing.T, pool *pgxpool.Pool, records record.Store, issue, reason string, at time.Time) {
 	t.Helper()
+	var wrote bool
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return records.SetMergeJump(context.Background(), tx, record.MergeJump{Issue: issue, Reason: reason, Session: "ses_controller", SetAt: at})
+		var err error
+		wrote, err = records.SetMergeJump(context.Background(), tx, record.MergeJump{Issue: issue, Reason: reason, Session: "ses_controller", SetAt: at})
+		return err
 	}); err != nil {
 		t.Fatalf("set the jump mark of %s: %v", issue, err)
+	}
+	if !wrote {
+		t.Fatalf("the jump mark of %s was not written, want it on an issue still in the workflow", issue)
 	}
 }
 

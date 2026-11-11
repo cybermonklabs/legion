@@ -521,9 +521,9 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
 //
-// A merge-jump-refused notice names a jump mark (MergeJump) the daemon spent on a merge GitHub
-// would not enqueue at the head of its queue: the issue, its pull request, the head the jump was
-// sent for and GitHub's own answer. It is the controller's and no architect's because the jump
+// A merge-jump-refused notice names a jump mark (MergeJump) the daemon spent on a jump whose own
+// mutation failed: the issue, its pull request, the head the jump was asked for, and GitHub's
+// own answer where one came back. It is the controller's and no architect's because the jump
 // was the controller's instruction and the mark is gone — the daemon falls back to the plain
 // submission in the same attempt, so the merge itself is on its way and nothing of the issue's
 // own work changed. The controller reads it to decide whether to mark the issue again

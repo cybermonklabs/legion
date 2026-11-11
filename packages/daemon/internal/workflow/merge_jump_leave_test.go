@@ -95,15 +95,24 @@ func TestLeavingTheWorkflowClearsTheJumpMark(t *testing.T) {
 	}
 }
 
-// seedMergeJump marks issue for the jump, as the controller's route does.
+// seedMergeJump marks issue for the jump, as the controller's route does. The write lands only
+// while the issue is still one the daemon runs (record.Store.SetMergeJump), and this seed runs
+// before the departure under test, so the answer is read: a mark that was never written would
+// let the leave's own clear pass for free.
 func seedMergeJump(t *testing.T, pool *pgxpool.Pool, issue, reason string) {
 	t.Helper()
+	var wrote bool
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().SetMergeJump(t.Context(), tx, record.MergeJump{
+		var err error
+		wrote, err = record.NewStore().SetMergeJump(t.Context(), tx, record.MergeJump{
 			Issue: issue, Reason: reason, Session: "ses_controller",
 			SetAt: time.Date(2026, 9, 22, 23, 0, 0, 0, time.UTC),
 		})
+		return err
 	})
+	if !wrote {
+		t.Fatalf("the jump mark of %s was not written, want it on an issue still in the workflow", issue)
+	}
 }
 
 // mergeJumpOf is the jump mark the record holds for issue, nil when it holds none.

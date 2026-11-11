@@ -1607,8 +1607,11 @@ type Store interface {
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 	// SetMergeJump sets issue's jump mark (MergeJump), replacing the one the issue holds: an
-	// issue carries at most one.
-	SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) error
+	// issue carries at most one. It writes only while the issue's own record, read under its row
+	// lock in this same transaction, is still one the daemon runs (Stopped), and answers whether
+	// it wrote: false is an issue whose departure committed while the request was in flight, and
+	// one whose record is gone altogether.
+	SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) (bool, error)
 	// ClearMergeJump deletes issue's jump mark and answers whether a row went. False is a mark
 	// another transaction already spent, or one a controller took off, which is what the
 	// transaction that submits a jumping merge reads to know the mark was still there when it

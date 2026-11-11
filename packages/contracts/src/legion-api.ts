@@ -709,20 +709,26 @@ const legionMergeQueueEntry = z.object({
 });
 
 /** `api.MergeJumpRecordView` — the newest jump of one repository (contract 72): the repository,
- * the issue whose mark was spent, the pull request's number and head, when the daemon submitted
- * it, the reason the mark carried, the queue as it stood before the jump (oldest entry first,
- * which is what names whose merge the jump displaced), how long that queue was, whether GitHub
- * answered no queue at all, and whether the jump went through, with what came back where it did
- * not.
+ * the issue whose mark was spent, the pull request's number and head, when the daemon asked, the
+ * reason the mark carried, the queue as it stood before the request (oldest entry first, which
+ * is what names whose merge the jump asked to go ahead of), how long that queue was, whether
+ * GitHub answered no queue at all, and whether a refusal was recorded, with the words it
+ * carried.
  *
  * `entriesTotal` and `entriesUnknown` are both here because `entries` alone cannot be read: it may
  * hold less of the queue than the queue had, and an empty `entries` is a queue of nothing only
  * when `entriesUnknown` is false. `refused` and `refusal` are here because the mark is spent
- * whether or not the jump went through, and without them a jump that did not would read as a merge
- * that went ahead of the queue; `refusal` is empty on a jump that did, and otherwise carries
+ * whether or not the jump took, and without them a jump that did not would stand as the request
+ * alone left it; `refusal` is empty where no refusal was recorded, and otherwise carries
  * GitHub's own words where an answer of GitHub's came back, a 502 of its own edge as much as a
  * 403, or says that Legion could not deliver it where nothing came back at all — a dial that
- * failed, a timeout, a connection closed before any status arrived. */
+ * failed, a timeout, a connection closed before any status arrived.
+ *
+ * `refused` false is "no refusal recorded" and never, on its own, a jump that went through: the
+ * daemon writes this record before it sends the mutation, so a jump still in flight, and one
+ * whose refusal the daemon could not write down, both read this way. Nor does `entries` say
+ * where the merge stands: it is the queue as the daemon read it before the request, and what
+ * GitHub then did with the queue is on GitHub. */
 const legionMergeJumpRecord = z.object({
   repository: nonEmptyString,
   issue: issueKey,
@@ -759,9 +765,10 @@ const legionMergeJumpRecord = z.object({
  * that finds it absent has been served that stripped body and learns nothing about which wakes
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
  * refuse. `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords` are the controller's
- * merge marks (contract 72): the issues whose next merge the daemon submits at the head of
- * GitHub's merge queue, the project's live holds, the issues whose merge one of those holds is
- * keeping back, and the newest jump of each repository that has had one, each never null and each
+ * merge marks (contract 72): the issues whose next merge the daemon asks GitHub to put at the
+ * head of its merge queue, the project's live holds, the issues whose merge one of those holds
+ * is keeping back, and the newest jump of each repository that has had one — what Legion asked
+ * GitHub for, never where a merge stands — each never null and each
  * empty while the project carries none of it. All four are optional here for the reason
  * `wakesWaiting` is: a reader before 72 knows none of them and refuses each as surely when it is
  * empty as when it names a mark, so the route leaves all four off the one body it serves a caller
@@ -1206,16 +1213,19 @@ export const LegionIssueStatusRequest = z.strictObject({
 });
 
 /** `api.MergeJumpRequest`, the controller's jump mark on one issue, posted to
- * `POST /legion/v1/merge/jump`: the next merge the daemon submits for `issue` goes in at the head
- * of GitHub's merge queue, and `reason` is what the controller says the jump is for, which the
- * record of the jump keeps after the mark is spent. The daemon refuses a request without a
- * controller grant (`CONTROLLER_REQUIRED`), one naming an issue of another Dispatch project
- * (`ISSUE_OUTSIDE_PROJECT`, since the daemons of several projects share one database and a mark
- * is kept under the issue's key alone), one naming an issue it does not record
- * (`ISSUE_NOT_RECORDED`), one naming an issue that has left the workflow and so submits no merge
- * to mark (`ISSUE_LEFT_WORKFLOW`), and one leaving a field empty, each before the grant is
- * redeemed. An issue holds at most one mark, so a second set of the same issue replaces the
- * first rather than being refused: the route takes the controller's newest word. */
+ * `POST /legion/v1/merge/jump`: the daemon asks GitHub to put the next merge it submits for
+ * `issue` at the head of GitHub's merge queue, and `reason` is what the controller says the jump
+ * is for, which the record of the jump keeps after the mark is spent. The daemon refuses a
+ * request without a controller grant (`CONTROLLER_REQUIRED`), one naming an issue of another
+ * Dispatch project (`ISSUE_OUTSIDE_PROJECT`, since the daemons of several projects share one
+ * database and a mark is kept under the issue's key alone), one naming an issue it does not
+ * record (`ISSUE_NOT_RECORDED`), one naming an issue that has left the workflow and so submits
+ * no merge to mark (`ISSUE_LEFT_WORKFLOW`), and one leaving a field empty, each before the grant
+ * is redeemed. `ISSUE_LEFT_WORKFLOW` also answers a departure that commits while the request is
+ * in flight: the write of the mark is conditional on the issue still being one the daemon runs,
+ * so nothing is written and the caller is told the same thing. An issue holds at most one mark,
+ * so a second set of the same issue replaces the first rather than being refused: the route
+ * takes the controller's newest word. */
 export const LegionMergeJumpRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

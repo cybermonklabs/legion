@@ -12,11 +12,11 @@
 -- primary key rather than a column of a log. A jump is a decision about one issue's next merge,
 -- never a history, so a second set of the mark replaces the first (record.Store.SetMergeJump) and
 -- nothing accumulates. reason and session record who asked for it and why, which is what the
--- record of the jump (merge_jump_records) repeats to anybody who asks later why a pull request
--- went ahead of the queue. A row goes in three ways: the daemon spends it when it submits the
--- jumping merge (ClearMergeJump), a controller takes the mark off, and the issue's own record is
--- deleted — the `on delete cascade` below, since a mark on an issue the daemon no longer records
--- can govern no submission.
+-- record of the jump (merge_jump_records) repeats to anybody who asks later what Legion asked
+-- GitHub's queue to let through, and why. A row goes in three ways: the daemon spends it when
+-- it submits the jumping merge (ClearMergeJump), a controller takes the mark off, and the
+-- issue's own record is deleted — the `on delete cascade` below, since a mark on an issue the
+-- daemon no longer records can govern no submission.
 --
 -- merge_holds is the project's hold list. The list is replaced whole on every write
 -- (ReplaceMergeHolds), so a controller sends the list it wants to stand rather than editing one
@@ -33,20 +33,21 @@
 -- forward. A row also goes with the next replacement of the project's list.
 --
 -- merge_jump_records keeps the newest jump of each repository, which is why the primary key is
--- (project, repository): what a reader wants is what jumped this repository's queue last, and a
--- record per repository answers it without a scan. entries is the queue as it stood before the
--- jump, a JSON array of entries (record.MergeQueueEntryRecord), with entries_total the queue's
--- length and entries_unknown set when GitHub did not answer the queue at all: a record that could
--- not read the queue says so rather than reading as an empty queue. refused and refusal carry a
--- jump GitHub would not take, so the mark being spent is never mistaken for the merge having
--- jumped. A jsonb array rather than a table of entries because nothing queries one entry: the
--- whole snapshot is written once and read whole.
+-- (project, repository): what a reader wants is what Legion last asked this repository's queue
+-- to let through, and a record per repository answers it without a scan. entries is the queue as
+-- it stood before the request, a JSON array of entries (record.MergeQueueEntryRecord), with
+-- entries_total the queue's length and entries_unknown set when GitHub did not answer the queue
+-- at all: a record that could not read the queue says so rather than reading as an empty queue.
+-- refused and refusal carry a jump that did not take, so the mark being spent is never mistaken
+-- for a jump that went through; refused false is no refusal recorded, since the row is written
+-- before the mutation is sent. A jsonb array rather than a table of entries because nothing
+-- queries one entry: the whole snapshot is written once and read whole.
 --
--- merge_jump_records.issue deliberately carries no foreign key to issues (key). The record of what
--- a jump displaced outlives the issue record: an issue is deleted when its tree is cleaned up,
--- and the account of a queue that was jumped weeks ago must stay readable after that. The column
--- holds the issue key as text, and a reader that finds no issue of that key reads a jump of an
--- issue the daemon no longer records.
+-- merge_jump_records.issue deliberately carries no foreign key to issues (key). The record of
+-- what a jump asked to go ahead of outlives the issue record: an issue is deleted when its tree
+-- is cleaned up, and the account of a queue a jump was asked of weeks ago must stay readable
+-- after that. The column holds the issue key as text, and a reader that finds no issue of that
+-- key reads a jump of an issue the daemon no longer records.
 --
 -- There is no down file: migrations here are forward-only. A rollback of the image leaves the
 -- three tables standing and empty of meaning, which costs a release that names none of them

@@ -85,10 +85,10 @@ type State struct {
 	// snapshot open. Never null: a daemon with no workflow has none (contract 43).
 	Consumers []ConsumerLagView `json:"consumers"`
 	// MergeJumps is every live jump mark the project's issues carry (record.Store.MergeJumps),
-	// by issue: the issues whose next merge the daemon submits at the head of GitHub's merge
-	// queue rather than behind it. A mark is spent by the merge it governs, so this key is what
-	// the controller has asked for and not yet had; the account of what a spent one did is
-	// MergeJumpRecords. Never null; empty while no issue carries a mark (contract 72).
+	// by issue: the issues whose next merge the daemon asks GitHub to put at the head of its
+	// merge queue rather than behind it. A mark is spent by the merge it governs, so this key is
+	// what the controller has asked for and not yet had; the account of what a spent one asked
+	// for is MergeJumpRecords. Never null; empty while no issue carries a mark (contract 72).
 	MergeJumps []MergeJumpView `json:"mergeJumps"`
 	// MergeHolds is the project's live merge holds, in the list's own order
 	// (record.Store.LiveMergeHolds): while one of them stands, the daemon submits no merge whose
@@ -105,11 +105,13 @@ type State struct {
 	// (contract 72).
 	MergeHeld []MergeHeldView `json:"mergeHeld"`
 	// MergeJumpRecords is the newest jump of each repository that has had one
-	// (record.Store.MergeJumpRecords), by repository: what the daemon did when it spent a mark,
-	// and what GitHub's queue held at that moment, which is what names whose merge the jump
-	// displaced. The record outlives the mark and the issue, so this key answers a reader after
-	// the fact; there is one row per repository and no history. Never null; empty until the
-	// project's first jump (contract 72).
+	// (record.Store.MergeJumpRecords), by repository: what the daemon asked GitHub for when it
+	// spent a mark, and what GitHub's queue held at that moment, which is what names whose merge
+	// the jump asked to go ahead of. It is the request and never where the merge stands: the
+	// record is written before the mutation is sent, and the queue in it is the queue as it was
+	// read before the request. The record outlives the mark and the issue, so this key answers a
+	// reader after the fact; there is one row per repository and no history. Never null; empty
+	// until the project's first jump (contract 72).
 	MergeJumpRecords []MergeJumpRecordView `json:"mergeJumpRecords"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's

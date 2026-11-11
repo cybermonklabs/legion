@@ -15,10 +15,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// MergeJumpRequest sets one issue's jump mark: the controller's instruction that the next merge
-// the daemon submits for Issue goes in at the head of GitHub's merge queue (record.MergeJump).
-// Reason is what the controller says the jump is for, which the record of the jump keeps after
-// the mark itself is spent, so the account of a pull request that went ahead of the queue names
+// MergeJumpRequest sets one issue's jump mark: the controller's instruction that the daemon ask
+// GitHub to put the next merge it submits for Issue at the head of GitHub's merge queue
+// (record.MergeJump). Reason is what the controller says the jump is for, which the record of
+// the jump keeps after the mark itself is spent, so the account of what Legion asked for names
 // the decision. An issue holds at most one mark, so a second set of the same issue replaces the
 // first rather than being refused: the route takes the controller's newest word.
 type MergeJumpRequest struct {
@@ -69,6 +69,14 @@ type MergeHoldRequest struct {
 // refused by a code of its own and before the grant is redeemed, so a caller learns what is wrong
 // with its request whether or not its grant is still good. The mark is written last, under a
 // controller grant alone.
+//
+// The issue is checked twice, and the second check is the write's own. runningMarkIssue reads
+// the record in a transaction of its own and refuses a controller that asked about an issue
+// already out of the workflow, without writing anything; the write then takes the issue's row
+// lock and refuses again where the record it locks has stopped (record.Store.SetMergeJump),
+// which is the departure that committed while this request was in flight. Both refusals are the
+// one 409 ISSUE_LEFT_WORKFLOW: the caller asked to mark an issue the daemon submits no merge
+// for, whichever moment it stopped being one.
 func (s *server) mergeJump(w http.ResponseWriter, r *http.Request) {
 	var req MergeJumpRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -92,11 +100,20 @@ func (s *server) mergeJump(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mark := record.MergeJump{Issue: req.Issue, Reason: req.Reason, Session: session, SetAt: s.now().UTC()}
+	var wrote bool
 	if err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
-		return s.records.SetMergeJump(r.Context(), tx, mark)
+		var err error
+		wrote, err = s.records.SetMergeJump(r.Context(), tx, mark)
+		return err
 	}); err != nil {
 		s.logRequestFailure(r, err, "api: set a jump mark", "issue", req.Issue)
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not set the jump mark of %s", req.Issue))
+		return
+	}
+	if !wrote {
+		writeFailure(w, http.StatusConflict, "ISSUE_LEFT_WORKFLOW", fmt.Sprintf(
+			"%s left the workflow while its mark was being written, so the daemon submits no merge of it to mark and nothing was written; a mark it still carries can be taken off",
+			req.Issue))
 		return
 	}
 	writeJSON(w, http.StatusOK, EmptyResponse{})
@@ -344,6 +361,13 @@ func (s *server) recordedMarkIssue(w http.ResponseWriter, r *http.Request, issue
 // mark that outlived its issue goes, so mergeJumpClear works on every recorded issue of the
 // project.
 //
+// It reads the record in a transaction of its own, so it answers a controller without writing
+// anything and before the grant is spent; the same rule is read again, under the issue's row
+// lock, in the transaction that writes the mark (record.Store.SetMergeJump), which is what
+// catches a departure that commits while this request is in flight. This check is kept for what
+// it is good at: it names the state the issue was found in, which the write's own refusal
+// cannot.
+//
 // The states refused are the ones record.Stopped names, the daemon's one statement of work that
 // has stopped, so that this refusal and the departure that clears a mark read one record the same
 // way: a status out of the workflow — done, backlog, icebox or triage, the issue closed or parked
@@ -447,16 +471,22 @@ type MergeQueueEntryView = record.MergeQueueEntryRecord
 
 // MergeJumpRecordView is the newest jump of one repository as the state shows it
 // (record.MergeJumpRecord): the repository, the issue whose mark was spent, the pull request's
-// number and head, when the daemon submitted it, the reason the mark carried, the queue as it
-// stood before the jump — oldest entry first, which is what names whose merge the jump displaced
-// — how long that queue was, whether GitHub answered no queue at all, and whether GitHub refused
-// the jump, with its answer.
+// number and head, when the daemon asked, the reason the mark carried, the queue as it stood
+// before the request — oldest entry first, which is what names whose merge the jump asked to go
+// ahead of — how long that queue was, whether GitHub answered no queue at all, and whether a
+// refusal was recorded, with the words it carried.
 //
 // EntriesTotal and EntriesUnknown are both here because Entries alone cannot be read: it may
 // hold less of the queue than the queue had, and an empty Entries is a queue of nothing only
 // when EntriesUnknown is false. Refused and Refusal are here because the mark is spent whether
-// or not GitHub took the jump, and without them a refused jump would read as a merge that went
-// ahead of the queue.
+// or not the jump took, and without them a jump that did not would stand as the request alone
+// left it.
+//
+// Refused false is "no refusal recorded" and never, on its own, a merge that went ahead of the
+// queue: the record is written before the mutation is sent, so it is also a jump whose answer
+// has not come back yet and one whose refusal the daemon could not write down. Nor does the
+// queue in Entries say where the merge stands: it is the queue as it was read before the
+// request, and GitHub alone knows what became of it.
 type MergeJumpRecordView struct {
 	Repository     string                `json:"repository"`
 	Issue          string                `json:"issue"`

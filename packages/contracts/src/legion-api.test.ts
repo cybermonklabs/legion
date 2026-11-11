@@ -1757,8 +1757,8 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 
 // The controller's merge marks (contract 72): the golden names LEGION-210's jump mark, the two
 // holds of the project's list — one of a repository it serves, one of every repository it serves
-// — the issue a hold is keeping back, and the newest jump of two repositories, one GitHub took
-// and one it refused with its queue unread. A state with none of them carries four empty lists
+// — the issue a hold is keeping back, and the newest jump of two repositories, one with no
+// refusal recorded and one carrying a refusal with its queue unread. A state with none of them carries four empty lists
 // rather than none.
 test("the state golden carries the controller's merge marks", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));

@@ -1,7 +1,7 @@
 // Package ghautomerge: this file holds the read of a branch's merge queue (QueueEntries), with
 // the document it is read by and the entry it answers. It is a read and no part of Submit's
 // path: a caller makes it before it decides a jump, so that the account of a jump can name the
-// queue the jump went ahead of while that queue still stands.
+// queue the jump asks to go ahead of while that queue still stands.
 package ghautomerge
 
 import (
@@ -40,9 +40,9 @@ var queueRead = fmt.Sprintf(`query MergeQueueEntries($owner: String!, $name: Str
 // MERGEABLE, UNMERGEABLE, LOCKED, in GitHub's own spelling, so a state this daemon does not know
 // is still carried), and EnqueuedAt when GitHub says it joined the queue.
 //
-// It is what the record keeps of a queue a jump went ahead of (record.MergeQueueEntryRecord), so
-// it holds what tells a reader whose merge was displaced and nothing else of the pull request:
-// the number is enough to find the rest.
+// It is what the record keeps of a queue a jump asked to go ahead of
+// (record.MergeQueueEntryRecord), so it holds what tells a reader whose merge the jump was asked
+// of and nothing else of the pull request: the number is enough to find the rest.
 type QueueEntry struct {
 	Number     int
 	Position   int

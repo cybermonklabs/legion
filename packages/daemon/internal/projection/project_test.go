@@ -862,7 +862,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 
 // The state carries the controller's merge marks as the record holds them: the live jump marks,
 // the live holds in the list's own order, the issues whose merge a hold is keeping back, and the
-// newest jump of each repository with the queue it displaced. A project with no mark at all
+// newest jump of each repository with the queue it asked to go ahead of. A project with no mark at all
 // carries four empty lists and never a nil one, since the wire writes each key on every body.
 func TestProjectAnswersTheControllersMergeMarks(t *testing.T) {
 	setAt := projectedAt.Add(-time.Hour)
@@ -900,7 +900,7 @@ func TestProjectAnswersTheControllersMergeMarks(t *testing.T) {
 	}
 	if len(got.MergeJumpRecords) != 1 || got.MergeJumpRecords[0].EntriesTotal != 2 ||
 		len(got.MergeJumpRecords[0].Entries) != 1 || got.MergeJumpRecords[0].Entries[0].Number != 401 {
-		t.Fatalf("mergeJumpRecords = %#v, want the one record with the entry it displaced", got.MergeJumpRecords)
+		t.Fatalf("mergeJumpRecords = %#v, want the one record with the entry it asked to go ahead of", got.MergeJumpRecords)
 	}
 
 	empty, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)

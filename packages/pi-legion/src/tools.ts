@@ -322,18 +322,21 @@ export function createLegionTool(deps: {
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
         "read_state. " +
-        "set_merge_jump (issue, reason) marks one issue so that the next merge the daemon submits for it goes in at the " +
-        "head of GitHub's merge queue, ahead of the pull requests already in it. The reason stays in the record of the " +
-        "jump after the mark is spent, so the account of a pull request that went ahead of the queue names the decision. " +
+        "set_merge_jump (issue, reason) marks one issue so that the daemon asks GitHub to put the next merge it " +
+        "submits for that issue at the head of GitHub's merge queue, ahead of the pull requests already in it. The " +
+        "reason stays in the record of the jump after the mark is spent, so the account of what Legion asked GitHub " +
+        "for names the decision. " +
         "One issue carries at most one mark, and a second set of the same issue replaces the first. Only a merge that " +
         "goes into a merge queue spends the mark, which is a merge whose base branch requires one. Where the base " +
         "requires no merge queue there is no queue to jump: the daemon submits that merge as it always does, and the " +
         "mark stands until clear_merge_jump takes it off or the issue leaves the workflow. " +
         "The daemon refuses an issue it does not record " +
         "(ISSUE_NOT_RECORDED), an issue of another project (ISSUE_OUTSIDE_PROJECT), an issue that has left the " +
-        "workflow, which submits no merge to mark (ISSUE_LEFT_WORKFLOW), and a call that leaves the reason out. A " +
-        "jump that does not go through does not stop the merge: the daemon submits it without the jump and records " +
-        "whether GitHub answered the request, whatever status that answer carried, or nothing came back at all. " +
+        "workflow, which submits no merge to mark (ISSUE_LEFT_WORKFLOW, which also answers an issue whose departure " +
+        "commits while the call is in flight, leaving no mark written), and a call that leaves the reason out. A " +
+        "jump that does not go through does not stop the merge: the daemon submits it without the jump in the same " +
+        "attempt and records whether GitHub answered the request, whatever status that answer carried, or nothing " +
+        "came back at all. " +
         "clear_merge_jump (issue) takes an issue's mark off before the merge it was about is submitted. It answers the " +
         "same whether a mark went or no mark was there, and the daemon refuses an issue it does not record " +
         "(ISSUE_NOT_RECORDED) or an issue of another project (ISSUE_OUTSIDE_PROJECT). A mark on an issue that has " +
@@ -359,8 +362,9 @@ export function createLegionTool(deps: {
         "(CONTROLLER_REQUIRED). Each answers an empty object, and read_state reads back what they wrote: mergeJumps the " +
         "marks that still stand, mergeHolds the hold list, mergeHeld the issues those holds are keeping back, which is " +
         "the merges a hold caught and not every merge a held path has, and mergeJumpRecords the newest jump of each " +
-        "repository, with the queue it displaced and, where the jump did not go through, whether GitHub refused it or " +
-        "Legion could not deliver it. ",
+        "repository, with the queue it asked to go ahead of and, where a refusal was recorded, whether GitHub " +
+        "answered the request or Legion could not deliver it. A jump record is what Legion asked GitHub for, written " +
+        "before the mutation was sent, and never where a merge stands in the queue: read GitHub for that. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -419,7 +423,7 @@ export function createLegionTool(deps: {
           const issue = requiredString(parameters, operation, "issue");
           if (operation === "set_merge_jump") {
             // The reason outlives the mark: the record of the jump keeps it after the merge
-            // spends the mark, so a jump the daemon made names the decision behind it.
+            // spends the mark, so a jump the daemon asked GitHub for names the decision behind it.
             const reason = requiredString(parameters, operation, "reason");
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.mergeJump({ grantId, issue, reason }));

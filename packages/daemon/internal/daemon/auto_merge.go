@@ -58,7 +58,7 @@ const removalLogReads = 3 * time.Minute
 // minutes, and the 90th percentile of every pull_request run was 17.
 const mergeWaitWarn = time.Hour
 
-// jumpQueueRead is how long the read of the merge queue a jump is about to go ahead of may take
+// jumpQueueRead is how long the read of the merge queue a jump asks to go ahead of may take
 // before the jump is made without it (readyMergeMarks.Jump). The read is one GraphQL call for at
 // most ghautomerge's queuePage entries, and it is the one read that is nobody's business but the
 // record of the jump: GitHub's own answer to the enqueue is what merges the pull request, and a
@@ -178,7 +178,7 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	logs := githubrest.Client{Token: github.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}
 	// The controller's marks are read for this one submission and spent against it
 	// (readyMergeMarks): the project's merge holds, which keep the submission back, and the
-	// issue's jump mark, which sends GitHub's enqueue at the head of the merge queue. The further
+	// issue's jump mark, which asks GitHub's enqueue to go at the head of the merge queue. The further
 	// submission a conflict removal calls for keeps ghautomerge.NoMarks{} (resubmit above), so a
 	// resubmission never jumps: the mark is the controller's instruction about READY's merge, and
 	// the row has already spent it or left it where it was on the submission that was chosen.

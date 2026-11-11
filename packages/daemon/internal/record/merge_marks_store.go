@@ -29,14 +29,41 @@ const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, ent
 // cannot drift apart, as mergeJumpColumns keeps the two reads of the jump marks together.
 const mergeHeldPayload = `payload ? 'heldSince' and payload->>'heldSince' <> ''`
 
-func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) error {
-	_, err := tx.Exec(ctx, `insert into merge_jumps (issue, reason, session, set_at) values ($1, $2, $3, $4)
-		on conflict (issue) do update set reason = excluded.reason, session = excluded.session, set_at = excluded.set_at`,
-		jump.Issue, jump.Reason, jump.Session, jump.SetAt)
-	if err != nil {
-		return fmt.Errorf("set the jump mark of %s: %w", jump.Issue, err)
+// SetMergeJump writes issue's jump mark, and lands only while the issue's own record is still
+// one the daemon runs (Stopped). It answers whether it wrote, as RefuseMergeJumpRecord answers
+// whether its own conditional update landed.
+//
+// The condition is read in this very transaction and under the issue row's lock, which is what
+// makes it a condition rather than a second guess. A departure clears the mark it finds in the
+// transaction that records the departure (workflow's leave), so a mark written between that
+// transaction's read and its commit would outlive the departure: it would stand in the record
+// until a re-admission brought the issue back, and be spent by whatever merge that run reached,
+// against a decision nobody made about that merge. The route's own check of the issue runs
+// before any of this and still stands — it answers a controller without writing anything — but
+// it reads in a transaction of its own, so the window between it and this write is exactly what
+// the lock closes: either this read waits for the departure and sees it, or the departure waits
+// for this write and clears the mark it just wrote.
+//
+// An issue with no record at all answers false too: its record was deleted mid-request, by a
+// tree's cleanup, which takes any mark with it (migration 20261110235352's `on delete cascade`)
+// and leaves no issue for a mark to govern.
+func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) (bool, error) {
+	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1 for update", jump.Issue))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
 	}
-	return nil
+	if err != nil {
+		return false, fmt.Errorf("read the issue the jump mark of %s is for: %w", jump.Issue, err)
+	}
+	if Stopped(*issue) {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `insert into merge_jumps (issue, reason, session, set_at) values ($1, $2, $3, $4)
+		on conflict (issue) do update set reason = excluded.reason, session = excluded.session, set_at = excluded.set_at`,
+		jump.Issue, jump.Reason, jump.Session, jump.SetAt); err != nil {
+		return false, fmt.Errorf("set the jump mark of %s: %w", jump.Issue, err)
+	}
+	return true, nil
 }
 
 func (s *Postgres) ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {

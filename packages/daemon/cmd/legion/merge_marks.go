@@ -58,14 +58,16 @@ func mergeHoldsSummary(holds []api.MergeHoldView, held []api.MergeHeldView) stri
 }
 
 // mergeJumpsSummary is the one line an operator reads for the merge queue the controller has
-// jumped or means to jump: the issues carrying a live jump mark (api.State.MergeJumps), each
-// with its reason and the controller session that set it, and then the newest jump of each
-// repository that has had one (api.State.MergeJumpRecords), each with what it went in front of.
+// asked to jump or means to ask: the issues carrying a live jump mark (api.State.MergeJumps),
+// each with its reason and the controller session that set it, and then the newest jump of each
+// repository that has had one (api.State.MergeJumpRecords), each with the queue it asked to go
+// ahead of.
 //
 // The marks and the records are one line because they are the two halves of one decision: a
-// mark is what the controller has asked for and a record what it got, and a mark that is gone
-// with no record beside it is a jump that never happened. Each reason is the controller's own
-// word, Go-quoted for the reason every other agent-supplied field on these lines is.
+// mark is what the controller has asked for and a record what Legion then asked GitHub for, and
+// a mark that is gone with no record beside it is a jump that was never asked. Each reason is
+// the controller's own word, Go-quoted for the reason every other agent-supplied field on these
+// lines is.
 func mergeJumpsSummary(jumps []api.MergeJumpView, records []api.MergeJumpRecordView) string {
 	if len(jumps) == 0 && len(records) == 0 {
 		return "merge jumps: none"
@@ -84,18 +86,24 @@ func mergeJumpsSummary(jumps []api.MergeJumpView, records []api.MergeJumpRecordV
 	spent := make([]string, len(records))
 	for i, jump := range records {
 		spent[i] = fmt.Sprintf("%s %s #%d at %s %s, %s", jump.Repository, jump.Issue, jump.Number,
-			jump.At.UTC().Format(time.RFC3339), quotedOrNone(jump.Reason), displacedBy(jump))
+			jump.At.UTC().Format(time.RFC3339), quotedOrNone(jump.Reason), jumpAsked(jump))
 	}
 	return fmt.Sprintf("merge jumps: %s; the newest of each repository: %s", marked, strings.Join(spent, "; "))
 }
 
-// displacedBy is what one spent jump went in front of, as mergeJumpsSummary names it: the
-// entries GitHub's queue held when the daemon submitted, each by number and state, and how long
-// that queue was. A jump that did not go through says so with the refusal's own words, because
-// the mark was spent either way and such a jump read as one would name a pull request that never
-// moved; a queue GitHub did not answer is told apart from an empty one, since the record keeps
-// the two apart (record.MergeJumpRecord.EntriesUnknown) and an operator reading "in front of
-// nothing" of an unread queue would be reading a guess.
+// jumpAsked is what one spent jump asked for, as mergeJumpsSummary names it: the queue GitHub
+// answered just before the request, each entry by number and state, and how long that queue was.
+// It is the queue the jump asked to go ahead of and never where the merge stands, because the
+// record is written before the mutation is sent and is read again here long after: what GitHub
+// did with the request is on GitHub. A queue GitHub did not answer is told apart from an empty
+// one, since the record keeps the two apart (record.MergeJumpRecord.EntriesUnknown) and an
+// operator reading "an empty queue" of an unread queue would be reading a guess.
+//
+// A record that carries a refusal says so with the refusal's own words instead, because the
+// mark was spent either way and the queue alone would read as a jump that took. Refused false is
+// no refusal recorded rather than a jump that went through — a record whose answer has not come
+// back yet carries none — which is why this line names the request and claims nothing of the
+// merge.
 //
 // The line says that the jump did not go through and never who refused it. Refused is true for
 // both shapes of a jump that failed — one GitHub answered and one Legion could not deliver — and
@@ -103,19 +111,19 @@ func mergeJumpsSummary(jumps []api.MergeJumpView, records []api.MergeJumpRecordV
 // (record.MergeJumpRecord, the daemon's jumpRefusalRecorded). So this line prints the words and
 // adds no assertion of its own, since "refused by GitHub" over a request GitHub never saw sends
 // an operator to the repository's merge-queue settings for a fault in the network.
-func displacedBy(jump api.MergeJumpRecordView) string {
+func jumpAsked(jump api.MergeJumpRecordView) string {
 	if jump.Refused {
 		return "the jump did not go through: " + quotedOrNone(jump.Refusal)
 	}
 	if jump.EntriesUnknown {
-		return "in front of a queue GitHub did not answer"
+		return "asked to go ahead of a queue GitHub did not answer"
 	}
 	if len(jump.Entries) == 0 {
-		return "in front of an empty queue"
+		return "asked to go ahead of an empty queue"
 	}
 	ahead := make([]string, len(jump.Entries))
 	for i, entry := range jump.Entries {
 		ahead[i] = fmt.Sprintf("#%d %s", entry.Number, entry.State)
 	}
-	return fmt.Sprintf("in front of %d queued: %s", jump.EntriesTotal, strings.Join(ahead, ", "))
+	return fmt.Sprintf("asked to go ahead of %d queued: %s", jump.EntriesTotal, strings.Join(ahead, ", "))
 }

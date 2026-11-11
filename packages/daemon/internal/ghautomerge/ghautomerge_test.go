@@ -50,7 +50,9 @@ import (
 // request itself — a 403 the token is refused by as much as the 502 GitHub's edge sends — and
 // jumpUnanswered leaves it with no answer at all: the fake takes the connection over and closes
 // it, so the client is left with a transport error and nothing of GitHub's to read
-// (jumpAnswered). queueEntries is the merge queue the
+// (jumpAnswered). jumpNoData answers that same enqueue 200 with `{"data":null}` and no errors,
+// the shape githubrest reads as ErrGraphQLNoData: GitHub answered and the answer says nothing of
+// the mutation, which is an answer all the same. queueEntries is the merge queue the
 // fake answers for baseBranch, oldest entry first, and queueTotal is GitHub's totalCount for it,
 // which is above the entries answered where the queue is longer than the page the read asks for
 // (queueTotal zero answers as many as the entries themselves). A read of any other branch answers
@@ -84,6 +86,7 @@ type github struct {
 	refuseJump                     string
 	jumpStatus                     int
 	jumpUnanswered                 bool
+	jumpNoData                     bool
 	queueEntries                   []QueueEntry
 	queueTotal                     int
 	queueReads                     int
@@ -326,6 +329,10 @@ func (g *github) serve(t *testing.T) string {
 			}
 			if g.jumpStatus != 0 {
 				http.Error(w, `{"message":"Server Error"}`, g.jumpStatus)
+				return
+			}
+			if g.jumpNoData {
+				_, _ = w.Write([]byte(`{"data":null}`))
 				return
 			}
 			refusal := g.refuseJump
@@ -1079,11 +1086,12 @@ func TestAJumpMarkSendsTheEnqueueOnlyWhereTheSubmissionIsAnEnqueue(t *testing.T)
 // would lose it and delay the merge for nothing.
 //
 // What the failure was travels with it (JumpFailure.Answered): an answer of GitHub's is GitHub's
-// word, whether GitHub wrote it into the GraphQL answer or decided the request itself with a
+// word, whether GitHub wrote it into the GraphQL answer, decided the request itself with a
 // status of its own — a 403 the token is refused by as much as the 502 its edge sends for an API
-// that decided nothing — and a request the client got no answer to at all, here a connection
-// closed before any status arrived, is a jump nothing came back for. The caller writes the two
-// in different words, so the two must arrive apart.
+// that decided nothing — or answered 200 with no data in the document at all, which is GitHub
+// answering and saying nothing of the mutation; and a request the client got no answer to at
+// all, here a connection closed before any status arrived, is a jump nothing came back for. The
+// caller writes the two in different words, so the two must arrive apart.
 //
 // The jump's own failure never becomes a *Refused and never ends the row: the fallback decides
 // how the submission ends, as it does without a mark at all. A fallback GitHub accepts is the
@@ -1110,6 +1118,8 @@ func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
 			refusedBy: "502", answered: true},
 		{name: "an HTTP refusal GitHub answered the request with", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusForbidden},
 			refusedBy: "403", answered: true},
+		{name: "a 2xx GitHub carried no data in", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpNoData: true},
+			refusedBy: "answered without data", answered: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, _ := clients(t, tc.g)

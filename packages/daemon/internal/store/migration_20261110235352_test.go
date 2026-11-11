@@ -70,7 +70,7 @@ func TestTheMergeMarkTablesArriveWith20261110235352(t *testing.T) {
 
 	// The jump record: the newest jump of each repository of the project, so one repository holds
 	// one record and a second repository holds its own. Its issue carries no foreign key: the
-	// account of what a jump displaced outlives the issue record, so a key no issue row carries
+	// account of what a jump asked to go ahead of outlives the issue record, so a key no issue row carries
 	// is recorded here.
 	const record = `insert into merge_jump_records (project, repository, issue, number, head, at, reason,
 		entries, entries_total, entries_unknown, refused, refusal)

@@ -34,6 +34,17 @@ func newMergeHarness(t *testing.T) (*harness, *time.Time) {
 	t.Helper()
 	h := newHarness(t)
 	clock := mergeNow
+	serveMergeRoutes(t, h, func() time.Time { return clock })
+	seedTree(t, h, "LEGION-208", "LEGION-209")
+	return h, &clock
+}
+
+// serveMergeRoutes points h's handler at a server of the merge-mark routes reading now for its
+// clock. It is apart from newMergeHarness for the one test that needs the clock to be a seam
+// rather than a value: the jump route reads it between its check of the issue and the
+// transaction that writes the mark, which is the window a departure can commit in.
+func serveMergeRoutes(t *testing.T, h *harness, now func() time.Time) {
+	t.Helper()
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:           config.DesignGateRootIssues.Steps(),
 		Supervisor:      h.supervisor,
@@ -48,10 +59,8 @@ func newMergeHarness(t *testing.T) (*harness, *time.Time) {
 		GitHubRepositories: func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("sjawhar/legion")}
 		},
-		Now: func() time.Time { return clock },
+		Now: now,
 	}).Handler
-	seedTree(t, h, "LEGION-208", "LEGION-209")
-	return h, &clock
 }
 
 // controllerSessionOf registers a controller session with a freshly minted capability, as
@@ -79,14 +88,23 @@ func jumpOf(t *testing.T, h *harness, issue string) *record.MergeJump {
 
 // markInRecord writes a jump mark straight into the record, as another project's daemon writes
 // its own: the shared table is keyed by the issue alone, and a test that asks whether a refused
-// call took a mark off needs one there that this project's routes would not have set.
+// call took a mark off needs one there that this project's routes would not have set. The write
+// lands only while the issue is still one a daemon runs (record.Store.SetMergeJump), so it is
+// read here: a seeded issue that had departed would leave the test with no mark and nothing
+// saying why.
 func markInRecord(t *testing.T, h *harness, issue, reason string) {
 	t.Helper()
+	var wrote bool
 	if err := pgx.BeginFunc(context.Background(), h.store.Pool(), func(tx pgx.Tx) error {
-		return record.NewStore().SetMergeJump(context.Background(), tx, record.MergeJump{
+		var err error
+		wrote, err = record.NewStore().SetMergeJump(context.Background(), tx, record.MergeJump{
 			Issue: issue, Reason: reason, Session: "ses_other_controller", SetAt: mergeNow})
+		return err
 	}); err != nil {
 		t.Fatalf("write the jump mark of %s: %v", issue, err)
+	}
+	if !wrote {
+		t.Fatalf("the jump mark of %s was not written, want it on an issue still in the workflow", issue)
 	}
 }
 
@@ -450,6 +468,49 @@ func TestMergeJumpRefusesAnIssueThatHasLeftTheWorkflowAndStillTakesItsMarkOff(t 
 				t.Fatalf("the mark of an issue that has left the workflow after the clear = %+v, want none", *mark)
 			}
 		})
+	}
+}
+
+// A departure that commits while the request is in flight takes no mark. The route reads the
+// issue's record and refuses a stopped one before it writes anything (runningMarkIssue), and
+// that read is a transaction of its own: between its commit and the transaction that writes the
+// mark there is a window, and the workflow's own departure commits in it — it clears the mark it
+// finds and then nothing clears one written after it (workflow's leave, whose comment names the
+// harm: such a mark "would be spent weeks later by whatever merge a re-admission of this issue
+// reaches, against a decision nobody made about that merge").
+//
+// The window is driven through the clock the route reads between the two: s.now() is the last
+// call the request makes before it opens the write's transaction, so a clock that records the
+// departure commits it exactly there. The write then reads the issue again under its row lock
+// and writes nothing (record.Store.SetMergeJump), and the route answers the same 409
+// ISSUE_LEFT_WORKFLOW the early check answers, since the caller asked to mark an issue the
+// daemon submits no merge for.
+func TestMergeJumpWritesNoMarkForADepartureThatCommitsDuringTheRequest(t *testing.T) {
+	h := newHarness(t)
+	departed := false
+	serveMergeRoutes(t, h, func() time.Time {
+		if !departed {
+			departed = true
+			departIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Status, issue.Phase = "done", phase.Done })
+		}
+		return mergeNow
+	})
+	seedTree(t, h, "LEGION-208", "LEGION-209")
+	controllerSessionOf(t, h)
+	grant := controllerGrant(t, h)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+		GrantID: grant.GrantID, Issue: "LEGION-208", Reason: "a merge this issue will never submit",
+	}, nil)
+
+	if !departed {
+		t.Fatal("the request never read the clock, so the departure never committed inside it: the seam this test drives is gone")
+	}
+	refusal := recorder.Body.String()
+	assertFailure(t, recorder, http.StatusConflict, "ISSUE_LEFT_WORKFLOW")
+	assertNames(t, refusal, "LEGION-208")
+	if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+		t.Fatalf("the mark %+v stands for an issue whose departure committed during the request, want none written", *mark)
 	}
 }
 
