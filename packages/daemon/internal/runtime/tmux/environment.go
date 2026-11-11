@@ -113,9 +113,11 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 // refuses (one that places the session a resume reads, one a Claude Code pane is told after the
 // operator's, a launch secret's pointer, a value that is a URL carrying a password), and a provider
 // key or its pointer, which the shim would then refuse to start over or skip
-// (internal/shim/config.go). The loader refuses what it can see without the runtime
-// (config.readPaneEnv); this refuses that again and the rest, at boot, before any pane opens. A
-// refusal names the variable and why, never its value.
+// (internal/shim/config.go). It reads runtimeOwned and controllerOwned and not the composed names
+// (composed), which the operator may set because the runtime writes this launch's share into the
+// value the operator wrote rather than over it. The loader refuses what it can see without the
+// runtime (config.readPaneEnv); this refuses that again and the rest, at boot, before any pane
+// opens. A refusal names the variable and why, never its value.
 func checkPaneEnv(env map[string]string, providerKeys []string) error {
 	identity := runtime.GitIdentity{}.Env()
 	for _, name := range slices.Sorted(maps.Keys(env)) {
