@@ -7636,7 +7636,7 @@ describe("the Dispatch decision record (A5)", () => {
         uploads.push({
           project,
           name: input.name,
-          content: "content" in input ? input.content : "",
+          content: input.content ?? "",
           key,
         });
         const answer = answers.projectArtifact
