@@ -446,7 +446,7 @@ func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 	const closed = 200
 	rig.closedIssuesWithStoppedClaims(t, closed)
 
-	candidates, err := rig.st.UnownedPods(ctx, rig.w.dispatchProject, record.OutOfWorkflowStatuses)
+	candidates, err := rig.st.UnownedPods(ctx, rig.w.dispatchProject, rig.w.projectID, record.OutOfWorkflowStatuses)
 	if err != nil {
 		t.Fatalf("read the pods of the project no claim owns: %v", err)
 	}

@@ -413,7 +413,7 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	candidates, err := st.UnownedPods(ctx, "LEGION", record.OutOfWorkflowStatuses)
+	candidates, err := st.UnownedPods(ctx, "LEGION", "legion", record.OutOfWorkflowStatuses)
 	if err != nil {
 		t.Fatal(err)
 	}

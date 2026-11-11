@@ -156,15 +156,22 @@ func (s *Store) StuckPodResumes(ctx context.Context, project string, before time
 }
 
 // UnfinishedPodResumes are the resumes of project the stranded report judges R6 on: those of
-// each pod's newest release whose wake is at or before the bound and whose woken role has not
-// taken its first turn, the ones a stuck pass has already marked included — a resume marked
-// stuck is exactly a pod a wake never brought back, so dropping it would take the claim out of
-// the report the moment the warning was written.
+// each pod's newest release that suspended a role, whose wake is at or before the bound and
+// whose woken role has not taken its first turn, the ones a stuck pass has already marked
+// included — a resume marked stuck is exactly a pod a wake never brought back, so dropping it
+// would take the claim out of the report the moment the warning was written.
 //
-// A resume of an older release is left out, whatever became of it: the claim it was for has
-// been released again since, which is a pod the daemon has just let go rather than one a wake
-// never brought back. Reading those too would list a role as stranded the moment its next
-// release was recorded.
+// A resume of an older release that suspended a role is left out, whatever became of it: the
+// claim it was for has been released again since, which is a pod the daemon has just let go
+// rather than one a wake never brought back. Reading those too would list a role as stranded
+// the moment its next release was recorded.
+//
+// A release that suspended no role is no such later release, and the subquery's filter on a
+// roles column that is not empty is what keeps it out. The release of a pod no claim of the
+// issue can use (workflow.UnownedPodRelease) changes no claim: a role an earlier release left
+// `released` is still released after it, still woken and still without a first turn, which is
+// the stranded claim this read is for. Counting it as the pod's newest release would drop
+// exactly those rows from the report's released-claim arm.
 func (s *Store) UnfinishedPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
 	return s.podResumesWithoutAFirstTurn(ctx, project, before, false)
 }
@@ -176,7 +183,7 @@ func (s *Store) podResumesWithoutAFirstTurn(ctx context.Context, project string,
 		query += ` and not stuck`
 	} else {
 		query += ` and release_id = (select max(id) from pod_releases
-			where project = r.project and issue = r.issue)`
+			where project = r.project and issue = r.issue and roles <> '')`
 	}
 	rows, err := s.pool.Query(ctx, query+` order by id`, project, before)
 	if err != nil {

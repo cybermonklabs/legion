@@ -285,12 +285,22 @@ func RecordPodWakeTx(ctx context.Context, tx pgx.Tx, res PodResume) (int64, erro
 	return id, nil
 }
 
-// LatestPodRelease is the newest release recorded for issue, or 0 when none is: the release a
-// wake of that pod ends, which is what pairs a resume with the release it measures.
+// LatestPodRelease is the newest release of issue that suspended a role, or 0 when none is: the
+// release a wake of that pod ends, which is what pairs a resume with the release it measures.
+//
+// A release that suspended no role is passed over, and the filter on a roles column that is
+// not empty is what says so: the release of a pod no claim of the issue can use
+// (workflow.UnownedPodRelease) changes no claim, saves no bundle and records its roles empty
+// (pod_releases.roles). Nothing of it comes back on a wake — its pod comes back at the next
+// start of a claim of the issue — so no wake ends it, and a wake that paired with it would
+// leave the release it really ends with no woken moment of its own: the pod hours of that
+// release would run from its own moment to every later read, for ever, and the woken share
+// would count it as a release nothing ever woke. The claim a wake is for was suspended by the
+// release it pairs with, and that release named a role.
 func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `select id from pod_releases where project = $1 and issue = $2
-		order by id desc limit 1`, project, issue).Scan(&id)
+		and roles <> '' order by id desc limit 1`, project, issue).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}

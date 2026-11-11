@@ -4420,8 +4420,10 @@ It saves no git bundle and it changes no claim, so each claim keeps its state, i
 The daemon cannot save that work: it reads a workspace only over a role process, and a pod with no live claim runs none.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch.
 
-Three reasons hold such a pod past the idle period, and the daemon writes each to its hold records under a name of its own:
+Of the reasons that hold such a pod past the idle period, the daemon writes three to its hold records, each under a name of its own:
 a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), and a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`).
+The other reasons are read in the per-pass line of the daemon's log and in no record:
+a pod whose issue or tree root has left the workflow or lingers (`unowned_tree_not_live`), one whose release is already running (`unowned_releasing`), and one a live claim holds again (`unowned_claim_live`) each stand past that period with no hold row of their own.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
 
@@ -4562,8 +4564,24 @@ An Envoy listener rolled back on its own, with this daemon left in place, stops 
 It goes on releasing a pod no claim owns, which reads no listener.
 Roll the listener back with the daemon, or set `idle_minutes: 0` and wait out the released claims first.
 This section adds the released claims and the saved bundles to a rollback and replaces no step of another: this release changes neither the pod layout nor the volume layout, so [Rolling back this release](#rolling-back-this-release) and [Rolling back the upgrade](#rolling-back-the-upgrade) stand as written for the releases they name.
-A release of a pod no claim owns adds no step of its own: it suspends no claim and saves no bundle, so nothing above acts on it.
-An issue it released stands with no Sandbox and no pod, which the earlier release builds again at the next start of a claim of that issue.
+A release of a pod no claim owns adds one step of its own, for such a release in flight when the daemon goes back.
+Its mark carries the rule that wrote it (`issue_releases.kind`) and no build before this change reads that column (`readReleaseMark`, `internal/store/issue_release.go`), so an earlier daemon runs the idle teardown over it:
+it records an earlier release's bundle bytes as this release's, it logs that the issue's roles resume in the same sessions although every claim of the issue is stopped, and it arms backstops, which deletes every wake mark and every open backstop of the issue and arms at most one again, for the open phase role alone.
+A claim an earlier idle release left `released` under any other role then loses its backstop and gets none in its place, so only a delivery, a start or an operator's resume brings that claim back.
+The window is the gap between the pass that marks such a release and its teardown row running, which is seconds, so leave no release of this kind in it:
+let the releases in flight finish before you stop this release's daemon, and then, with the daemon stopped, clear any mark still standing.
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+delete from issue_releases where kind = 'unowned';
+commit;
+SQL
+```
+
+It prints `DELETE <n>`, and `DELETE 0` once every such release has finished.
+The teardown row of a mark this deletes finds no mark and finishes without acting, which costs nothing: that release suspends no claim and saves no bundle, so the pod it would have taken stands, and the earlier release has no rule that releases a pod no claim owns.
+An issue whose pod this rule has already released stands with no Sandbox and no pod, which the earlier release builds again at the next start of a claim of that issue.
 
 ### Liveness rules
 

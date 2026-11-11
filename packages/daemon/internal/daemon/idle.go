@@ -145,13 +145,14 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 // a day it released nothing, which is what its production check reads. Only a pass with no
 // candidate at all writes nothing.
 func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
-	// The project is spelled two ways here, and the two are not the same string. The candidate
-	// answer is read from the issue records, whose project column holds the Dispatch project key
-	// (w.dispatchProject, "LEGION"), while the release's transaction, the hold records and
-	// pod_holds are all keyed on the claim token's spelling (w.projectID, "legion"), which is
-	// what IdlePods and ReleaseIdleIssue read. Store.UnownedPods says so in its own doc comment:
-	// handing it w.projectID answers no issue at all.
-	issues, err := w.idleStore.UnownedPods(ctx, w.dispatchProject, record.OutOfWorkflowStatuses)
+	// The project is spelled two ways here, and the two are not the same string. The issue
+	// records the candidate answer reads carry the Dispatch project key (w.dispatchProject,
+	// "LEGION"), while the claims it reads beside them, the release's transaction, the hold
+	// records and pod_holds are all keyed on the claim token's spelling (w.projectID,
+	// "legion"), which is what IdlePods and ReleaseIdleIssue read. Store.UnownedPods takes both
+	// and says in its own doc comment which is which: the two arguments are not interchangeable
+	// and either one in the other's place answers no issue at all.
+	issues, err := w.idleStore.UnownedPods(ctx, w.dispatchProject, w.projectID, record.OutOfWorkflowStatuses)
 	if err != nil {
 		w.log.Warn("unowned release: could not list the project's pods no claim owns", "error", err)
 		return
@@ -274,13 +275,22 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 //
 // Six belong to the second rule, the release of a pod no claim owns: IdleHoldUnownedClaimLive,
 // IdleHoldUnownedNoClaim, IdleHoldUnownedSandboxGone, IdleHoldUnownedTreeNotLive,
-// IdleHoldUnownedReleasing and IdleHoldUnownedNotIdle. In none of the six does a pod stand idle
-// with nobody in it: the first names a pod a live claim still holds, which the idle rule decides
-// and records; the second and the third name an issue with no pod at all, one with no claim that
-// ever ran and one whose Sandbox is already gone; the fourth names a pod the close is stopping,
-// which the idle rule already reports as IdleHoldTreeNotLive for every pod that has a live claim;
-// and the last two name this rule's own release already running and a quiet period that has not
-// passed. A row for any of them would say a pod was kept where nothing was kept.
+// IdleHoldUnownedReleasing and IdleHoldUnownedNotIdle. In five of them no pod stands idle with
+// nobody in it: the first names a pod a live claim still holds, which the idle rule decides and
+// records; the second and the third name an issue with no pod at all, one with no claim that
+// ever ran and one whose Sandbox is already gone; and the last two name this rule's own release
+// already running and a quiet period that has not passed. A row for any of those five would say
+// a pod was kept where nothing was kept.
+//
+// IdleHoldUnownedTreeNotLive, the fourth, is the one of the six whose pod can stand with nobody
+// in it: the issue or its tree root has left the workflow, or one of them lingers, and the close
+// that stops that pod has not finished. The idle rule reports no such pod either — it decides
+// the issues that have a live claim (IdlePods) and this rule the issues that have none
+// (UnownedPods), so the two candidate sets are disjoint and no pod this rule reads is ever
+// reported as IdleHoldTreeNotLive — and a close stuck on one leaves no hold row at all. It needs
+// none: the pass's own line counts the hold under unowned_tree_not_live once a minute for as
+// long as the pod stands, and `legion state` reports what the tree is doing, which is what the
+// operator acts on. A row would be a third reading of one stuck close with no fact of its own.
 //
 // The pass that reads one of them ends the pod's streaks instead of recording, which is the one
 // place a streak ends outside a hold of another reason (releaseIdlePod).
