@@ -301,11 +301,14 @@ export const GAP_WORDS = freeze({
   no_origin: "Origin not named",
   no_plan_task: "No plan task",
   /** The head of every issue draws this one, because Dispatch holds no read-back of a summary
-   *  at all yet (dispatch://INFRA-1278). It says that of Dispatch rather than of the issue, so
-   *  a reader does not take it for something their own issue is missing. */
-  no_read_back: "Dispatch records no read-back",
+   *  at all yet (dispatch://INFRA-1278). It names Dispatch rather than the issue, so a reader
+   *  does not take it for something their own issue is missing, and it is short enough that
+   *  the two head chips share one line at 390 px: both together are 310 px of the head's 358,
+   *  and a second line there puts the first open question off the first screen (R6,
+   *  `e2e/issue-layout.e2e.ts`, c-open-questions). */
+  no_read_back: "No read-back in Dispatch",
   /** The same for who wrote the sentences, which Dispatch holds of no issue either. */
-  no_summary_author: "Dispatch records no author",
+  no_summary_author: "No author in Dispatch",
   /** A decision says it shaped the node, and the node came from another one. */
   shaped_disagreement: "Origins disagree",
 } as const satisfies Record<GapKind, string>);
