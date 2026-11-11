@@ -534,21 +534,22 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 }
 
 // TestSecretSetReadsTheSecretsOwnShape: a set names no tag, so it reads the shape the secret
-// already carries and stores the value under it. The document here would otherwise meet the
-// untagged reading, which keeps a value holding line endings inside it whole: its owner declared
-// it a document, and one final line feed is all that goes.
+// already carries and stores the value under it. The value is one line, a carriage return and a
+// line feed: under the document reading the carriage return stays and only the final line feed
+// goes, while the untagged reading would store the line alone, so the test fails if the set
+// stores the value under no shape at all.
 func TestSecretSetReadsTheSecretsOwnShape(t *testing.T) {
-	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	const piped, want = "tok\r\n", "tok\r"
 	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "old")
 	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
 	local := secrets.NewLocal(wholeFile)
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, pem)
+	useStdin(t, piped)
 	if _, stderr, code := runSecret("set", "DOCUMENT_KEY"); code != 0 {
 		t.Fatalf("set: exit %d, stderr %q", code, stderr)
 	}
-	if want, v := strings.TrimSuffix(pem, "\n"), valueOf(t, local, "DOCUMENT_KEY"); v != want {
+	if v := valueOf(t, local, "DOCUMENT_KEY"); v != want {
 		t.Fatalf("stored %q, want %q", v, want)
 	}
 }

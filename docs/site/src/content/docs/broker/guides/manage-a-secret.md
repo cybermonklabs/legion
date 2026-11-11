@@ -300,10 +300,10 @@ form makes.
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  1h         -              yes    -        -
+NAME               OWNER            TIER   KIND          SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -      1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -325,6 +325,7 @@ github_owners: -
 requesters: -
 scopes: -
 admin: -
+shape: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -487,10 +488,10 @@ that moment is both), and the **earliest** it can be purged:
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -          -              yes    -                     -
+NAME               OWNER            TIER   KIND  SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -      -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -      -          -              yes    -                     -
 EARLIEST_PURGE is the deletion plus Secrets Manager's 7-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.
 ```
 

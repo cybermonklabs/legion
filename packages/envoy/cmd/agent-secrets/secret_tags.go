@@ -188,14 +188,15 @@ func checkAdmin(admin string, orNone bool) error {
 	return usageErr{fmt.Errorf("--admin is %s, not %q, or the broker refuses the secret as %s; leave --admin off for a secret whose grant is no administrator's", adminTrue, admin, policy.ReasonAdminMalformed)}
 }
 
-// checkShape is --shape's rule: policy.ShapeToken or policy.ShapeDocument, the two words the
-// broker reads (policy.TagShape), or none where orNone allows it (retag) to remove the tag. Any
-// other value is refused here, before anything is read or written, as the broker refuses it on
-// the reread, policy.ReasonShapeMalformed, named as the broker names it: the tag says what the
-// stored value is, so a word the broker does not know leaves it unable to say what a release of
-// the secret would hand over, and a secret carrying one is served to nobody.
+// checkShape is --shape's rule: one of policy.Shapes, the words the broker reads
+// (policy.ValidShape, as checkKind reads policy.ValidKind for --kind), or none where orNone
+// allows it (retag) to remove the tag. Any other value is refused here, before anything is read
+// or written, as the broker refuses it on the reread, policy.ReasonShapeMalformed, named as the
+// broker names it: the tag says what the stored value is, so a word the broker does not know
+// leaves it unable to say what a release of the secret would hand over, and a secret carrying
+// one is served to nobody.
 func checkShape(shape string, orNone bool) error {
-	if shape == "" || shape == policy.ShapeToken || shape == policy.ShapeDocument || (orNone && shape == tagNone) {
+	if shape == "" || policy.ValidShape(shape) || (orNone && shape == tagNone) {
 		return nil
 	}
 	if orNone {
@@ -331,38 +332,53 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 	return usageErr{fmt.Errorf("the broker refuses a secret carrying these tags as %s, and this agent-secrets has no message naming the flag that fixes it: write tags the broker accepts", reason)}
 }
 
+// tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
+// struct rather than eight string parameters for the reason policy.TagSet is one: a caller
+// passing that many values in order would transpose two of them, and every transposition
+// compiles and writes each value as another tag.
+type tagFlags struct {
+	Kind         string
+	GitHubOwners string
+	Requesters   string
+	Scopes       string
+	Admin        string
+	Shape        string
+	MaxGrant     string
+	DefaultGrant string
+}
+
 // optionalTags is the kind, github-owners, requesters, scopes, admin, shape, max-grant and
 // default-grant tags the flags set: each flag's value when it names one, and nothing for one
 // left unset or set to none. A kind brings the rollback guard with it (policy.TagRollbackGuard),
 // so a broker from before kinds refuses the secret rather than serve its stored key or refresh
 // token.
-func optionalTags(kind, githubOwners, requesters, scopes, admin, shape, maxGrant, defaultGrant string) map[string]string {
+func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
-	if named(kind) {
-		tags[policy.TagKind] = kind
+	if named(f.Kind) {
+		tags[policy.TagKind] = f.Kind
 		tags[policy.TagRollbackGuard] = policy.RollbackGuardValue
 	}
-	if named(githubOwners) {
-		tags[policy.TagGitHubOwners] = githubOwners
+	if named(f.GitHubOwners) {
+		tags[policy.TagGitHubOwners] = f.GitHubOwners
 	}
-	if named(requesters) {
-		tags[policy.TagRequesters] = requesters
+	if named(f.Requesters) {
+		tags[policy.TagRequesters] = f.Requesters
 	}
-	if named(scopes) {
-		tags[policy.TagScopes] = scopes
+	if named(f.Scopes) {
+		tags[policy.TagScopes] = f.Scopes
 	}
-	if named(admin) {
-		tags[policy.TagAdmin] = admin
+	if named(f.Admin) {
+		tags[policy.TagAdmin] = f.Admin
 	}
-	if named(shape) {
-		tags[policy.TagShape] = shape
+	if named(f.Shape) {
+		tags[policy.TagShape] = f.Shape
 	}
-	if named(maxGrant) {
-		tags[policy.TagMaxGrant] = maxGrant
+	if named(f.MaxGrant) {
+		tags[policy.TagMaxGrant] = f.MaxGrant
 	}
-	if named(defaultGrant) {
-		tags[policy.TagDefaultGrant] = defaultGrant
+	if named(f.DefaultGrant) {
+		tags[policy.TagDefaultGrant] = f.DefaultGrant
 	}
 	return tags
 }

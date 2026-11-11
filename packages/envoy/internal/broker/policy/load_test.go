@@ -616,6 +616,9 @@ func TestTheShapeTagIsInThePolicyVersion(t *testing.T) {
 	if token == document {
 		t.Error("shape=token and shape=document gave one version, so the digest holds the tag's presence and not its word")
 	}
+	if document == untagged {
+		t.Error("tagging a secret shape=document left the version where an untagged namespace has it, so no retag would reach a pod already holding the values")
+	}
 }
 
 // TestMergedSetVersionEqualsAFullLoads pins the digest contract: building the same contents by a

@@ -182,7 +182,9 @@ func TestTheShapeTagDecidesWhatTheBrokerReleases(t *testing.T) {
 	}
 
 	t.Run("a-document-keeps-its-line-feed", func(t *testing.T) {
-		const secret, stored = "DOCUMENT_SHAPE_KEY", "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+		// One line and one line feed: the untagged reading removes that line feed, so this row
+		// fails, in its value and in the log line it would then write, if the tag is not read.
+		const secret, stored = "DOCUMENT_SHAPE_KEY", "tok\n"
 		released := grantAndRelease(t, m, enrollmentID, key, shaped(secret, policy.ShapeDocument, stored), secret)
 		if got, want := valueDigest(released), valueDigest(stored); got != want {
 			t.Fatalf("%s released %s, want the stored value byte for byte, %s", secret, got, want)

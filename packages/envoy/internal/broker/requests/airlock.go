@@ -581,11 +581,10 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	return values, checked.set.Version, nil
 }
 
-// PolicyVersion is the version of the policy snapshot this broker holds now (policy.Set.Version:
-// every served secret's name, owner, tier, source, max-grant, github-owners, requesters and
-// shape, and each one's airlock fingerprint). The proxy holds the version AirlockValues answered
-// beside the values it answered, and reads this to tell whether that snapshot is still the live
-// one.
+// PolicyVersion is the version of the policy snapshot this broker holds now: policy.Set.Version,
+// which is the one statement of what the version covers, beside each served secret's airlock
+// fingerprint. The proxy holds the version AirlockValues answered beside the values it answered,
+// and reads this to tell whether that snapshot is still the live one.
 //
 // The shape tag is in it so that a retag of it - which changes what the broker hands over for
 // the same stored value, not who may have it - reaches a pod holding values the proxy read

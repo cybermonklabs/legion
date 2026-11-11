@@ -155,6 +155,15 @@ func ValidKind(kind string) bool {
 	return slices.Contains(Kinds, kind)
 }
 
+// Shapes is every value a secret's shape tag may name (TagShape). A tag holding another word is
+// refused (ReasonShapeMalformed), since the broker cannot say what it would release.
+var Shapes = []string{ShapeToken, ShapeDocument}
+
+// ValidShape reports whether shape is one of Shapes.
+func ValidShape(shape string) bool {
+	return slices.Contains(Shapes, shape)
+}
+
 // TrimForShape answers the value to spend for a stored value under its secret's shape tag, and
 // whether it changed it. Let rest be value with its whole trailing run of carriage returns and
 // line feeds removed (strings.TrimRight of "\r\n"):
@@ -553,7 +562,7 @@ func RequesterRule(t TagSet) RequesterFault {
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
 func TagRules(t TagSet) string {
-	if t.Shape != "" && t.Shape != ShapeToken && t.Shape != ShapeDocument {
+	if t.Shape != "" && !ValidShape(t.Shape) {
 		return ReasonShapeMalformed
 	}
 	if t.Scopes != "" && t.Kind != KindGoogleServiceAccount {

@@ -50,11 +50,11 @@ func init() {
 			"List every agent secret under your own cloud sign-in: its name, owner, tier, kind, shape,\nmax grant, default grant, whether it has a value, and its deletion once it is deleted, with\nthe earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
 			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape token|document] [--max-grant DURATION] [--default-grant session] [--profile P]",
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P]",
 			"Create an agent secret under your own cloud sign-in. Then ask the broker to serve it. Read\nits value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
 			"Set a new agent-secret value under your own cloud sign-in. Then ask the broker to serve it.\nRead the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape token|document|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
 			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, max grant or default grant under your own cloud sign-in. Then ask the broker to reread\nit. none removes a kind, GitHub owners, requesters, scopes, the admin mark, a shape, a max\ngrant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME [--profile P]",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under your own cloud\nsign-in, then ask the broker to stop serving it at once."}, cmdSecretDelete},
@@ -276,10 +276,11 @@ func pipeCommand(prefix, profile string, words ...string) string {
 // is refused there, naming pipeTo, the form's own command line (pipeCommand) with the value piped
 // in. Otherwise it reads all of secretStdin.
 //
-// Both arms then meet one reading of what they read: policy.TrimForShape, the broker's own rule,
-// so a value stored through this client and a value stored by any other writer are spent alike —
-// the broker reads what it releases by that same rule, and a reader of its own here would drift
-// from it. Where the rule changed nothing — a document, whose every byte is part of it, and a
+// Both arms then meet one tail: it refuses a value that is not valid UTF-8, whichever arm read
+// it, and then reads the value once, by policy.TrimForShape, the broker's own rule, so a value
+// stored through this client and a value stored by any other writer are spent alike — the broker
+// reads what it releases by that same rule, and a reader of its own here would drift from it.
+// Where the rule changed nothing — a document, whose every byte is part of it, and a
 // value the rule leaves alone, a PEM one among them — one final line feed goes, which is what
 // this reader has always removed, so `echo` and a file ending in a newline give the value without
 // one. A line typed at the prompt carries no ending at all, so the terminal arm meets the
@@ -318,19 +319,16 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 		if err != nil {
 			return "", fmt.Errorf("read the value at the terminal: %w", err)
 		}
-		if !utf8.Valid(line) {
-			return "", usageErr{errors.New("the value must be valid UTF-8")}
-		}
 		value, empty = string(line), "no value was entered at the prompt"
 	} else {
 		data, err := io.ReadAll(secretStdin)
 		if err != nil {
 			return "", fmt.Errorf("read the value from standard input: %w", err)
 		}
-		if !utf8.Valid(data) {
-			return "", usageErr{errors.New("the value must be valid UTF-8")}
-		}
 		value, empty = string(data), "the value is read from standard input, which was empty"
+	}
+	if !utf8.ValidString(value) {
+		return "", usageErr{errors.New("the value must be valid UTF-8")}
 	}
 	stored, changed := policy.TrimForShape(value, shape)
 	if !changed {
@@ -846,7 +844,16 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	tags := optionalTags(*kind, *githubOwners, *requesters, *scopes, *admin, *shape, *maxGrant, *defaultGrant)
+	tags := optionalTags(tagFlags{
+		Kind:         *kind,
+		GitHubOwners: *githubOwners,
+		Requesters:   *requesters,
+		Scopes:       *scopes,
+		Admin:        *admin,
+		Shape:        *shape,
+		MaxGrant:     *maxGrant,
+		DefaultGrant: *defaultGrant,
+	})
 	tags[policy.TagOwner], tags[policy.TagTier] = ownerValue, *tier
 	// The cross-tag rules weigh the owner tag, which me resolves to only once the sign-in is
 	// read, so they are checked here rather than beside the flags — still before the value is

@@ -135,7 +135,16 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if *newDefaultGrant == tagNone {
 		remove = append(remove, policy.TagDefaultGrant)
 	}
-	set := optionalTags(*newKind, *newGitHubOwners, *newRequesters, *newScopes, *newAdmin, *newShape, *newMaxGrant, *newDefaultGrant)
+	set := optionalTags(tagFlags{
+		Kind:         *newKind,
+		GitHubOwners: *newGitHubOwners,
+		Requesters:   *newRequesters,
+		Scopes:       *newScopes,
+		Admin:        *newAdmin,
+		Shape:        *newShape,
+		MaxGrant:     *newMaxGrant,
+		DefaultGrant: *newDefaultGrant,
+	})
 	if err == nil && len(remove) > 0 && (*newOwner != "" || *newTier != "" || len(set) > 0) {
 		err = usageErr{errors.New("none removes a tag in a retag of its own: run the removal and the other changes as two retags")}
 	}

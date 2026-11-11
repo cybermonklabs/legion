@@ -5359,7 +5359,7 @@ A machine's own session is its fleet's service's and no person's: its credential
 `cmd/broker`'s `serviceNames` registers both settings' services with the policy loader, so a secret a machine service owns is served rather than refused `owner-tag-malformed`.
 The two ERROR lines, `policy.RefusedMessage` with a `Reason*` constant and `policy.LoadFailedMessage`, are what the deployment's alarms filter on, so neither changes without the alarm, and a failed reload keeps the last set;
 a reload cut short because `NewCurrent`'s context ended (the broker shutting down) is no failed load and logs nothing.
-`Set.Version`, the SHA-256 of every served secret's name, owner, tier, source, max grant, GitHub owners, requesters, scopes and admin mark, is recorded on every request.
+`Set.Version`, the SHA-256 of every served secret's name, owner, tier, source, max grant, GitHub owners, requesters, scopes, admin mark and the shape tag of a secret that carries one, is recorded on every request.
 A kind source is `mint:<kind>:<store source>` (`policy.KindSource`, read back by `policy.ParseKindSource`).
 A grant ends for good when a release finds its secret's kind changed (a moved source) or its lifetime over the current max-grant (`Machine.endGrant`);
 a change reverted before any release finds it leaves the grant as it was, and to end a grant, revoke it.
@@ -5369,6 +5369,7 @@ a comma is refused `ErrGitHubOwnersComma`), and `policy.GitHubOwnersFor` (with `
 a comma is refused `ErrRequestersComma`, a list naming nobody `ErrRequestersMissing`, and an entry that is neither `ErrRequestersEntry`).
 The list narrows who may ask and bounds no grant by itself.
 `policy.TagRules` is the one statement of what a secret's tags demand of each other, which the loader and `agent-secrets secret` create and retag all apply:
+`shape-malformed`, which it weighs first, refuses a `shape` tag that is neither `token` nor `document`, since until the broker knows what the stored value is it cannot say what a release of the secret would hand over;
 `max-grant-required`, a max grant of an hour at most, is demanded of an admin secret (`policy.TagAdmin`) and of a `google-service-account` secret, and every other secret keeps its own cap, or none, so a person's mail and Drive logins stay at their tier and are capped by nothing;
 `requesters-not-owner` refuses a `google-service-account` secret whose list is not exactly its one person owner, and a service entry on an agent-tier one, a human-tier one being free to list registered services beside that owner so that a Legion pod can ask and the owner approves each request;
 `requesters-not-owner` again refuses a service entry on a secret the deployment binds to a `dev-<name>` account, at either tier, since such a token is one person's own;
@@ -5378,6 +5379,9 @@ The tag holds short names because the AWS store keeps its annotations as AWS tag
 a secret carrying none mints `cloud-platform` alone, as every token of this kind did before the tag existed, and a changed list reaches the token at the next release, since the minter reads the snapshot the release checked.
 `policy.TagAdmin` marks a secret whose grant is an administrator's, `"true"` its only value and anything else `admin-malformed`:
 the broker cannot tell such a secret from its kind, an admin console password and a personal API key both being stored strings, so the program that declares the secret says so, and the rules above then hold it to human tier, a requesters list and an hour's cap.
+`policy.TagShape` says what a secret's stored value is, in two words: `policy.ShapeToken`, a one-line credential such as an API key or a password, and `policy.ShapeDocument`, a value every byte of which is part of it, such as a PEM key.
+`policy.TrimForShape` is the one statement of what that tag does to a value: from a `ShapeToken` value it removes the trailing run of carriage returns and line feeds, a `ShapeDocument` value it answers byte for byte, and a value of a secret carrying no tag it reads for itself, removing a trailing line ending only where the value holds none inside it.
+It also answers whether it changed the value, and the broker's `release` (`requests.shapedValue`) and `agent-secrets secret` create and set all read it, so a value is stored and spent under the one rule.
 `Set.Evaluate` reads the list before owner and tier and denies a requester it does not name `policy.ReasonRequesterNotListed`, which the request row keeps as its `decision_detail` (`<NAME>: requester-not-listed`, several joined with `"; "`) and the request routes answer as `detail`.
 `requests.evaluate` also writes that field when a request is created: a name whose outcome would be an approval, in a request whose reason is empty once trimmed, is denied `policy.ReasonNoReason` there, so the row reads `<NAME>: a reason is necessary; ask again with --reason`, and the fixed sentence `policy denies at least one requested secret` joins the named denials whenever some name was denied with no reason to name.
 The kinds are `github-app` (installation tokens from the stored App key), `google-login` (an access token from the stored authorized-user credential), `azure-login` (`secrets.AzureLogin`, in `internal/broker/secrets/azurelogin.go`) and `google-service-account` (`secrets.GoogleServiceAccount`, in `internal/broker/secrets/googleserviceaccount.go`: an access token for one Google service account, minted by impersonating it with the broker's own Google credential through the IAM Service Account Credentials API, carrying the scopes the secret's `scopes` tag names, and served to the one person the secret's requesters name beside the registered services a human-tier one may list).
@@ -6258,6 +6262,8 @@ A kind source is `mint:<kind>:<source>`:
 `Machine.release` parses it (`policy.ParseKindSource`;
 a malformed one is `policy.ErrKindSourceMalformed`), reads `<source>` through the store's own `Read`, and passes that value to `Machine.Minters[kind]`.
 It never returns the stored value.
+Both of release's reads of the store pass through `policy.TrimForShape` under that secret's shape tag (`requests.shapedValue`), so the value a session is handed and the input a minter is given are read by the one rule.
+Each value the rule changed writes one INFO line, `requests.TrailingLineEndingRemovedMessage`, carrying the secret's name and nothing else.
 A minter's failure is `requests.ErrMintFailed`, `502 MINT_FAILED` carrying the minter's own message (never an upstream's text), and one ERROR line for the operator, `broker: mint failed` (`requests.MintFailedMessage`) with the name, the kind and `class=` `stored-value`, `narrowing`, `refused`, `binding` or `upstream` (`secrets.MintErrorClass`).
 The usual re-check then verifies the enrollment, the grant, its whole approval chain (`VerifyChain`), and
 — when the policy version moved since the grant was decided, any granted name is a service's (`anyServiceOwned`), or any granted name carries a `requesters` tag (`anyListed`):
