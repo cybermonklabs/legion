@@ -82,8 +82,9 @@ SAMPLE_SECONDS = 1
 
 # The sampler gives up after this long on its own, so a job that is cancelled between the two
 # steps - which leaves no `report` to stop it - leaves nothing running behind it either. The
-# longest job that drives it is tool-fallback, whose own timeout is 75 minutes, so this leaves
-# the sampler a quarter of an hour of room over the job it must outlive.
+# longest job that drives it is tool-fallback, whose own timeout is 22 minutes, so this is far
+# more room than any job it watches needs; it is a backstop for a report that never runs, not
+# a measure of how long a job takes.
 SAMPLER_MAX_SECONDS = 5400.0
 
 # How long `report` waits for the sampler to go after SIGTERM before printing anyway. The sampler

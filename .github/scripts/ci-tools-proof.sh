@@ -326,10 +326,12 @@ PROBE_BOUND=15
 # Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
 # step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
 # `report` holds a case to, so a hung install would otherwise pass as a refusal.
-# A step held to its bound takes about 660 to 672 s, and the longest single install measured
-# over 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z is 326 s (`install-jj`
-# on slow runs), so this leaves 274 s over the slowest healthy install and at least 60 s under
-# the fastest a held step can be, and it reads no ladder's length.
+# A step held to its bound takes about 660 to 672 s. The longest single install measured over
+# 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
+# sleeping (dispatch://INFRA-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
+# over the slowest healthy install there has been and at least 60 s under the fastest a held
+# step can be, and it reads no ladder's length. Since the ladders stopped sleeping, the slowest
+# timed install is far shorter: 42 s, the Bun second-source case, in job 130289341628.
 # It is the one wall-clock bound `report` and the control step judge an install by, and this line
 # is the one place it is written. Two other bounds are not it: `timeout-minutes: 11`, which the
 # runner enforces on the step rather than reading after it, and `PROBE_BOUND` above, which
