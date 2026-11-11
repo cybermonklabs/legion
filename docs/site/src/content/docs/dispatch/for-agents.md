@@ -74,7 +74,7 @@ tells the agent who Dispatch takes it for.
 
 | Area | Commands |
 | --- | --- |
-| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, parent, links, blockers, or components; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, or components; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves it on nobody; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
 | Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `dispatch projects` lists every project's key and name. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
@@ -83,6 +83,17 @@ tells the agent who Dispatch takes it for.
 | Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
+
+The dashboard's List is a live table over a project's issues, not a separate search index.
+Its Queue is Todo issues labelled `legion`, ordered by Board rank; **Start next** makes ordinary rank writes using `before` keys, as `dispatch issue-update --before <KEY>` does.
+An epic is an open root issue labelled `epic`, and the Epic column follows parent links to that root.
+Moving open selected issues into or out of an epic writes `parent`; closed selections are skipped and reported.
+Merging epics moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after all moves succeed; otherwise the source stays open and the notice identifies the failed moves.
+Closed issues keep their original parent and history.
+An epic is an ordinary table row; only while the table is grouped by epic is it the group's linked heading instead of a row inside it.
+Listings include the creator actor (`created_by`, nullable) and creation time (`created_at`).
+Bulk parent changes are ordinary independent keyed writes, at most eight in flight: a refusal does not hold the others, and each failed request retries or resumes through the shared pending-writes controls.
+New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command with several problems is refused once, with every problem listed, so the next run can
 fix them all. It exits 0 when it wrote or read, 1 when Dispatch or the flags refused it, and 2 on a
@@ -129,7 +140,7 @@ Each kind of write reaches people differently. Pick by what you need from them.
 
 | You need | Use | Where it lands |
 | --- | --- | --- |
-| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The assignee's Inbox, waiting on them |
+| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The Inbox of the person it waits on: the issue's assignee, until a person hands it to somebody else |
 | To point at a passage in a document | A comment with a quote (`dispatch comment`) | The document's margin and the issue's Conversation |
 | To change specific text | A suggestion (`dispatch suggest`) | The margin, where a person accepts or rejects it |
 | To tell people a deliverable landed, or answer a person's message | A message (`dispatch message`) | The issue's Conversation |

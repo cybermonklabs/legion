@@ -2,12 +2,15 @@ package tmux
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -252,6 +255,126 @@ func TestNewRefusesARoleOverlayPIConfigFilesCannotName(t *testing.T) {
 		want := `tmux runtime: Oh My Pi overlay "` + file + `" is not an absolute path PI_CONFIG_FILES can name`
 		if _, err := New(opts); err == nil || err.Error() != want {
 			t.Errorf("New with the merger's overlay %q = %v, want %q", file, err, want)
+		}
+	}
+}
+
+// daemonPATH is the PATH the fake runtime's options carry, which names the stub tmux New
+// resolves: a case that adds a directory to the daemon's PATH keeps that one on it.
+func daemonPATH(o *Options) string {
+	for _, entry := range o.Environ {
+		if path, ok := strings.CutPrefix(entry, "PATH="); ok {
+			return path
+		}
+	}
+	return ""
+}
+
+// A pane is told the shared public leak check the daemon resolved on its own machine, by each of
+// the three routes the check documents, and is told no such variable where the daemon resolves
+// none. A pane can resolve none of the three itself — PUBLIC_LEAK_CHECK is off the allow list,
+// its XDG_CONFIG_HOME is the daemon's rather than the operator's, and the check's installer puts
+// its files on no PATH a pane has — so a pane told nothing would have every `legion gh` and
+// every rescue push refused. A machine that carries no check is told nothing, which refuses
+// every public write of that pane with the setup error naming the check: the honest answer, and
+// no launch failure, since Legion installs no check on a tmux machine.
+func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// environ adds the route's names to the daemon's own environment and answers the check
+		// the pane must then be told, "" where the machine carries none.
+		environ func(t *testing.T, o *Options) string
+	}{
+		{
+			name: "PUBLIC_LEAK_CHECK in the daemon's own environment",
+			environ: func(t *testing.T, o *Options) string {
+				check := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+				o.Environ = append(slices.Clone(o.Environ), "PUBLIC_LEAK_CHECK="+check)
+				return check
+			},
+		},
+		{
+			name: "public-leak-check.sh on the daemon's PATH",
+			environ: func(t *testing.T, o *Options) string {
+				check := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+				o.Environ = append(slices.Clone(o.Environ), "PATH="+filepath.Dir(check)+":"+daemonPATH(o))
+				return check
+			},
+		},
+		{
+			name: "the pointer file under the daemon's configuration home",
+			environ: func(t *testing.T, o *Options) string {
+				check := leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes)
+				config := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(config, "public-leak-check"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(config, "public-leak-check", "path"), []byte(check+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				o.Environ = append(slices.Clone(o.Environ), "XDG_CONFIG_HOME="+config)
+				return check
+			},
+		},
+		{
+			name: "a machine that carries none",
+			environ: func(t *testing.T, o *Options) string {
+				// Nothing is added: the fake runtime's environment is a PATH naming the stub
+				// tmux's directory alone, with no HOME and no XDG_CONFIG_HOME, so each of the
+				// three places answers nothing.
+				return ""
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var want string
+			f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) { want = tc.environ(t, o) })
+			if _, err := f.Spawn(context.Background(), f.spec(t, claim.RoleTester)); err != nil {
+				t.Fatalf("Spawn: %v", err)
+			}
+			told := ""
+			n := 0
+			for _, pair := range f.pairs(t) {
+				if value, ok := strings.CutPrefix(pair, "PUBLIC_LEAK_CHECK="); ok {
+					told, n = value, n+1
+				}
+			}
+			switch {
+			case want == "" && n != 0:
+				t.Errorf("the pane was told PUBLIC_LEAK_CHECK=%q, want no such pair: the daemon resolved no check", told)
+			case want != "" && (n != 1 || told != want):
+				t.Errorf("the pane was told %d PUBLIC_LEAK_CHECK pairs, the last %q; want one naming the check the daemon resolved, %q", n, told, want)
+			}
+		})
+	}
+}
+
+// The resolved check is no runtime-owned name: an operator's pane variable and a spec's own Env
+// are told after it and outrank it, since an operator may point a pane at another copy of the
+// check. Both are refused for a name the runtime owns, so this is what keeps them allowed.
+func TestAnOperatorsCheckAndASpecsOutrankTheResolvedOne(t *testing.T) {
+	if ownedNames["PUBLIC_LEAK_CHECK"] {
+		t.Fatal("PUBLIC_LEAK_CHECK is a runtime-owned name, so no pane variable and no spec Env may set it")
+	}
+	in := PaneInputs{StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", LeakCheck: "/opt/machine/public-leak-check.sh"}
+	in.OperatorEnv = map[string]string{"PUBLIC_LEAK_CHECK": "/opt/operator/public-leak-check.sh"}
+	spec := testSpec()
+	// The order tmux applies is the order of the pairs, so the last of a name is what the pane
+	// holds: the daemon's resolved check, then the operator's, then the spec's.
+	want := []string{"/opt/machine/public-leak-check.sh", "/opt/operator/public-leak-check.sh"}
+	for _, told := range [][]string{nil, {"/opt/spec/public-leak-check.sh"}} {
+		if told != nil {
+			spec.Env["PUBLIC_LEAK_CHECK"] = told[0]
+			want = append(want, told[0])
+		}
+		var got []string
+		for _, pair := range panePairs(spec, in, secretFiles("/state", spec)) {
+			if value, ok := strings.CutPrefix(pair, "PUBLIC_LEAK_CHECK="); ok {
+				got = append(got, value)
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("a pane's PUBLIC_LEAK_CHECK pairs = %q, want %q in that order", got, want)
 		}
 	}
 }

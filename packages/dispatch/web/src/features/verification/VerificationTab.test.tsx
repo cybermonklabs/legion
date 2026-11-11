@@ -186,6 +186,12 @@ test("an issue with no Verification document shows the command that makes one", 
   const empty = screen.getByTestId("verification-empty");
   expect(empty.textContent).toContain("CORE-1 has no Verification document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name verification.md");
+  // The words themselves, as the Plan tab's case asserts them, and the constant beside them:
+  // this is the one place that holds the two tabs to one sentence, and the words are what a
+  // person reads, so a case that asserted the constant alone would pass whatever it came to say.
+  expect(empty.textContent).toContain(
+    "A later upload under that name replaces the document, so it names the token of the version it replaces"
+  );
   expect(empty.textContent).toContain(REPLACING_UPLOAD_NOTE);
   expect(empty.textContent).toContain("--precondition-json");
   // Nothing is read for an issue that has no such document.

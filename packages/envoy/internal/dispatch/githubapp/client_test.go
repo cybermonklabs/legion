@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -334,7 +335,8 @@ func (f *fakeGitHub) verifyAppJWT(r *http.Request) {
 	f.t.Helper()
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
-		f.t.Errorf("app endpoint called with Authorization %q, want a bearer JWT", r.Header.Get("Authorization"))
+		f.t.Errorf("app endpoint called with %s, want a bearer JWT",
+			githubapptest.DescribeAuthorization(r.Header.Get("Authorization")))
 		return
 	}
 	parts := strings.Split(raw, ".")

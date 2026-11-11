@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   createAsk,
   createComment,
@@ -22,14 +20,10 @@ import {
   selectEditorText,
 } from "./editor";
 import { commentWithBody } from "./margin-helpers";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const initialMarkdown = "The quick brown fox";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Bob comments on "quick brown"; Alice starts a comment on "brown" and cancels it, then comments on
 // "brown". Each record mark keeps its own text in both browsers and in the server's reading of the

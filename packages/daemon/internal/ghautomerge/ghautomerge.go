@@ -39,6 +39,10 @@ const read = `query PullRequestAutoMerge($owner: String!, $name: String!, $numbe
   }
 }`
 
+// The four mutations below pass the leak guard by none of its entry points, and are meant to: a
+// pull request's node id, a commit sha and a merge method are everything their variables carry,
+// and none of the three can hold a private name, a secret or a line of anyone's text. A later
+// reader adding a check here would be checking three generated identifiers.
 const (
 	disable = `mutation DisableAutoMerge($id: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }`
 	dequeue = `mutation DequeuePullRequest($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }`

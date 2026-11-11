@@ -1,4 +1,3 @@
-import { expect, test } from "@playwright/test";
 import type { RequirementCoverage } from "../web/src/api/types";
 
 import {
@@ -8,7 +7,7 @@ import {
   documentBase,
   getIssueCoverage,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /** Two requirements, so one can be served while the other is not. */
@@ -32,10 +31,6 @@ async function coverageOf(issue: string, blockId: string): Promise<RequirementCo
   }
   return requirement;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): 3.3 s - one sign-in and one load of the Spec tab, then a second version of the
 // Verification document written under that same open page and its flag watched clearing there.

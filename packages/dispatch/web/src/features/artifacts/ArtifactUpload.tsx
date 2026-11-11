@@ -277,14 +277,14 @@ export interface DraftUpload {
    *  could not be added to the draft; null otherwise. */
   madeUnanswered: string | null;
   /** Uploads the last refused file again, to the owner it was sent to. Where that refusal is one
-   *  the reader stopped, the press behind it may have reached Dispatch, so the hook holds that
-   *  press (`stopped`) and this makes it again, base and all: it goes under its key, and Dispatch
-   *  answers it with what the first one did rather than storing the file a second time. Where
-   *  Dispatch itself decided the refusal, the press the hook holds is another file's - a paste of
-   *  two files is two presses at once - and taking it would send that other file in place of the
-   *  one whose refusal is on screen; the file on screen is sent afresh instead, its base read
-   *  again and the press under a key of its own, which is what a refusal Dispatch decided asks
-   *  for. */
+   *  the reader stopped, the press behind it may have reached Dispatch, so this makes that press
+   *  again, base and all: it goes under its key, and Dispatch answers it with what the first one
+   *  did rather than storing the file a second time. A paste of several files is several presses
+   *  at once, and the reader can stop more than one of them, so the press made again is the one
+   *  of the file whose refusal is on screen (`stopped`), never whichever press stopped last.
+   *  Where Dispatch itself decided the refusal, that file has no stopped press: it is sent
+   *  afresh, its base read again and the press under a key of its own, which is what a refusal
+   *  Dispatch decided asks for. */
   retry(): void;
 }
 
@@ -361,9 +361,12 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
         return;
       }
       retryGuard.guard(() => {
-        // Only a refusal the reader's own Stop trying ended is the press the hook holds: any
-        // other press of this hook that was stopped is some other file's.
-        const again = retriesUnderItsKey(upload.error ?? undefined) ? upload.stopped() : undefined;
+        // The refusal on screen is the newest press's, which is not always the press the reader
+        // stopped last, so the press made again is the one that sent this very file; a refusal
+        // Dispatch decided has no stopped press of its own to make again.
+        const again = retriesUnderItsKey(upload.error ?? undefined)
+          ? upload.stopped((press) => press.file === last.file)
+          : undefined;
         if (again === undefined) {
           void send([last.file], last.owner);
           return;
@@ -522,14 +525,12 @@ export function useArtifactUpload(
         // The press the reader stopped may have reached Dispatch, which answers its key with
         // what it did there - but only while the two send the same bytes, since the key covers
         // the whole body, the `precondition` field included (`bodyDigest` in the server's
-        // `api/request_keys.go`). So a press of that same file sends that press's base again,
-        // and a press of another file is one of its own: it takes the base read when that file
-        // was chosen, or reads the token the document is at now.
-        const press = upload.stopped();
-        const base =
-          press !== undefined && press.file === file
-            ? press.base
-            : (chosenBase.current ?? captureUploadBase(owner, file, name));
+        // `api/request_keys.go`). So a press of the staged file asks the hook for the press that
+        // sent that very file and sends its base again, while a press of another file finds none
+        // and is one of its own: it takes the base read when that file was chosen, or reads the
+        // token the document is at now.
+        const stopped = upload.stopped((press) => press.file === file);
+        const base = stopped?.base ?? chosenBase.current ?? captureUploadBase(owner, file, name);
         chosenBase.current = undefined;
         void send(file, base);
       });

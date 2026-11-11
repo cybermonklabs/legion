@@ -1,10 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { RELATED_DEBOUNCE_MS } from "../web/src/features/issue/related-timing";
 import { createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /** The no-write check the dialog asks, for any project. A glob would read `?` as a wildcard. */
@@ -60,10 +58,6 @@ async function openCreateDialog(
   await expect(title).toBeFocused();
   return { dialog, related: dialog.getByRole("region", { name: "Related items" }), title };
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Create through answer to close: the related-issue check behind the create dialog must ask again once an issue was filed, not answer from before.
 test("a title checked before an issue was filed is checked again, not answered from before @pr", async ({
@@ -286,6 +280,9 @@ test("an answer that arrives after the title changed is not shown for the new ti
     release();
     await answered;
     await page.clock.runFor(1);
+    // The render's margin, from the paragraph above: react-query delivered the answer on the
+    // tick before this, and this window is what a render of it would show in. It is Node's
+    // clock, since the page's is the test's and a page-side wait would never return.
     await sleep(250);
 
     // The answer that landed is the first title's, so the dialog still says it is checking and

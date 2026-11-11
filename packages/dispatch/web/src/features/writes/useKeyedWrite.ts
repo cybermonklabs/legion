@@ -87,6 +87,13 @@ export interface UnansweredLanding<TVariables> {
   readonly at: number;
 }
 
+/** A press the reader stopped: the key its attempts went out under, and the variables it was
+ *  made with, which a `mutate` of the same variables is made again under (`sameVariables`). */
+interface StoppedPress<TVariables> {
+  readonly key: string;
+  readonly variables: TVariables;
+}
+
 /** `useMutation`'s result, with the one "made, but Dispatch lost its answer" state every create
  *  form shows (`LandedWithoutAnswer`): the last press that landed with `null`, until the next
  *  press starts or the form lets it go (`forgetUnanswered`, on an edit). */
@@ -98,14 +105,15 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
 > & {
   readonly unanswered: UnansweredLanding<TVariables> | undefined;
   readonly forgetUnanswered: () => void;
-  /** The last press the reader stopped, which a `mutate` of the same variables makes again under
-   *  its key, or `undefined` where no press has ended that way. It is the hook's last stopped
-   *  press, which is the press behind the refusal a surface shows only where that refusal is
-   *  itself a stopped one: where more than one press of the same hook is out at once, the refusal
-   *  the surface shows follows the newest press while this follows whichever ended stopped last.
-   *  So a surface takes it under `retriesUnderItsKey` of the refusal it shows, and sends it as it
-   *  stands rather than working out for itself what the key covers. */
-  readonly stopped: () => TVariables | undefined;
+  /** The press the reader stopped that `wanted` picks out, or `undefined` where no stopped press
+   *  of this hook is that one. The hook holds every press that ended stopped, newest first, each
+   *  under the key its attempts went out under, and a `mutate` of such a press's variables is
+   *  that press made again under that key. More than one press of a hook can be out at once - a
+   *  paste of several files is several presses - so the surface says which press it means: the
+   *  refusal it shows follows its newest press, which is not always the press that ended stopped
+   *  last. So a surface takes the press its refusal is about, under `retriesUnderItsKey` of that
+   *  refusal, and sends it as it stands rather than working out for itself what the key covers. */
+  readonly stopped: (wanted: (variables: TVariables) => boolean) => TVariables | undefined;
 };
 
 /**
@@ -117,13 +125,13 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * then and rolls it back on anything but a landing. A `mutate` of the same variables a press the
  * reader stopped was made with is that press made again, under its key - Dispatch may have taken
  * it, and answers the key with what it did - while one after Dispatch's own refusal is a new
- * press, since Dispatch would answer the old key with that refusal. The stopped press is the
- * surface's to read (`stopped`), so a surface making it again makes that press rather than judging
- * for itself which press the key covers. It runs whether or not the browser says it is online
- * (`networkMode: "always"`): the write's own tries wait out a network that is down, and a mutation
- * TanStack paused offline would make none, never go late and never offer Stop trying. A press that
- * lands with no answer is kept as `unanswered` for the surface to say so, until the next press or
- * `forgetUnanswered`.
+ * press, since Dispatch would answer the old key with that refusal. Every stopped press is held,
+ * each under its own key, and the surface reads the one it means (`stopped`), so a surface making
+ * a press again makes that press rather than judging for itself which press the key covers. It
+ * runs whether or not the browser says it is online (`networkMode: "always"`): the write's own
+ * tries wait out a network that is down, and a mutation TanStack paused offline would make none,
+ * never go late and never offer Stop trying. A press that lands with no answer is kept as
+ * `unanswered` for the surface to say so, until the next press or `forgetUnanswered`.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,
@@ -136,23 +144,27 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   ...options
 }: KeyedWriteOptions<TData, TVariables, TContext>): KeyedWriteResult<TData, TVariables, TContext> {
   const writes = useWrites();
-  /** The last press the reader stopped, which a Retry of the same variables makes again. */
-  const stopped = useRef<{ readonly key: string; readonly variables: TVariables } | undefined>(
-    undefined
-  );
+  /** Every press the reader stopped and has not made again, newest first. A surface with more
+   *  than one press out at once - a paste of several files - asks for the one it means. */
+  const stopped = useRef<readonly StoppedPress<TVariables>[]>([]);
   const [unanswered, setUnanswered] = useState<UnansweredLanding<TVariables> | undefined>(
     undefined
   );
   const forgetUnanswered = useCallback(() => setUnanswered(undefined), []);
-  const stoppedPress = useCallback(() => stopped.current?.variables, []);
+  const stoppedPress = useCallback(
+    (wanted: (variables: TVariables) => boolean) =>
+      stopped.current.find((press) => wanted(press.variables))?.variables,
+    []
+  );
   const mutation = useMutation({
     ...options,
     mutationFn: (variables: TVariables) => {
-      const again = stopped.current;
-      stopped.current = undefined;
+      const again = stopped.current.find((press) => sameVariables(press.variables, variables));
+      if (again !== undefined) {
+        stopped.current = stopped.current.filter((press) => press !== again);
+      }
       setUnanswered(undefined);
-      const key =
-        again !== undefined && sameVariables(again.variables, variables) ? again.key : newSendKey();
+      const key = again?.key ?? newSendKey();
       const press = {
         detail: null,
         endsWithSession,
@@ -174,7 +186,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         },
         (error: unknown) => {
           if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
-            stopped.current = { key, variables };
+            stopped.current = [{ key, variables }, ...stopped.current];
           }
           throw error;
         }

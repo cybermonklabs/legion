@@ -1,13 +1,5 @@
 import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import {
-  expect,
-  type Locator,
-  type Page,
-  type Request,
-  type TestInfo,
-  test,
-} from "@playwright/test";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
@@ -24,9 +16,15 @@ import {
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
-import { signIn } from "./users";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  type TestInfo,
+  test,
+} from "./test";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -45,11 +43,6 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   await writeFile(path, "# Review notes\n\nThese notes replace the initial spec.\n");
   return path;
 }
-
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
 
 async function openArtifacts(page: Page, isPhone: boolean) {
   if (isPhone) {

@@ -650,13 +650,14 @@ test("a draft's Retry after a stopped upload sends that press's base under its k
   }
 });
 
-// The hook holds the press the reader stopped, and that press is the one Retry makes again: one
-// judge of what goes out and of the key it goes under. Here a paste carries two files and the
-// reader stops the second before the first, so the press the field's own state names is not the
-// press the hook holds. Read from that state instead, a Retry sends the second press's body
-// under a key the hook mints afresh - one Dispatch has never seen - so whatever the stopped
-// attempt landed is stored a second time.
-test("a draft's Retry makes the press the hook holds, under that press's key", async () => {
+// A paste of two files is two presses at once, and the reader can stop both: the hook then holds
+// a stopped press for each, under the key that press's attempts went out under. The refusal the
+// field shows is its newest press's, whichever press the reader stopped last, so Retry sends the
+// file that refusal is about - chart.png here, stopped before notes.md - under chart.png's own
+// key, and Dispatch answers it with what that stopped attempt did. Sent as the press stopped
+// last instead, it would store notes.md a second time and leave chart.png unsent, with nothing
+// on screen saying so.
+test("a draft's Retry with two presses stopped sends the file whose refusal it shows", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
@@ -680,8 +681,8 @@ test("a draft's Retry makes the press the hook holds, under that press's key", a
     await tick(SEND_DEADLINE_MS + 1_000);
     const rows = writesOf(view.queryClient).rows();
     expect(rows.map((row) => row.status)).toEqual(["late", "late"]);
-    // The second press is stopped first, so the press the hook holds is the first one while the
-    // field's own refusal is the second one's.
+    // chart.png's press is stopped first and notes.md's after it, so the press stopped last is
+    // not the press the field's refusal is about.
     act(() => {
       writesOf(view.queryClient).stop(rows[1]?.id ?? 0);
     });
@@ -690,7 +691,7 @@ test("a draft's Retry makes the press the hook holds, under that press's key", a
       writesOf(view.queryClient).stop(rows[0]?.id ?? 0);
     });
     await tick(60_000);
-    const key = uploadArtifact.mock.calls.find((call) => fileSent(call[1]) === notes)?.[2].key;
+    const key = uploadArtifact.mock.calls.find((call) => fileSent(call[1]) === chart)?.[2].key;
     const stopped = uploadArtifact.mock.calls.length;
 
     uploadArtifact.mockResolvedValue(UPLOADED);
@@ -699,10 +700,11 @@ test("a draft's Retry makes the press the hook holds, under that press's key", a
 
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
     const again = uploadArtifact.mock.calls.at(-1);
-    expect(fileSent(again?.[1])).toBe(notes);
+    expect(fileSent(again?.[1])).toBe(chart);
     expect(again?.[2].key).toBe(key);
-    // Base and all: nothing was read for it, so it sends the bytes its key covers.
-    expect(again?.[1].precondition).toEqual({ document: "sha256:chosen" });
+    // Body and all: nothing was read for it, so it sends the bytes its key covers, and a picture
+    // replaces no document, so those bytes name no version.
+    expect(again?.[1].precondition).toBeUndefined();
     expect(ownerArtifactText).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
@@ -712,12 +714,14 @@ test("a draft's Retry makes the press the hook holds, under that press's key", a
   }
 });
 
-// A refusal Dispatch decided ends the press it answered, and a Retry of it is a press of its
-// own under a key of its own. The press the hook holds is the reader's last stopped one, which
-// is another file's here: a paste of two files is two presses at once, the reader stopped the
-// first, and Dispatch refused the second. Taken for this refusal, that held press would send
-// notes.md again and leave chart.png - the file whose refusal is on screen - unsent.
-test("a draft's Retry after Dispatch's refusal sends the file whose refusal it shows", async () => {
+// A refusal Dispatch decided ends the press it answered, and a Retry of it is a press of its own
+// under a key of its own: Dispatch would answer the old key with that refusal for a day. Here a
+// paste of two files is two presses at once, the reader stopped notes.md and Dispatch refused
+// chart.png, so the hook holds a stopped press while the refusal on screen is another file's.
+// Taken for this refusal, that stopped press would send notes.md again and leave chart.png - the
+// file whose refusal is on screen - unsent; and it stays notes.md's afterwards, so a press of
+// that file again is still answered under its key rather than storing the file a second time.
+test("a draft's Retry after Dispatch's refusal sends that file and leaves the stopped press alone", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
@@ -762,6 +766,16 @@ test("a draft's Retry after Dispatch's refusal sends the file whose refusal it s
     // notes.md's key covers another file altogether, so this press takes a key of its own.
     expect(again?.[2].key).not.toBe(chartKey);
     expect(again?.[2].key).not.toBe(notesKey);
+
+    // notes.md's stopped press is still notes.md's: a press of that file again, naming the
+    // version its base read, goes out under the key the stopped press went out under.
+    fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [notes] } });
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(sent + 2);
+    const notesAgain = uploadArtifact.mock.calls.at(-1);
+    expect(fileSent(notesAgain?.[1])).toBe(notes);
+    expect(notesAgain?.[2].key).toBe(notesKey);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
