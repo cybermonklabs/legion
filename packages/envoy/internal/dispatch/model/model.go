@@ -1763,17 +1763,22 @@ type MyRepliesResponse struct {
 	NextCursor string       `json:"next_cursor,omitzero"`
 }
 
-// SessionAnswer kinds: an ask's current answer (its ID is the ask's), a comment, or a message.
+// SessionAnswer kinds: an ask's current answer (its ID is the ask's), a comment, a message, or a
+// person's decline of an ask (its ID is the ask's too). A decline is a kind of its own because the
+// person chose nothing: a reader that drew it as an answer would draw an empty list of chosen
+// options under a question nobody answered.
 const (
-	SessionAnswerKindAnswer  = "answer"
-	SessionAnswerKindComment = "comment"
-	SessionAnswerKindMessage = "message"
+	SessionAnswerKindAnswer   = "answer"
+	SessionAnswerKindComment  = "comment"
+	SessionAnswerKindMessage  = "message"
+	SessionAnswerKindDeclined = "declined"
 )
 
 // SessionAnswer relations: what an item is to the session Dispatch delivered it to, spelled as
 // SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them.
 const (
 	SessionAnswerRelationAnsweredYourAsk        = "answered_your_ask"
+	SessionAnswerRelationDeclinedYourAsk        = "declined_your_ask"
 	SessionAnswerRelationRepliedOnYourAsk       = "replied_on_your_ask"
 	SessionAnswerRelationRepliedInCommentThread = "replied_in_a_comment_thread"
 	SessionAnswerRelationCommentedOnDocument    = "commented_on_a_document"
@@ -1792,25 +1797,29 @@ type SessionAnswerAsk struct {
 
 // SessionAnswer is one thing a person wrote that Dispatch delivered to a session, on
 // GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
-// body, or a message, each (Kind, ID) once. Author is always a user. Text is the person's words in
-// full ("" for an answer that chose options only). Selected and Replaced are an answer's, each
-// omitted when empty or false; EditedAt is an edited comment's; Ask is set on an answer and on a
-// reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue and
-// has no dispatch:// address; Href is then /agents/<session>/live.
+// body, a message, or a person's decline of an ask, each (Kind, ID) once. Author is always a
+// user. Text is the person's own words in full ("" for an answer that chose options only, and for
+// a decline the person wrote no note with). DispatchWords is set on a decline alone: the words
+// Dispatch wrote for the asking agent (DeclineDispatchWords), kept apart from the person's note so
+// no reader has to cut one out of the other. Selected and Replaced are an answer's, each omitted
+// when empty or false; EditedAt is an edited comment's; Ask is set on an answer, on a decline and
+// on a reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue
+// and has no dispatch:// address; Href is then /agents/<session>/live.
 type SessionAnswer struct {
-	Kind     string            `json:"kind"`
-	Relation string            `json:"relation"`
-	ID       string            `json:"id"`
-	At       time.Time         `json:"at"`
-	EditedAt *time.Time        `json:"edited_at,omitempty"`
-	Author   Actor             `json:"author"`
-	Text     string            `json:"text"`
-	Selected []string          `json:"selected,omitempty"`
-	Replaced bool              `json:"replaced,omitempty"`
-	Ask      *SessionAnswerAsk `json:"ask,omitempty"`
-	Owner    *OpenAskOwner     `json:"owner"`
-	Ref      *string           `json:"ref"`
-	Href     string            `json:"href"`
+	Kind          string            `json:"kind"`
+	Relation      string            `json:"relation"`
+	ID            string            `json:"id"`
+	At            time.Time         `json:"at"`
+	EditedAt      *time.Time        `json:"edited_at,omitempty"`
+	Author        Actor             `json:"author"`
+	Text          string            `json:"text"`
+	DispatchWords string            `json:"dispatch_words,omitempty"`
+	Selected      []string          `json:"selected,omitempty"`
+	Replaced      bool              `json:"replaced,omitempty"`
+	Ask           *SessionAnswerAsk `json:"ask,omitempty"`
+	Owner         *OpenAskOwner     `json:"owner"`
+	Ref           *string           `json:"ref"`
+	Href          string            `json:"href"`
 }
 
 // SessionAnswersResponse is what people wrote to one session since Since, newest first by At,

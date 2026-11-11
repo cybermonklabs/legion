@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
@@ -97,6 +98,21 @@ func (f *answersFixture) answer(t *testing.T, askID string, selected []string, t
 	return decodeBody[model.Ask](t, response)
 }
 
+// decline declines ask as alice, with note when it is set, and answers the ask as the decline left
+// it: its resolution holds the time the list places the item at.
+func (f *answersFixture) decline(t *testing.T, askID string, note *string) model.Ask {
+	t.Helper()
+	body := map[string]any{}
+	if note != nil {
+		body["note"] = *note
+	}
+	response := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/asks/"+askID+"/decline", body, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("decline ask %s: status=%d body=%s", askID, response.Code, response.Body.String())
+	}
+	return decodeBody[model.Ask](t, response)
+}
+
 // comment posts a comment on the fixture's issue as actor and returns its id.
 func (f *answersFixture) comment(t *testing.T, body map[string]any, actor string) string {
 	t.Helper()
@@ -164,7 +180,8 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 		if err := f.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events
 			where published_at is null
-			  and type in ('ask.answered', 'comment.created', 'message.created', 'message.answered')
+			  and type in ('ask.answered', 'comment.created', 'message.created', 'message.answered',
+			               'ask.resolved')
 		`).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
@@ -751,5 +768,181 @@ func TestSessionAnswersRefusesABadSessionID(t *testing.T) {
 		if response.Code != http.StatusBadRequest || responseCode(t, response) != "INVALID_SESSION_ID" {
 			t.Fatalf("session %s: status=%d body=%s, want 400 INVALID_SESSION_ID", session, response.Code, response.Body.String())
 		}
+	}
+}
+
+// declineIndex is the partial index the answers list reads its window of human events through,
+// over the five event types the read names (20261111002444).
+const declineIndex = "events_person_words_with_declines"
+
+// A person who declines an ask closes it with no answer, and every session the decline reached -
+// the asker and every follower - reads it on its own list: an item of its own kind, under a
+// relation of its own, at the resolution's own time, carrying the four sentences Dispatch wrote
+// and the person's note in parts of their own. No other resolution is listed at all, and the two
+// plans at the end are what lets this release drop the four-type index while a pod of the release
+// before it, whose read names four types, still serves requests through the five-type one.
+func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
+	f := newAnswersFixture(t)
+	const question = "Which database backs the queue?"
+	askID := f.ask(t, answersSession, question)
+	// The other session replies on the ask, which makes it a follower: the decline reaches it as
+	// it reaches the session that asked.
+	f.comment(t, map[string]any{"body": "Postgres, I would say.", "ask_id": askID}, answersOther)
+	const note = "The vendor owns that date; I do not."
+	written := note
+	declined := f.decline(t, askID, &written)
+	f.publishOutbox(t)
+	topics := f.destinations(t, "ask.resolved", askID)
+	for _, session := range []string{answersSession, answersOther} {
+		if !slices.Contains(topics, contracts.AgentSubject(session)) {
+			t.Fatalf("the decline reached %v, want %s's own topic", topics, session)
+		}
+	}
+
+	item := f.only(t, answersSession)
+	if item.Kind != model.SessionAnswerKindDeclined || item.Relation != model.SessionAnswerRelationDeclinedYourAsk || item.ID != askID {
+		t.Fatalf("item = %+v, want the decline of ask %s under a kind and a relation of its own", item, askID)
+	}
+	if item.Author != answersAlice || item.Text != note || item.DispatchWords != model.DeclineDispatchWords {
+		t.Fatalf("item words = %+v, want alice's note and Dispatch's sentences apart", item)
+	}
+	// Nobody chose an option, so the item carries none: a reader drawing an answer's options under
+	// it would draw an empty list under a question nobody answered.
+	if item.Selected != nil || item.Replaced || item.EditedAt != nil {
+		t.Fatalf("item = %+v, want no chosen option, no replacement and no edit", item)
+	}
+	// The list reads the resolution's time out of the event's JSON as a timestamptz, which keeps
+	// microseconds, so the item sits at the resolution's own time to the microsecond and not to
+	// the nanosecond Go wrote into that text.
+	if declined.Resolution == nil || item.At.Sub(declined.Resolution.At).Abs() >= time.Microsecond {
+		t.Fatalf("item at = %s, want the resolution's own time %+v", item.At, declined.Resolution)
+	}
+	if item.Ask == nil || item.Ask.ID != askID || item.Ask.Question != question {
+		t.Fatalf("item ask = %+v, want the session's whole question", item.Ask)
+	}
+	f.issuePlace(t, item, "ask")
+
+	// The session that replied on the ask follows it, and reads the same line.
+	follower := f.only(t, answersOther)
+	if follower.ID != askID || follower.Kind != model.SessionAnswerKindDeclined ||
+		follower.Relation != model.SessionAnswerRelationDeclinedYourAsk ||
+		follower.Text != note || follower.DispatchWords != model.DeclineDispatchWords {
+		t.Fatalf("the follower's item = %+v, want the same decline of ask %s", follower, askID)
+	}
+	// A session the decline never reached reads nothing.
+	f.empty(t, "session-untouched")
+	// A window that opens after the resolution leaves the decline out.
+	after := declined.Resolution.At.Add(time.Millisecond).Format(time.RFC3339Nano)
+	if later := f.list(t, answersSession, "?since="+after); later.Total != 0 || len(later.Items) != 0 {
+		t.Fatalf("since=%s = %+v, want the decline left out", after, later)
+	}
+
+	// A person who writes no note declines all the same: the sentences Dispatch wrote stand alone.
+	quiet := f.ask(t, answersSession, "Which region do we ship to first?")
+	quietly := f.decline(t, quiet, nil)
+	f.publishOutbox(t)
+	listed := f.list(t, answersSession, "")
+	if listed.Total != 2 || len(listed.Items) != 2 {
+		t.Fatalf("answers = %+v, want both declines", listed)
+	}
+	// Newest first by the resolution's time: the second decline heads the list.
+	if listed.Items[0].ID != quiet || listed.Items[1].ID != askID {
+		t.Fatalf("order = %s, %s, want %s before %s", listed.Items[0].ID, listed.Items[1].ID, quiet, askID)
+	}
+	silent := listed.Items[0]
+	if silent.Text != "" || silent.DispatchWords != model.DeclineDispatchWords {
+		t.Fatalf("a decline with no note = %+v, want Dispatch's sentences and no note", silent)
+	}
+	if quietly.Resolution == nil || silent.At.Sub(quietly.Resolution.At).Abs() >= time.Microsecond {
+		t.Fatalf("item at = %s, want the resolution's own time %+v", silent.At, quietly.Resolution)
+	}
+
+	// A retraction and the withdrawal an issue's close writes close an ask these sessions follow
+	// as well, and the list holds neither: it takes the declined kind alone.
+	retracted := f.ask(t, answersSession, "Shall we pause the rollout?")
+	f.comment(t, map[string]any{"body": "I am on it.", "ask_id": retracted}, answersOther)
+	if resolved := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/asks/"+retracted+"/resolve", map[string]any{
+		"kind": "retracted", "reason": "I asked it in the room instead.",
+	}, "alice"); resolved.Code != http.StatusOK {
+		t.Fatalf("retract ask %s: status=%d body=%s", retracted, resolved.Code, resolved.Body.String())
+	}
+	withdrawn := f.ask(t, answersSession, "Which region do we close first?")
+	f.comment(t, map[string]any{"body": "Mine too.", "ask_id": withdrawn}, answersOther)
+	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{
+		"status": "done",
+	}, "alice"); closed.Code != http.StatusOK {
+		t.Fatalf("close %s: status=%d body=%s", f.issue, closed.Code, closed.Body.String())
+	}
+	f.publishOutbox(t)
+	for _, ask := range []string{retracted, withdrawn} {
+		if reached := f.destinations(t, "ask.resolved", ask); !slices.Contains(reached, contracts.AgentSubject(answersSession)) {
+			t.Fatalf("the resolution of ask %s reached %v, want the session's own topic", ask, reached)
+		}
+	}
+	// The session that asked follows both declined asks, the one that replied follows the first
+	// alone, and neither list holds the retraction or the withdrawal.
+	for _, follows := range []struct {
+		session string
+		want    []string
+	}{
+		{answersSession, []string{quiet, askID}},
+		{answersOther, []string{askID}},
+	} {
+		listed := f.list(t, follows.session, "")
+		ids := []string{}
+		for _, item := range listed.Items {
+			if item.Kind != model.SessionAnswerKindDeclined {
+				t.Fatalf("%s answers hold %+v, want declines alone", follows.session, item)
+			}
+			ids = append(ids, item.ID)
+		}
+		if listed.Total != len(follows.want) || !slices.Equal(ids, follows.want) {
+			t.Fatalf("%s answers = %v (total %d), want the declines %v and neither the retraction %s nor the withdrawal %s",
+				follows.session, ids, listed.Total, follows.want, retracted, withdrawn)
+		}
+	}
+
+	f.seedEvents(t, 2000)
+	const personWords = `'ask.answered', 'comment.created', 'message.created', 'message.answered'`
+	for _, read := range []struct{ name, types string }{
+		{"the five types this release reads", personWords + `, 'ask.resolved'`},
+		{"the four types the release before it reads", personWords},
+	} {
+		statement := `
+			select e.type, e.payload->>'id' as id
+			from events e
+			where e.actor->>'kind' = 'user'
+			  and e.type in (` + read.types + `)
+			  and e.created_at >= $1
+			  and $2 = any(e.published_destinations)`
+		plan := planWithoutSeqScans(t, f.database, statement,
+			time.Now().UTC().Add(-72*time.Hour), contracts.AgentSubject(answersSession))
+		if explaintest.SeqScansRelation(t, plan, "events") {
+			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, declineIndex, plan)
+		}
+		scans := explaintest.IndexScans(t, plan)
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == declineIndex }) {
+			t.Fatalf("%s reads %v, want an index scan of %s:\n%s", read.name, scans, declineIndex, plan)
+		}
+	}
+}
+
+// seedEvents fills events with rows of a type no partial index of this read holds, so the plans
+// above are costed over a table worth an index rather than over the handful of rows this fixture
+// writes, and analyzes after, without which the planner costs every index off the same default
+// estimate. The seeded rows are published and notify nobody, so no outbox run of this test has
+// anything to do with them.
+func (f *answersFixture) seedEvents(t *testing.T, rows int) {
+	t.Helper()
+	if _, err := f.database.Pool.Exec(context.Background(), `
+		insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at)
+		select $1::text, 100000 + n, 'issue.updated', '{"kind":"session","id":"session-seed"}'::jsonb,
+		       jsonb_build_object('key', $1::text), false, now(), now() - make_interval(mins => n)
+		from generate_series(1, $2::int) n
+	`, f.issue, rows); err != nil {
+		t.Fatalf("seed %d events: %v", rows, err)
+	}
+	if _, err := f.database.Pool.Exec(context.Background(), "analyze events"); err != nil {
+		t.Fatalf("analyze the seeded events: %v", err)
 	}
 }

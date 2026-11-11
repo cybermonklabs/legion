@@ -1,0 +1,16 @@
+-- 20261111002445_drop_events_person_words.up.sql
+-- events_person_words, `events (created_at desc, id desc)` where the actor is a person and the
+-- type is one of ask.answered, comment.created, message.created and message.answered (0145), was
+-- built for the one read that lists what people wrote to a session
+-- (sessionanswers.List). That read names five types now and reads
+-- events_person_words_with_declines (20261111002444) instead, so this index serves nothing and is
+-- write cost on every event Dispatch appends, on the largest table it holds.
+-- Dropping it in the same release as the wider index is safe while the release before this one
+-- still serves: that build's read names four of the five types the wider index is partial on, and
+-- a query over a subset of a predicate's values implies that predicate, so the planner uses the
+-- wider index for the four-type read as it used this one. An index is not a shape the running
+-- code reads, so neither release loses an answer, only a plan choice.
+-- `drop index` takes ACCESS EXCLUSIVE on events for the instant it unlinks the index, inside the
+-- runner's one transaction, so every read and write of an event waits behind it for that moment;
+-- it reads no row of the table and rewrites none.
+drop index events_person_words;
