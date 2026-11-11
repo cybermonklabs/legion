@@ -61,12 +61,15 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		{name: "github.com as the userinfo of another host", body: "See https://github.com@evil.test/acme/widgets/issues/7 here.", credit: false},
 		{name: "that confusion in upper case", body: "See HTTPS://GITHUB.COM@EVIL.TEST/acme/widgets/issues/7 here.", credit: false},
 
-		// The same bytes inside another host's URL. These nine rows read the rule the architect
-		// settled on 2026-11-10: a citation is a URL whose authority is github.com and whose path
-		// is an issue path, and what stands to the left of that authority decides nothing. So the
-		// first seven credit, as the default branch credits them, and they are not the class this
-		// change refuses: a body that writes github.com/acme/widgets/issues/7 inside another URL
-		// has written that issue's URL, and its author could have written it bare.
+		// The same bytes inside another host's URL: ten rows, of which eight credit. A citation is
+		// a URL whose authority is github.com and whose path is an issue path, and what stands to
+		// the left of that authority decides nothing, so a body that writes
+		// github.com/acme/widgets/issues/7 inside another URL has written that issue's URL and is
+		// credited for it. The default branch credits only four of the eight, and the reason is
+		// its pattern rather than any reading of a host: it matches `github.com` case-sensitively,
+		// so the plain path, the lower-case query, the fragment and the at-sign row credit there
+		// while every upper- and mixed-case spelling does not, `example.test/(GitHub.com/...`
+		// among them. Measured against the merge base f164e6a27756.
 		{name: "another host's path", body: "See https://example.test/github.com/acme/widgets/issues/7 here.", credit: true},
 		{name: "another host's path in upper case", body: "See HTTPS://EXAMPLE.TEST/GITHUB.COM/acme/widgets/issues/7 here.", credit: true},
 		{name: "another host's path after a tilde", body: "See HTTPS://EXAMPLE.TEST/~GITHUB.COM/acme/widgets/issues/7 here.", credit: true},
@@ -76,18 +79,21 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		{name: "another host's fragment", body: "See https://example.test/r#github.com/acme/widgets/issues/7 here.", credit: true},
 		// The next two refuse, and a reader who takes that for a rule about percent-encoding will
 		// be wrong: the parser decodes nothing. `F` and `2` are host bytes, so the run of host
-		// bytes before the path is `2Fgithub.com`, which is not github.com. Measured in this pod.
+		// bytes before the path is `2Fgithub.com`, which is not github.com. The lower-case one is
+		// the single body in this block that the default branch credits and this code refuses;
+		// it is the ending-in-github.com class reached by an escape, and the corpus row for it
+		// carries hostIsNotGitHub for that reason.
 		{name: "a percent-encoded slash leaves the host bytes 2Fgithub.com, which is another name", body: "See https://example.test/a%2Fgithub.com/acme/widgets/issues/7 here.", credit: false},
 		{name: "the same in upper case, and for the same reason rather than a rule about encoding", body: "See HTTPS://EXAMPLE.TEST/A%2FGITHUB.COM/acme/widgets/issues/7 here.", credit: false},
 		{name: "an at-sign in another host's path leaves github.com the authority of what follows", body: "See https://example.test/x@github.com/acme/widgets/issues/7 here.", credit: true},
 
-		// Two readings the architect settled rather than left to chance, each pinned so that a
-		// later reader who changes one sees a row go red and knows to ask.
+		// Two readings pinned so that a later reader who changes one sees a row go red: a
+		// github.com URL inside another host's query is still that URL, and a trailing dot makes
+		// a different name, which the default branch refuses too.
 		{name: "a github.com URL written inside another host's query is still written", body: "See https://evil.test/r?u=https://github.com/acme/widgets/issues/7 here.", credit: true},
 		{name: "the DNS trailing dot is another host, as it is on main", body: "See https://github.com./acme/widgets/issues/7 here.", credit: false},
 
-		// Eight shapes measured in this pod against the parse, each row the answer the code gives
-		// today rather than one anybody wishes it gave.
+		// Eight shapes, each row the answer the code gives rather than one anybody wishes it gave.
 		{name: "a host with a port is github.com, the port being no part of the host", body: "See https://github.com:443/acme/widgets/issues/7 here.", credit: true},
 		// The digits after a colon are the port, however many there are, because the host before
 		// the colon is what decides. Measured against origin/main's own attribution.go in the same
@@ -166,18 +172,19 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 		{name: "scheme-relative inside brackets", body: "(//github.com/acme/widgets/issues/7)", want: []string{seven}},
 		{name: "scheme-relative inside square brackets", body: "[//github.com/acme/widgets/issues/7]", want: []string{seven}},
 
-		// The six shapes the stricter readings of rounds three to five dropped, each one a real
-		// citation the default branch credits. They come back because what stands to the left of
-		// the authority decides nothing, so no rule for brackets is needed to read them.
+		// Five citations a rule about the bytes left of the authority refuses and the default
+		// branch credits. They are credited here because what stands to the left of the authority
+		// decides nothing, so no rule for brackets is needed to read them.
 		{name: "a bare reference and a bracketed citation", body: "Fixes #12(github.com/acme/widgets/issues/7)", want: []string{twelve, seven}},
 		{name: "a bare reference and a citation in angle brackets", body: "Fixes #12<github.com/acme/widgets/issues/7>", want: []string{twelve, seven}},
 		{name: "after a word that carries a slash", body: "and/or(github.com/acme/widgets/issues/7)", want: []string{seven}},
 		{name: "a second citation bracketed against the first", body: "github.com/acme/widgets/issues/7(github.com/other/repo/issues/9)", want: []string{seven, "https://github.com/other/repo/issues/9"}},
 		{name: "in braces after a word that carries a slash", body: "x/{github.com/acme/widgets/issues/7}", want: []string{seven}},
 
-		// The rows this table carried as refusals until 2026-11-10, now credits, for the reason
-		// the block of nine above gives. A later change that refuses them again is a change to
-		// what this pull request delivers and needs its own decision, not a quiet edit here.
+		// Two bodies that credit github.com inside another host's path. A later change that
+		// refuses them changes what this parser delivers rather than tightening it, and the
+		// default branch credits the plain one while refusing the mixed-case bracketed one, which
+		// its case-sensitive pattern decides and no host reading does.
 		{name: "another host's path, bracketed", body: "See https://example.test/(GitHub.com/acme/widgets/issues/7) here.", want: []string{seven}},
 		{name: "another host's path, plain", body: "See https://example.test/github.com/acme/widgets/issues/7 here.", want: []string{seven}},
 	} {
