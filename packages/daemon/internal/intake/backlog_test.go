@@ -33,9 +33,11 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	spec := consumerSpec(&lockedBuffer{})
 	// A hang guard, not the subject: AckWait bounds each read a handling of these events makes
 	// (prepareRepository), and consumerSpec's 200 ms is about the length of such work on a loaded
-	// runner, so a minute is far above it and cuts nothing this row does. The window decides no
-	// redelivery either way: intake reports a message in progress for as long as its handler runs
-	// (keepInProgress), so the held fact below stays this consumer's however long it is held.
+	// runner, so a minute is far above it and cuts nothing this row does. The guard is also what
+	// keeps the read below the hold's own: a redelivery of the held fact needs the whole minute to
+	// pass with the handler still holding it. The progress keeper makes such a redelivery unlikely
+	// and promises none: a report, or the acknowledgement, that reaches the server after the
+	// window has lapsed still has the message delivered again (keepInProgress, ackprogress.go).
 	spec.AckWait = time.Minute
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {

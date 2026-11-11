@@ -29,8 +29,11 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	// handling makes - whether the pull request is recorded (recordedPullRequest) and the
 	// reviewer's permission (resolveReviewPermission) - and consumerSpec's 200 ms is about the
 	// length of that work on a loaded runner, so a minute is far above it and cuts nothing the row
-	// does. The window decides no redelivery of its own: intake reports a message in progress for
-	// as long as its handler runs (keepInProgress). Measured in this issue's pod at the base
+	// does. That guard is what makes the count of one sound: a redelivery the count would see
+	// needs the whole minute to pass with a handler still running. The progress keeper makes a
+	// redelivery unlikely while a handler runs and promises none: a report, or the
+	// acknowledgement, that reaches the server after the window has lapsed still has the message
+	// delivered again (keepInProgress, ackprogress.go). Measured in this issue's pod at the base
 	// commit, the held-fact row of this package failed 11 of 300 runs at the 200 ms window under
 	// 16 busy loops on 2 CPUs, and the keeper's first report was up to 403.7 ms late against a
 	// 66.7 ms period.

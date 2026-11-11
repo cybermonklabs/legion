@@ -85,8 +85,11 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	// AckWait bounds each read the handler makes - whether the pull request is recorded
 	// (recordedPullRequest) and the review author's permission (resolveReviewPermission) - and
 	// consumerSpec's 200 ms is about the length of this handler's own work on a loaded runner, so
-	// the row sets a minute as a guard far above it. The window decides no redelivery here:
-	// intake reports the message in progress while the handler works (keepInProgress).
+	// the row sets a minute as a guard far above it. That guard is what makes these counts sound:
+	// a redelivery the counts would see needs the whole minute to pass with the handler still
+	// running. The progress keeper makes a redelivery unlikely while a handler runs and promises
+	// none: a report, or the acknowledgement, that reaches the server after the window has lapsed
+	// still has the message delivered again (keepInProgress, ackprogress.go).
 	spec.AckWait = time.Minute
 	var mu sync.Mutex
 	var asked []string

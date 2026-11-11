@@ -17,16 +17,26 @@ import (
 // the fact lock — before ApplyFact found it already processed, and that repeated work read in the
 // log as trouble when the fact was only slow.
 //
-// It also quiets a true failure. A wedged handler no longer shows as that repeated preparation,
-// and no longer raises the delivered count in the consumer-lag warning (lagWatch.observe in
-// consume.go), because the message it is stuck on is not delivered again while it holds.
+// It also quiets a true failure, most of the time. A wedged handler rarely shows as that repeated
+// preparation, and rarely raises the delivered count in the consumer-lag warning (lagWatch.observe
+// in consume.go), because the message it is stuck on is reported in progress while it holds. That
+// is no promise. JetStream delivers the message again when a progress report, or the
+// acknowledgement itself, reaches the server after the acknowledgement window has lapsed, and the
+// repeated preparation and the raised count come back for that one delivery. The campaign of
+// dispatch://INFRA-1113 measured both halves of this at a 200 ms window: 21 messages whose handler
+// ran past the window were never delivered again, the longest running 888.6 ms under 12 reports of
+// the keeper, and every redelivery it traced was a signal the server got late — five times a
+// progress report 2.3 ms to 177.9 ms late, and once the acknowledgement.
 //
 // What still shows a wedged handler is the stall: ConsumerLag.Stalled, true once messages wait and
 // none has been handled for consumerStallAfter, and the state route's consumers[].stalled that
 // serves it (packages/daemon/internal/api/state.go).
 
 // keepInProgress reports message in progress to JetStream every `every` for as long as a handler
-// works on it, so JetStream does not deliver it again and have it prepared a second time. It
+// works on it, which makes a redelivery of that message unlikely: each report the server gets
+// inside the acknowledgement window starts that window again, so the message is not handed out a
+// second time and prepared again. It is no promise. A report, or the acknowledgement itself, that
+// reaches the server after the window has lapsed still has the message delivered again. It
 // returns stop, which ends the keeper. stop is safe to call many times and returns only once the
 // keeper's goroutine has ended, so a caller that calls it before it acknowledges or naks the
 // message knows no tick can still be in flight: a tick that reached the server after a nak would
@@ -36,7 +46,13 @@ import (
 // library's and this order does not rest on it.
 //
 // The one caller ticks at a third of AckWait. A fraction well below half leaves room for one tick
-// to be lost or to arrive late and still have another inside the window before it expires.
+// to be lost or to arrive late and still have another inside the window before it expires, which a
+// time.Ticker asks for: it drops a tick its goroutine was not scheduled for (Go 1.27.3). No report
+// covers the first period of a window, whatever the fraction is, because a ticker sends only after
+// each tick, so until one period has passed the window alone stands between the handler and a
+// redelivery. The campaign of dispatch://INFRA-1113 measured that first report at a 200 ms window,
+// whose period is 66.7 ms: the largest interval from the keeper's start to its first report was
+// 403.7 ms, which is 6.06 times the period, and the 99th percentile of that interval was 276.8 ms.
 //
 // jetstream.ErrMsgAlreadyAckd ends the keeper with no line at all. nats.go never marks a message
 // acknowledged for a progress signal (nats.go v1.53.1's (*jetStreamMsg).ackReply, which sets ackd

@@ -1954,8 +1954,12 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// handler makes (resolveReviewPermission), and consumerSpec's 200 ms is the length of
 			// this handler's own work on a loaded runner - two pool reads and the fact's
 			// transaction - so this row sets it as a hang guard far above that work, leaving the
-			// failed read and its retry as the only two reads. The window decides no redelivery
-			// here: intake reports the message in progress while the handler works.
+			// failed read and its retry as the only two reads. That guard is what makes the count
+			// of two sound: a redelivery the count would see needs the whole minute to pass with
+			// the handler still running. The progress keeper makes a redelivery unlikely while a
+			// handler runs and promises none: a report, or the acknowledgement, that reaches the
+			// server after the window has lapsed still has the message delivered again
+			// (keepInProgress, ackprogress.go).
 			spec.AckWait = time.Minute
 			var mu sync.Mutex
 			var asks []time.Time

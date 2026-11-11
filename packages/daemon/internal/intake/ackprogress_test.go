@@ -19,8 +19,13 @@ import (
 )
 
 // What the two rows here prove together is Acceptance A1 of dispatch://INFRA-1530: a fact held
-// well past its acknowledgement window is delivered once and prepared once, because consumeMessage
-// reports it in progress while its handler runs (keepInProgress).
+// well past its acknowledgement window is delivered once and prepared once at the two-second
+// window these rows keep, because consumeMessage reports it in progress while its handler runs
+// (keepInProgress). The keeper makes that second delivery unlikely rather than impossible: a
+// progress report, or the acknowledgement, that reaches the server after the window has lapsed
+// still has the message delivered again. That is why the first row's window is sized above the
+// delays measured for those signals, and why its count is sound at two seconds and was not at
+// consumerSpec's 200 ms (the window comment inside that row).
 //
 // The first row is that claim, on the daemon's own consumers, and it makes three assertions of one
 // held backlog. The signal itself is the one that fails every run when the keeper is gone: the row
@@ -254,7 +259,8 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	}
 	// Every delivery counts here, including a redelivered copy the consumer has not reached yet,
 	// so a copy JetStream made and the daemon dropped as a duplicate would show even though no
-	// second preparation did.
+	// second preparation did. The two-second window set above is what makes this exact count
+	// sound, and the comment on it says what sized it.
 	item, err := stream.Consumer(context.Background(), dispatchConsumerName(spec.Project))
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer: %v", err)
@@ -688,6 +694,12 @@ const heldFactLine = "an intake fact outlived its acknowledgement window and was
 // duration. The issue's after-merge check reads the line in production
 // (dispatch://INFRA-1530), so a change that dropped it, or that left its attributes behind, would
 // go unnoticed until that deploy; hence a row of its own, under the name the check selects.
+//
+// Its count is of log lines rather than of deliveries, and what makes it sound at consumerSpec's
+// 200 ms window, which this row keeps, is consumerFetchBatch of 1 (jetstream.PullMaxMessages(1),
+// consume.go), so no second delivery is handled while the first is held, together with
+// heldOnce.hold returning at once for every delivery after the first, so a redelivered copy is
+// handled in milliseconds and outlives no window of its own.
 func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
