@@ -940,22 +940,47 @@ function reviewsRoute(arg: string, repo: string): boolean {
 function submitRoute(arg: string, repo: string): boolean {
   return /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/\d+\/events$/.exec(arg)?.[1] === repo;
 }
+/** The value one of `flags` carries in `argv`, or undefined when the call names none of them:
+ * the argument after the flag, which is how gh takes `--method GET`, `-X GET`, `-R owner/repo`
+ * and `--repo owner/repo`. */
+function flagValue(argv: string[], flags: string[]): string | undefined {
+  const index = argv.findIndex((arg) => flags.includes(arg));
+  return index < 0 ? undefined : argv[index + 1];
+}
 /** The review `call` submitted, or undefined when it submitted none: the
  * `gh api --method POST repos/{owner}/{repo}/pulls/{n}/reviews` the reviewer's prompt prescribes,
  * on the run's own repository and no other (`reviewsRoute`),
  * whose JSON body comes from `--input <file>` (the stand-in records the file it read),
- * `--input -` (its stdin) or `-f`/`--raw-field` fields; or a `gh pr review`, which carries its
- * event as a flag and can name neither the head nor an inline comment; or the call that submits
- * a pending review (`submitRoute`), whose body carries the verdict and whose create carries the
- * rest (`reviewsIn`). A call on the reviews route that carries no body submits nothing:
- * `gh api repos/…/pulls/<n>/reviews` is the read of the reviews already there, which a round
- * often makes after it submitted. */
+ * `--input -` (its stdin) or `-f`/`--raw-field` fields; or a `gh pr review` of that same
+ * repository, which carries its event as a flag and can name neither the head nor an inline
+ * comment; or the call that submits a pending review (`submitRoute`), whose body carries the
+ * verdict and whose create carries the rest (`reviewsIn`). A call on the reviews route that
+ * carries no body submits nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews
+ * already there, which a round often makes after it submitted. Neither does a call that names
+ * the verb GET: `gh api repos/…/pulls/<n>/reviews --method GET -f per_page=100` is that same
+ * read with its query's parameters written as fields, and a reader that took those fields for a
+ * body made it the round's last submission, carrying no event — the row of a round that
+ * submitted nothing, which is the one thing such a round did not do.
+ *
+ * The repository is read on both routes, since a review of another repository's pull request
+ * approves nothing of this one and the stand-in answers such a call as GitHub would answer the
+ * right one (`reviewsRoute`): `gh pr review -R other/repo --request-changes` is a review of
+ * other/repo, and the repository rule covering the `gh api` route alone counted it as this
+ * round's verdict. */
 function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefined {
   if (call.argv[0] === "pr" && call.argv[1] === "review") {
+    // The repository the call names, which a call naming none leaves to the checkout it was made
+    // in: the run's own clone of the world's repository.
+    const named = flagValue(call.argv, ["-R", "--repo"]);
+    if (named !== undefined && named !== repo) return undefined;
     const flag = call.argv.find((arg) => REVIEW_FLAGS[arg] !== undefined) ?? "";
     return { at: call.at, event: REVIEW_FLAGS[flag] ?? "", head: "", comments: [], submits: false };
   }
-  if (call.argv[0] !== "api") return undefined;
+  // gh sends a call carrying a field as a POST and one carrying none as a GET, so the verb is
+  // read to tell an explicit GET — a read of the route — from a submission. It is read in any
+  // case, as gh reads it.
+  const method = (flagValue(call.argv, ["--method", "-X"]) ?? "").toUpperCase();
+  if (call.argv[0] !== "api" || method === "GET") return undefined;
   const submits = call.argv.some((arg) => submitRoute(arg, repo));
   if (!submits && !call.argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
   const fields = new Map<string, string>();
@@ -1022,6 +1047,17 @@ function reviewsIn(calls: z.infer<typeof Call>[], repo: string): Submission[] {
   }
   return found;
 }
+/** The verdict standing on the pull request after `submissions`, or undefined when none does:
+ * the last `APPROVE` or `REQUEST_CHANGES`. A `COMMENT` review is no verdict of its own — on
+ * GitHub it leaves the approval or the change request before it standing — so a round that
+ * approved and then posted a comment review is approved, and one that requested changes and then
+ * commented has its change request standing, which is what the defect control reads. A pending
+ * review carries no event either and stands for nothing (`reviewsIn`). */
+function verdictOf(submissions: Submission[]): Submission | undefined {
+  return submissions.findLast(
+    (review) => review.event === "APPROVE" || review.event === "REQUEST_CHANGES"
+  );
+}
 
 /** Everything one recorded gh call could carry a thread id or a reply in: its arguments, its
  * stdin, and each file it read a body from. */
@@ -1065,8 +1101,10 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
  * by SHA, with every text finding left as the inline thread the same submission writes.
  *
  * The score reads the round's submission, never the pull request's state: the gh stand-in answers
- * static routes, so a thread's state after the run says nothing. The submission is the last review
- * the stand-in recorded (reviewOf, calls.jsonl), and the run's world is rig.sh's worker_fixture
+ * static routes, so a thread's state after the run says nothing. The submission is the verdict
+ * the round ended with — its last `APPROVE` or `REQUEST_CHANGES` (`verdictOf`), and the last
+ * review the stand-in recorded when it ended with neither, so the row still names what such a
+ * round did submit — and the run's world is rig.sh's worker_fixture
  * under the case <run>/case.txt and the run's directory both name, which must agree. Both cases
  * carry the same two text findings, and neither is behavioural:
  *   text-only  the change's code is correct, so the round is clean: the submission is `APPROVE`
@@ -1095,7 +1133,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
     calls.filter((call) => call.as === "gh" && call.exit === 0),
     world.repo
   );
-  const review = reviews.at(-1);
+  const review = verdictOf(reviews) ?? reviews.at(-1);
   const resolves = calls.filter(resolvesAThread).length;
   const pushes = pushesOf(runDir).length;
   const paths = review?.comments ?? [];
@@ -1112,8 +1150,8 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // so what the reviewer can name is each finding's path, which is what `toldArchitect` takes in
   // place of an id. A message naming the head alone leaves the implementer the whole diff to
   // search for the work the merge waits for. One message carries all of it, since the implementer
-  // acts on the message it is handed (`publishedToAll`). A `REQUEST_CHANGES` round opens no such
-  // loop and sends none.
+  // acts on the message it is handed (`publishedTo`'s `all`). A `REQUEST_CHANGES` round opens
+  // no such loop and sends none.
   // And the rule is not only that the message was sent: it is sent once the issue stands in
   // `accepting`, which the reviewer reads with the `legion` tool's `read_record`
   // (review-threads.md step 1). The round ends on both halves, so an accepted completion can
@@ -1127,8 +1165,8 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // the daemon needs the review as well, so a read taken before the approval cannot have shown
   // the round ending whatever it answered — measured by the deep pass of 2026-11-10, which moved
   // a recorded run's own submission after its read and the run still passed. The submission read
-  // is the verdict's own (`review`, the last submission the stand-in recorded), not the first
-  // APPROVE of the round.
+  // is the verdict's own (`review`, the verdict the round ended with), not the first APPROVE of
+  // the round.
   //
   // The read is the reviewer's own call and its own answer, both from the tool's result: the
   // result's timestamp is written when the tool returned, so it orders the publish without any
@@ -1149,24 +1187,29 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
     const phases = recordRead(step, answer);
     return phases === undefined ? [] : [{ at: answer.at, phases }];
   });
-  const approvedAt = review?.event === "APPROVE" ? review.at : undefined;
+  // Every time here is compared through `instant` and never as text: a read whose answer carries
+  // no time of its own would sort before everything that happened, and a time that does not
+  // parse is the rig's fault rather than a read the reviewer took first.
+  const approvedAt =
+    review?.event === "APPROVE" ? instant(review.at, "the approval's time") : undefined;
   const afterApproval =
-    approvedAt === undefined ? [] : reads.filter((read) => read.at > approvedAt);
+    approvedAt === undefined
+      ? []
+      : reads.filter((read) => instant(read.at, "a read_record answer's time") > approvedAt);
   const readAfter = afterApproval.find((read) => read.phases.includes("accepting"))?.at;
   // The wake's own names: the head the fix lands above, and each of the two findings by the path
   // its thread is on, which is the name this world lets the reviewer give it.
   const wake = (after: string) =>
-    publishedToAll(
+    publishedTo(
       runDir,
       sender,
       "implementer",
       [world.head, FINDING_DOC, FINDING_WORKFLOW],
+      "all",
       after
     );
   const toldImplementer = readAfter !== undefined && wake(readAfter);
-  // Everything the case turns on but the read and the message it orders. A run that fails on its
-  // own evidence — a review that names another head, a finding written on neither file, a push
-  // in the round — failed whatever the reviewer was shown, so it stays a failure below.
+  // Everything the case turns on but the read and the message it orders.
   const otherwise =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
@@ -1179,12 +1222,17 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // would be moved out of the denominator by a limit that decided nothing. Two halves of the
   // verdict are decided without that read. A run that failed on its own evidence — a review that
   // names another head, a finding written on neither file, a push in the round — failed whatever
-  // the reviewer was shown (`otherwise`); and so did a run whose unreadable read was followed by
-  // no wake, since the step is the record read and then the message, and a round that sent the
-  // implementer nothing fails on whatever that read answered.
+  // the reviewer was shown (`otherwise`); and so did a run this reader already read as having
+  // taken the step (`toldImplementer`), where no answer to the unreadable read would change the
+  // row. The second is asked as the step's own answer and not as "some read after the approval
+  // answered `accepting`": a round whose accepting read came after its wake took no step this
+  // reader can see, since the message preceded the answer that was to order it, so what the run
+  // turns on is still the unreadable read the wake did follow. A round that woke nobody is
+  // decided the same way, since the step is the record read and then the message, and no answer
+  // orders a message never sent.
   if (
     otherwise &&
-    readAfter === undefined &&
+    !toldImplementer &&
     afterApproval.some((read) => read.phases.length === 0 && wake(read.at))
   )
     throw new Error(
@@ -1412,31 +1460,47 @@ function publishes(runDir: string, sender: string): Publish[] {
   }
   return sent;
 }
-/** Whether a message of this run reached `role`'s topic naming one of `names`. The loop after an
- * approval that leaves text threads open runs in `accepting`, where the daemon starts no phase
- * and records no review, so every step of it is carried by one of these messages and a step that
- * sends none leaves the next role never learning its turn began (review-threads.md, *After an
- * approval that leaves text threads open*). The role is read from the topic the message reached
- * and from nothing else: a message to the architect that says "the reviewer can resolve these"
- * is no wake of the reviewer. `names` are the strings the rule says the message must carry,
- * matched against the body alone for the same reason, and a commit is named by any prefix of
- * seven hexadecimal digits or more, as a reply names one (namesCommit). A message that names
- * none of them is no wake, since the next role cannot act on it, and a caller with nothing to
- * require passes an empty list, which no message satisfies rather than every message satisfying
- * it. `after` is a time Envoy's own record is ordered against, so a message that reached the
- * topic before it is no answer to what happened then. */
+/** How the names a caller asks for are matched against one message: `any` where they are the
+ * several ways one fact can be written, and `all` where one message must carry every one of
+ * them, which is how a wake that must carry several facts is read — the facts are one message's,
+ * or the role that reads it is left acting on half of them, since Envoy hands it each message on
+ * its own. */
+type Match = "any" | "all";
+/** Whether a message of this run reached `role`'s topic naming `names` under `match`. The loop
+ * after an approval that leaves text threads open runs in `accepting`, where the daemon starts
+ * no phase and records no review, so every step of it is carried by one of these messages and a
+ * step that sends none leaves the next role never learning its turn began (review-threads.md,
+ * *After an approval that leaves text threads open*). The role is read from the topic the
+ * message reached and from nothing else: a message to the architect that says "the reviewer can
+ * resolve these" is no wake of the reviewer. `names` are the strings the rule says the message
+ * must carry, matched against the body alone for the same reason, and a commit is named by any
+ * prefix of seven hexadecimal digits or more, as a reply names one (namesCommit). A message that
+ * names none of them is no wake, since the next role cannot act on it, and a caller with nothing
+ * to require passes an empty list, which no message satisfies under either match rather than
+ * every message satisfying it. `after` is a time Envoy's own record is ordered against, so a
+ * message that reached the topic before it is no answer to what happened then; both times are
+ * read through `instant`, where a time that does not parse is the rig's fault, since a message
+ * whose record carries no time would otherwise sort before everything that happened. A caller
+ * that orders a message against nothing passes no `after` and reads no time at all. */
 function publishedTo(
   runDir: string,
   sender: string,
   role: Role,
   names: string[],
-  after = ""
+  match: Match,
+  after?: string
 ): boolean {
-  return publishes(runDir, sender).some(
-    (sent) =>
-      sent.at > after &&
-      sent.topic.endsWith(`-${role}`) &&
-      names.some((name) => bodyNames(sent.message, name))
+  const from = after === undefined ? undefined : instant(after, "the time a message must follow");
+  return (
+    names.length > 0 &&
+    publishes(runDir, sender).some(
+      (sent) =>
+        sent.topic.endsWith(`-${role}`) &&
+        (from === undefined || instant(sent.at, "a message's time") > from) &&
+        (match === "all"
+          ? names.every((name) => bodyNames(sent.message, name))
+          : names.some((name) => bodyNames(sent.message, name)))
+    )
   );
 }
 /** Whether `message` names `name`: the string itself, or, when `name` is a commit, any prefix of
@@ -1445,27 +1509,6 @@ function publishedTo(
  * rather than everything of none. */
 function bodyNames(message: string, name: string): boolean {
   return name !== "" && (message.includes(name) || namesCommit(message, [name]));
-}
-/** Whether one message of this run reached `role`'s topic naming every one of `names`, which is
- * how a wake that must carry several facts is read: the facts are one message's, or the role that
- * reads it is left acting on half of them, since Envoy hands it each message on its own. An empty
- * `names` is satisfied by no message, as `publishedTo`'s is. */
-function publishedToAll(
-  runDir: string,
-  sender: string,
-  role: Role,
-  names: string[],
-  after = ""
-): boolean {
-  return (
-    names.length > 0 &&
-    publishes(runDir, sender).some(
-      (sent) =>
-        sent.at > after &&
-        sent.topic.endsWith(`-${role}`) &&
-        names.every((name) => bodyNames(sent.message, name))
-    )
-  );
 }
 /** Whether every message this agent sent went to `role`'s topic. The rule sends the
  * implementer's message to the reviewer's topic **and to that topic alone** (review-threads.md
@@ -1497,7 +1540,8 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
     runDir,
     sender,
     "architect",
-    threads.flatMap((thread) => [thread.id, thread.path])
+    threads.flatMap((thread) => [thread.id, thread.path]),
+    "any"
   );
 }
 
@@ -1553,11 +1597,14 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  *                often has one half: rig.sh boots no reviewer on an empty wake, and every term
  *                over the reviewer's acts then reads as the terms of an agent that never ran
  *                (BOOTS_OPTIONAL). An implementer that woke it anyway gets both halves read.
- * The completions the daemon stand-in refused are reported (`completions`, which counts the
- * accepted ones and is 0 for a loop the stand-in serves in `accepting`) and scored by
+ * The completions the daemon stand-in refused are reported (`refusedCompletions`) and scored by
  * neither case: this loop runs in no phase and writes no handoff, so there is nothing for a
  * completion to carry, and what a role should have done instead of one is no part of the rule
- * these words give.
+ * these words give. The refusals are what there is to count: both halves of this loop are
+ * booted in `accepting`, the architect's phase, where the stand-in refuses every completion of
+ * theirs 409 as the workflow does (daemon-standin.ts), so an accepted completion is a thing no
+ * run of this scenario can show and a count of those would read 0 whatever a run did — all 40
+ * of the runs recorded on 2026-11-10 read it so.
  * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
  * where the loop, the one reply per thread and the one thread per resolving call are defined. */
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
@@ -1572,11 +1619,12 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // approved: the rule gives the implementer "one push of one commit of the text fixes", so the
   // number of pushes is scored beside the diff. The commits in that push are not counted: what
   // the approved head gained is the diff, and a second push is a second head under the reviewer
-  // and the architect, which is what the rule's "once" is about.
-  const pushes = pushesOf(runDir).flatMap((push) =>
-    push.ref === `refs/heads/${world.branch}` ? [push.sha] : []
-  );
-  const tip = pushes.at(-1);
+  // and the architect, which is what the rule's "once" is about. The last push keeps the time
+  // its own remote logged it at, which is what the wake that reports it is ordered against
+  // (`toldReviewer`).
+  const pushes = pushesOf(runDir).filter((push) => push.ref === `refs/heads/${world.branch}`);
+  const push = pushes.at(-1);
+  const tip = push?.sha;
   const changed = tip === undefined ? [] : changedFiles(runDir, world.head, tip);
   const wanted = threads.map((thread) => thread.path).toSorted();
   const fixed = pushes.length === 1 && changed.toSorted().join("\n") === wanted.join("\n");
@@ -1659,8 +1707,12 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, [tip])
     );
   const daemon = parsed(path.join(runDir, "daemon.log"), DaemonLine);
-  const completions = daemon.filter(
-    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
+  // The completions the stand-in refused, which are the completions this loop can have: both
+  // halves are booted in `accepting`, whose phase is the architect's, so every completion of
+  // theirs is answered 409 HANDOFF_NOT_CURRENT_PHASE, as the workflow answers one
+  // (daemon-standin.ts). Reported and scored by neither case.
+  const refusedCompletions = daemon.filter(
+    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 409
   ).length;
   const moved = daemon.find(
     (line) => line.path === "/legion/v1/phase/backward" && line.status === 200
@@ -1686,14 +1738,39 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // which is the architect's gate because READY reads the round's first approval. The first
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
-  const toldReviewer = publishedTo(runDir, fixSender, RESOLVES, tip === undefined ? [] : [tip]);
+  //
+  // Each wake is read for every fact its step names and for the moment it could first be sent.
+  // Step 2 has the implementer name "the new head by SHA, the threads it answered, and that the
+  // push's own diff changes no code that runs", so one message carries the head and both thread
+  // ids: a message naming the head alone leaves the reviewer to work out for itself which
+  // threads the push answered, and all ten head wakes of the runs recorded on 2026-11-10 named
+  // both ids and the compare. And a wake written before the push it reports tells the reviewer
+  // of a head the remote had not taken, so it is ordered after that push.
+  const toldReviewer =
+    push !== undefined &&
+    publishedTo(
+      runDir,
+      fixSender,
+      RESOLVES,
+      [push.sha, ...threads.map((thread) => thread.id)],
+      "all",
+      push.at
+    );
   // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
   // role prompt): the architect hears of this head from the reviewer's second approval, so an
   // implementer that copies it in has told the architect of a head nobody has approved yet.
   const toReviewerAlone = sentOnlyTo(runDir, fixSender, RESOLVES);
+  // The reviewer's wake of the architect carries the approval, so it is ordered after the
+  // approval standing on the pull request: a message written before it reports an approval
+  // nobody had made. That approval is the pull request's, whichever half submitted it, since
+  // that is the one the architect's gate reads; whether the reviewer made it, and at the head
+  // the fix landed on, is `approved`'s own question.
+  const approvedAt = submissions.findLast((review) => review.event === "APPROVE")?.at;
   const toldArchitectOfHead =
     reviewSender !== undefined &&
-    publishedTo(runDir, reviewSender, "architect", tip === undefined ? [] : [tip]);
+    approvedAt !== undefined &&
+    tip !== undefined &&
+    publishedTo(runDir, reviewSender, "architect", [tip], "all", approvedAt);
   // code-defect: the finding has one route, and it is the message to the architect. A review
   // submitted here is submitted in `accepting`, where the daemon records none
   // (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` moves nothing and a
@@ -1736,7 +1813,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       )
   );
   const notes = [
-    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} completions=${completions}`,
+    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
