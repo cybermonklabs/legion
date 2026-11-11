@@ -27,6 +27,7 @@ import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
 import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
+import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";
 
@@ -152,6 +153,14 @@ function ApprovalBody({
   /** Where "Next change" stands in the marked blocks, and the question it stands in: another
    *  question is read from its first marked block, not from where the last one was left. */
   const nextChangeAt = useRef({ askId: ask.id, at: 0 });
+  /** This column's hold while the request opens, and the one thing that decides its write. The
+   *  write is a placement for an opened item, so it is the reader's to end like every other:
+   *  the request's own question is drawn from the first frame, and the column stands there
+   *  while the document settles and its artifact and version are read, which is long enough
+   *  for a reader to scroll in. No `drawing()` is ever called on it, so neither of its clocks
+   *  starts: it holds until the reader presses, scrolls, touches or types in the column, or
+   *  until the write below lets it go. */
+  const hold = useRef<SectionHold | undefined>(undefined);
   const settled = useSettled(artifactId);
   const approvedVersion = approval.approved?.version;
 
@@ -184,6 +193,63 @@ function ApprovalBody({
   // A document the column cannot read, and a request on a document that holds no version to
   // show, both fall back to the card.
   const failed = artifactQuery.isError || (artifact !== undefined && latestVersion === undefined);
+  // The version the column draws, read under the key `VersionView` reads it by: both readers
+  // share the one cache entry, so naming it here costs the page no second request, and the
+  // answer tells the column when the text it shows has landed.
+  const versionQuery = useQuery({
+    enabled: settled && latestVersion !== undefined,
+    queryFn: () => {
+      if (latestVersion === undefined) {
+        throw new Error("A version read needs the latest version.");
+      }
+      return api.getArtifactVersion(artifactId, latestVersion);
+    },
+    queryKey: ["artifact", artifactId, "version", latestVersion],
+  });
+  /** The request the column has read a version for, which is what the start of the column is
+   *  written for: the one scroller outlives the row, so a second request on a document opens
+   *  where the first one was left unless the column is sent back. The write waits for the
+   *  version's text, so a request whose version has not been read yet writes nothing at all;
+   *  where the body under the question is still a skeleton because another of its reads - the
+   *  signed-in person, or the approval's own baseline - has not landed, the write lands under
+   *  the question all the same. A version the column could not read, and a document it could
+   *  not read, each hold no text and write nothing, which leaves the reader where they were. */
+  const opened = isText(versionQuery.data) ? ask.id : undefined;
+  // One hold for each request, which is what `[ask.id]` is here for: the reader who moved this
+  // column has moved it for the request they moved it in, and the next request is placed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the request is what this effect is of; the hold it arms reads only the scroller's ref.
+  useEffect(() => {
+    const column = scroller.current;
+    if (column === null) {
+      return;
+    }
+    const held = holdSection(column);
+    hold.current = held;
+    return () => {
+      held.release();
+      hold.current = undefined;
+    };
+  }, [ask.id]);
+  useEffect(() => {
+    const column = scroller.current;
+    const held = hold.current;
+    if (opened === undefined || column === null || held?.writes() !== true) {
+      return;
+    }
+    // Keyed on the request and not on the version number: a later version of the same request
+    // is a redraw of what the column already holds, drawn from its own start, so it is left
+    // alone and a reader reading one is not pulled back up.
+    //
+    // The start is written straight rather than through `scrollElementToTop`: that one measures
+    // the move against the drawn rects, and where nothing is laid out every rect is zero and
+    // the move computes to nothing.
+    column.scrollTop = 0;
+    // Once for each request, and the hold is what says so: let go here, it answers no to every
+    // later pass of this request - a new version of the document, or a read that failed and
+    // recovered - and the next request the reader opens arms a hold of its own.
+    held.release();
+  }, [opened]);
+
   const marked = useMarkedBlocks(content);
 
   const askId = ask.id;
@@ -313,6 +379,7 @@ function DecisionBody({
         />
       )}
       issueKey={ask.issue_key}
+      item={ask.id}
       loadingName={ask.approval?.name ?? ask.document?.name ?? "the document"}
       onAskAnswered={onAnswered}
     />

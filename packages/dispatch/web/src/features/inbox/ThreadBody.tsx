@@ -153,7 +153,8 @@ function ThreadTurns({
    *  on screen long enough (`useDwell`), the thread is read. */
   markNewest: DwellRef;
   /** Whether the thread scrolls its first unread message into view when it opens, which the
-   *  reading pane does under **Oldest first** and a card never does. */
+   *  reading pane's own thread body and its fall-backs do under **Oldest first**, and which a
+   *  thread drawn inside a document the pane has placed and a card never do. */
   openAtFirstUnread: boolean;
   /** The thread's replies, oldest first. */
   replies: readonly ThreadTurn[];
@@ -596,7 +597,8 @@ function noReturn(): void {}
 
 export interface ThreadBodyProps {
   /** Whether the thread scrolls its first unread message into view when it opens: the reading
-   *  pane under **Oldest first**, never a card. */
+   *  pane's own thread body and its fall-backs under **Oldest first**, never a thread drawn
+   *  inside a document the pane has placed, and never a card. */
   openAtFirstUnread?: boolean;
   /** Whether the text the thread is anchored to is drawn above it, which a card and the pane's
    *  fall-back do in place of the document. */

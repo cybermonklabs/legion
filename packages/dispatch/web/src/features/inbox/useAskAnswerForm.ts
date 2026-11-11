@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
   Ask,
@@ -10,7 +10,6 @@ import type {
   AskRead,
   Comment,
   CreateCommentInput,
-  InboxRow,
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
@@ -21,7 +20,7 @@ import {
   clearPendingAskThreadInvalidation,
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
-import { markAnswerOutstanding } from "./outstanding-answers";
+import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
@@ -157,32 +156,20 @@ export function useAskAnswerForm({
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
-  // the shell's indicator shows the answer only while it is out.
-  const mutation = useKeyedWrite({
-    inline: true,
+  // the shell's indicator shows the answer only while it is out. The row's removal from the
+  // Inbox, its restore on a refusal and the hold that keeps the question where the reader
+  // pressed it are the decline's too, and are written once beside the hold itself.
+  const mutation = useOutstandingAnswerWrite({
+    askId: ask.id,
     // The question goes in as the characters its author wrote: a write's label is one line the
     // Writes indicator reads as text, and the reading list's `write-label`
     // (`DISPATCH_READING_SURFACES`) says why.
     label: () => `Answer to “${ask.question}”`,
     write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
-    onMutate: async () => {
-      if (replacing.current !== undefined) return undefined;
-      // Registered before the row goes, never a commit after it: the reading column reads this
-      // at the commit the removal below makes, and a hold arriving later would reach it once the
-      // card about to show a refusal had been unmounted with the question.
-      markAnswerOutstanding(ask.id, true);
-      await queryClient.cancelQueries({ queryKey: inboxQuery().queryKey });
-      const previous = queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey);
-      queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, (current) =>
-        current?.filter((currentAsk) => currentAsk.id !== ask.id)
-      );
-      return previous;
-    },
-    onError: (error, _input, previous) => {
-      if (replacing.current === undefined) {
-        queryClient.setQueryData(inboxQuery().queryKey, previous);
-        void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-      }
+    // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
+    // no open row there to take out.
+    removesRow: () => replacing.current === undefined,
+    onError: (error) => {
       if (error instanceof ApiError && error.code === "ASK_EDITED") {
         setAskChanged(true);
         setSelected([]);
@@ -236,17 +223,6 @@ export function useAskAnswerForm({
       invalidateOwnerReads(queryClient, ask);
     },
   });
-  // How long the Inbox's reading column keeps the question: while this answer is the reader's to
-  // finish - in flight, or refused with the card still holding that refusal under what they
-  // answered - and no longer. The same `pending || failed` liveness `SnoozeControl` reports its
-  // own write by, let go when the server decides the answer, when the form is reset, and when
-  // the card goes.
-  const answerLive = mutation.isPending || mutation.isError;
-  useEffect(() => {
-    if (!answerLive) return;
-    markAnswerOutstanding(ask.id, true);
-    return () => markAnswerOutstanding(ask.id, false);
-  }, [answerLive, ask.id]);
   const clarification = useKeyedWrite({
     inline: true,
     // The same line of the Writes indicator: `write-label` again (see above).

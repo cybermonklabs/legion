@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
+import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { usersQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
@@ -78,6 +78,7 @@ import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
+import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
@@ -87,6 +88,8 @@ import { useAskHandOn } from "./useAskHandOn";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
+const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<Ask> =>
+  api.declineAsk(id, input, bounds);
 const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
 const createReply = (
   issueKey: string,
@@ -115,6 +118,7 @@ export interface AskCardProps {
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
   answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
+  declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Reply-thread fetch/write seams for tests; default to the real API. */
   getAskThread?: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for the first card render. */
@@ -325,6 +329,7 @@ export function AskCard({
   frame = "card",
   answerAsk: answer = answerAsk,
   createReply: reply = createReply,
+  declineAsk: decline = declineAsk,
   getAskThread: getThread = getAskThread,
   initialThread,
   initialThreadUpdatedAt,
@@ -947,6 +952,11 @@ export function AskCard({
           />
         ) : null}
       </form>
+      {/* The person's way out of a question they will not answer, under the form that answers
+          it. An approval request draws none: it is answered with Approve or Request changes. */}
+      {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
+        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
+      ) : null}
       {answerFirst ? threadNode : null}
       <AskRecipients
         askId={displayedAsk.id}
