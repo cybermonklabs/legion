@@ -221,8 +221,8 @@ export function legionSlotValue(item: Item): string {
   return card?.waiting_place != null ? "Waiting for a slot" : "No slot";
 }
 /** A Legion phase's label as the views write it: the board column's label, except that an issue
- *  in retro reads "Retro". The board shows retro in its Merging column, but the Legion tab and
- *  the status bar call it Retro, so every view uses one word for it. */
+ *  in retro reads "Retro". The board shows retro in its Merging column, but Evals and the status
+ *  bar call it Retro, so every view uses one word for it. */
 export function legionPhaseLabel(label: string, phase: string): string {
   return phase === "retro" ? "Retro" : label;
 }
@@ -239,7 +239,7 @@ export function legionRolesText(card: LegionBoardCard): string {
   return card.roles.length === 0 ? "between turns" : `${card.roles.join(", ")} in a turn`;
 }
 /** Each board card's Legion phase as the table draws it. One reading of the board for the
- *  table, the project board's cards and the Legion tab. */
+ *  table, the project board's cards and Evals. */
 export function legionPhases(
   board: LegionBoardResponse | null | undefined
 ): Map<string, NonNullable<Item["legion"]>> {
@@ -1118,7 +1118,7 @@ export function countBy(
   });
 }
 
-/** The issues behind a number the reader clicked on the Legion tab, as the URL holds them:
+/** The issues behind a number the reader clicked on the Evals tab, as the URL holds them:
  *  the keys, and the words naming them. */
 export interface IssueSelection {
   readonly keys: ReadonlySet<string>;

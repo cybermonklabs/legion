@@ -4,6 +4,7 @@ import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@tes
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
+
 import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 
 import { answerRequests } from "../../__tests__/network";
@@ -119,6 +120,11 @@ function renderPage(
       updated_at: "2026-11-01T00:00:00Z",
     }))
   );
+  const getLegionMetrics = spyOn(api, "getLegionMetrics").mockImplementation(
+    () => Promise.withResolvers<never>().promise
+  );
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
+  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={[path]}>
@@ -138,6 +144,9 @@ function renderPage(
     getMyState.mockRestore();
     listIssues.mockRestore();
     listLegionSettings.mockRestore();
+    getLegionMetrics.mockRestore();
+    getDeliverySettings.mockRestore();
+    listRepoProjects.mockRestore();
     listProjectArtifacts.mockRestore();
     listProjects.mockRestore();
     whoAmI.mockRestore();
@@ -539,39 +548,38 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
   }
 });
 
-// dispatch://INFRA-979: the issues table carries the Legion columns, so the project page offers
-// no Legion view of its own, even for a project that names a daemon, and a stored `legion`
-// preference from before reads as the List.
-test("a project that names a Legion daemon is offered no Legion view, and a stored Legion preference reads as the List", async () => {
+test("a stored Legion issue-view preference reads as List on a Legion project", async () => {
   const viewKey = "dispatch.project.issue-view:alice";
+  const sockets = installFakeLiveSockets();
   window.localStorage.setItem(viewKey, "legion");
   const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "Board" })).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Board" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Evals" })).toBeVisible();
   } finally {
     page.restore();
+    sockets.restore();
     window.localStorage.removeItem(viewKey);
   }
 });
 
-test("a Legion project keeps two views and its list includes the phase column", async () => {
+test("a Legion project's Issue views keep the phase column and v toggle", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const sockets = installFakeLiveSockets();
   const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(await screen.findByRole("columnheader", { name: /Phase/ })).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
+    expect(await screen.findByRole("columnheader", { name: /Phase/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Evals" })).toBeVisible();
 
     await user.keyboard("v");
-    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Board" })).toHaveAttribute("aria-pressed", "true");
 
     await user.keyboard("v");
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem(viewKey)).toBe("list");
   } finally {
     page.restore();
@@ -580,35 +588,56 @@ test("a Legion project keeps two views and its list includes the phase column", 
   }
 });
 
-test("the Legion columns keep the table's search and grouping controls", async () => {
-  const viewKey = "dispatch.project.issue-view:alice";
+test("Legion columns retain the Issue table search and grouping controls", async () => {
   const sockets = installFakeLiveSockets();
   const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(await screen.findByRole("columnheader", { name: /Phase/ })).toBeDefined();
-    expect(screen.getByRole("table", { name: "Project issues table" })).toBeDefined();
-    expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
-    expect(screen.getByRole("combobox", { name: "Group by" })).toBeDefined();
+    expect(await screen.findByRole("columnheader", { name: /Phase/ })).toBeTruthy();
+    expect(screen.getByRole("table", { name: "Project issues table" })).toBeTruthy();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Group by" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Show lanes" })).toBeNull();
   } finally {
     page.restore();
     sockets.restore();
-    window.localStorage.removeItem(viewKey);
   }
 });
 
-test("a stored Legion preference on a project that names no daemon falls back to the list", async () => {
+test("a stored Legion issue-view preference on a project without a daemon reads as List", async () => {
   const viewKey = "dispatch.project.issue-view:alice";
   window.localStorage.setItem(viewKey, "legion");
   const page = renderPage("/projects/CORE");
   try {
     await screen.findByRole("heading", { name: "Core" });
     await waitFor(() => expect(page.listLegionSettings).toHaveBeenCalled());
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("tab", { name: "Evals" })).toBeNull();
   } finally {
     page.restore();
     window.localStorage.removeItem(viewKey);
+  }
+});
+
+test("the former Legion route redirects to Evals and keeps its query", async () => {
+  const page = renderPage("/projects/CORE/legion?x=1", undefined, "alice", [], [], ["CORE"]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/evals?x=1")
+    );
+    expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
+  } finally {
+    page.restore();
+  }
+});
+
+test("the Evals tab remains active for a direct route", async () => {
+  const page = renderPage("/projects/CORE/evals", undefined, "alice", [], [], ["CORE"]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
+  } finally {
+    page.restore();
   }
 });

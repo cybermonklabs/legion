@@ -31,15 +31,15 @@ import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
+import { EvalsTab } from "./EvalsTab";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
-import { LegionTab } from "./LegionTab";
 
-type ProjectTab = "architecture" | "issues" | "documents" | "legion";
+type ProjectTab = "architecture" | "issues" | "documents" | "evals";
 
 const architectureTab: TabDefinition<ProjectTab> = { id: "architecture", label: "Architecture" };
-const legionTab: TabDefinition<ProjectTab> = { id: "legion", label: "Legion" };
+const evalsTab: TabDefinition<ProjectTab> = { id: "evals", label: "Evals" };
 const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "issues", label: "Issues" },
   { id: "documents", label: "Documents" },
@@ -170,13 +170,25 @@ export function ProjectPage(): ReactNode {
     }
   }
 
+  if (
+    route.kind === "evals" &&
+    route.issue === undefined &&
+    location.pathname === `/projects/${route.project}/legion`
+  ) {
+    return (
+      <Navigate
+        replace
+        to={{
+          pathname: buildProjectPath({ kind: "evals", project: route.project }),
+          search: location.search,
+        }}
+      />
+    );
+  }
+
   const activeTab: ProjectTab = route.kind;
   const selectTab = (tab: ProjectTab) => {
-    navigate(
-      tab === "legion"
-        ? buildProjectPath({ kind: "legion", project: route.project })
-        : buildProjectPath({ kind: tab, project: route.project })
-    );
+    navigate(buildProjectPath({ kind: tab, project: route.project }));
   };
 
   return (
@@ -221,7 +233,7 @@ export function ProjectPage(): ReactNode {
             tabs={[
               ...(hasSource ? [architectureTab] : []),
               ...tabs,
-              ...(hasLegion || activeTab === "legion" ? [legionTab] : []),
+              ...(hasLegion || activeTab === "evals" ? [evalsTab] : []),
             ]}
           />
         </div>
@@ -301,15 +313,15 @@ export function ProjectPage(): ReactNode {
           )
         ) : null}
       </div>
-      {activeTab === "legion" ? (
+      {activeTab === "evals" ? (
         <div
-          aria-labelledby="project-legion-tab"
+          aria-labelledby="project-evals-tab"
           className="mt-3"
-          id="project-legion-panel"
+          id="project-evals-panel"
           role="tabpanel"
         >
-          <LegionTab
-            issue={route.kind === "legion" ? route.issue : undefined}
+          <EvalsTab
+            issue={route.kind === "evals" ? route.issue : undefined}
             key={route.project}
             project={route.project}
           />

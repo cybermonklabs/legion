@@ -363,33 +363,41 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "excluded",
+    name: "project-evals",
+    pattern: "/projects/:key/evals",
+    reason:
+      "The Evals tab needs a Legion daemon and metrics corpus, which legion.e2e.ts supplies " +
+      "(dispatch://INFRA-1508).",
+  },
+  {
+    kind: "excluded",
     name: "project-legion",
     pattern: "/projects/:key/legion",
     reason:
-      "The tab is drawn only for a project a Legion daemon serves, and the corpus names none " +
-      "(dispatch://INFRA-979).",
+      "This legacy address redirects to /projects/:key/evals, which legion.e2e.ts verifies " +
+      "(dispatch://INFRA-1508).",
   },
   {
     kind: "excluded",
     name: "project-legion-issue",
     pattern: "/projects/:key/legion/:issue",
     reason:
-      "One issue's Legion timeline inside the tab above, which the corpus cannot draw either " +
-      "(dispatch://INFRA-979).",
+      "One issue's Legion timeline inside Evals, which legion.e2e.ts verifies with its daemon " +
+      "fixture (dispatch://INFRA-1508).",
   },
   {
     kind: "excluded",
     name: "delivery",
     pattern: "/delivery",
     reason:
-      "The deployment-wide Delivery page is gone: the address redirects to the default " +
-      "project's issues page, which the project-issues entry reviews (dispatch://INFRA-979).",
+      "The deployment-wide Delivery page is gone: the address redirects to the default project's " +
+      "Evals tab or issues page, which legion.e2e.ts verifies (dispatch://INFRA-979).",
   },
   {
     kind: "excluded",
     name: "pipeline",
     pattern: "/pipeline",
-    reason: "The same redirect as /delivery, to the same page (dispatch://INFRA-979).",
+    reason: "The same redirect as /delivery, to the same project surface (dispatch://INFRA-979).",
   },
   {
     kind: "excluded",

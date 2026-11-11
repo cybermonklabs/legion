@@ -1,7 +1,3 @@
-// What the Legion tab plots from `GET /api/v1/legion/metrics` (dispatch://INFRA-979): per-day
-// trends of the finished issues' work time, rework and filings, and one row per issue for the
-// work-time and rework tables. The server holds every rule; this only turns its answer into the
-// series `Chart` draws, each with the unit its value axis is in.
 import type {
   LegionFilingClass,
   LegionMetricsResponse,
@@ -11,9 +7,8 @@ import type { ChartRange, ChartSeries } from "../delivery/Chart";
 import { pct } from "../delivery/lib/format";
 import { DAY_MS, liveWindow, type WindowChoice } from "../delivery/lib/window";
 
-/** Hours as the page writes them ("3.2h"; minutes under an hour). */
-/** Hours as the Legion tab writes them: minutes under an hour, else hours ("2.5h", never
- *  "152m"), whole hours from 100 on. */
+/** Hours as Evals writes them: minutes under an hour, else hours ("2.5 h", never "152m"), whole
+ *  hours from 100 on. */
 export const formatHours = (value: number): string =>
   value >= 100
     ? `${Math.round(value).toLocaleString("en-US")} h`
@@ -189,55 +184,4 @@ export function filingClasses(
     const count = report.splitting.filed.filter((one) => one.class === filing.key).length;
     return { ...filing, count, share: total === 0 ? 0 : count / total };
   });
-}
-
-/** Work time's table: one row per finished issue, its work time and the hours taken out of it. */
-export function workTimeIssueSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const issues = [...report.work_time.issues].sort((a, b) => b.hours - a.hours);
-  const run = (label: string, value: (issue: LegionWorkTimeIssue) => number): ChartSeries => ({
-    kind: "spark",
-    format: formatHours,
-    label,
-    max: 1,
-    points: issues.map((issue) => ({ label: issue.key, partial: false, value: value(issue) })),
-  });
-  return [
-    run("Work time", (issue) => issue.hours),
-    run("Parked", (issue) => issue.parked_hours),
-    run("Queued", (issue) => issue.queued_hours),
-  ];
-}
-
-/** Rework's table: one row per finished issue, its review rounds and its hours after the first
- *  review. */
-export function reworkIssueSeries(report: LegionMetricsResponse): ChartSeries[] {
-  const issues = [...report.rework.issues].sort((a, b) => b.review_rounds - a.review_rounds);
-  const run = (
-    label: string,
-    format: (value: number) => string,
-    value: (issue: (typeof issues)[number]) => number
-  ): ChartSeries => ({
-    kind: "spark",
-    format,
-    label,
-    max: 1,
-    points: issues.map((issue) => ({ label: issue.key, partial: false, value: value(issue) })),
-  });
-  return [
-    run(
-      "Review rounds",
-      (v) => `${v}`,
-      (issue) => issue.review_rounds
-    ),
-    run(
-      "Implementing after the first review",
-      formatHours,
-      (issue) => issue.implementing_hours_after_first_review
-    ),
-    run(
-      "Testing after the first review",
-      formatHours,
-      (issue) => issue.testing_hours_after_first_review
-    ),
-  ];
 }

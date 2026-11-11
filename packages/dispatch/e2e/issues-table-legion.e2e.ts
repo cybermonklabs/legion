@@ -88,7 +88,7 @@ test("daemon queue replaces Dispatch order and optional Legion columns sort and 
       await pick(page, label, value);
       await expect(page.locator("[data-issue-row]")).toHaveCount(1);
       await expect(row(page, "ACME-1")).toBeVisible();
-      await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+      await page.getByRole("button", { name: "Reset view", exact: true }).click();
     }
   } finally {
     await context.close();
@@ -120,12 +120,11 @@ test("phase-or-status bar and slot cap move live with a stored Legion event @pho
     const bar = page.getByRole("group", { name: "Issues by phase or status" });
     await expect(bar.getByRole("button", { name: "Implementing 1", exact: true })).toBeVisible();
     await expect(bar.getByRole("button", { name: "Todo 1", exact: true })).toBeVisible();
-    // The bar is titled by what it counts; the slots in use are the Legion tab's.
     await expect(page.locator("[data-issues-counted]")).toHaveText("6 issues");
     await expect(page.locator("[data-legion-slots]")).toHaveCount(0);
     await page
       .locator("[data-issues-bar-title]")
-      .getByRole("button", { name: "About these counts" })
+      .getByRole("button", { name: "About this bar" })
       .click();
     await expect(page.getByText(/Dispatch read the daemon at/)).toBeVisible();
     await page.keyboard.press("Escape");
@@ -290,7 +289,6 @@ test("a pushed daemon batch updates phase, queue, slot, roles, CI and cap withou
     await expect(row(page, "ACME-1").locator('[data-legion-fact="checks"]')).toHaveText("green");
     await expect(row(page, "ACME-3").getByText("#1", { exact: true })).toBeVisible();
     await expect(row(page, "ACME-4").getByText("#2", { exact: true })).toBeVisible();
-    // The slots in use moved to the Legion tab; the rows above are what this push changed here.
     expect(navigations).toEqual([]);
   } finally {
     await context.close();

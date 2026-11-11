@@ -1,9 +1,6 @@
-// The Legion tab's metrics (dispatch://INFRA-979), one column, metrics first: time per phase,
-// work time, rework, splitting, then CI and deploys. Each section has a short title, an info
-// button with its rule, and one line of numbers. The issue tables come after (LegionTab).
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
 import {
@@ -40,23 +37,20 @@ import {
   rangeLabel,
 } from "../delivery/Chart";
 import { formatDuration, formatRate, pct } from "../delivery/lib/format";
-import type { WindowChoice } from "../delivery/lib/window";
+import { DAY_MS, type WindowChoice } from "../delivery/lib/window";
 import { type SegmentedOption, SegmentedToggle } from "../delivery/SegmentedToggle";
 import { WindowControl } from "../delivery/WindowControl";
-import { buildProjectPath } from "../refs/routes";
-import { IssueGrid } from "./IssueGrid";
+import type { ColumnId } from "./issues-table-model";
+import { issuesViewHref } from "./issues-table-views";
 import {
   daysOf,
   filingClasses,
   formatHours,
   metricsRange,
-  reworkIssueSeries,
   reworkTrendSeries,
   splittingDaySeries,
-  workTimeIssueSeries,
   workTimeTrendSeries,
 } from "./LegionMetrics";
-import { PhaseHoursBar } from "./PhaseHoursBar";
 import { useWidth } from "./useWidth";
 
 const SECTION = `flex min-w-0 flex-col gap-2 rounded border px-4 py-3 ${surfaceBg} ${borderDefault}`;
@@ -112,6 +106,24 @@ function Section({
 const line = (...parts: readonly (string | false)[]): string =>
   parts.filter((part): part is string => part !== false && part !== "").join(" · ");
 
+function nextUtcDay(day: string): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
+}
+
+function finishedDayHref(
+  project: string,
+  day: string,
+  sort: `-${Extract<ColumnId, "work_hours" | "review_rounds">}`,
+  scope: LegionMetricsScope,
+  excluded: readonly string[]
+): string {
+  const overrides = new URLSearchParams([["f.closed", `${day}..${nextUtcDay(day)}`]]);
+  if (scope !== "all") overrides.set("f.legion", scope);
+  for (const root of excluded) overrides.append("exclude_tree", root);
+  overrides.set("sort", sort);
+  return issuesViewHref(project, "finished", overrides);
+}
+
 /** Whether a failed read is Dispatch saying it measures nothing for these repositories. */
 function notMeasured(error: unknown): boolean {
   return (
@@ -120,13 +132,8 @@ function notMeasured(error: unknown): boolean {
   );
 }
 
-export function LegionSections({
-  onOpenIssue,
-  project,
-}: {
-  readonly project: string;
-  readonly onOpenIssue: (key: string) => void;
-}): ReactNode {
+export function LegionSections({ project }: { readonly project: string }): ReactNode {
+  const navigate = useNavigate();
   const [chosen, setChosen] = useState<WindowChoice>({ kind: "preset", preset: "28d" });
   const [compare, setCompare] = useState<ChartRange | null>(null);
   const [scope, setScope] = useState<LegionMetricsScope>("all");
@@ -209,9 +216,10 @@ export function LegionSections({
             )}
             id="work_time"
             info="Work time is the time from the first worker event to the merge. It does not include parked time or queued time."
-            onOpenIssue={onOpenIssue}
+            onSelect={(day) =>
+              navigate(finishedDayHref(project, day, "-work_hours", scope, excluded))
+            }
             report={report}
-            table={workTimeIssueSeries}
             title="Work time"
             trend={workTimeTrendSeries}
           >
@@ -226,9 +234,10 @@ export function LegionSections({
             )}
             id="rework"
             info="Sent back: the issue went back to implementing one or more times. After the first review: the implementing and testing time after the first review."
-            onOpenIssue={onOpenIssue}
+            onSelect={(day) =>
+              navigate(finishedDayHref(project, day, "-review_rounds", scope, excluded))
+            }
             report={report}
-            table={reworkIssueSeries}
             title="Rework"
             trend={reworkTrendSeries}
           />
@@ -249,7 +258,6 @@ export function LegionSections({
         </>
       )}
       <DeliverySection compare={compare} onCompare={setCompare} project={project} range={range} />
-      {report === undefined ? null : <FinishedIssues project={project} report={report} />}
     </div>
   );
 }
@@ -259,100 +267,6 @@ const count = (value: number): string => value.toLocaleString("en-US");
 
 /** A count of issues as the headlines write it: "1 issue", "1,259 issues". */
 const issues = (value: number): string => `${count(value)} issue${value === 1 ? "" : "s"}`;
-
-/** One row of the finished-issues table. */
-interface FinishedRow {
-  readonly key: string;
-  readonly hours: number;
-  readonly phases: Readonly<Record<string, number>>;
-  readonly rounds: number | null;
-}
-
-/** The finished issues, in the Issues tab's table: each one's work time, its hours by phase as
- *  one bar (on one scale, or each row as 100%) and its review rounds. A key opens its timeline. */
-function FinishedIssues({
-  project,
-  report,
-}: {
-  project: string;
-  report: LegionMetricsResponse;
-}): ReactNode {
-  const [mode, setMode] = useState<"hours" | "share">("hours");
-  const rounds = useMemo(
-    () => new Map(report.rework.issues.map((issue) => [issue.key, issue.review_rounds])),
-    [report.rework.issues]
-  );
-  const rows = useMemo(
-    (): FinishedRow[] =>
-      report.phase_breakdown.issues.map((issue) => ({
-        key: issue.key,
-        hours: issue.hours,
-        phases: issue.phases,
-        rounds: rounds.get(issue.key) ?? null,
-      })),
-    [report.phase_breakdown.issues, rounds]
-  );
-  const max = Math.max(1, ...rows.map((row) => row.hours));
-  return (
-    <section aria-label="Finished issues" className={SECTION} data-legion-section="finished">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <SectionTitle
-          info="The issues that finished in the window. Time per phase does not include a root's time while it waits on its children."
-          title="Finished issues"
-        />
-        <SegmentedToggle label="Bar scale" onChange={setMode} options={BAR_MODES} value={mode} />
-      </div>
-      <IssueGrid<FinishedRow>
-        columns={[
-          "key",
-          "title",
-          {
-            id: "work_hours",
-            header: "Work time",
-            value: (row) => row.hours,
-            cell: (row) => <span className="tabular-nums">{formatHours(row.hours)}</span>,
-            filter: false,
-            size: 110,
-            primary: true,
-          },
-          {
-            id: "phase_hours",
-            header: "Time per phase",
-            value: (row) => row.hours,
-            cell: (row) => <PhaseHoursBar hours={row.phases} max={max} mode={mode} />,
-            filter: false,
-            size: 300,
-            primary: true,
-          },
-          {
-            id: "review_rounds",
-            header: "Rounds",
-            info: "Review rounds",
-            value: (row) => row.rounds ?? -1,
-            cell: (row) => <span className="tabular-nums">{row.rounds ?? "—"}</span>,
-            filter: false,
-            size: 96,
-          },
-        ]}
-        empty="No issues finished in the window."
-        fit="rows"
-        initialSort={[{ id: "work_hours", desc: true }]}
-        keyHref={(row) => buildProjectPath({ kind: "legion", project, issue: row.key })}
-        label="Finished issues"
-        layoutKey="legion-finished"
-        pageSize={25}
-        project={project}
-        rows={rows}
-      />
-    </section>
-  );
-}
-
-/** The two scales of the finished-issues bars. */
-const BAR_MODES: readonly SegmentedOption<"hours" | "share">[] = [
-  { value: "hours", label: "Hours" },
-  { value: "share", label: "Share" },
-];
 
 /** The share of the finished issues one tree holds at or past which its note is shown. */
 const LARGE_TREE_SHARE = 0.25;
@@ -400,18 +314,14 @@ function LargestTree({
   );
 }
 
-/** A section whose graph is a per-day trend and whose table is one row per issue (or the trend's
- *  own days where it has no per-issue table). A window of fewer than three days opens on the
- *  table. */
 function TrendSection({
   children,
   compare,
   headline,
   id,
   info,
-  onOpenIssue,
+  onSelect,
   report,
-  table,
   title,
   trend,
 }: {
@@ -419,9 +329,8 @@ function TrendSection({
   headline: string;
   id: string;
   info?: ReactNode;
-  onOpenIssue?: (key: string) => void;
+  onSelect?: (day: string) => void;
   report: LegionMetricsResponse;
-  table?: (report: LegionMetricsResponse) => ChartSeries[];
   title: string;
   trend: (report: LegionMetricsResponse) => ChartSeries[];
   children?: ReactNode;
@@ -432,32 +341,16 @@ function TrendSection({
     () => (comparedData === undefined ? undefined : trend(comparedData)),
     [comparedData, trend]
   );
-  const rows = useMemo(() => table?.(report), [table, report]);
-  const comparedRows = useMemo(
-    () => (comparedData === undefined ? undefined : table?.(comparedData)),
-    [comparedData, table]
-  );
   return (
     <Section headline={headline} id={id} info={info} title={title}>
       <Chart
         compare={chartCompare(compare, comparedSeries)}
         defaultMode={daysOf(report).length < 3 ? "table" : "graph"}
         label={title}
-        onSelect={
-          rows === undefined || onOpenIssue === undefined ? undefined : (row) => onOpenIssue(row)
-        }
+        onSelect={onSelect}
         range={{ kind: "custom", from: report.from, to: report.to }}
         rangeOnPage
         series={series}
-        table={
-          rows === undefined
-            ? undefined
-            : {
-                compare: comparedRows,
-                rows: { header: "Issue", over: "issue", pair: "name" },
-                series: rows,
-              }
-        }
       />
       {children}
     </Section>

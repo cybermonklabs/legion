@@ -47,9 +47,9 @@ export type ProjectRoute =
   | { kind: "architecture"; project: string }
   | { kind: "issues"; project: string }
   | { kind: "documents"; project: string }
-  /** The project's Legion efficiency dashboard (dispatch://INFRA-979), with one issue's
-   *  timeline open beside it when `issue` names one. */
-  | { kind: "legion"; project: string; issue?: string }
+  /** The project's Evals tab (formerly Legion). Issue timelines retain their `/legion/<issue>`
+   *  address, although they render inside Evals. */
+  | { kind: "evals"; project: string; issue?: string }
   | ({
       kind: "document";
       project: string;
@@ -487,12 +487,12 @@ export function parseProjectPath(pathname: string, search = ""): ProjectRoute | 
   if (target === "documents") {
     return { kind: "documents", project };
   }
-  if (target === "legion") {
-    return { kind: "legion", project };
+  if (target === "evals" || target === "legion") {
+    return { kind: "evals", project };
   }
   const legionIssue = target.match(/^legion\/([A-Za-z][A-Za-z0-9]*-[0-9]+)$/);
   if (legionIssue !== null) {
-    return { kind: "legion", project, issue: legionIssue[1] };
+    return { kind: "evals", project, issue: legionIssue[1] };
   }
   const document = target.match(/^documents\/([^/?#\s]+)$/);
   if (document === null) {
@@ -980,8 +980,8 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.kind === "architecture" || route.kind === "issues" || route.kind === "documents") {
     return `${project}/${route.kind}`;
   }
-  if (route.kind === "legion") {
-    return route.issue === undefined ? `${project}/legion` : `${project}/legion/${route.issue}`;
+  if (route.kind === "evals") {
+    return route.issue === undefined ? `${project}/evals` : `${project}/legion/${route.issue}`;
   }
   const document = `${project}/documents/${encodeURIComponent(route.slug)}`;
   const query = new URLSearchParams();

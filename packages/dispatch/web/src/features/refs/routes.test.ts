@@ -718,6 +718,17 @@ test("parses and builds project, documents, and document routes with version and
     "/projects/CORE/architecture"
   );
   expect(parseProjectPath("/projects/CORE/architecture/web")).toBeUndefined();
+  expect(parseProjectPath("/projects/CORE/evals")).toEqual({ kind: "evals", project: "CORE" });
+  expect(parseProjectPath("/projects/CORE/legion")).toEqual({ kind: "evals", project: "CORE" });
+  expect(parseProjectPath("/projects/CORE/legion/CORE-1")).toEqual({
+    kind: "evals",
+    issue: "CORE-1",
+    project: "CORE",
+  });
+  expect(buildProjectPath({ kind: "evals", project: "CORE" })).toBe("/projects/CORE/evals");
+  expect(buildProjectPath({ kind: "evals", project: "CORE", issue: "CORE-1" })).toBe(
+    "/projects/CORE/legion/CORE-1"
+  );
   expect(parseProjectPath("/projects/CORE/documents")).toEqual({
     kind: "documents",
     project: "CORE",

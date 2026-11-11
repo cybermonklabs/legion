@@ -27,6 +27,7 @@ export const walkRoutes = [
   { page: "ProjectPage", path: "/projects/:key/architecture" },
   { page: "ProjectPage", path: "/projects/:key/issues" },
   { page: "ProjectPage", path: "/projects/:key/documents" },
+  { page: "ProjectPage", path: "/projects/:key/evals" },
   { page: "ProjectPage", path: "/projects/:key/legion" },
   { page: "ProjectPage", path: "/projects/:key/legion/:issue" },
   { page: "DocumentPage", path: "/projects/:key/documents/:slug" },

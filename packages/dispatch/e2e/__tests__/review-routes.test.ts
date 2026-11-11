@@ -30,8 +30,6 @@ describe("the review layers' route list", () => {
     expect(unexplained.map((route) => route.name)).toEqual([]);
   });
 
-  // The floor fell from 36 to 32 with the Delivery and Pipeline pages, which the per-project
-  // Legion tab replaced (dispatch://INFRA-979): four shots of two pages that are gone.
   test("scans at least 15 pages and shoots about 36 snapshots", () => {
     expect(scanned).toBeGreaterThanOrEqual(15);
     expect(snapshots).toBeGreaterThanOrEqual(32);

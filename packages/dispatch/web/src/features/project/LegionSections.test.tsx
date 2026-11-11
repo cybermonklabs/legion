@@ -1,7 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: these rows change selects and ranges and press chart segments, which user-event has no form for on this harness.
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -242,17 +242,20 @@ function mapping(project: string, repo: string): RepoProject {
   return { created_by: { id: "alice", kind: "user" }, default: true, project, repo } as RepoProject;
 }
 
-/** The panel for `project`, with the Legion settings, the repository mappings and the deploy
- *  repository given. */
 /** Writes the address the router holds, so a test reads what a shared link would carry. */
 function Location(): null {
   const location = useLocation();
+  document.body.dataset.path = location.pathname;
   document.body.dataset.search = location.search;
   return null;
 }
 
 async function renderSections(
-  answer: (query: { project: string; scope: string }) => LegionMetricsResponse,
+  answer: (query: {
+    project: string;
+    scope: LegionMetricsResponse["scope"];
+    exclude_tree?: readonly string[];
+  }) => LegionMetricsResponse,
   options: { repos?: RepoProject[]; deployRepo?: string | null; path?: string } = {}
 ) {
   const metrics = spyOn(api, "getLegionMetrics").mockImplementation((query) =>
@@ -266,38 +269,18 @@ async function renderSections(
   );
   const pipeline = spyOn(api, "getDeliveryPipeline").mockResolvedValue(PIPELINE);
   const measures = spyOn(api, "getDeliveryMeasures").mockResolvedValue(MEASURES);
-  // The finished-issues grid joins its rows to the project's listing.
-  const listing = spyOn(api, "listIssues").mockResolvedValue([]);
-  const state = spyOn(api, "getMyState").mockResolvedValue({});
-  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
-  const settings = spyOn(api, "listLegionSettings").mockResolvedValue([]);
-  spies.push(metrics, repos, delivery, pipeline, measures, listing, state, agents, settings);
-  // The unit DOM has no layout engine and the grid's rows are virtual: give its box a height.
-  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
-    configurable: true,
-    get() {
-      return this.dataset.testid === "issue-grid-scroll" ? 600 : (height?.get?.call(this) ?? 0);
-    },
-  });
-  spies.push({
-    mockRestore: () => {
-      if (height !== undefined)
-        Object.defineProperty(HTMLElement.prototype, "clientHeight", height);
-    },
-  });
-  const opened: string[] = [];
+  spies.push(metrics, repos, delivery, pipeline, measures);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <MemoryRouter initialEntries={[options.path ?? "/projects/ACME/legion"]}>
+    <MemoryRouter initialEntries={[options.path ?? "/projects/ACME/evals"]}>
       <QueryClientProvider client={queryClient}>
-        <LegionSections onOpenIssue={(key) => opened.push(key)} project="ACME" />
+        <LegionSections project="ACME" />
         <Location />
       </QueryClientProvider>
     </MemoryRouter>
   );
   await screen.findByRole("region", { name: "Time per phase" });
-  return { measures, metrics, opened, pipeline };
+  return { measures, metrics, pipeline };
 }
 
 /** Switches a chart to its table and answers the table. */
@@ -328,7 +311,7 @@ test("the sections come in one column, in the order a reader asks, each with its
     [...document.querySelectorAll("[data-legion-section]")].map((one) =>
       one.getAttribute("data-legion-section")
     )
-  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting", "finished"]);
+  ).toEqual(["phase_breakdown", "work_time", "rework", "splitting"]);
   // Each headline holds numbers with their units and nothing else.
   expect(headline("work_time")).toBe("median 24.0 h · p90 36.8 h");
   expect(headline("phase_breakdown")).toBe(
@@ -337,7 +320,7 @@ test("the sections come in one column, in the order a reader asks, each with its
   // Each title is short, and carries its info button.
   expect(
     [...document.querySelectorAll("[data-legion-title]")].map((one) => one.firstChild?.textContent)
-  ).toEqual(["Time per phase", "Work time", "Rework", "Splitting", "Finished issues"]);
+  ).toEqual(["Time per phase", "Work time", "Rework", "Splitting"]);
   expect(document.querySelector("[data-health-tile]")).toBeNull();
   // The range is named once, beside the window control, and no chart repeats it.
   expect(document.querySelector("[data-legion-range]")?.textContent).toContain(" to ");
@@ -360,8 +343,8 @@ test("the phase bar draws each part in the issues table's colour with its share"
   );
 });
 
-test("the work-time chart plots medians per day, each plot titled once with its unit; its table lists issues", async () => {
-  const { opened } = await renderSections(() => report());
+test("the work-time chart tables UTC days and opens that day's Finished view", async () => {
+  await renderSections(() => report());
 
   const section = document.querySelector('[data-legion-section="work_time"]') as HTMLElement;
   // The median and the p90 each have their own plot, title and value axis, and no legend
@@ -371,9 +354,47 @@ test("the work-time chart plots medians per day, each plot titled once with its 
   ).toEqual(["Median work timehours", "p90 work timehours"]);
   expect(section.querySelector("[data-chart-legend]")).toBeNull();
   const table = await openTable("Work time");
-  expect(table.textContent).toContain("ACME-6");
-  fireEvent.click(screen.getByRole("button", { name: "Show the issues of ACME-6" }));
-  expect(opened).toEqual(["ACME-6"]);
+  expect(table.textContent).toContain("2026-11-02");
+  fireEvent.click(screen.getByRole("button", { name: "Show the issues of 2026-11-02" }));
+  expect(document.body.dataset.path).toBe("/projects/ACME/issues");
+  expect(document.body.dataset.search).toBe(
+    "?view=finished&f.closed=2026-11-02..2026-11-03&sort=-work_hours"
+  );
+});
+
+test("the rework chart tables UTC days and opens that day's Finished view", async () => {
+  await renderSections(() => report());
+
+  const table = await openTable("Rework");
+  expect(table.textContent).toContain("2026-11-01");
+  fireEvent.click(screen.getByRole("button", { name: "Show the issues of 2026-11-01" }));
+  expect(document.body.dataset.path).toBe("/projects/ACME/issues");
+  expect(document.body.dataset.search).toBe(
+    "?view=finished&f.closed=2026-11-01..2026-11-02&sort=-review_rounds"
+  );
+});
+
+test("a Work time day link keeps the selected scope and excluded tree", async () => {
+  const { metrics } = await renderSections(
+    (query) =>
+      report({
+        excluded_trees: query.exclude_tree ?? [],
+        scope: query.scope,
+      }),
+    { path: "/projects/ACME/evals?exclude_tree=ACME-6" }
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Roots" }));
+  await waitFor(() =>
+    expect(metrics).toHaveBeenCalledWith(
+      expect.objectContaining({ exclude_tree: ["ACME-6"], scope: "roots" })
+    )
+  );
+  await openTable("Work time");
+  fireEvent.click(screen.getByRole("button", { name: "Show the issues of 2026-11-02" }));
+  expect(document.body.dataset.search).toBe(
+    "?view=finished&f.closed=2026-11-02..2026-11-03&f.legion=roots&exclude_tree=ACME-6&sort=-work_hours"
+  );
 });
 
 test("splitting plots filings against finishes and lists the filings by class", async () => {
@@ -482,32 +503,11 @@ test("when one tree holds a large share of the finished issues, a note under wor
 test("a shared link with exclude_tree leaves that tree out from the first read", async () => {
   const { metrics } = await renderSections(
     () => report({ excluded_trees: ["ACME-6"], finished: 1 }),
-    { path: "/projects/ACME/legion?exclude_tree=ACME-6" }
+    { path: "/projects/ACME/evals?exclude_tree=ACME-6" }
   );
 
   expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }));
   await screen.findByRole("button", { name: "Count ACME-6's tree again" });
-});
-
-test("the finished issues are the Issues tab's table, with a phase bar on one scale or as shares", async () => {
-  await renderSections(() => report());
-
-  const table = screen.getByRole("region", { name: "Finished issues" });
-  await waitFor(() => expect(table.querySelector('[data-issue-row="ACME-6"]')).not.toBeNull());
-  // Most work time first; the key opens the issue's timeline.
-  expect(
-    [...table.querySelectorAll("[data-issue-row]")].map((one) => one.getAttribute("data-issue-row"))
-  ).toEqual(["ACME-6", "ACME-7"]);
-  expect(
-    table.querySelector('[data-issue-row="ACME-6"] [data-issue-link]')?.getAttribute("href")
-  ).toBe("/projects/ACME/legion/ACME-6");
-  const bar = (key: string) =>
-    table.querySelector(`[data-issue-row="${key}"] [data-phase-hours-length]`) as HTMLElement;
-  // Hours: one scale, the longest issue full length.
-  expect(bar("ACME-6").style.width).toBe("100%");
-  expect(bar("ACME-7").style.width).toBe("80%");
-  fireEvent.click(within(table).getByRole("button", { name: "Share" }));
-  await waitFor(() => expect(bar("ACME-7").style.width).toBe("100%"));
 });
 
 test("a section's rule is behind its info button, not on the page", async () => {

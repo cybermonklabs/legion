@@ -146,10 +146,6 @@ const BroadcastPage = lazy(() =>
   import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
 );
 
-/** `/delivery` and `/pipeline` were Dispatch's deployment-wide Delivery and Pipeline pages until
- *  dispatch://INFRA-979 put each project's own numbers on its Legion tab; a
- *  bookmarked address lands on the default project's issues page. Named, as every other row's
- *  element is, because the router's rows are a roster (`e2e/two-builds-routes.ts`). */
 const HealthRedirect = lazy(() =>
   import("./features/project/HealthRedirect").then((module) => ({ default: module.HealthRedirect }))
 );
@@ -856,6 +852,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
+                <Route element={<ProjectPage />} path="/projects/:key/evals" />
                 <Route element={<ProjectPage />} path="/projects/:key/legion" />
                 <Route element={<ProjectPage />} path="/projects/:key/legion/:issue" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />

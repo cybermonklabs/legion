@@ -1,11 +1,3 @@
-// The Settings page's Legion daemon field, the project page having no Legion view of its own
-// (dispatch://INFRA-979), `/pipeline` and the Delivery page's chart controls
-// (dispatch://INFRA-1077, acceptance A1). Every spec is tagged `@legion`, so `--grep @legion`
-// runs this file's work and nothing else.
-//
-// The board reads only what Dispatch recorded of the project's daemon, so the fixture writes those
-// rows (`legion-seed.ts`); the settings control is the one place that does call the daemon, through
-// Dispatch's relay, so that spec stands a fake daemon up and reads what reached it.
 import { expect, test } from "@playwright/test";
 
 import { baseUrl, postLegionEvents, userHeaders } from "./api";
@@ -34,7 +26,6 @@ test("the issues table shows the daemon's phases and issue facts @legion @phone"
     await page.goto(`/projects/${LEGION_PROJECT}`);
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table).toBeVisible();
-    // The bar over the table is titled by what it counts; the slots in use are the Legion tab's.
     await expect(page.locator("[data-issues-counted]")).toHaveText("5 issues");
     await page.getByRole("button", { name: "Columns", exact: true }).click();
     for (const name of ["Slot", "Roles", "CI"]) {
@@ -159,11 +150,6 @@ test("the Settings page's control shows a failed verdict as a failure and keeps 
   }
 });
 
-// A1: "a daemon URL set on the Settings page that brings the view", and A4's "A project with no
-// Legion setting shows no Legion view". The project is seeded with its issues and its daemon's
-// observations but no `legion_settings` row, so the only thing that can bring the view is the
-// person naming the daemon on the Settings page, beside the Delivery settings, as the Design's
-// "Where the data comes from" says.
 test("a project without a Legion setting gains phase columns when Settings names its daemon @legion @phone", async ({
   browser,
 }) => {
@@ -176,6 +162,7 @@ test("a project without a Legion setting gains phase columns when Settings names
     await page.goto(`/projects/${LEGION_PROJECT}`);
     await expect(page.getByRole("button", { name: "Board" })).toBeVisible();
     await expect(page.getByRole("columnheader").filter({ hasText: /^Phase/ })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Evals", exact: true })).toHaveCount(0);
 
     // The Settings page, beside the Delivery settings.
     await page.goto("/settings");
@@ -192,14 +179,12 @@ test("a project without a Legion setting gains phase columns when Settings names
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     expect((await saved).status()).toBe(200);
 
-    // The project page offers no Legion view of its own (dispatch://INFRA-979): the issues
-    // table carries the Legion columns.
     await page.goto(`/projects/${LEGION_PROJECT}`);
     await expect(page.getByRole("columnheader").filter({ hasText: /^Phase/ })).toBeVisible();
     await expect(page.locator('[data-issue-row="ACME-1"] [data-legion-phase]')).toContainText(
       "Implementing"
     );
-    await expect(page.getByRole("button", { name: "Legion" })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Evals" })).toBeVisible();
   } finally {
     await context.close();
     await daemon.close();
@@ -311,10 +296,8 @@ test("a live push moves an issue's phase without reloading the table @legion @ph
   }
 });
 
-// dispatch://INFRA-979: the Delivery and Pipeline pages are gone, and their old addresses land on
-// the default project's Legion tab — here the one project naming a Legion daemon.
 for (const path of ["/delivery", "/pipeline"]) {
-  test(`${path} lands on the default project's Legion tab @legion`, async ({ browser }) => {
+  test(`${path} lands on the default project's Evals tab @legion`, async ({ browser }) => {
     const daemon = await startFakeLegionDaemon({});
     await seedLegionFixture(daemon.url);
     const context = await asUser(browser, "alice");
@@ -322,8 +305,8 @@ for (const path of ["/delivery", "/pipeline"]) {
 
     try {
       await page.goto(path);
-      await expect(page).toHaveURL(new RegExp(`/projects/${LEGION_PROJECT}/legion$`));
-      await expect(page.locator("[data-legion-sections]")).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`/projects/${LEGION_PROJECT}/evals$`));
+      await expect(page.locator("[data-evals-tab]")).toBeVisible();
     } finally {
       await context.close();
       await daemon.close();
@@ -331,9 +314,7 @@ for (const path of ["/delivery", "/pipeline"]) {
   });
 }
 
-test("the Legion tab says where the finished issues' time went, then each metric @legion", async ({
-  browser,
-}) => {
+test("the Evals tab keeps metrics and charts, not issue rows @legion", async ({ browser }) => {
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);
   await seedLegionMetricsCorpus();
@@ -342,47 +323,38 @@ test("the Legion tab says where the finished issues' time went, then each metric
 
   try {
     await page.goto(`/projects/${LEGION_PROJECT}/legion`);
-    // One column, in the order a reader asks, each section with its headline line: the four
-    // metrics and the finished issues' own table (`LegionSections.test.tsx` lists the same
-    // five); CI and deploys, measured for no repository here, is one line, not a section.
-    await expect(page.locator("[data-legion-section]")).toHaveCount(5);
+    await expect(page).toHaveURL(new RegExp(`/projects/${LEGION_PROJECT}/evals$`));
+    await expect(page.locator("[data-evals-tab]")).toBeVisible();
+    await expect(page.locator("[data-legion-section]")).toHaveCount(4);
+    await expect(page.locator('[data-legion-section="finished"]')).toHaveCount(0);
+    await expect(page.locator("[data-issue-row]")).toHaveCount(0);
+    await expect(page.getByRole("columnheader", { name: "Issue", exact: true })).toHaveCount(0);
     await expect(page.locator("[data-legion-delivery-unmeasured]")).toContainText(
       "CI and deploys: not measured"
     );
     const headline = (id: string) =>
       page.locator(`[data-legion-section="${id}"] [data-legion-headline]`);
     await expect(headline("phase_breakdown")).toContainText("2 issues finished");
-    // The count is said once, in the first card; work time says its medians.
     await expect(headline("work_time")).toContainText("median");
-    // Two issues finished: the root with no review round, the child with one.
     await expect(headline("rework")).toContainText("median 0.5 review rounds");
     await expect(headline("rework")).toContainText("50% sent back");
     await expect(headline("splitting")).toContainText("1 issue filed");
-    // The range is named once, beside the window control.
     await expect(page.locator("[data-legion-range]")).toContainText(" to ");
 
-    // The finished issues' phase bar and each issue's own row, each key opening its timeline.
-    await expect(
-      page.locator("[data-legion-phase-bar] [data-legion-phase-part]").first()
-    ).toBeVisible();
-    const finished = page.locator('[data-legion-section="finished"] [data-issue-row]');
-    await expect(finished).toHaveCount(2);
-
-    // Each chart has its axes, its unit and the two controls.
     const work = page.locator('[data-legion-section="work_time"]');
     await expect(work.locator("[data-chart-unit]").first()).toContainText("hours");
     await expect(work.getByRole("group", { name: "Work time view" })).toBeVisible();
     await expect(work.locator('select[data-chart-compare="Work time"]')).toBeVisible();
 
-    // The toggle reads the metrics again for the roots alone: one of the two finished.
     await page.getByRole("button", { name: "Roots" }).click();
     await expect(headline("phase_breakdown")).toContainText("1 issue finished");
     await page.getByRole("button", { name: "All issues" }).click();
 
-    await finished.first().locator('a[data-issue-link][href*="/legion/"]').click();
+    await page.goto(`/projects/${LEGION_PROJECT}/legion/${LEGION_PROJECT}-1`);
     await expect(page).toHaveURL(
-      new RegExp(`/projects/${LEGION_PROJECT}/legion/${LEGION_PROJECT}-\\d+$`)
+      new RegExp(`/projects/${LEGION_PROJECT}/legion/${LEGION_PROJECT}-1$`)
     );
+    await expect(page.locator("[data-evals-tab]")).toBeVisible();
     await expect(page.locator("[data-legion-timeline]")).toBeVisible();
   } finally {
     await context.close();

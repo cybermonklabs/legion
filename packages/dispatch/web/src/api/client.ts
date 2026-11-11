@@ -327,8 +327,8 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
 }
 
 // A project that names no Legion daemon answers this 404 on the board and on the settings relay:
-// definitive like the delivery one above, and the answer that shows no Legion view at all rather
-// than a failure a reader could retry.
+// definitive like the delivery one above, and the answer that hides Legion columns and the
+// optional Evals tab rather than a failure a reader could retry.
 export function isLegionNotConfigured(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 404 && error.code === "LEGION_NOT_CONFIGURED"

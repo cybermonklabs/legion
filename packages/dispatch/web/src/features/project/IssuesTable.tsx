@@ -130,7 +130,7 @@ function IssuesTableContent({
     [phaseMax, phaseMode, setPhaseMode]
   );
   const timelineHref = useCallback(
-    (key: string) => buildProjectPath({ issue: key, kind: "legion", project }),
+    (key: string) => buildProjectPath({ issue: key, kind: "evals", project }),
     [project]
   );
 
@@ -209,7 +209,6 @@ function IssuesTableContent({
     openItems,
   ]);
   const excludedTrees = useMemo(() => readExcludedTrees(params), [params]);
-  // The issues behind a number the reader clicked on the Legion tab, if they arrived by one.
   const picked = useMemo(() => readSelection(params), [params]);
   const items = useMemo(() => {
     const shown = allItems.filter(
