@@ -43,9 +43,9 @@ func TestBackwardRowsMatchPhaseBackwardPairs(t *testing.T) {
 		if !phase.MovesBack(row.From, row.To) {
 			continue
 		}
-		fromTable[string(row.From)+"-"+string(row.To)] = true
+		fromTable[phase.Pair(row.From, row.To)] = true
 		if row.Trigger == TriggerBackward {
-			fromTrigger[string(row.From)+"-"+string(row.To)] = true
+			fromTrigger[phase.Pair(row.From, row.To)] = true
 		}
 	}
 	fromPhase := map[string]bool{}
@@ -58,7 +58,7 @@ func TestBackwardRowsMatchPhaseBackwardPairs(t *testing.T) {
 	// The backward trigger carries every pair but one: awaiting_merge goes back to implementing on
 	// the explicit checks_red row, because a queued pull request whose checks turn red is sent back
 	// by the daemon, not by a worker asking for a move.
-	delete(fromPhase, string(phase.AwaitingMerge)+"-"+string(phase.Implementing))
+	delete(fromPhase, phase.Pair(phase.AwaitingMerge, phase.Implementing))
 	if !maps.Equal(fromTrigger, fromPhase) {
 		t.Fatalf("%s rows = %v, want %v", TriggerBackward, sortedPairs(fromTrigger), sortedPairs(fromPhase))
 	}

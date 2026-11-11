@@ -279,11 +279,15 @@ var settingsForbiddenKeys = []string{
 	"prompt",
 }
 
-// settingsPathKeys are the `*_file` keys the settings do carry: a `_file` key is a credential's
-// file by the loader's own naming everywhere else, and the rule below reads the suffix, so each
-// key that is a path of something else is named here with the reason it is no credential.
+// settingsPathKeys are the `*_file` keys the settings do carry, each by the whole path it stands
+// under: a `_file` key is a credential's file by the loader's own naming everywhere else, and the
+// rule below reads the suffix, so each key that is a path of something else is named here with
+// the reason it is no credential. The path and not the key alone, so the exemption covers the one
+// block that earned it and a `prompt_file` grown anywhere else is still refused. The fixture
+// carries each of these paths, which the rule below holds it to: an exemption no document
+// exercises is an exemption nobody has read.
 var settingsPathKeys = map[string]string{
-	"prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.hooks[].prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
 }
 
 // The maximal kubernetes file resolves to a settings block whose top-level, runtime.kubernetes and
@@ -351,13 +355,20 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if err := json.Unmarshal(encoded, &document); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	exercised := map[string]bool{}
 	for _, key := range everyKey(document, "settings") {
-		name := key[strings.LastIndex(key, ".")+1:]
-		if _, path := settingsPathKeys[name]; path {
+		if _, path := settingsPathKeys[key]; path {
+			exercised[key] = true
 			continue
 		}
+		name := key[strings.LastIndex(key, ".")+1:]
 		if slices.Contains(settingsForbiddenKeys, name) || strings.HasSuffix(name, "_file") {
 			t.Errorf("settings carry the key %s", key)
+		}
+	}
+	for path := range settingsPathKeys {
+		if !exercised[path] {
+			t.Errorf("the fixture carries no %s, so the exemption for it is never read: set the key in settingsFixtureFile or drop the exemption", path)
 		}
 	}
 
@@ -598,13 +609,14 @@ func TestSettingsPodUpdateRounds(t *testing.T) {
 }
 
 // The settings name every hook the daemon runs and no hook's words. A file that writes no
-// `hooks:` key runs the one default hook, which selects every move back: its `moves` is the
-// one-element list `["any"]`, the word the operator writes for that, never the empty list and
-// never a null, and it carries no `prompt_file`, since its words are the daemon's own. A file
-// that names hooks carries each as it wrote it, with `prompt_file` as the path the loader
-// resolved and never the words of either form.
+// `hooks:` key — the minimal one, since the maximal file names a hook of its own — runs the one
+// default hook, which selects every move back: its `moves` is the one-element list `["any"]`,
+// the word the operator writes for that, never the empty list and never a null, and it carries
+// no `prompt_file`, since its words are the daemon's own. A file that names hooks carries each
+// as it wrote it, with `prompt_file` as the path the loader resolved and never the words of
+// either form.
 func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
-	byDefault := SettingsOf(settingsFixtureConfig(t))
+	byDefault := SettingsOf(minimalSettingsConfig(t))
 	want := []HookSettings{{
 		Name:  "work-back",
 		On:    config.HookEventWorkBack,
@@ -618,7 +630,7 @@ func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
 
 	const promptFile = "/etc/legion/hooks/back-to-implementing.md"
 	const inline = "Read the reviewer's thread before you write anything."
-	named := SettingsOf(loadSettingsFile(t, settingsFixtureFile+`hooks:
+	named := SettingsOf(loadSettingsFile(t, minimalSettingsFile+`hooks:
   - name: back-to-implementing
     on: work_back
     moves: [reviewing-implementing, testing-implementing]

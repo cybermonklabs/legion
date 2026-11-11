@@ -192,8 +192,10 @@ func TestAFiringReachesEachRoleItNames(t *testing.T) {
 				t.Fatalf("the %s's message from hook %s carries %q, want its own hook's words %q", prompt.Role, prompt.Hook, prompt.Prompt, words)
 			}
 			message := prompt.Message("LEGION-208")
-			if !strings.HasSuffix(message, "\n\n"+words) {
-				t.Fatalf("the %s reads %q, want it to end with a blank line and its own hook's words %q", prompt.Role, message, words)
+			// The words stand between the daemon's header and the daemon's counts, each marked
+			// off by a blank line, so the counts the shipped words point at are below them.
+			if !strings.Contains(message, "\n\n"+words+"\n\nMoves back this hook counts:") {
+				t.Fatalf("the %s reads %q, want its own hook's words %q between the header and the counts", prompt.Role, message, words)
 			}
 			if strings.Contains(message, config.DefaultWorkBackPrompt) {
 				t.Fatalf("the %s reads %q, want the words of hook %s and not the ones Legion ships with no hooks configured", prompt.Role, message, prompt.Hook)

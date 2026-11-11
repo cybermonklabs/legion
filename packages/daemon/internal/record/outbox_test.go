@@ -316,30 +316,33 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
 
-// A hook prompt's message states the daemon's own facts of the firing, then a blank line, then
-// the hook's words exactly as the deployment wrote them. The counts are listed in the order
-// phase.BackwardPairs() gives, which is neither the map's own order nor alphabetical, so two
-// readings of one row read alike. The pull-request sentence stands only for an issue with a pull
-// request, and the words of the hook come through whole: a prompt that spells a word in angle
-// brackets is published with it, since the daemon substitutes nothing into the hook's own text.
+// A hook prompt's message is three parts with a blank line between them: the daemon's header,
+// the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The
+// counts stand below the words, because the shipped hook's words point at them, and the header
+// stands above, because a worker knows a hook by the line it starts with. The counts are listed
+// in the order phase.BackwardPairs() gives, which is neither the map's own order nor
+// alphabetical, so two readings of one row read alike. The pull-request sentence stands only for
+// an issue with a pull request, and the words of the hook come through whole: a prompt that
+// spells a word in angle brackets is published with it, since the daemon substitutes nothing
+// into the hook's own text.
 func TestAHookPromptStatesTheFactsAndLeavesTheHooksWordsAlone(t *testing.T) {
 	const prompt = "This is the third time the work came back. Say what the round missed;\n<count> is no placeholder the daemon fills."
 	fired := HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 		Count: 3, Counts: map[string]int{"reviewing-implementing": 3, "testing-implementing": 1, "retro-implementing": 2},
 		PullRequest: "sjawhar/legion#42", Prompt: prompt}
-	want := "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing." +
-		" Moves back this hook counts: 3." +
+	want := "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
+		prompt + "\n\nMoves back this hook counts: 3." +
 		" Counts by move: testing-implementing=1, reviewing-implementing=3, retro-implementing=2." +
-		" Pull request: sjawhar/legion#42.\n\n" + prompt
+		" Pull request: sjawhar/legion#42."
 	if got := fired.Message("LEGION-208"); got != want {
 		t.Fatalf("Message of a firing with a pull request =\n%q\nwant\n%q", got, want)
 	}
 
 	noPull := fired
 	noPull.PullRequest = ""
-	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing." +
-		" Moves back this hook counts: 3." +
-		" Counts by move: testing-implementing=1, reviewing-implementing=3, retro-implementing=2.\n\n" + prompt
+	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
+		prompt + "\n\nMoves back this hook counts: 3." +
+		" Counts by move: testing-implementing=1, reviewing-implementing=3, retro-implementing=2."
 	if got := noPull.Message("LEGION-208"); got != want {
 		t.Fatalf("Message of a firing with no pull request =\n%q\nwant\n%q", got, want)
 	}
@@ -349,8 +352,8 @@ func TestAHookPromptStatesTheFactsAndLeavesTheHooksWordsAlone(t *testing.T) {
 	counted := fired
 	counted.Counts = nil
 	counted.PullRequest = ""
-	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing." +
-		" Moves back this hook counts: 3. Counts by move: none.\n\n" + prompt
+	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
+		prompt + "\n\nMoves back this hook counts: 3. Counts by move: none."
 	if got := counted.Message("LEGION-208"); got != want {
 		t.Fatalf("Message of a firing that counts nothing =\n%q\nwant\n%q", got, want)
 	}

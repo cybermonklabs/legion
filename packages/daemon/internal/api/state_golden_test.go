@@ -40,8 +40,9 @@ func goldenPath(name string) string {
 // provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
 // on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo and a query
 // on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while `pi_legion` pins the
-// version form). Every path the settings emit (`state_dir`, `instructions`) is a fixed absolute
-// literal, so the golden does not churn with the temporary directory the file is written under.
+// version form). Every path the settings emit (`state_dir`, `instructions`, the hook's
+// `prompt_file`) is a fixed absolute literal, so the golden does not churn with the temporary
+// directory the file is written under.
 // Hosts are placeholders.
 const settingsFixtureFile = `project: LEGION
 port: 13370
@@ -114,6 +115,13 @@ repository_renames:
 capabilities:
   decided:
     pool-capacity: "the pool is sized by hand for the admission cap"
+hooks:
+  - name: back-to-implementing
+    on: work_back
+    moves: [reviewing-implementing, testing-implementing]
+    every: 2
+    roles: [implementer]
+    prompt_file: /etc/legion/hooks/back-to-implementing.md
 runtime:
   kubernetes:
     namespace: legion

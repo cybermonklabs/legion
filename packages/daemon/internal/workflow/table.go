@@ -88,11 +88,11 @@ func backwardRows() []Row {
 	pairs := phase.BackwardPairs()
 	rows := make([]Row, 0, len(pairs))
 	for _, text := range pairs {
-		from, to, ok := phase.ParsePair(text)
+		from, to, _ := phase.ParsePair(text)
 		// Every pair comes from BackwardPairs, so ParsePair reads each one. The AwaitingMerge pair
 		// is the single one skipped: the table above already carries it as an explicit row, with
 		// the checks_red trigger that puts a queued pull request back into implementing.
-		if !ok || from == phase.AwaitingMerge {
+		if from == phase.AwaitingMerge {
 			continue
 		}
 		rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,

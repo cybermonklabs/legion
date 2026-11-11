@@ -933,12 +933,16 @@ type HookPrompt struct {
 
 func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 
-// Message is what the runner publishes for issue: the daemon's own facts of the firing — the
-// hook, the move back, the count that fired it, every backward-move count of the issue and the
-// pull request where the issue has one — then a blank line, then the hook's words exactly as
-// written. The blank line is what marks the two apart, so a reader knows which sentences are the
-// daemon's and which are the deployment's. The pull-request sentence is left out for an issue
-// with no pull request.
+// Message is what the runner publishes for issue, in three parts with a blank line between them:
+// the daemon's header, which names the hook and the move back; the hook's words exactly as
+// written; and the daemon's remaining facts, the count that fired the hook, every backward-move
+// count of the issue and the pull request where the issue has one.
+//
+// The counts stand below the words because the words point at them: the shipped hook says the
+// work "has gone back the number of times recorded below", and a message that put them above it
+// would point at nothing. The header stays above, because a worker knows a hook by the line it
+// starts with (`Legion hook `), which its role prompt and skill both name. The pull-request
+// sentence is left out for an issue with no pull request.
 //
 // The counts are listed in the order phase.BackwardPairs() gives rather than the map's own, so
 // two readings of one row read alike; a pair the map does not hold is left out. An empty map
@@ -961,9 +965,9 @@ func (p HookPrompt) Message(issue string) string {
 	if p.PullRequest != "" {
 		pull = fmt.Sprintf(" Pull request: %s.", p.PullRequest)
 	}
-	return fmt.Sprintf("Legion hook %s on %s: work went back from %s to %s."+
-		" Moves back this hook counts: %d. Counts by move: %s.%s\n\n%s",
-		p.Hook, issue, p.From, p.To, p.Count, counts, pull, p.Prompt)
+	return fmt.Sprintf("Legion hook %s on %s: work went back from %s to %s.\n\n%s\n\n"+
+		"Moves back this hook counts: %d. Counts by move: %s.%s",
+		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
 }
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.

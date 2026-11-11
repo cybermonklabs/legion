@@ -885,10 +885,20 @@ func withoutWaitingLine(state State) State {
 // no move back carries no such key — so this is asked of the state rather than answered true.
 func carriesBackwardMoves(state State) bool {
 	for _, issue := range state.Issues {
-		for _, worker := range issue.Workers {
-			if len(worker.BackwardMoves) > 0 {
-				return true
-			}
+		if issueCarriesBackwardMoves(issue) {
+			return true
+		}
+	}
+	return false
+}
+
+// issueCarriesBackwardMoves is whether a worker of this one issue carries the counts. It is what
+// both the question asked of the whole state and the strip below read, so the two never part
+// company over what carrying means.
+func issueCarriesBackwardMoves(issue Issue) bool {
+	for _, worker := range issue.Workers {
+		if len(worker.BackwardMoves) > 0 {
+			return true
 		}
 	}
 	return false
@@ -896,12 +906,16 @@ func carriesBackwardMoves(state State) bool {
 
 // withoutBackwardMoves is state with no worker carrying `backwardMoves`, the field
 // backwardMovesContract added to the state; nothing else of that contract is on the route, the
-// settings' `hooks` riding under a block the plugin reads loosely. The issue map and each
-// issue's worker map are copied, so the state the source answered is left as it was.
+// settings' `hooks` riding under a block the plugin reads loosely. The issue map is copied, as
+// every sibling strip copies it, so the state the source answered is left as it was. A worker
+// map is copied only for an issue a worker of which carries the counts: the field rides on the
+// implementer of an issue that has moved back and on nobody else, and this strip runs on every
+// state read of every pod below the contract, so the issues without one are left where they are
+// rather than rebuilt.
 func withoutBackwardMoves(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
-		if issue.Workers != nil {
+		if issueCarriesBackwardMoves(issue) {
 			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
 			for role, worker := range issue.Workers {
 				worker.BackwardMoves = nil

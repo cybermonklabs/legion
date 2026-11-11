@@ -1,6 +1,7 @@
 package record
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -546,13 +547,19 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	}
 	// A row that counted no backward move reads as a nil map and never as an empty one: the
 	// column holds the empty object for it, and a scanned row of a phase nothing went back from
-	// is then equal to the PhaseRow a caller builds for it.
-	moves := map[string]int{}
-	if err := json.Unmarshal(backwardMoves, &moves); err != nil {
-		return PhaseRow{}, fmt.Errorf("decode the backward move counts: %w", err)
-	}
-	if len(moves) > 0 {
-		phase.BackwardMoves = moves
+	// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
+	// row holds, and this scan runs on every phase row of every state read, so those bytes answer
+	// the nil map without a decode of their own, as the decision column above answers nil without
+	// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
+	// its error.
+	if !bytes.Equal(backwardMoves, []byte("{}")) {
+		moves := map[string]int{}
+		if err := json.Unmarshal(backwardMoves, &moves); err != nil {
+			return PhaseRow{}, fmt.Errorf("decode the backward move counts: %w", err)
+		}
+		if len(moves) > 0 {
+			phase.BackwardMoves = moves
+		}
 	}
 	phase.Role, phase.Claim = claim.Role(role), claim.Token(token)
 	return phase, nil

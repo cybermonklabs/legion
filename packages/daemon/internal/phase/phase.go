@@ -85,6 +85,14 @@ func ParsePair(text string) (from, to Phase, ok bool) {
 	return Phase(fromText), Phase(toText), true
 }
 
+// Pair spells one move back: "<from>-<to>". It is the one spelling the counts of
+// record.PhaseRow.BackwardMoves stand under, the words BackwardPairs answers, and the word a
+// hook's `moves` names a move by (config's readHookMoves). The three are one vocabulary, so the
+// spelling is written here and nowhere else.
+func Pair(from, to Phase) string {
+	return string(from) + "-" + string(to)
+}
+
 // backwardPairs is built once, in the order the workflow's backward rows are generated: each of
 // the first seven phases of Order paired with every phase before it, 21 pairs, and then the one
 // move back AwaitingMerge makes, which the workflow table carries as a row of its own.
@@ -100,10 +108,10 @@ func buildBackwardPairs() []string {
 	pairs := make([]string, 0, len(forward)*(len(forward)-1)/2+1)
 	for fromIndex, from := range forward {
 		for _, to := range forward[:fromIndex] {
-			pairs = append(pairs, string(from)+"-"+string(to))
+			pairs = append(pairs, Pair(from, to))
 		}
 	}
-	return append(pairs, string(AwaitingMerge)+"-"+string(Implementing))
+	return append(pairs, Pair(AwaitingMerge, Implementing))
 }
 
 func buildBackwardPairSet() map[string]bool {

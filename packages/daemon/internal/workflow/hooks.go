@@ -12,14 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// movePair is how the daemon spells one move back: "<from>-<to>", which is the key every count of
-// record.PhaseRow.BackwardMoves stands under, the word phase.BackwardPairs() answers, and the word
-// a hook's `moves` names a move by (config's readHookMoves). The three are one vocabulary, so the
-// spelling is written once, here.
-func movePair(from, to phase.Phase) string {
-	return string(from) + "-" + string(to)
-}
-
 // fireWorkBackHooks fires each hook of the deployment that stands on the work-back event and
 // counts this move, now that recordRound has counted it. counts is the issue's whole
 // backward-move map after the move, which is what each hook reads its own number from.
@@ -34,7 +26,7 @@ func movePair(from, to phase.Phase) string {
 // (config's readHookEvery), so this is the guard that keeps a hook written by any other route
 // from dividing by nothing rather than a rule of its own.
 func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, counts map[string]int, pr *record.PullRequest) error {
-	pair := movePair(from, to)
+	pair := phase.Pair(from, to)
 	for _, hook := range e.cfg.Hooks {
 		if hook.On != HookEventWorkBack || hook.Every <= 0 || !hookSelects(hook, pair) {
 			continue

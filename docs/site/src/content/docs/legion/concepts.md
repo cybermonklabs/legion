@@ -379,8 +379,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   entry of `hooks:` in [legion.yaml](/legion/legion/running-legion/#legionyaml): the moves it
   selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
   selects fires it when the counts of the moves it selects, added up, are then a whole multiple
-  of that number. The daemon writes the words to each role the hook names, after its own facts of
-  the firing — the hook, the move, the counts and the pull request — and posts
+  of that number. The daemon writes the words to each role the hook names, between its own
+  header — the hook and the move — and its own counts of the moves back, and posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
   issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
   not, and a role that reads the words answers in its own turn. A deployment that writes no

@@ -749,17 +749,17 @@
     ],
     "hooks": [
       {
-        "name": "work-back",
+        "name": "back-to-implementing",
         "on": "work_back",
         "moves": [
-          "any"
+          "reviewing-implementing",
+          "testing-implementing"
         ],
-        "every": 5,
+        "every": 2,
         "roles": [
-          "implementer",
-          "tester",
-          "reviewer"
-        ]
+          "implementer"
+        ],
+        "prompt_file": "/etc/legion/hooks/back-to-implementing.md"
       }
     ]
   },

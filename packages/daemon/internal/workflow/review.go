@@ -670,7 +670,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // how many rounds were counted against the cap and how many were excused.
 //
 // BackwardMoves rises as well, under the move's own "<from>-<to>" pair, spelled as
-// phase.BackwardPairs() spells the pairs (movePair): a review that sends the work back and a
+// phase.BackwardPairs() spells the pairs (phase.Pair): a review that sends the work back and a
 // test that sends it back are two counts and never one.
 //
 // A move that raised the conflict count raises no pair and fires no hook: nobody sent the work
@@ -702,7 +702,7 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, from,
 		if row.BackwardMoves == nil {
 			row.BackwardMoves = make(map[string]int, 1)
 		}
-		row.BackwardMoves[movePair(from, to)]++
+		row.BackwardMoves[phase.Pair(from, to)]++
 	}
 	counted := row.Rounds - row.ConflictRounds
 	tell := !conflict && counted >= e.cfg.ReviewRoundCap && row.CapTold != e.cfg.ReviewRoundCap
