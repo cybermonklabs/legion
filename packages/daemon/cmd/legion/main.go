@@ -654,10 +654,17 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 }
 
 // experimentLines are the lines an operator reads for the experiments the deployment declares
-// (`settings.projects.<KEY>.experiments`, the daemon's own project): one per experiment, in the
-// settings' order, which is the project's file's order, counting how many issues hold each arm
-// of it. An experiment no issue holds is `none` after its name, as a deployment that has drawn
+// (the daemon's own project): one per experiment, in the order the daemon's loader declares
+// them — the `memory` block's experiment first, then the `experiments` key's own in the file's
+// order (api.ProjectSettings.DeclaredExperiments) — counting how many issues hold each arm of
+// it. An experiment no issue holds is `none` after its name, as a deployment that has drawn
 // nothing has always read.
+//
+// The list is built from the settings and not from `settings.projects.<KEY>.experiments` alone,
+// because the two keys a project declares an experiment with are carried apart there: a
+// deployment that writes the `memory` block and no `experiments` key — which is what this fleet
+// runs — declares one experiment and carries an empty `experiments`, and reading that key alone
+// would print `experiments: none` while every issue holds a memory assignment.
 //
 // It counts issues, and not the trees a tree experiment is drawn for, because the state carries
 // no tree: a draw would have to stand for its tree, and it cannot. Every issue of a tree carries
@@ -666,11 +673,11 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 // tree's name. It names no issue either: the per-issue answers are in `legion state --json`,
 // where a line per issue would print hundreds on a live deployment.
 //
-// A deployment whose settings name no experiment has none to name and prints the one line
+// A deployment whose settings declare no experiment has none to name and prints the one line
 // `experiments: none`, which is what a deployment that declares nothing has always read in the
 // line this printer took the place of (`memory: none`).
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
-	declared := settings.Projects[project].Experiments
+	declared := settings.Projects[project].DeclaredExperiments()
 	if len(declared) == 0 {
 		return []string{"experiments: none"}
 	}

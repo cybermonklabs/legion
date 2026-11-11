@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -609,47 +608,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if s.consumerLag != nil {
 		state.Consumers = ConsumerLagViewsOf(s.consumerLag(r.Context()))
 	}
-	writeJSON(w, http.StatusOK, s.stateFor(r, s.assignmentsInDeclaredOrder(state), claims))
-}
-
-// assignmentsInDeclaredOrder is state with every issue's experiment answers in the order the
-// project's file declares the experiments (Options.Experiments, which is
-// config.Project.ExperimentsDeclared — the order `settings.projects.<KEY>.experiments` names
-// them in, since experimentsOf maps that same list). The projection answers them in the
-// experiments' names, which is the order the record keys its rows by: the file's order is the
-// project's and reaches no reader of the record, so it is put on here, where the declared list
-// is, and once for the whole body rather than per issue.
-//
-// A deployment that declares fewer than two experiments is left untouched: no list of one row
-// can be out of order, and that is every deployment until a project declares a second
-// experiment. An experiment the file no longer names keeps the place it has, after every
-// declared one and among its like in the order the record gave: its row stays in the record,
-// and a reader of the measurement needs it beside the rest.
-func (s *server) assignmentsInDeclaredOrder(state State) State {
-	if len(s.experiments) < 2 {
-		return state
-	}
-	declared := make(map[string]int, len(s.experiments))
-	for i, experiment := range s.experiments {
-		declared[experiment.Name] = i
-	}
-	place := func(view AssignmentView) int {
-		if i, found := declared[view.Experiment]; found {
-			return i
-		}
-		return len(declared)
-	}
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		if len(issue.Assignments) > 1 {
-			ordered := slices.Clone(issue.Assignments)
-			slices.SortStableFunc(ordered, func(a, b AssignmentView) int { return cmp.Compare(place(a), place(b)) })
-			issue.Assignments = ordered
-		}
-		issues[key] = issue
-	}
-	state.Issues = issues
-	return state
+	writeJSON(w, http.StatusOK, s.stateFor(r, state, claims))
 }
 
 // stateFor is state as the plugin that asked for it reads it, decided from claims, the project's

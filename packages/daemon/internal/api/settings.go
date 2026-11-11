@@ -258,6 +258,39 @@ type ProjectSettings struct {
 	Deploys []DeploySettings `json:"deploys"`
 }
 
+// DeclaredExperiments is every experiment this project declares, as the daemon's own loader
+// builds the list: the `memory` block's experiment first, then the `experiments` key's own in
+// the file's order (config.Project.ExperimentsDeclared, which this reverses the two keys back
+// through). The settings carry the two keys as the file writes them — the block under `memory`,
+// the key's own under `experiments` — because that is what an operator reads them for, so a
+// reader that must answer for every experiment the deployment draws, as `legion state` does
+// when it counts each one's arms, asks here rather than writing the mapping a second time.
+//
+// The daemon serves the settings from the same configuration it declares its experiments from
+// (internal/daemon's source), so this answers what that daemon drew for.
+func (p ProjectSettings) DeclaredExperiments() []config.Experiment {
+	project := config.Project{
+		Memory: config.Memory{
+			Mode:             p.Memory.Mode,
+			ConfigFiles:      p.Memory.ConfigFiles,
+			InstructionsPath: p.Memory.Instructions,
+		},
+		Experiments: make([]config.Experiment, 0, len(p.Experiments)),
+	}
+	for _, experiment := range p.Experiments {
+		declared := config.Experiment{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Variants: make([]config.Variant, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			declared.Variants = append(declared.Variants, config.Variant{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions})
+		}
+		project.Experiments = append(project.Experiments, declared)
+	}
+	return project.ExperimentsDeclared()
+}
+
 // MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is
 // drawn under, absent for a project that names no block, which is off (config.Memory.Word); the
 // Oh My Pi overlays every role of a memory-group tree names after the operator's and its own, `[]`

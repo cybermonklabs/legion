@@ -352,7 +352,8 @@ func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 
 // driftedInPod is what pod holds, for role, that a pod created now is not handed and whose
 // replacement is an update round's business rather than a launch's: the operator's volume and
-// mount holding every named role's overlays and the project's memory overlays in role's container
+// mount holding every named role's overlays and the overlays of every arm the project declares
+// in role's container
 // (movedRoleOverlays), the secrets broker's enrollment its next generation is started against
 // (movedEnrollment), the whole session store it was created under (movedSessionStore), and the
 // gh directories its gh volume projects (movedGhDirs). Each is fixed for the

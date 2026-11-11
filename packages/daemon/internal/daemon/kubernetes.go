@@ -301,9 +301,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // stream's address, the connection directory and the token source, which boot hands the factory.
 // The issue pod's one container gets runtime.kubernetes.resources.issue as its requirements, and
 // the daemon-launched controller's container runtime.kubernetes.resources.controller (requirements).
-// The project's memory overlays (`memory.config_files`) reach the runtime whatever its mode is,
-// as they reach tmuxOptions: a tree already drawn into the memory group names them under any
-// mode, and a project with no block hands over none.
+// Every arm of every experiment the project declares reaches the runtime whatever the
+// experiment's mode is (declaredVariants), as they reach tmuxOptions: a unit already drawn into
+// an arm names that arm's overlays under any mode, and a project that declares nothing hands
+// over none.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)

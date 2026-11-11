@@ -45,13 +45,56 @@
 package experiment
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"math"
 	"math/big"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// Records is the one write a draw makes: the answers drawn for a unit, onto that unit's own issue
+// key, each written once and never again (record.Store.PutAssignments). The one method is named
+// here rather than taken as record.Store, so this package reads no record beyond the draw's own
+// write and no caller leaks its store into it; each caller's store satisfies it as it stands.
+type Records interface {
+	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []record.Assignment) (int, error)
+}
+
+// DrawAndRecord draws every experiment of declared whose unit is unit for key, and records the
+// answers against key in tx, the caller's own transaction, so a crash between the draw and the
+// write leaves neither. It is the whole draw of every path that opens a unit — admission's
+// promoteHolds and putNewRoot, the workflow's first entry of a child, and the operator's spawn —
+// so a unit is drawn the same way whichever opened it.
+//
+// at is the instant every answer of this call records, read once by the caller's clock, and
+// source is the random source a `random` mode is drawn with (Draw). An experiment of another
+// unit is passed over, and a declared list that holds none of this unit writes nothing, which is
+// no error. Writing no row is no business of this helper's either: an experiment the key already
+// holds a row for keeps the arm it has been running under, and a key the daemon holds no record
+// of — an operator's spawn — takes no row at all (record.Store.PutAssignments).
+func DrawAndRecord(ctx context.Context, tx pgx.Tx, records Records, key string,
+	declared []config.Experiment, unit config.ExperimentUnit, source func(uint64) (uint64, error), at time.Time) error {
+	rows := make([]record.Assignment, 0, len(declared))
+	for _, experiment := range declared {
+		if experiment.Unit != unit {
+			continue
+		}
+		variant, err := Draw(experiment, source)
+		if err != nil {
+			return fmt.Errorf("draw the %s experiment of %s: %w", experiment.Name, key, err)
+		}
+		rows = append(rows, record.Assignment{Experiment: experiment.Name, Unit: string(experiment.Unit),
+			Variant: variant, Mode: string(experiment.Mode), DrawnAt: &at})
+	}
+	_, err := records.PutAssignments(ctx, tx, key, rows)
+	return err
+}
 
 // Draw is the variant experiment gives one unit, by the experiment's mode. ExperimentOff gives the
 // empty string: a unit under an off experiment is recorded at no variant at all. ExperimentOn

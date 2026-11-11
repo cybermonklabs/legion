@@ -701,10 +701,63 @@ var demoProductionCheck = productionCheckTesterLine("DEMO")
 
 var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck
 
-// projectsConfig is a tmux legion.yaml whose `projects` block is the given text: the Stage 1
-// keys, the operator bearer and the github_apps a file with projects must carry (with the keys
-// written out, so no command runs at boot), and a deliberately unreachable Postgres, as
-// legionConfig's is — every test of it stops before a store is opened.
+// tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion start --check-config`
+// passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
+// carry (with the keys written out, so no command runs at boot), and a deliberately unreachable
+// Postgres, as legionConfig's is — every test of it stops before a store is opened. `state_dir`
+// and `projects` are no part of it: each caller writes its own temporary directory and its own
+// projects block. The refusal-table fixtures read it too (troubleshooting_refusals_test.go), so
+// a key a passing file needs is added once.
+const tmuxCheckKeys = `project: DEMO
+port: 13370
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+operator_token_file: ./operator-token
+github_apps:
+  implement: { app_id: "1", private_key: implement-test-key }
+  review: { app_id: "2", private_key: review-test-key }
+`
+
+// kubernetesCheckKeys are the same for a kubernetes legion.yaml: the keys every pod needs,
+// without `state_dir`, without `projects` and without the `runtime` block, which is
+// kubernetesCheckRuntime and is written last so a caller's own four-space line extends it.
+const kubernetesCheckKeys = `project: DEMO
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+bind: 10.0.0.5
+daemon_url: http://10.0.0.5:13370
+envoy_url: http://envoy-listener.internal.example:9020
+envoy_token_file: ./envoy-token
+operator_token_file: ./operator-token
+dispatch_url: https://dispatch.internal.example
+dispatch_token_file: ./dispatch-token
+nats_urls: [nats://nats.internal.example:4222]
+github_apps:
+  implement: { app_id: "1", private_key_command: "exit 1" }
+  review: { app_id: "2", private_key_command: "exit 1" }
+`
+
+// kubernetesCheckRuntime is the `runtime.kubernetes` block those keys go with.
+const kubernetesCheckRuntime = `runtime:
+  kubernetes:
+    namespace: legion
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    storage_class: gp2
+    session_store: postgres
+    session_dsn_secret: SESSION_DSN
+    kubeconfig: ./kubeconfig
+    context: legion-daemon
+`
+
+// checkConfigKubeconfig is the kubeconfig that block names: the context it names, and a server
+// no check dials.
+const checkConfigKubeconfig = `apiVersion: v1
+kind: Config
+clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
+users: [{name: legion-daemon, user: {token: placeholder}}]
+contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
+current-context: legion-daemon
+`
+
+// projectsConfig is a tmux legion.yaml (tmuxCheckKeys) whose `projects` block is the given text.
 func projectsConfig(t *testing.T, projects string) string {
 	t.Helper()
 	omp, err := os.Executable()
@@ -715,15 +768,7 @@ func projectsConfig(t *testing.T, projects string) string {
 	t.Setenv("LEGION_GH_PATH", omp)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legion.yaml")
-	body := fmt.Sprintf(`project: DEMO
-port: 13370
-postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
-state_dir: %s
-operator_token_file: ./operator-token
-%sgithub_apps:
-  implement: { app_id: "1", private_key: implement-test-key }
-  review: { app_id: "2", private_key: review-test-key }
-`, filepath.Join(dir, "state"), projects)
+	body := fmt.Sprintf("state_dir: %s\n%s%s", filepath.Join(dir, "state"), tmuxCheckKeys, projects)
 	for name, contents := range map[string]string{path: body, filepath.Join(dir, "operator-token"): "operator-token\n"} {
 		if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
@@ -1241,48 +1286,18 @@ runtime:
 }
 
 // kubernetesCheckConfig is a kubernetes configuration `legion start --check-config` passes: the
-// keys every pod needs, a kubeconfig naming a context the check never dials, and extra appended
-// at the top level (a four-space-indented line extends the runtime.kubernetes block, which comes
-// last before it).
+// keys every pod needs (kubernetesCheckKeys, kubernetesCheckRuntime), a kubeconfig naming a
+// context the check never dials, and extra appended at the top level (a four-space-indented
+// line extends the runtime.kubernetes block, which comes last before it).
 func kubernetesCheckConfig(t *testing.T, extra string) string {
 	t.Helper()
 	dir := t.TempDir()
-	body := fmt.Sprintf(`project: DEMO
-postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
-state_dir: %s
-bind: 10.0.0.5
-daemon_url: http://10.0.0.5:13370
-envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
-operator_token_file: ./operator-token
-dispatch_url: https://dispatch.internal.example
-dispatch_token_file: ./dispatch-token
-nats_urls: [nats://nats.internal.example:4222]
-projects:
-  DEMO: {}
-github_apps:
-  implement: { app_id: "1", private_key_command: "exit 1" }
-  review: { app_id: "2", private_key_command: "exit 1" }
-runtime:
-  kubernetes:
-    namespace: legion
-    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    storage_class: gp2
-    session_store: postgres
-    session_dsn_secret: SESSION_DSN
-    kubeconfig: ./kubeconfig
-    context: legion-daemon
-%s`, filepath.Join(dir, "state"), extra)
+	body := fmt.Sprintf("state_dir: %s\n%sprojects:\n  DEMO: {}\n%s%s",
+		filepath.Join(dir, "state"), kubernetesCheckKeys, kubernetesCheckRuntime, extra)
 	config := filepath.Join(dir, "legion.yaml")
 	for name, contents := range map[string]string{
 		config: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n",
-		"kubeconfig": `apiVersion: v1
-kind: Config
-clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
-users: [{name: legion-daemon, user: {token: placeholder}}]
-contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
-current-context: legion-daemon
-`,
+		"kubeconfig": checkConfigKubeconfig,
 	} {
 		if !filepath.IsAbs(name) {
 			name = filepath.Join(dir, name)
@@ -1924,6 +1939,51 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
 			}
 		})
+	}
+}
+
+// The deployment that writes the `memory` block and declares no `experiments` key counts that
+// block's arms like any other experiment: the block is the experiment named `memory`
+// (config.Project.ExperimentsDeclared), and the settings carry it under `memory` rather than in
+// `experiments`, which stays `[]`. Reading the `experiments` key alone would print
+// `experiments: none` over a deployment every issue of which holds a memory assignment, which is
+// the line this deployment read before any experiment was declared.
+func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	drawn := func(variant string) string {
+		return `{"experiment":"memory","variant":"` + variant + `","mode":"random","drawnAt":"2026-10-25T10:00:00Z"}`
+	}
+	issue := func(key, variant string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"assignments":[` + drawn(variant) + `]}`
+	}
+	issues := `{` + issue("LEGION-208", "memory") + `,` + issue("LEGION-209", "memory") + `,` +
+		issue("LEGION-210", "memory") + `,` + issue("LEGION-300", "none") + `}`
+	// The settings as the daemon serves them for such a project: the block as the file writes it,
+	// and an empty `experiments`.
+	settings := `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random",` +
+		`"config_files":["/etc/legion-operator/memory.yml"]},"experiments":[]}}}`
+	served := "{" + daemon + `,"issues":` + issues + settings + "}"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	const want = "memory: 4 issues — 3 memory, 1 none\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
+	}
+	if strings.Contains(out.String(), "experiments: none") {
+		t.Fatalf("legion state printed %q, want no `experiments: none`: the block declares an experiment", out.String())
 	}
 }
 

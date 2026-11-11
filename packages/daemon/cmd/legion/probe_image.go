@@ -274,9 +274,9 @@ func runProbeImage(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// Each role's own overlays, read as that role's Oh My Pi will start on them, after the table so
 	// the log still reads as the declared list first.
 	roleImage := capabilities.Image{Launch: invocation, Env: environ, WorkDir: workDir}
-	if code := checkRoleOverlays(roleOverlays, func(files []string) (string, error) {
-		overlays := append(capabilities.OverlayEntries(envValue(environ, "PI_CONFIG_FILES")), files...)
-		return capabilities.CheckOverlays(ctx, roleImage, overlays, files)
+	if code := checkRoleOverlays(roleOverlays, func(value, alone []string) (string, error) {
+		overlays := append(capabilities.OverlayEntries(envValue(environ, "PI_CONFIG_FILES")), value...)
+		return capabilities.CheckOverlays(ctx, roleImage, overlays, alone)
 	}, stderr); code != 0 {
 		return code
 	}
@@ -348,24 +348,35 @@ func envValue(environ []string, name string) string {
 	return value
 }
 
-// checkRoleOverlays runs check on each role's own overlays in order and answers the exit code: 1,
-// after printing the role's RoleOverlaysRefusedLine, for the first role check refuses, else 0. A
-// run check reports as unanswered (a timeout) is printed and does not stop the role's own verdict:
-// a refusal found after it still refuses.
+// checkRoleOverlays runs check on each role's whole PI_CONFIG_FILES value in order and answers
+// the exit code: 1, after printing the role's RoleOverlaysRefusedLine, for the first value check
+// refuses, else 0. A run check reports as unanswered (a timeout) is printed and does not stop
+// that value's verdict: a refusal found after it still refuses.
 //
-// A value two roles share is read once: every workflow role of a project whose memory overlays
-// reach it and that names no overlays of its own is given one and the same list, and reading it
-// again asks Oh My Pi the same question for the same answer. The refusal still names the first
-// role holding the refused value, since the loop reaches it before any other role of that value.
-func checkRoleOverlays(entries []roleOverlays, check func(files []string) (string, error), stderr io.Writer) int {
+// check takes the whole value and, beside it, the overlays of that value to read on their own.
+// Each distinct value is read once and each distinct overlay is read alone once, over every
+// entry: a role's own files stand in the value of every arm the project declares, and Oh My Pi
+// gives one file the same answer whichever value it stands in, so a deployment that declares
+// arms would otherwise pay for the thing it added at every probe. The refusal still names the
+// first role holding the refused value, since the loop reaches it before any other role of it.
+func checkRoleOverlays(entries []roleOverlays, check func(value, alone []string) (string, error), stderr io.Writer) int {
 	read := make(map[string]struct{}, len(entries))
+	alone := map[string]struct{}{}
 	for _, entry := range entries {
 		value := strings.Join(entry.files, ":")
 		if _, done := read[value]; done {
 			continue
 		}
 		read[value] = struct{}{}
-		why, err := check(entry.files)
+		unread := make([]string, 0, len(entry.files))
+		for _, file := range entry.files {
+			if _, done := alone[file]; done {
+				continue
+			}
+			alone[file] = struct{}{}
+			unread = append(unread, file)
+		}
+		why, err := check(entry.files, unread)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion probe-image: role %s's overlays were read but Oh My Pi did not answer on some of them: %v\n", entry.role, err)
 		}

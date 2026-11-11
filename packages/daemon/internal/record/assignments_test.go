@@ -179,7 +179,7 @@ func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
 		}
 		// The experiments declared at the hand-over: the two the old tree drew, and one younger
 		// than that tree, which it holds no row for.
-		declared := []Assignment{
+		declared := []DeclaredExperiment{
 			{Experiment: "memory", Unit: "tree"},
 			{Experiment: "review-depth", Unit: "tree"},
 			{Experiment: "plan-length", Unit: "tree"},

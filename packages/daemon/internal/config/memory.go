@@ -3,13 +3,9 @@ package config
 import (
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // MemoryMode is `projects.<KEY>.memory.mode`: what the daemon gives each tree the project opens.
@@ -51,6 +47,15 @@ func (memory Memory) Word() MemoryMode {
 	return memory.Mode
 }
 
+// Written is whether the project writes the block at all: any one of its three keys. It is the
+// condition Project.ExperimentsDeclared maps the block to the experiment named memory under, and
+// the one a refusal tells the block's spelling of that experiment from `experiments.memory` by
+// (internal/daemon's declaredOverlayField), so the two read one predicate. A project writes the
+// block or `experiments.memory`, never both (checkExperimentMemory).
+func (memory Memory) Written() bool {
+	return memory.Mode != "" || len(memory.ConfigFiles) > 0 || memory.InstructionsPath != ""
+}
+
 // readMemory is a project's `memory`: `mode`, one of the three words (absent is off);
 // `config_files`, the absolute paths of the overlays a memory-group tree's roles name after their
 // own; and `instructions`, the absolute path of the file the daemon reads. A path that is relative
@@ -84,23 +89,18 @@ func readMemory(value *yaml.Node, key string) (Memory, error) {
 		}
 	}
 	if instructions := fields["instructions"]; instructions != nil {
-		field := key + ".instructions"
-		if memory.InstructionsPath, err = stringOf(instructions, field); err != nil {
+		if memory.InstructionsPath, err = cleanAbsolutePath(instructions, key+".instructions"); err != nil {
 			return Memory{}, err
-		}
-		if !filepath.IsAbs(memory.InstructionsPath) || filepath.Clean(memory.InstructionsPath) != memory.InstructionsPath {
-			return Memory{}, fmt.Errorf("%s %q must be a clean absolute path: the daemon reads it at boot from wherever it starts", field, memory.InstructionsPath)
 		}
 	}
 	return memory, nil
 }
 
 // checkMemory refuses what a project's `memory` block asks for that no tree could run as asked,
-// once the rest of the file is settled: a mode other than off that names no overlay; a block that
-// names overlays while worker_backends puts an issue role on a harness other than Oh My Pi, which
-// reads no PI_CONFIG_FILES; and, under runtime kubernetes, an overlay outside every
-// runtime.kubernetes.pod mount (checkRoleConfigMount), since a pod sees only the image and the
-// operator's mounts, and a file the image ships is no operator's.
+// once the rest of the file is settled: a mode other than off that names no overlay, which is
+// read here; and the two rules every declaration of overlays answers — a harness other than Oh
+// My Pi on an issue role, and an overlay outside the operator's pod mounts
+// (checkDeclaredOverlays).
 //
 // Only the first is about the mode. The other two hold whenever the block names overlays, `off`
 // included: the mode decides which new trees are drawn into the memory group, and a tree already
@@ -114,20 +114,8 @@ func checkMemory(cfg Config) error {
 		if memory.Word() != MemoryOff && len(memory.ConfigFiles) == 0 {
 			return fmt.Errorf("%s is %s and names no config_files: a memory-group tree's roles read their memory overlays from that key, so name at least one, or set mode: off", field, memory.Mode)
 		}
-		if len(memory.ConfigFiles) == 0 {
-			continue
-		}
-		for _, role := range claim.Roles {
-			if backend := cfg.BackendFor(role); backend != runtime.BackendOmp {
-				return fmt.Errorf("%s names config_files, and worker_backends.%s is %s, which reads no PI_CONFIG_FILES: put every issue role on %s, or take the overlays out of the block", field, role, backend, runtime.BackendOmp)
-			}
-		}
-		if k := cfg.Runtime.Kubernetes; k != nil {
-			for _, file := range memory.ConfigFiles {
-				if err := checkRoleConfigMount(k.Pod, field+".config_files", file); err != nil {
-					return err
-				}
-			}
+		if err := checkDeclaredOverlays(cfg, field, "the block", memory.ConfigFiles); err != nil {
+			return err
 		}
 	}
 	return nil

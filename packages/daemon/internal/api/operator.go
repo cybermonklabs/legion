@@ -396,28 +396,14 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open
 // that creates the tree's lifecycle row to run in its own transaction
-// (store.Store.OpenOperatorTreeLifecycle): one answer per experiment, under the mode the project
-// declares it at and at the instant this server's clock reads, recorded against the tree's root
-// issue key (record.Store.PutAssignments, which admission's own path draws through too). An
-// operator's tree usually has no issue record at all, and then the draw writes nothing — nothing
-// is refused and no record is invented.
+// (store.Store.OpenOperatorTreeLifecycle, experiment.DrawAndRecord): one answer per experiment,
+// under the mode the project declares it at and at the instant this server's clock reads,
+// recorded against the tree's root issue key (record.Store.PutAssignments, which admission's own
+// path draws through too). An operator's tree usually has no issue record at all, and then the
+// draw writes nothing — nothing is refused and no record is invented.
 func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.Tx) error {
 	return func(ctx context.Context, tx pgx.Tx) error {
-		drawnAt := s.now()
-		rows := make([]record.Assignment, 0, len(s.experiments))
-		for _, declared := range s.experiments {
-			if declared.Unit != config.ExperimentTree {
-				continue
-			}
-			variant, err := experiment.Draw(declared, s.source)
-			if err != nil {
-				return fmt.Errorf("draw the %s experiment of %s: %w", declared.Name, tree, err)
-			}
-			rows = append(rows, record.Assignment{Experiment: declared.Name, Unit: string(declared.Unit),
-				Variant: variant, Mode: string(declared.Mode), DrawnAt: &drawnAt})
-		}
-		_, err := s.records.PutAssignments(ctx, tx, tree, rows)
-		return err
+		return experiment.DrawAndRecord(ctx, tx, s.records, tree, s.experiments, config.ExperimentTree, s.source, s.now())
 	}
 }
 

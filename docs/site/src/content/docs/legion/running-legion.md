@@ -1147,7 +1147,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
   blocked on Dispatch links: none
-  memory: 6 issues — 2 none, 4 memory
+  memory: 6 issues — 4 memory, 2 none
   plan-length: 4 issues — 2 control, 2 long
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
@@ -1168,10 +1168,12 @@ Closing the terminal leaves the project without one, and the daemon logs
   so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
-  **The experiment lines.** There is one per experiment the project declares, in the order its
-  `legion.yaml` declares them, and it counts the issues that hold each arm of that experiment:
-  `memory: 6 issues — 2 none, 4 memory` above. An experiment no issue holds yet is `none` after
-  its name, and a deployment whose settings declare no experiment prints the one line
+  **The experiment lines.** There is one per experiment the project declares, counting the issues
+  that hold each arm of that experiment: `memory: 6 issues — 4 memory, 2 none` above. The arms of
+  one line are in the arms' own names; the lines are in the order the daemon declares the
+  experiments, which is the `memory` block's experiment first and then the order
+  `projects.<KEY>.experiments` names the rest in. An experiment no issue holds yet is `none` after
+  its name, and a deployment that declares no experiment at all prints the one line
   `experiments: none` in their place. `no variant` in a count is an answer and no arm: a
   hand-over settled that unit at no arm, because the tree it left held no row for the experiment.
   The lines count issues rather than the trees a tree experiment is drawn for, because the state
@@ -1179,15 +1181,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   two trees can share one draw.
 
   **The same answers in `legion state --json`.** Each issue carries `assignments`, one
-  `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project
-  declares the experiments; `settings.projects.<KEY>.experiments` carries the declaration those
-  answers were drawn from. An issue carries its tree's answer for a tree experiment and its own
-  for an issue experiment, `drawnAt` is absent where no draw was made, and the key itself is
-  absent from an issue no experiment holds an answer for. The three fields the `memory`
-  experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode` (the mode in force at
-  the draw) and `memoryDrawnAt` — are still on every issue and answer exactly as they did,
-  absent together where nothing was drawn for that tree. Read `assignments` for a measurement: a
-  declared experiment that is not `memory` appears nowhere else.
+  `{experiment, variant, mode, drawnAt}` per answer that applies to it, in that same declared
+  order; the declaration each answer was drawn from is in the settings, under
+  `settings.projects.<KEY>.memory` for the block's experiment and
+  `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
+  tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was
+  made, and the key itself is absent from an issue no experiment holds an answer for. The three
+  fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
+  (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
+  exactly as they did, absent together where nothing was drawn for that tree. Read
+  `assignments` for a measurement: a declared experiment that is not `memory` appears nowhere
+  else.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person

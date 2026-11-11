@@ -475,15 +475,6 @@ func isDurationKey(key string) bool {
 	return false
 }
 
-func isCountKey(key string) bool {
-	for _, c := range countKeys {
-		if c.key == key {
-			return true
-		}
-	}
-	return false
-}
-
 // readPositive reads a duration or count key into the file's map: a positive integer and, for a
 // duration, at most the timer bound (config.ts readPositiveInteger, and loadConfigFromFile's
 // lifecycle keys).
@@ -580,6 +571,22 @@ func stringOf(value *yaml.Node, key string) (string, error) {
 		return "", err
 	}
 	return *read, nil
+}
+
+// cleanAbsolutePath is a path key's value, refused when it is relative or unclean, and refused
+// the same way when the key is written with no value at all: the daemon reads such a file at
+// boot from wherever it starts, where a relative path resolves against no directory of the
+// operator's. The `memory` block's `instructions` and a variant's read through it alike, so the
+// two keys answer one refusal.
+func cleanAbsolutePath(value *yaml.Node, key string) (string, error) {
+	path, err := stringOf(value, key)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", fmt.Errorf("%s %q must be a clean absolute path: the daemon reads it at boot from wherever it starts", key, path)
+	}
+	return path, nil
 }
 
 // optionalString is a string key a blank value refuses, "" when it is unset.

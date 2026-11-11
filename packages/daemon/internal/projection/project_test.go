@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -41,18 +42,12 @@ type projectionStore struct {
 	gates      map[string]map[record.DesignStep]record.DesignGate
 	owed       []record.OwedStart
 	// assignments is every experiment answer the store holds, by the key of the unit it covers,
-	// in experiment order, as record.Store.AssignmentsFor answers them.
+	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
 }
 
-func (s projectionStore) AssignmentsFor(_ context.Context, _ pgx.Tx, issues []string) (map[string][]record.Assignment, error) {
-	held := make(map[string][]record.Assignment, len(issues))
-	for _, key := range issues {
-		if rows, drawn := s.assignments[key]; drawn {
-			held[key] = rows
-		}
-	}
-	return held, nil
+func (s projectionStore) Assignments(context.Context, pgx.Tx) (map[string][]record.Assignment, error) {
+	return s.assignments, nil
 }
 
 func (s projectionStore) TreeLifecycles(_ context.Context, _ pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
@@ -165,7 +160,7 @@ func TestProjectShowsOnlySlotlessTodoIssuesInDispatchRankOrder(t *testing.T) {
 		},
 		slots: []record.Slot{{Issue: "LEGION-214", Index: 0, AdmittedAt: now}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{}, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -208,7 +203,7 @@ func TestProjectShowsWhatAnAwaitingRootWaitsOn(t *testing.T) {
 		},
 	}}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -231,7 +226,7 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 	const issue = "S2-1"
 	architect := claim.Token("legion-s2-1-architect")
 	implementer := claim.Token("legion-s2-1-implementer")
-	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, []supervise.Claim{
+	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
 	}, nil, projectedAt)
@@ -267,7 +262,7 @@ func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 	const issue = "S2-2"
 	architect := claim.Token("legion-s2-2-architect")
 	implementer := claim.Token("legion-s2-2-implementer")
-	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, []supervise.Claim{
+	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1", PluginContract: 24},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
 	}, nil, projectedAt)
@@ -291,7 +286,7 @@ func TestProjectShowsLaunchUncertainClaimsWithoutALocator(t *testing.T) {
 			"LEGION-208": {{Issue: "LEGION-208", Role: claim.RoleArchitect, Claim: token}},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{{
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{{
 		Token: token, Issue: "LEGION-208", Role: claim.RoleArchitect, State: supervise.StateLaunchUncertain,
 	}}, nil, projectedAt)
 	if err != nil {
@@ -320,7 +315,7 @@ func TestProjectShowsTheHandoffRecordAWorkerNamed(t *testing.T) {
 			{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewer, LastHandoff: "review-record"},
 		}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{
 		{Token: implementer, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_implementer"},
 		{Token: tester, Issue: "LEGION-208", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester"},
 		{Token: reviewer, Issue: "LEGION-208", Role: claim.RoleReviewer, State: supervise.StateIdle, Session: "ses_reviewer"},
@@ -359,7 +354,7 @@ func TestProjectShowsTheReviewRoundsDecisionOnThePullRequest(t *testing.T) {
 			"LEGION-209": {Issue: "LEGION-209", Number: 43, HeadSHA: "head"},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{}, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -396,7 +391,7 @@ func TestProjectShowsTheOpenProductionCheckOnItsIssue(t *testing.T) {
 			{Issue: "LEGION-209", Repo: "acme/widgets", Number: 43, OpenedAt: opened, BoundAt: bound, Role: claim.RoleImplementer},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{}, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -433,7 +428,7 @@ func TestProjectShowsACapabilityReportOnlyOnTheClaimThatSentOne(t *testing.T) {
 		},
 	}
 	report.Locator.Incarnation = "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11/1"
-	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, []supervise.Claim{
+	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateWorking, Session: "session-2"},
 	}, map[claim.Token]capabilities.Report{implementer: report}, projectedAt)
@@ -467,7 +462,7 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing}},
 		held:   []record.HeldRow{{OutboxRow: start, WaitsOn: 801}, {OutboxRow: removal, WaitsOn: 803}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -478,7 +473,7 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 	if !reflect.DeepEqual(got.HeldOutboxRows, want) {
 		t.Fatalf("heldOutboxRows = %#v, want %#v", got.HeldOutboxRows, want)
 	}
-	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project with nothing held: %v", err)
 	}
@@ -512,7 +507,7 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 			{Key: "LEGION-301", Project: "LEGION", Status: "in_progress"},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -528,7 +523,7 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 		t.Fatalf("waiting = %#v, want the roots' waiting line unchanged", got.Admission.Waiting)
 	}
 
-	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project with nothing blocked: %v", err)
 	}
@@ -575,7 +570,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 		},
 		owed: []record.OwedStart{{Issue: "LEGION-12", ID: 42, CreatedAt: projectedAt.Add(-time.Hour)}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -590,7 +585,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 	gate := store.gates["LEGION-10"][record.DesignStepSpec]
 	gate.ApprovedMark.At = projectedAt
 	store.gates["LEGION-10"] = map[record.DesignStep]record.DesignGate{record.DesignStepSpec: gate}
-	got, err = Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err = Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project with the gate opened last: %v", err)
 	}
@@ -623,7 +618,7 @@ func TestProjectJudgesAdmissionOverThisProjectsRecordsAlone(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -689,7 +684,7 @@ func TestProjectShowsEveryIssueItsTreeRootsMemoryDraw(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -761,7 +756,7 @@ func TestProjectShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -775,6 +770,78 @@ func TestProjectShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 		if got := got.Issues[key].Assignments; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s runs under %+v, want %+v", key, got, want)
 		}
+	}
+}
+
+// The assignments ride in the order the project's file declares the experiments — the `memory`
+// block's experiment first, then the `experiments` key's own — and not the order the record keys
+// its rows by, which is the experiments' names. An experiment the file no longer names keeps its
+// row and rides after every declared one.
+//
+// The order is put on for every count, one declared experiment included: the number of
+// experiments a project declares is not the number of rows an issue holds, because a row stays
+// in the record after its experiment leaves the file. The block-only deployment below declares
+// one experiment and its root holds two rows, and the undeclared one rides second although its
+// name sorts first.
+func TestProjectOrdersEveryIssuesAssignmentsAsTheProjectDeclaresThem(t *testing.T) {
+	drawnAt := projectedAt.Add(-48 * time.Hour)
+	root := record.Issue{
+		Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
+		Phase: phase.Implementing, Status: "in_progress", Rank: "A", HandedOver: true,
+	}
+	child := root
+	child.Key, child.Rank = "LEGION-209", "B"
+	row := func(experiment, unit, variant string) record.Assignment {
+		return record.Assignment{Experiment: experiment, Unit: unit, Variant: variant, Mode: "random", DrawnAt: &drawnAt}
+	}
+	// As record.Store.Assignments answers them: by the experiments' names.
+	store := projectionStore{
+		issues: []record.Issue{root, child},
+		assignments: map[string][]record.Assignment{
+			"LEGION-208": {row("dropped", "tree", "on"), row("memory", "tree", "memory"), row("review-depth", "tree", "deep")},
+			"LEGION-209": {row("plan-length", "issue", "long")},
+		},
+	}
+	memory := config.Experiment{
+		Name: config.MemoryExperimentName, Mode: config.ExperimentRandom, Unit: config.ExperimentTree,
+		Variants: []config.Variant{{Name: "memory", Weight: 1}, {Name: "none", Weight: 1}},
+	}
+	named := func(t *testing.T, views []api.AssignmentView) []string {
+		t.Helper()
+		names := make([]string, len(views))
+		for i, view := range views {
+			names[i] = view.Experiment
+		}
+		return names
+	}
+
+	// A deployment that writes the `memory` block and no `experiments` key: one declared
+	// experiment, and a row of an experiment the file no longer names beside it.
+	block, err := Project(context.Background(), nil, store, "LEGION", nil, []config.Experiment{memory}, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if got, want := named(t, block.Issues["LEGION-208"].Assignments), []string{"memory", "dropped", "review-depth"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the block-only deployment serves %v, want %v: the one declared experiment first, then the undeclared rows in their names", got, want)
+	}
+
+	// The same rows under a file that declares three experiments, the block's among them.
+	declared := []config.Experiment{
+		memory,
+		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, OnVariant: "deep",
+			Variants: []config.Variant{{Name: "deep", Weight: 1}, {Name: "shallow", Weight: 1}}},
+		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue,
+			Variants: []config.Variant{{Name: "long", Weight: 1}, {Name: "short", Weight: 1}}},
+	}
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, declared, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if got, want := named(t, got.Issues["LEGION-208"].Assignments), []string{"memory", "review-depth", "dropped"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the root serves %v, want %v: the file's order, with the experiment it no longer names last", got, want)
+	}
+	if got, want := named(t, got.Issues["LEGION-209"].Assignments), []string{"memory", "review-depth", "plan-length", "dropped"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the child serves %v, want %v: its tree's rows and its own, in the file's order", got, want)
 	}
 }
 
@@ -801,7 +868,7 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 	}
 
 	got, err := Project(context.Background(), nil, store, "LEGION",
-		[]record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, nil, nil, projectedAt)
+		[]record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -858,7 +925,7 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 				},
 			}
 
-			got, err := Project(context.Background(), nil, store, project, nil, nil, nil, projectedAt)
+			got, err := Project(context.Background(), nil, store, project, nil, nil, nil, nil, projectedAt)
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}
@@ -920,7 +987,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

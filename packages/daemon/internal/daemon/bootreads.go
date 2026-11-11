@@ -205,13 +205,11 @@ func checkRoleConfigFiles(cfg config.Config) error {
 		}
 	}
 	block := memoryBlockWritten(cfg)
-	for _, experiment := range cfg.Projects[cfg.Project].ExperimentsDeclared() {
-		for _, variant := range experiment.Variants {
-			field := declaredOverlayField(cfg.Project, block, experiment, variant)
-			for _, file := range variant.ConfigFiles {
-				if err := podsafety.CheckOverlay(file); err != nil {
-					return fmt.Errorf("%s names %s, which a role drawn into that arm could not read: %w", field, file, err)
-				}
+	for _, variant := range declaredVariants(cfg) {
+		field := declaredOverlayField(cfg.Project, block, variant)
+		for _, file := range variant.ConfigFiles {
+			if err := podsafety.CheckOverlay(file); err != nil {
+				return fmt.Errorf("%s names %s, which a role drawn into that arm could not read: %w", field, file, err)
 			}
 		}
 	}

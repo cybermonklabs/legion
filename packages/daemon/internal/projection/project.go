@@ -25,12 +25,15 @@ import (
 // caller owns the repeatable-read transaction, so its record reads and claims share one snapshot.
 // project is the Dispatch project whose pending status writes and held lifecycle rows the state
 // lists. steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-// root's view answers its own state of; the empty list gates none. reports is each claim's latest
+// root's view answers its own state of; the empty list gates none. experiments are the project's
+// declared experiments (config.Project.ExperimentsDeclared), whose order each issue's
+// `assignments` ride in (assignmentViews); the empty list declares none, and every answer a
+// record still holds then rides in the experiments' names. reports is each claim's latest
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
 // claim with none shows no capabilities. Nil is no reports. now is the instant the held rows are
 // read at (record.Store.HeldRows) and their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, experiments []config.Experiment, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -39,23 +42,24 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
 	// linger deadline, and re-admission clears it.
 	lingering := make(map[string]bool)
-	keys := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
-		keys = append(keys, issue.Key)
 		if issue.Lingers() {
 			lingering[issue.Key] = true
 		}
 	}
-	// Every experiment answer the state's issues hold, by issue key, read in one statement over
-	// the issues already in hand (record.Store.AssignmentsFor). A row is keyed by the unit it
-	// covers and says which unit that is: a `tree` row is its tree root's and every issue of the
-	// tree is shown it, an `issue` row is the issue's own. So an issue's answers are its root's
-	// tree rows and its own issue rows, which assignmentViews joins.
-	assignments, err := s.AssignmentsFor(ctx, tx, keys)
+	// Every experiment answer the record holds, by issue key, in one statement
+	// (record.Store.Assignments). The table is read whole rather than for the issues in hand:
+	// every row is keyed by an issue of this database, so a list of every recorded key would
+	// select the same rows and cost a parameter the size of the table. A row says which unit it
+	// covers: a `tree` row is its tree root's and every issue of the tree is shown it, an
+	// `issue` row is the issue's own. So an issue's answers are its root's tree rows and its own
+	// issue rows, which assignmentViews joins.
+	assignments, err := s.Assignments(ctx, tx)
 	if err != nil {
 		return api.State{}, err
 	}
+	place := declaredPlaces(experiments)
 	slots, err := s.Slots(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -129,7 +133,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
 		// experiment was declared (contract 49).
-		view.Assignments = assignmentViews(assignments, issue.Key, issue.Tree)
+		view.Assignments = assignmentViews(assignments, issue.Key, issue.Tree, place)
 		view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt = memoryOf(view.Assignments)
 		// An escalation waits on the controller only while its tree runs. A held issue of a tree
 		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
@@ -327,28 +331,25 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	return projected, nil
 }
 
-// memoryExperiment is the name config.Project.ExperimentsDeclared gives the project's `memory`
-// block, and the name the `experiments` key's own spelling of that one experiment must use: the
-// row the three memory fields of an issue's view are read off (memoryOf).
-const memoryExperiment = "memory"
-
-// memoryGroupVariant is the arm of that experiment whose roles run with the project's memory
-// overlays and instructions. Every other arm, the empty one a hand-over settles a tree at
-// included, is the group `none` on the wire, whose enum has those two words alone
-// (packages/contracts/src/legion-api.ts, legionIssue).
-const memoryGroupVariant = "memory"
+// memoryGroupNone is the `memoryGroup` on the wire of every arm of the experiment named `memory`
+// but the first (config.MemoryVariantNames), the empty arm a hand-over settles a tree at
+// included: the wire enum has those two words alone (packages/contracts/src/legion-api.ts,
+// legionIssue), and the second of them is the group a tree outside the memory group has always
+// read.
+const memoryGroupNone = "none"
 
 // assignmentViews is every experiment answer that applies to the issue key, whose tree's root is
-// tree, in experiment order: its tree's tree-unit rows, which every issue of the tree runs
-// under, and its own issue-unit rows. A root's own key holds both kinds and every row of it
-// applies to the root itself, so a root takes its list as the store answers it. An issue no
-// answer applies to gets nil, which leaves the key off the wire.
+// tree, in the order the project's file declares the experiments: its tree's tree-unit rows,
+// which every issue of the tree runs under, and its own issue-unit rows. An issue no answer
+// applies to gets nil, which leaves the key off the wire.
 //
-// The order is the store's, the experiments' names (record.Store.AssignmentsFor); the state
-// route puts them in the order the project's file declares the experiments before serving them
-// (api's stateRoute, assignmentsInDeclaredOrder). The record cannot: a row is keyed by the
-// experiment's name, and the file's order is the project's rather than the store's.
-func assignmentViews(assignments map[string][]record.Assignment, key, tree string) []api.AssignmentView {
+// place is one experiment's place in that declared order, and the length of it for an
+// experiment the file no longer names (declaredPlaces): such a row stays in the record and
+// rides after every declared one, among its like in the experiments' names, which is the order
+// the record keys its rows by. The order is put on here rather than on the whole body at the
+// route, because here the rows are built once and sorted once; the record cannot put it on at
+// all, since the file's order is the project's rather than the store's.
+func assignmentViews(assignments map[string][]record.Assignment, key, tree string, place func(string) int) []api.AssignmentView {
 	rows := assignments[key]
 	if key != tree {
 		rows = make([]record.Assignment, 0, len(assignments[tree])+len(rows))
@@ -362,7 +363,6 @@ func assignmentViews(assignments map[string][]record.Assignment, key, tree strin
 				rows = append(rows, row)
 			}
 		}
-		slices.SortFunc(rows, func(a, b record.Assignment) int { return cmp.Compare(a.Experiment, b.Experiment) })
 	}
 	if len(rows) == 0 {
 		return nil
@@ -371,7 +371,28 @@ func assignmentViews(assignments map[string][]record.Assignment, key, tree strin
 	for i, row := range rows {
 		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt}
 	}
+	slices.SortStableFunc(views, func(a, b api.AssignmentView) int {
+		return cmp.Or(cmp.Compare(place(a.Experiment), place(b.Experiment)), cmp.Compare(a.Experiment, b.Experiment))
+	})
 	return views
+}
+
+// declaredPlaces is the place each experiment of declared holds in the order the project's file
+// declares them (config.Project.ExperimentsDeclared: the `memory` block's experiment first, then
+// the `experiments` key's own in the file's order), and the length of that list for every other
+// name, so an experiment the file no longer names sorts after every declared one whatever the
+// counts are.
+func declaredPlaces(declared []config.Experiment) func(string) int {
+	places := make(map[string]int, len(declared))
+	for i, experiment := range declared {
+		places[experiment.Name] = i
+	}
+	return func(name string) int {
+		if i, found := places[name]; found {
+			return i
+		}
+		return len(places)
+	}
 }
 
 // memoryOf is the three memory fields of an issue's view, read off the answer of the experiment
@@ -397,12 +418,12 @@ func assignmentViews(assignments map[string][]record.Assignment, key, tree strin
 // unit settled at no arm from a unit never drawn.
 func memoryOf(views []api.AssignmentView) (string, string, *time.Time) {
 	for _, view := range views {
-		if view.Experiment != memoryExperiment || view.DrawnAt == nil {
+		if view.Experiment != config.MemoryExperimentName || view.DrawnAt == nil {
 			continue
 		}
-		group := "none"
-		if view.Variant == memoryGroupVariant {
-			group = memoryGroupVariant
+		group := memoryGroupNone
+		if view.Variant == config.MemoryVariantNames[0] {
+			group = view.Variant
 		}
 		return group, view.Mode, view.DrawnAt
 	}

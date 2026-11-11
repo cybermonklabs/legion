@@ -185,6 +185,15 @@ type Assignment struct {
 	Carried bool
 }
 
+// DeclaredExperiment is one experiment a hand-over settles a child at: the name the project
+// declares it under and the unit it covers, which together are the whole of what the settling
+// write records (Store.CarryAssignments). A settled row carries no arm, no mode and no instant
+// by construction, so there is no field here to pass one in.
+type DeclaredExperiment struct {
+	Experiment string
+	Unit       string
+}
+
 // HandedOff is an issue whose implementer recorded its handoff, with the commit the handoff
 // recorded (PhaseRow.HandoffCommit).
 type HandedOff struct {
@@ -1404,13 +1413,14 @@ type Store interface {
 	// project is the normalized runtime token tree_lifecycles is keyed by, whose row for from is
 	// the fact that the old tree was opened at all: a child out of a tree the daemon never opened
 	// carries nothing, and its own first draw answers for it.
-	CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []Assignment) (int, error)
-	// AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of
-	// one unit agree. An issue with no assignment gives none, which is no error.
-	AssignmentsOf(ctx context.Context, tx pgx.Tx, issue string) ([]Assignment, error)
+	CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []DeclaredExperiment) (int, error)
 	// AssignmentsFor is the assignments of each of issues, by issue and then experiment, in one
-	// read; an issue with no assignment has no entry, and an empty list reads nothing.
+	// read; an issue with no assignment has no entry, and an empty list reads nothing. It is the
+	// read of the one or two keys a launch asks for.
 	AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]Assignment, error)
+	// Assignments is every assignment the record holds, by issue and then experiment, in one
+	// read: what the state's projection asks, which shows every recorded issue its own.
+	Assignments(ctx context.Context, tx pgx.Tx) (map[string][]Assignment, error)
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error

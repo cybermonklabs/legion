@@ -23,6 +23,15 @@ export function inline(text: string, cell = false): string {
     .join("");
 }
 
+/** The code fence a block of text goes in: one backtick more than the text's longest run of
+ *  backticks, and at least three, so no line of the text can close the block early. It is
+ *  lib/fence.sh's rule for the TypeScript generators, so a page a shell generator writes and a
+ *  page this one writes fence the same file the same way. */
+export function fence(text: string): string {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 interface Page {
   /** Where the page goes under the content directory, such as `dispatch/reference/api.md`. */
   path: string;

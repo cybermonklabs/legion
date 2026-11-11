@@ -625,38 +625,21 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 }
 
 // drawExperiments draws every experiment the project declares over unit (UseExperiments) and
-// records the answers against key, in the caller's transaction: the tree-unit experiments of a
-// tree against its root's key when the tree's lifecycle row is created (promoteHolds), and the
-// issue-unit experiments of an issue against its own key when the daemon first records it
-// (putNewRoot). Each answer is written once, so an experiment key already holds a row for keeps
-// the arm it has been running under whatever the project's file says now, and a key the daemon
-// holds no record of takes no row at all (record.Store.PutAssignments). A project declaring no
-// experiment of this unit draws nothing and writes nothing.
+// records the answers against key, in the caller's transaction (experiment.DrawAndRecord): the
+// tree-unit experiments of a tree against its root's key when the tree's lifecycle row is
+// created (promoteHolds), and the issue-unit experiments of an issue against its own key when
+// the daemon first records it (putNewRoot).
 func (a *Admission) drawExperiments(ctx context.Context, tx pgx.Tx, key string, unit config.ExperimentUnit) error {
-	drawnAt := a.now()
-	rows := make([]record.Assignment, 0, len(a.experiments))
-	for _, declared := range a.experiments {
-		if declared.Unit != unit {
-			continue
-		}
-		variant, err := experiment.Draw(declared, a.source)
-		if err != nil {
-			return fmt.Errorf("draw the %s experiment of %s: %w", declared.Name, key, err)
-		}
-		rows = append(rows, record.Assignment{Experiment: declared.Name, Unit: string(declared.Unit),
-			Variant: variant, Mode: string(declared.Mode), DrawnAt: &drawnAt})
-	}
-	_, err := a.store.PutAssignments(ctx, tx, key, rows)
-	return err
+	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.source, a.now())
 }
 
-// declaredAssignments is one row per experiment the project declares now, carrying its name and
-// its unit and nothing else: what a hand-over settles a child at for an experiment the tree it
-// left holds no answer for (record.Store.CarryAssignments, readmit).
-func (a *Admission) declaredAssignments() []record.Assignment {
-	settled := make([]record.Assignment, 0, len(a.experiments))
+// declaredAssignments is one entry per experiment the project declares now, carrying its name and
+// its unit: what a hand-over settles a child at for an experiment the tree it left holds no
+// answer for (record.Store.CarryAssignments, readmit).
+func (a *Admission) declaredAssignments() []record.DeclaredExperiment {
+	settled := make([]record.DeclaredExperiment, 0, len(a.experiments))
 	for _, declared := range a.experiments {
-		settled = append(settled, record.Assignment{Experiment: declared.Name, Unit: string(declared.Unit)})
+		settled = append(settled, record.DeclaredExperiment{Experiment: declared.Name, Unit: string(declared.Unit)})
 	}
 	return settled
 }

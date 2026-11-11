@@ -313,9 +313,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
-		// The memory group is read from the daemon's own store (treeMemoryGroup), not from here:
-		// the operator's spawn draws one with no workflow configured, and the launch that follows
-		// it must honour the draw it made.
+		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
+		// from here: the operator's spawn draws a tree's experiments with no workflow
+		// configured, and the launch that follows it must honour the draw it made.
 		// Only a daemon with the workflow configured has issue records to read a phase or a tree
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
@@ -848,98 +848,86 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
 // operator's own, as that role's pane will start Oh My Pi: its PI_CONFIG_FILES,
 // runtime.tmux.pi_config_files then the role's own files (role_config_files) and, for a workflow
-// role of a project that declares an arm naming overlays, that arm's files after them, each file
-// read and the role's own each read alone by image's Oh My Pi (capabilities.CheckOverlays), so a
-// file a pane's Oh My Pi would refuse refuses the boot, naming the key and the file, rather than
-// every launch that names it. Legion names no overlay of its own, so those lists are the whole of
-// a pane's PI_CONFIG_FILES.
+// role of a project that declares an arm naming overlays, that arm's files after them
+// (runtime.RoleOverlayValues, which the image probe's manifest builds its values with too), each
+// file read and each read alone by image's Oh My Pi (capabilities.CheckOverlays), so a file a
+// pane's Oh My Pi would refuse refuses the boot, naming the key and the file, rather than every
+// launch that names it. Legion names no overlay of its own, so those lists are the whole of a
+// pane's PI_CONFIG_FILES.
 //
-// One value per role per arm, never one value holding two arms' files, as the image probe reads
-// them (runtime/sandbox's probeManifest): the union of two arms is a configuration no launch
-// produces. An arm that names no overlay adds no value of its own, since its panes start on the
-// role's own files, which the role's own value already reads. The controller runs in no tree, so
-// it is in no arm and is never probed with one; no mode is read here, since a unit already drawn
-// into an arm names that arm's overlays whatever the mode is now. A run that never reached an
-// exit of its own is logged, not refused, as the model-fallback read is.
+// Each distinct file is read alone once and each distinct whole value is read once, over every
+// role and every arm: Oh My Pi is asked the same question of one file whichever value it stands
+// in, and of one value whichever role holds it, and it gives the same answer. A role's own
+// files would otherwise be read alone once per arm, so a deployment that declares arms would pay
+// for the thing it added at every boot. The refusal still names the first role and the first
+// value that holds what Oh My Pi refuses, since the loops reach them before any other.
+//
+// No mode is read here, since a unit already drawn into an arm names that arm's overlays
+// whatever the mode is now. A run that never reached an exit of its own is logged, not refused,
+// as the model-fallback read is.
 func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabilities.Image, log *slog.Logger) error {
 	var every []string
 	if block := cfg.Runtime.Tmux; block != nil {
 		every = block.PiConfigFiles
 	}
-	declared, blockWritten := cfg.Projects[cfg.Project].ExperimentsDeclared(), memoryBlockWritten(cfg)
-	// probed is each PI_CONFIG_FILES value already read, so one value shared by six roles costs
-	// one read of each of its files rather than six.
+	declared, blockWritten := declaredVariants(cfg), memoryBlockWritten(cfg)
+	// alone is each overlay already read on its own, and probed each whole PI_CONFIG_FILES value
+	// already read.
+	alone := map[string]struct{}{}
 	probed := make(map[string]struct{}, len(config.RoleConfigRoles))
 	for _, role := range config.RoleConfigRoles {
 		own := cfg.RoleConfigFiles[role]
 		ownField := "role_config_files." + string(role)
-		// A pane of this role drawn into an arm names that arm's overlays last, so the gate reads
-		// each value such a pane would start on rather than the role's half of it.
-		type candidate struct {
-			field string
-			files []string
-		}
-		var values []candidate
-		if role != claim.RoleController {
-			for _, experiment := range declared {
-				for _, variant := range experiment.Variants {
-					if len(variant.ConfigFiles) == 0 {
-						continue
-					}
-					field := declaredOverlayField(cfg.Project, blockWritten, experiment, variant)
-					if len(own) > 0 {
-						field = ownField + " with " + field
-					}
-					values = append(values, candidate{field: field, files: slices.Concat(own, variant.ConfigFiles)})
-				}
-			}
-		}
-		if len(values) == 0 {
-			values = []candidate{{field: ownField, files: own}}
-		}
-		for _, value := range values {
-			if len(value.files) == 0 {
-				continue
-			}
-			// Every workflow role of a project whose arm reaches it and that names no overlays of
-			// its own is given one and the same value, so each distinct value is read once rather
-			// than once per role: the runs Oh My Pi is asked for are identical, and so is their
-			// verdict. The first role holding a value Oh My Pi refuses is still the role the
-			// refusal names, since the loop reaches it before any other role of that value.
-			joined := strings.Join(value.files, ":")
+		for _, value := range runtime.RoleOverlayValues(role, own, declared) {
+			joined := strings.Join(value.Files, ":")
 			if _, read := probed[joined]; read {
 				continue
 			}
 			probed[joined] = struct{}{}
-			why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, value.files), value.files)
+			field := ownField
+			if value.Variant != nil {
+				field = declaredOverlayField(cfg.Project, blockWritten, *value.Variant)
+				if len(own) > 0 {
+					field = ownField + " with " + field
+				}
+			}
+			unread := make([]string, 0, len(value.Files))
+			for _, file := range value.Files {
+				if _, read := alone[file]; read {
+					continue
+				}
+				alone[file] = struct{}{}
+				unread = append(unread, file)
+			}
+			why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, value.Files), unread)
 			if err != nil {
 				log.Warn("boot gate: Oh My Pi did not answer on some of a role's overlays; its files were read", "role", role, "error", err)
 			}
 			if why != "" {
-				return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", value.field, role, why)
+				return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", field, role, why)
 			}
 		}
 	}
 	return nil
 }
 
-// memoryBlockWritten is whether the project writes the `memory` block at all, the condition
-// Project.ExperimentsDeclared maps it to the experiment named memory under. A project writes the
-// block or `experiments.memory`, never both (config.checkExperimentMemory), so this is what tells
-// the two spellings of that one experiment apart where a refusal must name the operator's key.
+// memoryBlockWritten is whether the daemon's own project writes the `memory` block at all
+// (config.Memory.Written), which is the condition Project.ExperimentsDeclared maps it to the
+// experiment named memory under. A project writes the block or `experiments.memory`, never both
+// (config.checkExperimentMemory), so this is what tells the two spellings of that one experiment
+// apart where a refusal must name the operator's key.
 func memoryBlockWritten(cfg config.Config) bool {
-	memory := cfg.Projects[cfg.Project].Memory
-	return memory.Mode != "" || len(memory.ConfigFiles) > 0 || memory.InstructionsPath != ""
+	return cfg.Projects[cfg.Project].Memory.Written()
 }
 
 // declaredOverlayField is the key an operator reads for one declared arm's overlays: the `memory`
 // block's own `config_files` where the arm came from the block, and the experiment's own
 // `projects.<KEY>.experiments.<experiment>.variants.<variant>.config_files` otherwise.
-func declaredOverlayField(project string, blockWritten bool, experiment config.Experiment, variant config.Variant) string {
-	if blockWritten && experiment.Name == "memory" {
+func declaredOverlayField(project string, blockWritten bool, variant runtime.Variant) string {
+	if blockWritten && variant.Experiment == config.MemoryExperimentName {
 		return "projects." + project + ".memory.config_files"
 	}
-	return "projects." + project + ".experiments." + experiment.Name + ".variants." + variant.Name + ".config_files"
+	return "projects." + project + ".experiments." + variant.Experiment + ".variants." + variant.Name + ".config_files"
 }
 
 // variantKey names one arm of one experiment in a map the daemon keys by both names: neither a
@@ -964,15 +952,25 @@ func variantKey(experiment, variant string) string { return experiment + "/" + v
 // never the operator's path: a pod cannot read the daemon's configuration, and the operator's
 // file may change under a running daemon.
 //
+// A project that declares no experiment reads no record at all: there is no arm for a row to
+// name, so the common deployment pays no transaction per worker spawn. The issue's own key is
+// read beside its tree's only where some declared experiment draws for the issue
+// (config.ExperimentIssue), since a deployment whose experiments all draw for the tree has
+// nothing of the issue's own to read.
+//
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
 // the same store with no workflow configured (api's drawExperiments), and a launch that could not
 // read that draw back would run the unit against an arm the daemon had already recorded for it.
 func launchVariants(st *store.Store, declared []config.Experiment, instructions map[string]string) func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
 	records := record.NewStore()
+	byIssue := slices.ContainsFunc(declared, func(e config.Experiment) bool { return e.Unit == config.ExperimentIssue })
 	return func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
+		if len(declared) == 0 {
+			return nil, nil
+		}
 		keys := []string{tree}
-		if issue != tree {
+		if byIssue && issue != tree {
 			keys = append(keys, issue)
 		}
 		var recorded map[string][]record.Assignment
@@ -2008,6 +2006,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
 			gatedSteps:   cfg.Gates.Steps(),
+			experiments:  cfg.Projects[cfg.Project].ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
 		},
 		StateTransactions:  st,
@@ -2150,6 +2149,10 @@ type source struct {
 	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
 	// root of the state answers its own state of; the empty list gates none.
 	gatedSteps []record.DesignStep
+	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
+	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
+	// once at boot for the reason settings is.
+	experiments []config.Experiment
 	// settings is the resolved configuration as the state shows it, built once here: Load reads
 	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
 	settings api.Settings
@@ -2289,7 +2292,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

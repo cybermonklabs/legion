@@ -1,16 +1,9 @@
 package api
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // assignmentsOf is the `assignments` of one issue of a state body, as the plugin's reader sees
@@ -118,61 +111,5 @@ func TestTheAssignmentsContractIsTheContractThatAddedTheField(t *testing.T) {
 	if assignmentsContract > DaemonAPIVersion {
 		t.Fatalf("assignmentsContract = %d, above DaemonAPIVersion %d: no caller would ever be served the field",
 			assignmentsContract, DaemonAPIVersion)
-	}
-}
-
-// The assignments ride in the order the project's file declares the experiments, which is the
-// order the settings name them in, and not the order the record keys its rows by: the record
-// answers them in the experiments' names, and a file that declares `review-depth` before
-// `memory` is served in that order. An experiment the file no longer names keeps its row and
-// rides after every declared one.
-func TestTheStateServesTheAssignmentsInTheProjectsDeclaredOrder(t *testing.T) {
-	at := memoryDrawnAt
-	state := State{Issues: map[string]Issue{"LEGION-208": {
-		Key: "LEGION-208", Generation: 1, Phase: phase.Implementing, Status: "in_progress",
-		Workers: map[claim.Role]PhaseView{},
-		// As record.Store.AssignmentsFor answers them: by the experiments' names.
-		Assignments: []AssignmentView{
-			{Experiment: "dropped", Variant: "on", Mode: "random", DrawnAt: &at},
-			{Experiment: "memory", Variant: "memory", Mode: "random", DrawnAt: &at},
-			{Experiment: "review-depth", Variant: "deep", Mode: "on", DrawnAt: &at},
-		},
-	}}}
-	declared := []config.Experiment{
-		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, OnVariant: "deep",
-			Variants: []config.Variant{{Name: "deep", Weight: 1}, {Name: "shallow", Weight: 1}}},
-		{Name: "memory", Mode: config.ExperimentRandom, Unit: config.ExperimentTree,
-			Variants: []config.Variant{{Name: "memory", Weight: 1}, {Name: "none", Weight: 1}}},
-	}
-	handler := NewServer("127.0.0.1", 8437, Options{
-		Steps:       config.DesignGateRootIssues.Steps(),
-		Experiments: declared,
-		State:       fakeSource{state: state, claims: podClaims(DaemonAPIVersion)}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
-		CallerPod: func(netip.Addr) (string, bool) { return "", false },
-	}).Handler
-	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
-	request.RemoteAddr = "192.0.2.1:41000"
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("state = %d, want 200; body %s", recorder.Code, recorder.Body)
-	}
-	body := recorder.Body.Bytes()
-
-	named := make([]string, 0, 3)
-	for _, assignment := range assignmentsOf(t, body, "LEGION-208") {
-		named = append(named, assignment["experiment"].(string))
-	}
-	if want := []string{"review-depth", "memory", "dropped"}; !reflect.DeepEqual(named, want) {
-		t.Fatalf("the assignments ride as %v, want %v: the file's order, with the experiment it no longer names last", named, want)
-	}
-	// The order is the settings' own, which is the one order a reader of the body can line the
-	// assignments up against.
-	settings := make([]string, 0, len(declared))
-	for _, experiment := range experimentsOf(declared) {
-		settings = append(settings, experiment.Name)
-	}
-	if !reflect.DeepEqual(named[:len(settings)], settings) {
-		t.Fatalf("the assignments ride as %v, want the settings' order %v", named, settings)
 	}
 }

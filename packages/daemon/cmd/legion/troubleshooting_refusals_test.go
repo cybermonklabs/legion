@@ -131,7 +131,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"projects.<KEY>.experiments must be a mapping of an experiment's name to its block": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
 	},
-	`projects.<KEY>.experiments key "…" must match %s: an experiment's name is recorded with every draw it makes`: func(t *testing.T) string {
+	`projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {Plan Length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
 	`projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")`: func(t *testing.T) string {
@@ -189,8 +189,8 @@ var refusalsNoFixtureDrives = map[string]string{
 
 // Every row of the troubleshooting page's refusal table (the table under `## The daemon will not
 // start`) is held to a message the daemon can produce. A row is matched this one way: the row's
-// refusal text is a pattern in which `…`, every `<…>` placeholder and a `%s` each stand for one
-// or more characters of any kind and every other character stands for itself, and the pattern
+// refusal text is a pattern in which `…` and every `<…>` placeholder stand for one or more
+// characters of any kind and every other character stands for itself, and the pattern
 // must match the fixture's message whole, from its first character to its last — so a row that
 // quotes wording the code no longer produces fails, and a row cannot pass by being a prefix of
 // something else. A row whose cell quotes two texts joined by "or" is satisfied by either; the
@@ -253,8 +253,10 @@ func TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces(t *
 	}
 }
 
-// refusalWildcard is what a row's text leaves open: `…`, a `<…>` placeholder, and a `%s` tail.
-var refusalWildcard = regexp.MustCompile(`…|<[^<>]*>|%s`)
+// refusalWildcard is what a row's text leaves open: `…` and a `<…>` placeholder. A Go format
+// verb is no wildcard of this page: a row quotes what the daemon prints, and the daemon prints
+// the pattern or the value the verb stood for, never the verb.
+var refusalWildcard = regexp.MustCompile(`…|<[^<>]*>`)
 
 // codeSpan is one `…` span of a row's cell.
 var codeSpan = regexp.MustCompile("`([^`]+)`")
@@ -335,7 +337,9 @@ func troubleshootingRows(t *testing.T) []string {
 // refusalFile is the legion.yaml one fixture writes: a file `legion start --check-config` passes,
 // minus every base line drop names and plus the fixture's own keys, so a fixture's refusal is the
 // one thing it asks for. Its Postgres is unreachable and its App keys are never run, as every
-// check-config fixture's are.
+// check-config fixture's are: the base is the one main_test.go's own passing fixtures are built
+// from (tmuxCheckKeys, kubernetesCheckKeys, kubernetesCheckRuntime, checkConfigKubeconfig), so a
+// key a passing file needs is written once for both.
 type refusalFile struct {
 	kubernetes bool     // the kubernetes base rather than the tmux one
 	drop       []string // base lines whose text starts with one of these are left out
@@ -343,52 +347,6 @@ type refusalFile struct {
 	pod        string   // extra lines of the runtime.kubernetes block, four spaces in
 	project    string   // extra lines of projects.DEMO, four spaces in
 }
-
-const tmuxRefusalBase = `project: DEMO
-port: 13370
-postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
-operator_token_file: ./operator-token
-github_apps:
-  implement: { app_id: "1", private_key: implement-test-key }
-  review: { app_id: "2", private_key: review-test-key }
-`
-
-const kubernetesRefusalBase = `project: DEMO
-postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
-bind: 10.0.0.5
-daemon_url: http://10.0.0.5:13370
-envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
-operator_token_file: ./operator-token
-dispatch_url: https://dispatch.internal.example
-dispatch_token_file: ./dispatch-token
-nats_urls: [nats://nats.internal.example:4222]
-github_apps:
-  implement: { app_id: "1", private_key_command: "exit 1" }
-  review: { app_id: "2", private_key_command: "exit 1" }
-`
-
-// kubernetesRefusalRuntime is the runtime block, written last so that a fixture's own pod lines
-// extend it.
-const kubernetesRefusalRuntime = `runtime:
-  kubernetes:
-    namespace: legion
-    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    storage_class: gp2
-    session_store: postgres
-    session_dsn_secret: SESSION_DSN
-    kubeconfig: ./kubeconfig
-    context: legion-daemon
-`
-
-// refusalKubeconfig names the context the kubernetes base names and nothing the check dials.
-const refusalKubeconfig = `apiVersion: v1
-kind: Config
-clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
-users: [{name: legion-daemon, user: {token: placeholder}}]
-contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
-current-context: legion-daemon
-`
 
 // refuse runs the real `legion start --check-config` over the file and answers the one refusal it
 // printed, without the `legion start: ` the command prefixes it with.
@@ -417,12 +375,12 @@ func (f refusalFile) write(t *testing.T) string {
 	t.Setenv("LEGION_GH_PATH", omp)
 	dir := t.TempDir()
 	beside := map[string]string{"operator-token": "operator\n"}
-	base := tmuxRefusalBase
+	base := tmuxCheckKeys
 	if f.kubernetes {
-		base = kubernetesRefusalBase
+		base = kubernetesCheckKeys
 		beside["envoy-token"] = "envoy\n"
 		beside["dispatch-token"] = "dispatch\n"
-		beside["kubeconfig"] = refusalKubeconfig
+		beside["kubeconfig"] = checkConfigKubeconfig
 	}
 	var body strings.Builder
 	fmt.Fprintf(&body, "state_dir: %s\n", filepath.Join(dir, "state"))
@@ -443,7 +401,7 @@ func (f refusalFile) write(t *testing.T) string {
 		body.WriteString("\n" + f.project)
 	}
 	if f.kubernetes {
-		kept(kubernetesRefusalRuntime)
+		kept(kubernetesCheckRuntime)
 		body.WriteString(f.pod)
 	}
 	config := filepath.Join(dir, "legion.yaml")

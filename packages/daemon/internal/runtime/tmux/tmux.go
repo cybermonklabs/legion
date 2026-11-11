@@ -308,9 +308,7 @@ func New(opts Options) (*Runtime, error) {
 	for _, files := range opts.RoleConfigFiles {
 		overlays = append(overlays, files...)
 	}
-	for _, variant := range opts.ExperimentVariants {
-		overlays = append(overlays, variant.ConfigFiles...)
-	}
+	overlays = append(overlays, runtime.VariantOverlays(opts.ExperimentVariants)...)
 	for _, path := range overlays {
 		if !filepath.IsAbs(path) || strings.Contains(path, ":") {
 			return nil, fmt.Errorf("tmux runtime: Oh My Pi overlay %q is not an absolute path PI_CONFIG_FILES can name", path)

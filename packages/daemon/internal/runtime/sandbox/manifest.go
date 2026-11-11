@@ -373,46 +373,38 @@ func (l launch) overlays(r *Runtime) []string {
 	for _, variant := range l.spec.Variants {
 		files := variant.ConfigFiles
 		if l.kept != nil {
-			files = heldOf(l.kept.variantFiles, variant.ConfigFiles)
-		}
-		if len(files) != len(variant.ConfigFiles) {
-			r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod",
-				"issue", l.spec.Issue, "role", l.spec.Role, "experiment", variant.Experiment, "variant", variant.Name,
-				"dropped", dropped(variant.ConfigFiles, files))
+			var dropped []string
+			files, dropped = splitHeld(l.kept.variantFiles, variant.ConfigFiles)
+			if len(dropped) > 0 {
+				r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod",
+					"issue", l.spec.Issue, "role", l.spec.Role, "experiment", variant.Experiment, "variant", variant.Name,
+					"dropped", dropped)
+			}
 		}
 		variants = append(variants, files...)
 	}
 	return withVariantOverlays(own, variants)
 }
 
-// heldOf are the files of want that held holds, in want's order: a kept pod's share of one
-// variant's overlays.
-func heldOf(held, want []string) []string {
-	var kept []string
+// splitHeld is want in two, each part in want's order: the files held holds, and the files it
+// does not. For one variant's overlays against a kept pod, that is the share the pod carries,
+// which the launch names, and the share it lacks, which the launch's one log line names.
+func splitHeld(held, want []string) (kept, missing []string) {
 	for _, file := range want {
 		if slices.Contains(held, file) {
 			kept = append(kept, file)
-		}
-	}
-	return kept
-}
-
-// dropped are the files of want that held does not hold, in want's order: the share of one
-// variant's overlays a kept pod lacks, which the launch's one log line names.
-func dropped(want, held []string) []string {
-	var missing []string
-	for _, file := range want {
-		if !slices.Contains(held, file) {
+		} else {
 			missing = append(missing, file)
 		}
 	}
-	return missing
+	return kept, missing
 }
 
 // withVariantOverlays is one PI_CONFIG_FILES list: a role's own overlays and then the variants'
 // own, which outrank them, and own itself where there is no variant overlay to add, so a
 // deployment whose project declares no experiment, and one whose variants name no overlay, hands
-// every caller the list it handed before any experiment existed (launch.overlays, probeManifest).
+// the launch the list it handed before any experiment existed (launch.overlays, its one caller;
+// the image probe's values are runtime.RoleOverlayValues').
 func withVariantOverlays(own, variants []string) []string {
 	if len(variants) == 0 {
 		return own

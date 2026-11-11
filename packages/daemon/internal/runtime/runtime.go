@@ -17,6 +17,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -362,6 +364,56 @@ func VariantOverlays(variants []Variant) []string {
 		files = append(files, variant.ConfigFiles...)
 	}
 	return files
+}
+
+// RoleOverlayValue is one whole PI_CONFIG_FILES tail a role may start on, after the operator's
+// own overlays: Files is the role's own overlays and then the overlays of one arm it may be
+// drawn into, and Variant is that arm, nil where the value is the role's own files alone.
+type RoleOverlayValue struct {
+	Variant *Variant
+	Files   []string
+}
+
+// RoleOverlayValues are every distinct PI_CONFIG_FILES tail a role starts on, in declared order:
+// own, the role's own overlays (`role_config_files`), followed by the overlays of each of
+// variants, the arms of every experiment the project declares, that names any — one value per
+// arm, never one value holding two arms' files, since the union of two arms is a configuration
+// no launch produces. An arm that names no overlay adds no value of its own, because its roles
+// start on the role's own files, which the role's own value already is. A role no arm reaches
+// answers that one value, which is the value every role was told before any experiment existed.
+//
+// The controller runs in no tree, so it is in no arm and answers its own files alone whatever
+// the project declares. A value two arms produce alike is answered once, and a value holding no
+// file at all is answered not at all: there is nothing for a reader of it to read.
+//
+// Both readers of a whole value ask this: the boot gate, which starts the image's Oh My Pi on
+// each (internal/daemon's checkPaneRoleOverlays), and the image probe's manifest, which passes
+// each to the probe pod (runtime/sandbox's probeManifest). What a launch is told is another
+// question — it names the arms its own unit was drawn into, not every declared one — and
+// VariantOverlays answers that one.
+func RoleOverlayValues(role claim.Role, own []string, variants []Variant) []RoleOverlayValue {
+	var values []RoleOverlayValue
+	if role != claim.RoleController {
+		for i, variant := range variants {
+			if len(variant.ConfigFiles) > 0 {
+				values = append(values, RoleOverlayValue{Variant: &variants[i], Files: slices.Concat(own, variant.ConfigFiles)})
+			}
+		}
+	}
+	if len(values) == 0 {
+		values = []RoleOverlayValue{{Files: own}}
+	}
+	read := make(map[string]struct{}, len(values))
+	distinct := values[:0]
+	for _, value := range values {
+		joined := strings.Join(value.Files, ":")
+		if _, done := read[joined]; done || len(value.Files) == 0 {
+			continue
+		}
+		read[joined] = struct{}{}
+		distinct = append(distinct, value)
+	}
+	return distinct
 }
 
 // PluginInstall is the plugin pair a Kubernetes launch installs before Oh My Pi starts, and the

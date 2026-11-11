@@ -543,29 +543,13 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 }
 
 // drawExperiments draws every issue-unit experiment the project declares (Config.Experiments)
-// for issue and records the answers against its own key, in the caller's transaction: one answer
-// per experiment, under the mode the project declares it at and at this engine's clock. The
-// tree-unit experiments of the tree the issue stands in are no part of this: they are drawn once
-// for the whole tree, when the tree is opened (admit's promoteHolds). Each answer is written
-// once, so an experiment the issue already holds a row for keeps the arm it has been running
-// under, and a key the daemon holds no record of takes no row at all
-// (record.Store.PutAssignments). A project declaring no issue-unit experiment writes nothing.
+// for issue and records the answers against its own key, in the caller's transaction
+// (experiment.DrawAndRecord): one answer per experiment, under the mode the project declares it
+// at and at this engine's clock. The tree-unit experiments of the tree the issue stands in are
+// no part of this: they are drawn once for the whole tree, when the tree is opened (admit's
+// promoteHolds).
 func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) error {
-	drawnAt := e.now()
-	rows := make([]record.Assignment, 0, len(e.cfg.Experiments))
-	for _, declared := range e.cfg.Experiments {
-		if declared.Unit != config.ExperimentIssue {
-			continue
-		}
-		variant, err := experiment.Draw(declared, e.cfg.ExperimentSource)
-		if err != nil {
-			return fmt.Errorf("draw the %s experiment of %s: %w", declared.Name, issue, err)
-		}
-		rows = append(rows, record.Assignment{Experiment: declared.Name, Unit: string(declared.Unit),
-			Variant: variant, Mode: string(declared.Mode), DrawnAt: &drawnAt})
-	}
-	_, err := e.store.PutAssignments(ctx, tx, issue, rows)
-	return err
+	return experiment.DrawAndRecord(ctx, tx, e.store, issue, e.cfg.Experiments, config.ExperimentIssue, e.cfg.ExperimentSource, e.now())
 }
 
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {

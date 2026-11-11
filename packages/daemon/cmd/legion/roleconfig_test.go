@@ -85,7 +85,7 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 		{"the timeout alone", "", 0},
 	} {
 		var stderr bytes.Buffer
-		code := checkRoleOverlays([]roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string) (string, error) { return tc.why, timedOut }, &stderr)
+		code := checkRoleOverlays([]roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
 		if code != tc.code || !strings.Contains(stderr.String(), "timed out after 1m0s") {
 			t.Errorf("%s: exit %d, stderr %q; want %d and the timeout", tc.name, code, stderr.String(), tc.code)
 		}
@@ -99,7 +99,9 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 // experiment that names overlays (runtime/sandbox's probeManifest), so the flag takes a role more
 // than once rather than refusing the second occurrence, and every occurrence is read on its own:
 // the union of two arms is a configuration no launch produces, and Oh My Pi may take each arm and
-// refuse the pair. A value two roles share is still read once.
+// refuse the pair. A value two roles share is still read once, and so is each overlay that is
+// read on its own: the role's own file stands in both arms' values and Oh My Pi answers for it
+// once.
 func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
 	own := []string{"/etc/legion-operator/tester.yml"}
 	alpha, beta := append(slices.Clone(own), "/etc/legion-alpha/alpha.yml"), append(slices.Clone(own), "/etc/legion-beta/beta.yml")
@@ -117,10 +119,11 @@ func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
 		t.Fatalf("the flag holds %d entries, want one per occurrence: %v", len(flag), flag)
 	}
 
-	var read [][]string
+	var read, alone [][]string
 	var stderr bytes.Buffer
-	code := checkRoleOverlays(flag, func(files []string) (string, error) {
-		read = append(read, files)
+	code := checkRoleOverlays(flag, func(value, own []string) (string, error) {
+		read = append(read, value)
+		alone = append(alone, own)
 		return "", nil
 	}, &stderr)
 	if code != 0 || stderr.Len() != 0 {
@@ -128,5 +131,9 @@ func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
 	}
 	if want := [][]string{alpha, beta}; !reflect.DeepEqual(read, want) {
 		t.Errorf("the probe read %q, want each arm on its own and the merger's repeat of the first read once: %q", read, want)
+	}
+	want := [][]string{alpha, {"/etc/legion-beta/beta.yml"}}
+	if !reflect.DeepEqual(alone, want) {
+		t.Errorf("the probe read %q on their own, want %q: the role's own file is read alone once, not once per arm", alone, want)
 	}
 }

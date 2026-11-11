@@ -1566,7 +1566,7 @@ func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, 
 // since the copy reads the assignment rows themselves, of which such a tree has none, and the
 // settled rows then answer for it. key's own record is required, as PutAssignments' target is: a
 // child the daemon holds no record of takes no row and raises nothing.
-func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []Assignment) (int, error) {
+func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []DeclaredExperiment) (int, error) {
 	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
 		select target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true
 		from tree_lifecycles life
@@ -1581,8 +1581,6 @@ func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key
 	if len(settled) == 0 {
 		return written, nil
 	}
-	// Only the name and the unit of a settled row are written: what it settles the child at is no
-	// variant, no mode and no instant, whatever else the caller's row carries.
 	experiments := make([]string, len(settled))
 	units := make([]string, len(settled))
 	for i, row := range settled {
@@ -1602,50 +1600,57 @@ func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key
 }
 
 // AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of one
-// unit agree. An issue with no assignment gives none.
+// unit agree. An issue with no assignment gives none. It is the one-unit read of AssignmentsFor,
+// and no method of the Store interface: nothing the daemon runs reads one unit's rows alone — a
+// launch reads a tree's and an issue's in one call, the state reads the table whole — so the
+// tests that check what one unit was recorded read the store itself.
 func (s *Postgres) AssignmentsOf(ctx context.Context, tx pgx.Tx, issue string) ([]Assignment, error) {
-	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
-		where issue_key = $1 order by experiment`, issue)
-	if err != nil {
-		return nil, fmt.Errorf("read the experiment assignments of %s: %w", issue, err)
-	}
-	defer rows.Close()
-	var assignments []Assignment
-	for rows.Next() {
-		_, assignment, err := scanAssignment(rows)
-		if err != nil {
-			return nil, fmt.Errorf("read the experiment assignments of %s: %w", issue, err)
-		}
-		assignments = append(assignments, assignment)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the experiment assignments of %s: %w", issue, err)
-	}
-	return assignments, nil
+	assignments, err := s.AssignmentsFor(ctx, tx, []string{issue})
+	return assignments[issue], err
 }
 
 // AssignmentsFor is the assignments of each of issues, by issue and then experiment, in one read;
-// an issue with no assignment has no entry, and an empty list reads nothing.
+// an issue with no assignment has no entry, and an empty list reads nothing. It is the read of one
+// or two keys a launch makes; a reader of every issue's answers asks Assignments.
 func (s *Postgres) AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]Assignment, error) {
-	assignments := make(map[string][]Assignment, len(issues))
 	if len(issues) == 0 {
-		return assignments, nil
+		return map[string][]Assignment{}, nil
 	}
 	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
 		where issue_key = any($1) order by issue_key, experiment`, issues)
+	return assignmentsByIssue(rows, err, fmt.Sprintf("%d issues", len(issues)), len(issues))
+}
+
+// Assignments is every experiment assignment the record holds, by issue and then experiment, in
+// one read. The state's projection asks this rather than AssignmentsFor over every recorded
+// issue: a row is keyed by an issue of this database (experiment_assignments.issue_key
+// references issues(key) on delete cascade), so the whole table is what the list of every issue
+// key selects, and the list itself costs a parameter the size of the table.
+func (s *Postgres) Assignments(ctx context.Context, tx pgx.Tx) (map[string][]Assignment, error) {
+	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
+		order by issue_key, experiment`)
+	return assignmentsByIssue(rows, err, "every issue", 0)
+}
+
+// assignmentsByIssue groups the rows of an assignment query under the issue each is keyed by,
+// keeping the query's order within each issue. err is the query's own failure, read here so each
+// reader above is one statement; what names the rows a failure is about, and size is the number
+// of issues the caller expects.
+func assignmentsByIssue(rows pgx.Rows, err error, what string, size int) (map[string][]Assignment, error) {
 	if err != nil {
-		return nil, fmt.Errorf("read the experiment assignments of %d issues: %w", len(issues), err)
+		return nil, fmt.Errorf("read the experiment assignments of %s: %w", what, err)
 	}
 	defer rows.Close()
+	assignments := make(map[string][]Assignment, size)
 	for rows.Next() {
 		issue, assignment, err := scanAssignment(rows)
 		if err != nil {
-			return nil, fmt.Errorf("read the experiment assignments of %d issues: %w", len(issues), err)
+			return nil, fmt.Errorf("read the experiment assignments of %s: %w", what, err)
 		}
 		assignments[issue] = append(assignments[issue], assignment)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the experiment assignments of %d issues: %w", len(issues), err)
+		return nil, fmt.Errorf("read the experiment assignments of %s: %w", what, err)
 	}
 	return assignments, nil
 }

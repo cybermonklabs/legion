@@ -11,13 +11,11 @@
 // Contract: scripts/generate.ts.
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { inline, writePage } from "./lib/markdown.ts";
+import { fence, inline, writePage } from "./lib/markdown.ts";
+import { capitalized, REQUIRED, readTable } from "./lib/reference.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const EXAMPLES_DIR = "deploy/kubernetes";
-/** The vocabulary a row's `required` is written in, the Dispatch settings table's
- *  (packages/envoy/cmd/dispatch/settings.go), which keytable.go's RequiredBy holds itself to. */
-const REQUIRED = /^(yes|no|when .+)$/;
 
 /** One nested key of a top-level key, as `legion config-reference --json` prints it: `path` is the
  *  mapping an operator writes it under, with `<KEY>`, `<APP>`, `<POD>` and `<NAME>` for a name the
@@ -64,31 +62,12 @@ function checkRow(row: Record<string, unknown>, where: string): void {
   }
 }
 
-/** Runs `legion config-reference --json` from PATH and returns the key table it prints, every row
- *  checked. scripts/generate.ts puts the legion scripts/build-binaries.sh built from this commit
- *  first on PATH; to run this generator alone, build the binaries into a directory and put that
- *  first on PATH:
- *  `docs/site/scripts/build-binaries.sh <dir> && PATH=<dir>:$PATH bun docs/site/generators/legion-config.ts <out>`. */
+/** Runs `legion config-reference --json` and returns the key table it prints, every row checked
+ *  here: the helper checks no field, because every row of this table, nested rows included, must
+ *  answer checkRow. */
 function readKeys(): ConfigKey[] {
-  const binary = Bun.which("legion");
-  if (binary === null) {
-    throw new Error(
-      "legion is not on PATH: run this generator through docs/site/scripts/generate.ts, which builds it (scripts/build-binaries.sh) and puts it there"
-    );
-  }
-  const command = "legion config-reference --json";
-  const run = Bun.spawnSync([binary, "config-reference", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (run.exitCode !== 0) {
-    throw new Error(`${command} exited ${run.exitCode}:\n${run.stderr.toString()}`);
-  }
-  const keys = JSON.parse(run.stdout.toString()) as unknown;
-  if (!Array.isArray(keys) || keys.length === 0) {
-    throw new Error(`${command} printed no keys`);
-  }
-  for (const key of keys as Record<string, unknown>[]) {
+  const keys = readTable("legion", ["config-reference", "--json"], "keys", []);
+  for (const key of keys) {
     checkRow(key, written(key, ""));
     if (!Array.isArray(key.nested)) {
       throw new Error(`key ${written(key, "")} has no list of nested keys`);
@@ -102,7 +81,7 @@ function readKeys(): ConfigKey[] {
       checkRow(nested, written(nested, nested.path));
     }
   }
-  return keys as ConfigKey[];
+  return keys as unknown as ConfigKey[];
 }
 
 /** A code span of a key's name, safe in a table cell. */
@@ -113,10 +92,7 @@ function code(text: string): string {
 /** One row of the key table: what the key is called, what the daemon does without it, whether it
  *  is required, and the one line the key table carries for it. */
 function row(name: string, key: ConfigKey | NestedKey): string {
-  const required = inline(
-    key.required.replace(/^./, (first) => first.toUpperCase()),
-    true
-  );
+  const required = capitalized(key.required, true);
   return `| ${name} | ${key.default === "" ? "—" : inline(key.default, true)} | ${required} | ${inline(key.description, true)} |`;
 }
 
@@ -157,13 +133,6 @@ function exampleFiles(): string[] {
     throw new Error(`${EXAMPLES_DIR} holds no tracked example file`);
   }
   return files;
-}
-
-/** The fence a file's contents go in: one backtick more than the file's longest run of backticks,
- *  and at least three, so no line of the file can close the block early. */
-function fence(text: string): string {
-  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
-  return "`".repeat(Math.max(3, longest + 1));
 }
 
 function renderExamples(files: string[]): string {

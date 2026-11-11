@@ -3,15 +3,11 @@ package config
 import (
 	"fmt"
 	"maps"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // ExperimentMode is `projects.<KEY>.experiments.<name>.mode`: what the daemon draws for each unit
@@ -99,18 +95,23 @@ type Variant struct {
 	InstructionsPath string
 }
 
-// memoryExperimentName is the name of the experiment the `memory` block is: the block and the key
+// MemoryExperimentName is the name of the experiment the `memory` block is: the block and the key
 // `experiments.memory` are two spellings of one experiment, which is why a project writing both is
-// refused (checkExperimentMemory).
-const memoryExperimentName = "memory"
+// refused (checkExperimentMemory). It is exported because every reader of that one experiment —
+// internal/projection, which reads an issue's three memory fields off its row, and
+// internal/daemon, which names the operator's key for its overlays — must ask for it by this
+// name and no other.
+const MemoryExperimentName = "memory"
 
-// memoryVariantNames are the two variant names `experiments.memory` may declare, and the two the
-// `memory` block maps to. They are fixed rather than the operator's to choose because a draw is
+// MemoryVariantNames are the two variant names `experiments.memory` may declare, and the two the
+// `memory` block maps to: the arm whose roles run with the project's memory overlays first, the
+// control second. They are fixed rather than the operator's to choose because a draw is
 // served to every pod in the issue's state body as `memoryGroup`, whose wire enum is
 // z.enum(["memory","none"]) (packages/contracts/src/legion-api.ts:477): a third word makes the
 // whole body fail to parse (legion-api.test.ts:615-617), so a project declaring the experiment
-// with other names would serve every pod of it a body the pod refuses.
-var memoryVariantNames = []string{"memory", "none"}
+// with other names would serve every pod of it a body the pod refuses. They are exported for the
+// same reason the name above is.
+var MemoryVariantNames = []string{"memory", "none"}
 
 // ExperimentsDeclared is every experiment the project declares, the `memory` block included, once
 // the whole file has passed: the block mapped to the experiment named memory, then the
@@ -137,15 +138,15 @@ var memoryVariantNames = []string{"memory", "none"}
 // at all, so it is the block's rule and not an experiment's.
 func (project Project) ExperimentsDeclared() []Experiment {
 	var declared []Experiment
-	if memory := project.Memory; memory.Mode != "" || len(memory.ConfigFiles) > 0 || memory.InstructionsPath != "" {
+	if memory := project.Memory; memory.Written() {
 		declared = append(declared, Experiment{
-			Name:      memoryExperimentName,
+			Name:      MemoryExperimentName,
 			Mode:      ExperimentMode(memory.Word()),
 			Unit:      ExperimentTree,
-			OnVariant: memoryVariantNames[0],
+			OnVariant: MemoryVariantNames[0],
 			Variants: []Variant{
-				{Name: memoryVariantNames[0], Weight: 1, ConfigFiles: memory.ConfigFiles, InstructionsPath: memory.InstructionsPath},
-				{Name: memoryVariantNames[1], Weight: 1},
+				{Name: MemoryVariantNames[0], Weight: 1, ConfigFiles: memory.ConfigFiles, InstructionsPath: memory.InstructionsPath},
+				{Name: MemoryVariantNames[1], Weight: 1},
 			},
 		})
 	}
@@ -292,12 +293,8 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 			}
 		}
 		if instructions := fields["instructions"]; instructions != nil {
-			instructionsField := field + ".instructions"
-			if variant.InstructionsPath, err = stringOf(instructions, instructionsField); err != nil {
+			if variant.InstructionsPath, err = cleanAbsolutePath(instructions, field+".instructions"); err != nil {
 				return nil, err
-			}
-			if !filepath.IsAbs(variant.InstructionsPath) || filepath.Clean(variant.InstructionsPath) != variant.InstructionsPath {
-				return nil, fmt.Errorf("%s %q must be a clean absolute path: the daemon reads it at boot from wherever it starts", instructionsField, variant.InstructionsPath)
 			}
 		}
 		variants = append(variants, variant)
@@ -335,9 +332,9 @@ func variantNames(variants []Variant) []string {
 // writes the `memory` block and declares the experiment too, since the two are one experiment
 // spelled twice and the daemon would draw for it twice; and an `experiments.memory` whose variants
 // are not exactly memory and none, which would serve every pod of the project a state body it
-// refuses (memoryVariantNames). Every other name of the key declares whatever variants it likes.
+// refuses (MemoryVariantNames). Every other name of the key declares whatever variants it likes.
 func checkExperimentMemory(experiments []Experiment, blockWritten bool, key string) error {
-	index := slices.IndexFunc(experiments, func(e Experiment) bool { return e.Name == memoryExperimentName })
+	index := slices.IndexFunc(experiments, func(e Experiment) bool { return e.Name == MemoryExperimentName })
 	if index < 0 {
 		return nil
 	}
@@ -345,19 +342,17 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 		return fmt.Errorf("%s.memory and %s.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both", key, key)
 	}
 	names := variantNames(experiments[index].Variants)
-	if !slices.Equal(slices.Sorted(slices.Values(names)), memoryVariantNames) {
+	if !slices.Equal(slices.Sorted(slices.Values(names)), MemoryVariantNames) {
 		return fmt.Errorf("%s.experiments.memory names the variants %s: its variants must be exactly %s, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse",
-			key, strings.Join(names, ", "), strings.Join(memoryVariantNames, " and "))
+			key, strings.Join(names, ", "), strings.Join(MemoryVariantNames, " and "))
 	}
 	return nil
 }
 
 // checkExperiments refuses what a project's declared variants name that no role could load as
-// named, once the rest of the file is settled: a variant whose overlays an issue role could not
-// read, because worker_backends puts that role on a harness other than Oh My Pi, which reads no
-// PI_CONFIG_FILES; and, under runtime kubernetes, an overlay outside every runtime.kubernetes.pod
-// mount (checkRoleConfigMount), since a pod sees only the image and the operator's mounts, and a
-// file the image ships is no operator's.
+// named, once the rest of the file is settled: the two rules every declaration of overlays
+// answers — a harness other than Oh My Pi on an issue role, and an overlay outside the
+// operator's pod mounts (checkDeclaredOverlays), which the `memory` block answers too.
 //
 // Both hold whatever the mode is, `off` included, for the reason checkMemory's own two do: the
 // mode decides which new units are drawn, and a unit already drawn keeps the files of the variant
@@ -373,21 +368,9 @@ func checkExperiments(cfg Config) error {
 	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		for _, experiment := range cfg.Projects[name].Experiments {
 			for _, variant := range experiment.Variants {
-				if len(variant.ConfigFiles) == 0 {
-					continue
-				}
 				field := "projects." + name + ".experiments." + experiment.Name + ".variants." + variant.Name
-				for _, role := range claim.Roles {
-					if backend := cfg.BackendFor(role); backend != runtime.BackendOmp {
-						return fmt.Errorf("%s names config_files, and worker_backends.%s is %s, which reads no PI_CONFIG_FILES: put every issue role on %s, or take the overlays out of the variant", field, role, backend, runtime.BackendOmp)
-					}
-				}
-				if k := cfg.Runtime.Kubernetes; k != nil {
-					for _, file := range variant.ConfigFiles {
-						if err := checkRoleConfigMount(k.Pod, field+".config_files", file); err != nil {
-							return err
-						}
-					}
+				if err := checkDeclaredOverlays(cfg, field, "the variant", variant.ConfigFiles); err != nil {
+					return err
 				}
 			}
 		}

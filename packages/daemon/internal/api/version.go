@@ -849,10 +849,13 @@ package api
 // 60: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
 // `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
-// the experiments, which is the order `settings.projects.<KEY>.experiments` names them in. An
+// the experiments, which is the `memory` block's experiment first and then the order
+// `settings.projects.<KEY>.experiments` names the key's own in
+// (config.Project.ExperimentsDeclared). An experiment the file no longer names rides after every
+// declared one, among its like in the experiments' names. An
 // issue carries its tree's answer for an experiment whose unit is the tree and its own for one
-// whose unit is the issue (api.Issue.Assignments, filled by internal/projection from
-// record.Assignment, ordered by api's assignmentsInDeclaredOrder). `variant` and `mode` ride
+// whose unit is the issue (api.Issue.Assignments, filled and ordered by internal/projection from
+// record.Assignment). `variant` and `mode` ride
 // whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no
 // instant: that row — no arm, no mode, no instant — is a hand-over settling a child at no arm
 // for an experiment the tree it left held no row for, which is how a reader tells a unit settled
