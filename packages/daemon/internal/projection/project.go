@@ -26,9 +26,13 @@ import (
 // root's view answers its own state of; the empty list gates none. reports is each claim's latest
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
-// claim with none shows no capabilities. Nil is no reports. now is the instant the held rows are
-// read at (record.Store.HeldRows) and their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+// claim with none shows no capabilities. Nil is no reports. wakes is every wake the daemon's
+// pacing still holds, both lanes as one list (api.WakesWaitingOf): the state names them under
+// `wakesWaiting`, and each claim view names the one its own claim waits for, so the two come
+// from one list and cannot disagree. Nil is a daemon holding none, which is every moment
+// outside a wave. now is the instant the held rows are read at (record.Store.HeldRows) and
+// their waits are measured from.
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, wakes []api.WakeWaiting, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -73,6 +77,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		checks[check.Issue] = check
 	}
 
+	// The wake each claim's own view names, read from the one list the state names under
+	// `wakesWaiting`, so a claim view and that list report the same wake (api.ClaimWakes).
+	claimWakes := api.ClaimWakes(wakes)
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
 	for _, current := range claims {
 		if current.Locator != nil {
@@ -87,9 +94,20 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			PluginContract: current.PluginContract,
 			UpdateRound:    current.UpdateRound,
 			UpdateHead:     current.UpdateHead,
+			// Where the claim's update round stands, the mark of a push-check re-ask that is
+			// still on the round, and what a turn the daemon sends nothing for would do to the
+			// answer standing now. Each is read from the claim's own update columns, in the one
+			// place that reads them (api.UpdateStateOf, api.ReaskedForPushCheck,
+			// api.UnpromptedTurnTakesAnswerBack).
+			UpdateState:                   api.UpdateStateOf(current),
+			UpdateReaskedForPushCheck:     api.ReaskedForPushCheck(current),
+			UnpromptedTurnTakesAnswerBack: api.UnpromptedTurnTakesAnswerBack(current),
 			// What the daemon last saw this claim's agent do, which the stall backstop and an
 			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
 			Step: api.StepViewOf(current.Step),
+		}
+		if wake, waits := claimWakes[current.Token]; waits {
+			view.Wake = &wake
 		}
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
@@ -107,7 +125,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		active = append(active, slot.Issue)
 	}
 
-	projected := api.State{Issues: make(map[string]api.Issue, len(issues))}
+	// The wakes the pacing holds, as the state names them beside the claim views that name
+	// their own: one list, set here, so the two readings come from one place.
+	projected := api.State{Issues: make(map[string]api.Issue, len(issues)), WakesWaiting: wakes}
 	for _, issue := range issues {
 		view := api.Issue{
 			Key:           issue.Key,

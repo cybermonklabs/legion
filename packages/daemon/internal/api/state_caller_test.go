@@ -238,6 +238,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
+					// Every row that reaches here is below shapedAnswersContract too, so none
+					// of its callers is served the four keys contract 60 added to a claim view.
+					for _, key := range roundReportKeys {
+						delete(view, key)
+					}
 				}
 				if tc.rounds {
 					continue

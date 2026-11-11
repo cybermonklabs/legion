@@ -228,12 +228,14 @@ func mixedPodClaims(low, high int) []supervise.Claim {
 	return append(claims, claimInPod("legion-legion-legion-208-tester", statePodUID, 0))
 }
 
-// keysAddedAfterTheFloor is every key the eight servings-down before this change remove, as the
-// wire names it: a caller served all of them is served the whole of what this contract writes
-// above the floor.
+// keysAddedAfterTheFloor is every key the ten servings-down remove, as the wire names it: a
+// caller served all of them is served the whole of what this contract writes above the floor.
+// The last five are this change's own, which shapedAnswersContract serves down.
 var keysAddedAfterTheFloor = []string{
 	`"updateRound"`, `"updateHead"`, `"memoryGroup"`, `"memoryDrawMode"`, `"memoryDrawnAt"`,
 	`"trees"`, `"tree"`, `"wakesWaiting"`, `"gatedSteps"`, `"step"`, `"` + WaitingLineField + `"`,
+	`"lowestPluginContract"`, `"updateState"`, `"updateReaskedForPushCheck"`,
+	`"unpromptedTurnTakesAnswerBack"`, `"wake"`,
 }
 
 // A claim that holds no process is in no pod's reckoning: suspending, failing or retiring a claim

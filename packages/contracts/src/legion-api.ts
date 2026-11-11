@@ -191,11 +191,39 @@ const legionClaimView = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** Where the claim's update round stands, read from the claim's own columns (contract 60):
+   * `none` when no round is open, `open` when a round is open and its task has not gone out,
+   * `asked` when the round asked this worker, `push-check-reask` when the round means to ask a
+   * second time because the pod's shim could not run the daemon's push check, and `answered`
+   * once the worker answered. A reader takes this rather than spelling the same reading out of
+   * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
+   * one nobody asked. A caller in a pod whose plugin declares a contract below 60 is served the
+   * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
+   * takes it as optional. */
+  updateState: z.enum(["none", "open", "asked", "push-check-reask", "answered"]).optional(),
+  /** Whether the open round has already asked this worker a second time for the daemon's push
+   * check (contract 60). The mark stands to the end of the round, so it is read beside whatever
+   * state the claim has reached and never as the state itself. Absent where it is false, and
+   * absent altogether for a caller below 60 (`withoutClaimRoundReport`). */
+  updateReaskedForPushCheck: z.boolean().optional(),
+  /** Whether a turn the daemon sends nothing for — an Envoy notice, a person's steer, a
+   * background result — would take this claim's standing answer back and leave the round
+   * waiting again (contract 60). It answers for that turn alone: the round's own task's turn is
+   * the turn the worker answers in and takes nothing back. Absent where it is false, and absent
+   * altogether for a caller below 60 (`withoutClaimRoundReport`). */
+  unpromptedTurnTakesAnswerBack: z.boolean().optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
    * contract below 57 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
+  /** The wake the daemon's pacing holds for this claim, absent where it holds none: the same
+   * wake `wakesWaiting` names beside this claim, with its kind and the moment it runs (contract
+   * 60). The kinds are the daemon's three paced lanes, as `legionWakeWaiting` below names them,
+   * and the kind is read as a plain string there and here, so a lane a later daemon adds is
+   * read rather than refused. A caller below 60 is served no such key
+   * (`withoutClaimRoundReport`). */
+  wake: z.object({ kind: nonEmptyString, dueAt: timestamp }).optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current

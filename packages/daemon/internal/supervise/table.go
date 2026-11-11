@@ -255,6 +255,13 @@ type PodUpdateOpen struct {
 // plugin, in the same pod, once the worker's turn has ended (endPodUpdate relaunches no working
 // claim), so no turn is lost.
 //
+// A plugin round's step 2 says one thing more: the number in the round's name is this daemon's
+// contract number and not the worker's. A plugin round is named for the contract the daemon
+// speaks (PluginRound), and the reasons line names that number beside the worker's own
+// (openPluginUpdate), so a worker reading both numbers could answer with the wrong one. The
+// sentence belongs here and in no role prompt: the prompts tell a worker to answer with the
+// round its task names and claim nothing about whose number that round holds.
+//
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
 func UpdateTask(round, reasons string) string {
@@ -263,6 +270,12 @@ func UpdateTask(round, reasons string) string {
 		`The replacement deletes the pod and the disk. The disk holds your workspace. Work that you do not push is lost.
 
 The daemon starts your process again on the new pod, in this same session.`
+	// whose is the one sentence a plugin round adds, in the step that names the round: the
+	// number in a plugin round's id is this daemon's contract (PluginRound of
+	// Deps.PluginContract), and the reasons line names that number beside the worker's own
+	// (openPluginUpdate), so a worker that read the two numbers could answer with its own. A pod
+	// round's id holds a pod uid and no number at all, so it adds nothing.
+	whose := ""
 	// The kind is the round's own, read by the one reader of its shape (IsPluginRound, which
 	// Claim.InPluginRound reads too), so the words can never disagree with what endPodUpdate does
 	// for the same round.
@@ -271,18 +284,19 @@ The daemon starts your process again on the new pod, in this same session.`
 			`The restart keeps the pod and the disk. The disk holds your workspace. Work that you do not push stays on the disk. The restart waits until your turn ends.
 
 The daemon starts your process again on this same pod, in this same session.`
+		whose = " The number in this round's name is the daemon's contract number and not your plugin's contract number."
 	}
 	return fmt.Sprintf(`%s The reasons are: %s.
 
 Do these three steps now:
 
 1. Push every commit you want to keep to this issue's branch.%s
-2. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".
+2. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".%s
 3. End your turn.
 
 If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 and step 3 only. End your last message with a line that starts with WAITING and names this round, so your own plugin does not continue the turn. The daemon reads the end of this turn as your answer.
 
-%s The daemon holds your next task until your process runs again. Do not start new work now.`, first, reasons, keep, round, consequence)
+%s The daemon holds your next task until your process runs again. Do not start new work now.`, first, reasons, keep, round, whose, consequence)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, and the task

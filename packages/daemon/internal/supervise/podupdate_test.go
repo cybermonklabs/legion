@@ -2286,3 +2286,35 @@ func TestPodUpdateARefusedRelaunchLeavesNoQuestionArmedForTheNextTask(t *testing
 		t.Errorf("the second prompt carried %q, want the next task %q", sent.Message, task)
 	}
 }
+
+// A plugin round's task says whose contract number the round's name holds. The round is named
+// for the contract this daemon speaks (PluginRound), and the reasons line names that number
+// beside the worker's own (openPluginUpdate), so a worker reading the two could answer with its
+// own number and have the answer refused. The sentence stands in the step that names the round
+// a worker answers with, and a pod round's task carries no such sentence: its name holds a pod
+// uid and no contract number at all.
+func TestUpdateTaskSaysWhoseNumberAPluginRoundsNameHolds(t *testing.T) {
+	const whose = "The number in this round's name is the daemon's contract number and not your plugin's contract number."
+	plugin := PluginRound(61)
+	reasons := "the process speaks plugin contract 59, and this daemon speaks 61"
+	task := UpdateTask(plugin, reasons)
+
+	ask := `2. Call the ` + "`legion`" + ` tool with op: "ready_for_update" and round: "` + plugin + `". ` + whose
+	if !strings.Contains(task, ask) {
+		t.Errorf("the plugin round's task is %q, want step 2 to read %q", task, ask)
+	}
+	// The two numbers the worker reads beside it, which is why the sentence is there.
+	if !strings.Contains(task, reasons) {
+		t.Errorf("the plugin round's task is %q, want the reasons %q it is read against", task, reasons)
+	}
+
+	pod := UpdateTask(PodRound("7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"), "the pod's image drifted")
+	if strings.Contains(pod, whose) {
+		t.Errorf("the pod round's task is %q, want no sentence about a contract number: its name holds none", pod)
+	}
+	// Nothing else of the task parts: the two kinds differ in the first sentence, the file
+	// paragraph of step 1 and the consequence, exactly as they did before this sentence.
+	if strings.Count(pod, "\n") != strings.Count(task, "\n") {
+		t.Errorf("the two tasks have %d and %d line breaks, want the same shape", strings.Count(pod, "\n"), strings.Count(task, "\n"))
+	}
+}

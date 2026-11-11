@@ -2181,7 +2181,23 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
+	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
+	// a launch or a plugin task waits in its claim's machine, in memory alone, since no store holds
+	// one and a restart raises the wave again through its own paths; a paced catch-up waits on its
+	// outbox row, read here in the snapshot every other durable fact of this state is read from.
+	//
+	// The two are read before the projection and handed to it, so the state's `wakesWaiting` and
+	// each claim view's own `wake` are set from one list. Both reads are of this one snapshot, so
+	// reading them here rather than after the projection changes what neither sees.
+	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	var held []supervise.WaitingWake
+	if s.wakes != nil {
+		held = s.wakes()
+	}
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), api.WakesWaitingOf(held, paced), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -2194,19 +2210,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		return api.State{}, nil, err
 	}
 	state.StrandedClaims = api.StrandedClaimsOf(stranded)
-	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
-	// a launch or a plugin task waits in its claim's machine, in memory alone, since no store holds
-	// one and a restart raises the wave again through its own paths; a paced catch-up waits on its
-	// outbox row, read here in the snapshot every other durable fact of this state is read from.
-	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	var held []supervise.WaitingWake
-	if s.wakes != nil {
-		held = s.wakes()
-	}
-	state.WakesWaiting = api.WakesWaitingOf(held, paced)
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,

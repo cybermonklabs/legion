@@ -516,9 +516,34 @@ type ClaimView struct {
 	// before its first push). It is the worker's word, which nothing verifies.
 	UpdateRound string `json:"updateRound,omitempty"`
 	UpdateHead  string `json:"updateHead,omitempty"`
+	// UpdateState is where the round above stands on this claim, as UpdateStateOf reads the
+	// claim's own update columns: `none`, `open`, `asked`, `push-check-reask` or `answered`
+	// (contract 60). A reader takes it rather than spelling the same reading out of
+	// `updateRound` and `updateHead`, which tell a worker that answered with no head from one
+	// nobody asked.
+	UpdateState UpdateState `json:"updateState,omitempty"`
+	// UpdateReaskedForPushCheck is whether the open round has already asked this claim's worker
+	// a second time, because the pod's shim could not run the daemon's push check
+	// (ReaskedForPushCheck). The mark stands to the end of the round, so it is read beside
+	// whatever state the claim has reached and never as the state itself: a claim the daemon
+	// re-asked and then asked again carries it with `asked`, and one that then answers carries
+	// it with `answered`.
+	UpdateReaskedForPushCheck bool `json:"updateReaskedForPushCheck,omitempty"`
+	// UnpromptedTurnTakesAnswerBack is whether a turn the daemon sends nothing for — an Envoy
+	// notice, a person's steer, a background result — would take this claim's standing answer
+	// back and leave the round waiting again (UnpromptedTurnTakesAnswerBack). It answers for
+	// that turn alone. The round's own task's turn is the turn the worker answers in and takes
+	// nothing back, and a turn of another task the daemon sent is decided by that delivery
+	// rather than by this field.
+	UnpromptedTurnTakesAnswerBack bool `json:"unpromptedTurnTakesAnswerBack,omitempty"`
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
+	// Wake is the wake the daemon's pacing holds for this claim, and absent where it holds
+	// none: the same wake the state names under `wakesWaiting`, beside the claim it will wake
+	// (WakeView). A claim that was never asked and carries a waiting launch is read here as the
+	// claim of a process the daemon has still to start.
+	Wake *WakeView `json:"wake,omitempty"`
 }
 
 // StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the
@@ -1034,6 +1059,39 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	wakes = append(wakes, queued...)
 	slices.SortStableFunc(wakes, func(a, b WakeWaiting) int { return cmp.Compare(a.Claim, b.Claim) })
 	return wakes
+}
+
+// WakeView is the wake the pacing holds for one claim, as that claim's view names it
+// (ClaimView.Wake): what kind of wake it is and the moment the pacing gave it, which is when it
+// runs. The claim, its issue and its role are the view's own, so the entry here is the rest of
+// the state's own `wakesWaiting` row (WakeWaiting) and reports the same wake. A claim view that
+// carries this and whose state is `queued` or `suspended` is a process the daemon has still to
+// start, which is the reading a reader of `updateState` alone cannot reach.
+type WakeView struct {
+	Kind  supervise.WakeKind `json:"kind"`
+	DueAt time.Time          `json:"dueAt"`
+}
+
+// ClaimWakes is the wake each claim's view carries, by claim, read from the one list the state
+// names (WakesWaitingOf): both lanes, so a claim view answers the same wake its row under
+// `wakesWaiting` answers, whichever lane holds it.
+//
+// One claim can hold two wakes — a machine's and a row's, or two rows — and the first of them in
+// that list is the one its view carries. WakesWaitingOf sorts by claim and leaves the order of
+// one claim's wakes as its sources gave it, so the machine's wake comes before a row's. Nothing
+// is allocated where no wake waits, which is every moment outside a wave.
+func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
+	if len(wakes) == 0 {
+		return nil
+	}
+	views := make(map[claim.Token]WakeView, len(wakes))
+	for _, wake := range wakes {
+		if _, held := views[wake.Claim]; held {
+			continue
+		}
+		views[wake.Claim] = WakeView{Kind: wake.Kind, DueAt: wake.DueAt}
+	}
+	return views
 }
 
 // StateSource maps the daemon's durable and live facts through the transaction the state route

@@ -268,7 +268,12 @@ func populatedState(t *testing.T) State {
 						Incarnation: "31881:9442101",
 						Tmux:        &runtime.TmuxLocator{Window: "@4", Pane: "%12"},
 					},
-					Step: StepViewOf(architectStep),
+					// No round is open over this claim, and the pacing holds a catch-up for it:
+					// the notice a child's re-admission wrote it in place of a launch, which the
+					// state names under `wakesWaiting` too.
+					UpdateState: UpdateStateNone,
+					Step:        StepViewOf(architectStep),
+					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {
@@ -289,6 +294,13 @@ func populatedState(t *testing.T) State {
 							// the head it pushed.
 							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+							// The worker answered with the ready_for_update call, so a turn the
+							// daemon sends nothing for would take that answer back and the round
+							// would ask it again. Its launch onto the pod's replacement waits in
+							// the pacing meanwhile.
+							UpdateState:                   UpdateStateAnswered,
+							UnpromptedTurnTakesAnswerBack: true,
+							Wake:                          &WakeView{Kind: supervise.WakeLaunch, DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
 						Rounds:        0,
@@ -315,8 +327,13 @@ func populatedState(t *testing.T) State {
 								Open:        []CapabilityGap{{Name: "github", Detail: "gh api user: HTTP 401: Bad credentials"}},
 							},
 							// The same round, on the worker that has not answered it yet: no head is
-							// reported until a worker answers.
-							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							// reported until a worker answers. The round asked it a second time,
+							// because this pod's shim could not run the daemon's push check, and
+							// the mark of that second ask stands beside the state the claim has
+							// reached, which is `asked` again.
+							UpdateRound:               "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateState:               UpdateStateAsked,
+							UpdateReaskedForPushCheck: true,
 							// The call this worker is in: a start the daemon received and no end,
 							// which is what a turn that has stopped moving leaves behind.
 							Step: StepViewOf(implementerStep),
@@ -363,7 +380,7 @@ func populatedState(t *testing.T) State {
 				DefaultBranch: "release/v7.1",
 				HoldReason:    "escalated",
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed"}, Rounds: 1},
+					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed", UpdateState: UpdateStateNone}, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
@@ -382,7 +399,7 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_211", State: "suspended"}, Rounds: 1},
+					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_211", State: "suspended", UpdateState: UpdateStateNone}, Rounds: 1},
 				},
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
@@ -440,7 +457,13 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Rounds: 1},
+					// The pacing holds this claim's update task, which its plugin round queues to
+					// the session already running: a wake stands over a claim no round has asked
+					// yet, which reads `none` with its wake beside it.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_207", State: "working", UpdateState: UpdateStateNone,
+						Wake: &WakeView{Kind: supervise.WakePluginTask, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
+					}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Rounds: 1},
 				},
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
@@ -700,6 +723,10 @@ func TestStateOperatorClaimGolden(t *testing.T) {
 						Incarnation: "1618075:268131172",
 						Tmux:        &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
 					},
+					// No round is open over an operator's spawn either: every claim view names
+					// one of the five states, and the projection writes this one for a claim no
+					// round has reached.
+					UpdateState: UpdateStateNone,
 				},
 			},
 		},

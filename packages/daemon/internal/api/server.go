@@ -864,13 +864,17 @@ func recordedContractAtOrBelow(n int) int {
 // report of claims nothing will wake without its retired entries (withoutRetiredStranded); a
 // caller below stallRecordContract without the claim views' `step` (withoutStallRecord); a
 // caller below waitingLineContract without each waiting issue's `waitingLine`
-// (withoutWaitingLine); and a caller below checkRoleContract is served each issue's check
-// without `role` (withoutCheckRole). The nine compose: each is applied when the state carries
+// (withoutWaitingLine); a caller below checkRoleContract is served each issue's check
+// without `role` (withoutCheckRole); and a caller below shapedAnswersContract is served the
+// body without `lowestPluginContract` (withoutLowestPluginContract) and its claim views
+// without `updateState`, `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and
+// `wake` (withoutClaimRoundReport). The eleven compose: each is applied when the state carries
 // something of its own, so a caller below all of them is served a body carrying none of the
-// twelve keys, each of them absent rather than empty, since a strict reader before the contract
-// that added a key refuses it whether or not it names anything, and with no retired entry under
-// `strandedClaims`. Every later reader takes those keys as optional and all three stranded
-// states — `packages/contracts/src/legion-api.ts` marks them optional for exactly these bodies.
+// seventeen keys, each of them absent rather than empty, since a strict reader before the
+// contract that added a key refuses it whether or not it names anything, and with no retired
+// entry under `strandedClaims`. Every later reader takes those keys as optional and all three
+// stranded states — `packages/contracts/src/legion-api.ts` marks them optional for exactly
+// these bodies.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, as stand-ins its own reader requires (withFixAttempts, withMaxFixAttempts). Any
@@ -939,6 +943,14 @@ func shapeState(state State, restore, strip int) State {
 	if strip < waitingLineContract && carriesWaitingLine(state) {
 		state = withoutWaitingLine(state)
 	}
+	if strip < shapedAnswersContract {
+		if carriesLowestPluginContract(state) {
+			state = withoutLowestPluginContract(state)
+		}
+		if carriesClaimRoundReport(state) {
+			state = withoutClaimRoundReport(state)
+		}
+	}
 	return state
 }
 
@@ -1004,6 +1016,20 @@ const checkRoleContract = 54
 // The boot gate alone covered that reader until this daemon shaped its answer (version.go's 60).
 const fixAttemptsContract = 59
 
+// shapedAnswersContract is the daemon contract this change lands under (version.go's 60), and
+// the contract that added five keys of its own: `lowestPluginContract` on the state, the
+// lowest contract any claim of the project records, and each claim view's `updateState`,
+// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`. A plugin before it
+// reads the state with a schema that names none of the five and refuses the whole body for one
+// of them, so a caller below this contract is served the state without them
+// (withoutLowestPluginContract, withoutClaimRoundReport).
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
+// moves that constant, and the contract these keys arrived at stays where it is. It moves only
+// with this change's own number, as the arrival contracts of this change's two new answers do
+// (answers.go's AnswerIssueRecord and AnswerHealth).
+const shapedAnswersContract = 60
+
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
 	carries := func(v ClaimView) bool { return v.UpdateRound != "" || v.UpdateHead != "" }
@@ -1035,9 +1061,10 @@ func carriesMemory(state State) bool {
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord and
-// carriesWaitingLine all the same, because stateFor puts the same question to the eight and
-// because a later contract that stops writing `trees` on every body answers it here.
+// carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
+// carriesWaitingLine, carriesLowestPluginContract and carriesClaimRoundReport all the same,
+// because stateFor puts the same question to the ten and because a later contract that stops
+// writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
@@ -1045,9 +1072,10 @@ func carriesTrees(State) bool { return true }
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord and
-// carriesWaitingLine all the same, because stateFor puts the same question to the eight and
-// because a later contract that stops writing `wakesWaiting` on every body answers it here.
+// carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
+// carriesWaitingLine, carriesLowestPluginContract and carriesClaimRoundReport all the same,
+// because stateFor puts the same question to the ten and because a later contract that stops
+// writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
@@ -1272,6 +1300,73 @@ func withoutStallRecord(state State) State {
 			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
 			for role, worker := range issue.Workers {
 				worker.Claim.Step = nil
+				workers[role] = worker
+			}
+			issue.Workers = workers
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesLowestPluginContract is whether state carries the key shapedAnswersContract added to
+// the body itself: `lowestPluginContract`, the lowest contract any claim of the project that
+// holds a process records. A project with no such claim reports no number and carries the key
+// for nobody (State.LowestPluginContract).
+func carriesLowestPluginContract(state State) bool { return state.LowestPluginContract != nil }
+
+// withoutLowestPluginContract is state with no `lowestPluginContract`, the one key
+// shapedAnswersContract added to the body itself. The field is the state's own value, so the
+// state the source answered is left as it was, as withoutWakesWaiting leaves it.
+func withoutLowestPluginContract(state State) State {
+	state.LowestPluginContract = nil
+	return state
+}
+
+// carriesClaimRoundReport is whether any claim view of state carries one of the four keys
+// shapedAnswersContract added to the claim views: `updateState`, `updateReaskedForPushCheck`,
+// `unpromptedTurnTakesAnswerBack` or `wake`. Every claim view a projection builds carries
+// `updateState`, since one of the five states always stands, so this is true of every state
+// that holds a claim view at all. It is asked all the same, because a body built with no view —
+// a project running nothing — carries none of the four and needs no copy.
+func carriesClaimRoundReport(state State) bool {
+	carries := func(v ClaimView) bool {
+		return v.UpdateState != "" || v.UpdateReaskedForPushCheck || v.UnpromptedTurnTakesAnswerBack || v.Wake != nil
+	}
+	for _, issue := range state.Issues {
+		if issue.Architect != nil && carries(*issue.Architect) {
+			return true
+		}
+		for _, worker := range issue.Workers {
+			if carries(worker.Claim) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withoutClaimRoundReport is state with no claim view carrying `updateState`,
+// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` or `wake`, the four keys
+// shapedAnswersContract added to the claim views. The architect's view and every worker's are
+// each stripped, as withoutStallRecord strips them. The issue maps are copied, so the state the
+// source answered is left as it was.
+func withoutClaimRoundReport(state State) State {
+	strip := func(v *ClaimView) {
+		v.UpdateState, v.UpdateReaskedForPushCheck, v.UnpromptedTurnTakesAnswerBack, v.Wake = "", false, false, nil
+	}
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if issue.Architect != nil {
+			architect := *issue.Architect
+			strip(&architect)
+			issue.Architect = &architect
+		}
+		if issue.Workers != nil {
+			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+			for role, worker := range issue.Workers {
+				strip(&worker.Claim)
 				workers[role] = worker
 			}
 			issue.Workers = workers

@@ -869,5 +869,7 @@ package api
 // open pull requests declare 61 and 69, so this change takes 60, the free number above its base,
 // as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says.)
+// says. A renumber moves `shapedAnswersContract` in server.go with it, which is the number the
+// five keys of this entry are served down below, as it moves the arrival contracts of this
+// change's two new answers in answers.go.)
 const DaemonAPIVersion = 60
