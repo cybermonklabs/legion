@@ -184,6 +184,15 @@ type Timer struct {
 type StalePlugin struct {
 	Claim   claim.Token
 	Trigger string
+	// Admitted is whether the pass that posted this took a credit of the stale-plugin refresh
+	// gate for this claim, which bounds how much of the wake pacing the lane holds at once
+	// (RefreshGate, dispatch://INFRA-2712 R1). The pass posts no refused claim at all — it
+	// re-reads every stale claim at the next sweep, so nothing is lost by the refusal — so what
+	// arrives here is admitted, except the project controller's claim, whose relaunch is exempt
+	// from the pacing and takes no credit (reserveWake), and a post a test or another daemon
+	// path makes with no gate behind it. The machine holds what it is handed until the relaunch
+	// runs or is abandoned (refreshPlugin, refreshCredit, releaseRefresh).
+	Admitted bool
 }
 
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
@@ -1755,11 +1764,25 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // sweep's ask at every tick, and this is the one moment the daemon knows the slot is free. The
 // send that follows carries whichever task the slot now holds, the round's ask or the claim's
 // own.
+//
+// The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
+// the claim took no credit while its turn ran (holdStaleRelaunch), so one is asked for here and
+// the relaunch runs on it. Refused, the relaunch is left to the next sweep, which posts
+// StalePlugin for a claim that is idle by then and relaunches it on the first credit that comes
+// free — a minute at the rate the lane is held to, against the hours a lane with no gate costs
+// every other wake of the daemon. The mark is not re-armed for that: it waits for a turn, and
+// this turn has ended. Nothing else of this function waits on the answer either — the round's
+// slot and the pending send run whichever way the gate answered.
 func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
-		if err := m.refreshPlugin(ctx, *held); err != nil {
-			return err
+		if m.admitRefresh() {
+			if err := m.refreshPlugin(ctx, *held, true); err != nil {
+				return err
+			}
+		} else {
+			m.log.Info("supervise: the turn of this claim on another plugin contract has ended, and the refresh gate is full; its relaunch waits for the next sweep",
+				"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", *held)
 		}
 	}
 	if err := m.takeSlotForUpdate(ctx, false); err != nil {

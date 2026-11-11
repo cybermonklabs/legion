@@ -204,6 +204,13 @@ type wake struct {
 // well as on the wake parked, so a refresh that runs where it is raised — the controller's own
 // claim, a daemon whose pacing is off — writes its lane in the line it writes (wakeRan) exactly
 // as one that waits does.
+//
+// Those same two returns give back the credit of the refresh gate this machine holds, if it
+// holds one (releaseRefresh, dispatch://INFRA-2712 R1): the work the credit was taken for runs
+// here rather than waiting in the pacing, which is the whole of what the gate counts. A wake
+// that parks keeps the credit on the machine for as long as it waits, and its turn is what gives
+// it back (runWake). Neither call reads the kind, since a machine holds a credit for a refresh
+// and for nothing else, and a release with none held is nothing.
 func (m *Machine) reserveWake(ctx context.Context, kind WakeKind, exempt bool, run, again func(context.Context) error) error {
 	if intent := m.pluginRelaunch; intent != nil {
 		kind = intent.kind
@@ -215,6 +222,7 @@ func (m *Machine) reserveWake(ctx context.Context, kind WakeKind, exempt bool, r
 		// names (R6), so a wake no pacing could have held — the pacing off, or this wake let
 		// through — says so rather than swelling that count.
 		m.wakeRan(kind, false, 0)
+		m.releaseRefresh()
 		return run(ctx)
 	}
 	// Past the return above there is a limiter and this wake is not one it lets through, so the
@@ -225,6 +233,7 @@ func (m *Machine) reserveWake(ctx context.Context, kind WakeKind, exempt bool, r
 	at := reserve(now)
 	if !at.After(now) {
 		m.wakeRan(kind, true, 0)
+		m.releaseRefresh()
 		return run(ctx)
 	}
 	// The intent of a stale-plugin relaunch travels with the launch it names, so the wake that
@@ -343,6 +352,15 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // claim keeps the mark of whatever relaunch last did run, and the next registration of this
 // same process is read against that one (staleRegistration).
 //
+// The refresh lane's own wake reads its claim once more before either step, which is the only
+// order in which the claim still holds what those two steps would spend: a claim that is no
+// longer stale, or that has started a turn since, is relaunched by this wake not at all
+// (refreshOverturned, dispatch://INFRA-2712 R2). Such a claim keeps its turn and the task that
+// turn is working, gives back the credit the gate admitted it on, and is left watched exactly as
+// the lifecycle refusal below leaves one (watchAgain), its probe left to the sweep's next
+// observation. The wake is spent and the relaunch is owed again, which the sweep's own
+// stale-plugin pass raises for a claim that is still stale when it next reads it.
+//
 // The difference between the two steps is what the store is reached for: only a delivery a turn
 // has confirmed is taken back (interrupted), a turn is confirmed in a ready or idle claim
 // alone, and the confirmation itself leaves that claim working — the table ignores a turn start
@@ -356,6 +374,13 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // refusal leaves owing too: the next report of the process, or the sweep's own stale-plugin
 // pass, raises one again.
 func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error {
+	if waiting.kind == WakePluginRefresh && m.refreshOverturned() {
+		m.log.Info("supervise: the fact this claim's plugin refresh was raised for is gone; its relaunch is left to the next stale-plugin pass",
+			"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
+		m.watchAgain()
+		m.releaseRefresh()
+		return nil
+	}
 	// Every kind a machine parks today starts a process (StartsProcess), so both steps are taken
 	// for every wake that reaches here. The branch is what keeps a kind added later that starts
 	// no process out of a launch's own steps: it replaces nothing, so it has no tree to recheck
@@ -372,8 +397,11 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 		}
 	}
 	// Past both steps the launch runs, so the intent this wake carried goes back to the machine
-	// for that launch to commit as it starts (holdPluginRelaunch, launchNow).
+	// for that launch to commit as it starts (holdPluginRelaunch, launchNow), and the credit the
+	// gate admitted this refresh on is given back: what it was counting is a refresh waiting in
+	// the pacing, and this one is waiting no longer (releaseRefresh).
 	m.holdPluginRelaunch(waiting.pluginMark)
+	m.releaseRefresh()
 	m.wakeRan(waiting.kind, paced, m.deps.Clock.Now().Sub(waiting.reserved))
 	return waiting.run(ctx)
 }

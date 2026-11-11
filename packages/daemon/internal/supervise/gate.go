@@ -31,8 +31,10 @@ package supervise
 // of the lane's facts (PluginContract, PluginRelaunchable, NoPluginInstall, WakePace) and because
 // internal/daemon imports this package: one gate per daemon serves both of the lane's askers, the
 // daemon's own pass over every stale claim (refreshStalePlugins) and the machine that holds a
-// stale relaunch back until the turn in flight ends (holdStaleRelaunch, refreshPlugin). Neither
-// asks it yet; this file is the gate itself, and the two askers land with the rest of the change.
+// stale relaunch back until the turn in flight ends (holdStaleRelaunch, refreshPlugin). The
+// machine's own two lines to it are at the foot of this file (admitRefresh, releaseRefresh), and
+// the credit each machine may hold is one, because a claim that already holds a wake is decided
+// nothing (Machine.refreshCredit, refreshPlugin).
 
 import "sync"
 
@@ -179,4 +181,42 @@ func (g *RefreshGate) Correct(waiting int) {
 	defer g.mu.Unlock()
 	g.held = max(waiting, g.granted)
 	g.granted = 0
+}
+
+// admitRefresh is a machine asking the gate for a credit of its own, which one asker does: the
+// relaunch a turn's end releases, held back until that turn was over (afterTurn,
+// holdStaleRelaunch). The daemon's own pass asks the same gate before it posts, and hands what it
+// was granted to the machine on the event it posts (StalePlugin.Admitted, refreshStalePlugins in
+// internal/daemon).
+//
+// A machine whose Deps carries no gate is granted everything. The field is an interface, and a
+// daemon or a harness that built none leaves it nil, which means exactly what a gate with the
+// pacing off means: the lane is bounded by nothing. That reading is made here and in
+// releaseRefresh and nowhere else, which is why no decision of this package touches
+// Deps.RefreshGate itself.
+func (m *Machine) admitRefresh() bool {
+	return m.deps.RefreshGate == nil || m.deps.RefreshGate.Admit()
+}
+
+// releaseRefresh gives back the credit this machine holds, if it holds one, and leaves it holding
+// none. It is the one way a credit goes back, so no path gives one credit back twice: a relaunch
+// that is abandoned at one step and re-decided at another releases once, and every further call
+// over the same machine is nothing.
+//
+// Where it is called is requirement R1's own list (dispatch://INFRA-2712): every exit of
+// refreshPlugin that raises no gated relaunch, the lifecycle refusal relaunchStale makes before
+// it reserves, and the three places the wake's work is about to run (reserveWake's exempt and
+// straight-through paths, runWake). Every other way a relaunch can be lost — a wake dropped with
+// the process it was parked over (letGo), a wake a second launch replaced, a suspension that
+// ended it (endHeld), a post to a claim the daemon no longer supervises — gives nothing back
+// here and is taken back by the sweep's own correction instead (Correct, refreshStalePlugins),
+// which is one rule for all of them rather than a release at each.
+func (m *Machine) releaseRefresh() {
+	if !m.refreshCredit {
+		return
+	}
+	m.refreshCredit = false
+	if m.deps.RefreshGate != nil {
+		m.deps.RefreshGate.Release()
+	}
 }

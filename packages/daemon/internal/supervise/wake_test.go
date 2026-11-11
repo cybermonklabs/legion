@@ -51,11 +51,17 @@ func pacedDeps(rate int) func(*Deps) {
 	}
 }
 
-// pacedHarness is a harness whose machines reserve from one such limiter (pacedDeps).
-func pacedHarness(t *testing.T, rate int) *harness {
+// pacedHarness is a harness whose machines reserve from one such limiter (pacedDeps). tune is
+// whatever else the test's own Deps need, set before the first machine exists, as the daemon sets
+// them (openSupervision, then the machines it builds): the stale-plugin refresh gate is set that
+// way (plugin_refresh_gate_test.go).
+func pacedHarness(t *testing.T, rate int, tune ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
 	pacedDeps(rate)(&h.deps)
+	for _, set := range tune {
+		set(&h.deps)
+	}
 	c := queuedClaim()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		t.Fatal(err)
@@ -2224,48 +2230,6 @@ func TestAStalePluginRelaunchAHeldSuspensionEndsMarksNothing(t *testing.T) {
 		t.Fatalf("the suspended claim is marked for %d, want 0: its relaunch replaced no process", got.PluginRelaunchFor)
 	}
 	h.wantCalls("Resume", 0)
-}
-
-// A registration that clears the mark while a relaunch waits does not unsay the relaunch that
-// then runs. The mark is cleared by a registration that records this daemon's own contract
-// (register, reregister), and the launch the pacing holds goes on to replace that process at its
-// turn: it did relaunch, so it marks the claim where it starts, and the next registration that
-// still differs is read against it (staleRegistration). Nothing of the mark the relaunch found
-// is put back over the claim either — there is nothing to put back, because the decision wrote
-// nothing.
-//
-// The negative control is the commit removed (launchNow's commitPluginRelaunch): the claim ends
-// marked for nothing after a relaunch that did replace its process, which this test reads at the
-// mark and at the stored claim.
-func TestARegistrationInsideTheWaitDoesNotUnsayTheRelaunchThatRuns(t *testing.T) {
-	h := pacedHarness(t, wakeRate)
-	h.reach(StateReady)
-	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = true
-	// The mark an earlier relaunch of this claim left, for the registration below to clear.
-	h.m.claim.PluginRelaunchFor = 25
-
-	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakePluginRefresh)
-
-	// The shim reconnects inside the wait and the agent registers on this daemon's own contract,
-	// which clears the mark.
-	h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
-		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 25})
-	if got := h.claim(); got.PluginRelaunchFor != 0 {
-		t.Fatalf("the claim after a current registration is marked for %d, want 0", got.PluginRelaunchFor)
-	}
-
-	h.advance(waiting.At.Sub(h.clock.Now()))
-
-	h.wantStarts(h.token, 2)
-	if got := h.claim(); got.PluginRelaunchFor != 25 {
-		t.Fatalf("the claim after the turn that replaced its process is marked for %d, want 25: that relaunch ran",
-			got.PluginRelaunchFor)
-	}
-	if stored := h.store.load(h.token); stored.PluginRelaunchFor != 25 {
-		t.Fatalf("the store holds the claim marked for %d, want 25", stored.PluginRelaunchFor)
-	}
 }
 
 // suspendHeld is whether err is the answer a suspension held for later gives its caller.

@@ -128,20 +128,39 @@ const PodUpdateContract = 46
 // the daemon's state tells the refresh of a fleet from the launches that start a tree's work by
 // that kind alone (dispatch://INFRA-2712 R4). The other caller of relaunchStale passes the
 // launch kind instead, because it is one claim's own launch (staleRegistration).
-func (m *Machine) refreshPlugin(ctx context.Context, trigger string) error {
+//
+// admitted is whether a credit of the refresh gate was taken for this claim before this decision
+// was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
+// claim it posts and hands it over on the event (StalePlugin.Admitted), and the turn's end takes
+// one of its own for the relaunch it held (afterTurn). The machine holds it from here until the
+// relaunch it pays for runs or is abandoned (refreshCredit, releaseRefresh). Every return below
+// that raises no relaunch gives it straight back, because the lane gave up nothing by it and the
+// next sweep will decide this claim again: the contract already current, a wake already held,
+// no process to replace, and the turn this relaunch waits out, whose own end asks the gate anew.
+// The controller's claim is admitted nothing and takes nothing — its wake is outside the pacing
+// (reserveWake) — and a decision reached with no credit releases nothing, so the same calls
+// stand for both.
+func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bool) error {
+	if admitted {
+		m.refreshCredit = true
+	}
 	if m.claim.PluginContract == m.deps.PluginContract {
+		m.releaseRefresh()
 		return nil
 	}
 	// A claim already queued for a wake takes no second one.
 	if m.wake != nil {
+		m.releaseRefresh()
 		return nil
 	}
 	if !HoldsCapability(m.claim.State) {
+		m.releaseRefresh()
 		return nil
 	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
 	if m.claim.State == StateWorking && !controller {
 		m.holdStaleRelaunch(trigger)
+		m.releaseRefresh()
 		return nil
 	}
 	return m.relaunchStale(ctx, WakePluginRefresh, trigger)
@@ -155,6 +174,11 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string) error {
 // the line the relaunch logs names the pass that asked for it. A sweep finds the same claim every
 // tick while its turn runs, so only the first of them logs; the rest replace the trigger and say
 // nothing.
+//
+// A claim in a turn takes no admission of the refresh gate: the credit its pass took is given
+// back at the return below this call, and the turn's end asks the gate for one of its own
+// (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and holding a credit
+// through it would spend one of the K the lane has on a claim that is doing nothing with it.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
@@ -187,6 +211,10 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger string) error {
 	if m.held == nil {
 		if err := m.checkLaunch(ctx); err != nil {
+			// The relaunch reserves nothing, so the credit it was admitted on is owed back here:
+			// this return is as far as it gets, and the next sweep raises it again once the
+			// refusal clears (releaseRefresh, refreshStalePlugins in internal/daemon).
+			m.releaseRefresh()
 			return err
 		}
 	}
@@ -300,9 +328,29 @@ func (m *Machine) commitPluginRelaunch() {
 }
 
 // refreshStalePlugin is the StalePlugin event's row, for the four states a claim's relaunched
-// process can run in: the event's own Trigger (boot or sweep) names the pass that posted it.
+// process can run in: the event's own Trigger (boot or sweep) names the pass that posted it, and
+// its Admitted says whether that pass took a credit of the refresh gate for this claim, which
+// the machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
 func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
-	return m.refreshPlugin(ctx, ev.(StalePlugin).Trigger)
+	stale := ev.(StalePlugin)
+	return m.refreshPlugin(ctx, stale.Trigger, stale.Admitted)
+}
+
+// refreshOverturned is the fact the lane's relaunch was raised for, read again at the wake's own
+// turn: a refresh wake can wait tens of minutes in a wave, and what made the claim stale can be
+// gone by then. Two things end it, and each leaves the claim better off than the relaunch would.
+// Its recorded plugin contract is this daemon's: a registration landed inside the wait — the
+// process reconnected and registered current, or a relaunch of another path got there first — so
+// there is nothing left to replace. Or the claim has started a turn: the worker is working, and
+// a relaunch now is exactly the cut turn the whole lane is built to avoid (holdStaleRelaunch,
+// dispatch://INFRA-2712 R2), where the next sweep finds the claim idle and relaunches it then.
+//
+// Its one caller is runWake, ahead of the launch's own lifecycle recheck and the turn take-back
+// (StartsProcess), which is the only order in which the claim still holds what those two would
+// spend. A launch wake makes no such re-read, and until this gate none waited long enough to
+// need one: the check is what the deleted plugin round made at its own wake.
+func (m *Machine) refreshOverturned() bool {
+	return m.claim.PluginContract == m.deps.PluginContract || m.claim.State == StateWorking
 }
 
 // staleRegistration is what register and reregister run once they have recorded the plugin

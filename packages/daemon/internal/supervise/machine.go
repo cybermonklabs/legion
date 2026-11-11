@@ -1022,6 +1022,18 @@ type Machine struct {
 	// commitPluginRelaunch), and the decider drops whatever neither took (relaunchMarked). The
 	// mark itself is the claim's and durable, written by the launch that commits this intent.
 	pluginRelaunch *pluginIntent
+	// refreshCredit is whether this machine holds a credit of the stale-plugin refresh gate: one
+	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
+	// for was decided — by the daemon's pass, which hands what it took on the event it posts
+	// (StalePlugin.Admitted), or by the turn's end asking for one itself (afterTurn,
+	// admitRefresh) — and given back at the one helper that gives one back (releaseRefresh).
+	//
+	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
+	// claim that already holds a wake, so a second refresh of the same claim returns before it
+	// can take a second credit, and the one it was handed is released at that return. It is
+	// memory only, as the wake it is taken for is: a restart leaves the gate empty and the first
+	// pass fills it from the claims it reads (RefreshGate, refreshStalePlugins).
+	refreshCredit bool
 	// identity is the latest hello2 identity for the claim's current incarnation,
 	// kept until its enrollment lands; enrollmentSent is whether that enrollment has been handed
 	// to the shim over the claim's current connection.
