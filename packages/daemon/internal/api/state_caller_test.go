@@ -203,8 +203,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// empty as surely as filled (withoutWakesWaiting), with the gated steps gone, the
 			// field contract 55 added, with contract 56's retired entries under
 			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
-			// `step` gone, the record contract 57 added (withoutStallRecord), and with the
-			// places in the admission line gone, the field contract 58 added.
+			// `step` gone, the record contract 57 added (withoutStallRecord), with the
+			// places in the admission line gone, the field contract 58 added, and with the four
+			// merge-mark keys gone, which contract 62 added (withoutMergeMarks): such a pod is
+			// below every one of those contracts.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -215,6 +217,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
+				for _, field := range MergeMarkFields {
+					delete(want, field)
+				}
 			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)

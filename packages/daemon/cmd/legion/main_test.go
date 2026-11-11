@@ -1623,6 +1623,133 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 	}
 }
 
+// An operator reading plain `legion state` is told which paths the controller is holding still
+// and what those holds are costing: each hold with its paths, its repository, its reason, the
+// session that set the list and when it ends, then the issues whose merge is waiting on one,
+// each with the moment its row runs again. A hold of no named repository holds every repository
+// the project serves, and says so. With no hold and no held merge the line says so; a held merge
+// outliving the hold that caught it is a real moment, so the line names it rather than reading
+// as nothing held.
+func TestPlainStateNamesTheMergeHoldsAndWhatTheyHold(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	window := `{"paths":["packages/daemon/"],"repository":"acme/widgets","reason":"the release window",` +
+		`"endsAt":"2026-11-10T18:00:00Z","session":"controller-2","setAt":"2026-11-10T09:00:00Z"}`
+	migration := `{"paths":["migrations/","db/"],"repository":"","reason":"the migration lands by hand",` +
+		`"endsAt":"2026-11-10T19:00:00Z","session":"controller-2","setAt":"2026-11-10T09:00:00Z"}`
+	for _, tc := range []struct {
+		name, holds, held, want string
+	}{
+		{
+			name:  "two holds and the merge they are holding",
+			holds: `[` + window + `,` + migration + `]`,
+			held:  `[{"issue":"LEGION-211","dueAt":"2026-11-10T18:01:00Z"}]`,
+			want: `merge holds: 2 — "packages/daemon/" in acme/widgets, "the release window", set by controller-2 until 2026-11-10T18:00:00Z; ` +
+				`"migrations/" "db/" in every repository, "the migration lands by hand", set by controller-2 until 2026-11-10T19:00:00Z; ` +
+				"holding 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
+		},
+		{
+			name:  "a hold that has caught nothing",
+			holds: `[` + window + `]`,
+			held:  `[]`,
+			want: `merge holds: 1 — "packages/daemon/" in acme/widgets, "the release window", set by controller-2 until 2026-11-10T18:00:00Z; ` +
+				"no merge is held\n",
+		},
+		{
+			name:  "a held merge whose hold has ended",
+			holds: `[]`,
+			held:  `[{"issue":"LEGION-211","dueAt":"2026-11-10T18:01:00Z"}]`,
+			want:  "merge holds: none set; holding 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
+		},
+		{name: "none", holds: `[]`, held: `[]`, want: "merge holds: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"mergeHolds":` + tc.holds + `,"mergeHeld":` + tc.held + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told which issues carry a live jump mark, each
+// with its reason and the session that set it, and the newest jump of each repository that has
+// had one, each with what it went in front of: the entries GitHub's queue held and how long that
+// queue was, a queue GitHub did not answer told apart from an empty one, and a jump GitHub
+// refused named with its answer, since the mark is spent either way. With no mark and no record
+// the line says so.
+func TestPlainStateNamesTheMergeJumps(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	marked := `[{"issue":"LEGION-208","reason":"the release blocker","session":"controller-2","setAt":"2026-11-10T09:00:00Z"}]`
+	displaced := `{"repository":"acme/widgets","issue":"LEGION-207","number":412,"head":"c0ffee1","at":"2026-11-10T08:00:00Z",` +
+		`"reason":"the earlier blocker","entries":[{"number":401,"position":1,"jump":false,"state":"QUEUED","enqueuedAt":"2026-11-10T07:00:00Z"},` +
+		`{"number":402,"position":2,"jump":false,"state":"MERGEABLE","enqueuedAt":"2026-11-10T07:30:00Z"}],` +
+		`"entriesTotal":3,"entriesUnknown":false,"refused":false,"refusal":""}`
+	refused := `{"repository":"zeta/tools","issue":"LEGION-209","number":77,"head":"deadbee","at":"2026-11-10T08:30:00Z",` +
+		`"reason":"the hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"refused":true,` +
+		`"refusal":"the merge queue is not enabled on this repository"}`
+	for _, tc := range []struct {
+		name, jumps, records, want string
+	}{
+		{
+			name:    "a mark, a jump that displaced two and a jump GitHub refused",
+			jumps:   marked,
+			records: `[` + displaced + `,` + refused + `]`,
+			want: `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; the newest of each repository: ` +
+				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", in front of 3 queued: #401 QUEUED, #402 MERGEABLE; ` +
+				`zeta/tools LEGION-209 #77 at 2026-11-10T08:30:00Z "the hotfix", refused by GitHub: "the merge queue is not enabled on this repository"` + "\n",
+		},
+		{
+			name:    "a mark nothing has spent yet",
+			jumps:   marked,
+			records: `[]`,
+			want:    `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; none has been spent` + "\n",
+		},
+		{
+			name:    "a jump already spent and no mark standing",
+			jumps:   `[]`,
+			records: `[` + displaced + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", in front of 3 queued: #401 QUEUED, #402 MERGEABLE` + "\n",
+		},
+		{name: "none", jumps: `[]`, records: `[]`, want: "merge jumps: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"mergeJumps":` + tc.jumps + `,"mergeJumpRecords":` + tc.records + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made

@@ -770,5 +770,85 @@
       "stalled": false,
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
+  ],
+  "mergeJumps": [
+    {
+      "issue": "LEGION-210",
+      "reason": "the release blocker goes in first",
+      "session": "ses_controller",
+      "setAt": "2026-09-22T09:17:00Z"
+    }
+  ],
+  "mergeHolds": [
+    {
+      "paths": [
+        "packages/daemon/",
+        "packages/contracts/"
+      ],
+      "repository": "acme/widgets",
+      "reason": "the release window runs until 20:00",
+      "endsAt": "2026-09-22T20:00:00Z",
+      "session": "ses_controller",
+      "setAt": "2026-09-22T09:10:00Z"
+    },
+    {
+      "paths": [
+        "migrations/"
+      ],
+      "repository": "",
+      "reason": "the migration lands by hand",
+      "endsAt": "2026-09-22T22:00:00Z",
+      "session": "ses_controller",
+      "setAt": "2026-09-22T09:10:00Z"
+    }
+  ],
+  "mergeHeld": [
+    {
+      "issue": "LEGION-211",
+      "dueAt": "2026-09-22T20:01:00Z"
+    }
+  ],
+  "mergeJumpRecords": [
+    {
+      "repository": "acme/widgets",
+      "issue": "LEGION-207",
+      "number": 412,
+      "head": "34a7ac80e9c3389ffbc1bbeece371ccacc043992",
+      "at": "2026-09-22T08:55:00Z",
+      "reason": "the hotfix goes in first",
+      "entries": [
+        {
+          "number": 401,
+          "position": 1,
+          "jump": false,
+          "state": "QUEUED",
+          "enqueuedAt": "2026-09-22T08:40:00Z"
+        },
+        {
+          "number": 404,
+          "position": 2,
+          "jump": true,
+          "state": "MERGEABLE",
+          "enqueuedAt": "2026-09-22T08:51:00Z"
+        }
+      ],
+      "entriesTotal": 2,
+      "entriesUnknown": false,
+      "refused": false,
+      "refusal": ""
+    },
+    {
+      "repository": "zeta/tools",
+      "issue": "LEGION-209",
+      "number": 77,
+      "head": "9f1c0b7e2a6d4c3b8e5f0a1d2c3b4a5e6f708192",
+      "at": "2026-09-22T09:02:00Z",
+      "reason": "the revert goes in first",
+      "entries": [],
+      "entriesTotal": 0,
+      "entriesUnknown": true,
+      "refused": true,
+      "refusal": "GitHub refused the jump: the merge queue of zeta/tools takes no jump"
+    }
   ]
 }

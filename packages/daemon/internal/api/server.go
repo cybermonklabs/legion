@@ -633,13 +633,16 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // that let a stranded claim's state be `retired`, is served the report of claims nothing will
 // wake without its retired entries (withoutRetiredStranded); a caller below stallRecordContract,
 // the contract that added the claim views' step record, is served it without `step`
-// (withoutStallRecord); and a caller below waitingLineContract, the contract that added each
-// waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine).
-// The eight compose: each is applied when the state carries something of its own, so a caller
+// (withoutStallRecord); a caller below waitingLineContract, the contract that added each
+// waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine);
+// and a caller below mergeMarksContract, the contract that added the controller's merge marks,
+// is served it without `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords`
+// (withoutMergeMarks).
+// The nine compose: each is applied when the state carries something of its own, so a caller
 // below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
-// of the eleven keys, each of them absent rather than empty, since a strict reader before the
+// of the fifteen keys, each of them absent rather than empty, since a strict reader before the
 // contract that added a key refuses it whether or not it names anything, and with no retired
-// entry under `strandedClaims`. Every later reader takes all eleven keys as optional and all
+// entry under `strandedClaims`. Every later reader takes all fifteen keys as optional and all
 // three states — `packages/contracts/src/legion-api.ts` marks `admission.trees`, `wakesWaiting`,
 // the issues' `gatedSteps` and `waitingLine` and the claim views' `step` optional for exactly
 // these bodies. Any other caller — a pod at this contract, the operator's `legion state`, a
@@ -699,6 +702,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	if contract < waitingLineContract && carriesWaitingLine(state) {
 		state = withoutWaitingLine(state)
 	}
+	if contract < mergeMarksContract && carriesMergeMarks(state) {
+		state = withoutMergeMarks(state)
+	}
 	return state
 }
 
@@ -748,6 +754,14 @@ const stallRecordContract = 57
 // strip is what keeps the field from a caller that did not ask for it rather than what keeps
 // such a caller reading at all.
 const waitingLineContract = 58
+
+// mergeMarksContract is the daemon contract that added the controller's four merge-mark keys to
+// the state (version.go's 63): `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords`.
+// A plugin before it is served the state without them: one built before sjawhar/legion#2788
+// reads it with a strict schema and would refuse the whole body for a key it does not name, and
+// one built after strips the key instead, so the strip is what keeps the four from a caller
+// that did not ask for them rather than what keeps such a caller reading at all.
+const mergeMarksContract = 63
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -864,6 +878,29 @@ func withoutWaitingLine(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// carriesMergeMarks is whether state carries the four keys mergeMarksContract added:
+// `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords`. It carries all four whatever
+// the daemon holds, since the state writes each on every body, empty rather than null
+// (State.MarshalJSON), and the strict reader before the contract refuses an empty key as surely
+// as one naming a mark. So this is true of every state the route writes; it is asked beside
+// carriesUpdateRounds, carriesMemory, carriesTrees, carriesWakesWaiting, carriesGatedSteps,
+// carriesRetiredStranded, carriesStallRecord and carriesWaitingLine all the same, because
+// stateFor puts the same question to the nine and because a later contract that stops writing
+// the four on every body answers it here.
+func carriesMergeMarks(State) bool { return true }
+
+// withoutMergeMarks is state carrying none of the four keys mergeMarksContract added; nothing
+// else of that contract is on this route, since its other three surfaces are the controller's
+// own routes, which a plugin below the contract never posts. The keys are dropped and not
+// emptied, the way withoutWakesWaiting drops its own: a reader of an older contract refuses a
+// key it does not know whether or not it carries anything. The state is a value, so the copy
+// the route serves is the only one the flag is set on.
+func withoutMergeMarks(state State) State {
+	state.MergeJumps, state.MergeHolds, state.MergeHeld, state.MergeJumpRecords = nil, nil, nil, nil
+	state.mergeMarksHidden = true
 	return state
 }
 

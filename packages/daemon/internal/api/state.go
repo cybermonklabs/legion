@@ -84,12 +84,46 @@ type State struct {
 	// NATS at the request after the state's transaction commits, so no NATS read holds the
 	// snapshot open. Never null: a daemon with no workflow has none (contract 43).
 	Consumers []ConsumerLagView `json:"consumers"`
+	// MergeJumps is every live jump mark the project's issues carry (record.Store.MergeJumps),
+	// by issue: the issues whose next merge the daemon submits at the head of GitHub's merge
+	// queue rather than behind it. A mark is spent by the merge it governs, so this key is what
+	// the controller has asked for and not yet had; the account of what a spent one did is
+	// MergeJumpRecords. Never null; empty while no issue carries a mark (contract 62).
+	MergeJumps []MergeJumpView `json:"mergeJumps"`
+	// MergeHolds is the project's live merge holds, in the list's own order
+	// (record.Store.LiveMergeHolds): while one of them stands, the daemon submits no merge whose
+	// pull request changes a file that hold's patterns match. The read behind it is the one that
+	// deletes nothing, because this state is projected inside one snapshot transaction; an ended
+	// hold leaves the record at the next read the daemon or the controller makes
+	// (record.Store.MergeHolds), and is in no body here, since this key lists the live holds
+	// alone. Never null; empty while the project holds no path (contract 62).
+	MergeHolds []MergeHoldView `json:"mergeHolds"`
+	// MergeHeld is every issue whose merge one of those holds is keeping back
+	// (record.Store.MergeHeldIssues), by issue: what the holds above are costing, which no other
+	// key of this state says — such an issue waits on its own ready_merge row and shows nothing
+	// of the wait in its issue record. Never null; empty while no merge waits on a hold
+	// (contract 62).
+	MergeHeld []MergeHeldView `json:"mergeHeld"`
+	// MergeJumpRecords is the newest jump of each repository that has had one
+	// (record.Store.MergeJumpRecords), by repository: what the daemon did when it spent a mark,
+	// and what GitHub's queue held at that moment, which is what names whose merge the jump
+	// displaced. The record outlives the mark and the issue, so this key answers a reader after
+	// the fact; there is one row per repository and no history. Never null; empty until the
+	// project's first jump (contract 62).
+	MergeJumpRecords []MergeJumpRecordView `json:"mergeJumpRecords"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
 	// when it is empty as when it names a wake, so MarshalJSON leaves the key off that one body
 	// rather than writing it empty, as Admission.treesHidden does for `trees`.
 	wakesWaitingHidden bool
+	// mergeMarksHidden is set on the copy the state route serves a caller whose plugin is older
+	// than the contract that added the four merge-mark keys (api's withoutMergeMarks, below
+	// server.go's mergeMarksContract): that reader knows none of `mergeJumps`, `mergeHolds`,
+	// `mergeHeld` and `mergeJumpRecords` and refuses each as surely when it is empty as when it
+	// names a mark, so MarshalJSON leaves all four off that one body rather than writing them
+	// empty, as wakesWaitingHidden does for `wakesWaiting`.
+	mergeMarksHidden bool
 }
 
 // ConsumerLagView is one durable consumer's lag as the state shows it (intake.ConsumerLag): its
@@ -264,13 +298,39 @@ type AgentSecretsLoginView struct {
 }
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
-// `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The one exception is a state whose
-// waiting wakes are hidden, which carries no `wakesWaiting` key at all; that body is marshaled
-// through a value whose own nil `wakesWaiting` field, being `omitempty`, shadows the embedded one
-// and so is written by nothing, which is how Admission.MarshalJSON leaves off `trees`.
+// `strandedClaims`, `wakesWaiting`, `capabilities`, `consumers`, `mergeJumps`, `mergeHolds`,
+// `mergeHeld` and `mergeJumpRecords` arrays on the wire: a nil Go map or slice is `null`, which
+// the plugin's reader refuses. The exceptions are the two bodies a key is hidden on — a state
+// whose waiting wakes are hidden, which carries no `wakesWaiting` key at all, and one whose
+// merge marks are hidden, which carries none of the four merge-mark keys. Such a body is
+// marshaled through a value whose own nil field of that name, being `omitempty`, shadows the
+// embedded one and so is written by nothing, which is how Admission.MarshalJSON leaves off
+// `trees`.
+//
+// The two hidings are read as four cases rather than composed, because they are two contracts
+// and not one: a caller below the wakes' contract is below the marks' as well today, and
+// nothing here rests on that, so a later contract that hides one of them alone needs no change
+// to this reasoning.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
+	// noMarks is the body a caller below mergeMarksContract reads, and noWakes the body a caller
+	// below wakesWaitingContract reads; noBoth is a caller below both, which every caller below
+	// the second is today.
+	type noMarks struct {
+		wire
+		MergeJumps       []MergeJumpView       `json:"mergeJumps,omitempty"`
+		MergeHolds       []MergeHoldView       `json:"mergeHolds,omitempty"`
+		MergeHeld        []MergeHeldView       `json:"mergeHeld,omitempty"`
+		MergeJumpRecords []MergeJumpRecordView `json:"mergeJumpRecords,omitempty"`
+	}
+	type noWakes struct {
+		wire
+		WakesWaiting []WakeWaiting `json:"wakesWaiting,omitempty"`
+	}
+	type noBoth struct {
+		noMarks
+		WakesWaiting []WakeWaiting `json:"wakesWaiting,omitempty"`
+	}
 	out := wire(s)
 	if out.Issues == nil {
 		out.Issues = map[string]Issue{}
@@ -290,15 +350,34 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.Consumers == nil {
 		out.Consumers = []ConsumerLagView{}
 	}
+	if s.mergeMarksHidden {
+		out.MergeJumps, out.MergeHolds, out.MergeHeld, out.MergeJumpRecords = nil, nil, nil, nil
+	} else {
+		if out.MergeJumps == nil {
+			out.MergeJumps = []MergeJumpView{}
+		}
+		if out.MergeHolds == nil {
+			out.MergeHolds = []MergeHoldView{}
+		}
+		if out.MergeHeld == nil {
+			out.MergeHeld = []MergeHeldView{}
+		}
+		if out.MergeJumpRecords == nil {
+			out.MergeJumpRecords = []MergeJumpRecordView{}
+		}
+	}
 	if s.wakesWaitingHidden {
 		out.WakesWaiting = nil
-		return json.Marshal(struct {
-			wire
-			WakesWaiting []WakeWaiting `json:"wakesWaiting,omitempty"`
-		}{wire: out})
-	}
-	if out.WakesWaiting == nil {
+	} else if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
+	}
+	switch {
+	case s.wakesWaitingHidden && s.mergeMarksHidden:
+		return json.Marshal(noBoth{noMarks: noMarks{wire: out}})
+	case s.wakesWaitingHidden:
+		return json.Marshal(noWakes{wire: out})
+	case s.mergeMarksHidden:
+		return json.Marshal(noMarks{wire: out})
 	}
 	return json.Marshal(out)
 }
@@ -979,6 +1058,163 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	wakes = append(wakes, queued...)
 	slices.SortStableFunc(wakes, func(a, b WakeWaiting) int { return cmp.Compare(a.Claim, b.Claim) })
 	return wakes
+}
+
+// MergeMarkFields are the four keys the merge marks are served under, read from here by the
+// tests that look for the keys rather than repeating the strings, as WaitingLineField is. They
+// are one list because the strip takes all four together: a caller below mergeMarksContract is
+// served none of them, so a test of the strip asks the same question of each.
+var MergeMarkFields = []string{"mergeJumps", "mergeHolds", "mergeHeld", "mergeJumpRecords"}
+
+// MergeJumpView is one issue's live jump mark as the state shows it (record.MergeJump): the
+// issue, what the controller said the jump is for, the controller session that set it and when.
+// It carries no state of its own, because the mark has none: a mark in the record has not been
+// spent, and one that was spent or taken off is gone (record.Store.ClearMergeJump).
+type MergeJumpView struct {
+	Issue   string    `json:"issue"`
+	Reason  string    `json:"reason"`
+	Session string    `json:"session"`
+	SetAt   time.Time `json:"setAt"`
+}
+
+// MergeHoldView is one live merge hold as the state shows it (record.MergeHold): the unanchored
+// regular expressions it matches against the paths a pull request changes, the repository it
+// holds them in, what the controller said the hold is for, when it stops holding, and the
+// controller session that set the list and when.
+//
+// Repository is `owner/name`, and "" is every repository the project serves. It is spelled
+// `repository` and not `repo`, which the issue and pull request views use, because this view is
+// read beside the route that sets it (MergeHoldRequest.Repository): a controller comparing what
+// it sent with what the daemon holds reads one name for one thing.
+type MergeHoldView struct {
+	Paths      []string  `json:"paths"`
+	Repository string    `json:"repository"`
+	Reason     string    `json:"reason"`
+	EndsAt     time.Time `json:"endsAt"`
+	Session    string    `json:"session"`
+	SetAt      time.Time `json:"setAt"`
+}
+
+// MarshalJSON keeps `paths` an array on the wire: a hold the record answers always names at
+// least one path, and a nil slice would still be `null`, which the plugin's reader refuses.
+func (h MergeHoldView) MarshalJSON() ([]byte, error) {
+	type wire MergeHoldView
+	out := wire(h)
+	if out.Paths == nil {
+		out.Paths = []string{}
+	}
+	return json.Marshal(out)
+}
+
+// MergeHeldView is one issue whose merge a hold is keeping back (record.MergeHeldIssue): the
+// issue, and when its ready_merge row runs again, which is when the daemon reads the holds once
+// more. Nothing else of the row is here: the row's payload is the submission's own business, and
+// a reader of this key is asking which merges the holds are costing and when each is tried next.
+type MergeHeldView struct {
+	Issue string    `json:"issue"`
+	DueAt time.Time `json:"dueAt"`
+}
+
+// MergeQueueEntryView is one entry of GitHub's merge queue as it stood before a jump. It is
+// record.MergeQueueEntryRecord: the stored snapshot and the served one are the same rows spelled
+// the same way, and the record's own json tags are the wire's, so the type is declared once and
+// read under both names.
+type MergeQueueEntryView = record.MergeQueueEntryRecord
+
+// MergeJumpRecordView is the newest jump of one repository as the state shows it
+// (record.MergeJumpRecord): the repository, the issue whose mark was spent, the pull request's
+// number and head, when the daemon submitted it, the reason the mark carried, the queue as it
+// stood before the jump — oldest entry first, which is what names whose merge the jump displaced
+// — how long that queue was, whether GitHub answered no queue at all, and whether GitHub refused
+// the jump, with its answer.
+//
+// EntriesTotal and EntriesUnknown are both here because Entries alone cannot be read: it may
+// hold less of the queue than the queue had, and an empty Entries is a queue of nothing only
+// when EntriesUnknown is false. Refused and Refusal are here because the mark is spent whether
+// or not GitHub took the jump, and without them a refused jump would read as a merge that went
+// ahead of the queue.
+type MergeJumpRecordView struct {
+	Repository     string                `json:"repository"`
+	Issue          string                `json:"issue"`
+	Number         int                   `json:"number"`
+	Head           string                `json:"head"`
+	At             time.Time             `json:"at"`
+	Reason         string                `json:"reason"`
+	Entries        []MergeQueueEntryView `json:"entries"`
+	EntriesTotal   int                   `json:"entriesTotal"`
+	EntriesUnknown bool                  `json:"entriesUnknown"`
+	Refused        bool                  `json:"refused"`
+	Refusal        string                `json:"refusal"`
+}
+
+// MarshalJSON keeps `entries` an array on the wire: a jump of an empty queue, and one whose
+// queue GitHub did not answer (EntriesUnknown), both record no entry, and a nil slice would be
+// `null`, which the plugin's reader refuses.
+func (r MergeJumpRecordView) MarshalJSON() ([]byte, error) {
+	type wire MergeJumpRecordView
+	out := wire(r)
+	if out.Entries == nil {
+		out.Entries = []MergeQueueEntryView{}
+	}
+	return json.Marshal(out)
+}
+
+// MergeJumpViewsOf is jumps as the state shows them, mark for mark; no marks is an empty list.
+func MergeJumpViewsOf(jumps []record.MergeJump) []MergeJumpView {
+	views := make([]MergeJumpView, len(jumps))
+	for i, jump := range jumps {
+		views[i] = MergeJumpView{Issue: jump.Issue, Reason: jump.Reason, Session: jump.Session, SetAt: jump.SetAt}
+	}
+	return views
+}
+
+// MergeHoldViewsOf is holds as the state shows them, hold for hold, in the list's own order; no
+// holds is an empty list.
+func MergeHoldViewsOf(holds []record.MergeHold) []MergeHoldView {
+	views := make([]MergeHoldView, len(holds))
+	for i, hold := range holds {
+		views[i] = MergeHoldView{
+			Paths:      hold.Paths,
+			Repository: hold.Repository,
+			Reason:     hold.Reason,
+			EndsAt:     hold.EndsAt,
+			Session:    hold.Session,
+			SetAt:      hold.SetAt,
+		}
+	}
+	return views
+}
+
+// MergeHeldViewsOf is held as the state shows it, issue for issue; no held merge is an empty
+// list.
+func MergeHeldViewsOf(held []record.MergeHeldIssue) []MergeHeldView {
+	views := make([]MergeHeldView, len(held))
+	for i, issue := range held {
+		views[i] = MergeHeldView{Issue: issue.Issue, DueAt: issue.DueAt}
+	}
+	return views
+}
+
+// MergeJumpRecordViewsOf is records as the state shows them, record for record; no jump is an
+// empty list.
+func MergeJumpRecordViewsOf(records []record.MergeJumpRecord) []MergeJumpRecordView {
+	views := make([]MergeJumpRecordView, len(records))
+	for i, jump := range records {
+		views[i] = MergeJumpRecordView{
+			Repository:     jump.Repository,
+			Issue:          jump.Issue,
+			Number:         jump.Number,
+			Head:           jump.Head,
+			At:             jump.At,
+			Reason:         jump.Reason,
+			Entries:        jump.Entries,
+			EntriesTotal:   jump.EntriesTotal,
+			EntriesUnknown: jump.EntriesUnknown,
+			Refused:        jump.Refused,
+			Refusal:        jump.Refusal,
+		}
+	}
+	return views
 }
 
 // StateSource maps the daemon's durable and live facts through the transaction the state route

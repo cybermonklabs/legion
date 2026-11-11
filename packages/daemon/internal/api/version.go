@@ -845,4 +845,50 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 60, 61, 62: taken by open pull requests of this repository while this branch was open — 60 by
+// cybermonklabs/legion#2539, #2731 and #3511, 61 by #2230 and 62 by #3522 — read on 2026-11-11
+// over `gh api graphql` across every open pull request, with each one's own copy of this file at
+// refs/pull/<n>/head. None of them carries the merge marks, so this branch takes the number
+// above them rather than one of theirs, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. A gap, left so the history reads as it happened.
+//
+// 63: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon's enqueue at
+// READY jumps the merge queue, and can hold a path still while a window runs. `GET
+// /legion/v1/state` gains four keys: `mergeJumps`, every live jump mark of the project by issue
+// (the issue, the reason, the controller session that set it and when); `mergeHolds`, every live
+// hold in the list's own order (its paths, its repository — "" for every repository the project
+// serves — its reason, its end time, the session that set the list and when); `mergeHeld`, every
+// issue whose merge a hold is keeping back, with the moment its ready_merge row is due again;
+// and `mergeJumpRecords`, the newest jump of each repository that has had one (the repository,
+// the issue, the pull request's number and head, the time, the reason, the entries GitHub's
+// queue then held — each with its number, position, jump, state and when GitHub enqueued it —
+// the queue's total count, whether the entries are unknown, and whether GitHub refused the jump,
+// with its answer). None of the four is ever null, so a plugin built before this refuses the
+// state over them: the route serves a caller whose pod's claims record a contract below 63 the
+// state with none of the four keys at all (api's stateFor, withoutMergeMarks), as it serves a
+// caller below 58 one with no `waitingLine`, one below 57 one with no `step`, one below 56 the
+// stranded report without its retired entries, one below 55 the issues without the gated steps,
+// one below 53 a body with no wakes waiting and one below 49 no memory group. The three
+// controller routes are the number's other surfaces: `POST /legion/v1/merge/jump` sets one
+// issue's mark, `POST /legion/v1/merge/jump/clear` takes it off, and `POST
+// /legion/v1/merge/holds` replaces the project's whole hold list and makes every merge it was
+// holding back due at once. They need no gate of their own — the boot gate holds plugin and
+// daemon equal, so a controller whose tool posts them never meets a daemon that serves none —
+// and they are named here because this number is what a reader asks when a post is refused.
+// This change ships one store migration, `20261110235352_merge_marks.up.sql` (the marks, the
+// hold list and the jump records), and three new `record.ReadyMerge` payload fields, `held`,
+// `heldSince` and `heldTold`, which say that a hold caught this merge, when it first caught it
+// and that the controller was told. A rollback is not free: an older daemon's payload decoder is
+// strict, so it refuses those three fields on every retry of every ready_merge row this daemon
+// wrote, and that daemon's reader knows neither of the two new notice kinds, `merge-held` and
+// `merge-jump-refused`. (main carries 59. The open pull requests of this repository declare 60
+// (cybermonklabs/legion#2539, #2731, #3511), 61 (#2230) and 62 (#3522), beside numbers already
+// passed, read on 2026-11-11 with `gh api graphql` over every open pull request's file list —
+// a list GitHub cut short read as touching the file — and then each one's `version.go` at
+// refs/pull/<n>/head. 63 is the lowest number above the base's that no open pull request holds,
+// which is the number this repository's own gate names in its refusal
+// (.github/scripts/check-daemon-api-contract.sh). Read main's own number, and this file on every
+// open pull request, again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 63

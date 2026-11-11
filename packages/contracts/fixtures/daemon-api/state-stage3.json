@@ -102,5 +102,9 @@
     "role_config_files": {},
     "repository_renames": []
   },
-  "consumers": []
+  "consumers": [],
+  "mergeJumps": [],
+  "mergeHolds": [],
+  "mergeHeld": [],
+  "mergeJumpRecords": []
 }

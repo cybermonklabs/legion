@@ -561,6 +561,45 @@ func populatedState(t *testing.T) State {
 			},
 			{Name: "legion-go-LEGION-wake", Unavailable: "read the consumer's info: context deadline exceeded"},
 		}),
+		// The controller's merge marks, every key of them filled, so the fixture pins the four
+		// shapes rather than four empty lists: LEGION-210 is marked for a jump; two holds stand,
+		// one of a named repository and one of every repository the project serves; LEGION-211's
+		// merge is waiting on one of them; and each of two repositories has had a jump, the
+		// second refused by GitHub, which spends the mark all the same.
+		MergeJumps: []MergeJumpView{{
+			Issue: "LEGION-210", Reason: "the release blocker goes in first",
+			Session: "ses_controller", SetAt: time.Date(2026, 9, 22, 9, 17, 0, 0, time.UTC),
+		}},
+		MergeHolds: []MergeHoldView{
+			{
+				Paths: []string{"packages/daemon/", "packages/contracts/"}, Repository: "acme/widgets",
+				Reason: "the release window runs until 20:00", EndsAt: time.Date(2026, 9, 22, 20, 0, 0, 0, time.UTC),
+				Session: "ses_controller", SetAt: time.Date(2026, 9, 22, 9, 10, 0, 0, time.UTC),
+			},
+			{
+				Paths: []string{"migrations/"}, Reason: "the migration lands by hand",
+				EndsAt:  time.Date(2026, 9, 22, 22, 0, 0, 0, time.UTC),
+				Session: "ses_controller", SetAt: time.Date(2026, 9, 22, 9, 10, 0, 0, time.UTC),
+			},
+		},
+		MergeHeld: []MergeHeldView{{Issue: "LEGION-211", DueAt: time.Date(2026, 9, 22, 20, 1, 0, 0, time.UTC)}},
+		MergeJumpRecords: []MergeJumpRecordView{
+			{
+				Repository: "acme/widgets", Issue: "LEGION-207", Number: 412, Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992",
+				At: time.Date(2026, 9, 22, 8, 55, 0, 0, time.UTC), Reason: "the hotfix goes in first",
+				Entries: []MergeQueueEntryView{
+					{Number: 401, Position: 1, State: "QUEUED", EnqueuedAt: time.Date(2026, 9, 22, 8, 40, 0, 0, time.UTC)},
+					{Number: 404, Position: 2, Jump: true, State: "MERGEABLE", EnqueuedAt: time.Date(2026, 9, 22, 8, 51, 0, 0, time.UTC)},
+				},
+				EntriesTotal: 2,
+			},
+			{
+				Repository: "zeta/tools", Issue: "LEGION-209", Number: 77, Head: "9f1c0b7e2a6d4c3b8e5f0a1d2c3b4a5e6f708192",
+				At: time.Date(2026, 9, 22, 9, 2, 0, 0, time.UTC), Reason: "the revert goes in first",
+				EntriesUnknown: true, Refused: true,
+				Refusal: "GitHub refused the jump: the merge queue of zeta/tools takes no jump",
+			},
+		},
 	}
 	// LEGION-208's tree was drawn into the memory group, so its root and LEGION-209, a child of
 	// that tree, both show the draw as internal/projection fills them, while every other issue of

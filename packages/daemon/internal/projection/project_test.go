@@ -40,6 +40,13 @@ type projectionStore struct {
 	lifecycles []string
 	gates      map[string]map[record.DesignStep]record.DesignGate
 	owed       []record.OwedStart
+	// The controller's merge marks as Project reads them: the project's jump marks, its live
+	// holds, the issues whose merge a hold is keeping back, and the newest jump of each
+	// repository. Each is empty in the tests that are about another part of the state.
+	mergeJumps       []record.MergeJump
+	mergeHolds       []record.MergeHold
+	mergeHeld        []record.MergeHeldIssue
+	mergeJumpRecords []record.MergeJumpRecord
 }
 
 func (s projectionStore) TreeLifecycles(_ context.Context, _ pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
@@ -87,6 +94,23 @@ func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map
 }
 func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record.ProductionCheck, error) {
 	return s.checks, nil
+}
+
+// The four merge-mark reads. LiveMergeHolds is answered and MergeHolds is not: the second
+// deletes the project's ended holds, and the state's transaction must write nothing, so a
+// Project that called it would reach the nil Store this fake embeds and panic rather than pass
+// quietly.
+func (s projectionStore) MergeJumps(context.Context, pgx.Tx, string) ([]record.MergeJump, error) {
+	return s.mergeJumps, nil
+}
+func (s projectionStore) LiveMergeHolds(context.Context, pgx.Tx, string, time.Time) ([]record.MergeHold, error) {
+	return s.mergeHolds, nil
+}
+func (s projectionStore) MergeHeldIssues(context.Context, pgx.Tx, string) ([]record.MergeHeldIssue, error) {
+	return s.mergeHeld, nil
+}
+func (s projectionStore) MergeJumpRecords(context.Context, pgx.Tx, string) ([]record.MergeJumpRecord, error) {
+	return s.mergeJumpRecords, nil
 }
 func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, _ string, keys []string) ([]record.DispatchIssueRow, error) {
 	wanted := make(map[string]bool, len(keys))
@@ -833,5 +857,58 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	if len(got.Admission.Waiting) != 0 {
 		t.Fatalf("admission.waiting = %#v, want none: three of the four hold a row already, and the fourth waits only for its merge",
 			got.Admission.Waiting)
+	}
+}
+
+// The state carries the controller's merge marks as the record holds them: the live jump marks,
+// the live holds in the list's own order, the issues whose merge a hold is keeping back, and the
+// newest jump of each repository with the queue it displaced. A project with no mark at all
+// carries four empty lists and never a nil one, since the wire writes each key on every body.
+func TestProjectAnswersTheControllersMergeMarks(t *testing.T) {
+	setAt := projectedAt.Add(-time.Hour)
+	store := projectionStore{
+		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing}},
+		mergeJumps: []record.MergeJump{{Issue: "LEGION-208", Reason: "the release blocker", Session: "controller-2", SetAt: setAt}},
+		mergeHolds: []record.MergeHold{
+			{Paths: []string{"packages/daemon/"}, Repository: "acme/widgets", Reason: "the release window",
+				EndsAt: projectedAt.Add(time.Hour), Session: "controller-2", SetAt: setAt},
+			{Paths: []string{"migrations/"}, Reason: "the migration lands by hand",
+				EndsAt: projectedAt.Add(2 * time.Hour), Session: "controller-2", SetAt: setAt},
+		},
+		mergeHeld: []record.MergeHeldIssue{{Issue: "LEGION-211", DueAt: projectedAt.Add(time.Hour)}},
+		mergeJumpRecords: []record.MergeJumpRecord{{
+			Repository: "acme/widgets", Issue: "LEGION-207", Number: 412, Head: "c0ffee1", At: setAt,
+			Reason: "the earlier blocker", EntriesTotal: 2,
+			Entries: []record.MergeQueueEntryRecord{{Number: 401, Position: 1, State: "QUEUED", EnqueuedAt: setAt}},
+		}},
+	}
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	wantJumps := []api.MergeJumpView{{Issue: "LEGION-208", Reason: "the release blocker", Session: "controller-2", SetAt: setAt}}
+	if !reflect.DeepEqual(got.MergeJumps, wantJumps) {
+		t.Fatalf("mergeJumps = %#v, want %#v", got.MergeJumps, wantJumps)
+	}
+	if len(got.MergeHolds) != 2 || got.MergeHolds[0].Repository != "acme/widgets" || got.MergeHolds[1].Repository != "" {
+		t.Fatalf("mergeHolds = %#v, want the two holds in the list's order, the second of every repository", got.MergeHolds)
+	}
+	wantHeld := []api.MergeHeldView{{Issue: "LEGION-211", DueAt: projectedAt.Add(time.Hour)}}
+	if !reflect.DeepEqual(got.MergeHeld, wantHeld) {
+		t.Fatalf("mergeHeld = %#v, want %#v", got.MergeHeld, wantHeld)
+	}
+	if len(got.MergeJumpRecords) != 1 || got.MergeJumpRecords[0].EntriesTotal != 2 ||
+		len(got.MergeJumpRecords[0].Entries) != 1 || got.MergeJumpRecords[0].Entries[0].Number != 401 {
+		t.Fatalf("mergeJumpRecords = %#v, want the one record with the entry it displaced", got.MergeJumpRecords)
+	}
+
+	empty, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if empty.MergeJumps == nil || empty.MergeHolds == nil || empty.MergeHeld == nil || empty.MergeJumpRecords == nil {
+		t.Fatalf("a project with no mark projects %#v, %#v, %#v, %#v; want four empty lists and no nil",
+			empty.MergeJumps, empty.MergeHolds, empty.MergeHeld, empty.MergeJumpRecords)
 	}
 }
