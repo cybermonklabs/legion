@@ -59,7 +59,6 @@ import type {
 } from "@legion/contracts";
 import {
   ARTIFACT_NAME_EXISTS_RULE,
-  ARTIFACT_STORED_TEXT_RULE,
   ASK_URGENCIES,
   actorActText,
   actorLabel,
@@ -74,8 +73,10 @@ import {
   inboxThreadRow,
   isIdPrefix,
   itemFromSearch,
+  PATH_KEEPS_BYTES,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
+  pathKeepsBytesOf,
   serviceSubjectLabel,
   typedBlockIdAttribute,
   zodSchemaApi,
@@ -2167,10 +2168,73 @@ function firstStoredDifference(given: string, stored: string): string {
   return "the stored text differs from the text given";
 }
 
-/** The refusal of inline text the store would change: where the two first differ, and the rule
- *  that names path. */
-function storedTextProblem(given: string, stored: string): string {
-  return `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}. ${ARTIFACT_STORED_TEXT_RULE}`;
+/**
+ * How much of the stored text a refusal prints whole. Past it the refusal prints the first whole
+ * lines that fit and says how much it cut: a document is up to 1 MiB, and a refusal nobody can
+ * read to the end is one nobody acts on. The line a reader fixes first is named before the text
+ * either way, so a cut refusal still says what to change.
+ */
+const STORED_TEXT_PRINTED = 2000;
+
+/** The stored text as a refusal prints it, and what the refusal says of the cut: whole while it
+ *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED characters. */
+function storedTextPrinted(stored: string): { readonly text: string; readonly cut: string } {
+  if (stored.length <= STORED_TEXT_PRINTED) return { text: stored, cut: "" };
+  const head = stored.slice(0, STORED_TEXT_PRINTED);
+  const lastLineFeed = head.lastIndexOf("\n");
+  const text = lastLineFeed === -1 ? head : head.slice(0, lastLineFeed + 1);
+  return {
+    text,
+    cut: ` The text below is cut after ${text.length} of its ${stored.length} characters: change the line named above and send the text again.`,
+  };
+}
+
+/**
+ * The refusal of inline text the store would change: where the two first differ, the way out
+ * this name has, and the text the store writes, so the writer can send exactly that text. The
+ * markers hold the stored text apart from the prose around it. A name `--path` would store as
+ * bytes has a second way out, which keeps the text as it was written; a Markdown name has none,
+ * since `--path` parses and renders it the same way (`pathKeepsBytesOf`).
+ */
+function storedTextProblem(given: string, stored: string, name: string): string {
+  const asBytes = pathKeepsBytesOf(name)
+    ? ` To keep the text as you wrote it, send it as a file with ${PATH_KEEPS_BYTES}.`
+    : "";
+  const printed = storedTextPrinted(stored);
+  return [
+    `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}.`,
+    ` Send the text Dispatch stores, which is between the two marker lines below.${asBytes}`,
+    `${printed.cut}\n--- the text Dispatch stores ---\n${printed.text}`,
+    "--- end of the text Dispatch stores ---",
+  ].join("");
+}
+
+/**
+ * The refusal of an upload whose stored-text check could not run. The check is the one thing that
+ * says whether the store would write this text under another spelling, so a failure that is not
+ * the route's absence leaves that question open, and an upload sent anyway would store the
+ * changed text this check exists to stop.
+ */
+function storedTextCheckFailed(error: unknown): string {
+  return `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}. Send the upload again once that call is answered.`;
+}
+
+/**
+ * Whether the round trip failed because the server holds no such route: the 404 or 405 a Dispatch
+ * older than POST /api/v1/markdown/round-trip answers. Such a server cannot say what it would
+ * store, and refused the upload itself before this check existed, so the upload goes on and that
+ * server makes its own answer. Every other failure says nothing about the route.
+ */
+function roundTripRouteAbsent(error: unknown): boolean {
+  return error instanceof DispatchServiceError && (error.status === 404 || error.status === 405);
+}
+
+/** `text` without a final line feed, which is what the stored-text check compares. The store
+ *  ends every document it holds with one, so text a writer gave without one comes back with one
+ *  and nothing else changed (`markdown_round_trip_test.go` pins "one" stored as "one\n"). That
+ *  one line feed is the only difference the check forgives. */
+function withoutFinalLineFeed(text: string): string {
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 /** The Components line of an issue read: the effective set with where it came from. */
@@ -5626,12 +5690,24 @@ export async function executeDispatchTool(
       // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
       // text it would write under another spelling is refused here rather than stored changed.
       // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
-      // A Dispatch that does not answer it - an older one, or one that takes this text nowhere -
-      // leaves the upload to make its own refusal, as it did before this check.
+      // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
+      // it did before this check: every other failure refuses the upload, since a check that did
+      // not run says nothing about what the store would write.
       if (content !== undefined) {
-        const stored = await client.markdownRoundTrip(content).catch(() => undefined);
-        if (stored !== undefined && stored !== content) {
-          throw new ToolInputError(input.tool, [storedTextProblem(content, stored)]);
+        let stored: string | undefined;
+        try {
+          stored = await client.markdownRoundTrip(content);
+        } catch (error) {
+          if (!roundTripRouteAbsent(error)) throw new Error(storedTextCheckFailed(error));
+        }
+        // The store ends a document with a line feed the writer's own text need not carry, and
+        // that one line feed is no other spelling: both sides lose at most one before they are
+        // compared. Every other difference is refused.
+        if (
+          stored !== undefined &&
+          withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)
+        ) {
+          throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
         }
       }
       const artifactInput =

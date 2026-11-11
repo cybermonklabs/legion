@@ -3,7 +3,6 @@ import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   ARTIFACT_NAME_EXISTS_RULE,
-  ARTIFACT_STORED_TEXT_RULE,
   type Artifact,
   type BlockPath,
   dispatchToolSpecs,
@@ -10436,8 +10435,9 @@ describe("executeDispatchTool", () => {
   });
 
   // INFRA-1522 R15: inline text is stored as Markdown, so Dispatch stores its rendering. The
-  // command asks the store what it would hold and refuses a text it would write otherwise.
-  test("refuses inline content the store would change, naming --path", async () => {
+  // command asks the store what it would hold and refuses a text it would write otherwise. The
+  // refusal prints the text the store writes, because that is the text the writer sends instead.
+  test("refuses inline content the store would change, printing the text Dispatch stores", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
@@ -10469,10 +10469,221 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     expect(failure.problems).toEqual([
-      'Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one". ' +
-        ARTIFACT_STORED_TEXT_RULE,
+      'Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one".' +
+        " Send the text Dispatch stores, which is between the two marker lines below." +
+        "\n--- the text Dispatch stores ---\n# Notes\n\n- one\n- two\n" +
+        "--- end of the text Dispatch stores ---",
     ]);
+    // notes.md is a Markdown name, which --path parses and renders the same way, so the refusal
+    // sends nobody there: the one way out is the text printed above.
+    expect(failure.problems[0]).not.toContain("--path");
     expect(requests).toEqual(["/api/v1/issues/DSP-42/artifacts", "/api/v1/markdown/round-trip"]);
+  });
+
+  // A name --path would store as bytes has a second way out, and the refusal names it.
+  test("names --path in the refusal of a name whose extension keeps the bytes", async () => {
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ markdown: "- one\n" });
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "Design notes", content: "* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toEqual([
+      'Dispatch stores this text under another spelling: line 1 reads "* one" and is stored as "- one".' +
+        " Send the text Dispatch stores, which is between the two marker lines below." +
+        " To keep the text as you wrote it, send it as a file with path (--path <file>), which" +
+        " stores a file whose path does not end in .md or .markdown as its bytes, unchanged." +
+        "\n--- the text Dispatch stores ---\n- one\n" +
+        "--- end of the text Dispatch stores ---",
+    ]);
+  });
+
+  // A document is up to 1 MiB, and a refusal nobody reads to the end is one nobody acts on, so a
+  // long stored text is cut at a line boundary and the refusal says how much it cut.
+  test("cuts a long stored text in the refusal and says what it cut", async () => {
+    const body = "A paragraph of the design.\n\n".repeat(200);
+    const stored = `# Notes\n\n- one\n\n${body}`;
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ markdown: stored });
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: `# Notes\n\n* one\n\n${body}` },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    const printed =
+      /--- the text Dispatch stores ---\n([\s\S]*)--- end of the text Dispatch stores ---$/.exec(
+        problem
+      )?.[1] ?? "";
+    expect(problem).toContain('line 3 reads "* one" and is stored as "- one".');
+    expect(printed.length).toBeGreaterThan(0);
+    expect(printed.length).toBeLessThan(stored.length);
+    // Whole lines only, and the start of the stored text, so what is printed reads as it stores.
+    expect(stored.startsWith(printed)).toBe(true);
+    expect(printed.endsWith("\n")).toBe(true);
+    expect(problem).toContain(
+      ` The text below is cut after ${printed.length} of its ${stored.length} characters: change the line named above and send the text again.`
+    );
+  });
+
+  // INFRA-1522 R15: the store ends every document it holds with a line feed, so text written
+  // without one comes back with one and nothing else changed. That is no other spelling, and the
+  // upload goes on. The server's own test pins it ("one" is stored as "one\n",
+  // packages/envoy/internal/dispatch/api/markdown_round_trip_test.go).
+  test("uploads inline content whose only difference is the store's final line feed", async () => {
+    const content = "# Notes\n\n- one\n- two";
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: `${JSON.parse(String(init?.body)).markdown}\n` });
+      }
+      posts.push(String(init?.body));
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toContain("Uploaded notes.md as version 1");
+    // The text goes up as it was written: the store adds the line feed, the command does not.
+    expect(posts.map((body) => JSON.parse(body).content)).toEqual([content]);
+  });
+
+  // INFRA-1522 R15(b): only a Dispatch that holds no such route leaves the upload to make its own
+  // refusal. 404 and 405 are what such a server answers.
+  test.each([
+    [404, "NOT_FOUND", "no route for POST /api/v1/markdown/round-trip"],
+    [405, "METHOD_NOT_ALLOWED", "method not allowed"],
+  ])("uploads when the round trip answers %i, which says the route is absent", async (status, code, error) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    });
+
+    expect(result.text).toContain("Uploaded notes.md as version 1");
+    expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
+  });
+
+  // Every other failure leaves open what the store would write, so the upload stops rather than
+  // storing the changed text this check exists to refuse.
+  test.each([
+    [401, "UNAUTHENTICATED", "the bearer token is not valid"],
+    [500, "INTERNAL", "the document service is down"],
+  ])("refuses the upload when the round trip answers %i, naming what failed", async (status, code, error) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
+      // A failed write asks /healthz whether the server keeps idempotency keys. Only the upload
+      // route is counted here.
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = failure instanceof Error ? failure.message : String(failure);
+    expect(message).toContain(
+      "Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with "
+    );
+    expect(message).toContain(error);
+    expect(message).toContain("Send the upload again once that call is answered.");
+    // The upload never left: a check that did not run says nothing about what the store writes.
+    expect(posts).toEqual([]);
   });
 
   test("uploads inline content the store would hold as it stands, and asks no round trip for a file", async () => {

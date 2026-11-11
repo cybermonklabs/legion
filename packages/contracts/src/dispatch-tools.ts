@@ -121,7 +121,7 @@ function brokenParts(parts: ReadonlyArray<readonly [boolean, string]>): string |
 const CONTENT_IS_MARKDOWN =
   "content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
 
-const PATH_KEEPS_BYTES =
+export const PATH_KEEPS_BYTES =
   "path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged";
 
 const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so with content the name ends in .md or .markdown or has no extension; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
@@ -139,16 +139,31 @@ export const ARTIFACT_NAME_EXISTS_RULE =
  * What `dispatch artifact` says of inline text the store would change. The command renders the
  * text as Dispatch renders a document it stores and compares the two, so a text stored under
  * another spelling (a `*` list stored with `-`, an ordered list renumbered, a CR LF stored as a
- * line feed) is refused before the upload rather than stored changed.
+ * line feed) is refused before the upload rather than stored changed. The rule holds for both
+ * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
+ * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
  */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused: send it as a file with ${PATH_KEEPS_BYTES}.`;
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
-/** A name's extension: what follows its last dot when that holds no blank. Digits count, so
- *  "rows.jsonl.1" has one, and so does a title such as "plan v1.2", which takes content once it
- *  ends in .md. */
+/** A name's extension, or undefined for a name with none: what follows its last dot when that
+ *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
+ *  "plan v1.2", which takes content once it ends in .md. */
 const NAME_EXTENSION = /\.([^\s.]+)$/u;
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
+
+/**
+ * Whether `--path` would store this name's text as the bytes it was written as: true for every
+ * name that does not end in .md or .markdown, a name with no extension included. Dispatch reads
+ * an upload's media type, which a Markdown path alone makes `text/markdown`, and parses and
+ * renders only a document (`PATH_KEEPS_BYTES`). A refusal of inline text the store would change
+ * names `--path` for such a name, and never for a Markdown one, which `--path` would change the
+ * same way.
+ */
+export function pathKeepsBytesOf(name: string): boolean {
+  const extension = NAME_EXTENSION.exec(name.trim())?.[1];
+  return extension === undefined || !MARKDOWN_EXTENSION.test(extension);
+}
 
 const artifactOwner = documentOwnerValidation(false);
 
@@ -469,15 +484,16 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   refusal: (value) => handoffProblem(value) ?? HANDOFF_RULE,
 };
 
-/** Every argument a record of a result carries, required ones first. A retraction takes none of
- *  them: it names the stored result and says why that result is wrong, and nothing of a fresh
- *  run belongs in it. */
+/** The five arguments a record of a result must carry. They are named here rather than taken as
+ *  the head of the list below, because reading them by position makes a field inserted in the
+ *  wrong place change what a record requires, with nothing to say so. */
+const RESULT_REQUIRED_FIELDS = ["issue", "check", "role", "verdict", "commit"] as const;
+
+/** Every argument a record of a result carries, the required ones above first. A retraction
+ *  takes none of them: it names the stored result and says why that result is wrong, and
+ *  nothing of a fresh run belongs in it. */
 const RESULT_RECORD_FIELDS = [
-  "issue",
-  "check",
-  "role",
-  "verdict",
-  "commit",
+  ...RESULT_REQUIRED_FIELDS,
   "surface",
   "run",
   "observed",
@@ -518,7 +534,7 @@ function resultProblem(value: unknown): string | undefined {
   if (input["reason"] !== undefined) {
     return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
   }
-  const missing = RESULT_RECORD_FIELDS.slice(0, 5).filter((field) => input[field] === undefined);
+  const missing = RESULT_REQUIRED_FIELDS.filter((field) => input[field] === undefined);
   if (missing.length > 0) {
     return `recording a result needs ${missing.join(", ")}. ${RESULT_RETRACT_RULE}`;
   }
@@ -1520,7 +1536,7 @@ export const dispatchToolSpecs = [
       "taken on a closed issue and for a check of any when. Three callers may retract: the " +
       "session that recorded the result, a session that holds the Dispatch claim of the issue " +
       "the result was recorded on, and a caller whose credential carries a person. Every other " +
-      "caller is 403 FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
+      "caller is 403 RETRACTION_FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
@@ -1646,7 +1662,7 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed; send such a text as a file with path."
+          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
         )
         .optional(),
       force: z
