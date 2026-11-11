@@ -34,7 +34,13 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		if pr.Run == nil && !adopted {
 			return intake.Result{}, nil
 		}
-		return intake.Result{}, e.putPullRequest(ctx, tx, settled)
+		// This write is the one pull-request write that marks no movement of the issue
+		// (record.Issue.MovedAt, the rule in engine.go's dispatchIssue). It records the fence
+		// the daemon read and decides nothing — no run and no outcome changed — so it is the
+		// daemon learning what it already knew, which is never a movement. Marking it would
+		// refresh a stopped tree's quiet time at every duplicate settlement the listener sends,
+		// and a tree that stopped with a settled head would never be found at all.
+		return intake.Result{}, e.store.PutPullRequest(ctx, tx, settled)
 	}
 	*pr = settled
 	return intake.Result{}, e.decideChecks(ctx, tx, pr, false)

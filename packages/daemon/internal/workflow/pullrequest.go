@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -14,24 +15,76 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// putPullRequest records pr and marks its issue moved (the rule in engine.go's dispatchIssue).
-// Every write of a pull request row in this package goes through it, and none may call
-// record.Store.PutPullRequest directly: the row is written from about a dozen places — a pull
-// request opened, reopened, synchronized, pushed to, closed or merged, a CI settlement, a new
-// read of what the base branch requires, a mergeability read, a review, a merge queue answer, a
-// READY held to its head — and a write site added later would otherwise have to remember the
-// mark. Routing them all through one function is what makes forgetting impossible rather than
-// merely unlikely.
+// putPullRequest records pr and marks its issue moved where the write is news of the pull
+// request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
+// in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
+// it but one: the row is written from about a dozen places — a pull request opened, reopened,
+// synchronized, pushed to, closed or merged, a CI settlement, a new read of what the base branch
+// requires, a mergeability read, a review, a merge queue answer, a READY held to its head — and
+// a write site added later would otherwise have to remember the mark. Routing them through one
+// function is what makes forgetting it hard rather than easy.
+//
+// The one exception calls record.Store.PutPullRequest itself and says why where it stands: the
+// listener's duplicate of a settlement the pass already built (review.go's checks), which writes
+// the fence the daemon read and decides nothing. The fence is part of the judgement, so the test
+// below would read that write as news, and the daemon recording what it has read of GitHub is no
+// movement of the work. A new write site that only records a read belongs there; every write
+// that changes what the record knows of the pull request belongs here.
+//
+// The row the record holds is read first, by its own key in the caller's transaction, so the
+// test has both sides. That read is the cost of never mistaking a repeat for news: GitHub
+// redelivers a webhook, and the daemon's own passes rebuild a push or a settlement whose webhook
+// was lost, so the same fact reaches this code twice as a matter of course.
 //
 // The issue is the row's own (record.PullRequest.Issue), so the helper needs no second argument
 // and cannot be handed the wrong key. The moment is the engine's clock, as every other site's
 // is: the fact is being applied now, whatever clock GitHub stamped it with, and the mark says
 // when the daemon saw the issue move.
 func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
+	recorded, err := e.store.PullRequest(ctx, tx, pr.Issue)
+	if err != nil {
+		return err
+	}
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return err
 	}
+	if recorded != nil && !pullRequestNews(*recorded, pr) {
+		return nil
+	}
 	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
+}
+
+// pullRequestNews says whether the write of after over before is news of the pull request: the
+// daemon's judgement of it changed (classify.JudgementChanged — its head, its planned mark, the
+// head it checked, its failing and cancelled checks, its check runs, its settlement fence, and
+// what its base branch requires), its head run opened or closed, the pushes it is still holding
+// changed, or one of the facts GitHub reports about the pull request itself changed: its state,
+// the newest deciding review, GitHub's mergeability verdict, the head the daemon holds
+// conflicting, and the merge commit.
+//
+// What it leaves out is every part of the row that is the daemon's own bookkeeping of a fact it
+// has already taken: the moves a push spends as it is reconciled (record.PullRequest.Moves,
+// classify.ApplyPushDropping) and GitHub's clock of its last change to the pull request
+// (HeadUpdatedAt). A redelivered webhook, and a webhook of a push or a settlement one of the
+// daemon's own passes rebuilt first, write those and nothing else; marked as movements they
+// would refresh the quiet time of a tree that has not moved since its work ended, and that tree
+// would never be found (record.QuietTrees). The daemon's own suites hold that line: a late push
+// webhook and a late settlement are each asserted to change nothing of the issue record
+// (internal/daemon's lateWebhookPushDecidesNothing and lateSettlementChangesOnlyTheFence).
+//
+// A field added to record.PullRequest later is not news to this test until it is named here. The
+// direction that costs something is this one — an unnamed field that is news leaves a tree
+// reading quieter than it is, which is one notice to a controller — while naming a field that is
+// not news loses the stopped tree the measure exists to find.
+func pullRequestNews(before, after record.PullRequest) bool {
+	return classify.JudgementChanged(before, after) ||
+		(before.Run == nil) != (after.Run == nil) ||
+		!slices.Equal(before.Pushes, after.Pushes) ||
+		before.State != after.State ||
+		before.ReviewSeen != after.ReviewSeen ||
+		before.Mergeability != after.Mergeability ||
+		before.ConflictingHead != after.ConflictingHead ||
+		before.MergeSHA != after.MergeSHA
 }
 
 // pullRequestOpened records the pull request a branch opened, and a reopen is the same pull
