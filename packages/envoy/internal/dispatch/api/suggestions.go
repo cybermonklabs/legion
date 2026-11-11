@@ -185,7 +185,10 @@ func (s *server) decisionBlockChecks(
 		} else {
 			source.artifactID = artifact.ID
 		}
-		input := relatedInput{project: artifact.Project, text: block.Question, title: block.Question, source: source, record: true}
+		input := relatedInput{
+			project: artifact.Project, text: block.Question, title: block.Question,
+			source: source, question: true, record: true,
+		}
 		checks[index] = decisionBlockCheck{BlockID: block.ID, Question: block.Question}
 		if index >= decisionBlockCheckLimit {
 			suggestions := notMadeSuggestions("more than five new decision blocks in one edit")
@@ -247,6 +250,12 @@ type relatedInput struct {
 	excludeIssues []string
 	// keywordsOnly skips the meaning search.
 	keywordsOnly bool
+	// question says the write is a question to a person: an ask create, a new decision block, or
+	// the POST form of the related route, which `dispatch related` calls. Such a check also
+	// offers the answered questions of the other projects (relatedOtherProjects). An issue
+	// create and the GET form of the related route leave it false, so they offer the items of
+	// the asking project alone.
+	question bool
 	// record writes the check's records: write_suggestions rows for an issue or ask source and one
 	// related_checks row. The no-write route leaves it false.
 	record bool

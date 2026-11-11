@@ -68,7 +68,10 @@ func (s *server) getRelated(w http.ResponseWriter, r *http.Request) {
 		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; send a longer text with POST")
 		return
 	}
-	s.answerRelated(w, r, request)
+	// The GET form offers no answered question of another project: its one caller is the
+	// new-issue dialog of the web application, which runs the check for each burst of a person's
+	// typing and draws the items of the asking project alone.
+	s.answerRelated(w, r, request, false)
 }
 
 // postRelated answers POST /api/v1/projects/{key}/related: the check over the body's title and
@@ -87,12 +90,16 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 		capExceeded(w, "title", length, contracts.IssueTitleMax)
 		return
 	}
-	s.answerRelated(w, r, request)
+	// The POST form is what `dispatch related` calls, which an agent runs on purpose to ask a
+	// question, so it offers the answered questions of the other projects too.
+	s.answerRelated(w, r, request, true)
 }
 
 // answerRelated runs the check both forms share against the path's project, recording nothing:
 // it has no source to record, and a reader trying words out must not count as a write's check.
-func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest) {
+// question says the form asks a person a question, which the two forms do not do alike
+// (postRelated and getRelated say why).
+func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest, question bool) {
 	project := r.PathValue("key")
 	if !projectKeyPattern.MatchString(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", project))
@@ -126,6 +133,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		excludeIssue:  request.ExcludeIssue,
 		excludeIssues: excluded,
 		keywordsOnly:  request.KeywordsOnly,
+		question:      question,
 	}))
 }
 
