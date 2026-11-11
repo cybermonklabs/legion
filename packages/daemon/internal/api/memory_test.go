@@ -86,7 +86,7 @@ var contract46Issue = []string{
 // trees too; a pod at 53 or 54 the wakes too; a pod at 55 the steps too, and still none of the
 // retired entries, the step records, the places, the counts and the marks; a pod at 56 the
 // retired entries too; a pod at 57 the step records too; a pod at 58 to 61 the places too, and
-// still neither the counts nor the four merge-mark keys; a pod at 62 to 65 the counts too, and
+// still neither the counts nor the four merge-mark keys; a pod at 62 to 71 the counts too, and
 // still none of the marks; a pod below 46 none of the ten; and a pod at this contract, a pod
 // whose claims record none and a caller in no pod — the operator's `legion state`, whose memory
 // line reads the draws, whose queue line reads the wakes, whose tool-call line reads the step
@@ -160,7 +160,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// places in the admission line are served too, and the counts of the moves back and the
 		// four merge-mark keys are held back.
 		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
-		// The band at 62 to 65, from backwardMovesContract to below mergeMarksContract: the
+		// The band at 62 to 71, from backwardMovesContract to below mergeMarksContract: the
 		// counts are served too, and the four merge-mark keys are the ones held back.
 		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, marks: true},
@@ -224,7 +224,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				delete(want, "wakesWaiting")
 			}
 			// A pod below mergeMarksContract is served none of the four merge-mark keys, which
-			// contract 66 added (api's withoutMergeMarks): they are dropped and not emptied, so
+			// contract 72 added (api's withoutMergeMarks): they are dropped and not emptied, so
 			// the body carries no such key at all.
 			if !tc.marks {
 				for _, field := range MergeMarkFields {

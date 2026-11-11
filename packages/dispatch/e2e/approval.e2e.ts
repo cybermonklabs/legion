@@ -660,7 +660,7 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
     await expect(handedBack).toBeVisible();
     await expect(handedBack).not.toContainText("Edited");
 
-    await shown.getByRole("button", { name: "Answer" }).click();
+    await shown.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect(
       answering.getByText("Your answer was not saved, because the question changed.")
     ).toHaveCount(0);

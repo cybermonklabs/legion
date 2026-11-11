@@ -88,7 +88,7 @@ type State struct {
 	// by issue: the issues whose next merge the daemon submits at the head of GitHub's merge
 	// queue rather than behind it. A mark is spent by the merge it governs, so this key is what
 	// the controller has asked for and not yet had; the account of what a spent one did is
-	// MergeJumpRecords. Never null; empty while no issue carries a mark (contract 66).
+	// MergeJumpRecords. Never null; empty while no issue carries a mark (contract 72).
 	MergeJumps []MergeJumpView `json:"mergeJumps"`
 	// MergeHolds is the project's live merge holds, in the list's own order
 	// (record.Store.LiveMergeHolds): while one of them stands, the daemon submits no merge whose
@@ -96,20 +96,20 @@ type State struct {
 	// deletes nothing, because this state is projected inside one snapshot transaction; an ended
 	// hold leaves the record at the next read the daemon or the controller makes
 	// (record.Store.MergeHolds), and is in no body here, since this key lists the live holds
-	// alone. Never null; empty while the project holds no path (contract 66).
+	// alone. Never null; empty while the project holds no path (contract 72).
 	MergeHolds []MergeHoldView `json:"mergeHolds"`
 	// MergeHeld is every issue whose merge one of those holds is keeping back
 	// (record.Store.MergeHeldIssues), by issue: what the holds above are costing, which no other
 	// key of this state says — such an issue waits on its own ready_merge row and shows nothing
 	// of the wait in its issue record. Never null; empty while no merge waits on a hold
-	// (contract 66).
+	// (contract 72).
 	MergeHeld []MergeHeldView `json:"mergeHeld"`
 	// MergeJumpRecords is the newest jump of each repository that has had one
 	// (record.Store.MergeJumpRecords), by repository: what the daemon did when it spent a mark,
 	// and what GitHub's queue held at that moment, which is what names whose merge the jump
 	// displaced. The record outlives the mark and the issue, so this key answers a reader after
 	// the fact; there is one row per repository and no history. Never null; empty until the
-	// project's first jump (contract 66).
+	// project's first jump (contract 72).
 	MergeJumpRecords []MergeJumpRecordView `json:"mergeJumpRecords"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
@@ -534,7 +534,9 @@ type Issue struct {
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
 // wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it.
+// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
+// of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
+// (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`

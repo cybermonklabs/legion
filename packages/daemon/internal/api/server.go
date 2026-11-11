@@ -771,12 +771,12 @@ const waitingLineContract = 58
 const backwardMovesContract = 62
 
 // mergeMarksContract is the daemon contract that added the controller's four merge-mark keys to
-// the state (version.go's 66): `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords`.
+// the state (version.go's 72): `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords`.
 // A plugin before it is served the state without them: one built before sjawhar/legion#2788
 // reads it with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the key instead, so the strip is what keeps the four from a caller
 // that did not ask for them rather than what keeps such a caller reading at all.
-const mergeMarksContract = 66
+const mergeMarksContract = 72
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

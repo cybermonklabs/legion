@@ -207,7 +207,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
 			// places in the admission line gone, the field contract 58 added, with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves), and with the four merge-mark keys gone, which contract 66
+			// (withoutBackwardMoves), and with the four merge-mark keys gone, which contract 72
 			// added (withoutMergeMarks): such a pod is below every one of those contracts.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {

@@ -2362,8 +2362,8 @@ jobs:
   # Dockerfile, the manifest and the helper beside it, and the eight actions, so
   # a step of it that waited on a release host would turn every pull request touching one of
   # those files red on exactly the day the fallback is doing its work.
-  # .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its
-  # only callers.
+  # .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
+  # the test job runs its ladder-report verb as well, over logs of its own.
   # It needs ci-images, which fills the copy this proof reads; the comment on the ci_images
   # filter says why that filter is a superset of this job's.
   #
@@ -3418,11 +3418,14 @@ jobs:
       # The reading of what the stand-in curl measured, before the fault stops, so that its own
       # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
       # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
-      # one did; for a kept measurement outside the window the rig holds it to; for a fetch
-      # that stayed on the ladder, spent one and then failed, which is a fault shape the
-      # stand-in's rule did not recognise; and for a fetch the stand-in shortened that then
-      # served the bytes, which is the reading that holds the shorten-ladder step at its
-      # position.
+      # one did; for a kept measurement outside the window the rig holds it to; for more
+      # fetches carrying CI_TOOLS_PROOF_FULL_LADDER than the bound the rig holds that count to,
+      # which is a second step's `env:` carrying that variable, or a kept case that makes more
+      # requests than it did; for a fetch that stayed on the ladder, spent one and then
+      # failed, which is a fault shape the stand-in's rule did not recognise; and for a fetch
+      # the stand-in shortened that then served the bytes, which is the reading that holds the
+      # shorten-ladder step at its position. Every run of it that reads the log through prints
+      # that count beside the bound, whether the reading passes or refuses.
       - name: Read what the stand-in curl measured of every fetch
         run: .github/scripts/ci-tools-proof.sh ladder-report
 
@@ -3768,9 +3771,10 @@ jobs:
       - name: Test the CI image mirror
         run: .github/scripts/mirror-ci-images.test.sh
 
-      # The three tool scripts, in the order they depend on each other: the fetch helper every
-      # install goes through, the filler that puts the bytes in the copy that helper reads, and
-      # the gate that holds every row to its pin.
+      # The tool scripts, in the order they depend on each other: the fetch helper every
+      # install goes through, the filler that puts the bytes in the copy that helper reads, the
+      # gate that holds every row to its pin, and the rig that drives that helper against a
+      # fault in the tool-fallback job.
       - name: Test the tool fetch helper
         run: .github/scripts/ci-tools.test.sh
 
@@ -3779,6 +3783,9 @@ jobs:
 
       - name: Test the tool manifest check
         run: .github/scripts/check-ci-tools.test.sh
+
+      - name: Test the tool fallback rig
+        run: .github/scripts/ci-tools-proof.test.sh
 
       - name: Test the action pin check
         run: .github/scripts/check-action-pins.test.sh
@@ -3848,7 +3855,7 @@ jobs:
       - name: Test the race memory sampler
         run: .github/scripts/race_memory.test.sh
 
-      - name: Test the disk watch
+      - name: Test the machine watch
         run: .github/scripts/disk_watch.test.sh
 
       - name: Test the session import pods script (a stand-in kubectl)
@@ -4691,6 +4698,12 @@ jobs:
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         run: bash loadtest/cluster/cluster.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: bash loadtest/vm/vm.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
+        run: bash loadtest/vm/sample.test.sh
         working-directory: packages/envoy
       # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
       # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
@@ -5667,22 +5680,25 @@ jobs:
         id: docker-plugin
         uses: ./.github/actions/install-docker-plugin
       # The live tests build container images on this runner's disk, and a job that runs out of
-      # space says only that it did. The pair around the step measures it: `start` prints what
-      # each file system the job writes to has free and leaves a sampler watching the one that
-      # holds /tmp, `report` stops the sampler and prints the free space the step began with,
-      # the least it ever had and the difference, with `margin short` when the step used more
-      # than half of what it started with (dispatch://INFRA-1085). The report prints and never
-      # fails the job: this is the measurement, not a new gate. The two steps share their state
-      # through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every later step of the
-      # job would inherit and check-ci-filters.sh treats as reaching the job's go commands.
-      - name: Start the disk watch over the live tests
+      # space says only that it did. The pair around the step measures it, and measures the two
+      # readings beside it: `start` prints what each file system the job writes to has free and
+      # leaves a sampler watching the one that holds /tmp, the memory the kernel reports
+      # available and the one-minute load, one line per second; `report` stops the sampler and
+      # prints the worst each of them reached, with the free space the step began with, the
+      # least it ever had and the difference, and `margin short` when the step used more than
+      # half of what it started with (dispatch://INFRA-1085, dispatch://INFRA-2605). The report
+      # prints and never fails the job: this is the measurement, not a new gate. The two steps
+      # share their state through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every
+      # later step of the job would inherit and check-ci-filters.sh treats as reaching the job's
+      # go commands.
+      - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
       - name: Live tests of envoy-infra's host:Listener
         run: go test -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra
         env:
           ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}
-      - name: Report the disk the live tests used
+      - name: Report what the live tests ran on
         if: always()
         run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
       # The schema carries both of the things the release build stamps into the plugin: the
