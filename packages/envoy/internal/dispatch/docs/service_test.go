@@ -2204,6 +2204,12 @@ func followAskRefusal(t *testing.T, service *Service, artifactID, blockID string
 			}
 		}
 		kept = remaining
+		// The step the refusal names where its deletes drop a decision: "a decision among them
+		// whose ask is still open cannot be deleted by a document edit, so answer or resolve
+		// that ask, or repair the decision in the document editor, before this delete"
+		// (askRepairStep). The server refuses such an edit too (refuseDroppedAskBlocks), so the
+		// follow resolves each of those asks, as the ask route resolves one.
+		resolveOpenAsksUnder(t, service, artifactID, ask, deletes)
 		if _, applyErr := joinedApplyOps(service, artifactID, ops, model.Actor{Kind: "user", ID: "alice"}, nil); applyErr != nil {
 			t.Fatalf("one document edit deleting %q, as the refusal names: %v\nrefusal: %v", deletes, applyErr, err)
 		}
@@ -3570,6 +3576,34 @@ func blockAskRow(t *testing.T, service *Service, artifactID, blockID string) (st
 		t.Fatalf("decode ask row options: %v", err)
 	}
 	return state, question, options
+}
+
+// resolveOpenAsksUnder resolves the open ask of every decision the named blocks of ask hold,
+// themselves included: the step the refusal names before a delete of theirs, which the server
+// refuses while such an ask is open (refuseDroppedAskBlocks). It writes the row as the ask
+// route's resolve writes it, a resolution beside the state the table holds them to.
+func resolveOpenAsksUnder(t *testing.T, service *Service, artifactID string, ask *pmdoc.Node, blocks []string) {
+	t.Helper()
+	for _, id := range blocks {
+		pmdoc.WalkAskBlocks(blockByID(ask, id), func(decision string) {
+			if decision == "" {
+				return
+			}
+			if _, err := service.store.Pool.Exec(context.Background(), `
+				update asks
+				set state = 'resolved', answer = null,
+				    resolution = jsonb_build_object(
+				      'kind', 'resolved',
+				      'reason', 'repaired by the delete the refusal names',
+				      'actor', jsonb_build_object('kind', 'user', 'id', 'alice'),
+				      'at', now()
+				    )
+				where block_artifact_id = $1 and block_id = $2 and state = 'open'
+			`, artifactID, decision); err != nil {
+				t.Fatalf("resolve the open ask of the decision %q the delete drops: %v", decision, err)
+			}
+		})
+	}
 }
 
 // firstAsk is the document's first top-level ask.

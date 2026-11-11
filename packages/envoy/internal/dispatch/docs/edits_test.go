@@ -3463,19 +3463,40 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	}
 }
 
-func TestApplyOpsDeletingAnOpenAskBlockByIDRetractsItsAsk(t *testing.T) {
+// A document edit may not take a block an open ask points at out of the document: the batch is
+// refused and the ask is left open (R5 of dispatch://INFRA-1520, refuseDroppedAskBlocks). A
+// person's editor is what removes such a block, and settlement retracts the ask of the block
+// that left.
+func TestAnEditCannotDropAnOpenAskBlockAndTheEditorsRemovalRetractsIt(t *testing.T) {
 	service, artifactID, askID, settle, askEvents := blockAskHarness(t)
-	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil); err != nil {
-		t.Fatalf("delete ask block: %v", err)
+	var invalidAsk *ErrInvalidAskBlock
+	_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil)
+	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "decision") {
+		t.Fatalf("delete of the open ask block = %v, want it refused for the block it drops", err)
 	}
+	if state, _ := askRowState(t, service, askID); state != "open" {
+		t.Fatalf("the refused delete left the ask %q, want it open", state)
+	}
+
+	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		kept := make([]*pmdoc.Node, 0, len(tree.Children))
+		for _, child := range tree.Children {
+			if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); id == "decision" {
+				continue
+			}
+			kept = append(kept, child)
+		}
+		tree.Children = kept
+		return tree
+	})
 	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n")
 	settle()
 	state, resolution := askRowState(t, service, askID)
 	if state != "resolved" || resolution == nil || *resolution != "retracted" {
-		t.Fatalf("deleted ask state=%q resolution=%v, want retracted", state, resolution)
+		t.Fatalf("the removed block's ask state=%q resolution=%v, want retracted", state, resolution)
 	}
 	if got := askEvents(); got != 2 {
-		t.Fatalf("ask events after delete = %d, want opened and resolved", got)
+		t.Fatalf("ask events after the removal = %d, want opened and resolved", got)
 	}
 }
 

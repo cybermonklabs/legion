@@ -618,9 +618,12 @@ const editReadBackBound = 2000
 // starts from (stampAskBlockIDs) and the caller stamps the tree it wrote (pmdoc.EnsureBlockIDs) -
 // so the two sides are matched by id.
 func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
+	// The render reads the document the batch wrote, so a tree only the renderer refuses is the
+	// document's own refusal (ErrDocOutsideSchema), which the route answers 409 DOC_SCHEMA, as
+	// every other render of a document names it (documentMarkdownValidWithOffsets).
 	markdown, offsets, err := written.RenderWithBlockOffsets()
 	if err != nil {
-		return "", err
+		return "", documentSchemaError(err)
 	}
 	spans := make(map[string]pmdoc.BlockOffset, len(offsets))
 	for _, offset := range offsets {

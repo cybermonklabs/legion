@@ -759,9 +759,18 @@ func TestAnAnswerBesideASecondBlockResolvedDoesNotCarry(t *testing.T) {
 func TestAnAnswerAfterABlockHeApprovedWasRemovedDoesNotCarry(t *testing.T) {
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved block removed", "Context\n\n"+regionAsk)
-	indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
+	region := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	asks := insertDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, waveAsk, 2, map[string]string{"wave": "How many regions take the first wave?"})
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
+	// A batch whose result drops a block an open ask points at is refused (R5 of
+	// dispatch://INFRA-1520), so the agent closes the question before it cuts the block.
+	resolved := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+region["region"]+"/resolve", map[string]any{
+		"kind": "resolved", "reason": "Decided in the kickoff.", "actor": sessionActor(),
+	})
+	if resolved.Code != http.StatusOK {
+		t.Fatalf("resolve the approved block's ask: status=%d body=%s", resolved.Code, resolved.Body.String())
+	}
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
 	deleted := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 		"actor": sessionActor(),
 		"ops":   []map[string]string{{"op": "delete", "block": "region"}},
@@ -769,10 +778,10 @@ func TestAnAnswerAfterABlockHeApprovedWasRemovedDoesNotCarry(t *testing.T) {
 	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete the approved block: status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
-	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 4)
 
 	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 4)
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 5)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")
 }
 

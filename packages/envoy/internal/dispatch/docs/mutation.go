@@ -839,6 +839,12 @@ func placeList(places []string) string {
 	return strings.Join(places[:len(places)-1], ", ") + " and " + places[len(places)-1]
 }
 
+// refuseDroppedAskBlocks refuses a write whose result holds no block for an open ask of the
+// document: a question a person can still answer is not lost to a write. It serves every writer
+// held to that rule - an upload repairing a document (ReplaceText), a rebuild (RebuildDocument)
+// and an edit batch whose result drops one (ApplyOps, applyOpsUnconditional, which call it only
+// where dropsAskBlock says a block is gone). A person's own editor is not held to it: settlement
+// retracts the ask of a block that leaves the document there.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node) error {
 	rows, err := s.queryFrom(ctx).Query(ctx, `
 		select block_id from asks
@@ -875,7 +881,37 @@ func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string,
 		blockIDs = append(blockIDs, blockID)
 	}
 	sort.Strings(blockIDs)
-	return fmt.Errorf("replacement removes open ask blocks %s", strings.Join(blockIDs, ", "))
+	if len(blockIDs) == 1 {
+		return fmt.Errorf(
+			"this write removes the open decision block %s, whose question a person can still answer; "+
+				"answer or resolve its ask, or remove the block in the document editor, before this write",
+			blockIDs[0],
+		)
+	}
+	return fmt.Errorf(
+		"this write removes the open decision blocks %s, whose questions a person can still answer; "+
+			"answer or resolve each ask, or remove the blocks in the document editor, before this write",
+		strings.Join(blockIDs, ", "),
+	)
+}
+
+// dropsAskBlock reports whether after is missing an ask block before held, which is when a batch
+// owes the asks table a read: the question of a block the edit's result no longer holds may be
+// one a person can still answer (refuseDroppedAskBlocks). Both trees are already in hand, so a
+// batch that drops none answers from memory and sends no statement. An ask block carrying no id
+// is passed over, as the open asks are read by block id and no row can point at none.
+func dropsAskBlock(before, after *pmdoc.Node) bool {
+	kept := askBlockIDs(after)
+	dropped := false
+	pmdoc.WalkAskBlocks(before, func(id string) {
+		if id == "" || dropped {
+			return
+		}
+		if _, held := kept[id]; !held {
+			dropped = true
+		}
+	})
+	return dropped
 }
 
 // Text returns the rendered document the caller sees (readDocument).
@@ -1478,6 +1514,12 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 				mutationErr = &ErrInvalidAskBlock{Reason: err}
 				return
 			}
+			if dropsAskBlock(batch.beforeTree, next) {
+				if err := s.refuseDroppedAskBlocks(ctx, artifactID, next); err != nil {
+					mutationErr = &ErrInvalidAskBlock{Reason: err}
+					return
+				}
+			}
 			var written pmdoc.ValidDocument
 			if outcome, written, mutationErr = batch.outcome(len(ops)); mutationErr != nil {
 				return
@@ -1545,6 +1587,11 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		pmdoc.EnsureBlockIDs(next)
 		if err := validateEditedAskBlocks(tree, next); err != nil {
 			return &ErrInvalidAskBlock{Reason: err}
+		}
+		if dropsAskBlock(batch.beforeTree, next) {
+			if err := s.refuseDroppedAskBlocks(ctx, artifactID, next); err != nil {
+				return &ErrInvalidAskBlock{Reason: err}
+			}
 		}
 		var written pmdoc.ValidDocument
 		if outcome, written, err = batch.outcome(len(ops)); err != nil {

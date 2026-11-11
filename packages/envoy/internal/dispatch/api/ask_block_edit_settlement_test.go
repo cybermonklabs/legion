@@ -589,18 +589,49 @@ func TestResolveBlockAskRefusesTheSettlementReason(t *testing.T) {
 	}
 }
 
+// removeBlockAsABrowserDoes deletes one block of the live document through a browser peer, and
+// returns once the room holds that deletion. A person's editor is the writer that removes a
+// block an open ask points at: the edits route refuses a batch whose result drops one (R5 of
+// dispatch://INFRA-1520), and so does an upload. The peer stays connected for the rest of the
+// test, as an open editor does.
+func removeBlockAsABrowserDoes(t *testing.T, documentService *docs.Service, artifactID, blockID string) {
+	t.Helper()
+	peer := connectBrowserPeer(t, documentService, artifactID)
+	t.Cleanup(peer.close)
+	peer.edit(t, func(tree *pmdoc.Node) error {
+		kept := make([]*pmdoc.Node, 0, len(tree.Children))
+		for _, child := range tree.Children {
+			if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); id == blockID {
+				continue
+			}
+			kept = append(kept, child)
+		}
+		if len(kept) == len(tree.Children) {
+			return fmt.Errorf("the document holds no block %q to delete", blockID)
+		}
+		tree.Children = kept
+		return nil
+	})
+	peer.barrier(t)
+}
+
 // Acceptance 5, second half: when the block leaves the document, settlement retracts its ask in
-// its own name, and undoing the deletion brings the ask back.
+// its own name, and undoing the deletion brings the ask back. A person deleting the block in
+// their editor is what takes it out of the document, since the edits route refuses a batch whose
+// result drops a block an open ask points at (R5 of dispatch://INFRA-1520,
+// TestAnEditDroppingABlockAnOpenAskPointsAtIsRefused).
 func TestBlockRemovedFromTheDocumentRetractsAsTheSystemActorAndUndoRestores(t *testing.T) {
-	handler, _ := blockAskHandler(t)
+	var documentService *docs.Service
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService = docs.New(docs.Deps{
+			Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond,
+		})
+		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		return documentService
+	})
 	issue, askID := seedBlockAsk(t, handler, "Block ask deletion", "decision", transportAsk, "Which transport?")
 
-	deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
-		"ops": []map[string]string{{"op": "delete", "block": "decision"}},
-	}, "alice")
-	if deleted.Code != http.StatusOK {
-		t.Fatalf("delete the ask block: status=%d body=%s", deleted.Code, deleted.Body.String())
-	}
+	removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")
 
 	ask := readBlockAsk(t, handler, askID)

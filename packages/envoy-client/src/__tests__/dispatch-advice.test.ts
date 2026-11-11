@@ -1136,6 +1136,27 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text.split("\n")[2]).toEndWith("--query 'Original title'");
   });
 
+  test("an older server's count on a replace searches by the ask block its with holds", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "draft", with: askBlock }],
+      },
+      advice({ decision_blocks_added: 1 })
+    );
+
+    expect(result.text).toBe(
+      [
+        appliedLine,
+        "1 new decision block:",
+        "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Should webhook deliveries'",
+        "Document token: sha256:edited",
+      ].join("\n")
+    );
+  });
+
   test("an edit that added no block prints no check", async () => {
     const result = await executeWrite(
       "dispatch_doc_edit",

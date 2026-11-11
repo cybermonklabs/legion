@@ -11,6 +11,15 @@ interface DecisionBlockInsert {
 
 // The table the server's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads, which checks
 // each row's ids against the document the server stored.
+//
+// Each row is driven through an `insert` alone, and not through a `replace` as well. The scan
+// reads a `replace`'s `with` by the same call as an insert's markdown, with the front-matter flag
+// false, so a replace run of the table would re-run the client code the insert rows already run.
+// The server's reader would pay for it: a `replace` needs a match, so every row would need a
+// seeded document whose match sits in a plain paragraph, since the server refuses blocks written
+// over a match in a heading, in a table cell, or in a typed block whose rule cannot hold them, and
+// writes them as literal text over a match in code. The scan and the server part only at those
+// match places, which no row names, so a replace run would hold nothing the insert run holds.
 const table: DecisionBlockInsert[] = JSON.parse(
   await Bun.file(
     new URL(
@@ -341,14 +350,38 @@ describe("newAsks", () => {
     ]);
   });
 
-  test("a replace's with opens no block", () => {
+  test("a replace's with opens the ask blocks it holds", () => {
     expect(
       newAsks("dispatch_doc_edit", {
         issue: "DSP-1",
         artifact: "spec",
         ops: [{ op: "replace", find: "Old", with: ":::ask{#window}\nWhich?\n:::" }],
       })
+    ).toEqual([{ kind: "block", id: "window", text: "Which?", opening: "Which?" }]);
+  });
+
+  test("a replace's with that opens no block opens none", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "Old", with: "New wording." }],
+      })
     ).toEqual([]);
+  });
+
+  // The scan cannot know where the match sits, so it reads no front matter in a `with`: a block
+  // between two `---` lines opens, where front-matter reading would hide it.
+  test("a replace's with reads no front matter", () => {
+    expect(
+      ids(
+        newAsks("dispatch_doc_edit", {
+          issue: "DSP-1",
+          artifact: "spec",
+          ops: [{ op: "replace", find: "Old", with: "---\n:::ask{#window}\nWhich?\n:::\n---" }],
+        })
+      )
+    ).toEqual(["window"]);
   });
 
   test("a new issue's spec opens each ask block in it", () => {

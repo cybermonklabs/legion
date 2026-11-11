@@ -1,8 +1,16 @@
 // The asks a gated Dispatch call opens for a person, read from the call's arguments as its
 // --dry-run prints them: a `dispatch ask`; each ask block in the markdown a `dispatch doc-edit`
-// inserts, a `dispatch issue` spec holds, or a `dispatch artifact` upload holds; and each block a
-// `dispatch doc-edit` retypes into an ask. A `replace`'s `with` opens no block (`dispatch doc-edit
-// --help`), and `dispatch edit-ask`, `comment`, `message` and `request-approval` open no new ask.
+// inserts or writes over a match, a `dispatch issue` spec holds, or a `dispatch artifact` upload
+// holds; and each block a `dispatch doc-edit` retypes into an ask. `dispatch edit-ask`, `comment`,
+// `message` and `request-approval` open no new ask.
+//
+// A `replace`'s `with` is read as an `insert`'s markdown is, with no front matter read in it:
+// `newAsks` cannot know whether the match sits at the document's start, which is what the server's
+// front-matter reading needs, and reading front matter where there is none would hide an ask block
+// the server opens. The gate fails closed, as `refuseRemovingOpenDecisionBlocks` does: it
+// over-reports where the server would refuse the operation (a match in a heading, in a table cell,
+// or in a typed block whose rule cannot hold the blocks) or write the text as literal code (a
+// match in a code block).
 //
 // The Dispatch server decides which lines of markdown are ask blocks, so the scan reads markdown as
 // its parser does: goldmark's block structure (`parseBlocks`, `openBlocks` and the default block
@@ -52,12 +60,23 @@ export function newAsks(toolName: string, input: Readonly<Record<string, unknown
     case "dispatch_doc_edit":
       return (Array.isArray(input.ops) ? input.ops : []).flatMap((op: unknown): NewAsk[] => {
         if (typeof op !== "object" || op === null) return [];
-        const { op: kind, markdown, type, block } = op as Record<string, unknown>;
+        const {
+          op: kind,
+          markdown,
+          with: replacement,
+          type,
+          block,
+        } = op as Record<string, unknown>;
         // Inserted text reads a closed front-matter block as front matter only where it lands at
         // the document's start (pmdoc.ParseFragment's opensDocument); a "start" anchor is that.
         if (kind === "insert" && typeof markdown === "string") {
           const { before, after } = op as Record<string, unknown>;
           return scanAsks(markdown, before === "start" || after === "start");
+        }
+        // A `with` is the same markdown, read with its front matter unread: the module comment
+        // says why the scan reads it that way and what that over-reports.
+        if (kind === "replace" && typeof replacement === "string") {
+          return scanAsks(replacement, false);
         }
         if (kind === "retype" && type === "ask" && typeof block === "string") {
           return [{ kind: "retype", id: block, text: "", opening: "" }];
