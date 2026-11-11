@@ -793,6 +793,33 @@ func TestCurvesTakeTheLoopFactorOfAStepThatCarriesOne(t *testing.T) {
 	}
 }
 
+// TestCurvesLeaveAStepThatDroveNoLoopLoadOutOfTheKneeWalk: a loop-series baseline of ten
+// minutes beside a 1x that fails. The baseline carries no loop factor, so it is a control row
+// and no point of the curve: the knee at 1x has no step passing before it and nothing under it
+// is refined.
+func TestCurvesLeaveAStepThatDroveNoLoopLoadOutOfTheKneeWalk(t *testing.T) {
+	root := t.TempDir()
+	baseline := goodSummary(1)
+	baseline.Config.LoopFactor = 0
+	baseline.Config.RequestsPerS = 60
+	baseline.Config.EventsPerS = 4
+	out := loopCurves(t,
+		loopFixture(t, root, "baseline", baseline, fixtureCgroup(2)),
+		loopFixture(t, root, "1x", collapsed(1), fixtureCgroup(3)))
+	_, rows := curvesCSV(t, out)
+	if got := rows["baseline"]["kind"]; got != "control" {
+		t.Errorf("the baseline is a %q row at factor %q, want a control row: it drove none of the series' load", got, rows["baseline"]["factor"])
+	}
+	knees := readText(t, filepath.Join(out, "KNEES.md"))
+	want := "- Bracket: (none, 1): the series' first judged step fails, so no step passed before it."
+	if !strings.Contains(knees, want) {
+		t.Errorf("KNEES.md does not bracket the knee at 1x as %q:\n%s", want, knees)
+	}
+	if got := readText(t, filepath.Join(out, "refine.txt")); got != "" {
+		t.Errorf("refine.txt asks the series to run %q: the baseline brackets no knee", got)
+	}
+}
+
 // TestCurvesFailAStepThatLostANotification: criterion (g) fails the step whose loop sessions were
 // owed a notification that never arrived, and names the class that lost it; a class that lost
 // none passes however many of its writes landed on the boundary of a session's life, and a step

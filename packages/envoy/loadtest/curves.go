@@ -286,12 +286,12 @@ const seriesPGCPUs = 16
 // classify is the step's kind. For a cluster step whose copy names the phase, meta.json's copy
 // (cluster.sh's write_copy_meta) says what the run did, so the kind comes from the run and not
 // from the step's name: the hour is the phase soak, or a window of an hour or more; the 4 vCPU
-// database is a copy whose Postgres has fewer than seriesPGCPUs vCPUs; the reads-only control is
-// a step the run marked reads-only, or one that offered no event; every other step is in the knee
-// series. Without such a copy (a local stack run, or a run from before cluster.sh recorded the
-// phase, whose copy names the series' Postgres tier for every step) the name says it, as it
-// always did: a window of an hour or more or -hour, -db4, -reads. The name is the row's label
-// either way.
+// database is a copy whose Postgres has fewer than seriesPGCPUs vCPUs; the control is a step
+// the run marked reads-only, or one that drove none of the series' load (droveNoSeriesLoad);
+// every other step is in the knee series. Without such a copy (a local stack run, or a run
+// from before cluster.sh recorded the phase, whose copy names the series' Postgres tier for
+// every step) the name says it, as it always did: a window of an hour or more or -hour, -db4,
+// -reads. The name is the row's label either way.
 func (s *curveStep) classify() curveKind {
 	if c, ok := readStepCopy(s.meta); ok && c.Phase != "" {
 		cpus, haveCPUs := c.pgCPUs()
@@ -300,7 +300,7 @@ func (s *curveStep) classify() curveKind {
 			return kindHour
 		case haveCPUs && cpus < seriesPGCPUs:
 			return kindDB4
-		case c.ReadsOnly || (!s.noSummary && s.sum.Config.EventsPerS == 0):
+		case c.ReadsOnly || s.droveNoSeriesLoad():
 			return kindControl
 		}
 		return kindSeries
@@ -310,10 +310,31 @@ func (s *curveStep) classify() curveKind {
 		return kindHour
 	case strings.HasSuffix(s.name, "-db4"):
 		return kindDB4
-	case strings.HasSuffix(s.name, "-reads") || (!s.noSummary && s.sum.Config.EventsPerS == 0):
+	case strings.HasSuffix(s.name, "-reads") || s.droveNoSeriesLoad():
 		return kindControl
 	}
 	return kindSeries
+}
+
+// droveNoSeriesLoad is a step that drove none of its series' load, which is a control row and
+// no point of the curve. A step that offered no event drove none of any series'. A step of a
+// series whose steps each offer their own rates (ownFactorsOnly) drove none of that series'
+// when its summary carries no loop factor: the factor is what the series' own rates are
+// multiplied by, so such a step is the baseline population alone and it reads factor 0
+// (stepFactor). Without this rule it joined the knee walk at factor 0, where a passing
+// baseline in front of a failing 1x brackets the knee at (0, 1) and writes a 0.5x refinement
+// the series never asked for (INFRA-988).
+//
+// It is not what keeps the run's own baselines out of the walk: those ran 3,600 s, and the
+// hour rule above, which is tested first, takes them and every other 60-minute step of that
+// run out of it. This rule reaches the step that drove no loop load in a window under an hour.
+// Comparing steps by the configuration each one ran rather than by a factor is
+// dispatch://INFRA-2719's to design.
+func (s *curveStep) droveNoSeriesLoad() bool {
+	if s.noSummary {
+		return false
+	}
+	return s.sum.Config.EventsPerS == 0 || (s.se.ownFactorsOnly && s.sum.Config.LoopFactor <= 0)
 }
 
 // kindName is the step's kind as curves.csv names it.
@@ -1063,9 +1084,14 @@ func renderCurvesCSV(se *curveSeries, steps []*curveStep) (string, error) {
 func renderCurves(se *curveSeries, steps []*curveStep) string {
 	var md markdown
 	md.line("# Scaling curves\n")
-	md.line("One row per step: the knee series (the grid and refinement steps) in factor order, then the reads-only control, the hour and the 4 vCPU database. A step's factor is its requests/s target ÷ 60 (events/s ÷ 4 without requests). `-` is a number the step did not measure or that could not be read, never 0.")
-	if slices.ContainsFunc(steps, func(s *curveStep) bool { return s.sum.Config.LoopFactor > 0 }) {
-		md.line("\nA step whose summary.json carries `config.loop_factor` reads at that factor instead (`loadgen run -loop-factor`): the steps of a series whose every step has its own baseline rates would all read as factor 1 otherwise.")
+	md.line("One row per step: the knee series (the grid and refinement steps) in factor order, then the control, the hour and the 4 vCPU database. `-` is a number the step did not measure or that could not be read, never 0.")
+	if se.ownFactorsOnly {
+		md.line("\nA step's factor is the `config.loop_factor` its run was given (`loadgen run -loop-factor`), since every step of this series offers its own rates. A step whose summary.json carries none drove none of this series' load: it reads factor 0 and is a control row, never a point of the curve.")
+	} else {
+		md.line("\nA step's factor is its requests/s target ÷ 60 (events/s ÷ 4 without requests).")
+		if slices.ContainsFunc(steps, func(s *curveStep) bool { return s.sum.Config.LoopFactor > 0 }) {
+			md.line("\nA step whose summary.json carries `config.loop_factor` reads at that factor instead (`loadgen run -loop-factor`): the steps of a series whose every step has its own baseline rates would all read as factor 1 otherwise.")
+		}
 	}
 	if slices.ContainsFunc(steps, func(s *curveStep) bool { return s.failed }) {
 		md.line("\n(failed: <kinds>), in every table: the step failed, so its row shows no number. The kinds are step-failed.json's `reasons[].kind` ("+failedKindsText+"; `sampler_gap`: a role went over %s without a good cgroup sample in the window), `%s` (cgroup.json is marked failed) and `%s` (the step directory holds none).",

@@ -3777,18 +3777,24 @@ removes the store with `sudo` and makes it again as the ssh user at the mode `up
 ### The profiling tunnel
 
 Dispatch's profiling port binds `127.0.0.1` only (`cmd/dispatch/pprof.go`), and Dispatch runs with
-host networking, so that port answers on its own machine's loopback and nowhere else. Two readers
-need it:
+host networking, so that port answers on its own machine's loopback and nowhere else. What a step
+reads there:
 
-- The profiles a step keeps (`cpu.pprof`, `goroutines.txt`, `heap.pprof`, `heap.txt`) are fetched
-  from that machine itself, over ssh, by a job `step` runs **beside the load**: the CPU profile
-  is asked for when the warm-up ends and answers the window's seconds later, so it is a profile
-  of the measured window, and the three state snapshots are read when it returns, at the
-  window's end with the load still on. A fetch that fails is a note, never a step
-  failure: the step's measurements stand without its profile. Where `loadgen run` reached the
-  profiling port through the tunnel below and wrote these files itself, its copies are the ones
-  the step keeps and this job's are dropped; `profiles.txt` in the step directory names the
-  writer of each.
+- The CPU profile of a step's window (`cpu.pprof`) is `loadgen run`'s own, taken through the
+  tunnel below at its window's start. The driver asks for none: Go serves **one CPU profile at
+  a time** (`cpu profiling already in use`), so a second request beside loadgen's is answered
+  `500`, and a driver that got in first would take the profiler and leave loadgen's
+  window-exact profile refused instead. A step whose tunnel died under it therefore keeps no
+  CPU profile at all.
+- The three state snapshots (`goroutines.txt`, `heap.pprof`, `heap.txt`) are each what the
+  process holds at the moment they are read, so a second reader costs no measurement anything.
+  `step` reads them from Dispatch's own machine over ssh at the end of the measured window,
+  with the load still on, which is where `loadgen run` reads its own. A fetch that fails is a
+  note, never a step failure: the step's measurements stand without its snapshots. Where
+  `loadgen run` reached the profiling port through the tunnel below and wrote these files
+  itself, its copies are the ones the step keeps and the driver's are dropped; `profiles.txt`
+  in the step directory names the writer of each file, and names `none` for one that neither
+  wrote.
 - The 5 s sampler inside `loadgen run` reads Dispatch's goroutines, its pool acquire waiters and
   its heap **while the step runs**, and it runs on the load machine.
 

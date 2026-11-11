@@ -71,10 +71,11 @@ const (
 // pass rule reads (curves.go readCloudSQLCPUFile).
 const cloudsqlCPUFileName = "cloudsql-cpu.json"
 
-// cpuProfileFileName is Dispatch's CPU profile over the window, which R6 names. Either of two
-// processes writes it: `loadgen run` through the step's profiling tunnel (run.go step.profile),
-// or, where that tunnel died under it, vm.sh's own fetch beside the load (vm/vm.sh
-// profiles_start); the step directory's profiles.txt says which.
+// cpuProfileFileName is Dispatch's CPU profile over the window, which R6 names. One process
+// writes it: `loadgen run`, through the step's profiling tunnel (run.go step.profile). The
+// driver fetches no CPU profile of its own, since Go serves one at a time (vm/vm.sh
+// PPROF_CPU_FILE), so a step whose tunnel died under it holds none; the step directory's
+// profiles.txt says, for this file and for each state snapshot, which process wrote it.
 const cpuProfileFileName = "cpu.pprof"
 
 // listenerRoleMark is what a listener's cgroup.json role name holds: the deployment runs
