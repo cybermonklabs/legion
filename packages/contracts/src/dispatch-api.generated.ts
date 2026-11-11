@@ -1882,7 +1882,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's per-agent conversation state: cleared_before, read_through, and unread_replies (the session's replies to the caller's direct messages newer than both and not read by id). */
+    /** @description The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list). */
     get: operations["getApiV1MeAgentsState"];
     put?: never;
     post?: never;
@@ -1900,7 +1900,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), and/or mark some of its replies read by id (read_replies, the session's own messages); answers the session's state. */
+    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), mark some of its replies read by id (read_replies, the session's own messages), and/or pin it to the caller's sidebar (pinned: true pins it, false unpins it, and neither touches the Clear); answers the session's state. */
     put: operations["putApiV1MeAgentsBySessionIdState"];
     post?: never;
     delete?: never;
@@ -5443,11 +5443,13 @@ export interface components {
     };
     UserAgentState: {
       cleared_before?: string;
+      pinned_at?: string;
       read_through?: string;
       unread_replies: number;
     };
     UserAgentStateInput: {
       cleared_before?: null | string;
+      pinned?: null | boolean;
       read_replies?: string[] | null;
       read_through?: null | string;
     };

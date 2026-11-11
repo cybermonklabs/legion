@@ -88,13 +88,15 @@ function Harness({
         commands={commands}
         contentIds={[]}
         empty="Nothing yet."
+        front
         held={false}
+        initialPlace={null}
+        onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
         replayCount={0}
         resetKey="session-1"
         sends={NO_SESSION_SENDS}
-        sessionId="session-1"
       />
     </AssistantRuntimeProvider>
   );
