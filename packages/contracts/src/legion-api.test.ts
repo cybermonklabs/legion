@@ -89,7 +89,7 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
-  // The controller's three merge-mark writes (contract 63), each a fact route that answers an
+  // The controller's three merge-mark writes (contract 66), each a fact route that answers an
   // empty object: the jump mark it sets on one issue, the clearing of that mark, and the whole
   // merge hold list it replaces.
   "merge-jump.json": LegionEmptyResponse,
@@ -960,7 +960,7 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
     ],
     ["child", LegionChildRequest, { grantId: "grant-208", issue: "LEGION-209" }],
-    // The controller's merge marks (contract 63): the jump mark, its clearing, and the whole
+    // The controller's merge marks (contract 66): the jump mark, its clearing, and the whole
     // hold list, which carries one hold with every field the route takes.
     [
       "merge jump",
@@ -1755,7 +1755,7 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
   expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
 });
 
-// The controller's merge marks (contract 63): the golden names LEGION-210's jump mark, the two
+// The controller's merge marks (contract 66): the golden names LEGION-210's jump mark, the two
 // holds of the project's list — one of a repository it serves, one of every repository it serves
 // — the issue a hold is keeping back, and the newest jump of two repositories, one GitHub took
 // and one it refused with its queue unread. A state with none of them carries four empty lists
@@ -1841,7 +1841,7 @@ test("the state golden carries the controller's merge marks", () => {
 });
 
 // None of the four keys is required: the route leaves all four off the body it serves a caller
-// in a pod whose claims record a contract below 63 (`api.stateFor`, `withoutMergeMarks`), and a
+// in a pod whose claims record a contract below 66 (`api.stateFor`, `withoutMergeMarks`), and a
 // reader of that body loses the marks rather than the whole state. What is refused is a mark the
 // daemon would never write: a jump with no reason, a hold whose path is blank, a held issue with
 // no due time, and a jump record whose queue entry names no state.

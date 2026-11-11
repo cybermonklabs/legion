@@ -644,7 +644,7 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
-/** `api.MergeJumpView` — one issue's live jump mark (contract 63): the issue, what the controller
+/** `api.MergeJumpView` — one issue's live jump mark (contract 66): the issue, what the controller
  * said the jump is for, the controller session that set it and when. It carries no state of its
  * own, because the mark has none: a mark the state shows has not been spent, and one the daemon
  * spent or the controller took off is gone. `session` is empty for a project whose controller has
@@ -656,7 +656,7 @@ const legionMergeJump = z.object({
   setAt: timestamp,
 });
 
-/** `api.MergeHoldView` — one live merge hold (contract 63): the unanchored regular expressions it
+/** `api.MergeHoldView` — one live merge hold (contract 66): the unanchored regular expressions it
  * matches against the paths a pull request changes, the repository it holds them in, what the
  * controller said the hold is for, when it stops holding, and the controller session that set the
  * list and when. `repository` is `owner/name`, and the empty string is every repository the
@@ -672,7 +672,7 @@ const legionMergeHold = z.object({
   setAt: timestamp,
 });
 
-/** `api.MergeHeldView` — one issue whose merge a hold is keeping back (contract 63): the issue,
+/** `api.MergeHeldView` — one issue whose merge a hold is keeping back (contract 66): the issue,
  * and when its `ready_merge` row runs again, which is when the daemon reads the holds once more.
  * Nothing else of the row is here: the row's payload is the submission's own business, and a
  * reader of this key asks which merges the holds are costing and when each is tried next. */
@@ -701,7 +701,7 @@ const legionMergeQueueEntry = z.object({
   enqueuedAt: timestamp,
 });
 
-/** `api.MergeJumpRecordView` — the newest jump of one repository (contract 63): the repository,
+/** `api.MergeJumpRecordView` — the newest jump of one repository (contract 66): the repository,
  * the issue whose mark was spent, the pull request's number and head, when the daemon submitted
  * it, the reason the mark carried, the queue as it stood before the jump (oldest entry first,
  * which is what names whose merge the jump displaced), how long that queue was, whether GitHub
@@ -748,13 +748,13 @@ const legionMergeJumpRecord = z.object({
  * that finds it absent has been served that stripped body and learns nothing about which wakes
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
  * refuse. `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords` are the controller's
- * merge marks (contract 63): the issues whose next merge the daemon submits at the head of
+ * merge marks (contract 66): the issues whose next merge the daemon submits at the head of
  * GitHub's merge queue, the project's live holds, the issues whose merge one of those holds is
  * keeping back, and the newest jump of each repository that has had one, each never null and each
  * empty while the project carries none of it. All four are optional here for the reason
- * `wakesWaiting` is: a reader before 63 knows none of them and refuses each as surely when it is
+ * `wakesWaiting` is: a reader before 66 knows none of them and refuses each as surely when it is
  * empty as when it names a mark, so the route leaves all four off the one body it serves a caller
- * in a pod whose claims record a contract below 63 (`api.stateFor`, `withoutMergeMarks`). A
+ * in a pod whose claims record a contract below 66 (`api.stateFor`, `withoutMergeMarks`). A
  * reader that finds them absent has been served that stripped body and learns nothing about the
  * marks rather than losing the whole state. */
 export const LegionStateResponse = z.object({

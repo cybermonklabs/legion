@@ -898,14 +898,49 @@ package api
 // says. Read main's own number, and every open branch's, again at the next forward merge rather
 // than from this line.)
 //
-// 63, 64, 65: taken by open pull requests of this repository while this branch was open — 63 by
-// cybermonklabs/legion#3573, which declares it beside this branch, 64 by #3521 and 65 by #3511,
-// each read at 2026-11-11T08:59Z from `const DaemonAPIVersion` in that pull request's own copy
-// of this file at refs/pull/<n>/head, over every open pull request of the repository. None of
-// them carries the merge marks, so this branch takes the number above them rather than one of
-// theirs, as
+// 64: INFRA-312 -- every Legion launch says which issue its dollars were spent on: the pane
+// environment and a pod's worker container now carry `legion.issue`, the issue the launch serves,
+// and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`, written after the attributes
+// the operator's own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets (the one
+// composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
+// `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
+// panePairs), so every launch's resource attributes name the issue it serves rather than the
+// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
+// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
+// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
+// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// written after the operator's; a pair the launch holds no fact for is left out rather than
+// written empty, so the project controller's launch, which serves no issue, carries `legion.role`
+// alone. The name stays the operator's to set — the runtime composes the value, it does not own
+// the name — but a launch spec may not set it (`composed`, beside `runtimeOwned`), since a spec's
+// second pair of that name is the one the C library's lookup answers with, and both configuration
+// loaders refuse an operator value the agent's OpenTelemetry detector would throw on
+// (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
+// member costs the launch every attribute of the variable, the operator's own theorem.project
+// among them. The pane environment and the worker container's environment are surfaces of this
+// contract, which is why an environment change takes a number at all: the boot gate refuses to
+// start against an installed plugin declaring another number, and `legion probe-image` refuses an
+// image whose pi-legion declares another, so no pane and no pod runs an agent of one contract
+// under a daemon of the other. (Read again at the forward merge of 2026-11-11 that brought main
+// in, 6c288b5434a86dad0d78930118888cddb9661949: main declares 62, which is INFRA-2551's entry
+// above and which cybermonklabs/legion#3522 declared before it merged, and the open pull requests
+// of this repository declare 60 (#2539, #2731, #3511 and #3519), 61 (#2230), 62 (#2733 and
+// #3573) and 63 (#3534), none of them carrying these attributes, so this change keeps 64, the
+// number above them all. That reading is of this file at refs/pull/<n>/head for every open pull
+// request, not of a file list: GitHub cuts a pull request's file list short, so one that changes
+// more files than the page holds answers without this path, which is how #2539 was missed when
+// this entry was first written. As
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. A gap, left so the history reads as it happened.
+// says.)
+//
+// 63 and 65: taken by open pull requests of this repository while this branch was open — 63 by
+// cybermonklabs/legion#3573, which declared it beside this branch, and 65 by #3511, each read
+// at 2026-11-11T08:59Z from `const DaemonAPIVersion` in that pull request's own copy of this
+// file at refs/pull/<n>/head, over every open pull request of the repository. Neither carries
+// the merge marks, so this branch took the number above them rather than one of theirs, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. 64 was the third of them when that reading was made and is no gap now: INFRA-312's entry
+// above is it, landed on main since. Two gaps, left so the history reads as it happened.
 //
 // 66: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon's enqueue at
 // READY jumps the merge queue, and can hold a path still while a window runs. `GET
@@ -944,7 +979,12 @@ package api
 // with `gh api graphql` over every open pull request's file list — a list GitHub cut short read as
 // touching the file — and then each one's `version.go` at refs/pull/<n>/head. 66 is the lowest
 // number above the base's that no open pull request holds, which is the number this repository's
-// own gate names in its refusal (.github/scripts/check-daemon-api-contract.sh). Read main's own
-// number, and this file on every open pull request, again at the next forward merge rather than
-// from this line.)
+// own gate names in its refusal (.github/scripts/check-daemon-api-contract.sh). 66 is held from
+// there on and through every forward merge, with another tree's entry absorbed beside it rather
+// than moved out of the way: only main's own DaemonAPIVersion reaching 66 moves this number, and
+// a number another open pull request declares moves it not at all, since whichever of the two
+// lands second renumbers then and a renumber made earlier is a change to this branch's own diff,
+// which costs its tester a full round. That is why the entries above this one at 64 and 62 are
+// main's, absorbed at the two forward merges of 2026-11-11, and why this number did not move at
+// either. Read main's own number again at the next forward merge rather than from this line.)
 const DaemonAPIVersion = 66
