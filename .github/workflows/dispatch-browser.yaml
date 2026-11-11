@@ -43,6 +43,13 @@ name: Dispatch browser suite
 # report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
 # A job budget is the backstop above the sum of its step budgets, so it never fires first.
 #
+# What the job set below costs, measured rather than estimated: the first green run of the
+# pull-request lane at this shape, run 43002633713 of 2026-11-11, took 694 seconds over five
+# jobs (binaries 170, shard (1) 251, shard (2) 167, embedder 84, merge 22) and 7 minutes
+# 28 seconds of wall time. The same lane took 1,195 seconds over seven jobs before this shape
+# (run 42868987140 of 2026-11-10), and the full lane took 2,945 seconds over twelve
+# (run 42809067358 of the same day).
+#
 # No permissions: block, so each caller's permissions stand. The merge job reads the run's jobs
 # through the API (`actions: read`) and ends with the ci-ok report (`checks: write`), both of
 # which ci.yaml already gives the job that calls this workflow.
