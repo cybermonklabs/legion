@@ -499,7 +499,11 @@ test("Next change moves the column to the next changed block", async ({ browser 
     await page.goto(inboxAt(seed.approvalAskId));
     await expect(pane.getByRole("region", { name: "Document version 2" })).toBeVisible();
     await expect(pane.locator(".dispatch-change-block")).toHaveCount(seed.changedBlocks);
-    // An approval request opens at the start of its column.
+    // Where the column rests before the step, which is what the move under it is read against.
+    // A fresh navigation leaves it at its start whatever the pane writes, so this reading says
+    // nothing of its own about where an approval request opens: the rows of
+    // `web/src/features/inbox/ReadingPane.test.tsx` that keep one scroller across two requests
+    // say that.
     await expect.poll(async () => (await restingColumn(page)).top).toBe(0);
 
     // The first marked block stands far down the document, so the step is a real move.

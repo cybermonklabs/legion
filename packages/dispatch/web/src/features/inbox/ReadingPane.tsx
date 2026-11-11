@@ -204,9 +204,11 @@ function ApprovalBody({
   /** The request the column has read a version for, which is what the start of the column is
    *  written for: the one scroller outlives the row, so a second request on a document opens
    *  where the first one was left unless the column is sent back. The write waits for the
-   *  version's text, so it lands with the question and the version below it rather than into an
-   *  empty skeleton; a version the column could not read, and a document it could not read,
-   *  each hold no text and write nothing, which leaves the reader where they were. */
+   *  version's text, so a request whose version has not been read yet writes nothing at all;
+   *  where the body under the question is still a skeleton because another of its reads - the
+   *  signed-in person, or the approval's own baseline - has not landed, the write lands under
+   *  the question all the same. A version the column could not read, and a document it could
+   *  not read, each hold no text and write nothing, which leaves the reader where they were. */
   const opened = isText(versionQuery.data) ? ask.id : undefined;
   useEffect(() => {
     const column = scroller.current;
