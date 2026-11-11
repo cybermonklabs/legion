@@ -117,6 +117,99 @@ func TestEveryWriteThatAddsToADeletedPostIsRefused(t *testing.T) {
 	}
 }
 
+// The ordinary thread reply is the commonest reply of all, and it takes the same refusal as the
+// delivery callback's: POST /api/v1/issues/{key}/comments and POST /api/v1/artifacts/{id}/comments
+// with reply_to naming a deleted comment, and POST /api/v1/issues/{key}/messages with in_reply_to
+// naming a deleted message. The refusal is read from the parent the create path already holds, so
+// it comes before the block a reply names is looked for: a reply naming a block of the withdrawn
+// post is told the post is gone and not that the delete took its blocks. A reply to a post nobody
+// deleted still stands, which the last two cases hold.
+func TestThreadReplyToADeletedPostIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A deleted post takes no reply", "before")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the withdrawn comment"}, "alice")
+	deleteThreadComment(t, handler, comment.ID, "alice")
+
+	document := createProjectDocument(t, handler, "TEST", "Design notes", "# Design notes\n")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments",
+		map[string]any{"body": "the withdrawn document comment"}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the document comment: status=%d body=%s", created.Code, created.Body.String())
+	}
+	documentComment := decodeBody[model.Comment](t, created)
+	deleteThreadComment(t, handler, documentComment.ID, "alice")
+
+	message := createSessionIssueMessage(t, handler, issue.Key, "the withdrawn message")
+	deleteIssueMessage(t, handler, message.ID, "")
+
+	t.Run("reply to a deleted comment on its issue", func(t *testing.T) {
+		refusedAsDeleted(t, "thread reply", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+				"body": "answering the withdrawn comment", "reply_to": comment.ID,
+			}, "bob"))
+	})
+	t.Run("reply naming a block of a deleted comment", func(t *testing.T) {
+		refusedAsDeleted(t, "thread reply to a block", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+				"body": "answering its first block", "reply_to": comment.ID, "reply_to_block": "b1",
+			}, "bob"))
+	})
+	t.Run("reply to a deleted comment on a document", func(t *testing.T) {
+		refusedAsDeleted(t, "document thread reply", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/artifacts/"+document.ID+"/comments", map[string]any{
+				"body": "answering the withdrawn document comment", "reply_to": documentComment.ID,
+			}, "bob"))
+	})
+	t.Run("reply to a deleted message", func(t *testing.T) {
+		refusedAsDeleted(t, "thread reply", sessionRequest(t, handler, http.MethodPost,
+			"/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+				"actor": sessionActor(), "body": "answering the withdrawn message", "in_reply_to": message.ID,
+			}))
+	})
+
+	// The negative control: the guard refuses a reply to the post that was deleted and to no
+	// other, so a thread reply to a live comment and to a live message still answers 201.
+	t.Run("reply to a comment nobody deleted", func(t *testing.T) {
+		live := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the comment that stands"}, "alice")
+		reply := createThreadComment(t, handler, issue.Key, map[string]any{
+			"body": "answering it", "reply_to": live.ID,
+		}, "bob")
+		if reply.ReplyTo == nil || *reply.ReplyTo != live.ID {
+			t.Fatalf("the reply to a live comment = %#v, want it under %s", reply, live.ID)
+		}
+	})
+	t.Run("reply to a message nobody deleted", func(t *testing.T) {
+		live := createSessionIssueMessage(t, handler, issue.Key, "the message that stands")
+		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
+			map[string]any{"actor": sessionActor(), "body": "answering it", "in_reply_to": live.ID})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("reply to a live message: status=%d body=%s, want 201", response.Code, response.Body.String())
+		}
+		if reply := decodeBody[model.Message](t, response); reply.InReplyTo == nil || *reply.InReplyTo != live.ID {
+			t.Fatalf("the reply to a live message = %#v, want it under %s", reply, live.ID)
+		}
+	})
+
+	// Nothing the refused replies asked for was written: neither deleted post holds a reply.
+	for _, deleted := range []model.Comment{comment, documentComment} {
+		read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/"+deleted.ID, nil, "alice")
+		if read.Code != http.StatusOK {
+			t.Fatalf("read the deleted comment: status=%d body=%s", read.Code, read.Body.String())
+		}
+		if thread := decodeBody[commentRead](t, read); len(thread.Replies) != 0 {
+			t.Fatalf("the deleted comment holds %#v, want no reply: each reply was refused", thread.Replies)
+		}
+	}
+	var replies int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from messages where in_reply_to = $1`, message.ID).Scan(&replies); err != nil {
+		t.Fatalf("count the replies of the deleted message: %v", err)
+	}
+	if replies != 0 {
+		t.Fatalf("the deleted message holds %d replies, want none: the reply was refused", replies)
+	}
+}
+
 // A write that moves no text stands on a deleted post: a resolve and a reopen of its thread, and
 // the session's record that it took a deleted message as its own turn.
 func TestEveryWriteThatMovesNoTextStandsOnADeletedPost(t *testing.T) {

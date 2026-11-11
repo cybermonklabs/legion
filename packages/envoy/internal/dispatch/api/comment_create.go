@@ -278,6 +278,15 @@ func (s *server) normalizeCommentThreadTarget(
 		if err != nil {
 			return commentThreadTarget{}, err
 		}
+		// A reply adds text under the post it answers, and a deleted post takes none: the
+		// thread reply is refused as the delivery callback's reply is (comment_delivery.go's
+		// replyComment), on the parent this walk has already locked, so the refusal costs no
+		// read of its own. Only the comment the request named is judged: a reply under a live
+		// comment stands whatever became of the root above it, and a reply written before the
+		// delete keeps its text and its place.
+		if parent.DeletedAt != nil {
+			return commentThreadTarget{}, errorf(http.StatusConflict, "POST_DELETED", "this comment is deleted")
+		}
 		target, err := s.threadHeadOf(ctx, tx, owner, parent)
 		if err != nil || input.ReplyToBlock == nil {
 			return target, err

@@ -355,7 +355,7 @@ export interface paths {
     /** @description List a document's comments. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. */
+    /** @description Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -1507,7 +1507,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -1627,7 +1627,7 @@ export interface paths {
     /** @description List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. */
     get: operations["getApiV1IssuesByKeyMessages"];
     put?: never;
-    /** @description Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. */
+    /** @description Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1IssuesByKeyMessages"];
     delete?: never;
     options?: never;

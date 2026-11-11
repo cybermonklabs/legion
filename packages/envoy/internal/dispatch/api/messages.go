@@ -259,6 +259,13 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	// A reply adds text under the message it answers, and a deleted post takes none: the
+	// thread reply is refused as the delivery callback's reply is (message_delivery.go's
+	// replyMessage), on the parent row this read already holds. Only the message in_reply_to
+	// named is judged, and a reply written before the delete keeps its text and its place.
+	if parent.Deleted {
+		return model.Message{}, nil, errorf(http.StatusConflict, "POST_DELETED", "this message is deleted")
+	}
 	var block *namedBlock
 	if input.InReplyToBlock != nil {
 		if err := lockReplyParentMessage(ctx, tx, parent.ID); err != nil {
@@ -458,6 +465,9 @@ type messageReplyParent struct {
 	ReplyBody string
 	Target    *string
 	InReplyTo *string
+	// Deleted says the parent's author withdrew it. It is read with the parent's own row, so
+	// the refusal a reply takes from it costs no read of its own.
+	Deleted bool
 }
 
 // messageReplyPreview is how much of a parent's body a reply's event and delivery frame carry.
@@ -482,6 +492,7 @@ func messageReplyParentOf(message model.Message) messageReplyParent {
 		ReplyBody: messageReplyPreview(message.Body),
 		Target:    message.Target,
 		InReplyTo: message.InReplyTo,
+		Deleted:   message.DeletedAt != nil,
 	}
 }
 
@@ -510,27 +521,28 @@ func loadMessageReplyParent(
 	var err error
 	if issueKey != nil {
 		err = tx.QueryRow(ctx, `
-			select body, target, in_reply_to::text from messages where id = $1 and issue_key = $2
-		`, *inReplyTo, *issueKey).Scan(&parentBody, &parent.Target, &parent.InReplyTo)
+			select body, target, in_reply_to::text, deleted_at is not null from messages where id = $1 and issue_key = $2
+		`, *inReplyTo, *issueKey).Scan(&parentBody, &parent.Target, &parent.InReplyTo, &parent.Deleted)
 	} else {
 		if target == nil {
 			return messageReplyParent{}, invalid
 		}
 		err = tx.QueryRow(ctx, `
 			with recursive thread as (
-				select id, body, issue_key, target, in_reply_to, 0 as depth from messages where id = $1
+				select id, body, issue_key, target, in_reply_to, deleted_at, 0 as depth from messages where id = $1
 				union all
-				select m.id, m.body, m.issue_key, m.target, m.in_reply_to, t.depth + 1
+				select m.id, m.body, m.issue_key, m.target, m.in_reply_to, m.deleted_at, t.depth + 1
 				from messages m join thread t on m.id = t.in_reply_to
 			)
 			select
 				(select body from thread where depth = 0),
 				(select target from thread where depth = 0),
-				(select in_reply_to::text from thread where depth = 0)
+				(select in_reply_to::text from thread where depth = 0),
+				(select deleted_at is not null from thread where depth = 0)
 			from thread
 			where in_reply_to is null and issue_key is null and target = $2
 			  and not exists (select 1 from thread where issue_key is not null)
-		`, *inReplyTo, *target).Scan(&parentBody, &parent.Target, &parent.InReplyTo)
+		`, *inReplyTo, *target).Scan(&parentBody, &parent.Target, &parent.InReplyTo, &parent.Deleted)
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
