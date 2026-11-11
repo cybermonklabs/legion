@@ -9,9 +9,9 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { normalizeEnvoyUrl } from "./envoy-settings";
 import { messageFor } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
@@ -812,7 +812,7 @@ export function resolveCallTiming(config: Pick<EnvoyClientConfig, "timeoutMs" | 
 }
 
 export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
-  const baseUrl = normalizeEnvoyUrl(config.baseUrl);
+  const baseUrl = withoutTrailingSlashes(config.baseUrl);
   const { timeoutMs, attempts, retryDelayMs } = resolveCallTiming(config);
 
   const credential = config.credential;

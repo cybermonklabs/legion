@@ -960,6 +960,14 @@ func main() {
 	// /healthz is always reachable, before NATS setup as well as after it.
 	mux.HandleFunc("/healthz", healthzHandler(&deps))
 
+	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
+	// durable consumer. It says only that the process answers, for the startup and liveness
+	// probes, which must not wait on or fail with NATS: a listener whose bus is down repairs
+	// itself, and a restart would only drop its warm caches. /healthz stays the readiness route,
+	// the one that reads the bus, because its HTTP status is what tells a starting pod from a
+	// serving one.
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+
 	// GaugeFunc for consumer pending — queries NATS at scrape time
 
 	// The webhook and /v1 routes answer 503 "service starting" until their dependencies are open

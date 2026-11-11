@@ -537,6 +537,23 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 // follows, which meets the same silent bus itself and is answered as the named 503. The roles come
 // from the registry's watched view of the claims, with no bucket call, and a view that is not
 // complete (store.ErrRoleViewNotReady) leaves them out rather than refusing the send.
+//
+// The title is read the same way and within that same one window, so the two read-throughs of one
+// stamp cannot cost the message more than the window the budget allots it (senderStampReadTimeout)
+// and a silent bus still leaves the publish its 1.5 s. session.SessionRegistry.Get answers this
+// listener's in-process cache alone, with one error for every row it does not hold
+// (nats.ErrKeyNotFound), and exactly that error is read through to the bucket with
+// session.SessionRegistry.Refresh: so a sender that registered a moment ago through another
+// listener, and any sender while the session cache refills after a reconnect, carries the title
+// the bucket holds. The read is made for a sender this cache misses, once per request, and nothing
+// remembers the miss - neither a negative cache nor a rate limit
+// (dispatch://INFRA-1368/artifact/decisions-md).
+//
+// Two senders still give a message with no title, and no read answers either. A row the bucket
+// dropped at its maximum age is gone from the bucket too, because a cached row's deadline is that
+// same drop point (session.SessionRegistry.Get), so a row this cache calls expired is one the
+// bucket no longer holds. A registration that carries no title is a hit with an empty value rather
+// than a miss, so it reaches the bucket not at all.
 func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
 	if sourceSession == "" {
 		return nil
@@ -553,6 +570,10 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	}
 	if entry, err := sessions.Get(sourceSession); err == nil {
 		sender.Title = entry.Title
+	} else if errors.Is(err, nats.ErrKeyNotFound) {
+		if refreshed, err := sessions.Refresh(readCtx, sourceSession); err == nil {
+			sender.Title = refreshed.Title
+		}
 	}
 	return sender
 }

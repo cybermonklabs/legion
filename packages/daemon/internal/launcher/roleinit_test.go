@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1193,5 +1194,58 @@ func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal reads %q, which does not name %s the mount was tried with", err, want)
 		}
+	}
+}
+
+// TestTheStatusPipeReadsTheWidthItCarries pins the reading end of role-init's status pipe, which
+// is parseStatus and nothing else: every line reportStatus can write — it writes the 32 bits of a
+// syscall.WaitStatus as a decimal, so from zero to the largest of them — reads back as itself,
+// and a line holding anything but such a number is no status at all rather than one truncated
+// into a role exit that never happened. Whitespace around the number is ignored, which costs
+// nothing and asks no caller to trim what it read: both readers take the pipe whole with
+// io.ReadAll (roleinit.go:151, launcher.go:634), and the writer sends no newline of its own.
+// What the writer prints is not checked here: reportStatus lives in roleinit_linux.go, runs
+// inside the re-exec stage and writes to an inherited descriptor, so a test of it is a test of
+// that stage rather than of this function.
+func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want uint32
+	}{
+		{"an exit of zero", "0", 0},
+		{"an exit code", "1792", 1792},
+		{"a kill by signal", "9", 9},
+		{"the widest status there is", strconv.FormatUint(math.MaxUint32, 10), math.MaxUint32},
+		{"whitespace around the number", "1792\n", 1792},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := parseStatus([]byte(tc.raw))
+			if status == nil {
+				t.Fatalf("parseStatus(%q) read no status, want %d", tc.raw, tc.want)
+			}
+			if uint32(*status) != tc.want {
+				t.Errorf("parseStatus(%q) = %d, want %d: the pipe carries the status as it was written",
+					tc.raw, uint32(*status), tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"nothing at all", ""},
+		{"role-init was killed before it wrote", "   "},
+		{"a line that is not a number", "killed"},
+		{"a negative number no writer sends", "-1"},
+		{"a number wider than a wait status", strconv.FormatUint(math.MaxUint32+1, 10)},
+		{"a number with something after it", "1792 9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if status := parseStatus([]byte(tc.raw)); status != nil {
+				t.Errorf("parseStatus(%q) = %d, want no status: a line role-init never wrote reports no exit",
+					tc.raw, uint32(*status))
+			}
+		})
 	}
 }
