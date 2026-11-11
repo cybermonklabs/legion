@@ -1209,10 +1209,13 @@ export const LegionIssueStatusRequest = z.strictObject({
  * `POST /legion/v1/merge/jump`: the next merge the daemon submits for `issue` goes in at the head
  * of GitHub's merge queue, and `reason` is what the controller says the jump is for, which the
  * record of the jump keeps after the mark is spent. The daemon refuses a request without a
- * controller grant (`CONTROLLER_REQUIRED`), one naming an issue it does not record
- * (`ISSUE_NOT_RECORDED`) and one leaving a field empty, each before the grant is redeemed. An
- * issue holds at most one mark, so a second set of the same issue replaces the first rather than
- * being refused: the route takes the controller's newest word. */
+ * controller grant (`CONTROLLER_REQUIRED`), one naming an issue of another Dispatch project
+ * (`ISSUE_OUTSIDE_PROJECT`, since the daemons of several projects share one database and a mark
+ * is kept under the issue's key alone), one naming an issue it does not record
+ * (`ISSUE_NOT_RECORDED`), one naming an issue that has left the workflow and so submits no merge
+ * to mark (`ISSUE_LEFT_WORKFLOW`), and one leaving a field empty, each before the grant is
+ * redeemed. An issue holds at most one mark, so a second set of the same issue replaces the
+ * first rather than being refused: the route takes the controller's newest word. */
 export const LegionMergeJumpRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -1224,7 +1227,9 @@ export const LegionMergeJumpRequest = z.strictObject({
  * mark was about is submitted. It carries no reason: the mark that carried one is gone, and
  * nothing keeps the account of a jump that never happened. The daemon answers the same whether a
  * mark went or none was there, and refuses the request without a controller grant
- * (`CONTROLLER_REQUIRED`) and for an issue it does not record (`ISSUE_NOT_RECORDED`). */
+ * (`CONTROLLER_REQUIRED`), for an issue of another project (`ISSUE_OUTSIDE_PROJECT`) and for an
+ * issue it does not record (`ISSUE_NOT_RECORDED`). It takes no `ISSUE_LEFT_WORKFLOW`: a mark on
+ * an issue that has left the workflow is exactly what this route is for. */
 export const LegionMergeJumpClearRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

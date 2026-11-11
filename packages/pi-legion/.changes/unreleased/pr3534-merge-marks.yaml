@@ -11,7 +11,9 @@ body: |-
   (holds) replaces the project's whole merge hold list: while a hold stands, the daemon submits
   no merge whose pull request changes a file one of that hold's paths matches, and the issue
   waits in `awaiting_merge` with its architect told once (`merge-held`). The daemon refuses an
-  issue it does not record (`ISSUE_NOT_RECORDED`), a jump with no reason, a hold with no path
+  issue it does not record (`ISSUE_NOT_RECORDED`), an issue of another project
+  (`ISSUE_OUTSIDE_PROJECT`), a jump mark on an issue that has left the workflow (`ISSUE_LEFT_WORKFLOW`),
+  a jump with no reason, a hold with no path
   (`HOLD_WITHOUT_PATH`), a path that is no regular expression (`INVALID_HOLD_PATH`), a hold with
   no reason (`HOLD_WITHOUT_REASON`), an `endsAt` no later than now (`HOLD_ALREADY_ENDED`) and a
   repository the project does not serve (`REPOSITORY_NOT_SERVED`), and every call without a

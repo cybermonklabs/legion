@@ -211,12 +211,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "requires no merge queue there is no queue to jump: the daemon submits that merge as it always does, and the " +
   "mark stands until clear_merge_jump takes it off or the issue leaves the workflow. " +
   "The daemon refuses an issue it does not record " +
-  "(ISSUE_NOT_RECORDED) and a call that leaves the reason out. A jump that does not go through does not stop the " +
-  "merge: the daemon submits it without the jump and records whether GitHub refused the jump or Legion could not " +
-  "deliver the request. " +
+  "(ISSUE_NOT_RECORDED), an issue of another project (ISSUE_OUTSIDE_PROJECT), an issue that has left the " +
+  "workflow, which submits no merge to mark (ISSUE_LEFT_WORKFLOW), and a call that leaves the reason out. A " +
+  "jump that does not go through does not stop the merge: the daemon submits it without the jump and records " +
+  "whether GitHub answered the request, whatever status that answer carried, or nothing came back at all. " +
   "clear_merge_jump (issue) takes an issue's mark off before the merge it was about is submitted. It answers the " +
   "same whether a mark went or no mark was there, and the daemon refuses an issue it does not record " +
-  "(ISSUE_NOT_RECORDED). " +
+  "(ISSUE_NOT_RECORDED) or an issue of another project (ISSUE_OUTSIDE_PROJECT). A mark on an issue that has " +
+  "left the workflow is taken off by this call as by any other, which is how such a mark goes. " +
   "set_merge_holds (holds) replaces the project's whole merge hold list. While a hold stands, the daemon submits " +
   "no merge whose pull request changes a file one of that hold's paths matches, and the issue waits in " +
   "awaiting_merge with its architect told which hold holds it. A hold keeps back a merge the daemon has not " +
