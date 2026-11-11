@@ -913,11 +913,13 @@ func repositoriesGitHub(t *testing.T) string {
 	}})
 }
 
-// stop cancels the daemon and requires it to return cleanly. The wait is the daemon's own stop
-// contract, stopBound(stopBudget): the budget, then the NATS close's, the stamp's and the store
-// close's bounds (daemon.go, stopBudget). A stop that honoured its contract can therefore never
-// fail here, which is the point: this is a hang guard for a run that never returns, not a
-// measurement of how long the stop took.
+// stop cancels the daemon and requires it to return cleanly. What it waits for is a run that
+// never returns, not a measurement of how long the stop took: no row of its callers reads the
+// elapsed time, so the wait is stopHangGuard(stopBudget) rather than the contract itself,
+// stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
+// bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
+// few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
+// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -931,7 +933,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(stopBound(stopBudget)):
+	case <-time.After(stopHangGuard(stopBudget)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }

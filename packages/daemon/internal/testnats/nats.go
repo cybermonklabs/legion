@@ -304,9 +304,11 @@ var monitorClient = &http.Client{Timeout: 5 * time.Second}
 // readConnections is the one question this fixture asks the server — which clients it holds —
 // and every caller inside the package asks it here: the drain, Connections and the leak check's
 // arm and settle. clientConnections, reading the monitoring endpoint's /connz, is its one
-// implementation here. One row of this package's own tests replaces it with a reader that fails
-// (TestAFailedReadAfterTheCloseKeepsTheRecord), which is how a read failing after the leak check
-// closed the fixture's clients is driven without waiting on anything.
+// implementation here. Two rows of this package's own tests replace it with a reader that fails,
+// which is how a failing read is driven without waiting on anything:
+// TestAFailedReadAfterTheCloseKeepsTheRecord, where the read fails only once the leak check has
+// closed the fixture's clients, and TestACheckWhoseEveryReadFailsLeavesNoEarlierTestsName, where
+// every read fails.
 var readConnections = clientConnections
 
 // clientConnections lists the server's open client connections, each by id and name, by reading

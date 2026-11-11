@@ -112,16 +112,21 @@ func leakCheck(t testing.TB, armed map[uint64]bool) {
 	if len(left) > 0 {
 		t.Errorf("%s left %d client connection(s) %v open on the shared NATS server. One this fixture opened it closes now, and no test after this one is failed for it; one the fixture did not open nothing here can close, and the next test to take the server is failed in this test's name. A test closes every client it opens, and testnats.Connect closes the caller's for it",
 			t.Name(), len(left), left)
-		// Recorded here, before the close below narrows it, because the read after that close
-		// can fail: a record cleared by such a failure costs the next test the drain's whole
-		// thirty-second bound and a failure that names nobody, which is the fault this check
-		// exists to end (dispatch://INFRA-1964). The record holds the fixture's own clients as
-		// well as the others until the read below narrows it, and that is what leftByTheLastTest
-		// is written for: it asks only that every connection the next test finds is one of the
-		// recorded ids, and the fixture's own are closed by then, so the next test does not find
-		// them.
-		recordLeft(t.Name(), left)
 	}
+	// Recorded here, before the close below narrows it, because the read after that close can
+	// fail: a record cleared by such a failure costs the next test the drain's whole
+	// thirty-second bound and a failure that names nobody, which is the fault this check exists
+	// to end (dispatch://INFRA-1964). The record holds the fixture's own clients as well as the
+	// others until the read below narrows it, and that is what leftByTheLastTest is written
+	// for: it asks only that every connection the next test finds is one of the recorded ids,
+	// and the fixture's own are closed by then, so the next test does not find them.
+	//
+	// It is written whatever was found, so that the record always belongs to the check that
+	// last ran: no path out of this function — the one where both reads fail among them, which
+	// writes left as nil here and nothing after — can leave an earlier test's name standing for
+	// the next test's failure to blame, and a wrong name is exactly what the message this check
+	// exists to make right must not carry.
+	recordLeft(t.Name(), left)
 	closeFixtureConnections()
 	if err == nil && len(left) == 0 {
 		recordLeft(t.Name(), nil)

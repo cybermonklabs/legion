@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"slices"
@@ -510,6 +511,38 @@ func TestAFailedReadAfterTheCloseKeepsTheRecord(t *testing.T) {
 	// The row leaves the server as it found it: the check closed the connection the fixture
 	// held, and no record for the test after this one to be failed by.
 	recordLeft(t.Name(), nil)
+}
+
+// A check whose every read of the server fails leaves no record at all, the one an earlier
+// test's check wrote included: the record names the test whose check ran last, whatever that
+// check managed to read, so the next test's drain can never fail in the name of a test that is
+// not the leaker — a wrong name in the very message this check exists to make right
+// (dispatch://INFRA-1964). What that drain gets instead is nothing: it waits its bound out and
+// names nobody, which is this issue's old behaviour and no accusation of the wrong test.
+// Nothing here waits on timing: the reader fails from before the check runs, so both of the
+// check's reads fail, and the record put in place by hand carries a connection id no server
+// holds.
+func TestACheckWhoseEveryReadFailsLeavesNoEarlierTestsName(t *testing.T) {
+	URL(t)
+	armed := armedNow(t)
+	earlier := "TestATestThatRanBeforeThisOne" + rand.Text()
+	recorded := []Connection{{CID: math.MaxUint64, Name: earlier}}
+	recordLeft(earlier, recorded)
+	server := readConnections
+	t.Cleanup(func() { readConnections = server })
+	readConnections = func() ([]Connection, error) {
+		return nil, errors.New("the monitoring endpoint cannot be read")
+	}
+
+	recorder := &leakRecorder{TB: t}
+	leakCheck(recorder, armed)
+
+	if len(recorder.messages) == 0 {
+		t.Fatalf("the leak check reported nothing although every read of the server failed, so this row drove neither of its reads")
+	}
+	if leaker, _ := leftByTheLastTest(recorded); leaker != "" {
+		t.Errorf("after a check whose every read of the server failed, the record still names %q, the test before it: the next test's drain would fail in that test's name for connections it never left. Want nobody named, whatever else the record answers", leaker)
+	}
 }
 
 // The check's own positive control: a reader that answered nothing whatever the server held would
