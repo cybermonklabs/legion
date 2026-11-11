@@ -584,14 +584,13 @@ type SuperviseRequest struct {
 	// finishes without acting. It is empty for the architect, which serves every phase, and for a
 	// suspend or a tree's close, which must still act after the issue moves on.
 	Phase phase.Phase `json:"phase,omitempty"`
-	// Assignment is the task the issue's current phase hands the role, as the workflow minted it
-	// for this start (workflow.Engine.start): the same token stands on the role's phases row,
-	// written in the transition's transaction. It travels to the claim's delivery and, once a
-	// confirmed delivery is retired, onto the claim, so a completion can be held to the assignment
-	// the turn reporting it was given (api/handoff.go, HANDOFF_STALE_ASSIGNMENT) rather than to the
-	// run alone, whose value every phase entry of one run shares. Empty for a start that hands no
-	// new task — a resume, a production check's look — and for every other operation.
-	Assignment string `json:"assignment,omitempty"`
+	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
+	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
+	// delivery and, once a confirmed delivery is retired, onto the claim, so a completion can be
+	// held to the entry the turn reporting it was given (api/handoff.go) rather than to the run
+	// alone, whose value every phase entry of one run shares. Zero for a start that hands no new
+	// task — a resume, a production check's look — and for every other operation.
+	Entry int64 `json:"entry,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
@@ -603,7 +602,7 @@ type SuperviseRequest struct {
 	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
 	// The cap counts the issues the daemon has started, so what it must bound is the start that
 	// puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the assignment on the role's phases row, the notices — is written in the
+	// status, the entry and its task on the role's phases row, the notices — is written in the
 	// transition's own transaction and waits for nothing. The hold is on this row's claimability
 	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
 	// of its issue's later rows is held behind it. The row carries the worker's task whether or

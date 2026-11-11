@@ -22,7 +22,7 @@ import (
 // carries them (record.SuperviseRequest.CheckLook and CheckOpenedAt). The two travel together
 // because a later merge of the same issue replaces the check and counts its looks from one again,
 // so a look number alone names no look. It is comparable, so the one rule that picks what a claim
-// is serving reads it as it reads the run and the assignment (serving). The zero value is a task,
+// is serving reads it as it reads the run and the entry (serving). The zero value is a task,
 // or a claim, that is no look's: every phase task, an operator's own, a resume.
 type CheckLook struct {
 	Look     int
@@ -64,13 +64,13 @@ type Delivery struct {
 	// an earlier one. The work a worker reports is the task it was given, and this is that task's
 	// run. Zero for a task of no run: an operator's own, an architect's.
 	Generation uint64
-	// Assignment is the assignment this task is of, from the start row that queued it: the token
-	// the workflow minted when the issue's phase handed this role a task, which stands on the
-	// role's phases row too. It is what tells one phase entry from the next within a run, so a
-	// turn that outlived its phase cannot complete the phase's next entry (api/handoff.go,
-	// HANDOFF_STALE_ASSIGNMENT). Empty for a task of no assignment: an operator's own, a resume,
-	// a production check's look, and every task queued before the daemon was upgraded to mint one.
-	Assignment string
+	// Entry is the phase entry this task is of, from the start row that queued it: the number the
+	// transition raised on the role's phases row when that entry handed this role work, which
+	// stands on the row beside the task itself. It is what tells one phase entry from the next
+	// within a run, so a turn that outlived its phase cannot complete the phase's next entry
+	// (api/handoff.go). Zero for a task of no entry: an operator's own, a resume, a production
+	// check's look, and every task queued before the daemon was upgraded to number them.
+	Entry int64
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
 	// turn's completion is a check report rather than a phase completion: the API routes on the
@@ -234,7 +234,7 @@ func pendingID(p *Delivery) string {
 	return p.ID
 }
 
-// queue gives the claim the task a deliver request carries, with the phase and the assignment it
+// queue gives the claim the task a deliver request carries, with the phase and the entry it
 // was queued for. An outbox repeats its row id after a crash before FinishOutbox; the same task
 // and id are therefore accepted without changing the persisted delivery. A request from an outbox
 // row the claim has already queued a task from (Claim.DeliveredRows) is accepted and queues
@@ -313,7 +313,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Assignment: request.Assignment, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now()}
+		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now()}
 	if request.Row > 0 {
 		// The claim records the row only once the store has it with the delivery: a write that
 		// failed leaves the row undelivered, so its retry queues the task.
@@ -658,17 +658,17 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 // round that is over, retire for the ask the claim ends with, and queue for the task a newer one
 // replaces. The claim keeps its state — the task is stale, not the agent.
 //
-// A confirmed task of a run leaves the run behind it, and its assignment and its check look with
-// it: the worker goes on working it in whatever turn comes next — one an Envoy notice starts,
-// with no delivery of its own — and its completion belongs to that run, that assignment and that
-// look. Only a delivery whose turn actually ran moves them, so a confirmation taken back by a
-// busy refusal never does, and only a task that carries them: an operator's task carries no
-// generation, no assignment and no look, a resume and a production check's look no assignment,
+// A confirmed task of a run leaves the run behind it, and its phase entry and its check look
+// with it: the worker goes on working it in whatever turn comes next — one an Envoy notice
+// starts, with no delivery of its own — and its completion belongs to that run, that entry and
+// that look. Only a delivery whose turn actually ran moves them, so a confirmation taken back by
+// a busy refusal never does, and only a task that carries them: an operator's task carries no
+// generation, no entry and no look, a resume and a production check's look no entry,
 // and a phase task no look, and each leaves what the claim is serving alone. Every retire of a
 // confirmed task of a run writes the row, the second task of one run included: the write is
 // unconditional on the value, not a diff. Which value each takes is the claim's own accessors,
 // read here off the claim this delivery is still pending on, so what the claim is left serving
-// is by construction what ServingRun, ServingAssignment and ServingCheck answered while that
+// is by construction what ServingRun, ServingEntry and ServingCheck answered while that
 // delivery was pending.
 //
 // The claim goes with the delete, in the store's one transaction, and is durable there rather
@@ -721,8 +721,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	m.disarm(TimerPromptRetry)
 	retired := m.stored()
 	if !p.ConfirmedAt.IsZero() {
-		retired.ServingGeneration, retired.ServingAssignmentID, retired.ServingCheckLook =
-			m.claim.ServingRun(), m.claim.ServingAssignment(), m.claim.ServingCheck()
+		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook =
+			m.claim.ServingRun(), m.claim.ServingEntry(), m.claim.ServingCheck()
 	}
 	// The deaths were charged against this task, so they end with it, in the same write.
 	retired.Budgets.Deaths = 0
