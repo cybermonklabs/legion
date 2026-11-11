@@ -243,8 +243,19 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		// the next one. Closing them here, in the transaction that marks the release, is what
 		// lets the next wake of each role take its own (store's TakePodWake, one open resume per
 		// role).
-		if err := CloseOpenResumes(ctx, tx, project, issue); err != nil {
-			return err
+		//
+		// A release that suspends no role is no wake's to end, so it closes none. It stops a pod
+		// whose every claim is failed, retired or suspended, which is a pod no wake of this issue
+		// is waiting on: a claim an earlier release left `released` is waiting for the pod that
+		// release took, not for this one, and its resume is the record of that wait. Closing it
+		// here would stamp that release woken and never turned up, and charge it from its own
+		// moment to every later read — the distortion the records exist to remove, moved onto the
+		// row beside it (`TestAReleaseThatSuspendsNoRoleEndsNoWake`, and the teardown's own
+		// reading in internal/daemon's outbox, which arms no backstop here for the same reason).
+		if !mark.SuspendsNoRole {
+			if err := CloseOpenResumes(ctx, tx, project, issue); err != nil {
+				return err
+			}
 		}
 		marked = true
 		return nil

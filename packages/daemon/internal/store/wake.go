@@ -78,8 +78,9 @@ func oneReleasedClaim(ctx context.Context, tx pgx.Tx, where, project, value, wha
 }
 
 // CloseOpenResumes closes every resume of issue no first turn has stamped: what the transaction
-// that marks a release writes, so the role's next wake records a resume of its own rather than
-// meeting the one left open by a pod that has come and gone.
+// that marks a release which suspends a role writes, so the role's next wake records a resume of
+// its own rather than meeting the one left open by a pod that has come and gone. A release that
+// suspends no role calls it not at all, since it is no wake's to end (ReleaseIdleIssue).
 //
 // Closing is its own column (closed_at), never a first turn: first_turn_at is the turn the daemon
 // observed, which the release records serve as firstTurnAt and the plugin's statistics measure the
@@ -473,9 +474,10 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 // wakes a role still reaches it once the pod is back — but the resume that refused it stands,
 // so a caller whose claim is still not running resumes it all the same rather than reading the
 // refusal as a pod already on its way (the outbox's wakeForDelivery, the workflow's wakeReleased
-// through the start row it queues). The release's own transaction closes the resumes left open
-// (CloseOpenResumes), so a pod that came back and whose role took no turn the daemon saw holds
-// nothing back at the next release.
+// through the start row it queues). The transaction of a release that suspends a role closes the
+// resumes left open (CloseOpenResumes), so a pod that came back and whose role took no turn the
+// daemon saw holds nothing back at the next release; a release that suspends none closes no
+// resume, because the pod it stops is one no wake of the issue is waiting on.
 //
 // Every wake runs through here — the four the workflow applies inside a fact's transaction and
 // the delivery wake the outbox takes in one of its own (Store.TakePodWake) — so there is one
