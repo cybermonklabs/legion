@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -1225,7 +1226,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID)
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{})
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}

@@ -194,10 +194,12 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 // hijacked connection. The auto-deployer (deploy/scripts/autodeploy.sh, schema_applied) polls the
 // same key before reading schema_migrations and reads only once a try of its own is granted, so a
 // migration in flight when it starts is waited out only if it ends inside the deployer's
-// 60-second deadline; a migration still holding the key then is not waited out at all - that read
-// fails and the deployer refuses to deploy rather than read behind a held key. A change of key
-// must change both: TestTheDeployerTakesTheMigrationKeyThisPackageDefines reads the script's own
-// key and fails when only one of the two moves.
+// 60-second deadline. That read ends within those 60 seconds, since each try's own timeout is
+// the smaller of 60 seconds and the time the deadline leaves; a migration still holding the key
+// then is not waited out at all - that read fails and the deployer refuses to deploy rather than
+// read behind a held key. A change of key must change both:
+// TestTheDeployerTakesTheMigrationKeyThisPackageDefines reads the script's own key and fails when
+// only one of the two moves.
 const migrationLockKey int64 = 8150001
 
 // migrationLockFirstPause and migrationLockMaxPause bound the sleep lockMigrations takes between

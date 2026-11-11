@@ -178,17 +178,18 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 }
 
 // routeTopics runs add, one of an event's route rules, over event with the followers and authors
-// it asks for read as a batch reads them, and returns the subjects it added.
-func routeTopics(t *testing.T, database *store.Store, event model.Event, add func(model.Event, lookup, *destinations) error) []string {
+// it asks for read as a batch reads them, and returns the subjects it added. The event's issue
+// has no route and no claimant here (routing), as none of these events' issues is claimed.
+func routeTopics(t *testing.T, database *store.Store, event model.Event, add func(model.Event, routing, lookup, *destinations) error) []string {
 	t.Helper()
 	want := newWanted()
-	_ = add(event, want, &destinations{seen: map[string]struct{}{}})
+	_ = add(event, routing{}, want, &destinations{seen: map[string]struct{}{}})
 	found, err := loadLookups(context.Background(), database.Pool, want)
 	if err != nil {
 		t.Fatalf("read the lookups: %v", err)
 	}
 	d := &destinations{seen: map[string]struct{}{}}
-	if err := add(event, found, d); err != nil {
+	if err := add(event, routing{}, found, d); err != nil {
 		t.Fatalf("add the routes: %v", err)
 	}
 	topics := []string{}
@@ -585,7 +586,7 @@ func TestPublishPreviousClaimantTellsTheSessionThatLostTheClaim(t *testing.T) {
 			database := storetest.Open(t)
 			seedIssue(t, database, "T-1", nil)
 			event := model.Event{Type: tc.eventType, Actor: tc.actor, Payload: tc.payload}
-			previousClaimant := func(event model.Event, _ lookup, d *destinations) error {
+			previousClaimant := func(event model.Event, _ routing, _ lookup, d *destinations) error {
 				addPreviousClaimant(event, d)
 				return nil
 			}

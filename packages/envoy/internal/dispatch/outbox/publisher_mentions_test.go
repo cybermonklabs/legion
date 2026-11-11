@@ -499,6 +499,138 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 	}
 }
 
+// A session a person's comment reaches only as a credit of the document it is anchored on, on an
+// issue a session claims, is left out of the author routes - but not while a mention of that
+// comment still decides its copy (addAuthorRoutes, mentionDeliveries.decidesCopyFor). So a
+// mention of the comment to it that is still being sent holds the event back exactly as the
+// claimant's does (TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent): the copy stays in
+// the list, the mention rule holds it (destinations.leftTo), and the event waits the
+// mentionPendingDelay with nothing counted, rather than publishing while that send is in flight
+// and leaving the session with neither the mention nor a copy should the send fail.
+//
+// The credits filter runs before any copy is built, which is where the mention rule would be
+// asked of this session (destinations.addSession), so a session dropped there is a session no
+// safety net of the mention rule can reach - neither the hold this case measures nor the
+// fallback row a resending mention is kept as.
+func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing.T) {
+	const (
+		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"
+		claimantTopic = "notifications.agent.session-claimant"
+	)
+	ctx := store.WithTransactionTracking(context.Background())
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
+	claimIssue(t, database, "T-1", claimant)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	writer := model.Actor{Kind: "session", ID: "session-writer"}
+	notes := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer})
+	commentID := seedThreadComment(t, database, "T-1", notes, alice, nil)
+	event := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{
+		ID: commentID, Anchor: &model.Anchor{ArtifactID: notes}, Body: "@session-writer look at this.",
+	}, writer.ID)
+	// A send a sender claimed just now, which is the state that holds a session's own copy back
+	// and blocks its event while it lasts (destinations.leftTo, mentionSending).
+	seedMentionDelivery(t, database, commentID, writer.ID, "pending")
+
+	publisher := &recordingPublisher{}
+	outbox := holding(t, Deps{Store: database, Publisher: publisher})
+	outbox.scan(ctx, unfenced{})
+
+	want := []string{issueTopic, claimantTopic}
+	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("topics = %#v, want %#v: the writer's own copy waits for the mention being sent to it", got, want)
+	}
+	if at := publishedAt(t, database, event.ID); at != nil {
+		t.Fatalf("published_at = %v while the writer's copy waits on its mention", at)
+	}
+	attempts, due := nextAttempt(t, database, event.ID)
+	if attempts != 0 {
+		t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
+	}
+	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
+		t.Fatalf("next_attempt_at = %v, want about %v from now", due, mentionPendingDelay)
+	}
+	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
+		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
+	}
+	if rows := heldDestinations(t, database, commentID); len(rows) != 0 {
+		t.Fatalf("the comment holds fallback rows %v, want none: a live mention's copy waits in the list, it is not kept as a row", rows)
+	}
+}
+
+// TestACreditedSessionWhoseMentionFailsAfterTheBatchReadsItTakesTheCopy is the case the batch
+// meets in production: the mention of a session a document credits is normally still being sent
+// when the batch reads the comment, and fails after. The first pass holds the event for that
+// mention, as TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue measures; the pass
+// that reads the settled failure gives that session the copy, under the key the failed mention's
+// send went under, so a session the comment names is reached by the mention or by this copy and
+// never by neither.
+func TestACreditedSessionWhoseMentionFailsAfterTheBatchReadsItTakesTheCopy(t *testing.T) {
+	const (
+		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"
+		claimantTopic = "notifications.agent.session-claimant"
+		writerTopic   = "notifications.agent.session-writer"
+	)
+	ctx := store.WithTransactionTracking(context.Background())
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	claimIssue(t, database, "T-1", model.Actor{Kind: "session", ID: "session-claimant"})
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	writer := model.Actor{Kind: "session", ID: "session-writer"}
+	notes := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer})
+	commentID := seedThreadComment(t, database, "T-1", notes, alice, nil)
+	event := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{
+		ID: commentID, Anchor: &model.Anchor{ArtifactID: notes}, Body: "@session-writer look at this.",
+	}, writer.ID)
+	seedMentionDelivery(t, database, commentID, writer.ID, "pending")
+
+	publisher := &recordingPublisher{}
+	outbox := holding(t, Deps{Store: database, Publisher: publisher})
+	outbox.scan(ctx, unfenced{})
+
+	held := []string{issueTopic, claimantTopic}
+	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, held) {
+		t.Fatalf("topics while the mention is being sent = %#v, want %#v", got, held)
+	}
+	if at := publishedAt(t, database, event.ID); at != nil {
+		t.Fatalf("published_at = %v while the writer's copy waits on its mention", at)
+	}
+
+	// The send fails after the batch read it, which is what the hold exists for.
+	if _, err := database.Pool.Exec(ctx, `
+		update comment_deliveries set state = 'failed' where comment_id = $1
+	`, commentID); err != nil {
+		t.Fatalf("fail the mention: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update events set next_attempt_at = null where id = $1`, event.ID); err != nil {
+		t.Fatalf("make the event due: %v", err)
+	}
+	outbox.scan(ctx, unfenced{})
+
+	want := []string{issueTopic, claimantTopic, writerTopic}
+	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("topics after the mention failed = %#v, want %#v: the session the comment names takes the copy its mention never delivered", got, want)
+	}
+	wantKey := contracts.AgentSendDedupeKey(writer.ID,
+		model.CommentMentionIdempotencyKey(commentID, "session:"+writer.ID, "steer"))
+	copies := publisher.all()
+	if got := copies[len(copies)-1].DedupeKey; got != wantKey {
+		t.Fatalf("the writer's copy is keyed %q, want the failed mention's key %q: a host the send reached before it failed drops the copy", got, wantKey)
+	}
+	if publishedAt(t, database, event.ID) == nil {
+		t.Fatalf("published_at is null after the mention failed and every copy went out")
+	}
+	if attempts, _ := nextAttempt(t, database, event.ID); attempts != 0 {
+		t.Fatalf("attempt_count = %d after the deferral resolved, want 0", attempts)
+	}
+	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
+		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
+	}
+}
+
 // TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere drives the scan itself: a new
 // comment whose claimant copy is held back for its mention still being sent is deferred only when
 // that is all that kept the attempt from finishing. When NATS denies another destination of the

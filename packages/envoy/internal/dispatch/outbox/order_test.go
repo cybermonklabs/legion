@@ -599,14 +599,17 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 	}
 	// Each comment reply whose mention failed reaches its thread's author, each resolution its
 	// thread root's author, each ask answer its two followers, each message reply its parent's
-	// sender, each document comment the document's author, each person's edit the edited
-	// document's author, and each comment on the unclaimed issue its spec's author; and every
-	// reply, resolution, answer, message and comment on the claimed issue - a person's - reaches
-	// the claimant, which an edit, no claimant event, does not.
+	// sender, each person's edit the edited document's author, and each comment on the unclaimed
+	// issue its spec's author; and every reply, resolution, answer, message and comment on the
+	// claimed issue - a person's - reaches the claimant, which an edit, no claimant event, does
+	// not. Each comment on a document of the claimed issue reaches that document's author no
+	// more: on an issue a session claims, the credits of a document are no second reason to
+	// deliver what the claimant already hears on its own topic (addAuthorRoutes). The read of
+	// those credits is made all the same, so the statement count below is unchanged.
 	if want := each * 5; claimant != want {
 		t.Fatalf("the batch reached the claimant %d times, want %d", claimant, want)
 	}
-	if want := each/2 + each*7 + each*5; agents != want {
+	if want := each/2 + each*6 + each*5; agents != want {
 		t.Fatalf("the batch reached %d sessions' own subjects, want %d", agents, want)
 	}
 	lookups := tracer.matchingAny("ask_followers", "from comments", "from messages", "artifact_versions", "from comment_deliveries", "is_primary")

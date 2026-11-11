@@ -519,72 +519,56 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 	}
 }
 
-// TestExecFormReleasesALineEndingUntouchedAndSaysSo is the end-to-end of the two above: the real
-// child of the real binary gets a released value that ends in a line ending exactly as the
-// broker served it — compared as a digest, so no value is in this test's output — and the exec
-// form says so on standard error, after its source line and before the child's own output, only
-// when a released value ends in one. A value that is meant to end in a newline, a PEM among
-// them, is delivered whole and named just the same (dispatch://INFRA-1042).
-func TestExecFormReleasesALineEndingUntouchedAndSaysSo(t *testing.T) {
+// TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore: the real child of the real
+// binary gets the bytes the broker released, byte for byte — compared as a digest, so no value
+// is in this test's output — and standard error carries the one source line and then nothing of
+// this command's at all, not even where the released value ends in a line ending. Which bytes a
+// value has is the broker's decision now (policy.TrimForShape): a value that reaches the child
+// ending in a line feed ends that way because its owner's shape tag says it does, and the agent
+// running the command could not store it differently in any case.
+func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
 	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
-	for name, tc := range map[string]struct {
-		released string
-		warns    bool
-	}{
-		"one trailing newline":  {released: "topsecretvalue123\n", warns: true},
-		"trailing CRLF":         {released: "topsecretvalue123\r\n", warns: true},
-		"lone carriage return":  {released: "topsecretvalue123\r", warns: true},
-		"a PEM-shaped value":    {released: "-----BEGIN KEY-----\nabc\n-----END KEY-----\n", warns: true},
-		"no trailing newline":   {released: "topsecretvalue123", warns: false},
-		"a newline inside only": {released: "first\nsecond", warns: false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			broker, counters := fakeBroker(t)
-			defer broker.Close()
-			counters.releaseValue(tc.released)
-			stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
-				"GRANT_ME", "--", "sh", "-c", `printf %s "$GRANT_ME" | sha256sum; echo the-child-ran >&2`)
-			// Nothing below prints stdout or stderr: this case's released value is in neither
-			// unless the very regression this test exists to catch has happened, and
-			// redactSecrets hides only the default fixture. Each failure says what was wrong
-			// instead: an exit code, a digest, which assertion about the two lines failed.
-			if exit != 0 {
-				t.Fatalf("exit = %d, want 0", exit)
-			}
-			sum := sha256.Sum256([]byte(tc.released))
-			want, fields := hex.EncodeToString(sum[:]), strings.Fields(stdout)
-			if len(fields) == 0 {
-				t.Fatalf("the child printed no digest at all")
-			}
-			if fields[0] != want {
-				// The token is not printed: a regression that puts the value where the digest
-				// belongs would print it. Its own digest tells two failures apart and discloses
-				// nothing.
-				got := sha256.Sum256([]byte(fields[0]))
-				t.Fatalf("what the child printed first is not the value's digest %s; sha256 of what it did print: %s", want, hex.EncodeToString(got[:]))
-			}
-			lines := strings.SplitAfter(stderr, "\n")
-			if len(lines) < 2 || !strings.HasPrefix(lines[0], "agent-secrets: GRANT_ME from ") {
-				t.Fatalf("the first of %d stderr lines is not the source line", len(lines))
-			}
-			if warned := strings.Contains(stderr, "end in a line ending"); warned != tc.warns {
-				t.Fatalf("a line-ending warning: %v, want %v", warned, tc.warns)
-			}
-			if tc.warns && !strings.HasPrefix(lines[1], "agent-secrets: GRANT_ME end in a line ending") {
-				t.Fatalf("the second stderr line is not the warning, so it does not come before the child's own output")
-			}
-			if !strings.Contains(stderr, "the-child-ran") {
-				t.Fatalf("the child's own stderr line is missing")
-			}
-			// This case's own value, whole and ending aside, in either stream is the leak.
-			for _, part := range []string{tc.released, strings.TrimRight(tc.released, "\r\n")} {
-				if part != "" && strings.Contains(stdout+stderr, part) {
-					t.Fatalf("the released value reached this command's own output")
-				}
-			}
-		})
+	broker, counters := fakeBroker(t)
+	defer broker.Close()
+	const released = "topsecretvalue123\n"
+	counters.releaseValue(released)
+
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
+		"GRANT_ME", "--", "sh", "-c", `printf %s "$GRANT_ME" | sha256sum; echo the-child-ran >&2`)
+	// Nothing below prints stdout or stderr: the released value is in neither unless the very
+	// regression this test exists to catch has happened, and redactSecrets hides only the
+	// default fixture. Each failure says what was wrong instead: an exit code, a digest, which
+	// assertion about the two streams failed.
+	digest := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0", exit)
+	}
+	want, fields := digest(released), strings.Fields(stdout)
+	if len(fields) == 0 {
+		t.Fatalf("the child printed no digest at all")
+	}
+	if fields[0] != want {
+		// The token is not printed: a regression that puts the value where the digest belongs
+		// would print it. Its own digest tells two failures apart and discloses nothing.
+		t.Fatalf("what the child printed first is not the released value's digest %s; sha256 of what it did print: %s", want, digest(fields[0]))
+	}
+	source, rest, ended := strings.Cut(stderr, "\n")
+	if !ended || !strings.HasPrefix(source, "agent-secrets: GRANT_ME from ") {
+		t.Fatalf("the first of stderr's %d lines is not the source line", strings.Count(stderr, "\n"))
+	}
+	if rest != "the-child-ran\n" {
+		t.Fatalf("after the source line stderr holds %d bytes (sha256 %s), want the child's own line and nothing else", len(rest), digest(rest))
+	}
+	// The released value, whole and ending aside, in either stream is the leak.
+	for _, part := range []string{released, strings.TrimRight(released, "\r\n")} {
+		if strings.Contains(stdout+stderr, part) {
+			t.Fatalf("the released value reached this command's own output")
+		}
 	}
 }
 
@@ -1044,10 +1028,10 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 	}
 }
 
-// TestReleasedValuesReachTheChildExactlyAsStored: a stored value may legitimately be several
-// lines, a PEM document among them, so the exec form injects every value byte for byte, line
-// endings and all.
-func TestReleasedValuesReachTheChildExactlyAsStored(t *testing.T) {
+// TestReleasedValuesReachTheChildAsTheBrokerSentThem: which bytes a released value has is the
+// broker's decision, taken from the secret's shape (policy.TrimForShape), so the exec form hands
+// the child what the broker sent, byte for byte, line endings and all.
+func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 	t.Parallel()
 	for name, value := range map[string]string{
 		"one trailing newline":   "sk-live-abc\n",
@@ -1068,70 +1052,7 @@ func TestReleasedValuesReachTheChildExactlyAsStored(t *testing.T) {
 			want := []string{"GRANT_ME=" + value}
 			gotSum, wantSum := sha256.Sum256([]byte(strings.Join(got, "\n"))), sha256.Sum256([]byte(strings.Join(want, "\n")))
 			if gotSum != wantSum {
-				t.Fatalf("child env sha256 = %s, want %s: the value must be injected as stored", hex.EncodeToString(gotSum[:]), hex.EncodeToString(wantSum[:]))
-			}
-		})
-	}
-}
-
-// TestWarnTrailingNewlineNamesEverySecretThatEndsInALineEnding: a one-line credential stored with
-// the trailing newline of whatever produced it is invisible where it is written and expensive
-// where it is read — a caller that sends it unstripped gets a rejected HTTP header, and the error
-// reporting that can quote the whole secret (dispatch://INFRA-1042). The exec form says so on
-// standard error before the command runs, naming each such secret in a stable order and never any
-// part of a value, and says nothing when no value ends in one. No failure below prints what was
-// written or any value: the one worth catching is a line that holds a value.
-func TestWarnTrailingNewlineNamesEverySecretThatEndsInALineEnding(t *testing.T) {
-	t.Parallel()
-	for name, tc := range map[string]struct {
-		values map[string]string
-		want   []string
-		quiet  bool
-	}{
-		"one trailing newline":  {values: map[string]string{"GRANT_ME": "sk-live-abc\n"}, want: []string{"GRANT_ME"}},
-		"trailing CRLF":         {values: map[string]string{"GRANT_ME": "sk-live-abc\r\n"}, want: []string{"GRANT_ME"}},
-		"lone carriage return":  {values: map[string]string{"GRANT_ME": "sk-live-abc\r"}, want: []string{"GRANT_ME"}},
-		"two of three, sorted":  {values: map[string]string{"B_KEY": "sk-bbbbbb\n", "A_KEY": "sk-aaaaaa\n", "C_KEY": "sk-cccccc"}, want: []string{"A_KEY", "B_KEY"}},
-		"a newline inside only": {values: map[string]string{"GRANT_ME": "first\nsecond"}, quiet: true},
-		"none":                  {values: map[string]string{"GRANT_ME": "sk-live-abc"}, quiet: true},
-		"no secrets at all":     {values: nil, quiet: true},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var stderr strings.Builder
-			warnTrailingNewline(&stderr, tc.values)
-			said := stderr.String()
-			// No failure below prints what was written. The line is meant to hold no value, so
-			// the failure that matters most here is the one where it holds one, and printing it
-			// then is the disclosure this whole change is about. Each failure says what was
-			// wrong, with a digest where two outputs must be told apart.
-			digest := func(s string) string {
-				sum := sha256.Sum256([]byte(s))
-				return hex.EncodeToString(sum[:])
-			}
-			if tc.quiet {
-				if said != "" {
-					t.Fatalf("it wrote %d bytes (sha256 %s), want nothing at all", len(said), digest(said))
-				}
-				return
-			}
-			if !strings.HasPrefix(said, "agent-secrets: "+strings.Join(tc.want, ", ")+" end in a line ending") {
-				t.Fatalf("the line does not open by naming exactly %v in order (sha256 %s)", tc.want, digest(said))
-			}
-			if strings.Count(said, "\n") != 1 || !strings.HasSuffix(said, "\n") {
-				t.Fatalf("it wrote %d newlines, want exactly one and it last", strings.Count(said, "\n"))
-			}
-			// The line is independent of the bodies: the same names with the same endings and
-			// wholly different values say exactly the same thing, which no substring check of a
-			// short value could establish (a short value can appear in the sentence's own words).
-			var other strings.Builder
-			changed := make(map[string]string, len(tc.values))
-			for name, value := range tc.values {
-				ending := value[len(strings.TrimRight(value, "\r\n")):]
-				changed[name] = "zzzzzzzzzzzzzzzzzzzz" + ending
-			}
-			warnTrailingNewline(&other, changed)
-			if other.String() != said {
-				t.Fatalf("the line changed with the values: sha256 %s became %s", digest(said), digest(other.String()))
+				t.Fatalf("child env sha256 = %s, want %s: the value must reach the child as the broker sent it", hex.EncodeToString(gotSum[:]), hex.EncodeToString(wantSum[:]))
 			}
 		})
 	}

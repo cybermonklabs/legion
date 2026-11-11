@@ -45,9 +45,12 @@ func TestLoadPrimaryDocumentAuthorsReadsEveryIssueOfABatchInOneQuery(t *testing.
 }
 
 // One query reads the recipients of a whole batch's replies, keyed by the comment each replies
-// under: two threads give two entries, a legacy nested reply finds its thread's root, a comment
-// with no row gives none, and a cyclic reply_to chain ends at the depth bound rather than
-// spinning, with the authors of the comments the walk visited.
+// under, each marked with where the read found it: two threads give two entries, a legacy nested
+// reply finds its thread's root, a comment with no row gives none, and a cyclic reply_to chain
+// ends at the depth bound rather than spinning, with the authors of the comments the walk visited.
+// A session that wrote in the thread is marked from it, one the thread's document credits alone
+// is not, and one that is both is marked from the thread, which is what tells the destinations
+// which rows to leave out on an issue a session claims (addAuthorRoutes).
 func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -56,9 +59,11 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 	writer := model.Actor{Kind: "session", ID: "session-writer"}
 	rooter := model.Actor{Kind: "session", ID: "session-rooter"}
 	replier := model.Actor{Kind: "session", ID: "session-replier"}
-	spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer, alice}, nil)
+	keeper := model.Actor{Kind: "session", ID: "session-keeper"}
+	spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer, alice}, nil, []model.Actor{keeper})
 	first := seedThreadComment(t, database, "T-1", spec, alice, nil)
 	seedThreadComment(t, database, "T-1", "", replier, &first)
+	seedThreadComment(t, database, "T-1", "", keeper, &first)
 	second := seedThreadComment(t, database, "T-1", "", rooter, nil)
 	nested := seedThreadComment(t, database, "T-1", "", replier, &second)
 	seedThreadComment(t, database, "T-1", "", writer, &nested)
@@ -69,7 +74,7 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 	}
 
 	done := make(chan struct{})
-	var recipients map[string][]string
+	var recipients map[string][]threadRecipient
 	var err error
 	go func() {
 		defer close(done)
@@ -84,10 +89,21 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load comment recipients: %v", err)
 	}
-	want := map[string][]string{
-		first:  {replier.ID, writer.ID},
-		nested: {rooter.ID, replier.ID, writer.ID},
-		cyclic: {rooter.ID, replier.ID},
+	want := map[string][]threadRecipient{
+		first: {
+			{sessionID: replier.ID, fromThread: true},
+			{sessionID: keeper.ID, fromThread: true},
+			{sessionID: writer.ID},
+		},
+		nested: {
+			{sessionID: rooter.ID, fromThread: true},
+			{sessionID: replier.ID, fromThread: true},
+			{sessionID: writer.ID, fromThread: true},
+		},
+		cyclic: {
+			{sessionID: rooter.ID, fromThread: true},
+			{sessionID: replier.ID, fromThread: true},
+		},
 	}
 	if !reflect.DeepEqual(recipients, want) {
 		t.Fatalf("recipients = %v, want %v", recipients, want)

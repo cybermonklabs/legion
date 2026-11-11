@@ -236,7 +236,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 		t.Fatalf("report what the pods are doing: %v", err)
 	}
 	idle := &workflowRuntime{pool: pool, projectID: "legion", log: quietLogger(), idleStore: trees,
-		idleImages: &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}, idlePeriod: time.Minute}
+		idleRuntime: &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}, idlePeriod: time.Minute}
 	if !idle.listenerLive(ctx) {
 		t.Fatal("the listener's report is not live, so the tick below would decide no pod at all")
 	}

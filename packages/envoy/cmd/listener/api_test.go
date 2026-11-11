@@ -2555,6 +2555,94 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 	}
 }
 
+// The sender stamp reads a title its cache misses through to the bucket - a sender that
+// registered a moment ago through another listener, or any sender while the session cache refills
+// after a reconnect - and stamps it as a cache hit would, within the one window the stamp already
+// spends on its interest read (senderStamp). The cache is kept from the registration by ending
+// its watcher before the second listener writes it, so nothing but the read-through can find it,
+// and the miss is asserted before anything is driven: a cache that already held the row would
+// prove nothing. A registration that carries no title is a hit with an empty value rather than a
+// miss, and still gives a message with no title, as a sender with no registration at all does
+// (TestSendHandler_StampsInterestSenderWithoutSessionEntry).
+func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T) {
+	const (
+		target   = "ses_title_stamp_target"
+		sender   = "ses_title_stamp_sender_the_cache_missed"
+		untitled = "ses_title_stamp_sender_that_registered_no_title"
+		title    = "the sender's title"
+	)
+	for _, route := range []struct {
+		name    string
+		handler func(*listenerDeps) http.HandlerFunc
+		path    string
+		body    func(source string) map[string]any
+	}{
+		{
+			name:    "send",
+			handler: func(d *listenerDeps) http.HandlerFunc { return sendHandler(d, logging.New("test")) },
+			path:    "/v1/messages/send",
+			body: func(source string) map[string]any {
+				return map[string]any{"target_session": target, "source": "agent", "source_session": source, "message": "who sent this?"}
+			},
+		},
+		{
+			name:    "publish",
+			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
+			path:    "/v1/messages/publish",
+			body: func(source string) map[string]any {
+				return map[string]any{"topic": "notifications.github.example-org.example-repo.pr.3", "source": "agent", "source_session": source, "message": "who sent this?"}
+			},
+		},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			client := setupPublishTestClient(t)
+			registry, sessions := setupSessionsTest(t, nil, []string{target})
+			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			sessions.EndWatch(endCtx)
+			cancel()
+			writer, err := session.OpenSessionRegistry(setupPublishTestClient(t).Conn, session.WithSessionReplicas(1))
+			if err != nil {
+				t.Fatalf("open the writing listener's session registry: %v", err)
+			}
+			for _, registration := range []struct {
+				sessionID string
+				title     string
+			}{{sessionID: sender, title: title}, {sessionID: untitled}} {
+				if err := writer.Put(registration.sessionID, session.SessionEntry{
+					SelfSubscribed: true,
+					MachineID:      "test-machine",
+					Dir:            "/test/" + registration.sessionID,
+					Title:          registration.title,
+				}); err != nil {
+					t.Fatalf("register %s through the writing listener: %v", registration.sessionID, err)
+				}
+				if _, err := sessions.Get(registration.sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
+					t.Fatalf("the listener's session cache answers %s with %v: the title could be read from the cache", registration.sessionID, err)
+				}
+			}
+			state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+
+			for _, want := range []struct {
+				sender string
+				title  string
+			}{{sender: sender, title: title}, {sender: untitled}} {
+				recorder := httptest.NewRecorder()
+				route.handler(state).ServeHTTP(recorder, postJSON(route.path, sendBody(route.body(want.sender))))
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("%s from %s: status %d, body %s; want 200", route.name, want.sender, recorder.Code, recorder.Body.String())
+				}
+				var response contracts.Envelope
+				if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+					t.Fatalf("decode the %s response %s: %v", route.name, recorder.Body.String(), err)
+				}
+				if response.Sender == nil || response.Sender.SessionID != want.sender || response.Sender.Title != want.title {
+					t.Fatalf("sender = %+v, want %s carrying the title %q the bucket holds", response.Sender, want.sender, want.title)
+				}
+			}
+		})
+	}
+}
+
 func TestPublishHandler_SuppliedPayloadWins(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
