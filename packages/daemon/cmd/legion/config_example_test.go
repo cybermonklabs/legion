@@ -79,6 +79,60 @@ func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
 	}
 }
 
+// The example's commented experiments block, uncommented with the operator-experiments volume and
+// mount its one arm's overlay points to, passes the same check, and names the experiment the
+// project declares: its mode, its unit, and the two arms it compares. The arm that names no file
+// is the control, which is why only one of the two carries an overlay.
+func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"  # WIDGETS:",
+			"  #   experiments:",
+			"  #     plan-length:",
+			"  #       mode: random",
+			"  #       unit: issue",
+			"  #       variants:",
+			"  #         - name: long",
+			"  #           weight: 1",
+			"  #           config_files: [/etc/legion-experiments/plan-length.yml]",
+			"  #         - name: control",
+			"        # - name: operator-experiments",
+			"        #   config_map: {name: legion-operator-experiments}",
+			"        # - {volume: operator-experiments, mount_path: /etc/legion-experiments}",
+		)
+		// The example's two forms of the project entry are alternatives, as the memory test says:
+		// the active empty one is commented out so the uncommented one is the project's whole entry.
+		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := cfg.Projects["WIDGETS"].Experiments
+	if len(declared) != 1 {
+		t.Fatalf("the WIDGETS experiments = %+v, want the plan-length experiment alone", declared)
+	}
+	plan := declared[0]
+	if plan.Name != "plan-length" || plan.Mode != configpkg.ExperimentRandom || plan.Unit != configpkg.ExperimentIssue {
+		t.Errorf("the WIDGETS experiment = %+v, want plan-length at mode random over the issue", plan)
+	}
+	want := []configpkg.Variant{
+		{Name: "long", Weight: 1, ConfigFiles: []string{"/etc/legion-experiments/plan-length.yml"}},
+		{Name: "control", Weight: 1},
+	}
+	if !slices.EqualFunc(plan.Variants, want, func(got, want configpkg.Variant) bool {
+		return got.Name == want.Name && got.Weight == want.Weight &&
+			slices.Equal(got.ConfigFiles, want.ConfigFiles) && got.InstructionsPath == want.InstructionsPath
+	}) {
+		t.Errorf("the plan-length variants = %+v, want %+v: the control arm names no file", plan.Variants, want)
+	}
+	// The `memory` block stays commented beside it, so the project declares the one experiment:
+	// a project writing the block and experiments.memory together is refused.
+	if memory := cfg.Projects["WIDGETS"].Memory; memory.Mode != "" {
+		t.Errorf("the WIDGETS memory block = %+v, want none: this test uncomments the experiments block alone", memory)
+	}
+}
+
 // The example's commented commit_issue_trailer_repos, uncommented, passes the same check and
 // names the one repository whose commits a pane of the project stamps with its issue key. It
 // needs no volume and no mount: the key names repositories, not files.

@@ -120,6 +120,55 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		}
 		return refusalFile{project: "    memory: {mode: on, config_files: [" + overlay + "], instructions: " + missing + "}\n"}.refuse(t)
 	},
+	// The declared experiments. `experiments` is read on the project as the `memory` block is, so
+	// each of these is one project key and the kubernetes base only where a pod mount is in view.
+	"projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both": func(t *testing.T) string {
+		return refusalFile{project: "    memory: {}\n    experiments: {memory: {variants: [{name: memory}, {name: none}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.memory names the variants …: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {memory: {variants: [{name: long}, {name: short}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments must be a mapping of an experiment's name to its block": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
+	},
+	`projects.<KEY>.experiments key "…" must match %s: an experiment's name is recorded with every draw it makes`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {Plan Length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
+	`projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {mode: sometimes, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
+	`projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {unit: pod, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {mode: random}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME> is on and names no on_variant: …": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {mode: on, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.weight must be a whole number above zero (got <n>): …": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {variants: [{name: long, weight: 0}, {name: control}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM> names config_files, and worker_backends.<role> is claude, which reads no PI_CONFIG_FILES: …": func(t *testing.T) string {
+		return refusalFile{top: "worker_backends: {implementer: claude}\n",
+			project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [/etc/legion-operator/plan.yml]}, {name: control}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …": func(t *testing.T) string {
+		return refusalFile{kubernetes: true,
+			project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [/etc/legion-operator/plan.yml]}, {name: control}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {variants: [{name: long, config_files: [/etc/legion-operator/plan.yml, /etc/legion-operator/plan.yml]}, {name: control}]}}\n"}.refuse(t)
+	},
+	"instructions file <path> of experiment <experiment> variant <variant> could not be read: …": func(t *testing.T) string {
+		dir := t.TempDir()
+		overlay, missing := filepath.Join(dir, "plan.yml"), filepath.Join(dir, "missing.md")
+		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return refusalFile{project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [" +
+			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
+	},
 	`projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    commit_issue_trailer_repos: [acme]\n"}.refuse(t)
 	},

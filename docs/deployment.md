@@ -365,9 +365,17 @@ provider_keys:
   every launch of that role fail. `docs/kubernetes.md` ("Operator configuration") has the rest of
   the key's rules. Every pane runs as the daemon's Unix user, so each role can read every role's
   overlay file; only loading is per role, so never put a secret in one.
-- **`projects.<KEY>.memory`**, the project's own block, is the second thing that appends to a
+- **`projects.<KEY>.memory`**, the project's own block, is one of the things that append to a
   pane's `PI_CONFIG_FILES`
   (`memory: {mode: random, config_files: [/etc/legion-memory/memory.yml], instructions: /etc/legion-daemon/memory-instructions.md}`).
+  The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon
+  reads it as an experiment of unit `tree` whose arms are `memory`, carrying the block's
+  `config_files` and `instructions`, and `none`, carrying neither, at equal weight, with
+  `on_variant: memory`.
+  A project writes the block **or** `experiments.memory`, never both: the two are one experiment
+  spelled twice, and a project that writes both is refused.
+  The block itself is accepted and refused in no new way, so a file that passed before passes
+  now, unchanged: every rule below is the rule it has always had.
   `mode` is `off`, `on` or `random`: `off` gives no tree a memory group and is what a project with
   no block gets, `on` gives every new tree one, and `random` draws a fair coin for each new tree.
   `config_files` are the Oh My Pi overlays a memory-group tree's panes name, and `instructions` the
@@ -382,9 +390,10 @@ provider_keys:
   it later, and a change of mode reaches only the trees opened after it.
   A child out of a tree the daemon never opened has run under nothing and the hand-over gives it
   nothing, so its own first open draws it like any other new tree.
-  Every role of a memory-group tree names the memory overlays last in `PI_CONFIG_FILES`, after
-  `pi_config_files` and the role's own, and ends its one `--append-system-prompt` value with the
-  memory instructions, after the deployment's own.
+  Every role of a memory-group tree names the memory overlays after `pi_config_files` and the
+  role's own, and before any other experiment's arms, since the block's experiment comes first
+  among the project's declared experiments, and ends its one `--append-system-prompt` value with
+  the memory instructions, after the deployment's own.
   The controller and every role of a no-memory tree get neither, and a block with no
   `instructions` appends nothing.
   The launch follows the record, not the mode:
@@ -403,6 +412,51 @@ provider_keys:
   `legion start --check-config` makes every one of these refusals and starts nothing.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`.
+- **`projects.<KEY>.experiments`**, the project's own mapping, declares the experiments it draws
+  its trees and its issues into, by the name each draw records
+  (`experiments: {plan-length: {mode: random, unit: issue, variants: [{name: long, config_files: [/etc/legion-experiments/plan-length.yml]}, {name: control}]}}`).
+  An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
+  once.
+  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
+  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
+  same arm, or `issue`, which draws for each issue on its own.
+  `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
+  since a draw among one arm measures nothing.
+  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
+  number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a pane
+  of a unit drawn into it names, and `instructions`, one markdown file the daemon reads at boot
+  and appends to that pane's prompt.
+  Both file keys are absolute paths, and neither is required: the arm that names no file at all is
+  the control the others are measured against.
+  **The order a pane's `PI_CONFIG_FILES` names them in** is the operator's files
+  (`runtime.tmux.pi_config_files`), then the pane's own role's (`role_config_files`), then the
+  files of each arm the pane's unit was drawn into, in the order the project's file declares the
+  experiments, so an arm's file outranks both.
+  The `memory` block's own arm comes first among them, since the block's experiment comes before
+  the `experiments` mapping's own.
+  The one `--append-system-prompt` value ends with each such arm's `instructions` in that same
+  order, after the deployment's own.
+  The draw is made once, when the unit is opened — a tree's when its lifecycle row is first
+  created, an issue's when the daemon first records that issue — and is recorded with the arm, the
+  mode in force and the instant.
+  The launch follows the record, not the mode: a unit drawn into an arm keeps that arm's files
+  while the project's file still names the arm, whatever the mode is now, and taking the files
+  away is taking the arm out of the file.
+  The controller runs in no tree and no issue, so it is in no experiment and gets no arm's files.
+  The loader refuses a `mode` that is no word of the three, a `unit` that is neither word, a block
+  that lists no variant, a mode other than `off` over one variant, a `mode: on` that names no
+  `on_variant`, an `on_variant` that is no arm of its experiment, a name or an arm name outside
+  those characters, a name or an arm name written twice, a `weight` that is not a whole number
+  above zero, and an arm that names `config_files` while `worker_backends` puts an issue role on
+  Claude Code, which reads no `PI_CONFIG_FILES`.
+  Boot refuses an arm's overlay no pane could read and an arm's `instructions` file it cannot read
+  or that holds nothing.
+  `legion start --check-config` makes every one of these refusals and starts nothing.
+  `legion config-reference --json` prints every key of the block with its default and what it
+  does.
+  `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
+  kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
 - **`projects.<KEY>.commit_issue_trailer_repos`**, the project's own list, names the repositories
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).

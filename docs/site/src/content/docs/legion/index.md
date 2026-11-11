@@ -58,7 +58,8 @@ flowchart LR
   that shows each one.
 - [Walkthrough](/legion/legion/walkthrough/): an issue going through Legion, end to end.
 - Reference: the [CLI](/legion/legion/reference/cli/), the
-  [configuration examples](/legion/legion/reference/config/) and the
+  [configuration reference](/legion/legion/reference/config/) — every key of `legion.yaml`, its
+  nested keys and the example files Legion ships — and the
   [skills](/legion/legion/reference/skills/) Legion's agents load, all generated from the code when
   the site is built.
 

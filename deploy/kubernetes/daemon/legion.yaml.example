@@ -84,7 +84,10 @@ projects:
   #                                    # jj appends, so a squash landing the branch carries the key.
   #                                    # Each must be one Dispatch maps to this project; a pane of
   #                                    # any other repository stamps nothing
-  #   memory:                          # optional: what each tree this project opens runs with:
+  #   memory:                          # optional: what each tree this project opens runs with. The
+  #                                    # block is the experiment named memory (experiments below),
+  #                                    # so write the block or experiments.memory, never both; the
+  #                                    # block itself is accepted and refused in no new way:
   #     mode: on                       # off (the default, and what a project with no memory block
   #                                    # gets), on, or random, a fair coin for each tree. The draw is
   #                                    # made once, when the tree's lifecycle row is first created,
@@ -107,6 +110,35 @@ projects:
   #                                    # boot and appends its text to every memory-group role's
   #                                    # system prompt, after the deployment's own instructions.
   #                                    # mode: on with no instructions appends nothing
+  #   experiments:                     # optional: what this project draws its trees and its issues
+  #                                    # into, by the name each draw records. The memory block above
+  #                                    # is the experiment named memory, written the other way
+  #     plan-length:                   # one experiment; its name is 1 to 32 characters of a-z, 0-9
+  #                                    # and -, and the project names it once
+  #       mode: random                 # off (the default, and what a block with no mode gets), on,
+  #                                    # which gives every new unit the on_variant arm, or random,
+  #                                    # which draws among the arms by their weights. The draw is
+  #                                    # made once, when the unit is opened, and the unit keeps that
+  #                                    # arm for its whole life under any later mode
+  #       unit: issue                  # tree (the default) draws once for a whole tree and gives
+  #                                    # every issue of it the same arm; issue draws for each issue
+  #       variants:                    # the arms it compares, at least two while mode is not off
+  #         - name: long               # the arm a draw records
+  #           weight: 1                # its share of a random draw against the other arms; 1 by
+  #                                    # default, and a whole number above zero
+  #           config_files: [/etc/legion-experiments/plan-length.yml] # Oh My Pi overlays every role
+  #                                    # of a unit drawn into this arm names in PI_CONFIG_FILES
+  #                                    # after pod.env's and the role's own (role_config_files), so
+  #                                    # they outrank both. Under runtime: kubernetes each file must
+  #                                    # be in a pod.volume_mounts mount below: uncomment the
+  #                                    # operator-experiments volume and mount there too, a
+  #                                    # ConfigMap legion-operator-experiments mounted at
+  #                                    # /etc/legion-experiments. The day a project declares an arm
+  #                                    # with overlay files, every live issue pod of the deployment
+  #                                    # drifts and is replaced: a role cannot read a file its pod
+  #                                    # does not mount
+  #         - name: control            # the arm that names no file at all is the control the others
+  #                                    # are measured against
 # repository_renames:                  # optional: a repository that moved, which the daemon then
 #   - from: acme/widgets-legacy        # treats as one repository wherever it compares a name —
 #     to: acme/widgets                 # GitHub's events name the new repository while every tree
@@ -330,6 +362,8 @@ runtime:
         #   config_map: {name: legion-operator-roles}
         # - name: operator-memory      # the project's memory.config_files overlays (above)
         #   config_map: {name: legion-operator-memory}
+        # - name: operator-experiments # an experiment variant's config_files overlays (above)
+        #   config_map: {name: legion-operator-experiments}
       volume_mounts:
         - {volume: operator-route, mount_path: /home/legion/.omp/profiles/legion/agent/models.yml, sub_path: models.yml}
         - {volume: operator-route, mount_path: /etc/legion-operator/overlay.yml, sub_path: overlay.yml}
@@ -339,6 +373,7 @@ runtime:
         # - {volume: nas, mount_path: /mnt/nas, read_only: false}          # writable
         # - {volume: operator-roles, mount_path: /etc/legion-operator-roles} # role_config_files' overlays
         # - {volume: operator-memory, mount_path: /etc/legion-memory} # memory.config_files' overlays
+        # - {volume: operator-experiments, mount_path: /etc/legion-experiments} # a variant's config_files overlays
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
 # capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets

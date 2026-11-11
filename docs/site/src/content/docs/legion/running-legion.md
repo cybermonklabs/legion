@@ -378,6 +378,14 @@ What each part is for:
   warning as it boots, and `legion start --check-config` prints each after its `Config OK` line
   and exits 0. Remove the key.
 - **`projects.<KEY>.memory`** (optional) decides what each tree that project opens runs with.
+  The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon
+  reads it as an experiment of unit `tree` whose arms are `memory`, carrying the block's
+  `config_files` and `instructions`, and `none`, carrying neither, at equal weight, with
+  `on_variant: memory`.
+  A project writes the block **or** `experiments.memory`, never both: the two are one experiment
+  spelled twice, and a project that writes both is refused.
+  The block itself is accepted and refused in no new way, so a file that passed before passes
+  now, unchanged.
   `mode` is `off`, the default and what a project with no block gets, `on`, which gives every new
   tree a memory group, or `random`, a fair coin for each new tree:
 
@@ -415,10 +423,51 @@ What each part is for:
   Code — hold whatever the mode is.
   The controller is in no memory group, a tree drawn `none` runs exactly as it ran before the block
   existed, and a block with no `instructions` appends nothing.
-  `legion state` prints one `memory:` line counting the issues drawn under each group and mode —
-  the state names no tree, and a tree handed over as one of its own carries its old tree's draw
-  verbatim, so trees cannot be counted from it — and
+  `legion state` prints one line per declared experiment, the `memory` line among them, counting
+  the issues that hold each arm — the state names no tree, and a tree handed over as one of its
+  own carries its old tree's draw verbatim, so trees cannot be counted from it — and
   `legion state --json` shows each issue its tree's group, the mode it was drawn under and when.
+- **`projects.<KEY>.experiments`** (optional) declares the experiments the project draws its trees
+  and its issues into, by the name each draw records:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      experiments:
+        plan-length:
+          mode: random
+          unit: issue
+          variants:
+            - {name: long, weight: 1, config_files: [/etc/legion-experiments/plan-length.yml]}
+            - {name: control, weight: 1}
+  ```
+
+  An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
+  once.
+  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
+  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
+  same arm, or `issue`, which draws for each issue on its own.
+  `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
+  since a draw among one arm measures nothing.
+  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
+  number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
+  a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own
+  disk that the daemon reads at boot and appends to that role's system prompt.
+  Both file keys are absolute paths, and neither is required: the arm that names no file at all is
+  the control the others are measured against.
+  A role of a drawn unit names each arm's `config_files` in its `PI_CONFIG_FILES` after the
+  operator's own and the role's own, in the order the project's file declares the experiments, and
+  ends its one `--append-system-prompt` value with each arm's `instructions` in that same order.
+  The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
+  and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
+  stops new draws and takes nothing from a unit already running.
+  Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
+  carries, and the day a project declares an arm with overlay files every live issue pod of the
+  deployment is replaced, since a role cannot read a file its pod does not mount
+  ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
+  "Operator configuration").
+  Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
 - **`projects.<KEY>.commit_issue_trailer_repos`** (optional) names the repositories whose commits
   carry their issue key:
 
@@ -690,6 +739,95 @@ What each part is for:
 
 The loader refuses any key it does not know, naming it, and refuses `omp_invocation` and
 `omp_launch_prefix` under Kubernetes, since every pod runs the image's Oh My Pi.
+
+**Every key in one place: `legion config-reference --json`.** The command prints the loader's own
+key table as JSON — one object per top-level key with its `name`, `default`, `required` and
+`description`, and, under `nested`, the keys of the mappings that belong to it — and reads
+nothing: no `legion.yaml`, no daemon, no cluster, so it answers anywhere the binary runs. JSON is
+the one shape it prints, which is why `--json` is required rather than one choice among formats:
+
+```sh
+legion config-reference --json | jq '.[] | select(.name == "projects") | .nested[] | select(.path | startswith("projects.<KEY>.experiments"))'
+```
+
+The [configuration reference](/legion/legion/reference/config/) on this site is built from that
+output when the site is built, together with the example files the repository ships, so the page
+and the loader can never disagree about a key.
+
+## Pre-registering an experiment
+
+Write this down before you move an experiment's `mode` off `off`, and keep it where the project
+keeps its decisions. An experiment nobody wrote down before it ran is one whose result can be
+chosen after it ran, and this fleet draws few enough units that the choice would decide the
+answer. A pre-registration states seven things.
+
+1. **The primary outcome.** One measure, named before the first draw, that the experiment is
+   judged on: the share of issues merged with no fix by a person, say, or the median hours from
+   an issue's start to its merge. Say how it is computed and which records it is read from. List
+   secondary measures if you want them, and let none of them decide the experiment.
+
+2. **The unit it randomises, and whether mixing arms inside a tree is a danger for that
+   outcome.** `unit: tree` draws once for a whole tree, so every issue of that tree runs in one
+   arm. `unit: issue` draws for each issue, so two issues of one tree can run in different arms.
+   Mixing inside a tree is safe when an arm cannot reach its siblings — an overlay that changes
+   how one issue's implementer writes its own code, and nothing the tree shares. It is a danger
+   when the arm can reach them: anything that changes what a role writes into the tree's spec,
+   its branch, or its architect's context reaches the tree's other issues, so the control arm
+   measures the treatment too and the difference you read is smaller than the true one. Where an
+   arm can leak, draw for the tree.
+
+3. **The smallest effect worth acting on.** The difference that would make you keep the arm, not
+   the difference you hope for. Everything in part 4 follows from this number.
+
+4. **The units each arm needs, at that project's measured volume.** The fleet runs about 2,200
+   trees a month over four projects, and no tree belongs to two of them, so a project's volume is
+   its own share of that. For one binary outcome at the tree level, a ten-point effect needs
+   about 400 units in each arm, and a five-point effect about 1,600. Write the number your
+   smallest worthwhile effect needs, and the weeks of that project's volume it takes to fill
+   every arm to it. An experiment that cannot reach its number before the date in part 5 is one
+   to widen — more projects, or a larger weight — or not to run.
+
+5. **The date it stops.** A calendar date, fixed before the first draw. On that date read the
+   outcome and set `mode: off`, which stops new draws and leaves every unit already drawn running
+   as it was. Reading the numbers early and stopping because they look good is how a null result
+   becomes a positive one, so if you will look early, say in the pre-registration what an early
+   look may and may not decide.
+
+6. **That the analysis groups by tree.** The issues of one tree are not independent draws: they
+   share a repository, a spec, an architect and each other's work, so two issues of one tree
+   carry much the same information as one issue does. An analysis of an issue-level experiment
+   therefore groups by tree — a mean per tree, or a model with one random effect per tree — and
+   never counts issues as if each had been drawn on its own, which would read a confidence it has
+   not earned. A tree-level experiment is already one row per tree.
+
+7. **The two ways an exposure can be wrong.** An assignment row says which arm a unit was drawn
+   into. It does not promise the unit ran in that arm, and two things break the promise:
+
+   - **A kept pod that does not hold the arm's overlay.** A launch into a pod the daemon keeps
+     names only the overlay files that pod holds, so a pod built before the arm's mount existed
+     starts its role without that arm's files, and the unit runs in neither arm: not the control,
+     which names no file, and not the arm it was drawn into, whose file it cannot read. Each such
+     launch logs one line naming the issue, the role, the experiment and the arm. Read those
+     lines and count the unit out of the exposure for that period.
+   - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
+     only the files the file still holds, so from the moment the arm leaves the file its units run
+     as a unit in no experiment runs. Take an arm out of the file only when the experiment is
+     over, and record the date if you do it sooner, because every unit of that arm is unexposed
+     from then on.
+
+A template to copy:
+
+```text
+Experiment: <name>            Project: <KEY>        Unit: tree | issue
+Primary outcome: <measure, how it is computed, which records it is read from>
+Mixing inside a tree: <safe, because …> | <a danger, because …; so the unit is the tree>
+Smallest effect worth acting on: <points>
+Units needed per arm: <n> (about 400 for ten points, 1,600 for five, at the tree level)
+Weeks of this project's volume to fill every arm: <n>
+Stops on: <date>     Early looks: <none> | <what one may decide>
+Analysis: grouped by tree (<per-tree mean | random effect per tree>)
+Exposure checks: kept-pod drops from the launch log; the date any arm left the file
+```
 
 ## Secrets and files
 
@@ -1009,7 +1147,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
   blocked on Dispatch links: none
-  memory: none
+  memory: 6 issues — 2 none, 4 memory
+  plan-length: 4 issues — 2 control, 2 long
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   open update rounds: none
@@ -1028,6 +1167,27 @@ Closing the terminal leaves the project without one, and the daemon logs
   until it is done, leaves the workflow or waits only for its merge,
   so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
+
+  **The experiment lines.** There is one per experiment the project declares, in the order its
+  `legion.yaml` declares them, and it counts the issues that hold each arm of that experiment:
+  `memory: 6 issues — 2 none, 4 memory` above. An experiment no issue holds yet is `none` after
+  its name, and a deployment whose settings declare no experiment prints the one line
+  `experiments: none` in their place. `no variant` in a count is an answer and no arm: a
+  hand-over settled that unit at no arm, because the tree it left held no row for the experiment.
+  The lines count issues rather than the trees a tree experiment is drawn for, because the state
+  names no tree and a tree handed over as one of its own carries its old tree's draw verbatim, so
+  two trees can share one draw.
+
+  **The same answers in `legion state --json`.** Each issue carries `assignments`, one
+  `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project
+  declares the experiments; `settings.projects.<KEY>.experiments` carries the declaration those
+  answers were drawn from. An issue carries its tree's answer for a tree experiment and its own
+  for an issue experiment, `drawnAt` is absent where no draw was made, and the key itself is
+  absent from an issue no experiment holds an answer for. The three fields the `memory`
+  experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode` (the mode in force at
+  the draw) and `memoryDrawnAt` — are still on every issue and answer exactly as they did,
+  absent together where nothing was drawn for that tree. Read `assignments` for a measurement: a
+  declared experiment that is not `memory` appears nowhere else.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
