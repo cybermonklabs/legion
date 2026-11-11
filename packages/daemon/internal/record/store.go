@@ -1648,14 +1648,23 @@ func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, 
 }
 
 // CarryAssignments settles the assignments of key, a child handed over as a tree of its own, from
-// the tree it left. The copy comes first: every assignment row of from's root, onto key with its
-// arm, its mode and its instant verbatim and the carried mark set, so the work that has been
-// running under those arms goes on running under them. Then each experiment of settled — the
+// the tree it left. The copy comes first: every tree-unit assignment row of from's root, onto key
+// with its arm, its mode and its instant verbatim and the carried mark set, so the work that has
+// been running under those arms goes on running under them. Then each experiment of settled — the
 // experiments declared at the hand-over — is written at no variant, no mode and no instant, under
 // the same write-once insert, so it lands only for an experiment the copy left unwritten: an
-// experiment the old tree held a row for keeps the copy, and one it held none for is settled here
-// at no variant and is never drawn for later. A row key already holds stands either way. It
+// experiment the old tree held a tree row for keeps the copy, and one it held none for is settled
+// here at no variant and is never drawn for later. A row key already holds stands either way. It
 // reports how many rows the two wrote.
+//
+// Only the tree rows are copied. A tree row is the whole tree's answer, which every issue of the
+// tree is shown (internal/projection's assignmentViews) and which a launch of any of them reads
+// off the root's key, so the child takes it on as the root of its own tree. An issue row of the
+// old root is that one issue's own answer, drawn for it and read back under its own key alone: it
+// says nothing about the child, which held no row of its own for that experiment and so ran in no
+// arm of it before the hand-over. Copied, the child would run in the old root's arm afterwards
+// and be marked as having carried it, where the settling below is what answers for it — at no
+// variant, as for any experiment the tree it left held no row for.
 //
 // The driver row is the old tree's lifecycle row, under project, the normalized runtime token
 // tree_lifecycles is keyed by (issues.project is the Dispatch key). A tree with no such row was
@@ -1669,7 +1678,7 @@ func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key
 		select target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true
 		from tree_lifecycles life
 		join issues target on target.key = $2
-		join experiment_assignments source on source.issue_key = $3
+		join experiment_assignments source on source.issue_key = $3 and source.unit = 'tree'
 		where life.project = $1 and life.tree = $3
 		on conflict (issue_key, experiment) do nothing`, project, key, from)
 	if err != nil {
@@ -1719,15 +1728,19 @@ func (s *Postgres) AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []strin
 	return assignmentsByIssue(rows, err, fmt.Sprintf("%d issues", len(issues)), len(issues))
 }
 
-// Assignments is every experiment assignment the record holds, by issue and then experiment, in
-// one read. The state's projection asks this rather than AssignmentsFor over every recorded
-// issue: a row is keyed by an issue of this database (experiment_assignments.issue_key
-// references issues(key) on delete cascade), so the whole table is what the list of every issue
-// key selects, and the list itself costs a parameter the size of the table.
-func (s *Postgres) Assignments(ctx context.Context, tx pgx.Tx) (map[string][]Assignment, error) {
+// Assignments is every experiment assignment the record holds for the issues of the Dispatch
+// project, by issue and then experiment, in one read. The database is shared by every project's
+// daemon (internal/daemon's workflow), and a row is keyed by an issue of it
+// (experiment_assignments.issue_key references issues(key) on delete cascade), so the issue's own
+// record is where its project is written and the join is what keeps one daemon's state out of
+// another's rows. The state's projection asks this rather than AssignmentsFor over every issue it
+// has in hand: the join selects the same rows and costs no parameter the size of the table.
+func (s *Postgres) Assignments(ctx context.Context, tx pgx.Tx, project string) (map[string][]Assignment, error) {
 	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
-		order by issue_key, experiment`)
-	return assignmentsByIssue(rows, err, "every issue", 0)
+		join issues on issues.key = experiment_assignments.issue_key
+		where issues.project = $1
+		order by issue_key, experiment`, project)
+	return assignmentsByIssue(rows, err, "every issue of "+project, 0)
 }
 
 // assignmentsByIssue groups the rows of an assignment query under the issue each is keyed by,

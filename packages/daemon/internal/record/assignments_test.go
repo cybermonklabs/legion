@@ -142,11 +142,14 @@ func TestAnExperimentAssignmentIsWrittenOnceAndReadBack(t *testing.T) {
 }
 
 // The hand-over settles the assignments of a child handed over as a tree of its own. Out of a tree
-// the daemon had opened it copies every row of the old tree's root verbatim — arm, mode and the
-// original instant — under the carried mark, and settles each experiment declared at the hand-over
-// that the old tree held no row for at no variant, no mode and no instant, so that experiment is
-// never drawn for the child later. Out of a tree nothing ever opened it writes nothing at all, and
-// a row the child already holds is never written over.
+// the daemon had opened it copies every tree-unit row of the old tree's root verbatim — arm, mode
+// and the original instant — under the carried mark, and settles at no variant, no mode and no
+// instant each experiment declared at the hand-over that the old tree held no such row for, so
+// that experiment is never drawn for the child later. An issue-unit row of the old root is that
+// root's own answer and is not copied: the child held no row of its own for that experiment and
+// ran in no arm of it, and the hand-over settles it at no variant like any other experiment the
+// tree it left answered nothing for. Out of a tree nothing ever opened it writes nothing at all,
+// and a row the child already holds is never written over.
 func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -170,29 +173,36 @@ func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
 				t.Fatalf("open the tree %s: %v", tree, err)
 			}
 		}
-		// The old tree's own draw: one experiment at an arm, one at none.
+		// The old tree's own draw: one tree experiment at an arm, one at none, and an issue
+		// experiment drawn for the old root itself, which is that one issue's answer and no part
+		// of what the tree hands over.
 		if _, err := records.PutAssignments(ctx, tx, "LEGION-1", []Assignment{
 			{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt},
 			{Experiment: "review-depth", Unit: "tree", Variant: "", Mode: "off", DrawnAt: &drawnAt},
+			{Experiment: "handoff-note", Unit: "issue", Variant: "long", Mode: "random", DrawnAt: &drawnAt},
 		}); err != nil {
 			t.Fatalf("draw the old tree's experiments: %v", err)
 		}
-		// The experiments declared at the hand-over: the two the old tree drew, and one younger
-		// than that tree, which it holds no row for.
+		// The experiments declared at the hand-over: the two tree experiments the old tree drew,
+		// one younger than that tree, which it holds no row for, and the issue experiment its
+		// root was drawn for.
 		declared := []DeclaredExperiment{
 			{Experiment: "memory", Unit: "tree"},
 			{Experiment: "review-depth", Unit: "tree"},
 			{Experiment: "plan-length", Unit: "tree"},
+			{Experiment: "handoff-note", Unit: "issue"},
 		}
 
-		// The copy is verbatim, the original instant included, and the younger experiment is
-		// settled at no variant: carried either way, so no draw writes over it.
+		// The copy is verbatim, the original instant included; the younger experiment is settled
+		// at no variant, and so is the issue experiment, whose row of the old root is the old
+		// root's own and is copied onto no one. Carried either way, so no draw writes over it.
 		carried, err := records.CarryAssignments(ctx, tx, treeLifecyclesToken, "LEGION-2", "LEGION-1", declared)
 		must(t, err)
-		if carried != 3 {
-			t.Fatalf("the hand-over wrote %d rows, want the old tree's two copied and the third settled", carried)
+		if carried != 4 {
+			t.Fatalf("the hand-over wrote %d rows, want the old tree's two tree rows copied and the other two settled", carried)
 		}
 		want := []string{
+			assignedAs(Assignment{Experiment: "handoff-note", Unit: "issue", Carried: true}),
 			assignedAs(Assignment{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt, Carried: true}),
 			assignedAs(Assignment{Experiment: "plan-length", Unit: "tree", Carried: true}),
 			assignedAs(Assignment{Experiment: "review-depth", Unit: "tree", Variant: "", Mode: "off", DrawnAt: &drawnAt, Carried: true}),
@@ -249,10 +259,11 @@ func TestTheHandOverCarriesTheAssignmentsOfAnOpenedTree(t *testing.T) {
 		}
 		over, err := records.CarryAssignments(ctx, tx, treeLifecyclesToken, "LEGION-5", "LEGION-1", declared)
 		must(t, err)
-		if over != 2 {
-			t.Fatalf("the hand-over onto a root that already holds a row wrote %d rows, want the two it holds none for", over)
+		if over != 3 {
+			t.Fatalf("the hand-over onto a root that already holds a row wrote %d rows, want the three it holds none for", over)
 		}
 		wantKept := []string{
+			assignedAs(Assignment{Experiment: "handoff-note", Unit: "issue", Carried: true}),
 			kept,
 			assignedAs(Assignment{Experiment: "plan-length", Unit: "tree", Carried: true}),
 			assignedAs(Assignment{Experiment: "review-depth", Unit: "tree", Variant: "", Mode: "off", DrawnAt: &drawnAt, Carried: true}),

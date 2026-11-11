@@ -98,13 +98,13 @@ const (
 )
 
 // declaring is the experiments a project with this `memory` block declares: the memory
-// experiment, as config.Project.ExperimentsDeclared maps it, and a tree experiment of the
+// experiment, as config.Project.Declaring maps it, and a tree experiment of the
 // project's own beside it at the same mode, so every fact below is read twice — once for the
 // block and once for an experiment that is not it. A project that names no mode writes no block
 // and declares the memory experiment alone, at mode off: that is a deployment that declares
 // nothing of its own, and its trees are drawn for memory all the same.
 func declaring(mode config.MemoryMode) []config.Experiment {
-	project := config.Project{Memory: config.Memory{Mode: mode}}
+	project := config.Project{Memory: config.Memory{Mode: mode}}.Declaring("projects.LEGION")
 	if mode == "" {
 		return project.ExperimentsDeclared()
 	}
@@ -211,7 +211,7 @@ func TestATreeOfAProjectThatDeclaresNothingIsRecordedAtTheMemoryExperiment(t *te
 	admission := quiet(t, 1)
 	// Exactly what the loader gives such a project: a project with no `memory` block and no
 	// `experiments` key at all.
-	admission.UseExperiments(config.Project{}.ExperimentsDeclared())
+	admission.UseExperiments(config.Project{}.Declaring("projects.LEGION").ExperimentsDeclared())
 	// Mode off decides without a draw, so the source is one that fails the test when it is read.
 	admission.source = refusingSource(t)
 	seedWaiting(t, pool, root, "A")

@@ -239,9 +239,10 @@ const (
 	defaultPort         = 13370
 	defaultBind         = "127.0.0.1"
 	defaultAdmissionCap = 4
-	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is a
-	// countKeys row, because that reader is the one that refuses a burst below 1; the rate is read
-	// on its own, since 0 is how an operator turns the pacing off.
+	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is
+	// on the key table's own row for it (keytable.go's positiveKey), because that reader is the
+	// one that refuses a burst below 1; the rate is read on its own, since 0 is how an operator
+	// turns the pacing off.
 	defaultWorkerWakesPerMinute = 8
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
@@ -259,37 +260,6 @@ const (
 	// passed.
 	maxTimerMinutes = maxTimerSeconds / 60
 )
-
-// durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
-// and the new probe interval). Every one of them is held to the timer bound.
-var durationKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *time.Duration
-}{
-	{"worker_boot_timeout_seconds", 120, func(c *Config) *time.Duration { return &c.WorkerBootTimeout }},
-	{"worker_rpc_timeout_seconds", 5, func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
-	{"worker_stop_timeout_seconds", 10, func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
-	{"tree_stop_timeout_seconds", 60, func(c *Config) *time.Duration { return &c.TreeStopTimeout }},
-	{"slow_command_timeout_seconds", 300, func(c *Config) *time.Duration { return &c.SlowCommandTimeout }},
-	{"probe_interval_seconds", 30, func(c *Config) *time.Duration { return &c.ProbeInterval }},
-	{"controller_wake_interval_seconds", 3600, func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
-}
-
-// countKeys are the positive-integer keys with no unit, and their defaults: the registration
-// deadline's interval count (config.ts DEFAULT_WORKER_BOOT_REGISTRATION_DEADLINE_INTERVALS), the
-// supervision budgets, and the wake pacing's burst.
-var countKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *int
-}{
-	{"worker_boot_registration_deadline_intervals", 3, func(c *Config) *int { return &c.WorkerBootRegistrationDeadlineIntervals }},
-	{"launch_failure_limit", 3, func(c *Config) *int { return &c.LaunchFailureLimit }},
-	{"prompt_failure_limit", 3, func(c *Config) *int { return &c.PromptFailureLimit }},
-	{"prompt_retire_limit", 2, func(c *Config) *int { return &c.PromptRetireLimit }},
-	{"worker_wake_burst", 1, func(c *Config) *int { return &c.WorkerWakeBurst }},
-}
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
 // rather than ignored: an operator who sets one expects it to act, and the daemon has nothing that
@@ -472,37 +442,6 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 		}
 	}
 	return file, nil
-}
-
-func isDurationKey(key string) bool {
-	for _, d := range durationKeys {
-		if d.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-// readPositive reads a duration or count key into the file's map: a positive integer and, for a
-// duration, at most the timer bound (config.ts readPositiveInteger, and loadConfigFromFile's
-// lifecycle keys).
-func readPositive(value *yaml.Node, key string, file *fileConfig) error {
-	read, err := readInt(value, key)
-	if err != nil || read == nil {
-		return err
-	}
-	if *read <= 0 {
-		return fmt.Errorf("%s must be a positive integer", key)
-	}
-	if isDurationKey(key) {
-		if *read > maxTimerSeconds {
-			return fmt.Errorf("%s must be at most %d", key, maxTimerSeconds)
-		}
-		file.Durations[key] = *read
-	} else {
-		file.Counts[key] = *read
-	}
-	return nil
 }
 
 // classify refuses an unmodelled key, naming its class.
@@ -1018,7 +957,8 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.WorkerWakesPerMinute != nil {
 		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
 	}
-	// 0 is the pacing off, which is why the rate is no countKeys row: that reader refuses it.
+	// 0 is the pacing off, which is why the rate's row names no positive default: that reader
+	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
 	}
@@ -1182,19 +1122,12 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		return fmt.Errorf("worker_stream_port must differ from port (both %d)", cfg.Port)
 	}
 
-	for _, d := range durationKeys {
-		seconds, ok := file.Durations[d.key]
-		if !ok {
-			seconds = d.defaultValue
+	// Every positive-integer key, each onto the field its own row names (keytable.go's
+	// positiveKey): the number the file carries, or that row's default where it carries none.
+	for _, row := range topLevelKeys {
+		if row.Positive != nil {
+			row.Positive.resolve(row.Name, file, cfg)
 		}
-		*d.field(cfg) = time.Duration(seconds) * time.Second
-	}
-	for _, c := range countKeys {
-		count, ok := file.Counts[c.key]
-		if !ok {
-			count = c.defaultValue
-		}
-		*c.field(cfg) = count
 	}
 	// The registration deadline is one timer for the product, so each factor fitting is not
 	// enough (resolveDaemonConfig in config.ts). The product is judged by dividing the bound

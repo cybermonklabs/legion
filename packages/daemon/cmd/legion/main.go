@@ -681,7 +681,7 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 // `memory: none` for a deployment that has drawn nothing yet, which is the line such a
 // deployment read before any experiment was declared.
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
-	declared := settings.Projects[project].DeclaredExperiments()
+	declared := settings.Projects[project].DeclaredExperiments(project)
 	counts := make(map[string]map[string]int, len(declared))
 	for _, issue := range issues {
 		for _, assignment := range issue.Assignments {

@@ -152,8 +152,10 @@ type Options struct {
 	Trees TreeLifecycles
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// of which the operator's spawn draws every tree-unit one for a tree it opens for the first
-	// time (drawExperiments). The empty list is a project that declares none, which draws
-	// nothing. ExperimentSource is the random source a `random` mode is drawn with; nil is
+	// time (drawExperiments). Every project the loader reads declares the memory experiment, at
+	// mode off where the file writes no `memory` block, and a draw at mode off records the tree
+	// at no variant; the empty list, which draws nothing, is a project no Declaring has reached.
+	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
 	// from; nil is time.Now, and a test pins it.
 	Experiments      []config.Experiment
@@ -802,8 +804,10 @@ func carriesMemory(state State) bool {
 
 // carriesAssignments is whether any issue of state carries the experiment answers it runs under,
 // the field assignmentsContract added. It is asked of the state rather than answered true, as
-// carriesMemory is: an issue of a deployment that declares no experiment holds no answer, and
-// such a state carries the key on no issue.
+// carriesMemory is: a deployment that declares nothing of its own still draws the memory
+// experiment for each tree it opens, so its states do carry the key, but an issue no draw has
+// reached — one of a tree opened before this release — holds no answer, and a state of such
+// issues alone carries the key on none of them.
 func carriesAssignments(state State) bool {
 	for _, issue := range state.Issues {
 		if len(issue.Assignments) > 0 {

@@ -48,14 +48,15 @@ func memoryRuntime(t *testing.T, files []string) *Runtime {
 }
 
 // memoryVariants are the two arms the `memory` block declares
-// (config.Project.ExperimentsDeclared): memory, carrying the block's overlays, and none, carrying
-// nothing. A nil list is a project that names no block at all, which declares no experiment.
+// (config.Project.ExperimentsDeclared): memory, carrying the block's overlays and the key the
+// operator wrote them under, and none, carrying nothing. A nil list is a project that names no
+// block at all, which declares no experiment.
 func memoryVariants(files []string) []runtime.Variant {
 	if files == nil {
 		return nil
 	}
 	return []runtime.Variant{
-		{Experiment: "memory", Name: "memory", ConfigFiles: files},
+		{Experiment: "memory", Name: "memory", ConfigFiles: files, ConfigFilesField: "projects.LEGION.memory.config_files"},
 		{Experiment: "memory", Name: "none"},
 	}
 }
@@ -201,7 +202,7 @@ func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.
 	worker := workerSpec(t)
 	pod := podOf(t, before, worker)
 	got, moved := after.movedRoleOverlays(pod, worker.Role)
-	if want := "experiments.memory.variants.memory.config_files /etc/b/memory.yml"; !moved || got.where != want {
+	if want := "projects.LEGION.memory.config_files /etc/b/memory.yml"; !moved || got.where != want {
 		t.Errorf("%s: moved %v %+v, want a move of %s", worker.Role, moved, got, want)
 	}
 	if got, moved := before.movedRoleOverlays(pod, worker.Role); moved {

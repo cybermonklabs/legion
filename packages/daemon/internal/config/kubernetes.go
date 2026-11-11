@@ -904,11 +904,11 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 		var source objectSource
 		switch {
 		case fields["secret"] != nil:
-			if source, err = readObjectSource(fields["secret"], field+".secret", true); err == nil {
+			if source, err = readObjectSource(fields["secret"], field+".secret", volumeSecretMembers); err == nil {
 				volume.Secret = &corev1.SecretVolumeSource{SecretName: source.name, Items: source.items, DefaultMode: source.mode}
 			}
 		case fields["config_map"] != nil:
-			if source, err = readObjectSource(fields["config_map"], field+".config_map", true); err == nil {
+			if source, err = readObjectSource(fields["config_map"], field+".config_map", volumeConfigMapMembers); err == nil {
 				volume.ConfigMap = &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: source.name}, Items: source.items, DefaultMode: source.mode,
 				}
@@ -1040,20 +1040,18 @@ type objectSource struct {
 }
 
 // readObjectSource is a Secret or ConfigMap source, read under the mapping its place in the block
-// makes it: a volume's own source (withMode) takes default_mode, and a projected volume's source
-// does not, since Kubernetes sets the mode of a projected volume's files for the whole volume,
-// never per source.
-func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource, error) {
+// makes it: described is that place's own key-table group, read by the call site's own reader
+// below, since the four places a source stands in are four groups — a volume's `secret` and its
+// `config_map`, which take default_mode, and a projected source's two, which do not, Kubernetes
+// setting the mode of a projected volume's files for the whole volume and never per source. The
+// group decides which names the mapping may carry, so deriving it from one of the four, as this
+// read did, left the other three's keys out of `legion config-reference` and the page generated
+// from it.
+func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (objectSource, error) {
 	if value.Kind != yaml.MappingNode {
 		return objectSource{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	var fields map[string]*yaml.Node
-	var err error
-	if withMode {
-		fields, err = describedMembers(value, key, podKey+".volumes[].secret")
-	} else {
-		fields, err = describedMembers(value, key, podKey+".volumes[].projected.sources[].secret")
-	}
+	fields, err := described(value, key)
 	if err != nil {
 		return objectSource{}, err
 	}
@@ -1092,6 +1090,28 @@ func readObjectSource(value *yaml.Node, key string, withMode bool) (objectSource
 		source.items = append(source.items, one)
 	}
 	return source, nil
+}
+
+// The four members readers a source's place names (readObjectSource): a volume's own `secret` and
+// `config_map`, which take default_mode, and a projected source's `secret` and `config_map`,
+// which do not. Each names its group as a constant of its own, which is what carries every one of
+// those keys into `legion config-reference` and holds the four to the key table
+// (TestNoKeyBypassesTheKeyTable).
+
+func volumeSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].secret")
+}
+
+func volumeConfigMapMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].config_map")
+}
+
+func projectedSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].projected.sources[].secret")
+}
+
+func projectedConfigMapMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, podKey+".volumes[].projected.sources[].config_map")
 }
 
 // readFileMode is a volume's default_mode: octal digits after YAML 1.1's leading 0 (kubectl's
@@ -1157,11 +1177,11 @@ func readProjected(value *yaml.Node, key string) (*corev1.ProjectedVolumeSource,
 		case kinds["service_account_token"] != nil:
 			source.ServiceAccountToken, err = readTokenProjection(kinds["service_account_token"], field+".service_account_token")
 		case kinds["secret"] != nil:
-			if object, err = readObjectSource(kinds["secret"], field+".secret", false); err == nil {
+			if object, err = readObjectSource(kinds["secret"], field+".secret", projectedSecretMembers); err == nil {
 				source.Secret = &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: object.name}, Items: object.items}
 			}
 		default:
-			if object, err = readObjectSource(kinds["config_map"], field+".config_map", false); err == nil {
+			if object, err = readObjectSource(kinds["config_map"], field+".config_map", projectedConfigMapMembers); err == nil {
 				source.ConfigMap = &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: object.name}, Items: object.items}
 			}
 		}

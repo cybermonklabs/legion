@@ -355,26 +355,17 @@ func envValue(environ []string, name string) string {
 //
 // check takes the whole value and, beside it, the overlays of that value to read on their own.
 // Each distinct value is read once and each distinct overlay is read alone once, over every
-// entry: a role's own files stand in the value of every arm the project declares, and Oh My Pi
-// gives one file the same answer whichever value it stands in, so a deployment that declares
-// arms would otherwise pay for the thing it added at every probe. The refusal still names the
-// first role holding the refused value, since the loop reaches it before any other role of it.
+// entry (capabilities.OverlayReads, which the boot gate's own read holds too): a role's own
+// files stand in the value of every arm the project declares, and Oh My Pi gives one file the
+// same answer whichever value it stands in, so a deployment that declares arms would otherwise
+// pay for the thing it added at every probe. The refusal still names the first role holding the
+// refused value, since the loop reaches it before any other role of it.
 func checkRoleOverlays(entries []roleOverlays, check func(value, alone []string) (string, error), stderr io.Writer) int {
-	read := make(map[string]struct{}, len(entries))
-	alone := map[string]struct{}{}
+	reads := capabilities.OverlayReads{}
 	for _, entry := range entries {
-		value := strings.Join(entry.files, ":")
-		if _, done := read[value]; done {
+		unread, first := reads.Unread(entry.files)
+		if !first {
 			continue
-		}
-		read[value] = struct{}{}
-		unread := make([]string, 0, len(entry.files))
-		for _, file := range entry.files {
-			if _, done := alone[file]; done {
-				continue
-			}
-			alone[file] = struct{}{}
-			unread = append(unread, file)
 		}
 		why, err := check(entry.files, unread)
 		if err != nil {

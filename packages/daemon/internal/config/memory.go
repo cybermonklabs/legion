@@ -47,15 +47,6 @@ func (memory Memory) Word() MemoryMode {
 	return memory.Mode
 }
 
-// Written is whether the project writes the block at all: any one of its three keys. It is the
-// condition Project.ExperimentsDeclared maps the block to the experiment named memory under, and
-// the one a refusal tells the block's spelling of that experiment from `experiments.memory` by
-// (internal/daemon's declaredOverlayField), so the two read one predicate. A project writes the
-// block or `experiments.memory`, never both (checkExperimentMemory).
-func (memory Memory) Written() bool {
-	return memory.Mode != "" || len(memory.ConfigFiles) > 0 || memory.InstructionsPath != ""
-}
-
 // readMemory is a project's `memory`: `mode`, one of the three words (absent is off);
 // `config_files`, the absolute paths of the overlays a memory-group tree's roles name after their
 // own; and `instructions`, the absolute path of the file the daemon reads. A path that is relative

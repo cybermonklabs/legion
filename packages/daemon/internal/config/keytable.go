@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -35,6 +36,61 @@ type keyDescriptor struct {
 	// Read reads the key's value into the file being loaded, answering the refusal the key's own
 	// reader makes of a value it cannot take.
 	Read func(value *yaml.Node, key string, file *fileConfig) error
+	// Positive is the row of a positive-integer key: the number the key defaults to and the
+	// field it resolves into, nil for every other key. Such a row writes no Default and no Read
+	// of its own — the table below renders the number into Default and takes the reader from
+	// Positive — so the number, the field and the line an operator reads are one row.
+	Positive *positiveKey
+}
+
+// positiveKey is what a positive-integer key resolves to: Value is the number the daemon takes
+// where the file names none, and exactly one of Duration and Count is the Config field the key
+// fills — Duration for a key written in seconds, which is held to the timer bound as well, and
+// Count for one with no unit.
+type positiveKey struct {
+	Value    int
+	Duration func(*Config) *time.Duration
+	Count    func(*Config) *int
+}
+
+// read is such a key's reader: a positive integer and, for a duration, at most the timer bound
+// (config.ts readPositiveInteger, and loadConfigFromFile's lifecycle keys). It keeps what it read
+// in the file's own map, which resolve then reads back.
+func (p *positiveKey) read(value *yaml.Node, key string, file *fileConfig) error {
+	read, err := readInt(value, key)
+	if err != nil || read == nil {
+		return err
+	}
+	if *read <= 0 {
+		return fmt.Errorf("%s must be a positive integer", key)
+	}
+	if p.Duration == nil {
+		file.Counts[key] = *read
+		return nil
+	}
+	if *read > maxTimerSeconds {
+		return fmt.Errorf("%s must be at most %d", key, maxTimerSeconds)
+	}
+	file.Durations[key] = *read
+	return nil
+}
+
+// resolve writes key's value onto cfg: the number the file named, or this row's own default where
+// it named none. A duration's number is seconds.
+func (p *positiveKey) resolve(key string, file fileConfig, cfg *Config) {
+	if p.Duration == nil {
+		count, named := file.Counts[key]
+		if !named {
+			count = p.Value
+		}
+		*p.Count(cfg) = count
+		return
+	}
+	seconds, named := file.Durations[key]
+	if !named {
+		seconds = p.Value
+	}
+	*p.Duration(cfg) = time.Duration(seconds) * time.Second
 }
 
 // reads is the Read of a key whose reader answers one value that the file keeps in one field: the
@@ -59,284 +115,297 @@ func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveI
 // and listens, what it runs at once, the controller, the agents' Oh My Pi and its credentials, the
 // endpoints and token files, the projects and the GitHub Apps, the runtime block, the per-role
 // overrides, the wake pacing, the workflow limits, and the supervision budgets and timers.
-var topLevelKeys = []keyDescriptor{
-	{
-		Name: "project", Default: "none: the daemon refuses a file that names no project", RequiredBy: "yes",
-		Description: "The Dispatch project key this daemon runs, which must also be a key of `projects`.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.Project = v }),
-	},
-	{
-		Name: "state_dir", Default: "none: the daemon refuses a file that names no state directory", RequiredBy: "yes",
-		Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.StateDir = v }),
-	},
-	{
-		Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
-		Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
-	},
-	{
-		Name: "port", Default: "`13370`", RequiredBy: "no",
-		Description: "The TCP port the daemon's API listens on, which every pod and pane reaches it at.",
-		Read:        reads(readInt, func(f *fileConfig, v *int) { f.Port = v }),
-	},
-	{
-		Name: "bind", Default: "`127.0.0.1`", RequiredBy: "no",
-		Description: "The address the daemon listens on, and the host every pod dials the worker stream at while `advertise_host` is unset; under `runtime: kubernetes` it may be `0.0.0.0`, where a daemon whose own pod restarts onto a new IP binds every interface, but never a loopback address, which no pod reaches.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.Bind = v }),
-	},
-	{
-		Name: "advertise_host", Default: "every pod dials `bind`", RequiredBy: "no",
-		Description: "The stable address every pod dials the worker stream at in `bind`'s place — an IP address or an ASCII DNS name, such as the Service that fronts a daemon whose own pod restarts onto a new IP; only `runtime: kubernetes` accepts it, since every pane dials the daemon's own unix socket.",
-		Read:        reads(readAdvertiseHost, func(f *fileConfig, v *string) { f.AdvertiseHost = v }),
-	},
-	{
-		Name: "daemon_url", Default: "`http://127.0.0.1:<port>`", RequiredBy: "when runtime is kubernetes: a pod cannot reach the daemon's loopback address",
-		Description: "The daemon's API as the pods and panes it starts are told to reach it, with no trailing slash and, under Kubernetes, neither a loopback nor the unspecified address.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.DaemonURL = v }),
-	},
-	{
-		Name: "worker_stream_port", Default: "`port` + 1", RequiredBy: "no",
-		Description: "The TCP port the worker stream listens on, which every pod's shim dials; it must differ from `port`.",
-		Read:        reads(readInt, func(f *fileConfig, v *int) { f.WorkerStreamPort = v }),
-	},
-	{
-		Name: "admission_cap", Default: "`4`, or `LEGION_ADMISSION_CAP` in the daemon's environment", RequiredBy: "no",
-		Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and keeps it until it is done, and the rest wait in line.",
-		Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
-	},
-	{
-		Name: "controller", Default: "`operator`", RequiredBy: "no",
-		Description: "Who runs the project's controller: `operator`, a person with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running (a pane of its own window under `runtime: tmux`), which needs `dispatch_url`.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.Controller = v }),
-	},
-	{
-		Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
-		Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret.",
-		Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
-	},
-	{
-		Name: "provider_keys", Default: "the agents' Oh My Pi receives no provider credential", RequiredBy: "no",
-		Description: "The provider credentials every agent's Oh My Pi receives in its environment: each variable Oh My Pi reads mapped to the key of the providers Secret that holds it, or, under `runtime: tmux`, to a secretsd key or a `file:/abs/path` the daemon reads once at boot.",
-		Read:        reads(readProviderKeys, func(f *fileConfig, v []ProviderKey) { f.ProviderKeys = v }),
-	},
-	{
-		Name: "omp_invocation", Default: "`LEGION_OMP_PATH` in the daemon's environment, which names the `omp` binary directly", RequiredBy: "when runtime is tmux and `LEGION_OMP_PATH` is unset",
-		Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
-		Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OmpInvocation = v }),
-	},
-	{
-		Name: "omp_launch_prefix", Default: "a pane runs Oh My Pi with no prefix", RequiredBy: "no",
-		Description: "An argv every pane's Oh My Pi launch is wrapped in; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi, and it may not run `secrets`, which `provider_keys` is for.",
-		Read:        reads(readLaunchPrefix, func(f *fileConfig, v []string) { f.OmpLaunchPrefix = v }),
-	},
-	{
-		Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-		Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
-		Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
-	},
-	{
-		Name: "dispatch_url", Default: "the daemon runs no workflow", RequiredBy: "when runtime is kubernetes: the workflow is what launches every pod",
-		Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `dispatch_token_file`, `nats_urls` and a `projects` entry for the daemon's own project.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.DispatchURL = v }),
-	},
-	{
-		Name: "dispatch_token_file", Default: "none: a configured `dispatch_url` is refused without it", RequiredBy: "when `dispatch_url` is configured",
-		Description: "The file holding the bearer token Legion's agents present to Dispatch; the daemon hands each pod its own copy, and no pod reads the operator's file.",
-		Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.DispatchTokenFile = v }),
-	},
-	{
-		Name: "envoy_url", Default: "`http://127.0.0.1:9020`", RequiredBy: "when runtime is kubernetes: a pod cannot reach the loopback listener it defaults to",
-		Description: "The Envoy listener the daemon and every agent reach each other through.",
-		Read:        reads(readString, func(f *fileConfig, v *string) { f.EnvoyURL = v }),
-	},
-	{
-		Name: "envoy_token_file", Default: "none: the pods receive no Envoy bearer", RequiredBy: "when runtime is kubernetes: every pod receives the Envoy bearer",
-		Description: "The file holding the Envoy listener's API token; the daemon hands each pod its own copy.",
-		Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.EnvoyTokenFile = v }),
-	},
-	{
-		Name: "nats_urls", Default: "none: the daemon reads no notification stream", RequiredBy: "when runtime is kubernetes: every pod's Envoy client connects to NATS, and when `dispatch_url` is configured: the workflow's intake reads Envoy's notification stream",
-		Description: "The NATS URLs the daemon and every pod's Envoy client connect to, in order and each once; the daemon reads Dispatch's issue events and each repository's GitHub events from the notification stream they carry.",
-		Read:        reads(readNatsURLs, func(f *fileConfig, v []string) { f.NatsURLs = v }),
-	},
-	{
-		Name: "nats_nkey_seed_file", Default: "the agents connect to NATS with no nkey user", RequiredBy: "no",
-		Description: "The file holding the agents' NATS nkey user seed, readable by its owner alone; the daemon publishes it to the pods as the providers Secret's `NATS_NKEY_SEED`.",
-		Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsNkeySeedFile = v }),
-	},
-	{
-		Name: "nats_daemon_nkey_seed_file", Default: "the daemon connects to NATS with no nkey user of its own", RequiredBy: "no",
-		Description: "The file holding the NATS nkey user seed for the daemon's own connection, readable by its owner alone, which no agent receives.",
-		Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
-	},
-	{
-		Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-		Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's repositories are Dispatch's own mapping, and its block carries what only that project does — its merge-queue role, its by-hand merge paths, its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
-		Read: func(value *yaml.Node, key string, file *fileConfig) error {
-			// The projects' own warnings join whatever a warned key above them raised, in file
-			// order: one list carries both, so neither producer may write over the other.
-			projects, raised, err := readProjects(value, key)
-			if err != nil {
-				return err
-			}
-			file.Projects, file.Warnings = projects, append(file.Warnings, raised...)
-			return nil
+//
+// A row that names a Positive is finished here rather than written out: its Default is that row's
+// number as an operator reads it, and its Read is that row's own reader, so a positive-integer
+// key's number is written once and the line the configuration reference prints can never name
+// another.
+var topLevelKeys = func() []keyDescriptor {
+	table := []keyDescriptor{
+		{
+			Name: "project", Default: "none: the daemon refuses a file that names no project", RequiredBy: "yes",
+			Description: "The Dispatch project key this daemon runs, which must also be a key of `projects`.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.Project = v }),
 		},
-	},
-	{
-		Name: repositoryRenamesKey, Default: "no two names are one repository", RequiredBy: "no",
-		Description: "The repositories that moved, each pair naming the repository as every record holds it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, so a pair stays here for as long as any record names the old repository.",
-		Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
-	},
-	{
-		Name: hooksKey, Default: "one hook: every fifth move back of any kind puts the daemon's own words in front of the implementer, the tester and the reviewer", RequiredBy: "no",
-		Description: "The deployment's own prompts, each naming the event it stands on, the moves back it counts, how many of them fire it, the roles its words are put in front of and those words; `hooks: []` runs none, and a file that names the key runs what it names and no default.",
-		Read:        reads(readHooks, func(f *fileConfig, v *[]Hook) { f.Hooks = v }),
-	},
-	{
-		Name: "gates", Default: "`design: [spec]`, the root issue's primary document", RequiredBy: "no",
-		Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or the merger's `READY` is accepted.",
-		Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
-	},
-	{
-		Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-		Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, narrowed to the repositories that agent works.",
-		Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
-	},
-	{
-		Name: "runtime", Default: "`tmux`, with no block", RequiredBy: "no",
-		Description: "Where the agents run: the scalar `tmux`, the daemon and every pane on one host, or a one-key mapping, `{kubernetes: {…}}` or `{tmux: {…}}`, whose block the loader reads; a bare `kubernetes` scalar is refused, since the block is the only source of what a pod needs.",
-		Read: func(value *yaml.Node, key string, file *fileConfig) error {
-			kubernetes, tmux, err := readRuntime(value)
-			if err != nil {
-				return err
-			}
-			file.Kubernetes, file.Tmux = kubernetes, tmux
-			return nil
+		{
+			Name: "state_dir", Default: "none: the daemon refuses a file that names no state directory", RequiredBy: "yes",
+			Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.StateDir = v }),
 		},
-	},
-	{
-		Name: "worker_backends", Default: "every role runs on Oh My Pi", RequiredBy: "no",
-		Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`), each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
-		Read:        reads(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
-	},
-	{
-		Name: "role_config_files", Default: "every role names only the overlays every role names", RequiredBy: "no",
-		Description: "Oh My Pi settings overlays one role names and no other — a model fallback chain for the roles whose output a machine checks, say: each key a role, each value absolute paths that role's `PI_CONFIG_FILES` names after the overlays every role names, so each outranks those.",
-		Read:        reads(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
-	},
-	{
-		Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
-		Description: "The worker capabilities this deployment decides rather than closes: under `decided`, each capability the report would leave open mapped to the reason the boot, `legion state` and the controller's tick then show in the gap's place.",
-		Read:        reads(readCapabilities, func(f *fileConfig, v *Capabilities) { f.Capabilities = v }),
-	},
-	{
-		Name: "worker_wakes_per_minute", Default: "`8`", RequiredBy: "no",
-		Description: "How many wakes a minute the daemon lets out — the role processes it starts, and the tasks and notices it queues to wake a session that already runs — so that a restart or a plugin wave does not push a provider organization over its per-minute uncached-input cap; `0` turns the pacing off, and a value below 0 is refused.",
-		Read:        reads(readInt, func(f *fileConfig, v *int) { f.WorkerWakesPerMinute = v }),
-	},
-	{
-		Name: "worker_wake_burst", Default: "`1`", RequiredBy: "no",
-		Description: "How many wakes may leave at once before `worker_wakes_per_minute` holds the next one back; a burst below 1 is refused.",
-		Read:        readPositive,
-	},
-	{
-		Name: "linger_hours", Default: "`72`", RequiredBy: "no",
-		Description: "How many hours a closed root's tree lingers before the daemon retires it, which is also where a claim carried out of that tree has its stop bounded; decimals allowed.",
-		Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.Linger = v }),
-	},
-	{
-		Name: "production_check_hours", Default: "`336`, fourteen days", RequiredBy: "no",
-		Description: "How many hours a closed issue's production check runs before its last look; decimals allowed.",
-		Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.ProductionCheckBound = v }),
-	},
-	{
-		Name: "pod_update_retask_hours", Default: "`1`", RequiredBy: "no",
-		Description: "How many hours a pod-update round waits before it asks a worker that has not answered again; decimals allowed.",
-		Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.PodUpdateRetask = v }),
-	},
-	{
-		Name: "pod_update_notice_hours", Default: "`4`", RequiredBy: "no",
-		Description: "How many hours a pod-update round runs before the controller is told it is not finishing; decimals allowed.",
-		Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.PodUpdateNotice = v }),
-	},
-	{
-		Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
-		Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push and wait.",
-		Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),
-	},
-	{
-		Name: "pod_update_rounds_per_minute", Default: "no limit at all: a sweep opens as many rounds as it has issues for", RequiredBy: "no",
-		Description: "How many pod-update rounds one sweep of the daemon opens; a sweep within 50 seconds of the last opening opens none.",
-		Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateRoundsPerMinute = v }),
-	},
-	{
-		Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
-		Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
-		Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
-	},
-	{
-		Name: "controller_wake_interval_seconds", Default: "`3600`", RequiredBy: "no",
-		Description: "How often the daemon wakes the project's controller, which is also the period of its status repair, so raising it to quiet the controller slows that repair with it.",
-		Read:        readPositive,
-	},
-	{
-		Name: "launch_failure_limit", Default: "`3`", RequiredBy: "no",
-		Description: "How many failed launches, and deaths of a ready agent while it had work outstanding, a claim takes before the daemon fails it.",
-		Read:        readPositive,
-	},
-	{
-		Name: "prompt_failure_limit", Default: "`3`", RequiredBy: "no",
-		Description: "How many prompts a worker may acknowledge without taking a turn before the daemon fails its claim.",
-		Read:        readPositive,
-	},
-	{
-		Name: "prompt_retire_limit", Default: "`2`", RequiredBy: "no",
-		Description: "How many times a worker is retired and relaunched over prompts it acknowledged without taking a turn before the daemon fails its claim.",
-		Read:        readPositive,
-	},
-	{
-		Name: stallBackstopKey, Default: "twice the bound that role's own worker holds a tool call no deadline judges to: eight hours for an implementer and a reviewer, two for every other role and the controller", RequiredBy: "no",
-		Description: "The daemon's own backstop under a worker whose turn has stopped: per role, how many hours after that role's last recorded step the daemon ends the turn that step belongs to, so the task goes back to waiting and the session is sent it again, charging the claim nothing; `0` switches the backstop off for that role, and a bound below the role's whole stall ladder is refused.",
-		Read:        reads(readStallBackstops, func(f *fileConfig, v map[claim.Role]time.Duration) { f.WorkerStallBackstops = v }),
-	},
-	{
-		Name: "worker_boot_timeout_seconds", Default: "`120`", RequiredBy: "no",
-		Description: "How long a launch waits for a role's launcher to connect — the image pull's bound, and how long a pod may stay `Pending` and unschedulable before the boot watchdog reads it dead; a GKE deployment, where a pod waits for a node of its own and pulls cold, needs a larger one.",
-		Read:        readPositive,
-	},
-	{
-		Name: "worker_boot_registration_deadline_intervals", Default: "`3`", RequiredBy: "no",
-		Description: "How many `worker_boot_timeout_seconds` the registration deadline is: an agent whose process is alive but which has not registered, or not said it is ready, within the product is retired and counted as a launch failure.",
-		Read:        readPositive,
-	},
-	{
-		Name: "worker_rpc_timeout_seconds", Default: "`5`", RequiredBy: "no",
-		Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also sizes how long the intake gives one fact's handling.",
-		Read:        readPositive,
-	},
-	{
-		Name: "worker_stop_timeout_seconds", Default: "`10`", RequiredBy: "no",
-		Description: "How long a role's stop gives its agent to exit before the daemon kills it, which under Kubernetes is the pod's termination grace and so has a floor the loader refuses a shorter value against.",
-		Read:        readPositive,
-	},
-	{
-		Name: "tree_stop_timeout_seconds", Default: "`60`", RequiredBy: "no",
-		Description: "How long the stop of a tree's root process waits for that process to be gone before the stop reports what it found.",
-		Read:        readPositive,
-	},
-	{
-		Name: "slow_command_timeout_seconds", Default: "`300`", RequiredBy: "no",
-		Description: "How long the daemon's slow commands run: the cluster check, a runtime's adoption of a recorded process, and each attempt of the boot's image probe, which takes `worker_boot_timeout_seconds` plus 60 seconds instead wherever that is larger.",
-		Read:        readPositive,
-	},
-	{
-		Name: "probe_interval_seconds", Default: "`30`", RequiredBy: "no",
-		Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again.",
-		Read:        readPositive,
-	},
-}
+		{
+			Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
+			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
+		},
+		{
+			Name: "port", Default: "`13370`", RequiredBy: "no",
+			Description: "The TCP port the daemon's API listens on, which every pod and pane reaches it at.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.Port = v }),
+		},
+		{
+			Name: "bind", Default: "`127.0.0.1`", RequiredBy: "no",
+			Description: "The address the daemon listens on, and the host every pod dials the worker stream at while `advertise_host` is unset; under `runtime: kubernetes` it may be `0.0.0.0`, where a daemon whose own pod restarts onto a new IP binds every interface, but never a loopback address, which no pod reaches.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.Bind = v }),
+		},
+		{
+			Name: "advertise_host", Default: "every pod dials `bind`", RequiredBy: "no",
+			Description: "The stable address every pod dials the worker stream at in `bind`'s place — an IP address or an ASCII DNS name, such as the Service that fronts a daemon whose own pod restarts onto a new IP; only `runtime: kubernetes` accepts it, since every pane dials the daemon's own unix socket.",
+			Read:        reads(readAdvertiseHost, func(f *fileConfig, v *string) { f.AdvertiseHost = v }),
+		},
+		{
+			Name: "daemon_url", Default: "`http://127.0.0.1:<port>`", RequiredBy: "when runtime is kubernetes: a pod cannot reach the daemon's loopback address",
+			Description: "The daemon's API as the pods and panes it starts are told to reach it, with no trailing slash and, under Kubernetes, neither a loopback nor the unspecified address.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.DaemonURL = v }),
+		},
+		{
+			Name: "worker_stream_port", Default: "`port` + 1", RequiredBy: "no",
+			Description: "The TCP port the worker stream listens on, which every pod's shim dials; it must differ from `port`.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.WorkerStreamPort = v }),
+		},
+		{
+			Name: "admission_cap", Default: "`4`, or `LEGION_ADMISSION_CAP` in the daemon's environment", RequiredBy: "no",
+			Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and keeps it until it is done, and the rest wait in line.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
+		},
+		{
+			Name: "controller", Default: "`operator`", RequiredBy: "no",
+			Description: "Who runs the project's controller: `operator`, a person with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running (a pane of its own window under `runtime: tmux`), which needs `dispatch_url`.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.Controller = v }),
+		},
+		{
+			Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
+			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
+		},
+		{
+			Name: "provider_keys", Default: "the agents' Oh My Pi receives no provider credential", RequiredBy: "no",
+			Description: "The provider credentials every agent's Oh My Pi receives in its environment: each variable Oh My Pi reads mapped to the key of the providers Secret that holds it, or, under `runtime: tmux`, to a secretsd key or a `file:/abs/path` the daemon reads once at boot.",
+			Read:        reads(readProviderKeys, func(f *fileConfig, v []ProviderKey) { f.ProviderKeys = v }),
+		},
+		{
+			Name: "omp_invocation", Default: "`LEGION_OMP_PATH` in the daemon's environment, which names the `omp` binary directly", RequiredBy: "when runtime is tmux and `LEGION_OMP_PATH` is unset",
+			Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OmpInvocation = v }),
+		},
+		{
+			Name: "omp_launch_prefix", Default: "a pane runs Oh My Pi with no prefix", RequiredBy: "no",
+			Description: "An argv every pane's Oh My Pi launch is wrapped in; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi, and it may not run `secrets`, which `provider_keys` is for.",
+			Read:        reads(readLaunchPrefix, func(f *fileConfig, v []string) { f.OmpLaunchPrefix = v }),
+		},
+		{
+			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
+		},
+		{
+			Name: "dispatch_url", Default: "the daemon runs no workflow", RequiredBy: "when runtime is kubernetes: the workflow is what launches every pod",
+			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `dispatch_token_file`, `nats_urls` and a `projects` entry for the daemon's own project.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.DispatchURL = v }),
+		},
+		{
+			Name: "dispatch_token_file", Default: "none: a configured `dispatch_url` is refused without it", RequiredBy: "when `dispatch_url` is configured",
+			Description: "The file holding the bearer token Legion's agents present to Dispatch; the daemon hands each pod its own copy, and no pod reads the operator's file.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.DispatchTokenFile = v }),
+		},
+		{
+			Name: "envoy_url", Default: "`http://127.0.0.1:9020`", RequiredBy: "when runtime is kubernetes: a pod cannot reach the loopback listener it defaults to",
+			Description: "The Envoy listener the daemon and every agent reach each other through.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.EnvoyURL = v }),
+		},
+		{
+			Name: "envoy_token_file", Default: "none: the pods receive no Envoy bearer", RequiredBy: "when runtime is kubernetes: every pod receives the Envoy bearer",
+			Description: "The file holding the Envoy listener's API token; the daemon hands each pod its own copy.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.EnvoyTokenFile = v }),
+		},
+		{
+			Name: "nats_urls", Default: "none: the daemon reads no notification stream", RequiredBy: "when runtime is kubernetes: every pod's Envoy client connects to NATS, and when `dispatch_url` is configured: the workflow's intake reads Envoy's notification stream",
+			Description: "The NATS URLs the daemon and every pod's Envoy client connect to, in order and each once; the daemon reads Dispatch's issue events and each repository's GitHub events from the notification stream they carry.",
+			Read:        reads(readNatsURLs, func(f *fileConfig, v []string) { f.NatsURLs = v }),
+		},
+		{
+			Name: "nats_nkey_seed_file", Default: "the agents connect to NATS with no nkey user", RequiredBy: "no",
+			Description: "The file holding the agents' NATS nkey user seed, readable by its owner alone; the daemon publishes it to the pods as the providers Secret's `NATS_NKEY_SEED`.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsNkeySeedFile = v }),
+		},
+		{
+			Name: "nats_daemon_nkey_seed_file", Default: "the daemon connects to NATS with no nkey user of its own", RequiredBy: "no",
+			Description: "The file holding the NATS nkey user seed for the daemon's own connection, readable by its owner alone, which no agent receives.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
+		},
+		{
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's repositories are Dispatch's own mapping, and its block carries what only that project does — its merge-queue role, its by-hand merge paths, its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Read: func(value *yaml.Node, key string, file *fileConfig) error {
+				// The projects' own warnings join whatever a warned key above them raised, in file
+				// order: one list carries both, so neither producer may write over the other.
+				projects, raised, err := readProjects(value, key)
+				if err != nil {
+					return err
+				}
+				file.Projects, file.Warnings = projects, append(file.Warnings, raised...)
+				return nil
+			},
+		},
+		{
+			Name: repositoryRenamesKey, Default: "no two names are one repository", RequiredBy: "no",
+			Description: "The repositories that moved, each pair naming the repository as every record holds it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, so a pair stays here for as long as any record names the old repository.",
+			Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
+		},
+		{
+			Name: hooksKey, Default: "one hook: every fifth move back of any kind puts the daemon's own words in front of the implementer, the tester and the reviewer", RequiredBy: "no",
+			Description: "The deployment's own prompts, each naming the event it stands on, the moves back it counts, how many of them fire it, the roles its words are put in front of and those words; `hooks: []` runs none, and a file that names the key runs what it names and no default.",
+			Read:        reads(readHooks, func(f *fileConfig, v *[]Hook) { f.Hooks = v }),
+		},
+		{
+			Name: "gates", Default: "`design: [spec]`, the root issue's primary document", RequiredBy: "no",
+			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or the merger's `READY` is accepted.",
+			Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
+		},
+		{
+			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
+			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, narrowed to the repositories that agent works.",
+			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
+		},
+		{
+			Name: "runtime", Default: "`tmux`, with no block", RequiredBy: "no",
+			Description: "Where the agents run: the scalar `tmux`, the daemon and every pane on one host, or a one-key mapping, `{kubernetes: {…}}` or `{tmux: {…}}`, whose block the loader reads; a bare `kubernetes` scalar is refused, since the block is the only source of what a pod needs.",
+			Read: func(value *yaml.Node, key string, file *fileConfig) error {
+				kubernetes, tmux, err := readRuntime(value)
+				if err != nil {
+					return err
+				}
+				file.Kubernetes, file.Tmux = kubernetes, tmux
+				return nil
+			},
+		},
+		{
+			Name: "worker_backends", Default: "every role runs on Oh My Pi", RequiredBy: "no",
+			Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`), each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
+			Read:        reads(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
+		},
+		{
+			Name: "role_config_files", Default: "every role names only the overlays every role names", RequiredBy: "no",
+			Description: "Oh My Pi settings overlays one role names and no other — a model fallback chain for the roles whose output a machine checks, say: each key a role, each value absolute paths that role's `PI_CONFIG_FILES` names after the overlays every role names, so each outranks those.",
+			Read:        reads(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
+		},
+		{
+			Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
+			Description: "The worker capabilities this deployment decides rather than closes: under `decided`, each capability the report would leave open mapped to the reason the boot, `legion state` and the controller's tick then show in the gap's place.",
+			Read:        reads(readCapabilities, func(f *fileConfig, v *Capabilities) { f.Capabilities = v }),
+		},
+		{
+			Name: "worker_wakes_per_minute", Default: "`8`", RequiredBy: "no",
+			Description: "How many wakes a minute the daemon lets out — the role processes it starts, and the tasks and notices it queues to wake a session that already runs — so that a restart or a plugin wave does not push a provider organization over its per-minute uncached-input cap; `0` turns the pacing off, and a value below 0 is refused.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.WorkerWakesPerMinute = v }),
+		},
+		{
+			Name: "worker_wake_burst", RequiredBy: "no",
+			Description: "How many wakes may leave at once before `worker_wakes_per_minute` holds the next one back; a burst below 1 is refused.",
+			Positive:    &positiveKey{Value: 1, Count: func(c *Config) *int { return &c.WorkerWakeBurst }},
+		},
+		{
+			Name: "linger_hours", Default: "`72`", RequiredBy: "no",
+			Description: "How many hours a closed root's tree lingers before the daemon retires it, which is also where a claim carried out of that tree has its stop bounded; decimals allowed.",
+			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.Linger = v }),
+		},
+		{
+			Name: "production_check_hours", Default: "`336`, fourteen days", RequiredBy: "no",
+			Description: "How many hours a closed issue's production check runs before its last look; decimals allowed.",
+			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.ProductionCheckBound = v }),
+		},
+		{
+			Name: "pod_update_retask_hours", Default: "`1`", RequiredBy: "no",
+			Description: "How many hours a pod-update round waits before it asks a worker that has not answered again; decimals allowed.",
+			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.PodUpdateRetask = v }),
+		},
+		{
+			Name: "pod_update_notice_hours", Default: "`4`", RequiredBy: "no",
+			Description: "How many hours a pod-update round runs before the controller is told it is not finishing; decimals allowed.",
+			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.PodUpdateNotice = v }),
+		},
+		{
+			Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
+			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push and wait.",
+			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),
+		},
+		{
+			Name: "pod_update_rounds_per_minute", Default: "no limit at all: a sweep opens as many rounds as it has issues for", RequiredBy: "no",
+			Description: "How many pod-update rounds one sweep of the daemon opens; a sweep within 50 seconds of the last opening opens none.",
+			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateRoundsPerMinute = v }),
+		},
+		{
+			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
+			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
+			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
+		},
+		{
+			Name: "controller_wake_interval_seconds", RequiredBy: "no",
+			Description: "How often the daemon wakes the project's controller, which is also the period of its status repair, so raising it to quiet the controller slows that repair with it.",
+			Positive:    &positiveKey{Value: 3600, Duration: func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
+		},
+		{
+			Name: "launch_failure_limit", RequiredBy: "no",
+			Description: "How many failed launches, and deaths of a ready agent while it had work outstanding, a claim takes before the daemon fails it.",
+			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.LaunchFailureLimit }},
+		},
+		{
+			Name: "prompt_failure_limit", RequiredBy: "no",
+			Description: "How many prompts a worker may acknowledge without taking a turn before the daemon fails its claim.",
+			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.PromptFailureLimit }},
+		},
+		{
+			Name: "prompt_retire_limit", RequiredBy: "no",
+			Description: "How many times a worker is retired and relaunched over prompts it acknowledged without taking a turn before the daemon fails its claim.",
+			Positive:    &positiveKey{Value: 2, Count: func(c *Config) *int { return &c.PromptRetireLimit }},
+		},
+		{
+			Name: stallBackstopKey, Default: "twice the bound that role's own worker holds a tool call no deadline judges to: eight hours for an implementer and a reviewer, two for every other role and the controller", RequiredBy: "no",
+			Description: "The daemon's own backstop under a worker whose turn has stopped: per role, how many hours after that role's last recorded step the daemon ends the turn that step belongs to, so the task goes back to waiting and the session is sent it again, charging the claim nothing; `0` switches the backstop off for that role, and a bound below the role's whole stall ladder is refused.",
+			Read:        reads(readStallBackstops, func(f *fileConfig, v map[claim.Role]time.Duration) { f.WorkerStallBackstops = v }),
+		},
+		{
+			Name: "worker_boot_timeout_seconds", RequiredBy: "no",
+			Description: "How long a launch waits for a role's launcher to connect — the image pull's bound, and how long a pod may stay `Pending` and unschedulable before the boot watchdog reads it dead; a GKE deployment, where a pod waits for a node of its own and pulls cold, needs a larger one.",
+			Positive:    &positiveKey{Value: 120, Duration: func(c *Config) *time.Duration { return &c.WorkerBootTimeout }},
+		},
+		{
+			Name: "worker_boot_registration_deadline_intervals", RequiredBy: "no",
+			Description: "How many `worker_boot_timeout_seconds` the registration deadline is: an agent whose process is alive but which has not registered, or not said it is ready, within the product is retired and counted as a launch failure.",
+			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.WorkerBootRegistrationDeadlineIntervals }},
+		},
+		{
+			Name: "worker_rpc_timeout_seconds", RequiredBy: "no",
+			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also sizes how long the intake gives one fact's handling.",
+			Positive:    &positiveKey{Value: 5, Duration: func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
+		},
+		{
+			Name: "worker_stop_timeout_seconds", RequiredBy: "no",
+			Description: "How long a role's stop gives its agent to exit before the daemon kills it, which under Kubernetes is the pod's termination grace and so has a floor the loader refuses a shorter value against.",
+			Positive:    &positiveKey{Value: 10, Duration: func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
+		},
+		{
+			Name: "tree_stop_timeout_seconds", RequiredBy: "no",
+			Description: "How long the stop of a tree's root process waits for that process to be gone before the stop reports what it found.",
+			Positive:    &positiveKey{Value: 60, Duration: func(c *Config) *time.Duration { return &c.TreeStopTimeout }},
+		},
+		{
+			Name: "slow_command_timeout_seconds", RequiredBy: "no",
+			Description: "How long the daemon's slow commands run: the cluster check, a runtime's adoption of a recorded process, and each attempt of the boot's image probe, which takes `worker_boot_timeout_seconds` plus 60 seconds instead wherever that is larger.",
+			Positive:    &positiveKey{Value: 300, Duration: func(c *Config) *time.Duration { return &c.SlowCommandTimeout }},
+		},
+		{
+			Name: "probe_interval_seconds", RequiredBy: "no",
+			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again.",
+			Positive:    &positiveKey{Value: 30, Duration: func(c *Config) *time.Duration { return &c.ProbeInterval }},
+		},
+	}
+	for i := range table {
+		if row := &table[i]; row.Positive != nil {
+			row.Default, row.Read = fmt.Sprintf("`%d`", row.Positive.Value), row.Positive.read
+		}
+	}
+	return table
+}()
 
 // topLevelByName is topLevelKeys by key name, which readKeys dispatches through.
 var topLevelByName = func() map[string]*keyDescriptor {
@@ -626,9 +695,9 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: podKey + ".volumes[].secret", Members: []member{
 		{Name: "name", Default: "none: a source that names no object is refused", RequiredBy: "yes",
-			Description: "The Secret or ConfigMap of the daemon's namespace this source projects, which must exist with every key the volume asks of it, or the image probe refuses the boot naming it."},
-		{Name: "items", Default: "every key of that object becomes a file of its own name", RequiredBy: "no",
-			Description: "The keys of that object the volume projects, each with the file it becomes."},
+			Description: "The Secret of the daemon's namespace this volume holds, which must exist with every key the volume asks of it, or the image probe refuses the boot naming it."},
+		{Name: "items", Default: "every key of that Secret becomes a file of its own name", RequiredBy: "no",
+			Description: "The keys of that Secret the volume projects, each with the file it becomes."},
 		{Name: "default_mode", Default: "Kubernetes' own `0644`, which every user in the pod can read", RequiredBy: "no",
 			Description: "The mode of every file this source projects, in octal digits after a leading `0` or `0o` and from 0 to 0777; a mode written in decimal is refused, since `440` would be 0670."},
 	}},
@@ -637,6 +706,14 @@ var nestedKeys = []memberGroup{
 			Description: "The key of that Secret or ConfigMap this item projects."},
 		{Name: "path", Default: "none: an item that names no path is refused", RequiredBy: "yes",
 			Description: "The file that key becomes, under the volume's own root."},
+	}},
+	{Path: podKey + ".volumes[].config_map", Members: []member{
+		{Name: "name", Default: "none: a source that names no object is refused", RequiredBy: "yes",
+			Description: "The ConfigMap of the daemon's namespace this volume holds, which must exist with every key the volume asks of it, or the image probe refuses the boot naming it."},
+		{Name: "items", Default: "every key of that ConfigMap becomes a file of its own name", RequiredBy: "no",
+			Description: "The keys of that ConfigMap the volume projects, each with the file it becomes; the item's own lines are the `secret.items[]` ones, which both sources' items are read against."},
+		{Name: "default_mode", Default: "Kubernetes' own `0644`, which every user in the pod can read", RequiredBy: "no",
+			Description: "The mode of every file this source projects, in octal digits after a leading `0` or `0o` and from 0 to 0777; a mode written in decimal is refused, since `440` would be 0670."},
 	}},
 	{Path: podKey + ".volumes[].persistent_volume_claim", Members: []member{
 		{Name: "name", Default: "none: a claim source that names no claim is refused", RequiredBy: "yes",
@@ -662,9 +739,15 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: podKey + ".volumes[].projected.sources[].secret", Members: []member{
 		{Name: "name", Default: "none: a source that names no object is refused", RequiredBy: "yes",
-			Description: "The Secret or ConfigMap of the daemon's namespace this source projects, which must exist with every key the volume asks of it."},
-		{Name: "items", Default: "every key of that object becomes a file of its own name", RequiredBy: "no",
-			Description: "The keys of that object the volume projects, each with the file it becomes."},
+			Description: "The Secret of the daemon's namespace this source projects, which must exist with every key the volume asks of it."},
+		{Name: "items", Default: "every key of that Secret becomes a file of its own name", RequiredBy: "no",
+			Description: "The keys of that Secret the volume projects, each with the file it becomes."},
+	}},
+	{Path: podKey + ".volumes[].projected.sources[].config_map", Members: []member{
+		{Name: "name", Default: "none: a source that names no object is refused", RequiredBy: "yes",
+			Description: "The ConfigMap of the daemon's namespace this source projects, which must exist with every key the volume asks of it."},
+		{Name: "items", Default: "every key of that ConfigMap becomes a file of its own name", RequiredBy: "no",
+			Description: "The keys of that ConfigMap the volume projects, each with the file it becomes; the item's own lines are the `secret.items[]` ones, which every source's items are read against."},
 	}},
 	{Path: podKey + ".volumes[].projected.sources[].service_account_token", Members: []member{
 		{Name: "audience", Default: "the API server's own audience, which the daemon's own API accepts", RequiredBy: "no",

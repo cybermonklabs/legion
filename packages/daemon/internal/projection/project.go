@@ -48,14 +48,15 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			lingering[issue.Key] = true
 		}
 	}
-	// Every experiment answer the record holds, by issue key, in one statement
-	// (record.Store.Assignments). The table is read whole rather than for the issues in hand:
-	// every row is keyed by an issue of this database, so a list of every recorded key would
-	// select the same rows and cost a parameter the size of the table. A row says which unit it
-	// covers: a `tree` row is its tree root's and every issue of the tree is shown it, an
-	// `issue` row is the issue's own. So an issue's answers are its root's tree rows and its own
-	// issue rows, which assignmentViews joins.
-	assignments, err := s.Assignments(ctx, tx)
+	// Every experiment answer the record holds for this project's issues, by issue key, in one
+	// statement (record.Store.Assignments). The database is shared by every project's daemon, so
+	// the read is joined to the issue records of project rather than taking the table whole,
+	// exactly as the issue read above is filtered to it; it is not listed by the keys in hand,
+	// since that list would select the same rows at the cost of a parameter the size of the
+	// table. A row says which unit it covers: a `tree` row is its tree root's and every issue of
+	// the tree is shown it, an `issue` row is the issue's own. So an issue's answers are its
+	// root's tree rows and its own issue rows, which assignmentViews joins.
+	assignments, err := s.Assignments(ctx, tx, project)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -335,13 +336,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	return projected, nil
 }
 
-// memoryGroupNone is the `memoryGroup` on the wire of every arm of the experiment named `memory`
-// but the first (config.MemoryVariantNames), the empty arm a hand-over settles a tree at
-// included: the wire enum has those two words alone (packages/contracts/src/legion-api.ts,
-// legionIssue), and the second of them is the group a tree outside the memory group has always
-// read.
-const memoryGroupNone = "none"
-
 // assignmentViews is every experiment answer that applies to the issue key, whose tree's root is
 // tree, in the order the project's file declares the experiments: its tree's tree-unit rows,
 // which every issue of the tree runs under, and its own issue-unit rows. An issue no answer
@@ -425,8 +419,11 @@ func memoryOf(views []api.AssignmentView) (string, string, *time.Time) {
 		if view.Experiment != config.MemoryExperimentName || view.DrawnAt == nil {
 			continue
 		}
-		group := memoryGroupNone
-		if view.Variant == config.MemoryVariantNames[0] {
+		// Every arm but the one named `memory` is the group `none` on the wire, the empty arm
+		// a mode-off draw and a hand-over leave included: the wire enum has those two words
+		// alone (packages/contracts/src/legion-api.ts, legionIssue).
+		group := config.MemoryVariantNone
+		if view.Variant == config.MemoryVariantMemory {
 			group = view.Variant
 		}
 		return group, view.Mode, view.DrawnAt

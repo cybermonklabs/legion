@@ -66,18 +66,17 @@ func drawnIntoBoth(t *testing.T, f *fakeServerRuntime, dir string, role claim.Ro
 		return path
 	}
 	variants := []runtime.Variant{
-		{Experiment: "alpha", Name: "on", ConfigFiles: alphaOverlays, InstructionsPath: write("alpha-on.md", "Alpha instructions.\n")},
-		{Experiment: "beta", Name: "on", ConfigFiles: betaOverlays, InstructionsPath: write("beta-on.md", "Beta instructions.\n")},
+		{Experiment: "alpha", Name: "on", ConfigFiles: alphaOverlays},
+		{Experiment: "beta", Name: "on", ConfigFiles: betaOverlays},
 	}
+	instructions := []string{write("alpha-on.md", "Alpha instructions.\n"), write("beta-on.md", "Beta instructions.\n")}
 	if reversed {
 		slices.Reverse(variants)
+		slices.Reverse(instructions)
 	}
 	spec := f.spec(t, role)
 	spec.Prompt.DeploymentInstructionsPath = write("deployment.md", "Deployment instructions.\n")
-	spec.Variants = variants
-	for _, variant := range variants {
-		spec.Prompt.VariantInstructionsPaths = append(spec.Prompt.VariantInstructionsPaths, variant.InstructionsPath)
-	}
+	spec.Variants, spec.Prompt.VariantInstructionsPaths = variants, instructions
 	return spec
 }
 

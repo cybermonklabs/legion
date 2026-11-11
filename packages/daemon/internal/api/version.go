@@ -530,15 +530,17 @@ package api
 // together while nothing has drawn for the issue's tree; the draw is made once on the tree's root
 // record, and every issue of the tree is shown its root's (api.Issue, filled by
 // internal/projection). `packages/contracts/src/legion-api.ts` mirrors them on `legionIssue`,
-// which is a `z.strictObject`, so a reader before 49 refuses a whole state carrying any of the
-// three — and every worker's `read_record` parses the state through it. `GET /legion/v1/state`
-// authenticates nobody, so a caller from a pod whose claims record a contract below 49 is served
-// the state without them (api's stateFor, withoutMemory), as a caller below 46 is served it
-// without the claim views' update rounds; a caller below both is served it without either. The
-// settings carry the project's `memory` block (mode, config files, instructions), which every
-// plugin reads loosely and which changes no strictly parsed shape. This change adds no store
-// migration of its own: the three columns are the issue record's
-// (20261104073148_issue_memory_group), and the hand-over's answer beside them is too
+// which was a `z.strictObject` at this contract, so a reader before 49 refused a whole state
+// carrying any of the three — and every worker's `read_record` parses the state through it.
+// (That schema strips such a key rather than refusing it since sjawhar/legion#2788, which
+// landed after this entry; 58 below is the first entry written under the strip.)
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 49 is served the state without them (api's stateFor, withoutMemory), as a
+// caller below 46 is served it without the claim views' update rounds; a caller below both is
+// served it without either. The settings carry the project's `memory` block (mode, config
+// files, instructions), which every plugin reads loosely and which changes no strictly parsed
+// shape. This change adds no store migration of its own: the three columns are the issue
+// record's (20261104073148_issue_memory_group), and the hand-over's answer beside them is too
 // (20261104153554_issue_memory_carried). (This branch took 47 while main's idle-release change
 // was unmerged; main landed it as 48, so this branch takes the number above it, as the collision
 // note says.)
@@ -985,8 +987,12 @@ package api
 // loses its `omitempty`, so a project that declares no experiment carries `[]` rather than no
 // key, as `slack_channels` and `memory` do; every plugin reads the settings loosely, so no
 // strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
-// `assignments` on `legionIssue`, which is a `z.strictObject`, so a reader before 74 refuses a
-// whole state carrying it — and every worker's `read_record` parses the state through it.
+// `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
+// `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
+// that package's own test holds it to, and 74 is later than that change, so a reader before 74
+// parses this state and sees no `assignments` at all rather than refusing it — and every
+// worker's `read_record` parses the state through that schema. The downgrade below is still
+// what serves such a reader: a caller that did not ask for the field is not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 74 is served the state without the field (api's stateFor,
 // withoutAssignments), as a caller below 49 is served it without the memory fields; a caller at

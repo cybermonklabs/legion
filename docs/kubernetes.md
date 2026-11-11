@@ -2122,12 +2122,17 @@ The four columns stay in the schema exactly as they stand, this release writes n
 To roll this release back to contract 68, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
 There is no SQL to run and no table to drop:
 the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
-What the rollback costs is the record of every tree drawn after the upgrade.
-The earlier release writes `issues.memory_*` only where it creates a tree's lifecycle row, and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again:
-it re-draws nothing, and no tree changes arm.
-What it loses is the record.
-A tree drawn after the upgrade has its answer in `experiment_assignments` and nothing in `issues.memory_*`, and the rolled-back release reads only the columns, so that tree reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
-The trees drawn before the upgrade are untouched and read exactly as they did.
+What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
+The earlier release writes `issues.memory_*` only where it creates a tree's lifecycle row, and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
+it changes arms all the same.
+That release decides a launch's memory from `issues.memory_group` alone (its `treeMemoryGroup`, `issue.MemoryGroup == "memory"`), and this release writes no `memory_*` column, so a tree drawn into the `memory` arm after the upgrade has an empty `memory_group`:
+its next role starts without the memory overlays and without the memory instructions, and the tree runs the rest of its life in the other arm than the one it was drawn into.
+The record goes with it: that tree's answer is in `experiment_assignments`, which the earlier release names nowhere, so it reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
+The trees drawn before the upgrade are untouched: their columns are the back-fill's source and still hold their draw, so they keep their arm and read exactly as they did.
+Rolling forward again costs the window the earlier release ran for.
+A tree it drew in that window has its answer in `issues.memory_*` alone, and the back-fill runs once, at the first deploy of the migration, and not a second time:
+this release finds no row for that tree, runs it in no arm — so it too changes arm mid-life — and settles the children it hands over at no variant.
+Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
 ### Contract discipline
@@ -5363,7 +5368,7 @@ each issue's pod (every role of it alike) and the image probe's.
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.memory.config_files`), the image probe's per-role value (they are passed for every workflow role and never for the controller, and a file the probe cannot read refuses the boot), the pod drift, and what a kept pod's role is told.
 
 - **Turning it on:** a pod created before the operator added the memory overlay's volume and mount is handled as it is for an overlay of `role_config_files` ("Rolling it out" above), with two differences.
-  The drift is reported `memory.config_files <file>`, and it replaces every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
+  The drift is reported `projects.<KEY>.memory.config_files <file>`, naming the key the operator wrote, and it replaces every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
   the controller's pod is never replaced for it, since the controller names these files in no list.
   A role of a memory-group tree started into a pod the launch keeps is told only the memory overlays that pod holds, as it is told only the role's own files that it holds, so it starts, pushes its work and answers the update round that replaces the pod.
 
@@ -5436,7 +5441,7 @@ each issue's pod (every role of it alike) and the image probe's.
   a pod's volumes and mounts are fixed when the pod is created, and a role cannot read a file its pod does not mount.
   It is every issue pod, and not the drawn units' pods alone, because any unit may be drawn into any arm;
   the controller's pod is never replaced for it, since the controller runs in no experiment.
-  The drift is reported `experiments.<experiment>.variants.<arm>.config_files <file>`, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
+  The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
   the daemon opens an update round on each drifted pod, which asks every worker of that issue to push and wait, and replaces the pod once they answer;
   a pod no round covers is replaced by the first launch into it.
   Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), and a role mid-turn at the boot's re-adoption is reported `StaleAddress` and relaunched at once, uncharged, so that turn is lost.

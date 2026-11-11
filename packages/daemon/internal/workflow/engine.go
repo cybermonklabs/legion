@@ -114,9 +114,11 @@ type Config struct {
 	Hooks []Hook
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// of which every issue-unit one is drawn for each issue this engine records for the first
-	// time, against that issue's own key (enterChild). The empty list is a project that declares
-	// none, which draws nothing. ExperimentSource is the random source a `random` mode is drawn
-	// with: nil is experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
+	// time, against that issue's own key (recordChild). Every project the loader reads declares
+	// the memory experiment, whose unit is the tree and which is therefore drawn where a tree is
+	// opened and never here, so a project that declares no experiment of its own has this engine
+	// draw nothing. ExperimentSource is the random source a `random` mode is drawn with: nil is
+	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 }
@@ -439,8 +441,13 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 
 // recordChild records an unrecorded todo child under root's live tree on the repository its event
 // resolves to, or, when that is none or one Legion does not serve, records nothing and says why on
-// the child and to the tree's architect. The daemon holds no record of this child, so this entry
-// is where its issue-unit experiments are drawn (enterChild).
+// the child and to the tree's architect.
+//
+// The daemon holds no record of this child, so this entry is the one moment the issue-unit
+// experiments the project declares are drawn for it (drawExperiments), in the transaction that
+// records it: a draw covers a unit from the moment the daemon records that unit, so a re-entry, a
+// rerun and an adoption, each of a record the daemon already holds, draw nothing, and an
+// experiment declared after a child was recorded never reaches it.
 func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue) error {
 	resolution, err := e.ResolveRepository(fact.ResolvedRepo)
 	if err != nil {
@@ -449,7 +456,10 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if resolution.Refusal != "" {
 		return e.refuseChild(ctx, tx, root, fact.Key, fact.ResolvedRepo, resolution)
 	}
-	return e.enterChild(ctx, tx, root, fact, root.Generation, resolution, true)
+	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
+		return err
+	}
+	return e.drawExperiments(ctx, tx, fact.Key)
 }
 
 // RecordedFact is the todo fact an issue's own record already says, for a run no live event
@@ -515,7 +525,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
 		return err
 	}
-	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child), false); err != nil {
+	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child)); err != nil {
 		return err
 	}
 	return e.notice(ctx, tx, child.Key, ChildReenteredNotice(child.Key, root.Key))
@@ -542,24 +552,17 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 // todo, which the daemon records rather than undoes: the record is the honest one, and the
 // notice says what the daemon will and will not do with it.
 //
-// first says the daemon held no record of this child before this entry, which is the one moment
-// the issue-unit experiments the project declares are drawn for it (drawExperiments): a draw
-// covers a unit from the moment the daemon records that unit, so a re-entry, a rerun and an
-// adoption, each of a record the daemon already holds, draw nothing and an experiment declared
-// after a child was recorded never reaches it.
+// It draws nothing: the one entry the daemon holds no record of the child before is
+// recordChild's, which draws that child's issue-unit experiments in this same transaction once
+// this has recorded it.
 func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue, generation uint64,
-	at Resolution, first bool) error {
+	at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Tree, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
 		Generation: generation, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
 		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
 	if err := e.store.PutIssue(ctx, tx, child); err != nil {
 		return err
-	}
-	if first {
-		if err := e.drawExperiments(ctx, tx, child.Key); err != nil {
-			return err
-		}
 	}
 	ancestor, err := record.AcceptedAncestorOf(ctx, e.store, tx, root.Tree, child.Key, parentKey)
 	if err != nil || ancestor == "" {

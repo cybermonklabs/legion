@@ -93,30 +93,65 @@ type Variant struct {
 	// appends to the system prompt of every role of a unit drawn into this arm, after the
 	// deployment's own instructions; empty where the arm names none.
 	InstructionsPath string
+	// ConfigFilesField is the key the operator wrote ConfigFiles under, whole:
+	// `projects.<KEY>.memory.config_files` for the arm the `memory` block declares, and
+	// `projects.<KEY>.experiments.<name>.variants.<arm>.config_files` for an arm of the
+	// `experiments` key. It is what a refusal and a pod's drift name the arm's overlays by, so
+	// the one spelling the operator can find in the file is carried from here rather than
+	// rebuilt, differently, by each reader.
+	//
+	// Project.Declaring fills it, which is where the project key it begins with is known, so it
+	// stands on every arm of Project.ExperimentsDeclared and on none of the arms Project.
+	// Experiments holds as the file was read.
+	ConfigFilesField string
 }
 
 // MemoryExperimentName is the name of the experiment the `memory` block is: the block and the key
 // `experiments.memory` are two spellings of one experiment, which is why a project writing both is
-// refused (checkExperimentMemory). It is exported because every reader of that one experiment —
-// internal/projection, which reads an issue's three memory fields off its row, and
-// internal/daemon, which names the operator's key for its overlays — must ask for it by this
-// name and no other.
+// refused (checkExperimentMemory). It is exported because the one reader of that one experiment
+// — internal/projection, which reads an issue's three memory fields off its row — must ask for
+// it by this name and no other.
 const MemoryExperimentName = "memory"
 
-// MemoryVariantNames are the two variant names `experiments.memory` may declare, and the two the
-// `memory` block maps to: the arm whose roles run with the project's memory overlays first, the
-// control second. They are fixed rather than the operator's to choose because a draw is
+// MemoryVariantMemory and MemoryVariantNone are the two arms of the experiment named memory: the
+// arm whose roles run with the project's memory overlays and its instructions, and the control
+// that names neither. They are fixed rather than the operator's to choose because a draw is
 // served to every pod in the issue's state body as `memoryGroup`, whose wire enum is
 // z.enum(["memory","none"]) (packages/contracts/src/legion-api.ts:477): a third word makes the
 // whole body fail to parse (legion-api.test.ts:615-617), so a project declaring the experiment
 // with other names would serve every pod of it a body the pod refuses. They are exported for the
-// same reason the name above is.
-var MemoryVariantNames = []string{"memory", "none"}
+// same reason the name above is: the one reader of this one experiment asks for each arm by its
+// name and no other.
+const (
+	MemoryVariantMemory = "memory"
+	MemoryVariantNone   = "none"
+)
 
-// ExperimentsDeclared is every experiment the project declares, the `memory` block included, once
-// the whole file has passed: the experiment named memory, then the `experiments` key's own in the
-// file's order. Every reader of experiments below the loader asks this one list, so the block and
-// the key behave alike there and a reader needs no second path for the block.
+// MemoryVariantNames are those two arms as `experiments.memory` must declare them and as the
+// `memory` block maps to them, the arm carrying the files first and the control second.
+var MemoryVariantNames = []string{MemoryVariantMemory, MemoryVariantNone}
+
+// ExperimentsDeclared is every experiment the project declares, the `memory` block included: the
+// experiment named memory, then the `experiments` key's own in the file's order. Every reader of
+// experiments below the loader asks this one list, so the block and the key behave alike there
+// and a reader needs no second path for the block.
+//
+// It reads the list Declaring built and builds nothing: the loader declares each project once,
+// as it reads it (readProject), so the eight readers below it — the launch, the boot's
+// instructions and overlay reads, the drift, admission, the engine, the state and the settings —
+// share one list, and each arm's own key path (Variant.ConfigFilesField) is the one the operator
+// wrote rather than one each reader works out again. A Project no Declaring has reached declares
+// nothing here.
+func (project Project) ExperimentsDeclared() []Experiment {
+	return project.declared
+}
+
+// Declaring is project with the experiments it declares built and kept on it, which is what
+// ExperimentsDeclared reads back: the loader calls it once for each project it reads, after the
+// two spellings of the memory experiment have been judged against each other
+// (checkExperimentMemory), and a caller that builds a Project by hand rather than from a file
+// calls it for the same list (api.ProjectSettings.DeclaredExperiments). key is the project's own
+// path, `projects.<KEY>`, which each arm's ConfigFilesField begins with.
 //
 // The memory experiment comes first. It is one key rather than a member of the ordered mapping,
 // so it has no file order against the mapping's members; first is chosen and fixed here so that
@@ -141,13 +176,17 @@ var MemoryVariantNames = []string{"memory", "none"}
 // (checkExperimentMemory), so the two spellings never both appear, and the key's own block is the
 // whole declaration.
 //
+// Each arm is copied rather than shared: the key path is put on the copy, so Project.Experiments
+// stays the file as it was read, and a second Declaring of one project builds the same list again
+// rather than writing over the first's arms.
+//
 // readMemory and checkMemory stay the block's own reader and checker, and this method is no part
 // of either. Seven rows of the refusal table in the documentation quote their texts word for word,
 // so the block keeps them; and checkMemory's rule that a mode other than off must name
 // config_files contradicts the control variant an experiment may declare, which names no overlay
 // at all, so it is the block's rule and not an experiment's.
-func (project Project) ExperimentsDeclared() []Experiment {
-	var declared []Experiment
+func (project Project) Declaring(key string) Project {
+	declared := make([]Experiment, 0, len(project.Experiments)+1)
 	if !slices.ContainsFunc(project.Experiments, func(experiment Experiment) bool {
 		return experiment.Name == MemoryExperimentName
 	}) {
@@ -156,14 +195,25 @@ func (project Project) ExperimentsDeclared() []Experiment {
 			Name:      MemoryExperimentName,
 			Mode:      ExperimentMode(memory.Word()),
 			Unit:      ExperimentTree,
-			OnVariant: MemoryVariantNames[0],
+			OnVariant: MemoryVariantMemory,
 			Variants: []Variant{
-				{Name: MemoryVariantNames[0], Weight: 1, ConfigFiles: memory.ConfigFiles, InstructionsPath: memory.InstructionsPath},
-				{Name: MemoryVariantNames[1], Weight: 1},
+				{Name: MemoryVariantMemory, Weight: 1, ConfigFiles: memory.ConfigFiles,
+					InstructionsPath: memory.InstructionsPath, ConfigFilesField: key + ".memory.config_files"},
+				{Name: MemoryVariantNone, Weight: 1},
 			},
 		})
 	}
-	return append(declared, project.Experiments...)
+	for _, experiment := range project.Experiments {
+		variants := make([]Variant, len(experiment.Variants))
+		for i, variant := range experiment.Variants {
+			variant.ConfigFilesField = key + ".experiments." + experiment.Name + ".variants." + variant.Name + ".config_files"
+			variants[i] = variant
+		}
+		experiment.Variants = variants
+		declared = append(declared, experiment)
+	}
+	project.declared = declared
+	return project
 }
 
 // readExperiments is a project's `experiments`: a mapping of an experiment's name to its block,
@@ -354,8 +404,11 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 	if blockWritten {
 		return fmt.Errorf("%s.memory and %s.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both", key, key)
 	}
+	// The two names, in whichever order the operator wrote them: the key declares the same
+	// experiment either way round, so both sides are sorted rather than this comparison resting
+	// on MemoryVariantNames happening to be in alphabetical order.
 	names := variantNames(experiments[index].Variants)
-	if !slices.Equal(slices.Sorted(slices.Values(names)), MemoryVariantNames) {
+	if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(slices.Values(MemoryVariantNames))) {
 		return fmt.Errorf("%s.experiments.memory names the variants %s: its variants must be exactly %s, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse",
 			key, strings.Join(names, ", "), strings.Join(MemoryVariantNames, " and "))
 	}

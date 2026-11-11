@@ -341,15 +341,25 @@ type SpawnSpec struct {
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
 // experiment's name and the arm's, as the draw recorded them (config.Experiment.Name,
-// config.Variant.Name), the Oh My Pi settings overlays the arm names (config.Variant.ConfigFiles),
-// and the daemon's own copy of the arm's instructions file, which the launch's system prompt ends
-// with. Either file may be absent: an arm that names neither is the control the others are
-// measured against, and a launch carrying it alone is the launch a unit in no experiment gets.
+// config.Variant.Name), the Oh My Pi settings overlays the arm names (config.Variant.ConfigFiles)
+// and the key the operator wrote those overlays under (config.Variant.ConfigFilesField). An arm
+// that names no overlay is the control the others are measured against, and a launch carrying it
+// alone is the launch a unit in no experiment gets.
+//
+// The instructions an arm names are no field of this: no runtime reads them off an arm, and what
+// a launch's prompt ends with is the daemon's own copy of each of them
+// (PromptParts.VariantInstructionsPaths, which internal/experiment's Launch answers beside these
+// arms).
+//
+// ConfigFilesField is what a refusal and a pod's drift name the arm's overlays by, so both name
+// the key an operator can find in the file — `projects.<KEY>.memory.config_files` for the arm
+// the `memory` block declares — rather than a path each reader works out for itself. It is empty
+// for an arm that names no overlay, which nothing names.
 type Variant struct {
 	Experiment       string
 	Name             string
 	ConfigFiles      []string
-	InstructionsPath string
+	ConfigFilesField string
 }
 
 // VariantOverlays are the Oh My Pi settings overlays of variants as one PI_CONFIG_FILES tail:

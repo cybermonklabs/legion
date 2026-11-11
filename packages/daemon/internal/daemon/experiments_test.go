@@ -54,9 +54,9 @@ func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
 	cfg := config.Config{
 		Project: "test",
 		Runtime: config.Runtime{Name: "tmux"},
-		Projects: map[string]config.Project{"test": {
+		Projects: map[string]config.Project{"test": config.Project{
 			Experiments: twoExperiments(alpha, beta),
-		}},
+		}.Declaring("projects.test")},
 	}
 	// Each arm alone passes, and the union the stub refuses is never composed.
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err != nil {
@@ -82,9 +82,9 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 	cfg := config.Config{
 		Project: "test",
 		Runtime: config.Runtime{Name: "tmux"},
-		Projects: map[string]config.Project{"test": {
+		Projects: map[string]config.Project{"test": config.Project{
 			Experiments: twoExperiments("/etc/legion-alpha/alpha.yml", "/etc/legion-beta/absent.yml"),
-		}},
+		}.Declaring("projects.test")},
 	}
 	err := checkRoleConfigFiles(cfg)
 	want := "projects.test.experiments.alpha.variants.on.config_files names /etc/legion-alpha/alpha.yml, which a role drawn into that arm could not read: "
@@ -106,20 +106,20 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 // never queries at all.
 func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 	const tree, issue = "LEGION-1", "LEGION-2"
-	declared := config.Project{}.ExperimentsDeclared()
+	declared := config.Project{}.Declaring("projects.test").ExperimentsDeclared()
 	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
 		t.Fatalf("a project that declares nothing declares %+v, want the memory experiment alone", declared)
 	}
-	variants, err := launchVariants(nil, declared, nil)(context.Background(), tree, issue)
-	if err != nil || variants != nil {
-		t.Fatalf("launchVariants over a fileless declaration = %v, %v, want no variant and no error", variants, err)
+	arms, err := launchVariants(nil, declared, "/state")(context.Background(), tree, issue)
+	if err != nil || arms.Variants != nil || arms.Instructions != nil {
+		t.Fatalf("launchVariants over a fileless declaration = %+v, %v, want no arm and no error", arms, err)
 	}
 
 	naming := []config.Experiment{{Name: "alpha", Mode: config.ExperimentRandom, Unit: config.ExperimentTree,
 		Variants: []config.Variant{{Name: "on", Weight: 1, ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"}}, {Name: "off", Weight: 1}}}}
 	read := func() (queried bool) {
 		defer func() { queried = recover() != nil }()
-		_, _ = launchVariants(nil, naming, nil)(context.Background(), tree, issue)
+		_, _ = launchVariants(nil, naming, "/state")(context.Background(), tree, issue)
 		return false
 	}
 	if !read() {

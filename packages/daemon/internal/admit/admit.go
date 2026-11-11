@@ -91,10 +91,13 @@ func (a *Admission) ReportCapabilities(open func() []string) {
 
 // UseExperiments registers the project's declared experiments
 // (config.Project.ExperimentsDeclared), each of which is drawn for the units this admission
-// records (drawExperiments). A project whose file declares none leaves the empty list, which
-// draws nothing at all. It is a setter rather than a parameter of New for the reason
-// ReportCapabilities is: every test that admits anything builds an admission, and none of them
-// declares an experiment.
+// records (drawExperiments). Every project the loader reads declares the memory experiment, at
+// mode off where the file writes no `memory` block (config.Project.Declaring), and a draw of an
+// experiment at mode off records its unit at no variant, so such a project has one answer
+// recorded for each tree it opens. The empty list, which draws nothing at all, is a project no
+// Declaring has reached: a test that builds one by hand. It is a setter rather than a parameter
+// of New for the reason ReportCapabilities is: every test that admits anything builds an
+// admission, and none of them declares an experiment.
 func (a *Admission) UseExperiments(experiments []config.Experiment) {
 	a.experiments = experiments
 }

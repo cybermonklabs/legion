@@ -46,7 +46,7 @@ type projectionStore struct {
 	assignments map[string][]record.Assignment
 }
 
-func (s projectionStore) Assignments(context.Context, pgx.Tx) (map[string][]record.Assignment, error) {
+func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
 	return s.assignments, nil
 }
 
@@ -751,7 +751,7 @@ func TestProjectAnswersTheMemoryFieldsOfAProjectThatDeclaresNothing(t *testing.T
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, config.Project{}.ExperimentsDeclared(), nil, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, config.Project{}.Declaring("projects.LEGION").ExperimentsDeclared(), nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

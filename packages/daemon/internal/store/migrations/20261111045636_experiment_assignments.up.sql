@@ -56,28 +56,68 @@ create table experiment_assignments (
 -- hand-over that settled the root at no draw (memory_carried), which is the pair the memory
 -- draw's own condition refused to draw over. A root neither drew for nor
 -- handed an answer to has nothing to record and takes no row, so it is drawn by this release's
--- own first open like any other new tree. memory_group is the variant, memory_draw_mode the mode,
--- memory_drawn_at the instant and memory_carried the mark, each verbatim; the experiment is the
--- literal `memory`, the name config.Project.ExperimentsDeclared gives the `memory` block, and the
--- unit the literal `tree`, the unit that block has always drawn for.
+-- own first open like any other new tree. memory_drawn_at is the instant and memory_carried the
+-- mark, each verbatim; the experiment is the literal `memory`, the name
+-- config.Project.ExperimentsDeclared gives the `memory` block, and the unit the literal `tree`,
+-- the unit that block has always drawn for.
+--
+-- The variant is memory_group with one spelling changed: a row drawn under mode off is copied at
+-- the empty variant rather than at the word `none` that column holds. That is the one answer the
+-- two releases spell differently. The draw before this release answered a mode-off tree with the
+-- word `none`, and this release's draw answers a mode-off experiment with the empty variant,
+-- which is the generic rule every declared experiment needs: nothing says an experiment has an
+-- arm named `none` to record such a draw under. Copied verbatim, one answer would stand in this
+-- column under two spellings, one for the trees drawn before this deploy and another for those
+-- drawn after, and every reader counting arms would have to know both.
+--
+-- What that costs: the old column told a tree drawn into no arm from a tree with no answer at all
+-- by the group alone — `none` against the empty string, which is what the base's own hand-over
+-- wrote for a tree it settled (coalesce(source.memory_group, '')) — and after this both read as
+-- the empty variant. The distinction is not lost; it moves into the two columns beside it, which
+-- this row carries and which api.AssignmentView publishes: mode is `off` for the drawn-under-off
+-- row and the empty string for the settled one, and drawn_at is the instant of the draw for the
+-- first and null for the second.
+--
+-- What it does not cost: the three memory fields of the state (internal/projection's memoryOf)
+-- read nothing new. They are filled only from a row that records a draw — drawn_at set, which the
+-- settled row has not — and every arm that is not the `memory` one, the empty arm among them,
+-- is the group `none`. So a tree drawn under mode off answers the group `none`, the mode `off`
+-- and its own instant here exactly as it answered them off the four columns before.
 --
 -- It alters no column and drops none. The four issues.memory_* columns stay in the schema exactly
 -- as they stand and only stop being written, which is what makes the roll back below cost what it
 -- costs rather than losing every tree drawn before this deploy as well.
 insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
-select key, 'memory', 'tree', memory_group, memory_draw_mode, memory_drawn_at, memory_carried
+select key, 'memory', 'tree',
+       case when memory_draw_mode = 'off' then '' else memory_group end,
+       memory_draw_mode, memory_drawn_at, memory_carried
 from issues
 where memory_drawn_at is not null or memory_carried;
 
 -- Rolling back onto legion-v19.49.1, the release before this one. That release writes
 -- issues.memory_* only where it creates a tree's lifecycle row (internal/admit/admit.go:1345-1349,
 -- `if lifecycle.Created`), and the lifecycle row of every tree drawn after this merge exists
--- already, so the rolled-back daemon creates none of them again: it re-draws nothing, and no tree
--- changes arm. What it loses is the record. A tree drawn after the merge has its answer in
--- experiment_assignments and nothing in issues.memory_*, and the rolled-back release reads only
--- the latter, so that tree reads as undrawn there for the rest of its life — its lifecycle row is
--- never created again, so nothing ever writes the columns for it — and the measurement job loses
--- its exposure. The trees drawn before the merge are untouched and read exactly as they did.
+-- already, so the rolled-back daemon creates none of them again: it re-draws nothing. It changes
+-- arms all the same, which is what the roll back costs. That release decides a launch's memory
+-- from issues.memory_group alone (its daemon.go's treeMemoryGroup, `issue.MemoryGroup ==
+-- "memory"`), and this release writes no memory_* column, so a tree drawn into the `memory` arm
+-- after the upgrade has an empty memory_group: its next role starts without the memory overlays
+-- and without the memory instructions, and the tree runs the rest of its life in the other arm
+-- than the one it was drawn into. The record goes with it: that tree's answer is in
+-- experiment_assignments, which the rolled-back release names nowhere, so it reads as undrawn
+-- there — its lifecycle row is never created again, so nothing ever writes the columns for it —
+-- and the measurement job loses its exposure. The trees drawn before the merge are untouched:
+-- their columns are the back-fill's source and still hold their draw, so they keep their arm and
+-- read exactly as they did.
+--
+-- Rolling forward again costs the window. A tree the rolled-back release drew while it ran has
+-- its answer in issues.memory_* alone, and the back-fill above runs once, at the first deploy of
+-- this migration, and not a second time: this release's launchVariants finds no row for that tree
+-- and runs it in no arm, so it too changes arm mid-life, and CarryAssignments settles the
+-- children it hands over at no variant. A deploy that ran the roll back therefore copies those
+-- trees over by hand before it reads the exposure again: the back-fill's own select, with
+-- `on conflict (issue_key, experiment) do nothing` added, since the rows copied at the first
+-- deploy stand.
 --
 -- There is no down file: the migrations here are forward-only, and nothing of this one need come
 -- off for that roll back, which names neither the table nor its rows. Dropping the four

@@ -1454,13 +1454,17 @@ type Store interface {
 	// an issue the daemon holds no record of — an operator's spawn — takes no row at all.
 	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error)
 	// CarryAssignments settles the assignments of key, a child handed over as a tree of its own,
-	// from the tree it left: every assignment of from's root copied verbatim — its arm, its mode
-	// and the instant it was drawn — and then each experiment of settled, the experiments declared
-	// at the hand-over, written at no variant, no mode and no instant for the experiments the copy
-	// left unwritten. Every row is marked carried, and every write is the write-once one, so an
-	// experiment the old tree held a row for keeps the copy, one it held none for is settled at no
-	// variant and is never drawn for later, and a row key already holds stands. It reports how
-	// many rows it wrote.
+	// from the tree it left: every tree-unit assignment of from's root copied verbatim — its arm,
+	// its mode and the instant it was drawn — and then each experiment of settled, the experiments
+	// declared at the hand-over, written at no variant, no mode and no instant for the experiments
+	// the copy left unwritten. Every row is marked carried, and every write is the write-once one,
+	// so an experiment the old tree held a tree row for keeps the copy, one it held none for is
+	// settled at no variant and is never drawn for later, and a row key already holds stands. It
+	// reports how many rows it wrote.
+	//
+	// An issue-unit row of the old root is left where it is: it is that one issue's own answer,
+	// shown to no other issue of the tree and read back under its own key alone, so the child
+	// ran in no arm of that experiment before the hand-over and is settled at none by it.
 	//
 	// project is the normalized runtime token tree_lifecycles is keyed by, whose row for from is
 	// the fact that the old tree was opened at all: a child out of a tree the daemon never opened
@@ -1470,9 +1474,10 @@ type Store interface {
 	// read; an issue with no assignment has no entry, and an empty list reads nothing. It is the
 	// read of the one or two keys a launch asks for.
 	AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]Assignment, error)
-	// Assignments is every assignment the record holds, by issue and then experiment, in one
-	// read: what the state's projection asks, which shows every recorded issue its own.
-	Assignments(ctx context.Context, tx pgx.Tx) (map[string][]Assignment, error)
+	// Assignments is every assignment the record holds for the issues of the Dispatch project,
+	// by issue and then experiment, in one read: what the state's projection asks, which shows
+	// every recorded issue of its own daemon's project its own.
+	Assignments(ctx context.Context, tx pgx.Tx, project string) (map[string][]Assignment, error)
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error

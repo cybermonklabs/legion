@@ -264,7 +264,10 @@ type ProjectSettings struct {
 
 // DeclaredExperiments is every experiment this project declares, as the daemon's own loader
 // builds the list: the memory experiment first, then the `experiments` key's own in the file's
-// order (config.Project.ExperimentsDeclared, which this reverses the two keys back through).
+// order (config.Project.Declaring, which this reverses the two keys back through). key is the
+// project's own Dispatch key, which is the map key the settings carry this project under and
+// which each arm's overlay key path begins with.
+//
 // The settings carry the two keys as the file writes them — the block under `memory`, the key's
 // own under `experiments` — because that is what an operator reads them for, so a reader that
 // must answer for every experiment the deployment draws, as `legion state` does when it counts
@@ -277,7 +280,7 @@ type ProjectSettings struct {
 //
 // The daemon serves the settings from the same configuration it declares its experiments from
 // (internal/daemon's source), so this answers what that daemon drew for.
-func (p ProjectSettings) DeclaredExperiments() []config.Experiment {
+func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 	project := config.Project{
 		Memory: config.Memory{
 			Mode:             p.Memory.Mode,
@@ -297,7 +300,7 @@ func (p ProjectSettings) DeclaredExperiments() []config.Experiment {
 		}
 		project.Experiments = append(project.Experiments, declared)
 	}
-	return project.ExperimentsDeclared()
+	return project.Declaring("projects." + key).ExperimentsDeclared()
 }
 
 // MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is

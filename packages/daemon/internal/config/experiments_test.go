@@ -265,9 +265,17 @@ func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.
 // `experiments` key's own in the file's order. Every project declares the memory experiment —
 // one that writes no block declares it at mode off, the mode its trees have been drawn and
 // recorded under all along — and the only project it is not added to is the one declaring
-// `experiments.memory` itself, the other spelling of that one experiment.
+// `experiments.memory` itself, the other spelling of that one experiment. Each arm carries the
+// key the operator wrote its overlays under, whichever spelling declared it: the block's arm the
+// block's own `config_files`, an arm of the `experiments` key its own.
 func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 	memoryBlock := "{mode: on, config_files: [/etc/legion-operator/memory.yml], instructions: /etc/legion-operator/memory.md}"
+	// blockField is the key the `memory` block's arm carries, which is the block's own
+	// `config_files` and not the experiments key's; armField is an arm of the `experiments` key's.
+	blockField := "projects.DEMO.memory.config_files"
+	armField := func(experiment, variant string) string {
+		return "projects.DEMO.experiments." + experiment + ".variants." + variant + ".config_files"
+	}
 	mapped := Experiment{
 		Name:      "memory",
 		Mode:      ExperimentOn,
@@ -279,6 +287,7 @@ func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 				Weight:           1,
 				ConfigFiles:      []string{"/etc/legion-operator/memory.yml"},
 				InstructionsPath: "/etc/legion-operator/memory.md",
+				ConfigFilesField: blockField,
 			},
 			{Name: "none", Weight: 1},
 		},
@@ -290,27 +299,30 @@ func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 		Mode:      ExperimentOff,
 		Unit:      ExperimentTree,
 		OnVariant: "memory",
-		Variants:  []Variant{{Name: "memory", Weight: 1}, {Name: "none", Weight: 1}},
+		Variants:  []Variant{{Name: "memory", Weight: 1, ConfigFilesField: blockField}, {Name: "none", Weight: 1}},
 	}
 	// The key's own spelling of that experiment, which stands alone: the block's mapping is left
-	// out so the project declares one memory experiment and not two.
+	// out so the project declares one memory experiment and not two. Its arms are the key's, so
+	// they carry the key's own paths and not the block's.
 	keyed := Experiment{
-		Name:     "memory",
-		Mode:     ExperimentRandom,
-		Unit:     ExperimentTree,
-		Variants: []Variant{{Name: "memory", Weight: 1}, {Name: "none", Weight: 1}},
+		Name: "memory",
+		Mode: ExperimentRandom,
+		Unit: ExperimentTree,
+		Variants: []Variant{{Name: "memory", Weight: 1, ConfigFilesField: armField("memory", "memory")},
+			{Name: "none", Weight: 1, ConfigFilesField: armField("memory", "none")}},
 	}
 	other := Experiment{
-		Name:     "other",
-		Mode:     ExperimentOff,
-		Unit:     ExperimentTree,
-		Variants: []Variant{{Name: "treated", Weight: 1}, {Name: "control", Weight: 1}},
+		Name: "other",
+		Mode: ExperimentOff,
+		Unit: ExperimentTree,
+		Variants: []Variant{{Name: "treated", Weight: 1, ConfigFilesField: armField("other", "treated")},
+			{Name: "control", Weight: 1, ConfigFilesField: armField("other", "control")}},
 	}
 	second := Experiment{
 		Name:     "another",
 		Mode:     ExperimentOff,
 		Unit:     ExperimentIssue,
-		Variants: []Variant{{Name: "only", Weight: 1}},
+		Variants: []Variant{{Name: "only", Weight: 1, ConfigFilesField: armField("another", "only")}},
 	}
 	otherBlock := "{other: {variants: [{name: treated}, {name: control}]}, another: {unit: issue, variants: [{name: only}]}}"
 

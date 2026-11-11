@@ -395,9 +395,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Reserve = reserve
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
-	// The project's declared experiments decide what each unit admission records is drawn for: a
-	// project whose file declares neither the `memory` block nor an `experiments` key declares
-	// nothing, and nothing is drawn for it.
+	// The project's declared experiments decide what each unit admission records is drawn for.
+	// A project whose file writes neither the `memory` block nor an `experiments` key declares
+	// the memory experiment all the same, at mode off, whose draw records each new tree at no
+	// variant (config.Project.Declaring).
 	w.admission.UseExperiments(cfg.Projects[cfg.Project].ExperimentsDeclared())
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same

@@ -42,9 +42,10 @@ func memoryVariants(memory []string) []runtime.Variant {
 var memoryOverlays = []string{"/etc/legion-memory/memory.yml", "/etc/legion-memory/recall.yml"}
 
 // memoryDraw is the arm a tree the draw put in the memory group runs in, as a launch carries it
-// (runtime.SpawnSpec.Variants), with the daemon's copy of the block's instructions.
-func memoryDraw(instructions string) []runtime.Variant {
-	return []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryOverlays, InstructionsPath: instructions}}
+// (runtime.SpawnSpec.Variants). The daemon's copy of the block's instructions is no part of an
+// arm: a launch names it among its prompt's own (runtime.PromptParts.VariantInstructionsPaths).
+func memoryDraw() []runtime.Variant {
+	return []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryOverlays}}
 }
 
 // newWindow is the new-window argv of one launch of spec by f, and the launch's -e pairs.
@@ -74,7 +75,7 @@ func TestAMemoryGroupPaneNamesTheMemoryOverlaysLast(t *testing.T) {
 	}
 	f := memoryRuntime(t, stateDir, memoryOverlays)
 	spec := f.spec(t, claim.RoleTester)
-	spec.Variants = memoryDraw(instructions)
+	spec.Variants = memoryDraw()
 	spec.Prompt.VariantInstructionsPaths = []string{instructions}
 
 	argv, pairs := newWindow(t, f, spec)
@@ -123,7 +124,7 @@ func TestTheControllersPaneNamesNoMemoryOverlay(t *testing.T) {
 	}
 
 	refused := controllerSpec(t, "omp")
-	refused.Variants = memoryDraw("")
+	refused.Variants = memoryDraw()
 	wantErr := "spawn legion-omp-controller: the controller runs in no tree, so it is in no experiment"
 	if _, err := memoryRuntime(t, t.TempDir(), memoryOverlays).Spawn(context.Background(), refused); err == nil || err.Error() != wantErr {
 		t.Fatalf("Spawn a controller in an experiment = %v, want %q", err, wantErr)
@@ -148,8 +149,9 @@ func TestNewRefusesAMemoryOverlayPIConfigFilesCannotName(t *testing.T) {
 func TestAMissingMemoryInstructionsRefusesTheLaunch(t *testing.T) {
 	f := memoryRuntime(t, t.TempDir(), memoryOverlays)
 	spec := f.spec(t, claim.RoleTester)
-	spec.Variants = memoryDraw(filepath.Join(t.TempDir(), "absent.md"))
-	spec.Prompt.VariantInstructionsPaths = []string{spec.Variants[0].InstructionsPath}
+	absent := filepath.Join(t.TempDir(), "absent.md")
+	spec.Variants = memoryDraw()
+	spec.Prompt.VariantInstructionsPaths = []string{absent}
 	if _, err := f.Spawn(context.Background(), spec); err == nil {
 		t.Fatal("a launch over a missing memory instructions file was not refused")
 	}
@@ -164,7 +166,7 @@ func TestAMissingMemoryInstructionsRefusesTheLaunch(t *testing.T) {
 func TestPaneVariablesCarryTheMemoryOverlays(t *testing.T) {
 	in := PaneInputs{
 		StateDir: t.TempDir(), PiConfigFiles: []string{"/etc/legion-operator/overlay.yml"},
-		RoleConfigFiles: []string{"/etc/legion-operator/tester.yml"}, Variants: memoryDraw(""),
+		RoleConfigFiles: []string{"/etc/legion-operator/tester.yml"}, Variants: memoryDraw(),
 	}
 	variables, err := PaneVariables(testSpec(), in, nil)
 	if err != nil {

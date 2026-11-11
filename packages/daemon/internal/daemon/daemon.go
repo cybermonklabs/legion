@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -656,11 +657,6 @@ type plan struct {
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
 	instructions string
-	// variantInstructions is the daemon's copy of each declared variant's instructions file
-	// (config.WriteVariantInstructions), by experiment and arm (variantKey): the fragment a
-	// launch whose unit was drawn into that arm ends its system prompt with. Empty for a project
-	// whose declared variants name no instructions file, and for one that declares nothing.
-	variantInstructions map[string]string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
@@ -770,14 +766,12 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 
 	// One copy per declared variant that names an instructions file, each under its experiment's
 	// own directory, since two names may hold `-` and neither may hold `/`
-	// (config.VariantInstructionsFile).
-	variantInstructions := map[string]string{}
+	// (config.VariantInstructionsFile, which is where a launch's arms read the copies back from:
+	// experiment.Launch). Boot writes them before the first pane opens.
 	for _, read := range reads.variantInstructions {
-		written, err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant)
-		if err != nil {
+		if _, err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
 			return plan{}, err
 		}
-		variantInstructions[variantKey(read.experiment, read.variant)] = written
 	}
 
 	clock := o.clock
@@ -805,8 +799,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
-		variantInstructions: variantInstructions,
-		dispatchToken:       reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
+		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		pluginRelaunchable: pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
@@ -905,11 +898,9 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 // pane's PI_CONFIG_FILES.
 //
 // Each distinct file is read alone once and each distinct whole value is read once, over every
-// role and every arm: Oh My Pi is asked the same question of one file whichever value it stands
-// in, and of one value whichever role holds it, and it gives the same answer. A role's own
-// files would otherwise be read alone once per arm, so a deployment that declares arms would pay
-// for the thing it added at every boot. The refusal still names the first role and the first
-// value that holds what Oh My Pi refuses, since the loops reach them before any other.
+// role and every arm (capabilities.OverlayReads, which the image probe's own read holds too).
+// The refusal still names the first role and the first value that holds what Oh My Pi refuses,
+// since the loops reach them before any other.
 //
 // No mode is read here, since a unit already drawn into an arm names that arm's overlays
 // whatever the mode is now. A run that never reached an exit of its own is logged, not refused,
@@ -919,34 +910,22 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 	if block := cfg.Runtime.Tmux; block != nil {
 		every = block.PiConfigFiles
 	}
-	declared, blockWritten := declaredVariants(cfg), memoryBlockWritten(cfg)
-	// alone is each overlay already read on its own, and probed each whole PI_CONFIG_FILES value
-	// already read.
-	alone := map[string]struct{}{}
-	probed := make(map[string]struct{}, len(config.RoleConfigRoles))
+	declared := declaredVariants(cfg)
+	reads := capabilities.OverlayReads{}
 	for _, role := range config.RoleConfigRoles {
 		own := cfg.RoleConfigFiles[role]
 		ownField := "role_config_files." + string(role)
 		for _, value := range runtime.RoleOverlayValues(role, own, declared) {
-			joined := strings.Join(value.Files, ":")
-			if _, read := probed[joined]; read {
+			unread, first := reads.Unread(value.Files)
+			if !first {
 				continue
 			}
-			probed[joined] = struct{}{}
 			field := ownField
 			if value.Variant != nil {
-				field = declaredOverlayField(cfg.Project, blockWritten, *value.Variant)
+				field = value.Variant.ConfigFilesField
 				if len(own) > 0 {
 					field = ownField + " with " + field
 				}
-			}
-			unread := make([]string, 0, len(value.Files))
-			for _, file := range value.Files {
-				if _, read := alone[file]; read {
-					continue
-				}
-				alone[file] = struct{}{}
-				unread = append(unread, file)
 			}
 			why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, value.Files), unread)
 			if err != nil {
@@ -960,75 +939,24 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 	return nil
 }
 
-// memoryBlockWritten is whether the daemon's own project writes the `memory` block at all
-// (config.Memory.Written), which is the condition Project.ExperimentsDeclared maps it to the
-// experiment named memory under. A project writes the block or `experiments.memory`, never both
-// (config.checkExperimentMemory), so this is what tells the two spellings of that one experiment
-// apart where a refusal must name the operator's key.
-func memoryBlockWritten(cfg config.Config) bool {
-	return cfg.Projects[cfg.Project].Memory.Written()
-}
-
-// declaredOverlayField is the key an operator reads for one declared arm's overlays: the `memory`
-// block's own `config_files` where the arm came from the block, and the experiment's own
-// `projects.<KEY>.experiments.<experiment>.variants.<variant>.config_files` otherwise.
-func declaredOverlayField(project string, blockWritten bool, variant runtime.Variant) string {
-	if blockWritten && variant.Experiment == config.MemoryExperimentName {
-		return "projects." + project + ".memory.config_files"
-	}
-	return "projects." + project + ".experiments." + variant.Experiment + ".variants." + variant.Name + ".config_files"
-}
-
-// variantKey names one arm of one experiment in a map the daemon keys by both names: neither a
-// experiment's name nor an arm's may hold `/` (config.experimentNamePattern), so the pair is one
-// string and no two pairs collide.
-func variantKey(experiment, variant string) string { return experiment + "/" + variant }
-
-// launchVariants is the one reader a launch's arms come from: for each experiment the project
-// declares, in the file's order (config.Project.ExperimentsDeclared, which maps the `memory`
-// block to the experiment named memory), the arm recorded for the unit that experiment covers —
-// the issue's tree root for a tree experiment, the issue itself for an issue experiment
-// (record.Assignment, written when the unit was opened and read back at every launch of its
-// roles). A unit with no row for an experiment, one no experiment was declared for, and a root
-// first opened before the experiment was declared run in no arm of it.
-//
-// A unit whose recorded arm the project's file no longer names contributes nothing: a launch
-// names the files the file still holds, so an arm taken out of the file takes its overlays and
-// its instructions with it, and the unit runs as one in no experiment does. Its row stays, so a
-// file that names the arm again gives the unit the arm it was drawn into.
-//
-// Each arm carries the daemon's own copy of its instructions file (instructions, by variantKey),
-// never the operator's path: a pod cannot read the daemon's configuration, and the operator's
-// file may change under a running daemon.
-//
-// An experiment whose every arm names neither a config file nor an instructions path contributes
-// nothing to any launch: there is nothing for a drawn unit to run with, whichever arm it drew. A
-// project none of whose declared experiments names a file — the common deployment, which writes
-// no `memory` block and declares no experiment of its own, and so declares the memory experiment
-// at mode off and nothing else (config.Project.ExperimentsDeclared) — therefore reads no record
-// at all, and pays no transaction per worker spawn. The issue's own key is read beside its
-// tree's only where some declared experiment draws for the issue (config.ExperimentIssue), since
-// a deployment whose experiments all draw for the tree has nothing of the issue's own to read.
+// launchVariants is the one reader a launch's arms come from: the experiments the project
+// declares, resolved against the answers the daemon's own store recorded for the launch's unit
+// (experiment.Launch, which decides which keys to read and which arms the rows put the launch
+// in). Everything here is the transaction that reads those rows.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
 // the same store with no workflow configured (api's drawExperiments), and a launch that could not
 // read that draw back would run the unit against an arm the daemon had already recorded for it.
-func launchVariants(st *store.Store, declared []config.Experiment, instructions map[string]string) func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
-	namesFile := func(experiment config.Experiment) bool {
-		return slices.ContainsFunc(experiment.Variants, func(variant config.Variant) bool {
-			return len(variant.ConfigFiles) > 0 || variant.InstructionsPath != ""
-		})
-	}
-	if !slices.ContainsFunc(declared, namesFile) {
-		return func(context.Context, string, string) ([]runtime.Variant, error) { return nil, nil }
-	}
+// A declaration no launch could use names no key to read, so such a deployment opens no
+// transaction per worker spawn at all (experiment.Launch.Keys).
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
-	byIssue := slices.ContainsFunc(declared, func(e config.Experiment) bool { return e.Unit == config.ExperimentIssue })
-	return func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
-		keys := []string{tree}
-		if byIssue && issue != tree {
-			keys = append(keys, issue)
+	return func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+		keys := launch.Keys(tree, issue)
+		if len(keys) == 0 {
+			return experiment.Arms{}, nil
 		}
 		var recorded map[string][]record.Assignment
 		if err := st.Tx(ctx, func(tx pgx.Tx) error {
@@ -1036,36 +964,9 @@ func launchVariants(st *store.Store, declared []config.Experiment, instructions 
 			recorded, err = records.AssignmentsFor(ctx, tx, keys)
 			return err
 		}); err != nil {
-			return nil, err
+			return experiment.Arms{}, err
 		}
-		var variants []runtime.Variant
-		for _, experiment := range declared {
-			unit := tree
-			if experiment.Unit == config.ExperimentIssue {
-				unit = issue
-			}
-			drawn := ""
-			for _, assignment := range recorded[unit] {
-				if assignment.Experiment == experiment.Name {
-					drawn = assignment.Variant
-				}
-			}
-			if drawn == "" {
-				continue
-			}
-			for _, variant := range experiment.Variants {
-				if variant.Name != drawn {
-					continue
-				}
-				variants = append(variants, runtime.Variant{
-					Experiment:       experiment.Name,
-					Name:             variant.Name,
-					ConfigFiles:      variant.ConfigFiles,
-					InstructionsPath: instructions[variantKey(experiment.Name, variant.Name)],
-				})
-			}
-		}
-		return variants, nil
+		return launch.Arms(recorded, tree, issue), nil
 	}
 }
 
@@ -1142,13 +1043,15 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 // into an arm names that arm's files under any mode. A project that declares nothing hands over
 // none, which is the launch every deployment built before any experiment existed.
 //
-// A variant's instructions are left out: the daemon inlines its own copy of them in the launch's
-// prompt (launchVariants), and no runtime reads them from its options.
+// A variant's instructions reach no runtime through its options: an arm carries no such path
+// (runtime.Variant), and the daemon names its own copy of each in the launch's prompt instead
+// (internal/experiment's Launch, read by launchVariants).
 func declaredVariants(cfg config.Config) []runtime.Variant {
 	var variants []runtime.Variant
 	for _, experiment := range cfg.Projects[cfg.Project].ExperimentsDeclared() {
 		for _, variant := range experiment.Variants {
-			variants = append(variants, runtime.Variant{Experiment: experiment.Name, Name: variant.Name, ConfigFiles: variant.ConfigFiles})
+			variants = append(variants, runtime.Variant{Experiment: experiment.Name, Name: variant.Name,
+				ConfigFiles: variant.ConfigFiles, ConfigFilesField: variant.ConfigFilesField})
 		}
 	}
 	return variants
@@ -1464,7 +1367,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			mergeRules: cfg.Projects[cfg.Project].Merge, runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.Projects[cfg.Project].ExperimentsDeclared(), p.variantInstructions),
+			variants: launchVariants(st, cfg.Projects[cfg.Project].ExperimentsDeclared(), cfg.StateDir),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		Secrets:                 p.secretsEnroller,

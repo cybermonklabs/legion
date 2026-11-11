@@ -103,8 +103,8 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	}
 	// Every declared variant's instructions, read as the deployment's are and refused the same
 	// way, in the order the project's file declares the experiments
-	// (config.Project.ExperimentsDeclared, which maps the `memory` block to the experiment named
-	// memory). No mode decides it: a unit already drawn into an arm is given that arm's
+	// (config.Project.ExperimentsDeclared, the list Declaring maps the `memory` block into as the
+	// experiment named memory). No mode decides it: a unit already drawn into an arm is given that arm's
 	// instructions whatever the mode is now, and only removing the key takes them away.
 	for _, experiment := range cfg.Projects[cfg.Project].ExperimentsDeclared() {
 		for _, variant := range experiment.Variants {
@@ -223,12 +223,10 @@ func checkRoleConfigFiles(cfg config.Config) error {
 			}
 		}
 	}
-	block := memoryBlockWritten(cfg)
 	for _, variant := range declaredVariants(cfg) {
-		field := declaredOverlayField(cfg.Project, block, variant)
 		for _, file := range variant.ConfigFiles {
 			if err := podsafety.CheckOverlay(file); err != nil {
-				return fmt.Errorf("%s names %s, which a role drawn into that arm could not read: %w", field, file, err)
+				return fmt.Errorf("%s names %s, which a role drawn into that arm could not read: %w", variant.ConfigFilesField, file, err)
 			}
 		}
 	}

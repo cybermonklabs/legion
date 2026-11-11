@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -26,7 +27,7 @@ func memoryConfig(memory config.Memory) config.Config {
 	return config.Config{
 		Project:  "test",
 		Runtime:  config.Runtime{Name: "tmux"},
-		Projects: map[string]config.Project{"test": {Memory: memory}},
+		Projects: map[string]config.Project{"test": config.Project{Memory: memory}.Declaring("projects.test")},
 	}
 }
 
@@ -36,19 +37,23 @@ func memoryBlock(mode config.MemoryMode) config.Memory {
 }
 
 // memoryVariants are the two arms the `memory` block maps to, as each runtime's options carry
-// them (config.Project.ExperimentsDeclared, declaredVariants): memory with the block's overlays,
-// then none with no file at all.
+// them (config.Project.ExperimentsDeclared, declaredVariants): memory with the block's overlays
+// and the key the operator wrote them under, then none with no file at all.
 var memoryVariants = []runtime.Variant{
-	{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles},
+	{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, ConfigFilesField: memoryField},
 	{Experiment: "memory", Name: "none"},
 }
+
+// memoryField is the key the block's arm carries wherever a refusal or a drift names its
+// overlays: `projects.<KEY>.memory.config_files`, for the project every test here configures.
+const memoryField = "projects.test.memory.config_files"
 
 // fileless are the same two arms as a project that writes no `memory` block declares them: it
 // declares the memory experiment all the same, at mode off, and neither arm names a file. They
 // reach every runtime's options and name nothing there, since an arm with no overlay adds no
 // PI_CONFIG_FILES value and no mount (runtime.RoleOverlayValues).
 var fileless = []runtime.Variant{
-	{Experiment: "memory", Name: "memory"},
+	{Experiment: "memory", Name: "memory", ConfigFilesField: memoryField},
 	{Experiment: "memory", Name: "none"},
 }
 
@@ -94,16 +99,33 @@ func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *tes
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-			cfg.Projects = map[string]config.Project{cfg.Project: {Memory: tc.memory}}
+			cfg.Projects = map[string]config.Project{cfg.Project: config.Project{Memory: tc.memory}.Declaring("projects." + cfg.Project)}
 			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, cfg.Project, "", lookup(nil), quietLogger())
 			if err != nil {
 				t.Fatalf("sandboxOptions: %v", err)
 			}
-			if !reflect.DeepEqual(opts.ExperimentVariants, tc.want) {
-				t.Errorf("sandbox ExperimentVariants = %v, want %v", opts.ExperimentVariants, tc.want)
+			// The arms carry the key of this configuration's own project, whose key
+			// kubernetesConfig makes afresh for each run, so the want is read against that key
+			// rather than the one the package's other tests configure.
+			want := underProject(tc.want, cfg.Project)
+			if !reflect.DeepEqual(opts.ExperimentVariants, want) {
+				t.Errorf("sandbox ExperimentVariants = %v, want %v", opts.ExperimentVariants, want)
 			}
 		})
 	}
+}
+
+// underProject is variants with each arm that carries the `memory` block's own key carrying it
+// under project, which is what a project of another key declares (config.Project.Declaring).
+func underProject(variants []runtime.Variant, project string) []runtime.Variant {
+	under := make([]runtime.Variant, len(variants))
+	for i, variant := range variants {
+		if variant.ConfigFilesField == memoryField {
+			variant.ConfigFilesField = "projects." + project + ".memory.config_files"
+		}
+		under[i] = variant
+	}
+	return under
 }
 
 // memorySpecs is a spec builder for a project whose memory instructions boot materialized, over
@@ -118,11 +140,15 @@ func memorySpecs(t *testing.T, instructions string) specs {
 	return specs{
 		stateDir: t.TempDir(), project: "test", prompts: composer, repositories: noRepositoriesView,
 		instructions: "/state/deployment-instructions.md",
-		variants: func(_ context.Context, tree, _ string) ([]runtime.Variant, error) {
+		variants: func(_ context.Context, tree, _ string) (experiment.Arms, error) {
 			if tree != "LEGION-1" {
-				return nil, nil
+				return experiment.Arms{}, nil
 			}
-			return []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, InstructionsPath: instructions}}, nil
+			arms := experiment.Arms{Variants: []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles}}}
+			if instructions != "" {
+				arms.Instructions = []string{instructions}
+			}
+			return arms, nil
 		},
 	}
 }
@@ -144,7 +170,7 @@ func memorySpawn(t *testing.T, s specs, tree, issue string, role claim.Role) run
 // inMemory is whether spec runs in the memory arm with instructions: the one variant the arm is,
 // and that arm's instructions path among the prompt's.
 func inMemory(spec runtime.SpawnSpec, instructions string) bool {
-	want := []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, InstructionsPath: instructions}}
+	want := []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles}}
 	var paths []string
 	if instructions != "" {
 		paths = []string{instructions}
@@ -217,8 +243,8 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 	}
 
 	refused := memorySpecs(t, "/state/experiments/memory/memory.md")
-	refused.variants = func(context.Context, string, string) ([]runtime.Variant, error) {
-		return nil, errors.New("the store is down")
+	refused.variants = func(context.Context, string, string) (experiment.Arms, error) {
+		return experiment.Arms{}, errors.New("the store is down")
 	}
 	token, err := claim.NewToken("test", "LEGION-2", claim.RoleTester)
 	if err != nil {
@@ -280,9 +306,9 @@ func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
 		Project:         "test",
 		Runtime:         config.Runtime{Name: "tmux"},
 		RoleConfigFiles: map[claim.Role][]string{claim.RoleController: {controller}},
-		Projects: map[string]config.Project{"test": {
+		Projects: map[string]config.Project{"test": config.Project{
 			Memory: config.Memory{Mode: config.MemoryOn, ConfigFiles: []string{memory}},
-		}},
+		}.Declaring("projects.test")},
 	}
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err != nil {
 		t.Fatalf("checkPaneRoleOverlays = %v, want nil: the controller is in no memory group, so it is never given both", err)
@@ -297,13 +323,13 @@ func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
 	}
 
 	// At off the same value is probed, since a drawn tree's role still starts on it.
-	cfg.Projects["test"] = config.Project{Memory: config.Memory{Mode: config.MemoryOff, ConfigFiles: []string{memory}}}
+	cfg.Projects["test"] = config.Project{Memory: config.Memory{Mode: config.MemoryOff, ConfigFiles: []string{memory}}}.Declaring("projects.test")
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("checkPaneRoleOverlays at mode off = %v, want it to start %q", err, want)
 	}
 
 	// A project that names no overlay is probed on the role's own files alone.
-	cfg.Projects["test"] = config.Project{}
+	cfg.Projects["test"] = config.Project{}.Declaring("projects.test")
 	if err := checkPaneRoleOverlays(context.Background(), cfg, image, quietLogger()); err != nil {
 		t.Fatalf("checkPaneRoleOverlays over a block that names no overlay = %v, want nil", err)
 	}

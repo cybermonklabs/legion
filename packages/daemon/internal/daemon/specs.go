@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -36,11 +37,11 @@ type specs struct {
 	secrets      map[string]string
 	prompts      *prompts.Composer
 	// variants is every arm of a declared experiment the claim's unit was drawn into, in the
-	// order the project's file declares the experiments (launchVariants, over the daemon's own
-	// store), each carrying the arm's overlays and the daemon's copy of its instructions. Boot
-	// always sets it; it is nil only in a test whose specs literal leaves it out, and such a
-	// specs launches every role in no experiment.
-	variants func(ctx context.Context, tree, issue string) ([]runtime.Variant, error)
+	// order the project's file declares the experiments, and the daemon's own copies of the
+	// instructions those arms name (launchVariants, over the daemon's own store). Boot always
+	// sets it; it is nil only in a test whose specs literal leaves it out, and such a specs
+	// launches every role in no experiment.
+	variants func(ctx context.Context, tree, issue string) (experiment.Arms, error)
 	// designSteps is the design-gate steps the project gates (gates.design), in the order it
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
@@ -211,16 +212,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// asks nothing, so each of its launches runs in no experiment, and an arm that names no
 	// instructions file appends nothing, its roles getting the overlays alone.
 	if s.variants != nil {
-		variants, err := s.variants(ctx, c.Tree, c.Issue)
+		arms, err := s.variants(ctx, c.Tree, c.Issue)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the experiment variants of %s: %w", c.Token, err)
 		}
-		spec.Variants = variants
-		for _, variant := range variants {
-			if variant.InstructionsPath != "" {
-				spec.Prompt.VariantInstructionsPaths = append(spec.Prompt.VariantInstructionsPaths, variant.InstructionsPath)
-			}
-		}
+		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)

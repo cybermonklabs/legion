@@ -1,13 +1,11 @@
 package config
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -24,14 +22,12 @@ var requiredBy = regexp.MustCompile(`^(yes|no|when .+)$`)
 var keyName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // loaderKeys is what the loader's own source says about its keys, read from every non-test file of
-// internal/config: the top-level keys it dispatches outside the key table, the nested key names
-// every members(...) site may carry, and the nestedKeys group every describedMembers(...) site
-// names, each with the site that passed it.
+// internal/config: the nested key names every members(...) site may carry, and the nestedKeys
+// group every describedMembers(...) site names, each with the site that passed it. The top-level
+// keys are no part of it: the loader dispatches each of them through the key table and nothing
+// else (readKeys over topLevelByName), so the table is the list and a second reading of the
+// source would only read the table back.
 type loaderKeys struct {
-	// positive are the durationKeys and countKeys rows: the key, and the default in its row.
-	positive map[string]int
-	// cases are the top-level keys readKeys still dispatches with a case label of its own.
-	cases map[string]string
 	// nested are the nested key names a members(...) or describedMembers(...) site may carry.
 	nested map[string]string
 	// groups are the nestedKeys paths describedMembers(...) sites name.
@@ -67,35 +63,33 @@ func readLoaderKeys(t *testing.T) loaderKeys {
 	if len(files) == 0 {
 		t.Fatal("parsed no file of internal/config")
 	}
-	source := &loaderSource{fileSet: fileSet, files: files, constants: map[string]string{}, lists: map[string][]string{}}
-	source.readDeclarations()
-	keys := loaderKeys{positive: map[string]int{}, cases: map[string]string{}, nested: map[string]string{}, groups: map[string]string{}}
-	source.readPositiveRows(t, keys.positive)
+	source := &loaderSource{fileSet: fileSet, files: files, constants: map[string]string{}}
+	source.readConstants()
+	keys := loaderKeys{nested: map[string]string{}, groups: map[string]string{}}
 	for i, file := range files {
 		source.readFile(t, file, paths[i], &keys)
 	}
 	return keys
 }
 
-// loaderSource is the parsed package, with the package-level string constants and []string
-// variables a call site's argument may name.
+// loaderSource is the parsed package, with the package-level string constants a call site's
+// argument may name.
 type loaderSource struct {
 	fileSet   *token.FileSet
 	files     []*ast.File
 	constants map[string]string
-	lists     map[string][]string
 }
 
-// readDeclarations collects the package's string constants and its []string variables. Constants
-// are resolved until nothing more resolves, since one is written from another
-// (agentSecretsKey = kubernetesKey + ".agent_secrets").
-func (s *loaderSource) readDeclarations() {
+// readConstants collects the package's string constants. They are resolved until nothing more
+// resolves, since one is written from another (agentSecretsKey = kubernetesKey +
+// ".agent_secrets").
+func (s *loaderSource) readConstants() {
 	for again := true; again; {
 		again = false
 		for _, file := range s.files {
 			for _, declaration := range file.Decls {
 				general, ok := declaration.(*ast.GenDecl)
-				if !ok || (general.Tok != token.CONST && general.Tok != token.VAR) {
+				if !ok || general.Tok != token.CONST {
 					continue
 				}
 				for _, spec := range general.Specs {
@@ -104,20 +98,11 @@ func (s *loaderSource) readDeclarations() {
 						continue
 					}
 					name := value.Names[0].Name
-					if general.Tok == token.CONST {
-						if _, known := s.constants[name]; known {
-							continue
-						}
-						if text, ok := s.text(value.Values[0]); ok {
-							s.constants[name], again = text, true
-						}
+					if _, known := s.constants[name]; known {
 						continue
 					}
-					if _, known := s.lists[name]; known {
-						continue
-					}
-					if list, ok := s.stringList(value.Values[0]); ok {
-						s.lists[name], again = list, true
+					if text, ok := s.text(value.Values[0]); ok {
+						s.constants[name], again = text, true
 					}
 				}
 			}
@@ -151,151 +136,7 @@ func (s *loaderSource) text(expression ast.Expr) (string, bool) {
 	return "", false
 }
 
-// stringList is a []string expression's elements, for a composite literal of strings.
-func (s *loaderSource) stringList(expression ast.Expr) ([]string, bool) {
-	composite, ok := expression.(*ast.CompositeLit)
-	if !ok {
-		return nil, false
-	}
-	if array, ok := composite.Type.(*ast.ArrayType); !ok || array.Len != nil {
-		return nil, false
-	}
-	list := make([]string, 0, len(composite.Elts))
-	for _, element := range composite.Elts {
-		text, ok := s.text(element)
-		if !ok {
-			return nil, false
-		}
-		list = append(list, text)
-	}
-	return list, true
-}
-
-// names is one argument of a members(...) site as the names it contributes: a literal or constant,
-// a []string literal, an append of either, a package-level []string, or a local variable built
-// from those in the function the call is in. A value it cannot follow answers false, and the
-// caller fails naming the site rather than passing over it. within is the function the call is in
-// and building is the local variable being followed, whose own name in an assignment to itself
-// (known = append(known, …)) contributes nothing a second time.
-func (s *loaderSource) names(expression ast.Expr, within *ast.FuncDecl, building string) ([]string, bool) {
-	if text, ok := s.text(expression); ok {
-		return []string{text}, true
-	}
-	if list, ok := s.stringList(expression); ok {
-		return list, true
-	}
-	switch node := expression.(type) {
-	case *ast.Ident:
-		if node.Name == building {
-			return nil, true
-		}
-		if list, ok := s.lists[node.Name]; ok {
-			return list, true
-		}
-		return s.localNames(node.Name, within)
-	case *ast.CallExpr:
-		identifier, ok := node.Fun.(*ast.Ident)
-		if !ok || identifier.Name != "append" {
-			return nil, false
-		}
-		var list []string
-		for _, argument := range node.Args {
-			part, ok := s.names(argument, within, building)
-			if !ok {
-				return nil, false
-			}
-			list = append(list, part...)
-		}
-		return list, true
-	}
-	return nil, false
-}
-
-// localNames is every name a local variable of the enclosing function is built from: its
-// declaration and every later assignment to it, each read as an argument of its own.
-func (s *loaderSource) localNames(name string, within *ast.FuncDecl) ([]string, bool) {
-	if within == nil {
-		return nil, false
-	}
-	var list []string
-	found, followed := false, true
-	ast.Inspect(within.Body, func(node ast.Node) bool {
-		assignment, ok := node.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for index, target := range assignment.Lhs {
-			identifier, ok := target.(*ast.Ident)
-			if !ok || identifier.Name != name || index >= len(assignment.Rhs) {
-				continue
-			}
-			found = true
-			part, ok := s.names(assignment.Rhs[index], within, name)
-			if !ok {
-				followed = false
-				return false
-			}
-			// An assignment written from the variable itself (known = append(known, …)) already
-			// carries what the declaration gave it, so the parts are joined and deduped below.
-			list = append(list, part...)
-		}
-		return true
-	})
-	if !found || !followed {
-		return nil, false
-	}
-	slices.Sort(list)
-	return slices.Compact(list), true
-}
-
-// readPositiveRows collects the durationKeys and countKeys rows: each key, and the default beside
-// it, which the key's descriptor must name.
-func (s *loaderSource) readPositiveRows(t *testing.T, into map[string]int) {
-	t.Helper()
-	for _, file := range s.files {
-		for _, declaration := range file.Decls {
-			general, ok := declaration.(*ast.GenDecl)
-			if !ok || general.Tok != token.VAR {
-				continue
-			}
-			for _, spec := range general.Specs {
-				value, ok := spec.(*ast.ValueSpec)
-				if !ok || len(value.Names) != 1 || len(value.Values) != 1 {
-					continue
-				}
-				if value.Names[0].Name != "durationKeys" && value.Names[0].Name != "countKeys" {
-					continue
-				}
-				composite, ok := value.Values[0].(*ast.CompositeLit)
-				if !ok {
-					t.Fatalf("%s is no composite literal; the guard reads its rows", value.Names[0].Name)
-				}
-				for _, element := range composite.Elts {
-					row, ok := element.(*ast.CompositeLit)
-					if !ok || len(row.Elts) < 2 {
-						t.Fatalf("%s holds a row the guard cannot read at %s", value.Names[0].Name, s.at(element))
-					}
-					key, keyOK := s.text(row.Elts[0])
-					number, numberOK := row.Elts[1].(*ast.BasicLit)
-					if !keyOK || !numberOK || number.Kind != token.INT {
-						t.Fatalf("%s holds a row the guard cannot read at %s", value.Names[0].Name, s.at(element))
-					}
-					read, err := strconv.Atoi(strings.ReplaceAll(number.Value, "_", ""))
-					if err != nil {
-						t.Fatalf("%s row %s has default %s, which is no number", value.Names[0].Name, key, number.Value)
-					}
-					into[key] = read
-				}
-			}
-		}
-	}
-	if len(into) == 0 {
-		t.Fatal("the guard read no durationKeys or countKeys row")
-	}
-}
-
-// readFile collects one file's case labels of readKeys and its members(...) and
-// describedMembers(...) sites.
+// readFile collects one file's members(...) and describedMembers(...) sites.
 func (s *loaderSource) readFile(t *testing.T, file *ast.File, path string, keys *loaderKeys) {
 	t.Helper()
 	for _, declaration := range file.Decls {
@@ -308,9 +149,8 @@ func (s *loaderSource) readFile(t *testing.T, file *ast.File, path string, keys 
 		if function.Name.Name == "describedMembers" {
 			continue
 		}
-		if function.Name.Name == "readKeys" {
-			s.readCaseLabels(function, keys.cases)
-		}
+		// A plain members(...) site's names are the names the guard reads here, so each must
+		// be written out: a literal, or a constant this package declares.
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
@@ -324,15 +164,13 @@ func (s *loaderSource) readFile(t *testing.T, file *ast.File, path string, keys 
 			switch identifier.Name {
 			case "members":
 				for _, argument := range call.Args[2:] {
-					names, ok := s.names(argument, function, "")
+					name, ok := s.text(argument)
 					if !ok {
-						t.Errorf("%s passes members(...) a list of names the guard cannot follow to its declaration; name each key there, or carry the site over to describedMembers", site)
+						t.Errorf("%s passes members(...) a name the guard cannot read; write each key out there as a literal or a package constant, or carry the site over to describedMembers", site)
 						continue
 					}
-					for _, name := range names {
-						if _, seen := keys.nested[name]; !seen {
-							keys.nested[name] = site
-						}
+					if _, seen := keys.nested[name]; !seen {
+						keys.nested[name] = site
 					}
 				}
 			case "describedMembers":
@@ -354,36 +192,18 @@ func (s *loaderSource) readFile(t *testing.T, file *ast.File, path string, keys 
 	}
 }
 
-// readCaseLabels collects every top-level key readKeys still dispatches with a case label of its
-// own. The table replaced that switch, so there are none; one added back is a key the table does
-// not carry, which is what this reads for.
-func (s *loaderSource) readCaseLabels(function *ast.FuncDecl, into map[string]string) {
-	ast.Inspect(function.Body, func(node ast.Node) bool {
-		clause, ok := node.(*ast.CaseClause)
-		if !ok {
-			return true
-		}
-		for _, expression := range clause.List {
-			if text, ok := s.text(expression); ok {
-				into[text] = "readKeys:" + s.line(expression)
-			}
-		}
-		return true
-	})
-}
-
 func (s *loaderSource) at(node ast.Node) string { return s.fileSet.Position(node.Pos()).String() }
 
 func (s *loaderSource) line(node ast.Node) string {
 	return strconv.Itoa(s.fileSet.Position(node.Pos()).Line)
 }
 
-// The loader dispatches every top-level key through the key table, and every nested key name it
-// accepts carries a line or is named on the undescribed list. This is what makes "a key with no
-// description fails the build" true: a key the loader dispatches that no descriptor names, a name
-// passed to members(...) that is in neither the descriptors nor the undescribed list, a
-// description left empty, a RequiredBy outside the vocabulary, a descriptor naming a key the
-// loader does not dispatch, and a key named twice each fail here.
+// The key table is the whole of the loader's top-level dispatch, and every nested key name the
+// loader accepts carries a line or is named on the undescribed list. This is what makes "a key
+// with no description fails the build" true: a name passed to members(...) that is in neither
+// the descriptors nor the undescribed list, a description left empty, a RequiredBy outside the
+// vocabulary, a row with no reader, a descriptor naming a key the loader classifies rather than
+// dispatches, and a key named twice each fail here.
 func TestNoKeyBypassesTheKeyTable(t *testing.T) {
 	keys := readLoaderKeys(t)
 
@@ -397,6 +217,16 @@ func TestNoKeyBypassesTheKeyTable(t *testing.T) {
 		if row.Read == nil {
 			t.Errorf("%s: no Read, so the loader dispatches the key to nothing", row.Name)
 		}
+		// A positive-integer key resolves into one field of the configuration, and its default
+		// is the number the table renders its line from.
+		if p := row.Positive; p != nil {
+			if (p.Duration == nil) == (p.Count == nil) {
+				t.Errorf("%s names a Positive naming neither one duration field nor one count field", row.Name)
+			}
+			if p.Value <= 0 {
+				t.Errorf("%s names the positive default %d", row.Name, p.Value)
+			}
+		}
 		// A key the loader classifies is a key it does not dispatch: it is refused, or accepted
 		// and read for nothing, so a row for it would describe a key no value reaches.
 		for _, class := range []struct {
@@ -409,32 +239,13 @@ func TestNoKeyBypassesTheKeyTable(t *testing.T) {
 		}
 	}
 
-	for key, where := range keys.cases {
-		if !described[key] {
-			t.Errorf("readKeys dispatches %s at %s, and no descriptor names it: add a row to topLevelKeys (keytable.go)", key, where)
-		}
-	}
-	for key, value := range keys.positive {
-		if !described[key] {
-			t.Errorf("the loader dispatches %s (a durationKeys or countKeys row), and no descriptor names it: add a row to topLevelKeys (keytable.go)", key)
-			continue
-		}
-		row := topLevelByName[key]
-		if want := "`" + strconv.Itoa(value) + "`"; !strings.Contains(row.Default, want) {
-			t.Errorf("%s: Default %q does not name its row's default %s", key, row.Default, want)
-		}
-		if reflect.ValueOf(row.Read).Pointer() != reflect.ValueOf(readPositive).Pointer() {
-			t.Errorf("%s is a durationKeys or countKeys row, so its Read must be readPositive", key)
-		}
-	}
-
 	checkNestedKeys(t, keys, described)
 }
 
 // checkDescriptor holds one row, top-level or nested, to the vocabulary and to one line of prose.
 // label is the key as an operator writes it, which a failure names; name is the key's own last
 // part, which carries the shape.
-func checkDescriptor(t failer, label, name, required, description string) {
+func checkDescriptor(t *testing.T, label, name, required, description string) {
 	t.Helper()
 	if !keyName.MatchString(name) {
 		t.Errorf("%q is no configuration key name", label)
@@ -451,7 +262,7 @@ func checkDescriptor(t failer, label, name, required, description string) {
 // is used, every member carries a line, and every name a plain members(...) site passes is on the
 // undescribed list, named once. A describedMembers site's names carry their own lines, so a name
 // described under one mapping never stands in for the same name under another.
-func checkNestedKeys(t failer, keys loaderKeys, described map[string]bool) {
+func checkNestedKeys(t *testing.T, keys loaderKeys, described map[string]bool) {
 	t.Helper()
 	nested := map[string]bool{}
 	for _, group := range nestedKeys {
@@ -543,89 +354,6 @@ func TestConfigReferenceNestsEveryKeyUnderItsOwn(t *testing.T) {
 			if key.Path != entry.Name && !strings.HasPrefix(key.Path, entry.Name+".") && !strings.HasPrefix(key.Path, entry.Name+"[") {
 				t.Errorf("%s is printed under %s", key.Path+"."+key.Name, entry.Name)
 			}
-		}
-	}
-}
-
-// failer is what a check reports a failure to: the test's own *testing.T, or the recorder below,
-// which the guard's own test reads the failures back from.
-type failer interface {
-	Helper()
-	Errorf(format string, args ...any)
-}
-
-// recorder is a failer that keeps what was reported, so a test can hold a check to reporting a
-// failure rather than to passing.
-type recorder struct{ failures []string }
-
-func (r *recorder) Helper() {}
-
-func (r *recorder) Errorf(format string, args ...any) {
-	r.failures = append(r.failures, fmt.Sprintf(format, args...))
-}
-
-// reported reports whether one failure holds every one of parts.
-func (r *recorder) reported(parts ...string) bool {
-	return slices.ContainsFunc(r.failures, func(failure string) bool {
-		for _, part := range parts {
-			if !strings.Contains(failure, part) {
-				return false
-			}
-		}
-		return true
-	})
-}
-
-// The guard follows a list a members(...) site builds to its declaration, rather than passing over
-// it, and reports every name such a site passes that nothing describes. Its fixture is a source of
-// its own because the loader no longer holds one: the two sites that built their names — a
-// `pod.volumes` entry's, from volumeSources, and a Secret or ConfigMap source's — were carried
-// onto describedMembers with a line for every name they pass, so the follower is there for the
-// next site rather than for a site that exists, and the same is true of the undescribed list the
-// second half reads. The fixture passes names four ways (a literal, a package constant, a
-// package-level []string, and a local built from both with append) and names nothing the key
-// table or the undescribed list holds, so the guard must read all four and report each of them.
-func TestTheGuardFollowsABuiltListOfNames(t *testing.T) {
-	const fixture = `package config
-
-const quinceKey = "quince"
-
-var fruitNames = []string{"apple"}
-
-func readFruit(value *yaml.Node) {
-	basket := append([]string{"pear"}, fruitNames...)
-	basket = append(basket, "plum")
-	members(value, "fruit", basket...)
-	members(value, "fruit", "damson", quinceKey)
-}
-`
-	fileSet := token.NewFileSet()
-	file, err := parser.ParseFile(fileSet, "fruit.go", fixture, parser.SkipObjectResolution)
-	if err != nil {
-		t.Fatalf("parse the guard's own fixture: %v", err)
-	}
-	source := &loaderSource{fileSet: fileSet, files: []*ast.File{file}, constants: map[string]string{}, lists: map[string][]string{}}
-	source.readDeclarations()
-	keys := loaderKeys{positive: map[string]int{}, cases: map[string]string{}, nested: map[string]string{}, groups: map[string]string{}}
-	source.readFile(t, file, "fruit.go", &keys)
-
-	described := map[string]bool{}
-	for _, row := range topLevelKeys {
-		described[row.Name] = true
-	}
-	// The fixture names no describedMembers group, so this also reports every group of the table
-	// as unused; the names below are what it is read for.
-	reported := &recorder{}
-	checkNestedKeys(reported, keys, described)
-	for _, name := range []string{"apple", "pear", "plum", "damson", "quince"} {
-		where, read := keys.nested[name]
-		switch {
-		case !read:
-			t.Errorf("the guard did not read %s, which the fixture's members(...) site passes", name)
-		case !strings.HasPrefix(where, "fruit.go:"):
-			t.Errorf("the guard read %s at %q, want the fixture's own site", name, where)
-		case !reported.reported(name, "whose line is not written"):
-			t.Errorf("the guard passed over %s, which neither the key table nor the undescribed list names; it reported %v", name, reported.failures)
 		}
 	}
 }
