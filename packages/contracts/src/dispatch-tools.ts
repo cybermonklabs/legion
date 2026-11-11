@@ -398,12 +398,15 @@ export const DISPATCH_ITEM_BLOCKS = 32768;
  */
 export const DISPATCH_EVENT_BODY_MAX = 32000;
 
-/** What a tool that writes a body says about the two bounds the server holds it to, written once
- *  so every such tool says it the same way. */
+/** What a tool that writes a body says about the two bounds the server holds it to and about the
+ *  decision block it refuses in one, written once so every such tool says it the same way. */
 const BODY_BLOCK_RULE =
   `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
   `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
-  "names it, and `dispatch limits` prints the bounds.";
+  "names it, and `dispatch limits` prints the bounds. A body holding a decision block (`:::ask`) " +
+  "is refused however short it is, since nobody can answer a question put in a comment or a " +
+  "message: ask the question in the issue's own document, as a decision block there, or open an " +
+  "ask with `dispatch ask`.";
 
 /** How dispatch_resolve_comment, dispatch_edit_comment and dispatch_delete_comment each name the
  *  comment they act on, written once so the three say it the same way. */

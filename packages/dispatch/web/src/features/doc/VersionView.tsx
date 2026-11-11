@@ -213,6 +213,7 @@ export function VersionView({
             <AskBlockCard
               ask={asks.find((candidate) => candidate.block_id === blockId)}
               host={host}
+              inBody={false}
               key={host.key}
               owner={owner}
               readOnly

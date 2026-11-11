@@ -28,7 +28,7 @@ dispatch search --query 'reviewer threads OR review comments'
 
 ## Research before you ask
 
-- Research when a file, command or document can show the answer (a pattern, a convention, a solved problem, a technical approach).
+- Research when a file, command or document can show the answer.
 - Ask a person only for what their authority, taste or risk appetite settles, because no file holds that. Where a file records the decision, cite it (`file:line`) and follow it; ask again only when the facts it rested on changed.
 - Say what you searched: each part you found with its source, and each part you did not, with the queries you ran. Ask only the part no search answered.
 

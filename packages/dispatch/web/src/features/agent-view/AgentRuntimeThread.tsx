@@ -3,8 +3,8 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import type { AgentStreamCommand } from "@legion/contracts";
-import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
+import { type AgentStreamCommand, isShellCommandReport } from "@legion/contracts";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo } from "react";
 
 import type { Message, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -14,6 +14,7 @@ import { postDeletion } from "../refs/post-marks";
 import { AgentThread } from "./AgentThread";
 import {
   type AgentConversation,
+  type DispatchTurn,
   dispatchTurns,
   toThreadMessages,
   turnSaysBody,
@@ -24,6 +25,7 @@ import {
   type KeyedMessage,
   turnKey,
 } from "./dispatch-marks";
+import { type LivePlace, useLiveViews } from "./live-views";
 import { storedMessages } from "./stored-messages";
 
 /** Who wrote a stored message, when it was not the viewer: its author as Dispatch recorded it
@@ -41,6 +43,31 @@ function dispatchId(messageId: string): string {
 }
 
 /**
+ * Whether a streamed user turn is the stored message it names, so the view draws the pair once
+ * rather than one under the other, and which of the two it is.
+ *
+ * A turn saying what the person wrote is that message, beside what the stream names of what the
+ * message carried, such as a picture's `[image]` (`turnSaysBody`, which holds the row to the
+ * body's own lines and to the body's own pictures): `"says-body"`. So is the report of a
+ * person's `!command` (INFRA-812, R4): the session runs the line itself and publishes the
+ * person's line and what the command printed as one user message, because the person ran it and
+ * the host wrote nothing (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). What
+ * a report reads like is one rule both packages import rather than spell twice
+ * (`isShellCommandReport` in `@legion/contracts`): the body is a `!` command, and the turn opens
+ * with that whole body and a blank line, so the turn still says what the person said and the
+ * rest of it - the fenced output and how the command ended - is the session's answer to that
+ * line. A report is named as one (`"report"`) because the session also posts it as its reply to
+ * that message, which the caller draws nowhere.
+ *
+ * Anything else is left to show beside the stored copy (`"no"`): the bus is open to any client,
+ * and a tag is no licence to put words in a person's mouth.
+ */
+function takesOverStored(turn: DispatchTurn, body: string): "no" | "report" | "says-body" {
+  if (isShellCommandReport(turn.text, body)) return "report";
+  return turnSaysBody(turn, body) ? "says-body" : "no";
+}
+
+/**
  * Everything that reads the conversation, in one component so a boundary can be put around it.
  *
  * assistant-ui converts every message while the runtime is built, so a message it refuses throws
@@ -53,6 +80,7 @@ export function AgentRuntimeThread({
   commands,
   conversation,
   empty,
+  front,
   onSend,
   ownSendCount,
   sends,
@@ -68,6 +96,9 @@ export function AgentRuntimeThread({
   commands: readonly AgentStreamCommand[] | undefined;
   conversation: AgentConversation;
   empty: string;
+  /** Whether this is the view the person is looking at; the transcript's own scrolling reads
+   *  it (`AgentThread`). */
+  front: boolean;
   /** Hands `body` to the session as a write of its own, as the page's delivery mode stands. */
   onSend: (body: string) => void;
   /** Bumped once per message this viewer sent that the session accepted, so their own send takes
@@ -96,9 +127,11 @@ export function AgentRuntimeThread({
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
     // taken, so it shows twice (`packages/pi-envoy/AGENTS.md` says which turns go untagged). Any
     // bus client can publish a tag, so only a person's stored message can be one, and only a
-    // streamed message saying exactly what that person wrote - beside what the stream names of
-    // what the message carried, such as a picture's `[image]` - replaces its stored copy
-    // (`turnSaysBody`).
+    // streamed message saying what that person wrote - beside what the stream names of what the
+    // message carried, such as a picture's `[image]` - or answering their `!` line, replaces its
+    // stored copy (`takesOverStored`). A `!` line's report also reaches Dispatch as this
+    // session's reply to that message, which is the same text once more: the turn the stream
+    // took over is the one the reader gets, and that reply is drawn nowhere (`reported`).
     const byID = new Map(
       messagesOfReads
         .filter((message) => message.author.kind === "user")
@@ -106,12 +139,21 @@ export function AgentRuntimeThread({
     );
     const turns = dispatchTurns(conversation);
     const taken = new Set<string>();
+    // The `!` messages whose report the stream took over. The plugin posts that report twice -
+    // this frame, and the reply on Dispatch every message to a session gets - so the stored
+    // reply to one of these is the same text again, and the view draws it nowhere.
+    const reported = new Set<string>();
     const streamed = toThreadMessages(conversation).map((message) => {
       const turn = turns.get(message.id ?? "");
       const source = byID.get(turn?.dispatchMessageId ?? "");
-      if (turn === undefined || source === undefined || !turnSaysBody(turn, source.body))
-        return message;
+      if (turn === undefined || source === undefined) return message;
+      // One read of the rule for this turn: it says both that the streamed turn replaces the
+      // stored copy and, for a `!` report, that the session's reply saying it again is drawn
+      // nowhere.
+      const takeover = takesOverStored(turn, source.body);
+      if (takeover === "no") return message;
       taken.add(source.id);
+      if (takeover === "report") reported.add(source.id);
       // The streamed turn keeps the key the stored copy would have had, so it is one turn under
       // one key for `useLiveFollow` whether the reader sees this frame or, after a rebuild that
       // dropped it, the stored copy below under that same `dispatch:<id>` id.
@@ -123,6 +165,13 @@ export function AgentRuntimeThread({
         }),
       };
     });
+    // The session's own reply to a `!` message whose report the stream already took over: the
+    // same text a third time, so the reader meets it nowhere.
+    const answersReportedCommand = (message: Message): boolean =>
+      message.author.kind === "session" &&
+      message.author.id === sessionId &&
+      message.in_reply_to !== null &&
+      reported.has(message.in_reply_to);
     // Dispatch's side of the conversation, interleaved with the stream by time: what the session
     // wrote is its reply, what the viewer wrote is theirs, and anything anyone else sent the
     // session (another human's direct message, an issue message, another agent) says who. The
@@ -130,7 +179,7 @@ export function AgentRuntimeThread({
     // messages carry microseconds, so they are put in time order first, and the stable merge keeps
     // that order between two stored messages in one millisecond.
     const dispatch: KeyedMessage[] = messagesOfReads
-      .filter((message) => !taken.has(message.id))
+      .filter((message) => !taken.has(message.id) && !answersReportedCommand(message))
       .sort((left, right) => compareTimestamps(left.created_at, right.created_at))
       .map((message) => {
         const content = [{ text: message.body, type: "text" as const }];
@@ -166,12 +215,11 @@ export function AgentRuntimeThread({
     );
   }, [conversation, sessionId, stored, viewer]);
 
-  // The page, this component, and its one runtime and composer outlive a move to another session
-  // (the route has no key), so the composer's text is per session only by being swapped: the
-  // session whose text the box holds, and the drafts of every other one this view has held. They
-  // live as long as the view, so leaving it drops them.
-  const shown = useRef(sessionId);
-  const drafts = useRef(new Map<string, string>());
+  // `MountedLiveViews` keys each view by its session, so this component never outlives a move to
+  // another session - the shell mounts one of it per session - and a view that sleeps is
+  // unmounted altogether (D6). So neither the box nor this component owns what the person has
+  // written or where they were reading: the session's entry in the live-view store does.
+  const views = useLiveViews();
 
   const runtime = useExternalStoreRuntime({
     // The frames already arrive in assistant-ui's own message shape, so the store's converter
@@ -203,17 +251,30 @@ export function AgentRuntimeThread({
     },
   });
 
-  // A move to another session keeps the box's text for the one left and puts the new one's kept
-  // draft in its place. Before paint, so the box never shows one session's draft under another.
+  // The box holds this session's kept draft, and every change of it goes back to the store as it
+  // is made. Before paint, so the box never shows one session's draft under another. React runs
+  // this effect's own cleanup before it runs again and at unmount, so the last text is written
+  // back under the session it was written to, whatever took the view away - a move to another
+  // session, or the view sleeping, which unmounts it.
   useLayoutEffect(() => {
-    const left = shown.current;
-    if (left === sessionId) return;
     const composer = runtime.thread.composer;
-    drafts.current.set(left, composer.getState().text);
-    composer.setText(drafts.current.get(sessionId) ?? "");
-    drafts.current.delete(sessionId);
-    shown.current = sessionId;
-  }, [runtime, sessionId]);
+    composer.setText(views.draft(sessionId));
+    const keep = () => views.setDraft(sessionId, composer.getState().text);
+    const unsubscribe = composer.subscribe(keep);
+    return () => {
+      unsubscribe();
+      keep();
+    };
+  }, [runtime, sessionId, views]);
+
+  // Where this session's reader was, as the store holds it: read for the session being shown,
+  // not watched, since the transcript below is what reports it and a render per scroll event
+  // would buy nothing.
+  const initialPlace = useMemo(() => views.place(sessionId), [sessionId, views]);
+  const onPlace = useCallback(
+    (place: LivePlace | null) => views.setPlace(sessionId, place),
+    [sessionId, views]
+  );
 
   // What `useLiveFollow` reads the transcript from, in render order; `AgentThread` renders the
   // same key into each turn's `data-message-id`, so the hook can find the turn a reader was on.
@@ -228,13 +289,15 @@ export function AgentRuntimeThread({
         commands={commands}
         contentIds={contentIds}
         empty={empty}
+        front={front}
         held={sendDisabled}
+        initialPlace={initialPlace}
+        onPlace={onPlace}
         ownSendCount={ownSendCount}
         placeholder={placeholder}
         replayCount={replayCount}
         resetKey={resetKey}
         sends={sends}
-        sessionId={sessionId}
       />
     </AssistantRuntimeProvider>
   );

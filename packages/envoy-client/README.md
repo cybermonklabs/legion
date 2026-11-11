@@ -118,7 +118,10 @@ claim once written. `recordDeliveredFor(sessionID, frame)` records the same way 
 frame was delivered in while the host shuts down: it writes while the host's optional
 `writeSessionID()` still names that session, once `sessionID()` already answers none, and the
 ledger holds the frame from the call on (Oh My Pi records every BTW's event id so, before its side
-turn and before any reply is posted).
+turn and before any reply is posted). It answers whether the write that keeps the record reached
+the host — a write queued behind earlier ones, so a host that moved while it waited answers
+false, as a write that failed does — so a host that has moved on can report what that session's
+record lost rather than drop it without a word.
 
 The state holds each followed subject's `since` and `after`, or `from_start` on the session's own
 agent subject while its first sweep still owes it from the oldest message the stream holds, the
@@ -133,7 +136,9 @@ state at any age. A write carries the state only when it changed; a sweep that h
 and only moved its cursors to the stream's end goes with the next write, or once the state last
 written is an hour old (`REPLAY_STATE_REFRESH_MS`). A frame the host fails to show is retried, and
 on its third failure the host shows a notice naming it instead (`showFailureNotice`); a host whose
-live path failed a frame calls `liveFailed(followed, envelope, error, receivedAt)`, which shows
+live path failed a frame calls `liveFailed(sessionID, followed, envelope, error, receivedAt)`, naming the
+session the frame was addressed to, which shows nothing and records nothing once the host no longer
+serves that session, and otherwise shows
 that notice at once unless a sweep will show the stream's copy, which it will not for a frame
 received before its subject's cursor started (a new follow, a new session, or a reset after a
 stream recreation), since that cursor can start past it. A host stamps `receivedAt` when the
