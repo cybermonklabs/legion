@@ -73,12 +73,8 @@ test("the rail Search control opens the palette and Escape returns focus to it @
 });
 
 phoneTest(
-  "phone search rows are at least 44px, do not overflow, and a comment result opens Conversation @phone @pr",
-  async ({ page, scene }, testInfo) => {
-    phoneTest.skip(
-      testInfo.project.name !== "stub-phone",
-      "phone row geometry is covered by the stub-phone project"
-    );
+  "phone search rows are at least 44px, do not overflow, and a comment result opens Conversation @phone @phone-only @pr",
+  async ({ page, scene }) => {
     await openSearchFromRail(page, true);
     await page.getByRole("combobox", { name: "Search" }).fill(searchTerm);
 

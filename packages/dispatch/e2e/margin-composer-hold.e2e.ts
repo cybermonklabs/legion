@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, listComments, patchIssue } from "./api";
 import {
   barAction,
@@ -10,7 +8,6 @@ import {
   selectEditorText,
   setSheet,
 } from "./editor";
-import { resetDatabase } from "./seed";
 import {
   answeredPost,
   holdPosts,
@@ -19,6 +16,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The composer a selection-bar action opens holds a send's draft until the server answers, like
@@ -26,10 +24,6 @@ import { asUser } from "./users";
 // the middle of a send, and expect the send's draft and its refusal back on the composer that sent
 // it.
 const spec = "The quick brown fox";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** What the margin's open composer says while a newer selection-bar action waits on its send. */
 const stillSending = "Still sending this one. Select the text again once it's sent.";

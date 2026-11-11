@@ -1,0 +1,5 @@
+kind: Removed
+body: The `./envoy-settings` subpath no longer exports `normalizeEnvoyUrl`. It trimmed a URL's trailing slashes, which `withoutTrailingSlashes` from `@legion/contracts/trailing-slash` does for the Dispatch client and its configuration, the Envoy client and its settings, the broker's token client and the Legion daemon's client; its two callers call that function directly.
+time: 2026-11-09T20:51:33.177023058Z
+custom:
+    Issue: pr3279
