@@ -737,7 +737,8 @@ type plan struct {
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
-	// hook name (readBoot): the engine is given words and never a path (engineConfig).
+	// hook name (readBoot): the engine is given words and never a path, in the hook list boot
+	// builds once from them (openWorkflow, engineHooks).
 	hookPrompts map[string]string
 	prompts     *prompts.Composer
 	// roleReferences are the task agents and skills the shared role prompts name

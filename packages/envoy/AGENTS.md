@@ -3563,7 +3563,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   both write their lines through a text handler on `io.Discard`, so the number is the line's own cost and not the operator's stderr behind it).
   It is always on rather than a setting because that is under a thousandth of a route's own cost, and the question it answers - which caller is making the requests - is asked when a deployment is already in trouble and nobody can turn a setting on retroactively.
 
-- Health endpoints reflect dependency health, not just process liveness, except Dispatch's `GET /livez`, which is liveness alone by design:
+- Health endpoints reflect dependency health, not just process liveness, except `GET /livez`, which both `envoy-dispatch` and `envoy-listener` serve as liveness alone by design:
   it answers `204` reading nothing, so a liveness or startup probe never restarts a process for a slow or unreachable dependency, and readiness stays on `/healthz`.
   `/healthz` returns `degraded` for a JetStream/KV probe that answered with a transient failure and `unhealthy` for NATS loss, a JetStream check that did not answer within its budget, a stopped interest, role claim, session or CI KV watcher, a missing durable consumer, or a durable consumer `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves.
 
@@ -4031,7 +4031,7 @@ The `Host` is compared with its port stripped, its IPv6 brackets off, case folde
 That keeps a page that rebinds its own name to an address reaching the listener (a loopback port, or a forward such as a tailnet one) from using its bearer-free API.
 A listener that requires a bearer checks no `Host`, since such a page holds no bearer.
 The boot log's `listener API hosts:` line names what is served.
-`/healthz`, `/metrics` and the webhook routes are served to any `Host`.
+`/healthz`, `/livez`, `/metrics` and the webhook routes are served to any `Host`.
 
 Each item below names an endpoint and its method, then its contract, and an item that names no endpoint continues the contract above it.
 
@@ -4161,7 +4161,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   NATS refusing the read outright (the listener's user lacks `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, no JetStream, no stream) is `503 {"code":"REPLAY_UNAVAILABLE","error":"<NATS error>"}`, any other failed read a plain 503.
   Trust model: `/v1/replay` trusts `session_id` as every `/v1` route does, with no check beyond `/v1`'s own authentication (`apiAuth`) and no per-session secret, and no check that the session is live, so a caller who can call `/v1` and knows a session's id, live or ended, can read that session's 72 hours of stored inbox:
   with a bearer configured, a holder of the API credential (the shared token or an accepted service-account token);
-  with none, any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, which on the GCP hub, whose listener takes no bearer, includes its tailnet name, so there it is every tailnet peer the tailnet's access rules let reach the port;
+  with none, any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, which on either GCP hub, whose listener takes no bearer, includes the hub's tailnet name, so there it is every tailnet peer the tailnet's access rules for port 9020 let reach the listener;
+  the VM hub's listener is on loopback and Tailscale Serve forwards the node's tailnet port 9020 to it, and the clustered hub's listener is a pod of its own that the tailnet entry's pods forward the Tailscale Service's port 9020 to, so the same tailnet rules decide and the listener's NetworkPolicy, which admits those pods alone, keeps every other pod of the cluster out;
   what the route refuses is reading any session it does not name (a wildcard, another session's subject through an interest, an exception lane).
   A listener older than the route answers 404 (the `/v1` catch-all), which the client reads as "does not replay".
 
@@ -4852,8 +4853,10 @@ Targeted issue `message.created` skips bound-route and author fan-out because th
 `/v1` accepts two bearer kinds: the `ENVOY_API_TOKEN` shared token, and
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
 — a projected service-account token that issuer signed for that audience.
-The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither.
-`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a non-loopback listener refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is the temporary Fargate transition flag.
+The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
+`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
+That flag is how an operator declares that something else fences the listener's port.
+The clustered hub's session listener is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).
 The boot log names what is on: `shared token`, `oidc <issuer>`, both, or `disabled`.
 
 Beside the two bearers it takes one credential that is not a bearer: an access token the secrets broker issued, presented under RFC 9449's DPoP scheme as `Authorization: DPoP <token>` with a `DPoP:` proof header (`internal/brokertoken`, `cmd/listener/brokerauth.go`).
@@ -4869,7 +4872,8 @@ Four variables configure it, all or none, and any of them set without the rest i
 The account identity is the file or the audience and never both: the broker resolves the calling service from whichever token it is presented (`BROKER_API_ACCOUNTS`, which takes a Kubernetes subject or a Google account's email).
 Configuring the credential opens nothing and closes nothing: a request presenting no token is judged exactly as it was before it existed, so an open listener still serves one, the `Host` and `Content-Type` fences still apply, and the non-loopback fence still counts only the two bearers — a broker token says who is calling, never whether `/v1` may be reached.
 A listener with none of the four variables set takes no such credential and reads `Authorization: DPoP` as it read every header it did not know before this credential existed: the open listener serves the request with no session bound, and a listener that requires a bearer answers the 401 it always answered, with nothing asked of any broker and no refusal logged.
-That is what keeps the loopback, no-bearer listener a GCP VM and the clustered hub run serving its clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
+That is what keeps the no-bearer listeners a GCP VM and the clustered hub run serving their clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
+The VM's listener is on loopback and the clustered hub's serves off loopback behind its NetworkPolicy, and neither takes a bearer.
 The scheme alone decides the kind, as RFC 9449 Section 7.2 requires, so a `DPoP` presentation is never retried as a bearer and a bearer is never read as one.
 A listener that takes broker tokens records every spent proof in the `envoy_dpop_proofs` KV bucket, whose records expire after the proof's acceptance window and a minute (`spentProofRetention`), so a proof captured from one replica is refused by every other; a bus with no JetStream is a startup refusal naming `ENVOY_AGENT_SECRETS_URL`, never a store in one process's memory.
 The boot log names it beside the bearers: `broker tokens at <url> as projected token <path>` or `as google audience <audience>`.
@@ -5010,13 +5014,13 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   the first move after an opening or a hand-back is not quiet.
 
 - A notifying comment-thread or message-reply event without an `ask_id` keeps the author routes:
-  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and every session the thread's document credits;
+  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;
   a message reply's direct parent author; for a resolve or reopen, the resolved comment's root author only, so the reopen a reply makes in the same transaction tells no new session twice;
-  and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
+  and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, where no session claims the issue, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
   That document is the anchor's (`anchor.artifact_id`) for a comment on a passage of an issue's document, and the event's own for a project document;
   for a reply, it is the thread root's, since a reply carries no anchor.
   A comment on an issue's conversation names no document.
-  A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under.
+  A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under, and each row says which of the two it came from (`from_thread`, the first element of the `min(rank)` the statement already orders by), so a session that is both a member and a credit counts as a member.
   A person's `comment.created` or `comment.edited` on an issue with no route and no session claimant (`routing`:
   unclaimed, or a person holds the claim) also reaches every session the issue's primary document (`artifacts.is_primary`) credits, as `documentCreditsSQL` reads credits (`addPrimaryDocumentAuthors`), so a session that wrote the spec without a claim still hears comments on any of the issue's threads, an ask's thread included.
   A batch reads those sessions for all such events in one statement (`loadPrimaryDocumentAuthors`, another lookup kind of `loadLookups`), keyed by issue.
@@ -5026,6 +5030,15 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   The primary-document and author routes are skipped for a human, who has no topic, for the event's own actor, so a session commenting on a document it wrote is never told of its own comment, and for a session whose own mention of the comment delivers it (`recipientFilter` keeps the first two, the mention rule below the third, asked where every copy bound for a session's own topic asks it).
   An unanswered `role:X` mention names no session in the payload, and the comment's attempt rows name the one its sender pinned there, so a thread session or document author that mention reached is left to it like any other; one the sender has not pinned yet hears the comment twice.
   An agent's comment notifies nobody (`notify` is false), so it takes no primary-document or author route at all.
+
+- On an issue a session claims, that session is the one a person's comment obliges, and the credits of a document are not a second reason to deliver:
+  a session the read gives only as a credit of a document is left out of the reply arm and of the document arm above when the event names an issue, its actor is a person and the issue's claimant is a session (`addAuthorRoutes`, the three conditions `addClaimantRoute` itself carries).
+  Six cases keep the delivery they have now: a comment on a project document, which names no issue and so has no claim to read;
+  an issue a person claims, whose claimant is empty;
+  an issue a route holds and no session claims, where the route's holder and the credits both hear it;
+  a session the comment names whose own mention of it failed, which has no other route on a claimed issue and whose copy carries the key of that failed mention (`mentionDeliveries.fallbackKeys`, read for the comment's edit as well as for the comment itself);
+  a member of the thread, so a session that wrote there still gets the person's later replies;
+  and a person's edit of a document (`artifact.human_edited`), which still reaches every session that document credits.
 
 - When a batch's recipient statement fails - its comment recipients, its primary document authors or its document credits (`loadDocumentSessionAuthors`) - unlike the other lookup kinds, whose failure fails the whole batch, only the events that asked an id the statement cannot answer fail.
   A statement Postgres refuses over the rows it read (`refusedStatement`:

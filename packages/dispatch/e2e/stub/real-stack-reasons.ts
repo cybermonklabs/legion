@@ -23,6 +23,8 @@ export const realStackReasons: Record<string, string> = {
   "address-links.e2e.ts": "asserts in the live spec editor (`/ws/doc`) as well as the Conversation",
   "agent-list-refilling.e2e.ts":
     "drives the fake Envoy listener's refusal states and asserts the page's reading of them",
+  "agent-name-band.e2e.ts":
+    "writes the session's two replies, one carrying a title and one carrying none, and then reads the name the server resolves from them (`delivery.ResolveSessionTitles`); the fake registry must drop the session before the page loads, or the roster names it and the read proves nothing",
   "agent-name.e2e.ts":
     "margin comment on the live document, plus the fake registry; lands on the live view, whose frames come from the relay; a registry change after load must reach the open page",
   "agent-tokens.e2e.ts": "token mint, attribution, privacy between two contexts, revoke",

@@ -625,6 +625,9 @@ func (c *computation) splitting(finished []*Issue) Splitting {
 		weeks[start] = fresh
 		return fresh
 	}
+	// The toggle reads each filed issue's tree as it stands now (inScope), while its class reads
+	// the parent it had when it was filed (classify); a filing into another project has no tree
+	// here and counts as a root.
 	for _, filed := range c.population.Filed {
 		if !c.inScope(filed.Key) {
 			continue

@@ -108,7 +108,9 @@ type Config struct {
 	// the one hook a deployment that writes no key runs is the configuration's default
 	// (config.DefaultHooks), never this engine's, so a deployment that configures none gets
 	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
-	// a path.
+	// a path, and the list is the one its caller built at boot rather than a decision-class
+	// value: `hooks` is fixed for the process, and the words a hook reads from a file are read
+	// only there (internal/daemon's openWorkflow).
 	Hooks []Hook
 }
 

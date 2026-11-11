@@ -803,4 +803,4 @@ Each line below is the reason the route answers with, for the keys it names.
 
 - `worker_stall_backstop_hours` — the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it.
 
-- `hooks` and every key under it — the words of every hook that names a `prompt_file` are read once, at boot, into the one map the engine's hook list is built from, keyed by the hook's name (internal/daemon's readBoot and engineHooks), and nothing reads a file again: a hook this route added, renamed or repointed would stand in front of its roles with no words at all.
+- `hooks` and every key under it — the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a `prompt_file` (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it.

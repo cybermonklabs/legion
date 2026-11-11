@@ -132,7 +132,7 @@ const (
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
 	whyStallBst = "the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it"
-	whyHooks    = "the words of every hook that names a prompt_file are read once, at boot, into the one map the engine's hook list is built from, keyed by the hook's name (internal/daemon's readBoot and engineHooks), and nothing reads a file again: a hook this route added, renamed or repointed would stand in front of its roles with no words at all"
+	whyHooks    = "the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a prompt_file (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it"
 )
 
 // Caller is which arm asked for a change through the settings route: what that caller may set.
@@ -283,13 +283,14 @@ var Classes = []Row{
 	// Also.
 	{Field: "Config.Gates", Path: "gates", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs, HolderGatedSteps}, Block: true},
 	{Field: "Gates.Design", Path: "gates.design", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs, HolderGatedSteps}},
-	// The deployment's own hooks. The engine reads the list from the settings holder as it
-	// decides, but the words of a hook that names a `prompt_file` are not in the list: boot
-	// reads them into a map of its own, keyed by hook name, and the hook list the engine runs is
-	// built from the two together (internal/daemon's engineHooks). Nothing reads a hook's file
-	// again, so the whole key is settled at boot: a change of it reaches the next boot. The list
-	// is one value the walk compares whole, as `projects.<KEY>.merge.by_hand` is, and the rows
-	// of one entry's members below it are what ClassOf answers a caller that names one.
+	// The deployment's own hooks. The engine is handed the list boot built — the file's hooks,
+	// each carrying the words it wrote in its key or, for a hook that names a `prompt_file`,
+	// the words boot read into a map of its own keyed by hook name (internal/daemon's readBoot
+	// and engineHooks) — and the daemon builds that list again at no later moment, since a hook
+	// whose words live only in that map would otherwise stand in front of its roles with none.
+	// So the whole key is settled at boot: a change of it reaches the next boot. The list is one
+	// value the walk compares whole, as `projects.<KEY>.merge.by_hand` is, and the rows of one
+	// entry's members below it are what ClassOf answers a caller that names one.
 	{Field: "Config.Hooks", Path: "hooks", Class: ClassFixed, Why: whyHooks},
 	{Field: "Hook.Name", Path: "hooks[].name", Class: ClassFixed, Why: whyHooks},
 	{Field: "Hook.On", Path: "hooks[].on", Class: ClassFixed, Why: whyHooks},

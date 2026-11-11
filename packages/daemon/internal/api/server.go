@@ -785,7 +785,7 @@ const backwardMovesContract = 62
 // version.go: a plugin before it reads the state with a strict schema that knows none of the
 // three — every schema of `packages/contracts/src/legion-api.ts` was strict until INFRA-1048 —
 // and refuses the whole body for one of them.
-const settingSourcesContract = 63
+const settingSourcesContract = 65
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

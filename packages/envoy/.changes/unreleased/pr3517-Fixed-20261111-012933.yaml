@@ -1,0 +1,5 @@
+kind: Fixed
+body: A person's comment on an issue a session claims now reaches that session alone. Before, it also reached every session credited on a document of the issue, so two agents answered one comment. A comment on a project document, an issue a person claims, an issue a route holds and no session claims, a member of the comment's thread, a person's edit of a document and a session whose own mention of the comment failed each keep the copy they get now.
+time: 2026-11-11T01:29:33.669026673Z
+custom:
+    Issue: pr3517
