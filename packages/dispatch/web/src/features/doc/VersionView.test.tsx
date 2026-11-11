@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
@@ -6,6 +6,7 @@ import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import type { AuthenticatedUser } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { changeMarksAgainst } from "./change-marks";
@@ -97,6 +98,7 @@ function renderVersionView({
 // collapsed the page and scrolled again, and its last scroll could run before the last editor had
 // laid out, leaving the reader at the top of the page; a browser row catches that only sometimes.
 test("VersionView keeps its editor when the parent renders again with an equal highlight, and builds a new one for another comment", async () => {
+  jest.useFakeTimers();
   const markdown = "Read the current specification and the older note";
   const { editors, rerender, view } = renderVersionView({
     highlight: { by: "user:alice", id: "comment-1", quote: "current" },
@@ -107,7 +109,7 @@ test("VersionView keeps its editor when the parent renders again with an equal h
     await waitFor(() => expect(editors).toHaveLength(1));
     rerender({ by: "user:alice", id: "comment-1", quote: "current" });
     rerender({ by: "user:alice", id: "comment-1", quote: "current" });
-    await Bun.sleep(20);
+    await tick(20);
     expect(editors).toHaveLength(1);
     expect(editors[0]?.destroyed).toBe(false);
     expect(editors[0]?.focused).toEqual(["comment-1"]);
@@ -117,6 +119,7 @@ test("VersionView keeps its editor when the parent renders again with an equal h
     expect(editors[0]?.destroyed).toBe(true);
     expect(editors[1]?.focused).toEqual(["comment-2"]);
   } finally {
+    realClock();
     view.unmount();
   }
 });
@@ -299,6 +302,7 @@ test("VersionView draws the marks its baseline computes over the version it rend
 
 test("VersionView draws nothing when it is given no baseline", async () => {
   await warmMarkdownRenderer();
+  jest.useFakeTimers();
   const markdown = "# Plan\n\nThe plan ships behind a canary today.\n";
   const drawn: ChangeDecorations[] = [];
   const { editors, view } = renderVersionView({
@@ -309,10 +313,11 @@ test("VersionView draws nothing when it is given no baseline", async () => {
 
   try {
     await waitFor(() => expect(editors).toHaveLength(1));
-    await Bun.sleep(20);
+    await tick(20);
     expect(editors[0]?.markdown).toBe(markdown);
     expect(drawn).toEqual([]);
   } finally {
+    realClock();
     view.unmount();
   }
 });

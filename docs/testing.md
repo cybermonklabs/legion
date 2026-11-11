@@ -126,7 +126,7 @@ itself, whose tests import its sources by relative path.
   (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
   both builds the two halves into a single list and prints one line, rather than calling
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-lanes.test.ts`).
+  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
@@ -482,3 +482,29 @@ that other work shares.
   lists each proof's containers and their limits.
 - Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images
   declare a `VOLUME` that a plain `docker rm -f` leaves on the host.
+
+## A CI job that failed with no log at all
+
+A job that stored no log did not hang: it lost its runner, and the one artifact that outlives the log says so.
+
+GitHub stores a job's log when the runner finalises it.
+A runner the service stops hearing from never finalises, so the logs endpoint answers `HTTP 404` with `<Code>BlobNotFound</Code>`, where a job that was cancelled, that failed and that passed each answers its log.
+The check run's annotation is written by the service and not by the runner, so it is still there:
+
+```sh
+gh api repos/<owner>/<repo>/check-runs/<job id>/annotations
+```
+
+It answers one annotation at `annotation_level: failure`, in these words:
+"The hosted runner lost communication with the server.
+Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error."
+
+Read the job record beside it (`gh api repos/<owner>/<repo>/actions/jobs/<job id>`).
+A lost runner leaves one step `in_progress` with a null conclusion and every step after it `pending`, so the last line of the step record is the last second anything was reported.
+Compare `created_at` with `completed_at` and with the job's own `timeout-minutes`:
+a job its ceiling ended stops at the ceiling, and one that stopped before it was ended by something else.
+
+Those three causes are what GitHub can say, and none of them is a reading of your job.
+A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the memory the kernel reports available and the one-minute load of every second it watched, which is what tells the second cause from the other two on the next run that does store a log.
+`tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
+It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).

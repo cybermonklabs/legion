@@ -1,7 +1,6 @@
-import { expect, test } from "@playwright/test";
 import { agentRow, type FakeSession, openAgents, setLiveSessions, shownAgentRows } from "./agents";
 import { createAsk, createComment, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // Three sessions with no field in common, so a match on one field never comes from another: the
@@ -30,10 +29,6 @@ const archivist: FakeSession = {
   session_id: "019a1c13-8f6d-7a0c-9b5b-6c3d7e0f1a13",
   title: "Archivist",
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** All three sessions live, each with Dispatch activity of its own so none folds under `No
  *  Dispatch activity`: the Scrum session's open ask waits on the viewer, which lists it first, and
