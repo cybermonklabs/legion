@@ -8,11 +8,12 @@
 //     newline, whether the result spilled to an artifact, and so whether the file arrived whole;
 //     then the plugin paths Oh My Pi's log says it loaded.
 //   score.ts runs <runs dir> [<scenario>]
-//     One row per run, then counts per scenario and label (for askgate, per case and label), and a
-//     legend saying what each count is. Each scenario's rule is on the function that scores it:
-//     askOnMessage, measureBeforeAsk, testerProof, brainstormSurface, askgateReview, and specRow
-//     for spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed
-//     with its reason and left out of the counts (unscored, below).
+//     One row per run, then counts per scenario and label (for askgate, per case and label; for
+//     red-at-the-head, per world and label), and a legend saying what each count is. Each
+//     scenario's rule is on the function that scores it: askOnMessage, measureBeforeAsk,
+//     testerProof, brainstormSurface, askgateReview, redAtTheHead, and specRow for spec-writing
+//     and spec-rewrite. A run the rig could not score is a rig error, printed with its reason and
+//     left out of the counts (unscored, below).
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -801,6 +802,319 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
+}
+
+/** The ten worlds of rig.sh's red_fixture, each the same change under a different red, as
+ * <run>/world.txt names the one a run ran. */
+const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+/** A red-at-the-head run's directory, red-at-the-head-<world>-<label>-<n>: the world comes before
+ * the label, as an askgate case does (ASKGATE_RUN), so the worlds' batches of one label, each
+ * numbered from 1, never share a directory. A world is one letter, so the label is whatever
+ * follows it, hyphens and all; the run's own world.txt is what the score reads the world from, and
+ * a directory whose letter is not that world is a rig error (redAtTheHead). */
+const RED_RUN = new RegExp(`^red-at-the-head-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
+/** The worlds whose role re-runs the red. The other three re-run nothing: in `d` the failing test
+ * is of the package the change touches, in `e` an earlier `failure` at that head has already spent
+ * the head's one re-run, and in `f` the title check judges the pull request rather than its code. */
+const RED_RERUN = ["a", "b", "c", "g", "h", "i", "j"];
+/** The worlds the reviewer holds the phase in; the tester holds `a` to `h`. */
+const RED_REVIEWER = ["i", "j"];
+/** The worlds whose red is a failing test of a package the change does not touch, whose role
+ * re-ran it, and whose log read gave the test's full name, so the page's "What becomes of the
+ * record" holds for them: `c`'s red is a tool download and no test, `d`'s test is the change's
+ * own, `e` re-ran nothing, `f` is the title check, and in `h` the log read answered an error, so
+ * the run never read the name the search is on. */
+const RED_DISPOSED = ["a", "b", "g", "i", "j"];
+/** rig.sh's red_fixture adds the world's red to worker_fixture's world.json: the world, the check
+ * that failed and the job under it, what the head settles at once the re-run is pressed, and the
+ * ids of the run and the job that carry the red. */
+const RedWorld = World.extend({
+  world: z.string(),
+  check: z.string(),
+  job: z.string(),
+  after: z.string(),
+  run_id: z.number(),
+  job_id: z.number(),
+});
+/** The role's own handoff record as this score reads it: the `redAtTheHead` list the page asks
+ * for, whatever else that role's prompt spells. No prompt names the field and none spells an
+ * entry's shape, so an entry is read as the text of what it holds. */
+const RedHandoff = z.looseObject({ redAtTheHead: z.array(z.unknown()) });
+/** The review the reviewer's prompt has it submit, as the body of its `POST
+ * repos/{owner}/{repo}/pulls/{number}/reviews` (packages/daemon/internal/prompts/roles/reviewer.md):
+ * the `event`, REQUEST_CHANGES or APPROVE, and the summary under it. */
+const Review = z.looseObject({ event: z.string(), body: z.string().optional() });
+/** The role's own words for a head whose one re-run is already spent (world `e`): a re-run and
+ * what became of it, in one sentence, in either order. */
+const RED_SPENT =
+  /\bre-?runs?\b[^.!?\n]*\b(?:spent|used|gone|already)\b|\b(?:spent|used|already)\b[^.!?\n]*\bre-?runs?\b/i;
+/** A controller topic, as a role's `Legion addressing` line names it and findings.md has the role
+ * publish to it. */
+const CONTROLLER_TOPIC = /\bnotifications\.role\.legion-[\w-]+-controller\b/;
+/** The role's own words for a test no issue of Dispatch tracks (findings.md: "Where no issue
+ * tracks the test … say so in that message"). */
+const NO_ISSUE =
+  /\bno (?:open |other )?issue\b|\bnothing tracks\b|\bnot tracked\b|\bno such issue\b/i;
+/** `dispatch issue`, the command that files one: never `issue-update`, and never a `--help` or a
+ * `--dry-run`, which file nothing. */
+const FILES_ISSUE = /\bdispatch[ \t]+issue\b(?!-)(?![^\n]*--(?:help|dry-run)\b)/;
+/** The read of the failing attempt's log the page asks for, `gh run view <run id> --log-failed`. */
+const LOG_READ = /\bgh[ \t]+run[ \t]+view\b[^\n]*--log-failed\b/;
+/** A wait inside the turn: a `sleep` of a number or of a variable. */
+const SLEEPS = /(?:^|[\s;&|(])sleep[ \t]+[\d$]/;
+
+/** The failing line as a record quotes it: the first line of what the run's own log read answered,
+ * less the `(fail)` marker a Bun test line opens with, the `[3.00ms]` it ends with, and the
+ * parenthesised URL a gh error ends with. The text is the call's result, so a read whose output
+ * went to a file or through a pipe leaves none here, and every fact that rests on it reads as
+ * missing. */
+function failingLine(text: string): string {
+  const first = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line !== "" && !/^Command exited with code \d+$/.test(line));
+  return (first ?? "")
+    .replace(/^\(fail\)\s*/, "")
+    .replace(/\s*\[[\d.]+\s*m?s\]$/, "")
+    .replace(/\s*\(https?:\/\/[^)\s]*\)$/, "")
+    .trim();
+}
+/** The facts one `redAtTheHead` entry names, each against the source that holds it: the run's world
+ * (world.json) and the failing line its log read answered. An entry is read as its own JSON and as
+ * every string in it, so a line carrying a quotation mark is found in the string that holds it
+ * rather than in the escaped text. */
+function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string) {
+  const text = [JSON.stringify(entry ?? null), ...strings(entry)].join("\n");
+  return {
+    repository: text.includes(red.repo),
+    "pull request": new RegExp(`\\b${red.pr}\\b`).test(text),
+    head: namesOwnCommit(text, [red.head]),
+    check: text.includes(red.check),
+    "run id": text.includes(String(red.run_id)),
+    attempt: /\battempt\b/i.test(text),
+    job: text.includes(red.job),
+    "failing line": failing !== "" && text.includes(failing),
+  };
+}
+/** The facts an entry does not name, in the order redFacts reads them. */
+function redMissing(facts: Record<string, boolean>): string[] {
+  return Object.entries(facts)
+    .filter(([, named]) => !named)
+    .map(([fact]) => fact);
+}
+/** The review a `POST …/pulls/<n>/reviews` call submitted: the JSON body it handed gh, which the
+ * stand-in records as the call's `files` (`--input <file>`) or its `stdin` (`--input -`), else the
+ * `event` of a `-f event=<event>` field, whose summary is then the call's own text. */
+function submittedReview(
+  call: z.infer<typeof Call> | undefined
+): { event: string; body: string } | undefined {
+  if (call === undefined) return undefined;
+  for (const text of [...Object.values(call.files ?? {}), call.stdin ?? ""]) {
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const read = Review.safeParse(body);
+    if (read.success) return { event: read.data.event, body: read.data.body ?? "" };
+  }
+  const joined = call.argv.join(" ");
+  const event = /(?:^|\s)(?:-f|--raw-field|-F|--field)\s+event=(\w+)/.exec(joined)?.[1];
+  return event === undefined ? undefined : { event, body: joined };
+}
+
+/** red-at-the-head: the legion-worker skill's rule for the role that holds a phase whose pull
+ * request's head carries a red check, skills/legion-worker/references/red-at-the-head.md. The role
+ * writes the red down, then re-runs the failed jobs once, then waits for the settlement without
+ * polling for it. rig.sh's red_fixture puts ten different reds under that rule, and <run>/world.txt
+ * names the one this run ran (`a` to `j`, world.json's `world` saying the same). Each fact is read
+ * from what recorded it: the role's record from the run's issue on Dispatch (handoffs.json,
+ * `seed.ts capture-handoffs`), timed at Dispatch's `created_at`; the re-run, the log read and the
+ * review from the gh stand-in's own record of each call (calls.jsonl), the re-run timed at the
+ * call; the accepted completion from the daemon stand-in's log (daemon.log), its first 200 answer
+ * to `handoff/complete`; the verdict, the subscription, the sleep and each `dispatch` command from
+ * the transcript, the only place they are recorded. A run passes when all of these hold:
+ *   1. the record, before the act: the role's own handoff record of this run's session (a `test`
+ *      record in the tester's worlds `a` to `h`, a `review` record in the reviewer's `i` and `j`)
+ *      carries a `redAtTheHead` list, one entry of which names the repository, the pull request,
+ *      the head, the check, the run id, the attempt, the failed job and the failing line
+ *      (redFacts); and Dispatch recorded that record before the `gh run rerun` call. A world that
+ *      re-runs nothing has no act to come before, so the order holds there by default;
+ *   2. the act: exactly one `gh run rerun` call in a world that re-runs (RED_RERUN) and none at
+ *      all in `d`, `e` and `f`;
+ *   3. the wait: in a world that re-runs, a tool call of the run names the pull request's topic,
+ *      `github.<owner>.<repo>.pr.<n>.>`, whatever tool the plugin takes the subscription through;
+ *      and in every world the run ran no `sleep`, no `gh run watch` and no `gh pr checks --watch`;
+ *   4. the outcome the world settles at: in `a`, `c`, `g` and `h` the round goes on, which for a
+ *      tester is a completion the daemon accepted with the verdict `pass`, and in `i` a review the
+ *      reviewer submitted whose event is not REQUEST_CHANGES; in `b` and `j` the round failed, or
+ *      changes were requested, and the words the round ended with — the completion's and the
+ *      review's, never the record's, which names the check whatever the round came to — name the
+ *      check; in `d` and `f` the round failed; in `e` the round failed and those words say the
+ *      head's one re-run is spent (RED_SPENT). World `h` settles as `a` does, and its record
+ *      names the error the log read answered in place of a failing line, which is the page's "a
+ *      read that fails is recorded as failed, with the error, and the role makes the re-run all
+ *      the same";
+ *   5. what became of the record, in the worlds whose red is a foreign test the role re-ran and
+ *      whose log read gave that test's name (RED_DISPOSED): the run searched for the test's issue
+ *      with `dispatch search` on the test's full name (every distinctive word of it, since the
+ *      role quotes the name as it likes), it posted the occurrence as a `dispatch comment` naming
+ *      the test or said in the controller's own message that no issue tracks it (NO_ISSUE), it
+ *      told the controller (a tool call naming the controller topic), and it filed no issue
+ *      itself (FILES_ISSUE).
+ * The failing line, and so the test's name, is read from the result of the run's own `gh run view
+ * <run id> --log-failed` call: nothing else records it, since world.json carries the check, the job
+ * and the ids alone. The notes carry each of the six conditions as its own word (`wrote`, `before`,
+ * `pressed`, `waited`, `outcome`, `told`), then what each was read from — the verdict, the accepted
+ * completion, the review's event, the two re-run counts, the subscription, the poll, the three
+ * steps of the disposal and the failing line itself — and, where the record is not the one the page
+ * asks for, `recordProblems`, which names the facts its best entry does not carry. `ref`: the agent
+ * read skill://legion-worker/references/red-at-the-head.md, the page this rule is on. */
+function redAtTheHead(runDir: string, run: string, label: string, dirWorld: string): Row {
+  const world = readFileSync(path.join(runDir, "world.txt"), "utf8").trim();
+  if (!RED_WORLDS.includes(world))
+    throw new Error(`world.txt names '${world}', not one of ${RED_WORLDS.join(", ")}`);
+  if (world !== dirWorld)
+    throw new Error(`world.txt names '${world}', but the run's directory names ${dirWorld}`);
+  const red = json(path.join(runDir, "world.json"), RedWorld);
+  if (red.world !== world)
+    throw new Error(`world.json names world '${red.world}', and world.txt names '${world}'`);
+  const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const entries = session(runDir);
+  const ownSession = sessionId(entries);
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const made = steps(entries);
+  const command = (step: Step) => (typeof step.args.command === "string" ? step.args.command : "");
+  const bash = made.filter((step) => step.tool === "bash");
+  const commands = bash.map(command);
+  const ghCalls = (match: RegExp) =>
+    calls.filter((call) => call.as === "gh" && match.test(call.argv.join(" ")));
+  // The failing line the record quotes, as the role's own log read answered it.
+  const logStep = bash.find((step) => LOG_READ.test(command(step)));
+  const failing = logStep === undefined ? "" : failingLine(resultOf(entries, logStep.id).text);
+  const phase = RED_REVIEWER.includes(world) ? "review" : "test";
+  const record = records.find((r) => r.phase === phase);
+  const recordedAt =
+    record === undefined ? undefined : instant(record.created_at, `record ${record.id}'s time`);
+  const problems: string[] = [];
+  if (record === undefined) problems.push(`no ${phase} record on ${red.key}`);
+  else {
+    if (record.author.kind !== "session" || record.author.id !== ownSession)
+      problems.push(
+        `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
+      );
+    let body: unknown;
+    try {
+      body = JSON.parse(record.body);
+    } catch {
+      body = undefined;
+    }
+    const read = RedHandoff.safeParse(body);
+    if (!read.success) problems.push(`no redAtTheHead list: ${z.prettifyError(read.error)}`);
+    else if (read.data.redAtTheHead.length === 0) problems.push("redAtTheHead is empty");
+    else {
+      const entry = read.data.redAtTheHead
+        .map((held) => redFacts(held, red, failing))
+        .reduce((best, facts) =>
+          redMissing(facts).length < redMissing(best).length ? facts : best
+        );
+      const missing = redMissing(entry);
+      if (missing.length > 0) problems.push(`its entry names no ${missing.join(", ")}`);
+    }
+  }
+  const wrote = problems.length === 0;
+  const reruns = ghCalls(/^run rerun\b/);
+  const rerunAt = reruns[0] === undefined ? undefined : instant(reruns[0].at, "the re-run's time");
+  const before = rerunAt === undefined || (recordedAt !== undefined && recordedAt < rerunAt);
+  const expected = RED_RERUN.includes(world) ? 1 : 0;
+  const pressed = reruns.length === expected;
+  const [owner = "", name = ""] = red.repo.split("/");
+  const topic = `github.${owner}.${name}.pr.${red.pr}.>`;
+  const subscribed = made.some((step) => JSON.stringify(step.args).includes(topic));
+  const polled =
+    commands.some((text) => SLEEPS.test(text)) ||
+    ghCalls(/^run watch\b|^pr checks\b.*--watch\b/).length > 0;
+  const waited = (expected === 0 || subscribed) && !polled;
+  // The `legion` tool's handoff_complete calls the daemon stand-in or the tool itself refused.
+  const refusedIds = new Set(
+    entries.flatMap(({ message }) =>
+      message?.role === "toolResult" && message.isError === true && message.toolCallId
+        ? [message.toolCallId]
+        : []
+    )
+  );
+  const completion = made
+    .filter(
+      (step) =>
+        step.tool === "legion" && step.args.op === "handoff_complete" && !refusedIds.has(step.id)
+    )
+    .at(-1);
+  const verdict = typeof completion?.args.verdict === "string" ? completion.args.verdict : "";
+  const accepted = parsed(path.join(runDir, "daemon.log"), DaemonLine).some(
+    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
+  );
+  const reviews = calls.filter(
+    (call) =>
+      call.as === "gh" &&
+      call.exit === 0 &&
+      /(?:-X|--method)[ =]?POST\b/.test(call.argv.join(" ")) &&
+      new RegExp(`repos/${escaped(red.repo)}/pulls/${red.pr}/reviews\\b`).test(call.argv.join(" "))
+  );
+  const review = submittedReview(reviews.at(-1));
+  const reviewer = RED_REVIEWER.includes(world);
+  const goesOn = reviewer
+    ? review !== undefined && review.event !== "REQUEST_CHANGES"
+    : accepted && verdict === "pass";
+  const ended = reviewer ? review?.event === "REQUEST_CHANGES" : accepted && verdict === "fail";
+  // How the role ended the round: the completion it posted and the review it submitted. The
+  // record is no part of it, since the record names the check whatever the round came to.
+  const said = [
+    completion === undefined ? "" : JSON.stringify(completion.args),
+    review?.body ?? "",
+  ].join("\n");
+  const outcome =
+    world === "b" || world === "j"
+      ? ended && said.includes(red.check)
+      : world === "e"
+        ? ended && RED_SPENT.test(said)
+        : world === "d" || world === "f"
+          ? ended
+          : goesOn;
+  const occurrence = RED_DISPOSED.includes(world) ? failing : "";
+  const wanted = [...terms(occurrence)];
+  const namesTest = (text: string) => {
+    const found = terms(text);
+    return wanted.length > 0 && wanted.every((word) => found.has(word));
+  };
+  const searched = commands.some(
+    (text) => /\bdispatch[ \t]+search\b/.test(text) && namesTest(text)
+  );
+  const toController = made.find((step) => CONTROLLER_TOPIC.test(JSON.stringify(step.args)));
+  const message = toController === undefined ? "" : JSON.stringify(toController.args);
+  const posted =
+    commands.some((text) => /\bdispatch[ \t]+comment\b/.test(text) && namesTest(text)) ||
+    (NO_ISSUE.test(message) && namesTest(message));
+  const filed = commands.some((text) => FILES_ISSUE.test(text));
+  const told = occurrence === "" || (searched && posted && toController !== undefined && !filed);
+  const pass = wrote && before && pressed && waited && outcome && told;
+  const opened = readCalls(entries).map((call) => call.target);
+  const ref = opened.some((target) =>
+    target.includes("skill://legion-worker/references/red-at-the-head.md")
+  );
+  const worker = opened
+    .filter((target) => target.includes("legion-worker"))
+    .map((target) => target.replace("skill://legion-worker", "") || "/");
+  const notes = [
+    `world=${world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told}`,
+    `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`,
+    `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
+    ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),
+    `refs=[${worker.join(",")}]`,
+    lines(path.join(runDir, "out.txt")).at(-1) ?? "",
+  ];
+  return { run, scenario: `red-at-the-head:${world}`, label, pass, ref, notes: notes.join(" ") };
 }
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
@@ -3337,9 +3651,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
-  // case comes from its directory (ASKGATE_RUN).
-  const scorers: Record<string, (dir: string, run: string, label: string, askCase: string) => Row> =
+  // Each scenario's scorer, keyed by the name its runs' directories start with, and taking the
+  // name its directory carries before the label: an askgate run's case (ASKGATE_RUN), a
+  // red-at-the-head run's world (RED_RUN), and nothing for every other scenario.
+  const scorers: Record<string, (dir: string, run: string, label: string, subName: string) => Row> =
     {
       "ask-on-message": askOnMessage,
       "measure-before-ask": measureBeforeAsk,
@@ -3348,6 +3663,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       askgate: askgateReview,
       "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
       "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+      "red-at-the-head": redAtTheHead,
     };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
@@ -3357,15 +3673,23 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
     const dir = path.join(runsDir, run);
-    // undefined for every other scenario, null for an askgate directory that names no case.
-    const askgate = scenario === "askgate" ? ASKGATE_RUN.exec(run) : undefined;
-    const [, askCase = "", label = named] = askgate ?? [];
-    const key = `${askgate ? `askgate:${askCase}` : scenario}\t${label}`;
+    // null for an askgate directory that names no case, or a red-at-the-head one that names no
+    // world; undefined for every other scenario, whose directory carries the label alone.
+    const sub =
+      scenario === "askgate"
+        ? ASKGATE_RUN.exec(run)
+        : scenario === "red-at-the-head"
+          ? RED_RUN.exec(run)
+          : undefined;
+    const [, subName = "", label = named] = sub ?? [];
+    const key = `${sub ? `${scenario}:${subName}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
-      if (askgate === null)
+      if (sub === null)
         throw new Error(
-          "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
+          scenario === "askgate"
+            ? "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
+            : "the directory names no world: a red-at-the-head run's directory is red-at-the-head-<world>-<label>-<n>"
         );
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
@@ -3378,7 +3702,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, askCase);
+        const scored = score(dir, run, label, subName);
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
@@ -3470,6 +3794,8 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
+      "           red-at-the-head: the six conditions on redAtTheHead for the world <run>/world.txt",
+      "           names, counted per world and label (redAtTheHead)",
       "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
