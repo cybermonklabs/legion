@@ -7,12 +7,12 @@ const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as cons
  *  that a run of cards landing one after another is waited out once rather than chased, short
  *  enough that a reader who followed a link sees the target without reading somewhere else
  *  first. */
-const QUIET_MS = 200;
+export const QUIET_MS = 200;
 
 /** How long a re-run is waited for at all. A drawing that never settles - a card that re-measures
  *  itself forever - must not leave the listeners armed for the life of the page, and a target
  *  moved by something that late is better left where the reader has it. */
-const LIMIT_MS = 3_000;
+export const LIMIT_MS = 3_000;
 
 /**
  * Runs `refocus` (every focus in the live document, through `ProofDocument`'s `focusInEditor`,

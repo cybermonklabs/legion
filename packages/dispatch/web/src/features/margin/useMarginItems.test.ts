@@ -724,7 +724,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
   const { listComments, unmount } = renderActionButtons();
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
-    await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
     expect(actionFailureShown()).toBeNull();
     const [first, again] = acceptComment.mock.calls.map(([, bounds]) => bounds.key);
     expect(again).toBe(first);

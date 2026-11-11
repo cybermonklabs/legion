@@ -9,10 +9,8 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import {
-  type IntersectionControl,
-  installIntersectionObserver,
-} from "../../__tests__/intersection-observer";
+import { onFakeClock } from "../../__tests__/fake-clock";
+import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
@@ -138,17 +136,6 @@ function newestTurn(id: string): Element {
   return watched;
 }
 
-/** One dwell: on screen for the second the rule asks for, then its write let through. */
-async function dwell(viewport: IntersectionControl, element: Element): Promise<void> {
-  const waited = Promise.withResolvers<void>();
-  await act(async () => {
-    viewport.show(element);
-    setTimeout(() => waited.resolve(), 1_100);
-    await waited.promise;
-  });
-  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
-}
-
 /** The width the Inbox shows its reading column from (1280 px); happy-dom answers `matchMedia`
  *  from the window it is given. */
 function widenToReadingPane(): () => void {
@@ -186,7 +173,7 @@ test("a card read by the dwell rule stays in the list, drawn as read", async () 
     await screen.findByTestId("inbox-thread-comment");
     await waitFor(() => expect(document.querySelector('[aria-label="Unread"]')).not.toBeNull());
 
-    await dwell(viewport, newestTurn("comment-2"));
+    await onFakeClock(() => dwellOn(viewport, newestTurn("comment-2")));
     expect(mark.mock.calls).toEqual([["comment-1", { read_through: NEWEST }, keyedAttempt]]);
 
     // The next read of the Inbox still holds the row - a thread stays until it is dismissed - and
@@ -221,7 +208,7 @@ test("a row read in the column stays in the list after the selection moves off i
       expect(document.querySelector('[data-inbox-pane-body="issue"]')).not.toBeNull()
     );
 
-    await dwell(viewport, newestTurn("comment-2"));
+    await onFakeClock(() => dwellOn(viewport, newestTurn("comment-2")));
     expect(mark.mock.calls).toEqual([["comment-1", { read_through: NEWEST }, keyedAttempt]]);
 
     act(() => {
@@ -318,7 +305,7 @@ test("an Agent thread is read by reply id, and moves no session read mark", asyn
       expect(document.querySelector('[data-inbox-thread-turn="reply-1"]')).not.toBeNull()
     );
 
-    await dwell(viewport, newestTurn("reply-1"));
+    await onFakeClock(() => dwellOn(viewport, newestTurn("reply-1")));
 
     // By id, and by id alone: no `read_through` for the session, and no thread mark either.
     expect(state.mock.calls).toEqual([["planner", { read_replies: ["reply-1"] }, keyedAttempt]]);

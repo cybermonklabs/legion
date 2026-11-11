@@ -109,7 +109,10 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 		{
 			// The reported case: a person comments on a passage of the issue's spec, which another session
 			// wrote; the claimant replies and resolves; the person replies, which reopens the thread.
-			name: "a person's reply on a claimed unrouted issue reaches the claimant and the document's writer once each",
+			// The spec's writer hears none of it: on an issue a session claims, the credits of a
+			// document are no second reason to deliver what that claimant already hears on its own
+			// topic (addAuthorRoutes), and the writer wrote no comment in this thread.
+			name: "a person's reply on a claimed unrouted issue reaches the claimant alone, not the document's writer",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
 				claimIssue(t, database, "T-1", claimant)
 				spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer}, []model.Actor{claimant})
@@ -120,7 +123,7 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 				created := appendCommentEvent(t, database, broker, "comment.created", sami, model.Comment{ID: reply, ReplyTo: &root})
 				return []recipientCheck{
 					{event: reopened, want: []string{claimant.ID}},
-					{event: created, want: []string{claimant.ID, writer.ID}},
+					{event: created, want: []string{claimant.ID}},
 				}
 			},
 		},
@@ -160,6 +163,19 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 			},
 		},
 		{
+			// An issue no session claims keeps the credits of the thread's document: the holder of
+			// its route is no claimant, and nothing else tells the document's writer of the reply.
+			name:  "a reply on a routed unclaimed issue reaches the route's holder, the thread's sessions and the document's writer",
+			route: new("session:session-holder"),
+			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
+				spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer})
+				root := seedThreadComment(t, database, "T-1", spec, rooter, nil)
+				reply := seedThreadComment(t, database, "T-1", "", alice, &root)
+				created := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{ID: reply, ReplyTo: &root})
+				return []recipientCheck{{event: created, want: []string{"session-holder", rooter.ID, writer.ID}}}
+			},
+		},
+		{
 			name: "a thread session the reply mentions is left to the mention once it delivered, and published to when it failed",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
 				claimIssue(t, database, "T-1", claimant)
@@ -188,7 +204,24 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 			},
 		},
 		{
-			name: "the reopening a reply makes reaches the claimant and the thread's root author, and the reply reaches everyone",
+			// A person's claim leaves routing.claimant empty (readBatch), so the rule that leaves a
+			// document's credits out on an issue a session claims is inert here: the writer of the
+			// document this thread hangs on still gets the person's reply. A rule keyed on the
+			// issue having a claim at all, rather than on the claimant being a session, would drop it.
+			name: "a person's claim leaves the credits of the thread's document in",
+			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
+				claimIssue(t, database, "T-1", model.Actor{Kind: "user", ID: "bob"})
+				spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer})
+				root := seedThreadComment(t, database, "T-1", spec, alice, nil)
+				reply := seedThreadComment(t, database, "T-1", "", alice, &root)
+				created := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{ID: reply, ReplyTo: &root})
+				return []recipientCheck{{event: created, want: []string{writer.ID}}}
+			},
+		},
+		{
+			// The reply reaches the thread's sessions and the claimant; the writer of the document
+			// the thread hangs on is a credit of it alone, which a session's claim leaves out.
+			name: "the reopening a reply makes reaches the claimant and the thread's root author, and the reply the thread's sessions",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
 				claimIssue(t, database, "T-1", claimant)
 				spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer})
@@ -199,7 +232,7 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 				created := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{ID: reply, ReplyTo: &root})
 				return []recipientCheck{
 					{event: reopened, want: []string{claimant.ID, rooter.ID}},
-					{event: created, want: []string{claimant.ID, rooter.ID, replier.ID, writer.ID}},
+					{event: created, want: []string{claimant.ID, rooter.ID, replier.ID}},
 				}
 			},
 		},
@@ -218,10 +251,16 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 // sends each destination's chain beside the others (planChains), so an event's destinations reach
 // the publisher in no order of the event's: the order is the one the batch records them in
 // (published_destinations), and the publisher must have been sent exactly those.
+//
+// The batch runs with an event broker, as every outbox does: the mention rule appends a
+// comment.delivery receipt through it where it settles an abandoned attempt before it publishes
+// that session's copy (mentionComment.settleAbandoned,
+// TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy), and a batch without one
+// fails that event rather than publishing it.
 func checkSessionRecipients(t *testing.T, database *store.Store, checks []recipientCheck) {
 	t.Helper()
 	publisher := &recordingPublisher{}
-	deps := Deps{Store: database, Publisher: publisher}
+	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {
 		t.Fatalf("scan batch: %v", err)
 	}
@@ -567,7 +606,11 @@ func makeDue(t *testing.T, database *store.Store, events ...model.Event) {
 // back from it until the failed event is tried again, and reaches it after the failed event does;
 // the destinations the failed event did list, the claimant here, chain as usual. The cases are
 // the three recipient reads: a reply's thread sessions, the sessions of the primary document of an
-// issue nobody routes or claims, and the sessions of the document a comment is anchored on.
+// issue nobody routes or claims, and the sessions of the document a comment is anchored on. That
+// last read still runs, and a failure of it still backs its event off, where the credits it
+// answers reach nobody: on an issue a session claims they are no second reason to deliver
+// (addAuthorRoutes, creditOnly), and the hold is the same - a read that failed names no session,
+// so the later event waits for the retry whatever the repaired read would have said.
 func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBeforeIt(t *testing.T) {
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	rooter := model.Actor{Kind: "session", ID: "session-rooter"}
@@ -581,6 +624,10 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 		// wantFirst is the later event's sessions in the first batch: those the failed event
 		// listed.
 		wantFirst []string
+		// creditOnly is that the failed event's read names rooter as a credit of its document
+		// alone, no comment of the thread being rooter's: the issue's session claim leaves such a
+		// credit out, so the repaired read sends rooter the later event alone.
+		creditOnly bool
 	}{
 		{
 			name: "a reply's thread sessions",
@@ -618,7 +665,8 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 				resolved := appendCommentEvent(t, database, broker, "comment.resolved", sami, model.Comment{ID: root})
 				return commented, resolved, notes
 			},
-			wantFirst: []string{claimant.ID},
+			wantFirst:  []string{claimant.ID},
+			creditOnly: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -668,8 +716,13 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 					order = append(order, item.SourceEventID)
 				}
 			}
-			if want := []string{fmt.Sprint(failed.ID), fmt.Sprint(later.ID)}; !slices.Equal(order, want) {
-				t.Fatalf("%s received events %v, want %v: the failed event first, then the later one", rooter.ID, order, want)
+			wantOrder := []string{fmt.Sprint(failed.ID), fmt.Sprint(later.ID)}
+			if tc.creditOnly {
+				wantOrder = []string{fmt.Sprint(later.ID)}
+			}
+			if !slices.Equal(order, wantOrder) {
+				t.Fatalf("%s received events %v, want %v: the failed event first and then the later one, or the later one alone where the repaired read names %s as a credit of the document and the issue's claimant is a session",
+					rooter.ID, order, wantOrder, rooter.ID)
 			}
 		})
 	}

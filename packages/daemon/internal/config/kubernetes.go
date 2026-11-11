@@ -810,6 +810,12 @@ func unfilledPlaceholder(key, value, put string) error {
 // credential's value (runtime.HoldsSecretValue, as a spec's Env is judged in
 // runtime.ValidateSpawnSpec): a credential travels in a Secret, never as a plain value in the pod's
 // spec.
+//
+// One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
+// the operator's own resource attributes, which the runtime appends the launch's issue and role
+// to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
+// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// — rather than at a launch nobody watches.
 func readPodEnv(value *yaml.Node) (map[string]string, error) {
 	const key = podKey + ".env"
 	if value == nil {
@@ -835,6 +841,11 @@ func readPodEnv(value *yaml.Node) (map[string]string, error) {
 		case runtime.HoldsSecretValue(name):
 			return nil, fmt.Errorf("%s sets %s, a credential-shaped name: a credential comes from a Secret, so mount one with %s.volumes or name its key in provider_keys",
 				key, name, podKey)
+		}
+		if name == runtime.SpendAttributesVariable {
+			if why := runtime.SpendAttributesRefusal(text); why != "" {
+				return nil, fmt.Errorf("%s sets %s to %s: %s", key, name, spendAttributesRule, why)
+			}
 		}
 		env[name] = text
 	}
