@@ -404,6 +404,30 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		}
 		assertCitedFromAnAskPartAlone(t, database, askCited)
 
+		// A document that holds a second version, made through the route that names one: a
+		// named version of an empty document is a second empty row, so what refuses this
+		// removal is the count of versions and no version of it holds a word.
+		named := emptyDocument(t, handler, issue.Key, "Named notes")
+		if version := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+named.ID+"/versions",
+			map[string]any{"summary": "The notes as they stand"}, "alice"); version.Code != http.StatusCreated {
+			t.Fatalf("name a version of the empty document: status=%d body=%s", version.Code, version.Body.String())
+		}
+
+		// A document row that holds no version at all. No route of Dispatch makes one - every
+		// document is made with its first version in the same transaction - so this row is
+		// written rather than made. The refusal protects it all the same: a route whose words
+		// say it deletes a document holding exactly one empty version must not delete a row
+		// that holds none.
+		var versionlessID string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ($1, 'TEST', 'versionless-md', 'versionless.md', 'doc', '{"kind":"user","id":"alice"}')
+			returning id::text
+		`, issue.Key).Scan(&versionlessID); err != nil {
+			t.Fatalf("write a document row holding no version: %v", err)
+		}
+		versionless := readDocument(t, handler, versionlessID)
+
 		for _, refused := range []struct {
 			what     string
 			document model.Artifact
@@ -415,6 +439,16 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 				what: "a document whose version holds words", document: written,
 				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
 				sentence: notUntouchedSentence(written, "its first version is not empty"),
+			},
+			{
+				what: "a document that holds a named version as well", document: named,
+				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
+				sentence: notUntouchedSentence(named, "it holds more than one version"),
+			},
+			{
+				what: "a document row that holds no version", document: versionless,
+				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
+				sentence: notUntouchedSentence(versionless, "it holds no version at all"),
 			},
 			{
 				what: "a document whose edit has not settled", document: typed,

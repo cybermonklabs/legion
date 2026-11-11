@@ -35,6 +35,7 @@ import {
   CLOSED_ISSUE_REMOVE_REFUSAL,
   CLOSED_ISSUE_RENAME_REFUSAL,
   CorrectTitle,
+  correctionIsOffered,
   RemoveDocument,
   removalIsOffered,
 } from "./DocumentWayBack";
@@ -210,10 +211,12 @@ export function ArtifactHeader({
                 >
                   Name version
                 </button>
-                <CorrectTitle
-                  artifact={artifact}
-                  refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
-                />
+                {!correctionIsOffered(artifact) ? null : (
+                  <CorrectTitle
+                    artifact={artifact}
+                    refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
+                  />
+                )}
                 {issueKey === null || !removalIsOffered(artifact) ? null : (
                   <RemoveDocument
                     artifact={artifact}

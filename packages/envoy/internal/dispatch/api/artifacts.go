@@ -108,6 +108,12 @@ type jsonArtifactUpload struct {
 	// where that slug is one of the documents Dispatch makes itself (400 ARTIFACT_ROLE_NAME).
 	// A multipart upload sends its bytes as the `file` part instead and carries no content at
 	// all, which is a body of its own (openAPIMultipartSchema).
+	//
+	// Content of whitespace alone is carried to the store as it was typed, and the store makes
+	// it empty: the write parses the markdown into the document and stores what that document
+	// renders back (Docs.SeedText, storeArtifact), and whitespace alone is no block, so the
+	// version holds an empty markdown of size 0. Such a document is as removable as one made
+	// with no content at all, measured on 2026-11-11 through the route itself.
 	Content *string         `json:"content"`
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`

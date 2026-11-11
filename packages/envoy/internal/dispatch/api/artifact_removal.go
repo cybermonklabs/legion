@@ -178,6 +178,12 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 	`, artifact.ID).Scan(&versions, &madeWithContent, &writtenSince, &settledThrough); err != nil {
 		return fmt.Errorf("read the versions of %s: %w", artifact.ID, err)
 	}
+	// The count is read for every value that is not one, because R10 passes only a document
+	// that holds exactly one version whose markdown is empty. More than one version is a second
+	// row somebody made: a settled write or a named version. No version at all is a row no
+	// route of Dispatch makes - every document is made with its first version in the same
+	// transaction - which is why the test of that refusal writes the row itself; the removal
+	// still refuses it, because a row that holds no version is not the row these words delete.
 	switch {
 	case writtenSince:
 		return artifactNotUntouched(artifact, "it holds writing")
@@ -185,6 +191,8 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		return artifactNotUntouched(artifact, "its first version is not empty")
 	case versions > 1:
 		return artifactNotUntouched(artifact, "it holds more than one version")
+	case versions != 1:
+		return artifactNotUntouched(artifact, "it holds no version at all")
 	}
 	// An edit that has not settled, in the durable terms a room is read by: a doc_updates row
 	// above the latest version's doc_update_version, the cursor writeDocumentVersion stamps

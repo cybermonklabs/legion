@@ -141,6 +141,18 @@ export function removalIsOffered(artifact: Artifact): boolean {
 }
 
 /**
+ * Whether a correction of `artifact`'s title is offered at all. Dispatch corrects a document's
+ * title, and refuses two kinds whatever name the correction carries: an artifact that is no
+ * document, because a file or an image keeps the name it was uploaded with, and the issue's
+ * spec, because the spec's name is how the spec is written whole (`renameArtifact`). A role
+ * document and a project document are both corrected, so neither is read here. A press that is
+ * always refused is offered nowhere, so the header reads this before it renders `CorrectTitle`.
+ */
+export function correctionIsOffered(artifact: Artifact): boolean {
+  return artifact.kind === "doc" && !(artifact.primary && artifact.issue_key !== null);
+}
+
+/**
  * The control that removes a document, on its row in the issue's document list and on its own
  * page. It asks for no confirmation: Dispatch removes only a document that holds nothing and that
  * nothing names, and refuses every other one with a sentence that names the test it failed, which

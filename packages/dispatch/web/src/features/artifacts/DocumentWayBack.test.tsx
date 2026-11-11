@@ -287,3 +287,36 @@ test("a project document's page offers the correction and no removal", async () 
     listArtifacts.mockRestore();
   }
 });
+
+// The spec's name is how the spec is written whole, so the server refuses a correction of it
+// whatever name the press carries: its header offers no correction, where an ordinary
+// document's header offers one.
+test("the issue's spec offers no correction and an ordinary document does", async () => {
+  const spec = document({
+    name: "spec.md",
+    primary: true,
+    ref_key: "CORE-1/spec",
+    slug: "spec",
+  });
+  const listSpec = spyOn(api, "listArtifacts").mockResolvedValue([spec]);
+  const specPage = renderPage(buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "spec" }));
+
+  try {
+    await screen.findByRole("heading", { name: "spec.md" });
+    expect(screen.queryByRole("button", { name: "Correct title" })).not.toBeInTheDocument();
+  } finally {
+    specPage.unmount();
+    listSpec.mockRestore();
+  }
+
+  const listDocument = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
+  const documentPage = renderPage(documentPath);
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    expect(screen.getByRole("button", { name: "Correct title" })).not.toBeNull();
+  } finally {
+    documentPage.unmount();
+    listDocument.mockRestore();
+  }
+});
