@@ -749,6 +749,15 @@ Each item below names a task and where its code is, then notes on it.
   A job holding a credential runs no script of this repository, so it reads the value from the output of an upstream job that does (`release-envoy-listener.yaml`'s `targets`, `worker-image.yaml`'s `build`), or from a `workflow_call` input when that job was skipped (`worker-image.yaml`'s `image`, which `release.yaml` passes).
   `docs/site/repo-paths.ts` is the docs build's adapter over the same script
 
+- **A workflow file holds the structure of its jobs, and nothing else**
+  — a file of `.github/workflows/` names its jobs, their triggers, their conditions, their runners and what they call.
+  The path-filter data is in `.github/ci-filters.yaml`, which `dorny/paths-filter` reads by path, in one step of `ci.yaml`'s `changes` job.
+  A `run:` body of more than 10 lines is a script under `.github/scripts/`, run by its path, with each budget comment on the line it sizes.
+  A derivation or a history goes in `.github/ci-notes/<the workflow file's name without its suffix>.md`, and the step it belongs to keeps one comment line, `# why: .github/ci-notes/<file>.md#<the section's anchor>`, that names it; a value's own arithmetic stays on its line in the workflow file.
+  `.github/scripts/check-workflow-files.sh` holds every file of that directory to 64,000 bytes, and refuses one GitHub's own parser would not read (invalid YAML, or two keys of one mapping that are equal when upper-cased) and one that calls more than 45 unique reusable workflows.
+  The number is 64,000 because GitHub starts no run at all for a workflow file above its cap of 500 KB and signals that only as a run with no jobs in it, so the limit a reader is held to is a readable file rather than a parser's limit.
+  `ci.yaml`'s `ci-filters` job runs the check, `.github/workflows/workflow-files.yaml` runs it a second time in a file small enough to start when `ci.yaml` is too large to, and `ci.yaml`'s test job runs `.github/scripts/check-workflow-files.test.sh`
+
 - **A change that touches the daemon API contract declares a number above its base's**
   — `const DaemonAPIVersion` in `packages/daemon/internal/api/version.go` is the number a daemon and the Legion plugin in its pods must agree on, so two changes cannot both declare one, and the one that lands second is renumbered after its review has already run.
   `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches that file and declares a number no higher than its base carries — the tip of the base branch on a pull request, the commit the queue built the group on in the merge queue — and the refusal names a free number, the lowest above the base's that no open pull request declares, and the four files that hold the number (that file, `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`).

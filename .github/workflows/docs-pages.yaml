@@ -16,11 +16,12 @@ name: Docs (main)
 # waiting in the group below only the newest builds, and the site loses nothing by that: each
 # build covers the whole tree, so the site still ends at the newest docs-selecting commit.
 #
-# The paths below are ci.yaml's docs filter flattened as dorny/paths-filter reads it (each
-# anchor's group in its place and order, the one duplicate kept), so main builds the site on
-# exactly the changes a pull request's docs job builds it on. .github/scripts/check-ci-filters.sh
-# fails when the two lists differ, naming each missing and extra pattern (ci_job_reads.py's
-# PUSH_WORKFLOWS pairs them), so change the filter and this list together.
+# The paths below are the `docs` filter of .github/ci-filters.yaml flattened as
+# dorny/paths-filter reads it (each anchor's group in its place and order, the one duplicate
+# kept), so main builds the site on exactly the changes a pull request's docs job builds it on.
+# .github/scripts/check-ci-filters.sh fails when the two lists differ, naming each missing and
+# extra pattern (ci_job_reads.py's PUSH_WORKFLOWS pairs them), so change the filter and this list
+# together.
 on:
   push:
     branches: [main]
