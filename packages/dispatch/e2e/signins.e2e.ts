@@ -1,13 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import type { FakeSignIn } from "./fake-broker";
 import { setSignIns } from "./fake-broker-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { withAlice } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Alice's two sign-ins, one per machine she ran `agent-secrets login` on, as the broker lists
  *  them. Bob's is seeded beside them on a machine account of its own, so the page proves it

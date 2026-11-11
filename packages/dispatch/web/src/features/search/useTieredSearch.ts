@@ -9,7 +9,7 @@ import type { SearchRequest } from "./search-filters";
 /** How long the bar waits after a keystroke before it searches the words alone. Short enough
  *  that the list answers the letter just typed, long enough that a fast typist sends one search
  *  for a word rather than one for each of its letters. */
-const KEYSTROKE_DEBOUNCE_MS = 150;
+export const KEYSTROKE_DEBOUNCE_MS = 150;
 /** How long the bar waits after the last keystroke before it searches by meaning as well as by
  *  words. It has to be clearly longer than the keystroke's wait, or every burst of typing would
  *  pay for an embedding; and short enough that the re-ranked list still reads as part of typing

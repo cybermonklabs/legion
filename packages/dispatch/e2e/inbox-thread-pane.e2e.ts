@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { exchangeDelivery } from "../web/src/features/agents/exchange-delivery";
 import { setLiveSessions } from "./agents";
 import {
@@ -29,7 +27,7 @@ import {
   sessionActor,
   THREAD_SESSION,
 } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -40,10 +38,6 @@ import { asUser } from "./users";
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Selects a row the way the pointer does: the click lands on the row's own time. */
 async function selectRow(page: Page, id: string): Promise<Locator> {

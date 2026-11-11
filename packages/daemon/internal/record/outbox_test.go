@@ -43,6 +43,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		WorkspaceRemove{Linger: 3},
 		MergeQueuePublish{Role: "merge-queue", Packet: "READY #42 at head (approved at head) for LEGION-208 (https://github.com/sjawhar/legion/pull/42)"},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
+		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}}},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -56,6 +57,11 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		CheckBound{},
 		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest"},
 		PhaseEnded{Role: claim.RoleImplementer, From: phase.Retro, To: phase.Implementing, Reason: "CI is red at head: pytest", TaskFollows: true},
+		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
+			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
+			PullRequest: "sjawhar/legion#42", Prompt: "Read the reviewer's thread before you write anything."},
+		HookPrompt{Hook: "slow-review", Role: claim.RoleReviewer, From: phase.Accepting, To: phase.Reviewing,
+			Count: 2, Counts: map[string]int{"accepting-reviewing": 2}, Prompt: "Say what the round missed."},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -166,8 +172,8 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindMergeQueuePublish, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge,
-		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindPhaseEnded, OutboxKindIssueBundle, OutboxKindIssueRelease,
-		OutboxKindGatedStepsPublish, OutboxKindClaimRelease}
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindIssueBundle, OutboxKindIssueRelease,
+		OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish}
 	lanes := map[OutboxKind][]OutboxLane{}
 	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
 		for _, kind := range LaneKinds(lane) {
@@ -251,6 +257,15 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a phase-ended message out of the phase the issue is in", payload: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
 		{name: "a phase-ended message without a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing}, reason: "carries the reason the architect's notice carries"},
 		{name: "a phase-ended task that follows for another role", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest", TaskFollows: true}, reason: "only the implementer is told its task follows"},
+		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
+		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
+		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
+		{name: "a hook prompt to the controller", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleController, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
+		{name: "a hook prompt on a move forward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleReviewer, From: phase.Implementing, To: phase.Reviewing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
+		{name: "a hook prompt on a phase outside the forward line", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Held, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
+		{name: "a hook prompt that counted nothing", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Prompt: "Read the thread."}, reason: "its count is one or more"},
+		{name: "a hook prompt counting backward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: -1, Prompt: "Read the thread."}, reason: "its count is one or more"},
+		{name: "a hook prompt with no words", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1}, reason: "carries the hook's own words"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
@@ -284,6 +299,9 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a phase-ended message to an architect", row: OutboxRow{ID: 46, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"architect","from":"accepting","to":"implementing","reason":"CI is red at head: pytest"}`)}, reason: "never to an architect"},
 		{name: "a phase-ended message with an unknown field", row: OutboxRow{ID: 47, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"tester","from":"testing","to":"implementing","reason":"CI is red at head: pytest","quiesce":"tester"}`)}, reason: "unknown field"},
+		{name: "a hook prompt to an architect", row: OutboxRow{ID: 49, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
+		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 50, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
+		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 51, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
 		{name: "a claim release with a field", row: OutboxRow{ID: 48, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -298,6 +316,49 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
+
+// A hook prompt's message is three parts with a blank line between them: the daemon's header,
+// the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The
+// counts stand below the words, because the shipped hook's words point at them, and the header
+// stands above, because a worker knows a hook by the line it starts with. The counts are listed
+// in the order phase.BackwardPairs() gives, which is neither the map's own order nor
+// alphabetical, so two readings of one row read alike. The pull-request sentence stands only for
+// an issue with a pull request, and the words of the hook come through whole: a prompt that
+// spells a word in angle brackets is published with it, since the daemon substitutes nothing
+// into the hook's own text.
+func TestAHookPromptStatesTheFactsAndLeavesTheHooksWordsAlone(t *testing.T) {
+	const prompt = "This is the third time the work came back. Say what the round missed;\n<count> is no placeholder the daemon fills."
+	fired := HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
+		Count: 3, Counts: map[string]int{"reviewing-implementing": 3, "testing-implementing": 1, "retro-implementing": 2},
+		PullRequest: "sjawhar/legion#42", Prompt: prompt}
+	want := "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
+		prompt + "\n\nMoves back this hook counts: 3." +
+		" Counts by move: testing-implementing=1, reviewing-implementing=3, retro-implementing=2." +
+		" Pull request: sjawhar/legion#42."
+	if got := fired.Message("LEGION-208"); got != want {
+		t.Fatalf("Message of a firing with a pull request =\n%q\nwant\n%q", got, want)
+	}
+
+	noPull := fired
+	noPull.PullRequest = ""
+	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
+		prompt + "\n\nMoves back this hook counts: 3." +
+		" Counts by move: testing-implementing=1, reviewing-implementing=3, retro-implementing=2."
+	if got := noPull.Message("LEGION-208"); got != want {
+		t.Fatalf("Message of a firing with no pull request =\n%q\nwant\n%q", got, want)
+	}
+
+	// The counts cannot normally be empty, since the firing counted the move that fired it, but a
+	// row written any other way says so rather than dropping the sentence.
+	counted := fired
+	counted.Counts = nil
+	counted.PullRequest = ""
+	want = "Legion hook back-to-implementing on LEGION-208: work went back from reviewing to implementing.\n\n" +
+		prompt + "\n\nMoves back this hook counts: 3. Counts by move: none."
+	if got := counted.Message("LEGION-208"); got != want {
+		t.Fatalf("Message of a firing that counts nothing =\n%q\nwant\n%q", got, want)
+	}
+}
 
 // The release field is gone: an issue's close deletes its Sandbox in every case, so a suspension
 // carries nothing to say which. A row the previous release queued with the field is stripped of

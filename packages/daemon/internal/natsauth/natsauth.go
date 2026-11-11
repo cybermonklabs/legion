@@ -149,7 +149,14 @@ func (s source) seed() (string, error) {
 // Connect dials urls as the nkey user seed is the seed of, a seed Seed answered; "" connects
 // without a credential. Every connection it opens pings as detectSilentCuts sets, because the
 // daemon dials NATS here and nowhere else: the pings are this package's, not a caller's to pass.
-func Connect(urls []string, seed string, options ...nats.Option) (*nats.Conn, error) {
+//
+// name is what the connection calls itself to the server, and it is a parameter rather than an
+// option because an option can be forgotten and an unnamed connection is one nobody can place:
+// an operator reading /connz on the Envoy NATS sees which process holds each connection, and a
+// test fixture reporting a connection a test left open can say which client it was. It is
+// appended after the caller's own options, beside detectSilentCuts, so a caller's own nats.Name
+// does not win here.
+func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
 	if seed != "" {
 		user, err := userKey(seed, "the NATS nkey seed")
 		if err != nil {
@@ -161,8 +168,8 @@ func Connect(urls []string, seed string, options ...nats.Option) (*nats.Conn, er
 		}
 		options = append(options, nats.Nkey(public, user.Sign))
 	}
-	// Last, so these pings hold whatever a caller passed before them.
-	options = append(options, detectSilentCuts)
+	// Last, so these pings and this name hold whatever a caller passed before them.
+	options = append(options, detectSilentCuts, nats.Name(name))
 	return nats.Connect(strings.Join(urls, ","), options...)
 }
 
