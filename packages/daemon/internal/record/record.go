@@ -404,7 +404,26 @@ type PhaseRow struct {
 	// compares Rounds - ConflictRounds with the cap, so such a round costs the issue nothing,
 	// whichever fact made the move (workflow's recordRound).
 	ConflictRounds int
-	Verdict        string
+	// BackwardMoves is how many times the issue moved back by each kind of move, keyed
+	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. Like Rounds it is
+	// counted on the implementer's row alone (workflow's recordRound), and the two count the same
+	// moves to different ends: Rounds keeps its meaning exactly, rising on every backward move,
+	// because a phase completion's idempotency key is built from it (api/handoff.go's
+	// handoffPosition), while this map says what kind each move was, which is what a hook reads.
+	// A conflict round is the one move the two part company on: it raises Rounds and
+	// ConflictRounds and no pair, since nobody sent the work back, so no hook fires for it.
+	// The map starts empty when the migration lands and is never filled in from the past, so an
+	// issue already in flight reads counts that add up to less than its Rounds.
+	BackwardMoves map[string]int
+	// CapTold is the review_round_cap value this row last posted the cap's message and its
+	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
+	// once for each value of the cap rather than on every round after the first that reaches it:
+	// the round that tells writes the cap it read here, and a later round compares the two.
+	// A new generation clears it (ClearGeneration), so a tree sent back to the start tells again
+	// from its own first crossing.
+	CapTold int
+	Verdict string
 	// Summary is what the role reported with its completion. The merger's is its READY packet,
 	// which the daemon posts when the issue reaches awaiting_merge.
 	Summary string

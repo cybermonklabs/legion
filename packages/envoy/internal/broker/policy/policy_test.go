@@ -221,3 +221,61 @@ func TestRequesters(t *testing.T) {
 		}
 	}
 }
+
+// TestTrimForShape is the shape rule's table: the value TrimForShape spends for each stored
+// value under each shape, and whether it says it changed it. A token's whole trailing run of
+// carriage returns and line feeds goes, however many and in whichever order; a document is
+// spent byte for byte; a secret with no shape tag is trimmed only where its value holds no
+// carriage return and no line feed inside it, so a PEM document keeps the line ending that ends
+// it. A value that is nothing but line endings keeps them under every shape, since the empty
+// string reads to a caller as a credential that is not set. (The values below are fixtures, not
+// credentials.)
+func TestTrimForShape(t *testing.T) {
+	const (
+		token = "tok-abc"
+		pem   = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	)
+	for _, c := range []struct {
+		name        string
+		value       string
+		shape       string
+		want        string
+		wantChanged bool
+	}{
+		{"a line feed, no shape tag", token + "\n", "", token, true},
+		{"a line feed, token", token + "\n", policy.ShapeToken, token, true},
+		{"a line feed, document", token + "\n", policy.ShapeDocument, token + "\n", false},
+		{"a carriage return and a line feed, no shape tag", token + "\r\n", "", token, true},
+		{"a carriage return and a line feed, token", token + "\r\n", policy.ShapeToken, token, true},
+		{"a carriage return and a line feed, document", token + "\r\n", policy.ShapeDocument, token + "\r\n", false},
+		{"a carriage return, no shape tag", token + "\r", "", token, true},
+		{"a carriage return, token", token + "\r", policy.ShapeToken, token, true},
+		{"a carriage return, document", token + "\r", policy.ShapeDocument, token + "\r", false},
+		{"two line feeds, no shape tag", token + "\n\n", "", token, true},
+		{"two line feeds, token", token + "\n\n", policy.ShapeToken, token, true},
+		{"two line feeds, document", token + "\n\n", policy.ShapeDocument, token + "\n\n", false},
+		{"no line ending, no shape tag", token, "", token, false},
+		{"no line ending, token", token, policy.ShapeToken, token, false},
+		{"no line ending, document", token, policy.ShapeDocument, token, false},
+		// A PEM document holds line endings inside it, so the untagged reading leaves its last
+		// one alone; an owner who tagged it a token asked for it to go.
+		{"a PEM document, no shape tag", pem, "", pem, false},
+		{"a PEM document, token", pem, policy.ShapeToken, "-----BEGIN KEY-----\nabc\n-----END KEY-----", true},
+		{"a PEM document, document", pem, policy.ShapeDocument, pem, false},
+		{"a line ending inside the value, no shape tag", "a\nb\r", "", "a\nb\r", false},
+		{"a line ending inside the value, token", "a\nb\r", policy.ShapeToken, "a\nb", true},
+		{"a line ending inside the value, document", "a\nb\r", policy.ShapeDocument, "a\nb\r", false},
+		{"one line feed alone, no shape tag", "\n", "", "\n", false},
+		{"one line feed alone, token", "\n", policy.ShapeToken, "\n", false},
+		{"one line feed alone, document", "\n", policy.ShapeDocument, "\n", false},
+		{"leading line feeds, no shape tag", "\n\n" + token, "", "\n\n" + token, false},
+		{"leading line feeds, token", "\n\n" + token, policy.ShapeToken, "\n\n" + token, false},
+		{"leading line feeds, document", "\n\n" + token, policy.ShapeDocument, "\n\n" + token, false},
+	} {
+		got, changed := policy.TrimForShape(c.value, c.shape)
+		if got != c.want || changed != c.wantChanged {
+			t.Errorf("%s: TrimForShape(%q, %q) = %q, %t; want %q, %t",
+				c.name, c.value, c.shape, got, changed, c.want, c.wantChanged)
+		}
+	}
+}
