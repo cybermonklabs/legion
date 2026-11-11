@@ -8,30 +8,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
-
-// documentRooms is the room eviction the removal needs of the document service
-// (docs.Service.Evict). It is reached by assertion rather than through docs.API, as the document
-// test hooks are (documentTestHooks), so the surface every handler and test double implements
-// does not carry it.
-type documentRooms interface {
-	Evict(ctx context.Context, artifactID string) error
-}
-
-// requireDocumentRooms answers the document service's room eviction, or refuses the request. A
-// service that closes no room is refused before the removal writes anything: a document whose row
-// went while its room stayed open would settle that room against a row that is gone.
-func (s *server) requireDocumentRooms(w http.ResponseWriter) (documentRooms, bool) {
-	rooms, ok := s.deps.Docs.(documentRooms)
-	if !ok {
-		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, codeDocServiceUnavailable,
-			"this server's document service closes no editor room, so a document is not removed here"))
-		return nil, false
-	}
-	return rooms, true
-}
 
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
 // title and never written in. It answers 204 and no body.
@@ -49,53 +29,23 @@ func (s *server) requireDocumentRooms(w http.ResponseWriter) (documentRooms, boo
 // after that clear of events.artifact_id, so the clear cannot take it; an issue document's events
 // are the issue's, so that row carries no artifact id and outlives the document.
 //
-// The room is closed after the commit, and only then (docs.Service.Evict): a settlement that
-// commits against a row that has gone would fail, and a client that reconnects between the two
-// reads the document as gone rather than loading a room for a row that is no longer there.
+// The room is closed on every process that holds one, through the room-sync notification this
+// transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
+// another process is a room over a row that has gone, whose next append meets a foreign key that
+// no longer resolves. The removing process closes its own room after the commit, and only then
+// (docs.Service.Evict): a settlement that commits against a row that has gone would fail, and a
+// client that reconnects between the two reads the document as gone rather than loading a room
+// for a row that is no longer there.
 func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	rooms, ok := s.requireDocumentRooms(w)
+	tx, artifact, _, ok := s.beginArtifactWrite(w, r)
 	if !ok {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	tx, err := s.begin(r.Context())
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	defer tx.Rollback(r.Context())
-	// The owner's own refusals come first, as every write to an owner takes them: a closed issue
-	// is refused here, before the document is read at all. An agent's conversation takes no lock
-	// because it holds no document (uploadArtifactFor), so the kind refusal below is every
-	// removal an artifact of a conversation gets.
-	switch {
-	case artifact.IssueKey != nil:
-		if _, err := s.requireOpenOwnerStatus(r.Context(), tx, issueOwner(*artifact.IssueKey)); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	case artifact.Project != "":
-		if err := lockProjectArtifacts(r.Context(), tx, artifact.Project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	// The row is read again under that lock, so every test below, and the document the event
-	// carries, read it as it is now: the read above ran before the lock and a correction of the
-	// same document may have committed since.
-	artifact, err = s.loadArtifact(r.Context(), tx, artifact.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	if refusal := artifactIsUntouched(r.Context(), tx, artifact); refusal != nil {
 		s.writeHandlerError(w, refusal)
 		return
@@ -116,6 +66,13 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
 		return
 	}
+	// Every process closes its room of the document, from this transaction's commit. Sent here,
+	// after the row is gone and before the commit, for the reason the seam gives: a removal that
+	// fails to commit announces nothing.
+	if err := docs.AnnounceDocumentRemoved(r.Context(), tx, artifact.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
 	))
@@ -131,7 +88,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// The eviction outlives the request: a caller that hung up still leaves no room open on a
 	// row that has gone. A room this server could not close is logged, not answered: the
 	// document is removed, which is what the caller asked for and what every later read sees.
-	if err := rooms.Evict(context.WithoutCancel(r.Context()), artifact.ID); err != nil {
+	if err := s.deps.Docs.Evict(context.WithoutCancel(r.Context()), artifact.ID); err != nil {
 		slog.Error("dispatch: close the editor room of a removed document", "artifact", artifact.ID, "error", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -168,8 +125,8 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 	var settledThrough int64
 	if err := tx.QueryRow(ctx, `
 		select count(*)::int,
-		       coalesce(bool_or(v.number = 1 and coalesce(v.markdown, '') <> ''), false),
-		       coalesce(bool_or(v.number <> 1 and coalesce(v.markdown, '') <> ''), false),
+		       coalesce(bool_or(v.number = 1 and coalesce(octet_length(v.markdown), 0) > 0), false),
+		       coalesce(bool_or(v.number <> 1 and coalesce(octet_length(v.markdown), 0) > 0), false),
 		       coalesce((select latest.doc_update_version from artifact_versions latest
 		                 where latest.artifact_id = $1 order by latest.number desc limit 1), 0)
 		from artifact_versions v where v.artifact_id = $1

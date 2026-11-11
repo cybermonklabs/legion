@@ -3033,6 +3033,30 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 	}
 }
 
+// documentRemoved is documentRemovedChannel's handler, on its room-sync lane (roomSync.handlers):
+// the document artifactID was removed, in a transaction of any process - this one's or another's
+// - whose commit announced it (AnnounceDocumentRemoved). The row has gone, so a room of it here
+// is a room over nothing: its next append would meet a foreign key that no longer resolves, and a
+// settlement would commit against a row that is not there. The room is closed, through the same
+// eviction the removing process runs over its own room after the commit (api.removeArtifact).
+//
+// A process holding no room of the document has nothing to close, which is read first
+// (recheckResidentIssues reads residence the same way): every process hears this, the removing
+// one included, and on all but the few holding a room there is no room to take a close's lock
+// for. The removal is refused for anything but an untouched document, so a room this closes
+// holds nothing a person typed and nothing is lost by closing it unflushed.
+func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
+	if s.srv.GetDoc(artifactID) == nil {
+		return
+	}
+	if err := s.Evict(ctx, artifactID); err != nil && ctx.Err() == nil {
+		// The room stays open until this process's next close of it. Nothing re-reads a
+		// removal: it is announced once, and the row it names is gone, so the error is what
+		// anyone looking at this process has to go on.
+		slog.Error("dispatch: close the editor room of a removed document", "artifact", artifactID, "error", err)
+	}
+}
+
 // recheckResidentIssues is the issue-open lane's work after each LISTEN stands: a close or a
 // reopen notified while the listener had no connection reached nobody and is never sent again, so
 // the issue of every room this process holds is read once more, in one statement, and each room

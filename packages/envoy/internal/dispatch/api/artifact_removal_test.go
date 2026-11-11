@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	gws "github.com/gorilla/websocket"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -507,4 +510,122 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		}
 		assertNoRowNamesTheDocument(t, roomDatabase, document.ID)
 	})
+}
+
+// Two document services run against one database, as two Dispatch processes do, and both hold a
+// room of the same untouched document. The removal goes through the first of them, and both
+// rooms close: the removal's own transaction announces it to every process
+// (docs.AnnounceDocumentRemoved), so the second process closes its room of a row that has gone
+// rather than keeping one whose next append would meet a foreign key that no longer resolves
+// (R10). A build that evicts only on the removing process fails here.
+//
+// The close carries no content: the removal is refused for anything but an untouched document,
+// which the test reads as the document's one empty version before it removes anything.
+func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
+	ctx := context.Background()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	removing, ok := deps.Docs.(*docs.Service)
+	if !ok {
+		t.Fatalf("the test server's document service is %T, which holds no rooms to read", deps.Docs)
+	}
+	runDocumentRoomSync(t, database, removing)
+	// The second process: a document service of its own on a second pool, as cmd/dispatch runs
+	// one, hearing the first's announcements over the database alone.
+	secondStore := storetest.SecondProcess(t, database)
+	holding := docs.New(docs.Deps{Store: secondStore, Identity: headerIdentity(secondStore), Settle: time.Hour})
+	t.Cleanup(func() { _ = holding.Shutdown(context.Background()) })
+	runDocumentRoomSync(t, secondStore, holding)
+
+	issue := createInteractionIssue(t, handler, "ROOM", "A document two processes hold", "# Spec\n")
+	document := emptyDocument(t, handler, issue.Key, "Room notes")
+
+	// The document is untouched, which is the only document this route removes: it holds one
+	// version and that version is empty, so neither room below holds anything a person typed.
+	var versions int
+	var written string
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*)::int, coalesce(string_agg(coalesce(markdown, ''), ''), '')
+		from artifact_versions where artifact_id = $1::uuid
+	`, document.ID).Scan(&versions, &written); err != nil {
+		t.Fatalf("read the document's versions: %v", err)
+	}
+	if versions != 1 || written != "" {
+		t.Fatalf("the document holds %d versions carrying %q; want the one empty version typing a title makes", versions, written)
+	}
+
+	// A person opens the document on the second process, which loads its room there: the room a
+	// removal on the other process must close, and the person R10 leaves holding nothing live
+	// over a row that has gone. Opening it types nothing, so the document is still untouched.
+	secondServer := httptest.NewServer(http.HandlerFunc(holding.ServeHTTP))
+	t.Cleanup(secondServer.Close)
+	connection, wsResponse, err := gws.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(secondServer.URL, "http")+"/ws/doc/"+document.ID,
+		http.Header{"X-Dispatch-User": []string{"alice"}})
+	if err != nil {
+		t.Fatalf("open the document on the second process: response=%#v err=%v", wsResponse, err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	// Each process is read holding a room of the document, so what is said of the two rooms
+	// after the removal is said of rooms that existed. The removing process loaded its own when
+	// the document was made.
+	for _, process := range []struct {
+		what    string
+		service *docs.Service
+	}{
+		{what: "the removing process", service: removing},
+		{what: "the second process", service: holding},
+	} {
+		if text, err := process.service.Text(ctx, document.ID); err != nil || text != "" {
+			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
+		}
+		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+			return slices.Contains(process.service.ResidentRooms(), document.ID)
+		}) {
+			t.Fatalf("%s holds the rooms %v, and not %s, whose room the removal must close",
+				process.what, process.service.ResidentRooms(), document.ID)
+		}
+	}
+
+	removedDocument(t, handler, document.ID)
+
+	// The second process hears the removal over the database and closes its room. The wait is
+	// for the notification's trip, not for a retry: nothing announces this twice.
+	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		return !slices.Contains(holding.ResidentRooms(), document.ID)
+	}) {
+		t.Fatalf("the second process still holds the room of the removed document %s: %v; its next append meets a foreign key that no longer resolves",
+			document.ID, holding.ResidentRooms())
+	}
+	if rooms := removing.ResidentRooms(); slices.Contains(rooms, document.ID) {
+		t.Fatalf("the removing process still holds the room of %s: %v", document.ID, rooms)
+	}
+	// The person who held it open on the second process is left holding no live room: the close
+	// takes their socket with it, and their browser reconnects to a document that has gone.
+	waitForDocumentConnectionClose(t, connection)
+	// No append of either room reached the database after the removal, and neither process takes
+	// the room up again: a settle window passes with doc_updates holding nothing of the document
+	// and no room of it resident anywhere.
+	if testwait.Holds(time.Second, testwait.Poll, func() bool {
+		return documentAppendCount(t, database, document.ID) > 0 ||
+			slices.Contains(holding.ResidentRooms(), document.ID) ||
+			slices.Contains(removing.ResidentRooms(), document.ID)
+	}) {
+		t.Fatalf("after the removal of %s the store holds %d appends of it, the second process the rooms %v and the removing process %v",
+			document.ID, documentAppendCount(t, database, document.ID), holding.ResidentRooms(), removing.ResidentRooms())
+	}
+	assertNoRowNamesTheDocument(t, database, document.ID)
+}
+
+// documentAppendCount is how many stored appends the database holds of a document's room. After
+// the document's removal it is zero: the rows went with the row they are keyed by, and an append
+// a room left open over that row made afterwards could not be stored at all.
+func documentAppendCount(t *testing.T, database *store.Store, artifactID string) int {
+	t.Helper()
+	var appends int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*)::int from doc_updates where artifact_id = $1::uuid`, artifactID).Scan(&appends); err != nil {
+		t.Fatalf("count the document's stored appends: %v", err)
+	}
+	return appends
 }
