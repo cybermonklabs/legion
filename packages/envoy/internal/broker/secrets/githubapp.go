@@ -218,6 +218,15 @@ const revokeTimeout = 10 * time.Second
 // lapses at GitHub without the revoke) and error=, which never holds the token.
 const revokedWiderMessage = "broker: GitHub did not revoke a narrowed token it minted wider than asked; it lapses at its expiry"
 
+// revokedCheckMessage is logged, at WARN, when GitHub does not confirm the revoke of a token a
+// check minted — the caller's context ending first is the likeliest cause — followed by app=,
+// installation=, expires_at= (when the token lapses at GitHub without the revoke) and error=,
+// which never holds the token. It is a line of its own rather than revokedWiderMessage because
+// that one names a fault a check usually does not have: a check revokes every token it mints,
+// nearly always one GitHub minted exactly as asked, and its reader would go looking at the
+// narrowing for nothing.
+const revokedCheckMessage = "broker: GitHub did not revoke a token minted for a check; it lapses at its expiry"
+
 // missingActionsMessage is logged, at WARN, when GitHub refuses the permissions a read-only
 // narrowing asked for and the token is minted without actions, followed by app= and
 // installation=. It never holds the token.
@@ -229,6 +238,16 @@ const missingActionsMessage = "broker: a GitHub App installation does not hold a
 func (m GitHubApp) revokeInstallationToken(ctx context.Context, token string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 	defer cancel()
+	return m.revokeToken(ctx, token)
+}
+
+// revokeToken is that same revoke under ctx as it is given, and nothing else. A check's revoke
+// calls it with the caller's own context (Mint): that caller is waiting on the check's answer
+// inside a budget it bounds, and a revoke that outlived the cut context by revokeTimeout there
+// would put a single probe past the 30 s whole-call timeout the agent-secrets client gives every
+// call (leasetime.RenewClientTimeout). A release's revoke runs after its caller may be gone, so
+// it keeps the detached bound revokeInstallationToken gives it.
+func (m GitHubApp) revokeToken(ctx context.Context, token string) error {
 	const what = "revoke GitHub App installation token"
 	request, err := githubRequest(ctx, http.MethodDelete, m.base()+"/installation/token", token, nil)
 	if err != nil {
@@ -248,10 +267,25 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, token string) er
 // asked for. With req.GitHubNarrowing it mints for the narrowing's owner alone, which
 // req.GitHubOwners must list (it refuses, asking GitHub nothing, otherwise), sending the narrowing
 // as GitHub's access_tokens body, and releases the token only when GitHub's answer holds no more
-// than the narrowing asked (heldBy); a token it refuses so it revokes at GitHub first. The value is
-// the JSON object stored in the secret, never part of an error. Every error wraps one of
-// ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream.
+// than the narrowing asked (heldBy); a token it refuses so it revokes at GitHub first.
+// With req.Check it finds out whether that release could be served without serving it: it makes
+// the same calls in the same order, revokes each token GitHub answers with the moment it has it
+// and releases none, and answers Minted{} with the error the release would have answered, nil
+// where the release would have succeeded. A check needs req.GitHubNarrowing, since a release
+// without one is the owner-wide one the broker already makes; a check without one is refused
+// before GitHub is asked anything.
+// The value is the JSON object stored in the secret, never part of an error. Every error wraps
+// one of ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
+	if req.Check && req.GitHubNarrowing == nil {
+		// A programming error in the broker: the caller asked this minter to find out about a
+		// narrowing it did not name. ErrMintRefused is the class for a release the minter itself
+		// refuses before any upstream is asked, as it is for the Azure login that is not human
+		// tier; ErrMintUpstream would log MintErrorClass's "upstream" and send an operator to
+		// GitHub's status and the broker's egress, which this fault has nothing to do with, and
+		// ErrMintStoredValue would blame the secret's owner for code the broker holds.
+		return Minted{}, fmt.Errorf("%w: a github app mint check needs the narrowing it checks", ErrMintRefused)
+	}
 	var secret githubAppSecret
 	// encoding/json's syntax errors quote the offending byte, so this decode and the token's do
 	// not wrap their errors: the stored key and GitHub's token are both secrets.
@@ -318,9 +352,24 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		if err != nil {
 			return Minted{}, narrowing.refusal(err, secret.AppID, owner)
 		}
+		if req.Check {
+			// A check releases nothing, so the token goes back to GitHub the moment GitHub
+			// answers with it: before heldBy judges it, since a check revokes what heldBy accepts
+			// as readily as what it refuses, and under the caller's own context (revokeToken),
+			// which is waiting on this answer. Blanking it leaves no token held past this point;
+			// heldBy reads what GitHub says the token holds and never the token itself, so the
+			// verdict below is still the one the release would get.
+			if revokeErr := m.revokeToken(ctx, token.Token); revokeErr != nil {
+				slog.Warn(revokedCheckMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
+			}
+			token.Token = ""
+		}
 		if err := narrowing.heldBy(token); err != nil {
-			if revokeErr := m.revokeInstallationToken(ctx, token.Token); revokeErr != nil {
-				slog.Warn(revokedWiderMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
+			if !req.Check {
+				// A check revoked this token already, and holds none to revoke here.
+				if revokeErr := m.revokeInstallationToken(ctx, token.Token); revokeErr != nil {
+					slog.Warn(revokedWiderMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
+				}
 			}
 			return Minted{}, fmt.Errorf("%w: github app %s: installation %d: %w", ErrMintUpstream, secret.AppID, installation.ID, err)
 		}
@@ -340,6 +389,13 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 			return Minted{}, fmt.Errorf("%w: github app %s has no installation on %s", ErrMintRefused, secret.AppID, narrowing.Owner)
 		}
 		return Minted{}, fmt.Errorf("%w: github app %s has no installation on an account its github-owners tag lists", ErrMintRefused, secret.AppID)
+	}
+	if req.Check {
+		// Every token this check minted is revoked and none is held, so there is nothing to
+		// encode and the answer is the verdict alone: the release this check stood for would
+		// have succeeded. Marshalling a map of strings and times cannot fail, so the encode
+		// below holds no verdict a check could miss by returning here.
+		return Minted{}, nil
 	}
 	encoded, err := json.Marshal(minted)
 	if err != nil {
