@@ -1,7 +1,5 @@
-import { expect, test } from "@playwright/test";
-
 import { seedReference } from "./hover-preview";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -10,14 +8,9 @@ import { asUser } from "./users";
  * because the `iphone` project runs no stubbed row.
  */
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("on a phone, tapping a reference follows it and never shows a card @phone", async ({
+test("on a phone, tapping a reference follows it and never shows a card @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "touch geometry is covered by the iphone project");
+}) => {
   const { source, target } = await seedReference();
   const alice = await asUser(browser, "alice");
   try {

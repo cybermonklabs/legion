@@ -8,23 +8,14 @@ import {
   rowsOfListing,
 } from "../configurations";
 import { harnessProcessCount } from "../harness-processes";
+import realConfig from "../playwright.config";
+import doubledConfig, { doubledProject, doubledSpec } from "./fixtures/doubled-project.config";
 import { listing, retained } from "./playwright-listing";
 
-// e2e/playwright.config.ts reads the command line as it evaluates: with no harness port set it
-// refuses the run unless that line is a listing, which starts no server and runs no spec
-// (`isListMode` and the unset-ports refusal after it, e2e/playwright.config.ts). This file reads
-// the config for its projects' `use` and starts nothing, so it says `--list` as the listings below
-// do, and puts the command line back for whatever test file this worker runs next. The imports
-// are dynamic because a static one would evaluate the config before this line could say so.
-const commandLine = process.argv;
-process.argv = [...commandLine, "--list"];
-const { default: realConfig } = await import("../playwright.config");
-const {
-  default: doubledConfig,
-  doubledProject,
-  doubledSpec,
-} = await import("./fixtures/doubled-project.config");
-process.argv = commandLine;
+// This file reads e2e/playwright.config.ts for its projects' `use` and starts nothing. Importing
+// it costs nothing but the read: the config starts no server of its own and refuses no run for
+// the harness's sake - `globalSetup` starts the stacks, and nothing here runs it
+// (e2e/global-setup.ts).
 
 // The process count reaches the listings below: that is what chooses the project list (the
 // config's `projects:`, e2e/playwright.config.ts), and the configurations below are read from

@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -31,7 +32,8 @@ type routeAnswer struct {
 // column would have to be written on every row of the table, GET rows included. No row carries
 // its shape: routes() stamps the write class and the OAuth scopes onto the row it builds, and
 // nothing stamps this (routes_table.go), so the emitter and the two mount guards read the map
-// here. routes_shapes_test.go pins how many rows it holds.
+// here. routes_shapes_test.go holds it to the table: the map and the rows the server mounts are
+// the same set.
 type routeShape struct {
 	// Status is the status the route answers when it succeeds.
 	Status int
@@ -516,6 +518,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: delivery.SessionGroup{}, Request: updateDeliverySessionGroupInput{},
 	},
 	"DELETE /api/v1/delivery/session-groups/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
+	"GET /api/v1/ci-reconcile/passes":             {Status: http.StatusOK, Response: []cireconcile.PassRecord{}},
 	"GET /api/v1/me/agent-tokens":                 {Status: http.StatusOK, Response: []model.AgentToken{}},
 	"POST /api/v1/me/agent-tokens": {
 		Status: http.StatusCreated, Response: createAgentTokenResponse{}, Request: createAgentTokenInput{},
@@ -673,6 +676,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: model.Ask{}, Request: editAskInput{}},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {

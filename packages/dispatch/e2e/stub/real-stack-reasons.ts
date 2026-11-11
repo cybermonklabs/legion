@@ -23,6 +23,8 @@ export const realStackReasons: Record<string, string> = {
   "address-links.e2e.ts": "asserts in the live spec editor (`/ws/doc`) as well as the Conversation",
   "agent-list-refilling.e2e.ts":
     "drives the fake Envoy listener's refusal states and asserts the page's reading of them",
+  "agent-name-band.e2e.ts":
+    "writes the session's two replies, one carrying a title and one carrying none, and then reads the name the server resolves from them (`delivery.ResolveSessionTitles`); the fake registry must drop the session before the page loads, or the roster names it and the read proves nothing",
   "agent-name.e2e.ts":
     "margin comment on the live document, plus the fake registry; lands on the live view, whose frames come from the relay; a registry change after load must reach the open page",
   "agent-tokens.e2e.ts": "token mint, attribution, privacy between two contexts, revoke",
@@ -45,6 +47,10 @@ export const realStackReasons: Record<string, string> = {
     "decision answers the server records, and pastes in the live document editor",
   "ask-concurrent-edit.e2e.ts": "two editors crossing in one `/ws/doc` room",
   "ask-part-references.e2e.ts": "the reference and backlink index the server builds from the write",
+  "asked-of-cli.e2e.ts":
+    "runs the real `dispatch open-asks` against the server and reads the person it names, which the server's own expression answers, before and after a hand-on made in a browser",
+  "asked-of.e2e.ts":
+    "hands an ask on and re-reads the write on every surface that draws it; whose Inbox the row sits in is the server's own expression, and each move arrives over the live socket with no reload",
   "attention.e2e.ts":
     "the new card arrives over the live socket; a read-mark write moves under the reader",
   "bare-references.e2e.ts": "opens the spec's live editor and its margin for every assertion",
