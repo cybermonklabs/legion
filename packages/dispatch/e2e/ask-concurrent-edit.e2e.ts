@@ -1,12 +1,3 @@
-import {
-  type Browser,
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  test,
-} from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, getIssue } from "./api";
 import {
@@ -17,7 +8,7 @@ import {
   placeCaret,
   selectTextIn,
 } from "./editor";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // sjawhar/legion#2433: two collaborators editing one decision block at once can leave it holding what its
@@ -28,10 +19,6 @@ import { asUser } from "./users";
 // until it is fixed, and its ask stays open; joining the two lists makes it a decision again.
 
 const SPEC = 'Intro.\n\n:::ask{#a1 urgency="med" multiple="false"}\nWhich one?\n:::\n\nAfter.\n';
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 function askBlock(page: Page): Locator {
   return documentEditor(page).locator('[data-dispatch-ask-block="a1"]');

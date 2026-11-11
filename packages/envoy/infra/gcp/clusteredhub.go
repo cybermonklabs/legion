@@ -21,9 +21,10 @@ import (
 const clusteredHubType = "envoy-infra:gcp:ClusteredNatsHub"
 
 const (
-	// maxClusteredHubNameBytes keeps <name>-tailnet within the 52 bytes a StatefulSet's or a
-	// Deployment's name may have, so its controller-revision-hash label stays a valid label value.
-	maxClusteredHubNameBytes = 44
+	// maxClusteredHubNameBytes keeps <name>-listener, the longest name the hub derives, within the
+	// 52 bytes a StatefulSet's or a Deployment's name may have, so its controller-revision-hash
+	// label stays a valid label value.
+	maxClusteredHubNameBytes = 43
 
 	// clusteredHubServers is the number of NATS servers the hub runs, and so the most copies
 	// JetStream keeps of a stream there: it refuses a stream with more replicas than servers.
@@ -120,8 +121,8 @@ type ClusteredNatsHubArgs struct {
 	Kubeconfig pulumi.StringInput `pulumi:"kubeconfig" provider:"secret"`
 	// The existing namespace the hub runs in; the component never creates it.
 	Namespace string `pulumi:"namespace"`
-	// The chart's release name and fullnameOverride, and so the StatefulSet's name: a DNS-1123
-	// label of at most 44 bytes.
+	// The chart's release name and fullnameOverride, and so the StatefulSet's name and the names
+	// of the Services the chart and the component render: a DNS-1035 label of at most 43 bytes.
 	Name string `pulumi:"name"`
 	// The in-cluster client Service's name, a DNS-1035 label.
 	ServiceName   string `pulumi:"serviceName"`
@@ -171,7 +172,8 @@ type ClusteredNatsHubArgs struct {
 }
 
 // ClusteredHubTailnetArgs are the hub's tailnet entry: the Tailscale Service svc:<serviceName>,
-// served by replicas hosts, each joined with the tags and running the session listener.
+// served by replicas hosts, each joined with the tags, forwarding the Service's NATS port to the
+// hub and its port 9020 to the session listener the hub runs as a workload of its own.
 type ClusteredHubTailnetArgs struct {
 	ServiceName    string                    `pulumi:"serviceName"`    // the Service's name without svc:
 	TailnetDnsName string                    `pulumi:"tailnetDnsName"` // <tailnet>.ts.net
@@ -187,11 +189,12 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 	a.SetToken("gcp", "ClusteredHubTailnet")
 }
 
-// ClusteredHubListenerArgs are the session listener each tailnet host runs: its image, its
-// machine id, the public key of its NATS user's seed, and the existing Kubernetes Secret in the
-// hub's namespace, and the key in it, holding that seed, which the component mounts by reference
-// and never reads. The hub renders the listener's user itself, named after the machine id and
-// granted core.ListenerPermissions for it, as gcp:NatsHub renders its own listener's.
+// ClusteredHubListenerArgs are the session listener the hub runs as a workload of its own, which
+// the tailnet hosts forward the Tailscale Service's port 9020 to: its image, its machine id, the
+// public key of its NATS user's seed, and the existing Kubernetes Secret in the hub's namespace,
+// and the key in it, holding that seed, which the component mounts by reference and never reads.
+// The hub renders the listener's user itself, named after the machine id and granted
+// core.ListenerPermissions for it, as gcp:NatsHub renders its own listener's.
 type ClusteredHubListenerArgs struct {
 	Image          string  `pulumi:"image"`              // pinned: <name>@sha256:<digest>
 	MachineID      *string `pulumi:"machineId,optional"` // default tailnet.serviceName
@@ -266,8 +269,9 @@ type clusteredHubTailnet struct {
 	natsURL, envoyURL           string
 }
 
-// clusteredHubListener is the resolved session listener of each tailnet host: env is its
-// environment but the seed (core.ListenerConfig.Env).
+// clusteredHubListener is the resolved session listener the hub runs beside its tailnet hosts,
+// which forward the Tailscale Service's port 9020 to it: env is its environment but the seed
+// (core.ListenerConfig.Env).
 type clusteredHubListener struct {
 	image, machineID              string
 	seedSecretName, seedSecretKey string
@@ -341,8 +345,8 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.Kubeconfig == nil {
 		return clusteredHubSettings{}, core.InputErrorf("kubeconfig", "kubeconfig is required: the hub builds its own Kubernetes provider from it")
 	}
-	if len(args.Name) > maxClusteredHubNameBytes || !namespaceRule.MatchString(args.Name) {
-		return clusteredHubSettings{}, core.InputErrorf("name", "name %q must be a DNS-1123 label of at most %d bytes, so <name>-tailnet stays within the 52 bytes a StatefulSet's or Deployment's name may have",
+	if len(args.Name) > maxClusteredHubNameBytes || !dns1035LabelRule.MatchString(args.Name) {
+		return clusteredHubSettings{}, core.InputErrorf("name", "name %q must be a DNS-1035 label of at most %d bytes, a letter first: the chart renders the Service <name>-headless and the component the Service <name>-listener, which Kubernetes holds to that shape, and <name>-listener must stay within the 52 bytes a StatefulSet's or Deployment's name may have",
 			args.Name, maxClusteredHubNameBytes)
 	}
 	if !dnsLabel(args.Namespace) {
@@ -610,12 +614,13 @@ func checkNamespaces(input string, namespaces []string) error {
 
 // newClusteredHubTailnet resolves the tailnet entry and the listener user the hub renders for it:
 // both nil without tailnet, where tailnetAuthKey, which only the tailnet hosts use, and
-// natsReplicas, which only their session listener takes, are refused. The listener runs as its
-// machine id, serves on the pod's loopback on the listener's default port, where the tailnet host
-// forwards the Service's port 9020, and reaches NATS through the hub's client Service. It answers
-// on the Service's tailnet name and on every further address allowedHosts names; the operator's
-// entries are checked as their own list, so a refusal names tailnet.listener.allowedHosts and the
-// index the operator wrote.
+// natsReplicas, which only the session listener takes, are refused. The listener runs as its
+// machine id in a pod of its own and serves on every address of that pod on the listener's
+// default port, reached through its cluster Service, which a NetworkPolicy admits the tailnet
+// entry's pods alone to and where each host forwards the Tailscale Service's port 9020; it
+// reaches NATS through the hub's client Service. It answers on the Service's tailnet name and on
+// every further address allowedHosts names; the operator's entries are checked as their own
+// list, so a refusal names tailnet.listener.allowedHosts and the index the operator wrote.
 func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) (*clusteredHubTailnet, *listenerUser, error) {
 	t := args.Tailnet
 	if t == nil {
@@ -662,7 +667,7 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	}
 	l := t.Listener
 	if l == nil {
-		return nil, nil, core.InputErrorf("tailnet.listener", "tailnet.listener is required with tailnet: each tailnet host serves the session listener on port %d", core.DefaultListenerPort)
+		return nil, nil, core.InputErrorf("tailnet.listener", "tailnet.listener is required with tailnet: the tailnet hosts forward the Tailscale Service's port %d to the session listener the hub runs as a workload of its own", core.DefaultListenerPort)
 	}
 	if !imageRule.MatchString(l.Image) {
 		return nil, nil, core.InputErrorf("tailnet.listener.image", "tailnet.listener.image %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", l.Image)
@@ -692,28 +697,26 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 		seedSecretName: l.SeedSecretName,
 		seedSecretKey:  l.SeedSecretKey,
 	}
-	// The listener is the tailnet pod's one sized input; the tailscale and advertiser containers
-	// have fixed sizes, so the pod's total is refused where Autopilot would raise or reject it, as
-	// the hub pod's is.
+	// The listener is the only container of its own pod, so its size is that pod's whole request,
+	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
 	var err error
 	if listener.cpu, listener.memory, err = autopilotPodSize(autopilotPod{
-		name:     "the tailnet pod",
+		name:     "the listener pod",
 		cpuInput: "tailnet.listener.cpu", memoryInput: "tailnet.listener.memory",
 		cpu: l.Cpu, memory: l.Memory,
 		defaultCPU: defaultClusteredHubListenerCPU, defaultMemory: defaultClusteredHubListenerMemory,
 		memoryExamples: "1Gi or 512Mi",
-		sidecars: []autopilotSidecar{
-			{name: "the tailscale container", cpu: clusteredHubTailscaleCPU, memory: clusteredHubTailscaleMemory},
-			{name: "the advertiser", cpu: clusteredHubAdvertiserCPU, memory: clusteredHubAdvertiserMemory},
-		},
 	}); err != nil {
 		return nil, nil, err
 	}
 	host := core.TailnetHostName(t.ServiceName, t.TailnetDnsName)
+	// The listener serves on every address of its own pod: the tailnet hosts reach it through its
+	// cluster Service, which a NetworkPolicy admits their pods alone to, and no longer over a
+	// loopback they share with it.
 	env, err := core.ListenerConfig{
 		MachineID:      machineID,
 		Port:           core.DefaultListenerPort,
-		ListenHost:     "127.0.0.1",
+		ListenHost:     "0.0.0.0",
 		AllowedHosts:   append([]string{host}, l.AllowedHosts...),
 		NATSReplicas:   s.natsReplicas,
 		StreamMaxBytes: s.streamMaxBytes,

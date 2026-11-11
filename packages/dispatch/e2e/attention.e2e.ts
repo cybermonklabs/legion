@@ -1,17 +1,11 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createMessage, createProject, putIssueState } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
   actor: { id: "e2e-attention", kind: "session" as const },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * The row the reader is on, read the way `ViewportAnchor` reads it: the row nearest the visible

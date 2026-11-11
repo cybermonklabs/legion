@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import {
   createIssue,
@@ -21,7 +19,7 @@ import {
   selectEditorQuote,
   typeAtEnd,
 } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A closed issue still takes comments and messages (dispatch://INFRA-448), so a finished issue's
@@ -54,10 +52,6 @@ interface Fixture {
   /** Bob's message to the tester, whose delivery failed. */
   readonly testerMessageId: string;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seedClosedIssue(): Promise<Fixture> {
   await setLiveSessions([planner, tester]);

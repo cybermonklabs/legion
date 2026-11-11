@@ -1719,11 +1719,11 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
   expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
 });
 
-// The count of claims the stale-plugin lane has left (contract 60): the golden names everything
+// The count of claims the stale-plugin lane has left (contract 69): the golden names everything
 // that lane has left to do, the claim whose wake it already holds among them, and a
 // state whose lane has nothing left carries 0 rather than no key. The key is not required for
 // the same reason `wakesWaiting` is not: a daemon at this contract leaves it off the state it
-// serves a caller whose pod's plugin is older than 60, and the one it serves a caller whose
+// serves a caller whose pod's plugin is older than 69, and the one it serves a caller whose
 // pod's claims it cannot read at all (`api.stateFor`, `withoutClaimsToRefresh`). So a body
 // without the key parses and a reader of it learns nothing about what the lane has left, rather
 // than losing the whole state; what is refused is a count that is not a whole number of claims.

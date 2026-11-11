@@ -882,16 +882,24 @@ is queued for it, since the next phase start or re-admission resumes it as befor
 
 ## The work loops or stops
 
-These arrive as messages on the Dispatch issue, and the architect is told:
+These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
   implementer's counted rounds reached three
   ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
   phase raises the count, and a move made while the head conflicts with its base is a conflict
-  round, which the cap leaves out and the message's second number names. The work goes on, and the
-  architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
+  round, which the cap leaves out and the message's second number names. The daemon posts it and
+  tells the architect once for each value the cap holds, so the rounds after it say nothing again
+  until you change `review_round_cap` or the issue runs again as a new generation. The work goes
+  on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
   let rounds that are converging run, and posts that decision on the issue; it asks you only for a
   decision that needs your authority.
+- **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
+  A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
+  move back and fired: the daemon wrote the hook's words to each role the line names, on that
+  role's own topic, and posted this record of it. Nothing is held: the phase the move opened
+  started its worker, and each role answers in its own turn. No hook writes to an architect: the
+  daemon's own wake to an architect is a notice.
 - **No message for red CI.** A pull request is never blocked for a count of failed fixes: a check
   or workflow the base branch requires that stands red sends the work back to the implementer every
   time, however many reds came before, and reaches the architect as a `checks-red` notice rather

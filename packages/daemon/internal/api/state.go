@@ -62,7 +62,7 @@ type State struct {
 	// recorded plugin contract is not DaemonAPIVersion, that is in no update round, and whose
 	// launch installs a plugin — the set the daemon's own pass walks
 	// (daemon's refreshStalePlugins). Always a number, never null, and 0 when the lane has
-	// nothing left, which is every moment outside a wave (contract 60).
+	// nothing left, which is every moment outside a wave (contract 69).
 	//
 	// It is what `wakesWaiting` alone cannot say. The lane holds at most one minute of the
 	// pacing at a time (supervise.RefreshGate), so the wakes waiting are what it has admitted,
@@ -644,12 +644,23 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its
-// completion reported, the Dispatch handoff record it named — and the rounds the phase has run.
+// completion reported, the Dispatch handoff record it named — and the rounds the phase has run,
+// with the counts of the moves back that made those rounds.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
 	HandoffRecord *HandoffRecordView `json:"handoffRecord,omitempty"`
 	Rounds        int                `json:"rounds"`
+	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
+	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. It is absent, and
+	// never `{}`, for an issue that has had no move back, so a reader tells an issue that carries
+	// no counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
+	// exactly: it rises on every move back, a conflict round included, where no pair counts a
+	// conflict round, since nobody sent the work back. The counts start empty at the migration
+	// that added them and are never filled in from the past, so an issue already in flight reads
+	// counts that add up to less than its `rounds`.
+	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 }
 
 // HandoffRecordView is the Dispatch handoff record a worker's completion of its current

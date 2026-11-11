@@ -206,12 +206,20 @@ const legionHandoffRecordView = z.object({
 });
 
 /** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
- * completion reported, the Dispatch handoff record it named), and the rounds it has run. */
+ * completion reported, the Dispatch handoff record it named), the rounds it has run and the
+ * counts of the moves back that made them. */
 const legionPhaseView = z.object({
   claim: legionClaimView,
   handoffCommit: nonEmptyString.optional(),
   handoffRecord: legionHandoffRecordView.optional(),
   rounds: z.number().int().nonnegative(),
+  /** How many times the issue's work has gone back by each kind of move, keyed `<from>-<to>` as
+   * the daemon counts the pairs (`reviewing-implementing` and the rest). Absent, never `{}`, for
+   * a worker whose issue has had no move back, and absent from the whole state for a caller in a
+   * pod whose plugin declares a contract below 62 (the daemon's `withoutBackwardMoves`), so every
+   * reader takes it as optional. `rounds` beside it counts every round, a conflict round
+   * included, which no pair counts. */
+  backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
 /** `api.PullRequestView` — the pull request as the daemon observes it from GitHub.
@@ -415,7 +423,7 @@ const legionHeldOutboxRow = z.object({
  * which is when it runs. The kinds are the daemon's three paced lanes: `launch`, a role process it
  * is about to start, and `plugin-refresh`, the relaunch of a process whose plugin speaks an
  * earlier contract than the daemon's, which the stale-plugin lane's own gate admits (contract
- * 60), both held in the claim's machine and lost with a restart, which raises the wave
+ * 69), both held in the claim's machine and lost with a restart, which raises the wave
  * again through its own paths; and `catch-up`, the notice a start writes to an architect already
  * running in place of a launch, which waits on its own outbox row. `kind` is an unconstrained
  * string, so a lane a later daemon names is read rather than refused. */
@@ -660,13 +668,13 @@ const legionConsumerLag = z.object({
  * that finds it absent has been served that stripped body and learns nothing about which wakes
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
  * refuse. `claimsToRefresh` is how many claims the stale-plugin lane still has to relaunch onto
- * the daemon's plugin, a number and never null, 0 when the lane has nothing left (contract 60).
+ * the daemon's plugin, a number and never null, 0 when the lane has nothing left (contract 69).
  * It is what `wakesWaiting` cannot say: that lane holds at most one minute of the pacing at a
  * time, so its waiting wakes are what it has admitted and this is what it has left. It is
  * optional for the same reason `wakesWaiting` is and no other: the route strips it for a caller
- * in a pod below 60 and for one whose pod's claims it cannot read, since a reader before 60
+ * in a pod below 69 and for one whose pod's claims it cannot read, since a reader before 69
  * refuses the key when it is 0 as surely as when it names a number (`api.stateFor`,
- * `withoutClaimsToRefresh`). The two strips compose on one body: a caller below 53 is below 60
+ * `withoutClaimsToRefresh`). The two strips compose on one body: a caller below 53 is below 69
  * too and is served neither key. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,

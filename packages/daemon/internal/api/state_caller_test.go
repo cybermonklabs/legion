@@ -157,13 +157,14 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds, the count of claims the refresh lane has left, the gated steps, the claim
-// views' step record and the places in the admission line among the keys it is served without,
-// since such a pod is below treeContract, wakesWaitingContract, claimsToRefreshContract,
-// gatedStepsContract, stallRecordContract and waitingLineContract too. A
-// pod at this contract, and a caller in no pod — the operator's `legion state`, whose
-// open-rounds line reads both fields, whose queue line reads those wakes and whose tool-call
-// line reads the step records — are served everything. The claims are the state snapshot's own,
+// pacing holds, the count of claims the refresh lane has left, the gated steps, the claim views'
+// step record, the places in the admission line and the workers' counts of the moves back among
+// the keys it is served without, since such a pod is below treeContract, wakesWaitingContract,
+// claimsToRefreshContract, gatedStepsContract, stallRecordContract, waitingLineContract and
+// backwardMovesContract too. A pod at this contract, and a caller in no
+// pod — the operator's `legion state`, whose open-rounds line reads both fields, whose queue
+// line reads those wakes and whose tool-call line reads the step records — are served
+// everything. The claims are the state snapshot's own,
 // so there is no readable state whose caller's contract is unknown: a snapshot without them is
 // no state, and the route refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
@@ -237,9 +238,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// field contract 55 added, with contract 56's retired entries under
 			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
-			// places in the admission line gone, the field contract 58 added, and with
-			// `claimsToRefresh` gone, the count a reader before contract 60 refuses as surely
-			// when it is 0 (withoutClaimsToRefresh).
+			// places in the admission line gone, the field contract 58 added, with the
+			// workers' counts of the moves back gone, the field contract 62 added
+			// (withoutBackwardMoves), and with `claimsToRefresh` gone, the count a reader
+			// before contract 69 refuses as surely when it is 0 (withoutClaimsToRefresh).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -258,7 +260,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				issue := issue.(map[string]any)
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
-					views = append(views, worker.(map[string]any)["claim"])
+					worker := worker.(map[string]any)
+					if !tc.rounds {
+						delete(worker, backwardMovesField)
+					}
+					views = append(views, worker["claim"])
 				}
 				for _, view := range views {
 					view, ok := view.(map[string]any)
