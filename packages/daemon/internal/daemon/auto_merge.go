@@ -150,7 +150,7 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	// the same head, with nothing armed: it is built here, where keep is, so the decision that
 	// makes it takes the submission rather than the four values it is made of.
 	resubmit := func(ctx context.Context) (ghautomerge.Outcome, error) {
-		return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep)
+		return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep, ghautomerge.NoMarks{})
 	}
 	// logs is the repository's REST base, where a failing job's log lives, under this row's own
 	// token (readFailures). The budget everything the row does after those reads runs on comes
@@ -158,7 +158,7 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	// run opened with can be long spent by the time they answer, and a write on it would fail
 	// after a submission that succeeded.
 	logs := githubrest.Client{Token: github.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}
-	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep)
+	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep, ghautomerge.NoMarks{})
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
 	// off that decision's own answer, which those arms then handle as any other. The reading, the

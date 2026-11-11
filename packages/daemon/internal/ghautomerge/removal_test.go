@@ -191,7 +191,7 @@ func TestARemovalTheSubmissionDidNotMakeIsReadInsteadOfSubmittingAgain(t *testin
 			g := &github{head: "head", mergeState: mergeState, queueRequired: tc.queue, autoMergeOK: true, timeline: tc.timeline,
 				contextPages: map[string]string{"after-100": secondChecksPage}, failPages: tc.failPages}
 			client, _ := clients(t, g)
-			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"), NoMarks{})
 			var failed *MergeFailed
 			var removed *Removed
 			var conflict *ConflictRemoval
@@ -293,7 +293,7 @@ func TestSubmitRetriesAQueueRemovalWhoseChecksGitHubFailsToRead(t *testing.T) {
 				timeline:     []string{enqueued, dequeued(reason, "github-merge-queue", pagedChecks)},
 				contextPages: map[string]string{"after-100": secondChecksPage}, failPages: true}
 			client, _ := clients(t, g)
-			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"), NoMarks{})
 			var failed *MergeFailed
 			var removed *Removed
 			var refused *Refused
@@ -304,7 +304,7 @@ func TestSubmitRetriesAQueueRemovalWhoseChecksGitHubFailsToRead(t *testing.T) {
 			g.mu.Lock()
 			g.failPages = false
 			g.mu.Unlock()
-			_, err = Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			_, err = Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"), NoMarks{})
 			if !errors.As(err, &failed) || !strings.Contains(err.Error(), "integration (failure, "+failedRun+")") {
 				t.Fatalf("the retry once GitHub answers the page = %v (%T), want MergeFailed naming the failure on it", err, err)
 			}
@@ -375,7 +375,7 @@ func TestARemovalsFailingRunsAreReadOnceItIsTold(t *testing.T) {
 				timeline: []string{enqueued, dequeued(reason, "github-merge-queue", tc.group)},
 				jobLogs:  map[int64]string{failingJob: goLog}}
 			client, logs := clients(t, g)
-			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"), NoMarks{})
 			var failed *MergeFailed
 			var conflict *ConflictRemoval
 			var runs []FailingRun

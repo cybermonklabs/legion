@@ -43,6 +43,15 @@ import (
 // and a Retry-After of 180 seconds. timelineReads counts the timeline's reads. contextPages is each
 // further page of the merge queue commit's checks by the cursor it follows, pageReads counts their
 // reads, and failPages answers every one with GitHub's server error.
+// refuseJump answers the enqueue of a jump with GitHub's refusal, of refuseType as the enable's
+// refusal is, and leaves every other mutation alone: it is how a jump GitHub will not take, and
+// the fallback the same attempt then sends, are driven apart. queueEntries is the merge queue the
+// fake answers for queueOf, oldest entry first, and queueTotal is GitHub's totalCount for it,
+// which is above the entries answered where the queue is longer than the page the read asks for
+// (queueTotal zero answers as many as the entries themselves). queueOf is the branch the fake has
+// a merge queue for (baseBranch when empty): a read of any other branch answers a null mergeQueue,
+// as GitHub does for a branch with no merge queue at all. queueReads counts the merge queue's
+// reads, so a submission that reads one at all is caught.
 // jobLogs is the log of each Actions job by its id, as GET /actions/jobs/{id}/logs answers it,
 // and logReads counts the job logs read: what one such log says failed, and each way a read of
 // one can end, is read of jobFailures itself (failingtests_test.go).
@@ -68,6 +77,11 @@ type github struct {
 	timelineReads, pageReads       int
 	contextPages                   map[string]string
 	failPages                      bool
+	refuseJump                     string
+	queueEntries                   []QueueEntry
+	queueTotal                     int
+	queueOf                        string
+	queueReads                     int
 	jobLogs                        map[int64]string
 	logReads                       int
 	mutations                      []string
@@ -94,6 +108,26 @@ const (
 // settings decide the message (why is on the enable and merge mutations in ghautomerge.go).
 func submitted(verb string) string {
 	return fmt.Sprintf("%s PR_42 head SQUASH headline=%q body=%q", verb, absent, absent)
+}
+
+// jumped is the enqueue of a jump the fake records for #42 at head: the head the caller named,
+// passed as expectedHeadOid, the jump the document itself carries as a literal, and no merge
+// method at all, since GitHub's EnqueuePullRequestInput has none (why is on the enqueue document
+// in ghautomerge.go). The name a merge-queue timeline event is recorded under is removal_test's
+// own enqueued.
+func jumped(head string) string {
+	return fmt.Sprintf("enqueue PR_42 %s jump=true method=%v", head, absent)
+}
+
+// passedInput is the value query's mutation passes for field, and absent where the document does
+// not pass that field at all. GitHub reads only what the mutation's input names, so a field the
+// document leaves out is recorded as absent rather than as the value of a variable GitHub never
+// reads: that is what holds each mutation's recorded line to the input it really sent.
+func passedInput(query string, variables map[string]any, field, variable string) any {
+	if !strings.Contains(query, field+": $"+variable) {
+		return absent
+	}
+	return variables[variable]
 }
 
 // operationHeader is the start of a GraphQL document's operation signature: the operation's name
@@ -270,21 +304,40 @@ func (g *github) serve(t *testing.T) string {
 			g.mutations = append(g.mutations, fmt.Sprintf("dequeue %v", request.Variables["id"]))
 			g.queued = g.requeue && g.armed
 			_, _ = w.Write([]byte(`{"data":{"dequeuePullRequest":{"clientMutationId":null}}}`))
+		case strings.Contains(request.Query, "enqueuePullRequest"):
+			// The jump is a literal of the document rather than a variable, so the fake reads it
+			// from the document itself; GitHub's enqueue input carries no merge method, so the
+			// method is recorded as absent, as every input a document does not pass is.
+			jump := absent
+			if strings.Contains(request.Query, "jump: true") {
+				jump = "true"
+			}
+			g.mutations = append(g.mutations, fmt.Sprintf("enqueue %v %v jump=%v method=%v", request.Variables["id"],
+				passedInput(request.Query, request.Variables, "expectedHeadOid", "head"), jump,
+				passedInput(request.Query, request.Variables, "mergeMethod", "method")))
+			refusal := g.refuseJump
+			if refusal == "" {
+				refusal = g.refuseSubmit
+			}
+			if refusal != "" {
+				kind := g.refuseType
+				if kind == "" {
+					kind = "UNPROCESSABLE"
+				}
+				g.refused = true
+				_, _ = fmt.Fprintf(w, `{"data":null,"errors":[{"type":%q,"message":%q}]}`, kind, refusal)
+				return
+			}
+			g.queued = true
+			_, _ = w.Write([]byte(`{"data":{}}`))
 		case strings.Contains(request.Query, "enablePullRequestAutoMerge"), strings.Contains(request.Query, "mergePullRequest"):
 			verb := "merge"
 			if strings.Contains(request.Query, "enablePullRequestAutoMerge") {
 				verb = "enable"
 			}
-			// GitHub reads only what the mutation's input passes, so a field the mutation leaves out
-			// is recorded as absent rather than as the value of the variable it never reads.
-			passed := func(field, variable string) any {
-				if !strings.Contains(request.Query, field+": $"+variable) {
-					return absent
-				}
-				return request.Variables[variable]
-			}
 			g.mutations = append(g.mutations, fmt.Sprintf("%s %v %v %v headline=%q body=%q", verb, request.Variables["id"], request.Variables["head"], request.Variables["method"],
-				passed("commitHeadline", "headline"), passed("commitBody", "body")))
+				passedInput(request.Query, request.Variables, "commitHeadline", "headline"),
+				passedInput(request.Query, request.Variables, "commitBody", "body")))
 			if g.submitStatus != 0 {
 				http.Error(w, `{"message":"Server Error"}`, g.submitStatus)
 				return
@@ -318,6 +371,37 @@ func (g *github) serve(t *testing.T) string {
 				t.Errorf("checks page read of %v, want a page this fake lists", request.Variables)
 			}
 			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"object":{"oid":"group-sha","statusCheckRollup":{"contexts":%s}}}}}`, page)
+		case strings.Contains(request.Query, "MergeQueueEntries"):
+			g.queueReads++
+			if request.Variables["owner"] != "acme" || request.Variables["name"] != "widgets" {
+				t.Errorf("merge queue read of %v, want acme/widgets", request.Variables)
+			}
+			branch := g.queueOf
+			if branch == "" {
+				branch = baseBranch
+			}
+			if request.Variables["branch"] != branch {
+				// GitHub's own answer for a branch with no merge queue: the field is null, and
+				// nothing in it is an error.
+				_, _ = w.Write([]byte(`{"data":{"repository":{"mergeQueue":null}}}`))
+				return
+			}
+			nodes := make([]string, 0, len(g.queueEntries))
+			for _, entry := range g.queueEntries {
+				nodes = append(nodes, fmt.Sprintf(`{"position":%d,"jump":%t,"state":%q,"enqueuedAt":%q,"pullRequest":{"number":%d}}`,
+					entry.Position, entry.Jump, entry.State, entry.EnqueuedAt.Format(time.RFC3339), entry.Number))
+			}
+			total := g.queueTotal
+			if total == 0 {
+				total = len(g.queueEntries)
+			}
+			queue := fmt.Sprintf(`{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":%d,"nodes":[%s]}}}}}`, total, strings.Join(nodes, ","))
+			// The queue's answer is held to its document as the pull request's read is: a field
+			// GitHub would never answer here is the fake and the document drifting apart.
+			if drifted := unselectedFields(queueRead, queue); drifted != "" {
+				t.Errorf("the fake's answer to the merge queue read is one GitHub would never give: %s", drifted)
+			}
+			_, _ = w.Write([]byte(queue))
 		case strings.Contains(request.Query, "timelineItems"):
 			g.timelineReads++
 			if request.Variables["owner"] != "acme" || request.Variables["name"] != "widgets" || request.Variables["number"] != float64(42) {
@@ -401,7 +485,7 @@ func clients(t *testing.T, g *github) (client, logs githubrest.Client) {
 // declares, as GitHub's validator does: an error, and no mutation made. Every document this
 // package sends passes that check, so each case of this file proves its document valid too.
 func TestTheFakeRefusesAGraphQLDocumentGitHubsValidatorWouldRefuse(t *testing.T) {
-	for _, document := range []string{read, enable, merge, disable, dequeue, removals, moreChecks} {
+	for _, document := range []string{read, enable, merge, enqueue, queueRead, disable, dequeue, removals, moreChecks} {
 		if message := refusedVariables(document); message != "" {
 			t.Errorf("a document this package sends is refused: %s", message)
 		}
@@ -611,7 +695,7 @@ func TestSubmitUsesGitHubsAnswerForTheREADYHead(t *testing.T) {
 			g := &github{state: tc.state, head: tc.head, mergeState: tc.mergeState, queueRequired: tc.queueRequired,
 				autoMergeOK: tc.autoMergeOK, armed: tc.armed, queued: tc.queued}
 			client, _ := clients(t, g)
-			got, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping(tc.keep))
+			got, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping(tc.keep), NoMarks{})
 			var lagging *Lagging
 			var unmergeable *Unmergeable
 			var armed *Armed
@@ -646,7 +730,7 @@ func TestSubmitUsesGitHubsAnswerForTheREADYHead(t *testing.T) {
 func TestSubmitWaitsOnAStandingArmWithoutReadingTheTimeline(t *testing.T) {
 	g := &github{head: "head", mergeState: "CLEAN", queueRequired: true, queued: true}
 	client, _ := clients(t, g)
-	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"), NoMarks{})
 	var armed *Armed
 	if !errors.As(err, &armed) || !armed.Routine() {
 		t.Fatalf("Submit while queued = %v, want a routine Armed wait", err)
@@ -701,7 +785,7 @@ func TestAnUnmergeableEntryIsAWaitCarryingTheQueuesOwnState(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, _ := clients(t, tc.g)
-			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", tc.seen, keeping("head"))
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", tc.seen, keeping("head"), NoMarks{})
 			var armed *Armed
 			if !errors.As(err, &armed) || !errors.Is(err, wait.ErrWaiting) {
 				t.Fatalf("Submit = %v, want an Armed wait", err)
@@ -761,7 +845,7 @@ func TestAnUnmergeableEntryOnItsBaseBranchesTipIsTheHeadsOwnConflict(t *testing.
 func TestALaggingSubmissionStallsOnlyOnGitHubsOwnClock(t *testing.T) {
 	g := &github{state: "CLOSED", head: "head", mergeState: "UNKNOWN"}
 	client, _ := clients(t, g)
-	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), NoMarks{})
 	var lagging *Lagging
 	if !errors.As(err, &lagging) {
 		t.Fatalf("Submit = %v, want Lagging", err)
@@ -780,7 +864,7 @@ func TestALaggingSubmissionStallsOnlyOnGitHubsOwnClock(t *testing.T) {
 func TestSubmitFailsAReadWithoutUpdatedAt(t *testing.T) {
 	g := &github{state: "CLOSED", head: "head", mergeState: "UNKNOWN", updated: "null"}
 	client, _ := clients(t, g)
-	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), NoMarks{})
 	var lagging *Lagging
 	if err == nil || errors.Is(err, wait.ErrWaiting) || errors.As(err, &lagging) || !strings.Contains(err.Error(), "updatedAt") {
 		t.Fatalf("Submit without updatedAt = %v, want a failure naming updatedAt", err)
@@ -797,7 +881,7 @@ func TestOnlyABlockedOrComputingMergeStateIsARoutineWait(t *testing.T) {
 		for _, queue := range []bool{false, true} {
 			g := &github{head: "head", mergeState: state, queueRequired: queue, autoMergeOK: queue}
 			client, _ := clients(t, g)
-			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), NoMarks{})
 			var unmergeable *Unmergeable
 			if !errors.As(err, &unmergeable) || !errors.Is(err, wait.ErrWaiting) || unmergeable.Routine() != routine || unmergeable.Queue != queue {
 				t.Fatalf("Submit while %s on a merge-queue base %t = %v; want an Unmergeable wait, routine %t", state, queue, err, routine)
@@ -829,7 +913,7 @@ func TestSubmitTellsAPermanentRefusalFromATransientOne(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, _ := clients(t, tc.g)
-			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), NoMarks{})
 			var refused *Refused
 			if err == nil || errors.Is(err, wait.ErrWaiting) {
 				t.Fatalf("Submit = %v, want GitHub's failure", err)
@@ -851,7 +935,7 @@ func TestSubmitKeepsTheRateLimitOfItsConfirmationRead(t *testing.T) {
 	const squash = "Squash merges are not allowed on this repository."
 	g := &github{head: "head", mergeState: "CLEAN", refuseSubmit: squash, limitAfterRefusal: true}
 	client, _ := clients(t, g)
-	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), NoMarks{})
 	var refused *Refused
 	if err == nil || errors.As(err, &refused) || errors.Is(err, wait.ErrWaiting) {
 		t.Fatalf("Submit = %v, want a failure to retry", err)
@@ -861,6 +945,256 @@ func TestSubmitKeepsTheRateLimitOfItsConfirmationRead(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), squash) {
 		t.Fatalf("Submit = %v, want the refusal kept as context", err)
+	}
+}
+
+// marks is the Marks a test drives Submit with, and the record of what Submit asked of it: hold
+// is what Hold answers, jump and jumpErr what Jump answers, and refusalErr what JumpRefused
+// answers. holds and jumps count the times each was asked, branch is the base branch Jump was
+// told, and refusals counts the times JumpRefused was told of GitHub's answer, refusal being the
+// last one it was told.
+type marks struct {
+	hold       error
+	jump       bool
+	jumpErr    error
+	refusalErr error
+	holds      int
+	jumps      int
+	branch     string
+	refusals   int
+	refusal    string
+}
+
+func (m *marks) Hold(context.Context) error {
+	m.holds++
+	return m.hold
+}
+
+func (m *marks) Jump(_ context.Context, branch string) (bool, error) {
+	m.jumps++
+	m.branch = branch
+	return m.jump, m.jumpErr
+}
+
+func (m *marks) JumpRefused(_ context.Context, answer string) error {
+	m.refusals++
+	m.refusal = answer
+	return m.refusalErr
+}
+
+// A jump mark sends GitHub's enqueue in place of the enable on a merge-queue base, and nowhere
+// else. The enqueue passes the head the caller named as GitHub's expected head, carries its jump
+// as the document's own literal, and passes no merge method at all, since GitHub's enqueue input
+// has none: the merge queue's own rule decides how the entry merges. The caller is told the base
+// branch the pull request merges into, from the read Submit has just made, so it can read that
+// branch's queue without a further read of its own. An accepted enqueue is the same outcome an
+// accepted enable is there: an entry in the queue, which is a wait (Armed), not a merge.
+//
+// Everywhere else Jump is never asked: a merge of a pull request GitHub reports mergeable now
+// goes out as a merge, and an auto-merge arm as an arm, so a mark on a pull request whose base
+// has no merge queue is left where it is.
+func TestAJumpMarkSendsTheEnqueueOnlyWhereTheSubmissionIsAnEnqueue(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		g         *github
+		mutations []string
+		// jumps is the times Jump was asked, branch the base branch it was told, and merged
+		// whether Submit ends the submission rather than waiting on GitHub's own merge.
+		jumps  int
+		branch string
+		merged bool
+	}{
+		{name: "a merge-queue base GitHub reports mergeable now", g: &github{head: "ready-head", mergeState: "CLEAN", queueRequired: true},
+			mutations: []string{jumped("ready-head")}, jumps: 1, branch: baseBranch},
+		{name: "a merge-queue base on a branch of its own", g: &github{head: "ready-head", mergeState: "CLEAN", queueRequired: true, baseName: "release", baseTip: "release-tip"},
+			mutations: []string{jumped("ready-head")}, jumps: 1, branch: "release"},
+		{name: "a pull request GitHub reports mergeable now, with no merge queue", g: &github{head: "ready-head", mergeState: "CLEAN"},
+			mutations: []string{"merge PR_42 ready-head SQUASH headline=\"<absent>\" body=\"<absent>\""}, merged: true},
+		{name: "a repository that allows auto-merge, with no merge queue", g: &github{head: "ready-head", mergeState: "BLOCKED", autoMergeOK: true},
+			mutations: []string{"enable PR_42 ready-head SQUASH headline=\"<absent>\" body=\"<absent>\""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := clients(t, tc.g)
+			m := &marks{jump: true}
+			got, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "ready-head", false, keeping("ready-head"), m)
+			var armed *Armed
+			switch {
+			case tc.merged:
+				if got != Merged || err != nil {
+					t.Fatalf("Submit = %q, %v; want the merge", got, err)
+				}
+			case !errors.As(err, &armed) || !errors.Is(err, wait.ErrWaiting) || armed.Head != "ready-head":
+				t.Fatalf("Submit = %q, %v; want an Armed wait at READY's head", got, err)
+			}
+			if m.holds != 1 || m.jumps != tc.jumps || m.branch != tc.branch || m.refusals != 0 {
+				t.Fatalf("marks asked: %d holds, %d jumps of %q, %d refusals; want 1 hold, %d jumps of %q and no refusal",
+					m.holds, m.jumps, m.branch, m.refusals, tc.jumps, tc.branch)
+			}
+			tc.g.mu.Lock()
+			defer tc.g.mu.Unlock()
+			if !slices.Equal(tc.g.mutations, tc.mutations) {
+				t.Fatalf("mutations %v, want %v", tc.g.mutations, tc.mutations)
+			}
+		})
+	}
+}
+
+// Any answer of GitHub's to the jump but acceptance — a refusal no retry repairs as much as a
+// rate limit — is told to the caller and then the submission Submit chose is sent in the same
+// attempt, with the variables it has always carried. The mark is spent by the time the enqueue
+// goes out, so a jump that did not fall back would lose it and delay the merge for nothing.
+//
+// The jump's own refusal never becomes a *Refused and never ends the row: the fallback decides
+// how the submission ends, as it does without a mark at all. A fallback GitHub accepts is the
+// arm's wait, and a fallback GitHub refuses where it still stands is the refusal the row ends on.
+func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
+	const refusal = "Pull request is not in a mergeable state."
+	for _, tc := range []struct {
+		name      string
+		g         *github
+		refusedBy string
+		// ended says the fallback's own refusal ends the submission (*Refused).
+		ended bool
+	}{
+		{name: "a refusal no retry repairs", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseJump: refusal}, refusedBy: refusal},
+		{name: "a rate limit", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseJump: "API rate limit exceeded", refuseType: "RATE_LIMITED"},
+			refusedBy: "API rate limit exceeded"},
+		{name: "a refusal GitHub gives the fallback too", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseSubmit: refusal}, refusedBy: refusal, ended: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := clients(t, tc.g)
+			m := &marks{jump: true}
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), m)
+			var armed *Armed
+			var refused *Refused
+			switch {
+			case tc.ended:
+				if !errors.As(err, &refused) || !strings.Contains(refused.Message, refusal) || refused.Action != "enqueue" {
+					t.Fatalf("Submit = %v (%T), want the fallback's own refusal", err, err)
+				}
+			case !errors.As(err, &armed) || !errors.Is(err, wait.ErrWaiting):
+				t.Fatalf("Submit = %v, want the fallback's Armed wait", err)
+			}
+			if m.refusals != 1 || !strings.Contains(m.refusal, tc.refusedBy) {
+				t.Fatalf("JumpRefused told %d times, last %q; want once, carrying GitHub's %q", m.refusals, m.refusal, tc.refusedBy)
+			}
+			tc.g.mu.Lock()
+			defer tc.g.mu.Unlock()
+			if want := []string{jumped("head"), submitted("enable")}; !slices.Equal(tc.g.mutations, want) {
+				t.Fatalf("mutations %v, want %v: the same attempt sends the submission it chose", tc.g.mutations, want)
+			}
+		})
+	}
+}
+
+// A caller with no marks sends exactly the mutations this package sent before marks existed, for
+// every submission choose can pick: the enqueue of a merge-queue base, the merge of a pull
+// request GitHub reports mergeable now, and the auto-merge arm. Nothing enqueues with a jump, and
+// nothing is held.
+func TestNoMarksSendsTheSubmissionChooseChoseAndNothingElse(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		g        *github
+		mutation string
+		outcome  Outcome
+	}{
+		{name: "a merge-queue base GitHub reports mergeable now", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true}, mutation: submitted("enable")},
+		{name: "a pull request GitHub reports mergeable now", g: &github{head: "head", mergeState: "CLEAN"}, mutation: submitted("merge"), outcome: Merged},
+		{name: "a repository that allows auto-merge", g: &github{head: "head", mergeState: "BLOCKED", autoMergeOK: true}, mutation: submitted("enable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := clients(t, tc.g)
+			got, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), NoMarks{})
+			if tc.outcome != "" && (got != tc.outcome || err != nil) {
+				t.Fatalf("Submit = %q, %v; want %q", got, err, tc.outcome)
+			}
+			tc.g.mu.Lock()
+			defer tc.g.mu.Unlock()
+			if want := []string{tc.mutation}; !slices.Equal(tc.g.mutations, want) {
+				t.Fatalf("mutations %v, want %v", tc.g.mutations, want)
+			}
+		})
+	}
+}
+
+// An error any of the caller's marks answers is the submission's whole answer: Submit returns it
+// as it stands, for the caller to read whatever it put in it. A hold answers before anything is
+// sent, so a held submission sends no mutation at all; a jump and a refusal answer after the
+// mutations each has sent by then. A hold's own wait (Held) keeps its moment through Submit, so
+// the row runs again when the hold ends (wait.UntilAt), and it is routine, so a row a long hold
+// catches is logged as a wait and not as something an operator should look at.
+func TestAMarksErrorAnswersTheWholeSubmission(t *testing.T) {
+	held := &Held{Number: 42, Repo: ghrepo.MustParse("acme/widgets"), Head: "head", Reason: "the release window is open",
+		Ends: time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC)}
+	failed := errors.New("the record could not be read")
+	for _, tc := range []struct {
+		name      string
+		m         *marks
+		want      error
+		mutations []string
+	}{
+		{name: "a hold", m: &marks{hold: held}, want: held},
+		{name: "a hold that could not be decided", m: &marks{hold: failed}, want: failed},
+		{name: "a jump that could not be decided", m: &marks{jumpErr: failed}, want: failed},
+		{name: "a refusal the caller could not record", m: &marks{jump: true, refusalErr: failed},
+			want: failed, mutations: []string{jumped("head")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseJump: "Pull request is not in a mergeable state."}
+			client, _ := clients(t, g)
+			got, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"), tc.m)
+			if got != "" || err != tc.want {
+				t.Fatalf("Submit = %q, %v; want the marks' own error %v", got, err, tc.want)
+			}
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			if !slices.Equal(g.mutations, tc.mutations) {
+				t.Fatalf("mutations %v, want %v", g.mutations, tc.mutations)
+			}
+		})
+	}
+	if !errors.Is(held, wait.ErrWaiting) || !held.Routine() {
+		t.Fatalf("a held submission (%v) is a routine wait %t, want a routine wait", held, held.Routine())
+	}
+	if at, ok := wait.UntilAt(held); !ok || !at.Equal(held.Ends) {
+		t.Fatalf("a held submission runs again at %s (named %t), want the hold's end %s", at, ok, held.Ends)
+	}
+}
+
+// QueueEntries reads one page of a branch's merge queue, in GitHub's own order, with GitHub's
+// totalCount for the whole queue beside it: a queue longer than the page is answered as the
+// entries this read carries and the count of all of them, so a reader is told the queue held more
+// than the entries it is shown. A branch with no merge queue answers no entries and no error, as
+// GitHub answers a null mergeQueue for one. The read changes nothing.
+func TestQueueEntriesReadsOnePageWithGitHubsTotalCount(t *testing.T) {
+	joined := func(minute int) time.Time { return time.Date(2026, 11, 10, 9, minute, 0, 0, time.UTC) }
+	page := []QueueEntry{
+		{Number: 2234, Position: 1, State: "MERGEABLE", EnqueuedAt: joined(1)},
+		{Number: 2859, Position: 2, Jump: true, State: "QUEUED", EnqueuedAt: joined(7)},
+	}
+	for _, tc := range []struct {
+		name   string
+		branch string
+		g      *github
+		want   []QueueEntry
+		total  int
+	}{
+		{name: "one page of a queue longer than it", branch: baseBranch, g: &github{queueEntries: page, queueTotal: 73}, want: page, total: 73},
+		{name: "a queue of one page", branch: baseBranch, g: &github{queueEntries: page}, want: page, total: 2},
+		{name: "a branch with no merge queue", branch: "release", g: &github{queueEntries: page}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := clients(t, tc.g)
+			got, total, err := QueueEntries(context.Background(), client, ghrepo.MustParse("acme/widgets"), tc.branch)
+			if err != nil || total != tc.total || !slices.Equal(got, tc.want) {
+				t.Fatalf("QueueEntries = %+v, %d, %v; want %+v, %d and no error", got, total, err, tc.want, tc.total)
+			}
+			tc.g.mu.Lock()
+			defer tc.g.mu.Unlock()
+			if tc.g.queueReads != 1 || len(tc.g.mutations) != 0 {
+				t.Fatalf("%d merge queue reads and mutations %v, want one read and no mutation at all", tc.g.queueReads, tc.g.mutations)
+			}
+		})
 	}
 }
 
