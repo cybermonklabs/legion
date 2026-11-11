@@ -525,12 +525,14 @@ jobs:
               exit 1
               ;;
           esac
-          # Why the projects are named at all: Playwright shards top-level projects only, and the
-          # three `-alone` projects name every other project in their `dependencies`
-          # (e2e/playwright.config.ts), so a shard over the whole list would shard `webkit-alone`
-          # alone and run every other project whole in all four shards. Naming the eight parallel
-          # projects with `--project` leaves the `-alone` ones out of the run, so every project
-          # left is top-level and every one of them shards. The alone job runs those three.
+          # Why the projects are named at all: a shard splits the rows of every project the run
+          # selects, so a project this leg does not name is a project it would spread over these
+          # four machines. `visual` and `visual-phone` are in the default selection, and their
+          # image comparisons belong to the `visual` job, which runs them one row at a time, so
+          # naming the projects above is what keeps them off these machines. The three `-alone`
+          # projects stay out without being named: each sets `default: false`
+          # (e2e/playwright.config.ts), so a run that names no project holds no row of theirs.
+          # The alone job names them, one machine each.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -644,10 +646,11 @@ jobs:
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The three projects whose rows are read from the wall clock, one machine each. Each runs with
-    # one worker and `--no-deps`, so nothing else is on the machine while it measures. The full
-    # lane alone: a pull request runs no clock row, since a shard job's machine cannot hold one
-    # still enough to measure.
+    # The three projects whose rows are read from the wall clock, one machine each. Each leg runs
+    # one worker and names one project, and a wall-clock project takes nothing else with it - it
+    # names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
+    # while it measures. The full lane alone: a pull request runs no clock row, since a shard
+    # job's machine cannot hold one still enough to measure.
     #
     # Its steps are the shard job's, with three differences - one worker rather than four, the
     # Playwright command below, and no file store on the machine - and their commands are kept
@@ -781,13 +784,14 @@ jobs:
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
         # legs run is a clock spec, and no clock spec uploads or downloads anything.
-        # chromium-alone runs both (`clockSpecs`: heavy-bodies and nested-directive, named at
-        # e2e/playwright.config.ts:200 and taken by that project at :389), firefox-alone and
-        # webkit-alone run heavy-bodies alone (:397, :409). And e2e/run.ts:126-130 makes no lane
-        # bucket at one worker. A store serving nothing would be charged to the very reading
-        # these rows exist for, which is why the `weed` the image carries is started on the
-        # shard job's machines and not on these. A clock spec that later uploads fails here by
-        # name rather than quietly.
+        # chromium-alone runs both wall-clock specs (`clockSpecNames` in e2e/configurations.ts:
+        # heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
+        # that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
+        # And e2e/run.ts makes no lane bucket at one lane: `laneBucket` returns before it asks
+        # the store for one when the run has a single lane. A store serving nothing would be
+        # charged to the very reading these rows exist for, which is why the `weed` the image
+        # carries is started on the shard job's machines and not on these. A clock spec that
+        # later uploads fails here by name rather than quietly.
         #
         # The memory and CPU sampler both this job and the shard job run is
         # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
@@ -835,10 +839,18 @@ jobs:
           # reports keep their own names when the merge job downloads them into one directory.
           export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
           export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-${{ matrix.project }}.zip"
-          # `--no-deps` is required, not tidiness: each `-alone` project names every parallel
-          # project in its `dependencies` (e2e/playwright.config.ts), so without it Playwright
-          # would run the whole suite here before this leg's own rows, and the shard jobs would
-          # have run it already. With it this machine runs one project, one row at a time.
+          # `--project` and `--workers=1` are the whole selection, and the first of them selects
+          # this leg's rows and nothing else. Until dispatch://INFRA-1280 it did not: each
+          # `-alone` project named every parallel project in its `dependencies`, so this command
+          # carried a flag refusing them, without which Playwright would have run the whole
+          # suite here before this leg's own rows, and the shard jobs had run it already. Those
+          # `dependencies` are gone, and the flag with them.
+          #
+          # `--workers=1` says the thing the measurement rests on instead of leaning on a
+          # default. The DISPATCH_E2E_WORKERS=1 above is how many lanes e2e/run.ts starts, and
+          # the config refuses a `--workers` that disagrees with that count
+          # (e2e/playwright.config.ts, "This run has N lanes"), so the run is the one it always
+          # was: one project, one row at a time, on a machine with nothing else on it.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -848,7 +860,7 @@ jobs:
           # The suite's own status is carried in a file rather than in `$?` or in PIPESTATUS,
           # for the reason the shard job's own browser step gives at length.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --no-deps --project="${{ matrix.project }}" --reporter=list,blob 2>&1 ||
+          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project="${{ matrix.project }}" --workers=1 --reporter=list,blob 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
