@@ -200,7 +200,7 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await expect(inboxDocumentRow.getByRole("link", { name: /CORE.*Design notes/ })).toBeVisible();
     const inboxAsk = await inboxAskCard(bobPage, askId);
     await inboxAsk.getByLabel("Your answer").fill("Yes, publish it.");
-    await inboxAsk.getByRole("button", { name: "Answer" }).click();
+    await inboxAsk.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({

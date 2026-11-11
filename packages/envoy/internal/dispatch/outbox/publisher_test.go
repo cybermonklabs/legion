@@ -1247,6 +1247,77 @@ func TestRunRoutesAskResolutionToTheAskerAndHumanResolutionToTheRoute(t *testing
 	}
 }
 
+// A person who declines an ask closes it like any other resolution, so the decline takes the same
+// road out: the issue topic, the issue's route, and every session following the ask on its own
+// topic, the asker among them. Each copy names the ask it answers, and carries the four sentences
+// Dispatch writes (model.DeclineDispatchWords) and the person's note in parts of their own, so the
+// reader never has to cut one out of the other.
+func TestADeclineTellsEveryFollowingSessionInDispatchsOwnWords(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	route := "role:legion-controller-x"
+	seedIssue(t, database, "T-1", &route)
+	askID := seedAsk(t, database, "T-1", model.Actor{Kind: "session", ID: "session-asker"}, "Ship it?")
+	seedFollower(t, database, askID, "session-replier")
+	person := model.Actor{Kind: "user", ID: "alice"}
+	note := "The vendor owns that date; I do not."
+	event := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"),
+		Type:     "ask.resolved",
+		Actor:    person,
+		Payload: model.Ask{
+			ID: askID, IssueKey: new("T-1"), Question: "Ship it?", State: "resolved",
+			Resolution: &model.AskResolution{
+				Kind:          "declined",
+				Reason:        note,
+				DispatchWords: model.DeclineDispatchWords,
+				Actor:         person,
+				At:            time.Unix(1, 0).UTC(),
+			},
+		},
+	})
+	wantTopics := []string{
+		"notifications.dispatch.issue.T-1.ask.resolved",
+		"notifications.role.legion-controller-x",
+		"notifications.agent.session-asker",
+		"notifications.agent.session-replier",
+	}
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, time.Second, "decline publication", func() bool {
+		return len(publisher.all()) == len(wantTopics) && publishedAt(t, database, event.ID) != nil
+	})
+	items := publisher.all()
+	if topics := topicsOf(items); !reflect.DeepEqual(topics, wantTopics) {
+		t.Fatalf("published to %#v, want %#v", topics, wantTopics)
+	}
+	for index, item := range items {
+		if item.InReplyTo != askID {
+			t.Fatalf("publication %d (%s) in_reply_to = %q, want the declined ask %q", index, item.Topic, item.InReplyTo, askID)
+		}
+		var payload struct {
+			Payload struct {
+				Resolution model.AskResolution `json:"resolution"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &payload); err != nil {
+			t.Fatalf("decode event payload %s: %v", item.Payload, err)
+		}
+		resolution := payload.Payload.Resolution
+		if resolution.Kind != "declined" {
+			t.Fatalf("publication %d (%s) resolution kind = %q, want declined", index, item.Topic, resolution.Kind)
+		}
+		if resolution.DispatchWords != model.DeclineDispatchWords {
+			t.Fatalf("publication %d (%s) dispatch_words = %q, want %q", index, item.Topic, resolution.DispatchWords, model.DeclineDispatchWords)
+		}
+		if resolution.Reason != note {
+			t.Fatalf("publication %d (%s) reason = %q, want the person's note %q alone", index, item.Topic, resolution.Reason, note)
+		}
+	}
+}
+
 func TestRunAddsBoundRoutePublication(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

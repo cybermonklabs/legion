@@ -56,21 +56,22 @@ const issueRows = `select s.id, s.text, encode(sha256(convert_to(s.text, 'UTF8')
 // and the queue settles the row it already holds with no vector.
 var issueItems = searchableItems(issueRows)
 
-// windowCoverageKinds is every kind whose rows the indexers own: one row per window of a
-// document's, a comment's, a message's blocks or of an ask's parts (INFRA-370). Migration
+// windowCoverageKinds is every kind whose rows the writers of windows own: one row per window
+// of a document's, a comment's, a message's blocks or of an ask's parts (INFRA-370). Migration
 // 20261102233626 and the three after it dropped the whole-text triggers these replace, so
-// every such row is written by the indexer that wrote the blocks it covers, in that write's
-// own transaction, or by the block-index tick for an owner written before this build. No
-// statement of this pass may invent one: the pass has no way to window an owner, and a row it
-// inserted for a window that no longer exists would be embedded for ever at a text no reader
-// can reach. So no statement here builds a window row (insertMissingIssues and repairStaleIssues
-// are the issue's alone), a window kind takes the settling and the identity steps alone
-// (coverPass), and it is counted in the report from its own rows (windowRows).
+// every such row is written by the block-index tick's window arm, which writes the windows of
+// every comment, message, ask and document whose blocks a write recorded and whose windows it
+// left to that tick (INFRA-988). No statement of this pass may invent one: the pass has no way
+// to window an owner, and a row it inserted for a window that no longer exists would be
+// embedded for ever at a text no reader can reach. So no statement here builds a window row
+// (insertMissingIssues and repairStaleIssues are the issue's alone), a window kind takes the
+// settling and the identity steps alone (coverPass), and it is counted in the report from its
+// own rows (windowRows).
 var windowCoverageKinds = []string{"document_block", "comment_block", "message_block", "ask_part"}
 
 // windowRows is a window kind's items, in the shape issueRows gives the issue's: its own
-// rows, since a window exists only while the indexer that wrote it says so, and its text and
-// hash are the ones that indexer wrote. Reading them from embeddings itself is what makes the
+// rows, since a window exists only while the write that made it says so, and its text and
+// hash are the ones that write left. Reading them from embeddings itself is what makes the
 // report count the windows of the database rather than items the pass has no way to window.
 func windowRows(kind string) string {
 	return fmt.Sprintf(`select s.id, s.text, s.hash, s.written_at from (
@@ -89,9 +90,16 @@ func searchableItems(items string) string {
 // never DO UPDATE: a row a trigger inserts between this statement's read and its insert holds
 // text at least as fresh as what this statement read, and DO UPDATE would revert it to the older
 // text.
+//
+// project_key is the issue's own, read through embeddings_owner_project_key (migration
+// 20261109120000) - the expression embeddings_enqueue itself writes, so this insert is still
+// byte for byte the row the trigger would have made. It is the one insert into embeddings that
+// does not go through one of the two enqueue functions, and a row it left unlabelled would be
+// returned by no project-scoped meaning search (api/search.go).
 var insertMissingIssues = `
-	insert into embeddings (kind, id, text_snapshot, content_hash)
-	select $1::text, item.id, item.text, item.hash from (` + issueItems + `) item
+	insert into embeddings (kind, id, text_snapshot, content_hash, project_key)
+	select $1::text, item.id, item.text, item.hash, embeddings_owner_project_key($1::text, item.id)
+	from (` + issueItems + `) item
 	where not exists (select 1 from embeddings e where e.kind = $1::text and e.id = item.id)
 	limit $2
 	on conflict (kind, id) do nothing`

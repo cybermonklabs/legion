@@ -709,6 +709,69 @@ func TestCensusAdmitsSplitWindowMigrationsAndRefusesTheOldIndexShape(t *testing.
 	}
 }
 
+// The same pair, one release later: the column and the index it is read through. 20261109120000
+// adds embeddings.project_key and replaces the two functions that write the table, every
+// statement of it catalog-only; 20261110155257 builds the index concurrently, marked
+// non-transactional, which has the size exception of its own. Together they pass over a database
+// at 20261108070100 with the limit at one byte, where embeddings is far over it.
+//
+// The old shape is the index back inside 20261109120000, which is where it was written first:
+// a plain build inside that migration's transaction, under the ACCESS EXCLUSIVE lock its ALTER
+// holds to the commit. It is not catalog-only, so the exemption goes and the census refuses the
+// migration on embeddings' size - which is a refused deploy (cmd/dispatch/README.md). That is
+// the whole reason the index is a migration of its own.
+func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261108070100)
+	set := migrationsThrough(t, 20261110155257)
+	for _, oldShape := range []bool{false, true} {
+		candidate := make(fstest.MapFS, len(set))
+		for name, file := range set {
+			candidate[name] = file
+		}
+		if oldShape {
+			name := "migrations/20261109120000_embeddings_project_key.up.sql"
+			candidate[name] = &fstest.MapFile{Data: append(append([]byte(nil), set[name].Data...),
+				[]byte("\ncreate index embeddings_kind_project on embeddings (kind, project_key) where kind in ('issue', 'document_block', 'comment_block', 'message_block', 'ask_part');")...)}
+		}
+		report, err := census(context.Background(), store.Pool.Config().ConnString(), candidate, pgmigrate.CensusOptions{TableLimit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The verdict of the whole set is not this test's subject and must not be asserted: the
+		// set holds every pending migration, and under a TableLimit of one byte any of them may
+		// refuse for a table of its own - 20261110004829_drop_default_branch_commits does, where
+		// default_branch_commits already exists (measured in CI at d656b570, which is why this
+		// assertion is gone). What this test is about is the two entries below, each read on its
+		// own.
+		found := map[int]bool{20261109120000: false, 20261110155257: false}
+		for _, entry := range report.Pending {
+			if _, wanted := found[entry.Migration.Version]; wanted {
+				found[entry.Migration.Version] = true
+			}
+			switch entry.Migration.Version {
+			case 20261109120000:
+				if oldShape {
+					if len(entry.Refusals) != 1 || !strings.Contains(entry.Refusals[0], "embeddings is ") {
+						t.Fatalf("the index inside the column's migration did not refuse embeddings on size: %+v", entry)
+					}
+				} else if entry.TableSizeExemption != "alter table and create function" {
+					t.Fatalf("the column's migration is not exempt: %+v", entry)
+				}
+			case 20261110155257:
+				if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+					t.Fatalf("the concurrent index migration was not admitted: %+v", entry)
+				}
+			}
+		}
+		for version, present := range found {
+			if !present {
+				t.Fatalf("migration %d was not exercised by the census", version)
+			}
+		}
+	}
+}
+
 // An enabled event trigger on create trigger runs code of its own when the migration runs, so a
 // migration of only a trigger is not exempt while one exists, and the size refusal names it. A
 // disabled one changes nothing. A drop fires sql_drop as well as ddl_command_start and

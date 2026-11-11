@@ -54,8 +54,9 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 // legionLabel is the label that hands an issue's status to the Legion daemon. The daemon holds
 // its own copy of the spelling (packages/daemon/internal/dispatch/types.go, LegionLabel): the two
 // are separate constants in separate Go modules that have to be changed together, not one shared
-// value. packages/envoy otherwise knows nothing about Legion, so this is the one Legion-specific
-// rule Dispatch itself carries.
+// value. packages/envoy knows two Legion-specific rules in all, and this is one: the other is the
+// design-gate record the daemon publishes onto an issue (design_gates, issue_design_gates.go),
+// which the superseded-approval advice reads to name the gates a document write made stale.
 const legionLabel = "legion"
 
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by

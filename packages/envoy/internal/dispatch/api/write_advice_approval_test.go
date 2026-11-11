@@ -39,9 +39,10 @@ func editAdviceDocument(t *testing.T, handler http.Handler, artifactID, markdown
 	return adviceFromResponse(t, response.Code, response.Body.String())
 }
 
-// A document edit that stores a version over the one a person approved says so, because that is
-// what closes a Legion design gate. The edit after it says nothing: that approval was already
-// stale, and the second edit closed nothing.
+// A document edit that stores a version over the one a person approved says so, whatever the
+// document is: that approval is now stale, and whether a Legion design gate was among the things
+// it held open is what the design-gate list beside it answers. The edit after it says nothing:
+// that approval was already stale, and the second edit superseded none.
 func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)

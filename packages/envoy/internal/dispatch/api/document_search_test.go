@@ -194,8 +194,10 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			holds:           documents,
 		},
 		{
+			// Both sides are the scoped shape: searchArguments binds the fixture's project, and
+			// that is what the route sends for one (runMeaningSearch).
 			name:      "search, meaning and keywords",
-			statement: searchQueryMeaning,
+			statement: searchQueryMeaningScoped,
 			// This release's own meaning body over main's keyword legs, for the reason
 			// document_search_oracle_test.go gives: main's own meaning arms read the whole-text
 			// rows this release deletes. It opens with the package's own q, so it takes the
@@ -213,7 +215,7 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 		},
 		{
 			name:      "the related-item check's meaning stage",
-			statement: relatedMeaningQuery,
+			statement: relatedMeaningScopedQuery,
 			oracle:    relatedMeaningQueryOverMainsDocumentArm,
 			arguments: relatedMeaning,
 			holds:     documents,
@@ -275,8 +277,10 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 			arguments: slices.Concat(keyword, owners),
 		},
 		{
+			// The scoped shape, as the plain pair above is: these arguments bind the fixture's
+			// project (relatedMeaningStatementFor).
 			name:      "the related-item check's meaning stage, excluding its own issue",
-			statement: relatedMeaningExcludingQuery,
+			statement: relatedMeaningScopedExcludingQuery,
 			arguments: slices.Concat(meaning, owners),
 		},
 	}

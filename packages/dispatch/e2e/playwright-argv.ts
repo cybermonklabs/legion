@@ -1,14 +1,16 @@
 /** What each `playwright test` option takes of the tokens after it, read the way the runner's own
  *  parser reads argv.
  *
- *  One reader in this tree asks it, and it asks about a DASH token: `e2e/configurations.ts`'s
- *  `projectsOnCommandLine`, whose question is whether a `--project` is an option of the run or
- *  another option's value. A flat `argv.some()` answers it wrongly, because a flat argv cannot
- *  tell an option from an option's VALUE: `--output --project=stub` hands Playwright
+ *  Two readers in this tree ask it, both in `e2e/configurations.ts`. `projectsOnCommandLine`
+ *  asks about a DASH token: whether a `--project` is an option of the run or another option's
+ *  value. `clockFileOnCommandLine` asks about both kinds - whether a `--ui` is the mode it
+ *  spells or an option's value, and whether a NON-DASH token is a positional filter or an
+ *  option's value. A flat `argv.some()` answers either question wrongly, because a flat argv
+ *  cannot tell an option from an option's VALUE: `--output --project=stub` hands Playwright
  *  `--project=stub` as the output directory and names no project at all, and `--grep --ui`
  *  hands it `--ui` as `--grep`'s value and the run is an ordinary one (dispatch://INFRA-1410).
- *  That reader takes the classification below and `valuesTakenAt` rather than carrying a rule
- *  of its own.
+ *  Both readers take the classification below and `valuesTakenAt` rather than carrying a rule
+ *  of their own.
  *
  *  The readings this is built on were taken against a configuration that refuses nothing and
  *  holds one trivial row, each command `bunx playwright test --config <that config> <arguments>`.
@@ -45,19 +47,28 @@
  *  gave `http://localhost:57029` and `--project chromium --ui-port 0 --list` gave
  *  `http://localhost:35679`.
  *
- *  A NON-DASH target, measured in ANOTHER CHECKOUT: the INFRA-1280 tree, against that tree's
- *  own suite, where the target is a spec path and the reading is the listing it produced. This
- *  checkout cannot reproduce either row, since its own suite is another set of files, and
- *  they are kept because they are the evidence for the half of the OPTIONAL rule that this
- *  tree's reader never exercises: what such an option does with a token that does NOT begin
- *  with a dash (dispatch://INFRA-1280).
+ *  A NON-DASH target, measured in this tree, where the target is a spec path and the reading is
+ *  the listing it produced. These two rows are the evidence for the other half of the OPTIONAL
+ *  rule - what such an option does with a token that does NOT begin with a dash
+ *  (dispatch://INFRA-1280) - which is the half `clockFileOnCommandLine` rests on, and
+ *  `e2e/__tests__/clock-selection.test.ts` holds a row of its own for each of them, "a
+ *  wall-clock path behind `--shuffle`, which Playwright takes as the seed" and "a wall-clock
+ *  path behind `--only-changed`, which Playwright takes as a git ref".
  *
- *    --list --shuffle e2e/claim.e2e.ts       listed 1,384 tests in 179 files: that tree's whole
- *                                            suite, the path taken as the seed and no file
- *                                            filtered
- *    --list --only-changed e2e/claim.e2e.ts  listed 0 tests in 0 files, `--only-changed <path>`
- *                                            printing `Cannot detect changed files for
+ *    --list --shuffle e2e/claim.e2e.ts       listed 1,299 tests in 179 files, exit 0: the
+ *                                            default selection, the path taken as the seed and
+ *                                            no file filtered
+ *    --list --only-changed e2e/claim.e2e.ts  listed 0 tests in 0 files, exit 1, `--only-changed
+ *                                            <path>` printing `Cannot detect changed files for
  *                                            --only-changed mode: git diff <path> --name-only`
+ *
+ *  Those 1,299 rows are what a listing that names no project holds, and not the whole suite:
+ *  the three wall-clock projects carry `default: false` (`clockProjectNames`,
+ *  `e2e/configurations.ts`) and stand outside it. Measured at this head against
+ *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1299 tests in 179 files`, `--list`
+ *  naming `chromium-alone`, `firefox-alone` and `webkit-alone` lists `Total: 50 tests in 2
+ *  files`, and `--list` naming all fifteen projects of the config lists `Total: 1349 tests in
+ *  181 files`, which is the suite.
  *
  *  Together the two sets of readings settle every class. A REQUIRED-value option takes the next
  *  token whatever it looks like, a `--ui` included, which is why `--grep --ui` lists rows. An
@@ -67,8 +78,8 @@
  *  `--project` and answering that the run names no project
  *  (`e2e/__tests__/projects-on-command-line.test.ts` holds the row). It TAKES a token that does
  *  not begin with a dash, which is why `--shuffle e2e/claim.e2e.ts` shuffles by that path and
- *  filters no file; nothing in this tree asks that, and the INFRA-1280 readings above are the
- *  whole evidence for it. A VARIADIC option (`--project <project-name...>`) behaves as a
+ *  filters no file. That is the half `clockFileOnCommandLine` rests on, and the two rows named
+ *  above are its evidence. A VARIADIC option (`--project <project-name...>`) behaves as a
  *  required one for its first value and stops at the next dash token, so `--project --ui` reads
  *  `--ui` as a project name and `--project chromium --ui` leaves `--ui` a flag.
  */

@@ -92,6 +92,12 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
+	// The version write records the blocks and leaves their windows to the block-index tick's
+	// window arm (refs.IndexBlocks), so the seed writes them here as that arm would: a seeded
+	// database a server has to window is one it would rewrite.
+	if err := refs.WriteDocumentWindows(ctx, tx, document.ID, latest, blocks); err != nil {
+		return fmt.Errorf("write the document's windows: %w", err)
+	}
 	// ReplaceDocumentCounted stores each mention's excerpt at this version number, which is the
 	// document's highest: refs.MarkStaleExcerpts re-owes a mention whose excerpt_version is
 	// below max(artifact_versions.number), so a seed that wrote 1 would leave every one of the

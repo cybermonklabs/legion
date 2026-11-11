@@ -102,9 +102,9 @@ type seededItems struct {
 // texts chosen to catch a coverage text that is not the indexer's: Unicode, a comment longer
 // than embed's maxInputChars (32,000 runes, stored whole and cut only when sent), an unanswered
 // and an answered ask both with options, and a project document whose latest version is the one
-// that counts. It writes no window: an item's windows are its indexer's to write
-// (refs.IndexBlocks, refs.IndexItem, refs.IndexAskParts), and seedEveryKind writes them as that
-// indexer would.
+// that counts. It writes no window: a document's are its version write's to write
+// (refs.IndexBlocks) and an item's the block-index tick's window arm's
+// (refs.WriteItemWindows), and seedEveryKind writes them as those writers would.
 func seedItems(t *testing.T, q querier, project string) seededItems {
 	t.Helper()
 	ctx := context.Background()
@@ -150,8 +150,8 @@ func seedItems(t *testing.T, q querier, project string) seededItems {
 	return items
 }
 
-// enqueueWindow writes one window of owner ownerKey, covering covers, as the indexer that wrote
-// those blocks writes it (refs.writeWindows, through embeddings_enqueue_window).
+// enqueueWindow writes one window of owner ownerKey, covering covers, as the writer of that
+// owner's windows writes it (refs.writeWindows, through embeddings_enqueue_window).
 func enqueueWindow(t *testing.T, q querier, kind, ownerKey, suffix, text string, covers ...string) {
 	t.Helper()
 	mustExec(t, q, `select embeddings_enqueue_window($1, $2, $3, $4)`, kind, ownerKey+"#"+suffix, text, covers)
@@ -174,9 +174,9 @@ func seedEveryKind(t *testing.T, q querier, project string) int {
 }
 
 // seedWindowsAgain rewrites every window the database holds with the text and the covers it
-// already holds, as an indexer rewrites the windows of an owner whose blocks a write left
-// unchanged: refs.writeWindows writes an owner's windows at every index of its blocks, and
-// embeddings_enqueue_window writes a row only where the hash of its text moved.
+// already holds, as a writer of windows rewrites those of an owner whose blocks a write left
+// unchanged: refs.writeWindows writes an owner's whole set, and embeddings_enqueue_window
+// writes a row only where the hash of its text moved.
 func seedWindowsAgain(t *testing.T, database *store.Store) {
 	t.Helper()
 	mustExec(t, database.Pool, `
@@ -295,6 +295,31 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	case <-done:
 	case <-time.After(eventWait):
 		t.Fatal("Run did not return after its context ended")
+	}
+}
+
+// The row the pass adds for an issue that has none carries that issue's project, as the row
+// its trigger would have added does (insertMissingIssues, migration 20261109120000). This
+// insert is the one write of an embeddings row that does not go through an enqueue function,
+// so nothing else would catch it leaving the column null - and a row with a null project_key
+// is returned by no project-scoped meaning search (api/search.go).
+//
+// The issue is written with its trigger on and its row then deleted, which is the state the
+// pass is for - an issue the queue holds no row of - reached without the superuser setting
+// that turns triggers off (withTriggersOff).
+func TestCoverLabelsTheIssueRowItAddsWithTheIssuesProject(t *testing.T) {
+	database := storetest.Open(t)
+	seedIssue(t, database, "PRJK", "PRJK-1", "An issue the queue holds no row of")
+	mustExec(t, database.Pool, `delete from embeddings where kind = 'issue' and id = 'PRJK-1'`)
+	cover(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
+
+	var project *string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select project_key from embeddings where kind = 'issue' and id = 'PRJK-1'`).Scan(&project); err != nil {
+		t.Fatalf("read the row the pass added for PRJK-1: %v", err)
+	}
+	if project == nil || *project != "PRJK" {
+		t.Errorf("the row the pass added carries project_key %v, want the issue's own, PRJK", project)
 	}
 }
 
