@@ -8,13 +8,21 @@
 # five-field line the stand-in curl of the shorten-ladder step writes, one line for each fetch
 # it was handed.
 #
-# What this file covers is that one refusal, in four readings: a legitimate log passes, a log
-# with one record more than the bound is refused, a log whose every record carries the name is
-# refused, and a log with no such record still refuses for the reason it refused for before.
-# The verb's other refusals stay driven by the `tool-fallback` job of .github/workflows/ci.yaml,
-# which runs this verb over the log of its own run: the window the one kept case must measure
-# inside, a second name that kept the pinned ladder, and a fetch that was shortened and then
-# served the bytes.
+# What this file covers is that one refusal, in five readings: a legitimate log passes; a log
+# with one record more than the bound is refused; a log whose every record carries the name is
+# refused; a log whose kept measurement is under the floor is refused for its records as well
+# as for that measurement; and a log with no such record still refuses for the reason it
+# refused for before.
+#
+# Four refusals of the verb are driven by nothing: a second name that kept the pinned
+# ladder, a fetch the stand-in shortened that then served the bytes, an absent or empty log,
+# and a line that is not the five-field line the stand-in writes. No case below reaches them,
+# and neither does the `tool-fallback` job of .github/workflows/ci.yaml: that job runs this
+# verb once, over the log of its own run, and that run passes, so it reads the measurement and
+# drives no refusal at all (job 130429248756, head 7c3b4de2, printed the closing sentence).
+# Two refusals beside the count are reached below only as by-products of what a case pins, and
+# this file claims neither as coverage of its own: the under-floor arm of the window chain, by
+# the fourth case, and the fetch that stayed on the pinned ladder and failed, by the fifth.
 #
 # Run from anywhere: .github/scripts/ci-tools-proof.test.sh
 # CI runs it in ci.yaml's test job.
@@ -102,6 +110,20 @@ check "names the count it read and the bound" \
   "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to, and the names they carried it under are: crane-head")"
 check "prints no closing sentence" "$(is "$(contains "$out" "$closing")" false)"
 check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
+
+echo "case: a log under the floor is refused for its records as well"
+# The comment at ci-tools-proof.sh:1748-1750 says the count refusal stands on its own and is no
+# further arm of the window chain above it. This log is the case above with one field changed,
+# 10 s in place of 63 s, so it takes that chain's under-floor arm, and written as a further
+# `elif` the verb would then say nothing of its 65 records at all. That rewrite is what the two
+# assertions below on the count refusal and on the number of refusals redden for.
+run_report "$(repeat 65 "seconds=10 decision=full host=github.com exit=22 full-ladder=crane-head")"
+check "exits 1" "$(is "$status" 1)"
+check "the under-floor refusal speaks" \
+  "$(contains "$out" "measured 10 s, under the floor of 45 s, so it stopped driving the real ladder")"
+check "the count refusal speaks beside it" \
+  "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to")"
+check "no refusal speaks beside those two" "$(is "$(error_count "$out")" 2)"
 
 echo "case: a log with no record of that name still refuses for the old reason"
 # The legitimate log with one field changed on every record and nothing else. A run where the

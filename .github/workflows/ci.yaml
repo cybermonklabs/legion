@@ -2669,9 +2669,8 @@ jobs:
       # faults, so a stand-in installed above that case shortened a fetch this job means to
       # succeed and took the pinned ladder off it, while the fault that makes the shortening
       # true was not up yet. In job 129841257239 that fetch is the first one the ladder-report
-      # step printed, `github.com: shortened, curl exit 0, 0s` (the listing carries the name
-      # each fetch held as a fifth field now): 2 attempts over 1 s where the pinned ladder
-      # gives 7 over 63 s, so one short failure of github.com would redden this
+      # step printed, `github.com: shortened, curl exit 0, 0s`: 2 attempts over 1 s where the
+      # pinned ladder gives 7 over 63 s, so one short failure of github.com would redden this
       # required job where the pinned ladder rode it out.
       # The step after this one starts the fault, so every fetch made from here goes through
       # it and no fetch this job did not arrange to fail is ever shortened. The ladder-report
