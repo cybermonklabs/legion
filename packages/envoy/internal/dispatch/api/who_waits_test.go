@@ -272,7 +272,7 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 	// holds is spelled once in the module. The precedent for reading the source rather than the
 	// behaviour is api/lock_level_test.go.
 	t.Run("the three reads share one expression", func(t *testing.T) {
-		sources := moduleSources(t, "../../..")
+		sources := moduleSources(t)
 		declarations := map[string]ast.Node{}
 		for _, source := range sources {
 			if filepath.Base(filepath.Dir(source.path)) != "api" {
