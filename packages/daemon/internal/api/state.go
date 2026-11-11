@@ -471,7 +471,9 @@ type Issue struct {
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
 // wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it.
+// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
+// of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
+// (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`

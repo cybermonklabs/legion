@@ -1387,8 +1387,8 @@ GATES = [
         (".github/scripts/repo-paths.sh",
          f"{at('envoy-smoke', SCHEMA_STEP)}: it derives the download URL the build stamps in"),
         (".github/scripts/disk_watch.py",
-         f"{at('envoy-smoke', 'Start the disk watch over the live tests')} and "
-         f"{at('envoy-smoke', 'Report the disk the live tests used')} run it"),
+         f"{at('envoy-smoke', 'Start the machine watch over the live tests')} and "
+         f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + CI_SELF),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
@@ -1513,8 +1513,9 @@ GATES = [
         (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
                                         "bytes through it, and the two steps above source it for a row's fields"),
         (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
-                                              "of this job that drives the proof does; this job and tool-fallback-arm "
-                                              "are its only callers"),
+                                              "of this job that drives the proof does; tool-fallback-arm drives it "
+                                              "too, and the test job runs its ladder-report verb over logs of its "
+                                              "own"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                               "of GitHub's release assets"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "

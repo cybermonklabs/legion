@@ -1567,13 +1567,22 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	return nil
 }
 
+// A row keeps a decline as three columns and Go as one optional value (RootAsk.Decline): declined
+// is the column that says there is one, and the note and the words are its two parts, each null
+// where Dispatch recorded none. The scan below builds the value from the three, and the write
+// takes it apart again.
 const rootAskColumns = `issue, ask, coalesce(kind, ''), coalesce(artifact, ''), open, seq, coalesce(waiting_on, ''), waiting_on_seq,
-	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq`
+	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq, declined, coalesce(declined_note, ''), coalesce(declined_words, '')`
 
 func scanRootAsk(row scanner) (RootAsk, error) {
 	var ask RootAsk
+	var declined bool
+	var decline AskDecline
 	err := row.Scan(&ask.Issue, &ask.Ask, &ask.Kind, &ask.Artifact, &ask.Open, &ask.Seq, &ask.WaitingOn, &ask.WaitingOnSeq, &ask.ClosedBy,
-		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq)
+		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq, &declined, &decline.Note, &decline.Words)
+	if err == nil && declined {
+		ask.Decline = &decline
+	}
 	return ask, err
 }
 
@@ -1589,18 +1598,24 @@ func (s *Postgres) RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*
 }
 
 func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error {
+	declined, note, words := false, "", ""
+	if ask.Decline != nil {
+		declined, note, words = true, ask.Decline.Note, ask.Decline.Words
+	}
 	if _, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
-		by_tree, person_seq, person_answer_seq)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		by_tree, person_seq, person_answer_seq, declined, declined_note, declined_words)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		on conflict (issue, ask) do update set kind = excluded.kind, artifact = excluded.artifact, open = excluded.open, seq = excluded.seq,
 		waiting_on = excluded.waiting_on, waiting_on_seq = excluded.waiting_on_seq, closed_by = excluded.closed_by,
 		closed_seq = excluded.closed_seq, by_tree = excluded.by_tree,
-		person_seq = excluded.person_seq, person_answer_seq = excluded.person_answer_seq
+		person_seq = excluded.person_seq, person_answer_seq = excluded.person_answer_seq,
+		declined = excluded.declined, declined_note = excluded.declined_note, declined_words = excluded.declined_words
 		where root_asks.seq <= excluded.seq and root_asks.waiting_on_seq <= excluded.waiting_on_seq
 		and root_asks.closed_seq <= excluded.closed_seq and root_asks.person_seq <= excluded.person_seq
 		and root_asks.person_answer_seq <= excluded.person_answer_seq`,
 		ask.Issue, ask.Ask, nullableText(ask.Kind), nullableText(ask.Artifact), ask.Open, ask.Seq, nullableText(ask.WaitingOn), ask.WaitingOnSeq,
-		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq); err != nil {
+		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq,
+		declined, nullableText(note), nullableText(words)); err != nil {
 		return fmt.Errorf("put ask %s of %s: %w", ask.Ask, ask.Issue, err)
 	}
 	return nil
