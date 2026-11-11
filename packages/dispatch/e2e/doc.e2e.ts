@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type BrowserContext, expect, test } from "@playwright/test";
 
 import {
   createComment,
@@ -32,7 +31,7 @@ import {
 } from "./editor";
 import { pickPreset } from "./issue-page";
 import { engineParagraphs } from "./read-back";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -41,10 +40,6 @@ const session = {
 };
 const longToken = `sjawhar/legion#838-${"unbreakable".repeat(12)}`;
 const initialMarkdown = `## Database\n\nUse SQLite\n\n| col | value |\n|---|---|\n| a | 1 |\n| b | ${longToken} |\n\n- [ ] task\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\nEnd of spec.\n`;
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the spec opens as a formatted, editable document with no source pane", async ({
   browser,
@@ -120,10 +115,9 @@ test("the spec opens as a formatted, editable document with no source pane", asy
 // The narrow-screen half of the row above. The spec's table holds a token nothing can break, the
 // widest thing a document can carry; on a 390 px screen it has to wrap inside its cell rather
 // than push the table, and the page with it, sideways.
-test("a spec whose table holds an unbreakable token keeps the page within the screen @phone", async ({
+test("a spec whose table holds an unbreakable token keeps the page within the screen @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "only a phone screen is narrower than the token");
+}) => {
   await createProject({ key: "READ", name: "Readable" });
   const issue = await createIssue({
     project: "READ",
@@ -592,11 +586,7 @@ for (const row of [
   // leaving PROVIDER_ECHO_MS of real time for what those timers sent to come back.
   test(`an idle document provider stays on one connection past its receive timeout, as ${row.reader}`, async ({
     browser,
-  }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "chromium",
-      "one Hocuspocus provider proves the document socket stays connected"
-    );
+  }) => {
     await createProject({ key: row.key, name: "Idle document" });
     const issue = await createIssue({
       project: row.key,
@@ -631,6 +621,9 @@ for (const row of [
       const started = await page.evaluate(() => Date.now());
       for (let spent = 0; spent < PAST_THE_RECEIVE_TIMEOUT_MS; spent += PROVIDER_TIMER_STEP_MS) {
         await page.clock.runFor(PROVIDER_TIMER_STEP_MS);
+        // The real time each step leaves for what those timers sent to come back: the clock
+        // jumped above is the page's, and the round trip over the socket is not, so the step is
+        // paced with `PROVIDER_ECHO_MS` of the wall clock before the next jump.
         await sleep(PROVIDER_ECHO_MS);
       }
       // However little of the run that cost, the page itself has spent the whole timeout: a

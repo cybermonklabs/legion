@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   EMPTY_STATE_LINES,
   NODE_FACT_LABELS,
@@ -25,7 +23,7 @@ import {
   rowsOfType,
   visibleText,
 } from "./issue-page";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The issue's checks, on the Checks preset of the redesigned issue page (dispatch://INFRA-1196):
@@ -105,10 +103,6 @@ async function openResults(page: Page): Promise<void> {
     await branchMoreRows(page).first().getByRole("button").first().click();
   }
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): 2.3 s - a project, its default repository, a pull request in the fake GitHub, a
 // Verification document of three checks and two recorded results, each result's record route
@@ -236,7 +230,7 @@ A check nobody has run yet reads no result.
   }
 });
 
-// SLOW(>=2s): 1.9 s here, over the bar on the four-lane report this rule is read against, and
+// SLOW(>=2s): 1.9 s here, over the bar on the four-worker report this rule is read against, and
 // this pod puts it over in a third of runs. Two results recorded against the document's two
 // checks, each one's record route reading through to the fake GitHub for the pull request's
 // head, with the fake re-seeded between them so the first result ages; then one load of the

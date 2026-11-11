@@ -2,7 +2,7 @@
  *  width, and the review panel toggle the phone layout draws instead. Each reads only what the
  *  page draws, so each runs against a recording rather than against a harness
  *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The phone row runs under `stub-phone`,
- *  which is the one project that takes the `@phone` tag here. */
+ *  which is the one project that takes the ` @phone-only` tag it carries. */
 import { expect } from "@playwright/test";
 
 import { createAsk, createIssue, createProject } from "./api";
@@ -61,14 +61,10 @@ test("issue landing keeps Spec primary and puts open asks in Needs you @pr", asy
 // phone layout alone renders, and opening it has to bring the open asks up without pushing the
 // page sideways. The screen is the project's own, so the claim is read at the width a phone
 // actually gives it.
-test("on a phone the issue's open asks come up behind the review panel toggle @phone @pr", async ({
+test("on a phone the issue's open asks come up behind the review panel toggle @phone @phone-only @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "stub-phone",
-    "the review panel toggle is the phone layout's; a desktop width draws the margin beside the document"
-  );
   await page.goto(`/issues/${scene.issue}`);
   const toggle = page.getByRole("button", { name: "Open review panel (2 open asks)" });
   await expect(toggle).toBeVisible();

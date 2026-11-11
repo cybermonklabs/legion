@@ -1,13 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, test } from "@playwright/test";
-
 import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/query-client";
 import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
 import { holdFirstRequest } from "./editor";
 import { pickPreset } from "./issue-page";
-import { resetDatabase } from "./seed";
 import { failBuildScript, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,10 +30,6 @@ interface NavigationEventTrace {
   type: string;
   url?: unknown;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // It is no stubbed row: the row's own 503s are recorded beside the answer that follows them, and
 // a replay is given the first of them for every ask, so the page never opens.
@@ -158,10 +152,6 @@ test("signing out revokes the session on the server and returns to the sign-in p
 test("a chunk that fails after a Download link was followed reloads the page @pr", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium" && testInfo.project.name !== "firefox-download-navigation",
-    "the guard is checked in Chromium and Firefox"
-  );
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", spec: "Downloadable spec.", title: "Files" });
   const context = await asUser(browser, "alice");
@@ -270,8 +260,7 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
 // the stubbed layer's file server answers with `index.html` rather than a 404.
 test("a tab whose three reloads are older than five minutes reloads for a new failure", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the recovery does not depend on the layout");
+}) => {
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const counts = await missEntryChunk(page, () => false, baseUrl);
@@ -301,8 +290,7 @@ test("a tab whose three reloads are older than five minutes reloads for a new fa
 // real 404.
 test("a tab that reloaded three times in the last five minutes does not reload for a new failure", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the recovery does not depend on the layout");
+}) => {
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const counts = await missEntryChunk(page, () => false, baseUrl);
@@ -319,6 +307,9 @@ test("a tab that reloaded three times in the last five minutes does not reload f
     // The handler runs on the failure itself, so a reload it decided to make would already have
     // asked for the page; four frames of margin for the request to reach the counter.
     await failed;
+    // The margin that paragraph names: a reload the handler decided on asked for the page in the
+    // task of the failure awaited above, so this window is four frames for that request to reach
+    // the counter; a reload that never happens marks nothing else to wait on.
     await sleep(250);
     expect(counts).toEqual({ documents: 1, entryRequests: 1 });
     expect(await tabReloads(page)).toEqual(spent);
@@ -337,8 +328,7 @@ test("a tab that reloaded three times in the last five minutes does not reload f
 for (const leaving of ["beforeunload", "pagehide"]) {
   test(`a page whose entry chunk fails after ${leaving} stays until it is shown again`, async ({
     browser,
-  }, testInfo) => {
-    test.skip(testInfo.project.name !== "chromium", "the recovery does not depend on the layout");
+  }) => {
     const context = await asUser(browser, "alice");
     const page = await context.newPage();
     const requested = Promise.withResolvers<void>();

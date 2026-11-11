@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
@@ -15,8 +13,8 @@ import {
   resolveComment,
 } from "./api";
 import { expectUncovered } from "./layout";
-import { resetDatabase } from "./seed";
 import { answeredPost, holdPosts, refusePosts, WRITE_REFUSED, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The phone layout on every project: on a phone a comment's thread opens full-screen over the
@@ -126,10 +124,6 @@ async function pageNetwork(
 async function scrollToOldest(page: Page): Promise<void> {
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // A send's composer is the one that shows its outcome, and the one on screen: a thread opened over
 // it while the message is on its way leaves it where it was, holding the draft until the answer,

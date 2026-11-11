@@ -1,4 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
 import { mintAgentToken } from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
@@ -8,7 +7,7 @@ import {
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { pressFinger } from "./touch";
 import { asUser } from "./users";
 
@@ -112,10 +111,6 @@ async function clickShape(page: Page, shape: { series: string; x: number; at: st
   if (position === null) throw new Error(`no ${shape.series} shape painted at ${shape.at}`);
   await page.mouse.click(position.x, position.y);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the Delivery sidebar nav entry opens the delivery timeline", async ({ browser }) => {
   await seedDeliveryFixture();
@@ -278,10 +273,9 @@ test("dragging the zoom slider zooms without setting a brush window", async ({ b
   await context.close();
 });
 
-test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone", async ({
+test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "a finger drag exercises the phone project");
+}) => {
   await seedDeliveryFixture();
   // The reconcile pass the server runs on its own five-minute tick (`ReconcileInterval`,
   // `delivery/reconcile.go`) can land anywhere inside this row: the fake GitHub holds no
@@ -353,10 +347,9 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
 // laid out once around the longest text the rows can carry; here the failure is written while
 // the finger is down, so the rewrap itself happens under the finger and the width is read
 // across it.
-test("on a phone a reconcile error arriving under the finger widens nothing @phone", async ({
+test("on a phone a reconcile error arriving under the finger widens nothing @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "a finger on the chart is the phone project's");
+}) => {
   await seedDeliveryFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -449,7 +442,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   // happy: last_reconcile_at is set (a prior pass did succeed once) but last_error names the most
   // recent failure, and the freshness row must show that failure by name, not the generic
   // "Reconcile X ago"/"never ran" wording a merely-stale-but-healthy row gets (lib/freshness.ts's
-  // reconcileRow). The lane's own server runs the delivery reconcile on a ticker of its own, so a
+  // reconcileRow). The stack's own server runs the delivery reconcile on a ticker of its own, so a
   // pass can land between the write below and the page's read of it, and a failing pass
   // overwrites last_error (store.go's RecordReconcileError). Hence the fake GitHub: acme/widgets
   // with Contents and Pull-requests but no Actions makes every such pass fail with exactly the
@@ -457,7 +450,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   // read on acme/widgets"), so a pass inside this row's window changes nothing. The SQL seed
   // stays: the page must show the failure the instant it loads, before any pass has run.
   // To see that for oneself, run this row with DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1s, which
-  // e2e/run-server.sh forwards to the lane's server: several passes then land inside the window
+  // e2e/run-server.sh forwards to the stack's server: several passes then land inside the window
   // below and the row still reads the same.
   await seedFakeGithub({
     "acme/widgets": { contents: "read", installation_id: 690, pull_requests: "read" },

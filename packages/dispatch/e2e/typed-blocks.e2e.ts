@@ -1,14 +1,8 @@
-import { expect, test } from "@playwright/test";
-
 import { NODE_TYPE_NAMES } from "../web/src/features/issue/page-words";
 import { createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("typedBlockDirectiveRoundTrip", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });

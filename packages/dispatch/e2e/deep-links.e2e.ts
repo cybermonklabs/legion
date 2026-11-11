@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   createArtifactComment,
   createAsk,
@@ -25,8 +23,8 @@ import {
   selectEditorText,
 } from "./editor";
 import { openIssueAddress } from "./issue-page";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -54,10 +52,6 @@ const longDocument = [
   ),
   "Unique faraway quotation.",
 ].join("\n\n");
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seedIssue() {
   await createProject({ key: "CORE", name: "Core" });
@@ -1021,10 +1015,9 @@ test("a linked card's placement ignores the margin's own scroll @webkit @firefox
   }
 });
 
-test("an iPhone document item link brings its far-away mark above the closed review sheet @phone", async ({
+test("an iPhone document item link brings its far-away mark above the closed review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the closed sheet is phone-only");
+}) => {
   const { comment, issue, markId } = await seedLongDocument();
   const context = await asUser(browser, "alice");
 
@@ -1052,10 +1045,9 @@ test("an iPhone document item link brings its far-away mark above the closed rev
   }
 });
 
-test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone", async ({
+test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the bottom-sheet viewport is phone-only");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",

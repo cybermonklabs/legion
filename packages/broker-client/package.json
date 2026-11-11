@@ -40,6 +40,7 @@
     "lint": "bunx biome check src/"
   },
   "dependencies": {
+    "@legion/contracts": "workspace:*",
     "jose": "6.2.9",
     "openid-client": "6.8.7"
   },

@@ -1,11 +1,8 @@
-import { expect, test } from "@playwright/test";
-
 import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { createIssue, createIssueArtifact, createProject, editArtifact, getArtifact } from "./api";
 import { blockId } from "./editor";
 import { gotoIssue, nodeRows } from "./issue-page";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, test } from "./test";
 
 // The decision records end to end, against the real server: an agent writes `decisions.md` with
 // one decision that links two spec blocks, and a person reads it on the Spec tab beside those
@@ -19,16 +16,11 @@ const STALE_TITLE = "A decision that shaped this block changed after it.";
 const DECISION = "Store notices in a table";
 const REASON = "Chosen for the simplest storage.";
 
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-  await createProject({ key: "CORE", name: "Core" });
-});
-
 // @pr: The Decisions tab's only row: a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change.
 test("a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change @pr", async ({
   page,
 }) => {
+  await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
     spec: "Notices are lost today.\n\nStore each notice.\n\nShow the newest first.\n",

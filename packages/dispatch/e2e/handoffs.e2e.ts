@@ -1,7 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
 import { createHandoff, createIssue, createProject } from "./api";
 import { conversationStateControl } from "./issue-page";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The session that writes both versions, as `dispatch handoff-write` does: under the agent bearer,
@@ -59,10 +58,6 @@ function handoffCard(page: Page, title: string) {
     .locator(":scope > li[data-turn]")
     .filter({ has: page.getByText(title, { exact: true }) });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // The Conversation half. Against the build of the commit before the Conversation change, this
 // test fails (no handoff card) while the Activity test below passes: that is the negative control.

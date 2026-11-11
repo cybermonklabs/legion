@@ -1,7 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { type APIResponse, expect, type Page, type Route, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
   createArtifactComment,
@@ -19,7 +17,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { type APIResponse, expect, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: what an open page shows must still follow the writes it shows, once an event
@@ -27,10 +25,6 @@ import { asUser } from "./users";
 // alice's page stays open, and expects the change on the page within 2 s, with no reload.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 const live = { timeout: 2_000 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Opens `path` and returns once Dispatch has started the page's event feed on its live socket
  *  (`events_start`): it subscribes the feed to its event relay before it sends that frame, so every
@@ -358,6 +352,9 @@ test("budget: a document in another project citing 25 documents reads no issue d
       .poll(
         async () => {
           const before = gets.length;
+          // The sample's own width: each attempt counts the reads that arrive in 100 ms of real
+          // time, and the poll ends on the first window that holds none, which is what "the
+          // opening reads have stopped" means here.
           await sleep(100);
           return gets.length - before;
         },
@@ -372,6 +369,9 @@ test("budget: a document in another project citing 25 documents reads no issue d
     // `MIN_REFETCH_INTERVAL_MS`; one jump fires both, and the margin is for a request they make
     // reaching Playwright's counter.
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a read either timer owed leaves the page inside the jump
+    // above, and this window in Node is for it to reach Playwright's counter, which the page's
+    // own clock cannot do. A read that is never made marks nothing else to wait on.
     await sleep(200);
     console.log(`REFETCH-INDEX [${testInfo.project.name}] GETs: ${gets.join(", ")}`);
     const unrelated = gets.filter(

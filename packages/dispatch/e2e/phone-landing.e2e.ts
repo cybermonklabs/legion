@@ -1,15 +1,7 @@
-import {
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  type Route,
-  test,
-} from "@playwright/test";
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
 import { conversationStateControl, openIssueAddress } from "./issue-page";
 import { boxesApart } from "./layout";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Locator, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
 // The iPhone 13 viewport INFRA-95 measured the landing fault at. At the `phone` layout
@@ -116,10 +108,6 @@ async function expectNewestInView(page: Page, card: Locator, label: string): Pro
   expect(inView, `${label}: the newest card is not wholly in the viewport: ${where}`).toBe(true);
   expect(apart, `${label}: the newest card shares a point with the composer: ${where}`).toBe(true);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The three reads the Conversation's list is built from. */
 const READS = ["asks", "comments", "messages"] as const;

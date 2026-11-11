@@ -4,8 +4,8 @@
  *
  *  Every row reads only what the page draws over fixed answers, so each runs against a
  *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
- *  The phone row runs under `stub-phone`, which emulates the phone; under `stub`, which runs
- *  at a desktop width, its own `test.skip` takes it out. The sidebar row of `nav.e2e.ts`
+ *  The phone row runs under `stub-phone`, which emulates the phone; its ` @phone-only` tag is
+ *  what keeps it out of `stub`, which runs at a desktop width. The sidebar row of `nav.e2e.ts`
  *  stayed there: its badges are counts the server computes over the twenty issues and three
  *  asks it seeds, and it asserts the exact set of requests the page makes of that server,
  *  which a recording that answers only what it holds cannot be read for.
@@ -142,12 +142,8 @@ test("the rail's New issue button opens the create dialog, preselecting the page
 // One count, one colour: the Inbox badge means the viewer must act, and a reader who learns it
 // in the drawer must recognise it in the top bar.
 badgeTest(
-  "the Inbox count is the same badge in the phone top bar and the drawer @phone @pr",
-  async ({ page, scene }, testInfo) => {
-    badgeTest.skip(
-      testInfo.project.name !== "stub-phone",
-      "the compact top bar exists below the xl rail"
-    );
+  "the Inbox count is the same badge in the phone top bar and the drawer @phone @phone-only @pr",
+  async ({ page, scene }) => {
     await page.goto("/");
     const fill = (locator: ReturnType<Page["getByText"]>) =>
       locator.evaluate((element) => getComputedStyle(element).backgroundColor);

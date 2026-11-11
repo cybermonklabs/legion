@@ -1,12 +1,3 @@
-import {
-  type WebSocket as BrowserWebSocket,
-  expect,
-  type Page,
-  type Request,
-  test,
-  type WebSocketRoute,
-} from "@playwright/test";
-
 import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -20,8 +11,15 @@ import {
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { conversationStateControl } from "./issue-page";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import {
+  type WebSocket as BrowserWebSocket,
+  expect,
+  type Page,
+  type Request,
+  test,
+  type WebSocketRoute,
+} from "./test";
 import { asUser } from "./users";
 
 const agent: FakeSession = {
@@ -195,10 +193,6 @@ function trackDocumentLoads(page: Page): string[] {
   return loaded;
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): one socket for every live view is read over three live views, so the row loads and
 // draws all three in the one tab - the project's board, the session's live thread and the
 // delivery timeline - and each is a page's worth of rendering the claim cannot do without.
@@ -300,6 +294,9 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
     for (const pageSockets of sockets) await untilFeedStarts(pageSockets);
     await Promise.all(pending.map(waitForReads));
 
+    // The idle itself: five seconds of real time with every page's socket open. A request a page
+    // holds open ages on the wall clock whatever that page's timers believe, so no clock jump
+    // can stand in for this window - it is the measurement this row is.
     await board.waitForTimeout(IDLE_MS);
     for (const page of pages) await page.clock.fastForward(SILENCE_CHECK_MS);
     // Whatever the checks started - the sign-in check that jump also fires among them - is a read

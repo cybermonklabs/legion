@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import {
   acceptSuggestion,
@@ -29,8 +28,9 @@ import {
 } from "./editor";
 import { pickPreset } from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
-import { resetDatabase, setCommentAuthorService } from "./seed";
+import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -44,10 +44,6 @@ async function expandedConversationThread(page: Page, rootId: string): Promise<L
   await turn.getByRole("button", { name: "Expand thread" }).click();
   return turn;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two browser contexts, three document loads and three composer round trips.
 test("the selection bar comments, suggests, and asks on marks that both users see", async ({

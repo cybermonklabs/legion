@@ -22,7 +22,7 @@ import (
 // open and no reset.
 func TestAHubThatStopsAnsweringIsNoticedWithinSeconds(t *testing.T) {
 	var out lockedBuffer
-	conn, err := natsauth.Connect([]string{fakeServer(t, "")}, "",
+	conn, err := natsauth.Connect([]string{fakeServer(t, "")}, "", t.Name(),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))), natsauth.ReconnectForever())
 	if err != nil {
 		t.Fatalf("connect: %v", err)

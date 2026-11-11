@@ -1,22 +1,16 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createMessage, createProject, putIssueState } from "./api";
 import {
   conversationViewport,
   scrollConversationBy,
   scrollConversationTo,
 } from "./conversation-scroll";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
   actor: { id: "e2e-attention", kind: "session" as const },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * The conversation, where a reader reads a comment or a message. Every entry of the issue is

@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { setLiveSessions } from "./agents";
@@ -15,7 +13,7 @@ import {
   releaseClaim,
 } from "./api";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A person's answer and replies on an ask reach the ask's followers, the session holding the
@@ -28,10 +26,6 @@ const routed = "e2e-reach-routed";
 // A row that waits out the listener roster (routeRosterTTL, five seconds) sees the refreshed read
 // only on its next probe, and the default ladder probes once a second after the first second.
 const ROSTER = { intervals: [50, 50, 100, 200, 500], timeout: 15_000 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A claim the server settles: the ask card names the claimant and the route, and a release drops the claimant with no reload.
 test("the ask card lists the issue's claimant and route, and drops the claimant on release without a reload @pr", async ({

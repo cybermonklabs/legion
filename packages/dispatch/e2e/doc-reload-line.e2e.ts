@@ -1,10 +1,8 @@
-import { expect, test } from "@playwright/test";
-
 import type { Actor } from "../web/src/api/types";
 import { createIssue, createProject, patchIssue } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { expectIssueClosed, openIssueActions, runIssueAction } from "./issue-page";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // The server admits a document socket read-only for a closed issue exactly as it does for a
@@ -13,10 +11,6 @@ import { asUser } from "./users";
 // disagree - an admission that came while the page still held the issue closed, on a page that
 // then learns the issue is open - and the page must name the reload that makes the document
 // editable again.
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The session that reopens the issue behind the page's back. */
 const reopener = {

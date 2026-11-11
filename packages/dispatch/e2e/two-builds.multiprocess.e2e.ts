@@ -1,14 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  type Browser,
-  expect,
-  type Locator,
-  type Page,
-  type Request,
-  test,
-} from "@playwright/test";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
 import { type FakeSession, setLiveSessions } from "./agents";
@@ -32,7 +24,7 @@ import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { type DispatchProcess, processPinCookie, processPinHeader } from "./harness-processes";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
 
@@ -98,10 +90,6 @@ test.beforeAll(() => {
     builds.b.assets,
     `${webDists.a}/assets and ${webDists.b}/assets hold the same files`
   ).not.toEqual(builds.a.assets);
-});
-
-test.beforeEach(async () => {
-  await resetDatabase();
 });
 
 /** The machine the seeded session reports. It reports it as `machine_id` and no `host`, which
