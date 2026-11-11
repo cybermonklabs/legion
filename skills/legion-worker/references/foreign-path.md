@@ -11,7 +11,7 @@ Every path yours: commit and push as your role prompt says. A path you did not w
 only in the second list, or already inside a commit of yours: split nothing, tell the architect.
 A path you did not write in the first list:
 
-    jj -R "$LEGION_WORKSPACE" split -m '<issue>: <what you did>' <your paths…>
+    cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" split -m '<issue>: <what you did>' <your paths…>
     jj -R "$LEGION_WORKSPACE" metaedit -r @- --update-author
     jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @-
     jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>
@@ -22,4 +22,4 @@ why. Always `-m`: without it the commit carries no message of yours.
 The remainder keeps that path, and the push above moves the bookmark's commit alone, so it stays
 out of the branch. Never put the bookmark on the remainder, described or not: measured, that
 pushes the other role's file. Read the first list again, then tell the architect what it held.
-Recover forward (`jj new`, `jj restore <paths>`), never `jj undo` or `jj op restore`.
+Recover forward (`jj new`, `jj restore <paths>`), never `jj undo`, `jj abandon` or `jj op restore`.
