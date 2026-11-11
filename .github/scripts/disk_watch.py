@@ -35,14 +35,16 @@ with at least twice the disk it went on to need.
 Each line of the series carries the second its readings were taken in: the stamp is read from
 the clock after those readings and never before them, so a line names the second it was read in
 rather than the second it was due in. One line can still reach the file after the second it
-names - the sampler takes the stamp and then appends, and a stall landing between the two holds
-that line back until the sampler runs again - but those two statements are microseconds apart.
+names: the sampler takes the stamp and then appends, so a stall landing between the two holds
+that line back until the sampler runs again, and an append that blocks on the disk it measures
+delays it the same way. A stall can land in that gap only rarely, because the stamp and the
+append run a few hundred microseconds apart.
 The job record times every step boundary, so a reader lines the two up: what the machine had
 when a step began, and what it had while that step ran. A second with no line of its own is a
 second the sampler wrote nothing in, and it has two causes, both of them the machine: it was
-not scheduled - a machine too busy to run a process waking from a sleep - or its own writes to
-the disk it measures, the series append and the state file, took longer than the second they
-were made in. Neither is a hole in what was measured.
+not scheduled - a machine too busy to run a process waking from a sleep - or its own reads and
+writes on the disk it measures (the free-space read, the series append and the state file)
+took longer than the second they were made in. Neither is a hole in what was measured.
 It does not show a runner being lost: the series reaches a reader only through the report
 step's output, and a run whose runner stopped answering stores no log at all. It is the
 headroom of every run that does store one, and the reading for a command that hangs while the
@@ -410,9 +412,11 @@ def sample(path: str, state_path: str) -> int:
         # the boundary `start` ends on, and a reader lines that boundary up against a tick. The
         # state file may not be written yet on this first pass, which costs nothing: `start`
         # seeds all three worst readings itself, and the series line is written either way.
-        # The step is a plain second because the stamp above has already read the clock into
-        # `tick`: it cannot be behind the clock here, so a pass that ran long or was held off
-        # the CPU waits for the second after the one it ran in rather than for one gone by.
+        # The step is a plain second because the next stamp reads the clock with `tick` as its
+        # floor. `tick` can be behind the clock here when the writes above ran long or a stall
+        # landed among them; the sleep then returns at once, and the next stamp names the
+        # second it is taken in. The 0.05 s margin keeps a sleep that wakes a few milliseconds
+        # early inside the second it waited for, so the readings taken next are of that second.
         tick += SAMPLE_SECONDS
         time.sleep(max(0.0, tick + 0.05 - time.time()))
     return 0

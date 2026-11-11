@@ -218,9 +218,9 @@ check "start left a sampler to stop" "$(is "$status" 0)"
 pid=$(field "$stall_state" sampler_pid)
 sleep 3
 kill -STOP "$pid"
-# `kill -STOP` only queues the signal: the sampler stops when it next runs, which can be a
-# whole pass later. Waiting for the kernel to report it stopped means the series read below is
-# the series of a process that cannot write.
+# `kill -STOP` only sends the signal, and the series below may be read only once the process
+# can no longer write. Measured in this pod, a sleeping sampler shows `T` within about a
+# millisecond, so the wait is a guarantee rather than a delay.
 for _ in $(seq 50); do
   [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && break
   sleep 0.1
@@ -237,9 +237,10 @@ check "the kernel has the sampler off the CPU" \
 # against the old sampler with the stop landed 20 ms in: 0 late lines found in 3 of 3 runs,
 # though every run wrote one.
 # One edge: if a stop lands between the stamp and the append in disk_watch.py's `sample`, the
-# current sampler writes that line after the second it names too, and this window refuses it.
-# Those two statements are microseconds apart, so such a run is rare - and it would be a true
-# failure, a line that reached the series after its own second, rather than a false one.
+# current sampler holds that line back, and this window refuses it. That is a false failure of
+# this check, since the sampler read the clock in that second, and the docstring of
+# disk_watch.py accepts that one late line. It is accepted here because the stamp and the
+# append run a few hundred microseconds apart, so about one run in ten thousand meets it.
 last_before_stall=$(stamps "$stall_state.series" | tail -1)
 sleep 4
 # resumed_at is read before the sampler is let go, so the second it is let go in - which may
@@ -258,9 +259,10 @@ after=$(awk -v resumed="$resumed_at" '$1 >= resumed' <<<"$seconds" | grep -c '^[
 # The number of ticks whose second did not move on: a sampler that reads the clock at the
 # wrong moment could stamp two ticks with one second.
 out_of_order=$(awk 'NR > 1 && $1 <= last { n += 1 } { last = $1 } END { print n + 0 }' <<<"$seconds")
-# The lines naming a second the sampler was off the CPU for the whole of - from the second
-# after its last stamp to the second before it was let go. A sampler that stamps before it
-# reads writes exactly one: the tick it was waiting for when the signal landed.
+# The lines naming a second from the one after the sampler's last stamp to the one before it
+# was let go: seconds it was off the CPU for the whole of, except in the rare edge above. A
+# sampler that stamps before it reads writes exactly one: the tick it was waiting for when the
+# signal landed.
 inside_stall=$(awk -v from="$((last_before_stall + 1))" -v to="$((resumed_at - 1))" \
   '$1 >= from && $1 <= to { n += 1 } END { print n + 0 }' <<<"$seconds")
 # What this proves is that the sampler was running before the stop and came back after it, so
