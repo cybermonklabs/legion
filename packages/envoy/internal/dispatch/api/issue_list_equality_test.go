@@ -91,7 +91,7 @@ const mainIssueSummaryHead = `
 	       count(a.id) filter (where i.closed_at is null),
 	       i.tasks_done, i.tasks_total, progress.children_done, progress.children_total,
 	       comp.owner_key, comp.mode, comp.reason, comp.ids, comp.unknown,
-	       i.repo, repo.resolved, repo.too_deep
+	       i.repo, repo.resolved, repo.too_deep, i.closed_at
 	from issues i`
 
 const mainIssueSummaryTail = `
@@ -175,11 +175,15 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 		{name: "the pinned listing", oracle: mainListPinnedIssuesQuery, paged: listPinnedIssuesPageQuery, unpaged: listPinnedIssuesQuery, pinnedBy: "alice"},
 	} {
 		t.Run(listing.name, func(t *testing.T) {
-			arguments := slices.Clone(filters)
+			oracleArguments := slices.Clone(filters)
+			if listing.pinnedBy != "" {
+				oracleArguments = append(oracleArguments, listing.pinnedBy)
+			}
+			want := issueListRows(t, fixture.database, listing.oracle, oracleArguments)
+			arguments := append(slices.Clone(filters), nil, nil)
 			if listing.pinnedBy != "" {
 				arguments = append(arguments, listing.pinnedBy)
 			}
-			want := issueListRows(t, fixture.database, listing.oracle, arguments)
 			if len(want) < 4 {
 				t.Fatalf("%s answered %d rows, too few for the comparison to decide anything", listing.name, len(want))
 			}

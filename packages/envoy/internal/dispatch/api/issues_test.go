@@ -338,6 +338,85 @@ func TestListIssuesFiltersByUpdatedSince(t *testing.T) {
 	}
 }
 
+func TestListIssuesFiltersByClosedWindow(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "TEST", "name": "Test project",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	createIssue := func(title string) model.Issue {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "TEST", "title": title, "force": true,
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response)
+	}
+	issues := []model.Issue{
+		createIssue("Closed before the window"),
+		createIssue("Closed at the window start"),
+		createIssue("Closed at the window end"),
+		createIssue("Open"),
+	}
+	closedAt := []time.Time{
+		time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, time.November, 3, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, time.November, 4, 0, 0, 0, 0, time.UTC),
+	}
+	for index, at := range closedAt {
+		if _, err := database.Pool.Exec(context.Background(),
+			"update issues set status = 'done', closed_at = $2 where key = $1", issues[index].Key, at); err != nil {
+			t.Fatalf("close %s at %s: %v", issues[index].Key, at, err)
+		}
+	}
+	list := func(query string) []map[string]any {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("list ?%s: status=%d body=%s", query, response.Code, response.Body.String())
+		}
+		return decodeBody[[]map[string]any](t, response)
+	}
+	window := "project=TEST&status=done&closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-04T00:00:00Z"
+	if rows := list(window); len(rows) != 1 || rows[0]["key"] != issues[1].Key {
+		t.Fatalf("closed window rows = %#v, want only %s", rows, issues[1].Key)
+	} else if got, ok := rows[0]["closed_at"].(string); !ok || got != closedAt[1].Format(time.RFC3339) {
+		t.Fatalf("closed window row closed_at = %#v, want %s", rows[0]["closed_at"], closedAt[1].Format(time.RFC3339))
+	}
+	if rows := list("project=TEST&closed_since=2026-11-03T00:00:00Z"); len(rows) != 2 ||
+		rows[0]["key"] != issues[1].Key || rows[1]["key"] != issues[2].Key {
+		t.Fatalf("closed-since rows = %#v, want %s and %s", rows, issues[1].Key, issues[2].Key)
+	}
+	if rows := list("project=TEST&open=true"); len(rows) != 1 || rows[0]["key"] != issues[3].Key {
+		t.Fatalf("open rows = %#v, want only %s", rows, issues[3].Key)
+	} else if got, found := rows[0]["closed_at"]; !found || got != nil {
+		t.Fatalf("open row closed_at = %#v, want null", got)
+	}
+	for _, test := range []struct {
+		query string
+		code  string
+	}{
+		{query: "project=TEST&closed_since=yesterday", code: "INVALID_CLOSED_SINCE"},
+		{query: "project=TEST&closed_before=x", code: "INVALID_CLOSED_BEFORE"},
+		{query: "project=TEST&closed_since=2026-11-04T00:00:00Z&closed_before=2026-11-03T00:00:00Z", code: "INVALID_CLOSED_WINDOW"},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+test.query, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"`+test.code+`"`) {
+			t.Errorf("list ?%s: status=%d body=%s, want 400 %s", test.query, response.Code, response.Body.String(), test.code)
+		}
+	}
+	paged := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+window+"&limit=1", nil, "alice")
+	if paged.Code != http.StatusOK {
+		t.Fatalf("list paged closed window: status=%d body=%s", paged.Code, paged.Body.String())
+	}
+	if page := decodeBody[model.IssueSummaryPage](t, paged); page.Total != 1 || len(page.Issues) != 1 || page.Issues[0].Key != issues[1].Key {
+		t.Fatalf("paged closed window = %#v, want total 1 with %s", page, issues[1].Key)
+	}
+}
+
 func TestListIssuesIncludesEventUpdatedIssuesSinceWatermark(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -575,7 +654,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", "", "", nil, []string{}, false, []int16{}, false).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", "", "", nil, []string{}, false, []int16{}, false, nil, nil).Scan(&planJSON); err != nil {
 		t.Fatalf("explain list query: %v", err)
 	}
 

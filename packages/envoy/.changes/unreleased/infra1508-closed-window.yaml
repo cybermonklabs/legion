@@ -1,0 +1,9 @@
+kind: Added
+body: >-
+  `GET /api/v1/issues` now returns every row's `closed_at` (null while open) and accepts
+  inclusive RFC3339 `closed_since` and exclusive RFC3339 `closed_before` bounds; malformed
+  bounds return `INVALID_CLOSED_SINCE` or `INVALID_CLOSED_BEFORE`, and a non-forward window
+  returns `INVALID_CLOSED_WINDOW`.
+time: 2026-11-11T03:04:37Z
+custom:
+  Issue: INFRA-1508

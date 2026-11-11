@@ -71,9 +71,10 @@ func TestStatementTimings(t *testing.T) {
 	// The eight filters a listing request carries (listIssues' arguments), narrowed to the
 	// project and nothing else: the list a dashboard opens.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
+	listArguments := slices.Concat(filters, []any{nil, nil})
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
-		benchtime.Statement{SQL: listIssuesQuery, Args: filters})
+		benchtime.Statement{SQL: listIssuesQuery, Args: listArguments})
 	// The paged read's before side is the one text the release before this change had: it
 	// answered a paged request by reading every matching issue, resolving all of them and
 	// cutting the page in Go, so the push-down is measured against the read it replaced rather
@@ -81,7 +82,7 @@ func TestStatementTimings(t *testing.T) {
 	runner.Pair(t, "the issue list, the first page of 20",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
 		benchtime.Statement{SQL: listIssuesPageQuery,
-			Args: slices.Concat(filters, []any{issueListTimingLimit, issueListTimingOffset})})
+			Args: slices.Concat(listArguments, []any{issueListTimingLimit, issueListTimingOffset})})
 
 	runner.Pair(t, "the project list",
 		benchtime.Statement{SQL: mainProjectList},

@@ -1,0 +1,8 @@
+kind: Added
+body: >-
+  `IssueSummary.closed_at` is the issue's closing time or null while it is open, and the
+  `GET /api/v1/issues` query accepts optional inclusive `closed_since` and exclusive
+  `closed_before` RFC3339 timestamps.
+time: 2026-11-11T03:04:37Z
+custom:
+  Issue: INFRA-1508

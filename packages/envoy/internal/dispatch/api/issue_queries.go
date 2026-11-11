@@ -59,7 +59,7 @@ var (
 // projects (every project's first issue is "U"), nothing makes one unique within a project, and
 // created_at is the creating transaction's start.
 func issueSummaryQuery(pinned, paged bool) string {
-	parameter := 9
+	parameter := 11
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -94,8 +94,6 @@ func issueSummaryQuery(pinned, paged bool) string {
 `
 }
 
-// issueListFilters are the eight filters a listing request carries, written against `issues i`
-// alone so the filtered term joins nothing: the page and the count both read it.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($2 = '' or i.status = $2)
 		  and ($3 = '' or i.parent_key = $3)
@@ -104,7 +102,9 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))`
+		       or ($8::boolean and i.priority is null))
+		  and ($9::timestamptz is null or i.closed_at >= $9)
+		  and ($10::timestamptz is null or i.closed_at < $10)`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -139,7 +139,8 @@ const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.lab
 	       case when i.closed_at is null then coalesce(open_asks.total, 0) else 0 end,
 	       ` + issueProgressColumns + `,
 	       ` + issueComponentsColumns + `,
-	       ` + refs.IssueRepoColumns
+	       ` + refs.IssueRepoColumns + `,
+	       i.closed_at`
 
 // issueSummaryJoins resolve the six values a listing row carries beside the issue's own columns,
 // each for every issue of `subjects` at once rather than for one row at a time. The open-ask
@@ -297,6 +298,28 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		updatedSince = &parsed
 	}
+	var closedSince *time.Time
+	if query.Has("closed_since") {
+		parsed, err := parseOptionalRFC3339(query, "closed_since", time.Time{})
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_SINCE", http.StatusBadRequest, err.Error())
+			return
+		}
+		closedSince = &parsed
+	}
+	var closedBefore *time.Time
+	if query.Has("closed_before") {
+		parsed, err := parseOptionalRFC3339(query, "closed_before", time.Time{})
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_BEFORE", http.StatusBadRequest, err.Error())
+			return
+		}
+		closedBefore = &parsed
+	}
+	if closedSince != nil && closedBefore != nil && !closedBefore.After(*closedSince) {
+		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_before must be after closed_since")
+		return
+	}
 	priorities, unsetPriority, err := parsePriorityFilter(query["priority"])
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -315,7 +338,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
-	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority}
+	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority, closedSince, closedBefore}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -404,13 +427,17 @@ type issueSummaryRow struct {
 
 // targets are the row's scan targets, after leading, which a paged read fills with the columns
 // it carries ahead of the issue's own.
+const issueSummaryScanValues = 31
+
 func (r *issueSummaryRow) targets(leading ...any) []any {
-	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.createdBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
+	targets := slices.Grow(leading, issueSummaryScanValues)
+	targets = append(targets, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.createdBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.issue.OpenAsks)
 	targets = append(targets, r.progress.targets()...)
 	targets = append(targets, r.components.targets()...)
-	return append(targets, r.repo.targets()...)
+	targets = append(targets, r.repo.targets()...)
+	return append(targets, &r.issue.ClosedAt)
 }
 
 // resolve turns the scanned row into the summary the response carries, refusing an issue whose
