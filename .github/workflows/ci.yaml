@@ -2444,8 +2444,9 @@ jobs:
     #
     # THIS CHANGE ADDS TEN STEPS TO THAT SUM AND NO TIME A READER WOULD NOTICE: eight marks,
     # one before each install with nowhere to go, each a single `echo` which measured 0 s in
-    # every green run of this pull request, and the machine watch's start and its report, at
-    # 5 s and 0 s (jobs 130015112773, 129940828354 and 129966328215). The watch itself is a
+    # jobs 130015112773, 129940828354 and 129966328215 and at most 1 s in job 130289341628 at
+    # the merge of main, and the machine watch's start and its report, at 5 s and 0 s in the
+    # first three. The watch itself is a
     # sampler beside the job rather than a step of it, so those two steps are its whole cost
     # to this budget (dispatch://INFRA-2605).
     #
@@ -2458,11 +2459,12 @@ jobs:
     # The eleven minutes is derived from the installs as they ran before the ladders stopped
     # sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
     # 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
-    # part of that window counted as well as the twenty-four it carries now — gave a median of
+    # part of that window counted as well as the thirty-two it carries now — gave a median of
     # 64 s, a 99th percentile of 128 s and a maximum of 326 s, which is `install-jj` on five
     # slow runs. Eleven minutes is twice that maximum, rounded up to the minute the key takes,
-    # so no step that would have finished is ended by it, and an install costs less now than
-    # any of those figures.
+    # so no step that would have finished is ended by it. Since the ladders stopped sleeping
+    # every install sits under that 99th percentile: the slowest in job 130289341628 is the
+    # head's own `install-crane`, the one kept ladder, at 65 s.
     # THE BOUND WOULD HAVE CHANGED NOTHING IN THE INCIDENT THAT ASKED FOR IT, because a bound
     # the runner enforces needs a runner that is alive. It is here for the other failure: a
     # command that hangs while the runner answers, where without it the job's own ceiling is
@@ -2470,11 +2472,12 @@ jobs:
     # holds.
     # That the runner does enforce it on a `uses:` step of a composite action is measured and
     # not assumed: on this change's own first run, an action sleeping 180 s under
-    # `timeout-minutes: 1` was ended after 72.5 s and the steps after it ran. THAT READING IS
-    # OF THE JOB RECORD AND NOT OF THE LOG: the record of that step (job 129786363688, step 3)
-    # carries `outcome=failure conclusion=success`, while the log carries the composite
-    # action's inner end-action line instead. The runner is about twelve seconds late, so a
-    # bound is a ceiling and not a stopwatch.
+    # `timeout-minutes: 1` was ended after 72.5 s and the steps after it ran. The job record of
+    # that step (job 129786363688, step 3) gives the wall time, 10:57:03Z to 10:58:16Z, and
+    # `conclusion: success`, and holds no `outcome` at all; its log gives `The action has timed
+    # out.`; and the `outcome=failure` the caller's later steps read was measured in job
+    # 129872208213, where a later step printed `steps.<id>.outcome`. The runner is about
+    # twelve seconds late, so a bound is a ceiling and not a stopwatch.
     timeout-minutes: 22
     # contents: read is the two checkouts'; actions: read and checks: write are the
     # ci-ok-report step's. Every read of the package here is the anonymous one an install makes,
