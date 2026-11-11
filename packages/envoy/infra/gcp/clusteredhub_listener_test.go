@@ -47,7 +47,7 @@ func TestClusteredNatsHubListenerPodMatchesGolden(t *testing.T) {
 
 // The Deployment runs one listener, wearing the listener's selector labels, in the hub's
 // namespace; it surges the new pod in before it stops the old one, so the durable the old pod
-// holds is free by the time the new one has waited its bind deadline out; the pod has 35 s to
+// holds is free by the time the new one has waited its bind deadline out; the pod has 40 s to
 // stop; and it waits on its own ServiceAccount, and on the priority class's read where there is
 // one.
 func TestClusteredNatsHubListenerDeployment(t *testing.T) {
@@ -65,7 +65,7 @@ func TestClusteredNatsHubListenerDeployment(t *testing.T) {
 	require.Equal(t, map[string]any{"labels": listenerPodLabels}, spec["template"].(map[string]any)["metadata"])
 
 	pod := clusteredListenerPodSpec(t, m)
-	require.Equal(t, 35.0, pod["terminationGracePeriodSeconds"])
+	require.Equal(t, 40.0, pod["terminationGracePeriodSeconds"])
 	require.Equal(t, clusteredListenerName, pod["serviceAccountName"])
 	require.Equal(t, false, pod["enableServiceLinks"])
 	require.NotContains(t, pod, "priorityClassName")
@@ -215,7 +215,7 @@ func TestClusteredNatsHubListenerProbes(t *testing.T) {
 // The kubelet spends the listener's preStop hook and its shutdown on SIGTERM inside the pod's one
 // grace period, and kills what is still running at its end: the 5 s hook, which holds the pod
 // open while its removal from its Service's endpoints reaches every node's proxy, and the 28 s
-// stop both fit in 35 s. The grace is also below the deadline a starting listener waits for the
+// stop both fit in 40 s. The grace is also below the deadline a starting listener waits for the
 // durable the stopping one holds, so the old pod is gone before the new one gives up.
 func TestClusteredNatsHubListenerStopFitsItsGrace(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
