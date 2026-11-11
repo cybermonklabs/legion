@@ -216,6 +216,13 @@ handler's own context once its key is claimed, until a call with `delay_ms: 0`: 
 drive a write Dispatch is slow to finish with it, slow on the server rather than held in the
 browser. A context that ends during the wait answers `503 SLOW_WRITE_CUT_OFF` and the handler never
 runs, so a keyed handler cut off with its client would never land under it.
+`DISPATCH_TEST_HORIZON_STALL_AFTER` sets how long a pending event-horizon observation waits before
+the process logs its `event horizon held back` warning, in place of the five seconds a deployment
+waits, and `DISPATCH_TEST_HORIZON_WARN_EVERY` how often each of the three event-horizon warnings
+repeats — that stall warning while the stall stands, the failed-observation warning and the
+failed-persist warning — in place of thirty seconds, so an end-to-end test whose own wait keys on
+the stall warning sees it inside its patience. A deployment sets neither, and like the rest both
+need `DISPATCH_TEST_HOOKS=1`.
 
 The live-socket disconnect and rotate, the quiesce and the publish hooks act on every process
 serving the database, not only the one the call reached, so a browser suite against two processes
