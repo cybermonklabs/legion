@@ -52,10 +52,10 @@ func runPlannerCounts(cfg runConfig, sf seedFile) map[string]docVersions {
 	st.openWindow(time.Now().Add(-cfg.warmup - cfg.duration - time.Second))
 	counts := map[string]docVersions{}
 	var marker int64
-	openLoop(context.Background(), cfg.rngSeed, 1, st.ratePlan(cfg.events), st.winStart, st.winEnd,
+	openLoop(context.Background(), cfg.rngSeed, eventStream, st.ratePlan(cfg.events), st.winStart, st.winEnd,
 		func(r *rand.Rand, _ time.Time, in bool) {
 			marker++
-			p := planEvent(r, cfg, st.sessions, sf, marker)
+			p := planEvent(r, st.pops[0], cfg, marker)
 			if !in || (p.kind != kindEdit && p.kind != kindUpload) {
 				return
 			}

@@ -130,20 +130,21 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // median. The ceiling is picked here rather than derived from the task's CPU allotment or read
 // out of the DSN another repository's URL builder writes.
 //
-// It is 48 of one connection budget of 104 (ConnectionsPerProcess) that every pool of a process
+// It is 48 of one connection budget of 105 (ConnectionsPerProcess) that every pool of a process
 // shares, partitioned rather than grown: requests 48, background 6 (Background), live 4 (Live),
 // settlements 4 (Settlements), rooms 4, the rooms' appends 8 (RoomAppends), health 1, the five
 // listener connections (the listener pool's one dial is one of them redialling), leases
-// LeasePoolSize (17), outbox 2, compaction 2 (Compaction), the event horizon 2 (Horizon) and the
+// LeasePoolSize (18), outbox 2, compaction 2 (Compaction), the event horizon 2 (Horizon) and the
 // server process registry's own 1 (registryPoolSize). The partition
 // itself added nothing: it is the 87 the process opened before, the request pool having given up
 // 16, which background, live, settlements and the leases' two spare connections took; the event
 // horizon's 2, the background loops' shared wake listener, the outbox's second connection, the
-// outbox's own listener, the compaction's 2 and the two lease names added since (the CI reconcile
-// pass's and the settlement resumption's) are the only connections added since, and the
+// outbox's own listener, the compaction's 2 and the three lease names added since (the CI
+// reconcile pass's, the settlement resumption's and the embeddings project_key fill's) are the
+// only connections added since, and the
 // horizon's came with the pool itself. The rooms' appends are the one pool added over the budget
 // rather than out of it: the 8 they take are the connections a room's browser updates no longer
-// take one request connection at a time, which is why the budget is 104 and not 96. A write
+// take one request connection at a time, which is why the budget is 105 and not 97. A write
 // takes a connection per statement one after another, and a read pins one for its whole length
 // (PinConnection); an issue read, which once took six statements, two more when the issue had
 // documents, two more when it had open asks, and one per artifact, now takes two batches. So
@@ -348,7 +349,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // callers can be inside Exclusive at once, which cmd/dispatch counts its wiring against
 // (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so a leased loop added without a name
 // and a connection fails a test instead of waiting for a connection.
-const LeaseNameCount = 15
+const LeaseNameCount = 16
 
 // LeasePoolSize bounds the pool a periodic maintenance loop takes its once-overall lease on
 // (duty.Exclusive): a connection for every lease name on duty's list, and two spare. A caller and
@@ -411,7 +412,7 @@ const registryPoolSize = 1
 const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres, the
-// budget of 104 SharedPoolSize describes: every pool's size, the registry's own pool
+// budget of 105 SharedPoolSize describes: every pool's size, the registry's own pool
 // (processes.Register) and the event horizon's (Horizon) among them, and one connection per
 // listener it may hold at once, which the listener pool dials and hands off rather than holds (its
 // one dial in flight is one of those listeners redialling, so it is not counted twice).

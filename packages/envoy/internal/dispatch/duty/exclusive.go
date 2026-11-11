@@ -64,6 +64,12 @@ const (
 	// reads every open pull request of every mapped repository and the App's budget pays for every
 	// process that passes.
 	CIReconcileLease = "ci-reconcile"
+	// EmbeddingProjectKeyFillLease is api.RunEmbeddingProjectKeyFill's single pass: one process of
+	// a roll labels the embeddings rows stored before migration 20261109120000 with the project
+	// each belongs to, since a second would walk the same keyset behind the first's commits. It is
+	// the one listed name that is no loop of a cadence, so its connection goes back for good once
+	// the labelling is over (store.LeasePoolSize says why it is counted like any other caller).
+	EmbeddingProjectKeyFillLease = "embeddings-project-key-fill"
 )
 
 // leaseNames is every lease Exclusive takes, and Exclusive refuses any other: the lease pool has a
@@ -87,6 +93,7 @@ var leaseNames = [...]string{
 	IssueAskRepairLease,
 	ServerProcessesLease,
 	CIReconcileLease,
+	EmbeddingProjectKeyFillLease,
 }
 
 // LeaseNames is every lease name Exclusive accepts.

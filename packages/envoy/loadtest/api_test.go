@@ -218,7 +218,7 @@ func TestUploadWhoseSpecReadIsRefusedIsARefusalOfTheWrite(t *testing.T) {
 	}))
 	defer srv.Close()
 	sf := seedFile{Issues: []seedIssue{{Key: "LGB-1", ArtifactID: "busy"}, {Key: "LGB-2", ArtifactID: "overloaded"}, {Key: "LGB-3", ArtifactID: "no-token"}}}
-	wr := newWriter(newAPI(srv.URL, "token", 4), sf, 1, log.New(io.Discard, "", 0))
+	wr := newWriter(newAPI(srv.URL, "token", 4), sf, nil, 1, log.New(io.Discard, "", 0))
 	var writes []writeRec
 	for i := range sf.Issues {
 		rec := wr.do(context.Background(), eventPlan{marker: int64(i + 1), kind: kindUpload, issue: i})
