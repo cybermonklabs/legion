@@ -43,16 +43,14 @@ function FunnelIcon(): ReactNode {
 const filterTrigger = (active: boolean) =>
   `min-h-11 min-w-11 rounded p-1 md:min-h-8 md:min-w-8 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
 
-export function ColumnFilter({
+export function ColumnFilter<TData>({
   column,
   counts,
-  doneLoaded,
   open,
   onOpenChange,
 }: {
-  column: Column<Item, unknown>;
+  column: Column<TData, unknown>;
   counts: ReadonlyMap<string, number>;
-  doneLoaded: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }): ReactNode {
@@ -94,7 +92,8 @@ export function ColumnFilter({
   const show = meta?.show ?? ((value: string) => value);
   // The one option whose detail is not a count: Done is offered before the closed issues it
   // would count have been read, and says so rather than claiming zero.
-  const unloadedDone = (value: string) => column.id === "status" && value === "done" && !doneLoaded;
+  const unloadedDone = (value: string) =>
+    column.id === "status" && value === "done" && meta?.doneLoaded === false;
   return (
     <MultiSelect
       emptyMessage="No matching value."
@@ -384,13 +383,13 @@ export function IssueTableToolbar({
   );
 }
 
-export function IssueTablePager({
+export function IssueTablePager<TData>({
   table,
   items,
   pagerRef,
 }: {
-  table: Table<Item>;
-  items: readonly Item[];
+  table: Table<TData>;
+  items: readonly TData[];
   pagerRef: RefObject<HTMLDivElement | null>;
 }): ReactNode {
   const { pageIndex, pageSize } = table.getState().pagination;

@@ -26,10 +26,9 @@ import { columnFilterSpec, type Item, reorder } from "./issues-table-model";
 
 /** One header cell: its sort control, which doubles as the handle that drags the column
  *  elsewhere, its filter, and the edge that resizes it. */
-export function TableHeaderCell({
+export function TableHeaderCell<TData>({
   compact,
   counts,
-  doneLoaded,
   dragColumn,
   header,
   openFilter,
@@ -41,9 +40,8 @@ export function TableHeaderCell({
   /** A phone, where the title's header stacks its controls. */
   compact: boolean;
   counts: ReadonlyMap<string, number>;
-  doneLoaded: boolean;
   dragColumn: string | undefined;
-  header: Header<Item, unknown>;
+  header: Header<TData, unknown>;
   openFilter: string | undefined;
   /** The columns in the order they are shown, which a drop rewrites. */
   order: readonly string[];
@@ -105,7 +103,6 @@ export function TableHeaderCell({
           <ColumnFilter
             column={column}
             counts={counts}
-            doneLoaded={doneLoaded}
             onOpenChange={(open) => setOpenFilter(open ? column.id : undefined)}
             open={openFilter === column.id}
           />

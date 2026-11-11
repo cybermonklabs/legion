@@ -1,5 +1,15 @@
 import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tanstack/react-table";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   COLUMN_MIN,
   COLUMN_SIZES,
@@ -9,6 +19,27 @@ import {
   PINNED_SHARE,
 } from "./issues-table-model";
 import { readLayout, writeLayout } from "./issues-table-storage";
+
+/** A table's layout as `useTableLayout` keeps it: the reader's widths, order and visibility,
+ *  what the box measures, and the refs and setters the table and its box are wired with. */
+export interface TableLayoutModel {
+  /** Attaches everything drawn above the box, whose size moves the box's top edge. */
+  readonly attachAbove: (node: HTMLDivElement | null) => void;
+  /** Attaches the box the rows scroll in. */
+  readonly attachBox: (node: HTMLDivElement | null) => void;
+  readonly boxHeight: number;
+  readonly boxWidth: number;
+  readonly order: ColumnOrderState;
+  readonly pagerRef: RefObject<HTMLDivElement | null>;
+  /** The widths the window allows and the columns pinned at its left. */
+  readonly responsive: { readonly sizing: ColumnSizingState; readonly pinned: string[] };
+  readonly scrollRef: RefObject<HTMLDivElement | null>;
+  readonly setOrder: Dispatch<SetStateAction<ColumnOrderState>>;
+  readonly setSizing: Dispatch<SetStateAction<ColumnSizingState>>;
+  readonly setVisibility: Dispatch<SetStateAction<VisibilityState>>;
+  readonly sizing: ColumnSizingState;
+  readonly visibility: VisibilityState;
+}
 
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
@@ -22,7 +53,7 @@ import { readLayout, writeLayout } from "./issues-table-storage";
  * height is what this sets. A scroll does none of these, and the virtualizer commits on every
  * visible range, so measuring there would be a reflow per scrolled row.
  */
-export function useTableLayout(project: string) {
+export function useTableLayout(project: string): TableLayoutModel {
   const saved = useMemo(() => readLayout(project), [project]);
   const [sizing, setSizing] = useState<ColumnSizingState>(saved.sizing);
   const [order, setOrder] = useState<ColumnOrderState>(saved.order);
