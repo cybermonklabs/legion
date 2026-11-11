@@ -35,8 +35,8 @@ Three facts govern every thread, whoever opened it.
     App, so such a thread may be a person's finding: resolve it only when the finding itself is
     settled (a genuine Minor is settled by being judged Minor), since the resolution says you
     judged it. When GitHub refuses a resolution, report the thread and GitHub's message to the
-    architect with `envoy_publish`, which opens a `dispatch ask` for a human to resolve it by
-    hand; never skip it silently.
+    architect with `envoy_publish`,
+    which opens a `dispatch ask` for a human to resolve it by hand; never skip it silently.
   - The **implementer** replies and resolves nothing. After every push that answers a review it
     replies on each thread that push answers, naming the fixing commit, and records each in the
     PR body's `Threads` section; a thread a bot opened it answers the same way, and the reviewer
