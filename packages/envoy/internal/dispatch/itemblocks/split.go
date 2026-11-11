@@ -30,14 +30,32 @@ type Block struct {
 // one whose blocks' starts it cannot place, splits at blank lines into blocks of type "text", so
 // every body splits and no item is refused for its shape. A body of only whitespace has no blocks.
 func Split(body string) []Block {
+	blocks, _ := split(body)
+	return blocks
+}
+
+// split is Split's blocks together with the document the parser read body as, which is nil where
+// the parser refused body and where body holds only whitespace. It is the package's one parse of
+// a body the parser reads: Check reads the decision blocks of this document rather than parsing
+// the body a second time, since it runs on every body write. A body the parser refused is read
+// once more, by the reader that answers no refusal (pmdoc.FindDecisionCard), which is the only
+// way to see what the browser reader draws for it.
+//
+// Where the parse stands but bySourceStarts cannot place its block starts, the blocks are the
+// blank-line fallback's while the document is still the parser's, so the two count their
+// top-level blocks differently; a caller that reads both says which count it means.
+func split(body string) ([]Block, *pmdoc.Node) {
 	// The parser answers one empty paragraph for a body of only whitespace, which holds none of
 	// the body.
 	if strings.TrimSpace(body) == "" {
-		return nil
+		return nil, nil
 	}
 	var blocks []Block
 	ok := false
-	if doc, starts, err := pmdoc.ParseWithSourceStarts(body); err == nil {
+	doc, starts, err := pmdoc.ParseWithSourceStarts(body)
+	if err != nil {
+		doc = nil
+	} else {
 		blocks, ok = bySourceStarts(body, doc, starts)
 	}
 	if !ok {
@@ -46,7 +64,7 @@ func Split(body string) []Block {
 	for index := range blocks {
 		blocks[index].Hash = Hash(blocks[index].Text)
 	}
-	return blocks
+	return blocks, doc
 }
 
 // bySourceStarts cuts body at the parser's block starts. Each start is taken back to the start of
