@@ -1,26 +1,22 @@
-import { expect, test } from "@playwright/test";
-
 import { setListsState, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
-import { resetDatabase } from "./seed";
+import { pickFilterOption } from "./filters";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A session's claim lapses when its session is no longer running, and the claim chip and the
-// project list's Unclaimed filter judge that against the live agent list. A list the Envoy
-// listener refuses as refilling (ENVOY_REFILLING) says nothing of whether the holder is gone, so
-// neither view may call the claim lapsed from it: the chip says it could not check, and the
-// filter keeps the claim as held and says why. A complete list that does not name the holder is
-// the one answer that lapses the claim, which the second test shows.
+// issues table's Claimed by filter - its "Nobody or lapsed" value, which `?unclaimed=1` also
+// sets - judge that against the live agent list. A list the Envoy listener refuses as
+// refilling (ENVOY_REFILLING) says nothing of whether the holder is gone, so neither view may
+// call the claim lapsed from it: the chip says it could not check, and the filter keeps the
+// claim as held and says why. A complete list that does not name the holder is the one answer
+// that lapses the claim, which the second test shows, picking the value in the column itself.
 //
 // Dispatch passes the listener's `Retry-After: 5` on with that refusal, and the shared retry
 // policy leaves a read that names a wait alone for it before each of its two retries, plus a
 // random share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`), so a view's first
 // refilling read says so up to 20 s after the page made it: `REFILL_TIMEOUT` is that wait and a
 // margin, and the test's own deadline covers the two reads below that take it.
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 const holder = { session_id: "claim-refill-session", title: "Claim refill holder" };
 const REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -39,8 +35,8 @@ async function seedSessionClaim(): Promise<string> {
   return issue.key;
 }
 
-// @pr: A refilling agent list must never lapse a claim: the chip and the Unclaimed filter both read the live list, and both are wrong if this breaks.
-test("a refilling agent list never lapses a session's claim on the chip or in the Unclaimed filter @pr", async ({
+// @pr: A refilling agent list must never lapse a claim: the chip and the Claimed by filter both read the live list, and both are wrong if this breaks.
+test("a refilling agent list never lapses a session's claim on the chip or in the Claimed by filter @pr", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -71,13 +67,15 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
       `Couldn't check which claims have lapsed, so every claim counts as held: ${REFILLING}`,
       { timeout: REFILL_TIMEOUT }
     );
-    await expect(page.locator("[data-issue-row]").filter({ hasText: key })).toHaveCount(0);
+    await expect(
+      page.getByRole("table", { name: "Project issues table" }).locator(`[data-issue-row="${key}"]`)
+    ).toHaveCount(0);
   } finally {
     await alice.close();
   }
 });
 
-test("a complete agent list without the holder lapses its claim on the chip and in the Unclaimed filter", async ({
+test("a complete agent list without the holder lapses its claim on the chip and in the Claimed by filter", async ({
   browser,
 }) => {
   const key = await seedSessionClaim();
@@ -87,8 +85,13 @@ test("a complete agent list without the holder lapses its claim on the chip and 
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
     await expect(page.getByTestId("issue-claim")).toHaveAttribute("title", /no longer running/);
-    await page.goto("/projects/CORE/issues?unclaimed=1");
-    await expect(page.locator("[data-issue-row]").filter({ hasText: key })).toHaveCount(1);
+    // Picked in the column, not through the link's parameter: the same rule, one place.
+    await page.goto("/projects/CORE/issues");
+    await pickFilterOption(page, "Claimed by", "Nobody or lapsed");
+    await expect(page).toHaveURL(/unclaimed=1/);
+    await expect(
+      page.getByRole("table", { name: "Project issues table" }).locator(`[data-issue-row="${key}"]`)
+    ).toHaveCount(1);
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveCount(0);
   } finally {
     await alice.close();

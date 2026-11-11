@@ -1,16 +1,10 @@
-import { expect, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject } from "./api";
 import { documentEditor, markSpan } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const original = "the quick brown fox";
 const replacement = "a slow red hound";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: The live document: an open Spec suggestion draws its replacement, and its decoration writes no object-valued DOM attribute.
 test("an open Spec suggestion decoration shows its replacement without object-valued DOM attributes @pr", async ({

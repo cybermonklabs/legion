@@ -13,11 +13,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// mainIssueComponentsLateral and the laterals and statements below it are main's own SQL, held
-// here letter for letter as the oracle of every comparison in this file. They are copies of the
-// text this change replaced, not text built from the package's constants: a statement built
-// from those would move with them, and the two sides would agree however the resolution rule
-// changed. parentDepthCap is written as the 32 main spliced into them for the same reason.
+// The laterals and resolution rules below freeze main's SQL rather than reading the package's
+// constants: building the oracle from those would make both sides agree however the rule changed.
+// The listing projection independently includes the creator and creation time now required by
+// the summary contract; the inherited joins, filters and ordering stay unchanged.
+// parentDepthCap is written as the 32 main spliced into them for the same reason.
 const mainIssueComponentsLateral = `
 	left join lateral (
 		with recursive chain as (
@@ -85,7 +85,7 @@ const mainIssueStatusCase = `case i.status
 const mainIssueSummaryHead = `
 	select i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
-	       i.assignee, i.route, i.updated_at, i.last_seq,
+	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 	       i.claimed_by, i.claimed_at,
 	       count(a.id) filter (where i.closed_at is null),

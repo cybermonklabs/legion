@@ -54,7 +54,7 @@ function fileFor(path: string): string | undefined {
   const file = join(dist, within);
   if (!file.startsWith(`${dist}/`)) return undefined;
   // One stat, not an `existsSync` and a `statSync`: this runs for every asset of every page
-  // load, and one process serves every lane.
+  // load, and one process serves every worker.
   const seen = statSync(file, { throwIfNoEntry: false });
   if (seen === undefined || !seen.isFile()) return undefined;
   return file;
@@ -114,7 +114,7 @@ const server = Bun.serve({
     // No `ETag`: nothing reads one here, because this server answers no conditional request and
     // every row opens a context with an empty cache, and hashing two megabytes of document and
     // chunks for each of several hundred rows cost 25 ms a row on the one process all four
-    // lanes share.
+    // workers share.
     const file = found ?? join(dist, "index.html");
     return new Response(Bun.file(file), {
       headers: {

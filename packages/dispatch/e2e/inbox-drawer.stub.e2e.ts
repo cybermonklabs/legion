@@ -52,12 +52,11 @@ test("over an issue page the drawer opens from the header, keeps its page, and E
 // The drawer's phone half: below the compact width the top bar carries the same Peek, and the
 // panel it opens takes the whole screen rather than the side panel the row above opens. What
 // the drawer does once open is that row's, at any width, so this row's own claim is the phone
-// layout's and it says so itself, as it did at the desktop width before the move.
-test("on a phone the inbox drawer opens from the compact top bar and covers the screen @phone @pr", async ({
+// layout's and it says so with its ` @phone-only` tag, which `stub` inverts.
+test("on a phone the inbox drawer opens from the compact top bar and covers the screen @phone @phone-only @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "stub-phone", "the full-screen drawer is the phone layout");
   await page.goto(`/issues/${scene.issueKey}`);
   await peekTrigger(page).click();
   await expect(drawer(page).getByTestId(`ask-${scene.askId}`)).toBeVisible();
