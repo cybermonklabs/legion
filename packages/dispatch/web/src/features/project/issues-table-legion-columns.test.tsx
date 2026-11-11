@@ -143,11 +143,9 @@ function cell(key: string, column: string): HTMLElement | null {
 }
 
 test("Place exposes each card's waiting_place rather than the listing order", async () => {
-  const user = userEvent.setup();
   await renderTable({
     issues: [issue("ACME-3"), issue("ACME-4"), issue("ACME-5")],
   });
-  await showColumns(user, ["Place"]);
 
   expect(cell("ACME-3", "queue")?.dataset.value).toBe("3");
   expect(cell("ACME-3", "queue")?.textContent).toBe("#3");
@@ -212,9 +210,7 @@ test("Phase and In phase fall back to the slot admission time", async () => {
 });
 
 test("a project without Legion hides its optional cells while keeping Place", async () => {
-  const user = userEvent.setup();
   await renderTable({ hasLegion: false });
-  await showColumns(user, ["Place"]);
 
   for (const name of [
     "Work time",
