@@ -777,6 +777,10 @@ BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
+# The step every job that runs the suite carries, under one name: Playwright loads the config
+# before any hook of the suite, and that config imports `@legion/contracts`, whose built dist/
+# its Node runner reads (dispatch-browser.yaml's shard job says it at length).
+BROWSER_CONTRACTS = "Build contracts for dispatch e2e"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
@@ -984,8 +988,9 @@ GATES = [
 
     gate("broker_client", "broker-client", reads=reads(
         ("packages/broker-client/**", f"{at('broker-client', 'Lint the broker client')}, typecheck and test in "
-                                      "packages/broker-client; its modules import only one another, node:, bun: and "
-                                      "the third-party packages its manifest names"),
+                                      "packages/broker-client; its modules import one another, node:, bun:, the "
+                                      "third-party packages its manifest names and @legion/contracts"),
+        (CONTRACTS_SRC, "packages/broker-client/src/token-client.ts imports @legion/contracts/trailing-slash"),
         (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
     ) + biome(at("broker-client", "Lint the broker client")) + bun_job("broker-client") + CI_SELF),
 
@@ -1146,19 +1151,23 @@ GATES = [
          f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
          f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
-        (CONTRACTS_SRC, f"{BROWSER_SUITE_STEPS} build it "
-         "through packages/dispatch/e2e/run.ts's buildContracts, which every run of the suite does for "
-         "Playwright's Node resolution; packages/dispatch/web/vite.config.ts:117-126 aliases"),
+        (CONTRACTS_SRC, f"{BROWSER_SUITE_STEPS} read it through Playwright's own Node "
+         f"resolution, which takes the package's built dist/, and {at_browser(BROWSER_CONTRACTS)}, "
+         f"{at_browser(BROWSER_CONTRACTS, BROWSER_ALONE)}, {at_browser(BROWSER_CONTRACTS, BROWSER_MP)}, "
+         f"{at_browser(BROWSER_CONTRACTS, BROWSER_EMBEDDER)} and "
+         f"{at_browser(BROWSER_CONTRACTS, BROWSER_VISUAL)} make that build, one per job, before "
+         "Playwright loads a config that imports the package; "
+         "packages/dispatch/web/vite.config.ts:117-126 aliases"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
-        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each lane's server port through it"),
+        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each stack's server port through it"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),
         (".github/scripts/dispatch-browser-postgres.sh",
          f"{at_browser(BROWSER_PG_STEP)} and {at_browser(BROWSER_PG_STEP, BROWSER_ALONE)} "
-         "run it for the reading of the image's PostgreSQL their lanes start"),
+         "run it for the reading of the image's PostgreSQL their stacks start"),
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
         (".github/scripts/dispatch-browser-run-reads.sh",
          f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "

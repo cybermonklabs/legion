@@ -12,7 +12,6 @@
 // here holds the main thread for is measured by `main-thread-hold.ts`, which
 // `nested-directive.e2e.ts` measures its own two rows with, so one instrument and one bound
 // answer for both (sjawhar/legion#2612).
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 // `markdownWorkerThreshold` comes from the module that carries it and imports nothing: the
 // engine around it (`markdown-engine.ts`) is a browser module this spec's process cannot load.
@@ -43,7 +42,7 @@ import {
 } from "./heavy-bodies";
 import { expectSettled, markdownBody } from "./heavy-bodies-page";
 import { expectUnderTheBound, measureDraw, record } from "./main-thread-hold";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -177,10 +176,6 @@ async function seedIssue(title: string): Promise<{ key: string }> {
   await createProject({ key: "CORE", name: "Core" });
   return await createIssue({ project: "CORE", title });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 interface Row {
   /** The body an agent posts. */
@@ -507,20 +502,16 @@ async function aConversationTheReaderHasRead(
 }
 
 // The reader's place is proven in Chromium and WebKit: the compensation reads layout the two
-// engines measure and anchor differently. This file runs in each engine's own `-alone` project,
-// where the clock rows have the machine to themselves (`e2e/playwright.config.ts`), so those are
-// the project names a row of it can run under.
+// engines measure and anchor differently, and Firefox was never measured on it. This row and
+// the two below it are the three `firefox-alone` leaves out, by the `readersPlaceRows` invert
+// in e2e/playwright.config.ts; every other row of this file runs in all three.
 // SLOW(>=2s): the row loads a Conversation of `readTurns` turns, waits for it to come to rest -
 // 600 ms of one answer (`atRest`) - and only then lets a message of 8,000 items arrive above the
 // reader. What it is about is that message filling, so the row pays a whole draw of 16,000
 // elements after a whole load.
 test("a long message arriving above the reader keeps the turn they are reading where it was while it fills", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
-    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
-  );
+}) => {
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -606,11 +597,7 @@ async function scrollOnTheFirstBatch(page: Page, by: number): Promise<void> {
 // it measures exists only while that fill runs, and a shorter body has no such window.
 test("a reader who scrolls while a long body above them fills keeps where they scrolled to", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
-    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
-  );
+}) => {
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -713,11 +700,7 @@ async function jumpToLatestOnTheFirstBatch(page: Page): Promise<void> {
 // items landing under the composer, which is a whole draw of 16,000 elements.
 test("Jump to latest keeps a newest long turn under the composer while it fills", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
-    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
-  );
+}) => {
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

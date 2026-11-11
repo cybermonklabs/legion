@@ -39,7 +39,7 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := nats.Connect(url, nats.Nkey(public, user.Sign), nats.Timeout(5*time.Second))
+	conn, err := nats.Connect(url, nats.Name(t.Name()), nats.Nkey(public, user.Sign), nats.Timeout(5*time.Second))
 	if err != nil {
 		t.Fatalf("connect as the seed's user: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := nats.Connect(url, nats.Nkey(daemonUser, user.Sign), nats.Timeout(5*time.Second))
+	conn, err := nats.Connect(url, nats.Name(t.Name()), nats.Nkey(daemonUser, user.Sign), nats.Timeout(5*time.Second))
 	if err != nil {
 		t.Fatalf("connect as the daemon seed's user: %v", err)
 	}

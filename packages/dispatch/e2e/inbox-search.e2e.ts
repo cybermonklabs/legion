@@ -1,8 +1,7 @@
-import { expect, test } from "@playwright/test";
 import { searchInbox } from "./inbox-filter";
 import { askControls, inboxRow } from "./inbox-pane";
 import { openInbox, rows, seedInbox } from "./inbox-search";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -10,10 +9,6 @@ import { asUser } from "./users";
  * the row holds open and then lets through. Every other row of this file reads only what the
  * page draws from one answer and is a stubbed row, in `inbox-search.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test.describe("inbox search", () => {
   // One row outranks the typed text: the row whose "Assign to me" write is still in flight. Under

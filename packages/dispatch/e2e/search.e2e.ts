@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   answerAsk,
   createAsk,
@@ -11,7 +9,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -21,10 +19,6 @@ import { asUser } from "./users";
  * row runs in one of them. What the palette draws over one fixed answer is in
  * `search.stub.e2e.ts`, and the fixture both files read is in `search.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to its highlighted term", async ({
   browser,

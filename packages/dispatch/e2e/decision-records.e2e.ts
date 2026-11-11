@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createIssue,
   createIssueArtifact,
@@ -9,8 +7,7 @@ import {
   listComments,
 } from "./api";
 import { blockId } from "./editor";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, test } from "./test";
 
 // The decision records end to end, against the real server: an agent writes `decisions.md` with
 // one decision that links two spec blocks, and a person reads it on the Spec tab beside those
@@ -29,16 +26,11 @@ const LISTED = "Name the notice store";
 const LISTED_OPENING = "Notices live in a table, as";
 const LISTED_CHANGE = "Measure the file store first.";
 
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-  await createProject({ key: "CORE", name: "Core" });
-});
-
 // @pr: The Decisions tab's only row: a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change.
 test("a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change @pr", async ({
   page,
 }) => {
+  await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
     spec: "Notices are lost today.\n\nStore each notice.\n\nShow the newest first.\n",
@@ -129,6 +121,7 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
 test("a decision written as a list keeps its link and its key, and anchors its Change on the words that list flattens to @pr", async ({
   page,
 }) => {
+  await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
     spec: "Notices are lost today.\n\nStore each notice.\n",
@@ -198,6 +191,7 @@ test("a decision written as a list keeps its link and its key, and anchors its C
 // whole text in every slot.
 // @pr: The Decisions tab of an answer with no reading draws each block once, with its own text.
 test("a decision whose answer carries no reading is drawn block by block @pr", async ({ page }) => {
+  await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
     spec: "Notices are lost today.\n",

@@ -1005,14 +1005,16 @@ jobs:
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
-            # The secrets broker's TypeScript client: its own sources and tests (it imports nothing
-            # first-party outside itself but the fixtures its tests use), the Bun install and the
-            # Bun it runs, and Biome.
+            # The secrets broker's TypeScript client: its own sources and tests, the one
+            # first-party package its sources import, the fixtures its tests use, the Bun install
+            # and the Bun it runs, and Biome.
             broker_client:
               - '.github/workflows/ci.yaml'
               - *bun_install
               - *biome
               - 'packages/broker-client/**'
+              # src/token-client.ts imports @legion/contracts/trailing-slash.
+              - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
             envoy_client:
@@ -4217,9 +4219,9 @@ jobs:
       # run 42303677853 at 5636a301, where both of its cases failed with "The requested module
       # '@legion/contracts/dispatch-tools' does not provide an export named
       # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built
-      # (dispatch-browser.yaml's shard, alone and multiprocess jobs need contracts built for the
-      # same reason and carry no step for it: packages/dispatch/e2e/run.ts's buildContracts
-      # builds them at the start of every run of the suite).
+      # (every job of dispatch-browser.yaml that runs the suite needs contracts built for the
+      # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
+      # file's shard job explains).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build
         working-directory: packages/contracts
@@ -4238,16 +4240,16 @@ jobs:
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch
-      # The database cases of e2e/__tests__/psql-session.test.ts and harness-lanes.test.ts skip
+      # The database cases of e2e/__tests__/psql-session.test.ts and harness-stacks.test.ts skip
       # themselves where LEGION_TEST_PG_DSN names no server, so in this job they do not run: it
       # has no `postgres:` service, as this job's head says. A container of the pinned image for
       # this step alone was tried and taken out again, in the job these tests ran in before this
       # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on one
-      # runner in three. What those cases prove - that a lane's psql reads its own lane's database
-      # and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set, which is how
-      # a developer and an issue pod run them (`bun run test` in packages/dispatch; psql-session
-      # makes a database of its own there), and the lane contract they guard is also covered end to
-      # end by every multi-lane run of the browser suite itself.
+      # runner in three. What those cases prove - that a worker's psql reads its own stack's
+      # database and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set,
+      # which is how a developer and an issue pod run them (`bun run test` in packages/dispatch;
+      # psql-session makes a database of its own there), and the stack contract they guard is also
+      # covered end to end by every multi-worker run of the browser suite itself.
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch

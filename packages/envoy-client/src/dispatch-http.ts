@@ -80,9 +80,9 @@ import {
   type IdempotencyLandedCode,
   retriesUnderKey,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
-import { withoutTrailingSlashes } from "./base-url";
 import type { RequestCredential } from "./bearer";
 
 export type {

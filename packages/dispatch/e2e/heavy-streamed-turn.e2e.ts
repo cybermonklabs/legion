@@ -11,7 +11,6 @@
 // arriving behind it, and that is what the reader would read until that frame's own answer and
 // its whole paint had landed: the regression this change has now repeated twice
 // (sjawhar/legion#2519, `useRenderedMarkdown`).
-import { expect, type Page, test } from "@playwright/test";
 // `markdownWorkerThreshold` comes from the module that carries it and imports nothing: the
 // engine around it (`markdown-engine.ts`) is a browser module this spec's process cannot load.
 // The row at the end of this file sizes its turn by it, since a turn under it is parsed on the
@@ -20,7 +19,7 @@ import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worke
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
 import { expectSettled, looseTextLength, markdownBody } from "./heavy-bodies-page";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -37,10 +36,6 @@ declare global {
     __heavyStreamTurnEnded?: () => void;
   }
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * How many paragraphs the turn holds and how long the row leaves between frames, which the
@@ -242,7 +237,7 @@ const reachThePaintMs = 15_000;
  * its batches, and the row used to publish its frames on a clock and hope one landed there.
  * Under four Playwright workers none does. The page cannot paint a frame before the parse
  * worker answers one, and a stream published into a page that is behind only makes that answer
- * later: on this pod of two cores at four lanes, Chromium's first paint of this turn landed
+ * later: on this pod of two cores at four workers, Chromium's first paint of this turn landed
  * 5.1 s into a 4.8 s stream, so all 36 samples taken while the turn streamed were of a body
  * holding no blocks at all and the row's own guard red it - as it red the WebKit row of CI run
  * 125366889641, with no part-built batch in 61 samples (sjawhar/legion#2612).
@@ -294,11 +289,11 @@ test("a reader who opens the live view while a long turn streams is never shown 
   browser,
 }) => {
   // What this row spends is the page's own work, three times over: the first parse and paint of
-  // a 4,000-paragraph turn before a frame goes out (1.1 to 4.9 s at four lanes on this pod), the
+  // a 4,000-paragraph turn before a frame goes out (1.1 to 4.9 s at four workers on this pod), the
   // sixty frames of the stream, and the parse and paint of the whole 4,061-paragraph turn at the
   // end, which is another 5 to 9 s there. The row used to overlap the first of those with the
   // stream and measure nothing for it; measuring the window costs that overlap, and 30 s - the
-  // suite's blanket default - cut a run of it off at four lanes with every guard already
+  // suite's blanket default - cut a run of it off at four workers with every guard already
   // satisfied (sjawhar/legion#2612). The deadline is the room a node slower than this one needs;
   // nothing the row waits for is a clock of its own.
   test.setTimeout(60_000);

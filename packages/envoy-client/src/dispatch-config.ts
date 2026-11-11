@@ -1,4 +1,4 @@
-import { withoutTrailingSlashes } from "./base-url";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   type BearerSource,
   bearerCredential,
