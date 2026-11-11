@@ -1,9 +1,3 @@
-// One issue's Legion timeline (dispatch://INFRA-979), from GET /api/v1/legion/issues/<KEY>/timeline,
-// which the metrics' own computation answers: the issue's phases on a time axis, the segments its
-// bars' hours went to, its role turns, CI waits, asks to a person, parked spans, and its
-// children's phases under it. Every stretch names its hours and its source, on the axis (its
-// title) and in the table under it. A phase is drawn with the issues table's label and colour:
-// the board column the route names for it, coloured by `legionPhaseScale`.
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
@@ -15,7 +9,7 @@ import {
   borderDefault,
   borderStrong,
   chartParts,
-  legionPhaseScale,
+  stageClass,
   surfaceBg,
   surfaceMutedBg,
   textMutedOnSurface,
@@ -35,10 +29,10 @@ const SEGMENT_LABEL: Record<string, string> = {
   unknown: "Not observed",
 };
 const SEGMENT_FILL: Record<string, string> = {
-  waiting_on_person: legionPhaseScale.awaiting_person ?? "",
+  waiting_on_person: stageClass("phase:awaiting_person"),
   in_a_turn: chartParts[2],
   ci_wait: chartParts[1],
-  waiting_on_children: legionPhaseScale.waiting_on_children ?? "",
+  waiting_on_children: stageClass("phase:waiting_on_children"),
   idle: chartParts[6],
   // Unknown hours draw as an outlined stretch, visible on the lane's own muted track.
   unknown: `${surfaceBg} border border-dashed ${borderStrong}`,
@@ -198,7 +192,7 @@ function TimelineBody({
           span.source === "observed"
             ? legionPhaseLabel(column?.label ?? span.name, span.name)
             : (column?.label ?? span.name),
-        fill: legionPhaseScale[column?.id ?? ""] ?? surfaceMutedBg,
+        fill: stageClass(`phase:${column?.id ?? ""}`),
       };
     };
     const plain = (fill: string) => (span: LegionTimelineSpan) => ({
@@ -399,7 +393,7 @@ function TimelineBody({
           <li className="flex items-center gap-1">
             <span
               aria-hidden
-              className={`inline-block h-3 w-3 rounded-sm ${legionPhaseScale.planning ?? ""}`}
+              className={`inline-block h-3 w-3 rounded-sm ${stageClass("phase:planning")}`}
               style={HATCH}
             />
             <span className={textSecondaryOnCanvas}>hatched: root waits on children</span>

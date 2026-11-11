@@ -160,7 +160,7 @@ export function useTableLayout(
     bottomPadding += padding(main);
     const slack = window.innerHeight - bottomPadding - pager.getBoundingClientRect().bottom;
     const available = bounds.height + slack;
-    setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
+    setBoxHeight(Math.max(header + rowsHeight + 2, available));
   }, []);
   useLayoutEffect(() => {
     measure();

@@ -47,7 +47,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1920, height: 1080 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto("/projects/CORE/issues?cols=priority,queue,key,title,status,labels");
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table).toBeVisible();
     const titleHeader = table
@@ -708,7 +708,8 @@ test("phone status labels are readable and closed issues load from the Status fi
     const strip = page.getByRole("group", { name: "Issues by status" });
     // No Done cell at all while closed issues are unloaded: the bar counts what it has.
     await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
-    for (const button of await strip.getByRole("button").all()) {
+    const labels = page.getByRole("list", { name: "Statuses" });
+    for (const button of await labels.getByRole("button").all()) {
       await button.scrollIntoViewIfNeeded();
       const readable = await button.evaluate((element) => {
         const text = document.createRange();
@@ -787,7 +788,7 @@ test("a session creator renders its live name, state and conversation link @phon
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto("/projects/CORE/issues?cols=key,title,author");
     const row = page.locator(`[data-issue-row="${issue.key}"]`);
     const creatorCell = row.getByRole("cell").filter({
       has: page.getByRole("link", { name: /Live table creator/ }),

@@ -5,7 +5,7 @@ import {
   closedWindow,
   columnFilterSpec,
   compareGroups,
-  countIssueStates,
+  countBy,
   defaultView,
   effectiveFilters,
   facetCounts,
@@ -452,8 +452,8 @@ test("the bar counts each issue once, under its Legion phase or its Dispatch sta
     legionBoard
   );
   expect(rows.length).toBe(5);
-  const counted = countIssueStates(rows);
-  expect(counted.map(({ column, count, id }) => [`${column}:${id}`, count])).toEqual([
+  const counted = countBy(rows, "stage", false);
+  expect(counted.map(({ count, value }) => [value, count])).toEqual([
     ["status:todo", 1],
     ["phase:queue", 2],
     ["phase:planning", 1],
@@ -486,7 +486,7 @@ test("the bar reads in lifecycle order: Queue before the phases, Triage never af
     undefined,
     board
   );
-  expect(countIssueStates(rows).map(({ column, id }) => `${column}:${id}`)).toEqual([
+  expect(countBy(rows, "stage", false).map(({ value }) => value)).toEqual([
     "status:triage",
     "phase:queue",
     "status:in_progress",
@@ -510,13 +510,11 @@ test("an issue Legion works is never under In progress or Needs review", () => {
     // A configured project whose board has not answered: no card holds any of the three.
     null
   );
-  expect(countIssueStates(rows).map(({ column, count, id }) => [`${column}:${id}`, count])).toEqual(
-    [
-      ["status:in_progress", 1],
-      ["phase:implementing", 1],
-      ["phase:reviewing", 1],
-    ]
-  );
+  expect(countBy(rows, "stage", false).map(({ count, value }) => [value, count])).toEqual([
+    ["status:in_progress", 1],
+    ["phase:implementing", 1],
+    ["phase:reviewing", 1],
+  ]);
 });
 
 // In progress, Needs review and Retro name a Dispatch status and a Legion phase both, and the
@@ -538,10 +536,7 @@ test("a status named like a phase says it holds the issues Legion does not run",
   );
   const named = (legion: boolean) =>
     Object.fromEntries(
-      countIssueStates(rows, legion).map(({ column, id, label, count }) => [
-        `${column}:${id}`,
-        `${label} ${count}`,
-      ])
+      countBy(rows, "stage", legion).map(({ value, label, count }) => [value, `${label} ${count}`])
     );
 
   // The issue Legion works is under the phase, which is named as it always was; the three

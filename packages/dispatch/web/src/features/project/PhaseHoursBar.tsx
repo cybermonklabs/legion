@@ -2,7 +2,7 @@
 // table's phase column and the Issues table's optional "Time per phase" column draw it.
 import type { ReactNode } from "react";
 
-import { legionPhaseScale, surfaceMutedBg } from "../../theme/classes";
+import { stageClass, surfaceMutedBg } from "../../theme/classes";
 import { formatHours } from "./LegionMetrics";
 
 /** The phases in workflow order, with the label each block's title names. */
@@ -61,7 +61,7 @@ export function PhaseHoursBar({
             const spent = hours[phase.id] ?? 0;
             return (
               <span
-                className={legionPhaseScale[phase.id] ?? legionPhaseScale.other ?? ""}
+                className={stageClass(`phase:${phase.id}`)}
                 data-phase-hours-part={phase.id}
                 key={phase.id}
                 style={{ width: `${(100 * spent) / total}%` }}

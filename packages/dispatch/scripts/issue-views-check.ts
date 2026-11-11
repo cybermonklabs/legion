@@ -383,7 +383,7 @@ async function required(locator: Locator, description: string): Promise<Locator>
 
 async function rowCount(root: Locator): Promise<number> {
   const scroll = await required(
-    root.locator('[data-testid="data-table-scroll"]'),
+    root.locator('[data-testid="issues-table-scroll"]'),
     "the table scroll box"
   );
   const count = numberOf(await scroll.getAttribute("data-row-count"));

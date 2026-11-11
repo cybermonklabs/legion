@@ -123,8 +123,12 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issue-bar.e2e.ts":
+    "the bar's segment geometry and filter round trip read the Legion board the fake daemon serves through Dispatch",
   "issues-table-legion.e2e.ts":
     "the table's Legion columns and its phase-or-status bar read the board the fake daemon serves, which the server reads over its own socket and relays",
+  "issue-views.e2e.ts":
+    "view counts, saved browser-local views, layouts and range chips read the Dispatch listings and Legion board the fake daemon serves",
   "issue-views-loading.e2e.ts":
     "the open and closed-window issue listings and the board snapshot are served by Dispatch; the test delays that live snapshot while it reads the rows",
   "issue-columns-legion.e2e.ts":

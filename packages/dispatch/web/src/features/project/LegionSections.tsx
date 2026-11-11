@@ -25,7 +25,7 @@ import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
   filingScale,
-  legionPhaseScale,
+  stageClass,
   surfaceBg,
   textMutedOnSurface,
   textPrimaryOnCanvas,
@@ -561,7 +561,7 @@ function PhaseBar({ breakdown }: { breakdown: LegionPhaseBreakdown }): ReactNode
       <div className="flex h-9 w-full overflow-hidden rounded" data-legion-phase-bar ref={barRef}>
         {breakdown.phases.map((part) => (
           <span
-            className={`flex h-9 items-center overflow-hidden px-1 text-xs font-medium whitespace-nowrap ${legionPhaseScale[part.id] ?? ""}`}
+            className={`flex h-9 items-center overflow-hidden px-1 text-xs font-medium whitespace-nowrap ${stageClass(`phase:${part.id}`)}`}
             data-legion-phase-part={part.id}
             key={part.id}
             style={{ flex: `0 0 ${part.share * 100}%` }}
@@ -579,7 +579,7 @@ function PhaseBar({ breakdown }: { breakdown: LegionPhaseBreakdown }): ReactNode
           <li className="flex items-baseline gap-1.5" key={part.id}>
             <span
               aria-hidden
-              className={`inline-block h-2.5 w-2.5 shrink-0 self-start mt-0.5 rounded-sm sm:self-center sm:mt-0 ${legionPhaseScale[part.id] ?? ""}`}
+              className={`inline-block h-2.5 w-2.5 shrink-0 self-start mt-0.5 rounded-sm sm:self-center sm:mt-0 ${stageClass(`phase:${part.id}`)}`}
             />
             {/* On a phone the hours go under the label, so the label is never cut. */}
             <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-1.5">

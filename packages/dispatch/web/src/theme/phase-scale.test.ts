@@ -7,7 +7,7 @@ import { expect, test } from "bun:test";
 
 import { LIFECYCLE_ORDER } from "../features/project/issues-table-model";
 import { PHASE_ORDER } from "../features/project/PhaseHoursBar";
-import { issueStatusScale, legionPhaseScale } from "./classes";
+import { stageScale } from "./classes";
 
 type Lab = readonly [l: number, a: number, b: number];
 
@@ -68,12 +68,9 @@ function deltaE2000(one: Lab, two: Lab): number {
   return Math.sqrt((dL / sL) ** 2 + (dC / sC) ** 2 + (dH / sH) ** 2 + rT * (dC / sC) * (dH / sH));
 }
 
-/** A phase's (or, as `status:<id>`, a status's) fill in one scheme, read from its classes. */
+/** A stage's fill in one scheme, read from its classes. */
 function fill(entry: string, scheme: "light" | "dark"): string {
-  const [scale, id] = entry.startsWith("status:")
-    ? [issueStatusScale, entry.slice("status:".length)]
-    : [legionPhaseScale, entry.replace(/^phase:/, "")];
-  const classes = scale[id] ?? "";
+  const classes = stageScale[entry] ?? "";
   const pattern =
     scheme === "light" ? /(?:^| )bg-\[#([0-9a-f]{6})\]/ : /dark:bg-\[#([0-9a-f]{6})\]/;
   const hex = pattern.exec(classes)?.[1];
@@ -98,7 +95,7 @@ for (const scheme of ["light", "dark"] as const) {
   test(`each pair of adjacent phases differs by ΔE ≥ 20 in the ${scheme} scheme`, () => {
     expect(
       tooClose(
-        PHASE_ORDER.map((phase) => phase.id),
+        PHASE_ORDER.map((phase) => `phase:${phase.id}`),
         scheme
       )
     ).toEqual([]);

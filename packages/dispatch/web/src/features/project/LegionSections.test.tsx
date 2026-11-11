@@ -11,7 +11,7 @@ import type {
   LegionMetricsResponse,
   RepoProject,
 } from "../../api/types";
-import { legionPhaseScale } from "../../theme/classes";
+import { stageClass } from "../../theme/classes";
 import { LegionSections } from "./LegionSections";
 
 /** Every spy a test installed, put back when it ends. */
@@ -348,7 +348,7 @@ test("the phase bar draws each part in the issues table's colour with its share"
   await renderSections(() => report());
 
   const part = document.querySelector('[data-legion-phase-part="planning"]') as HTMLElement;
-  for (const one of (legionPhaseScale.planning ?? "").split(" ")) {
+  for (const one of stageClass("phase:planning").split(" ")) {
     expect(part.className).toContain(one);
   }
   expect(part.textContent).toBe("Planning 56%");

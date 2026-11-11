@@ -5,10 +5,10 @@ import type { IssueSummary } from "../../api/types";
 import {
   borderDefault,
   focusVisibleRing,
-  issueStatusScale,
   linkHoverText,
   linkText,
   selectedCardBg,
+  stageClass,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
@@ -22,7 +22,7 @@ import {
 import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
 import { ColumnFilter, Popover } from "./issues-table-controls";
-import { columnFilterSpec, type Item, reorder } from "./issues-table-model";
+import { columnFilterSpec, type Item, reorder, statusStage } from "./issues-table-model";
 
 /** One header cell: its sort control, which doubles as the handle that drags the column
  *  elsewhere, its filter, and the edge that resizes it. */
@@ -313,7 +313,11 @@ export function GroupRow({
               className={`flex h-2 w-32 overflow-hidden rounded-full ${surfaceMutedBg}`}
             >
               {byStatus.map(([status, count]) => (
-                <span className={issueStatusScale[status]} key={status} style={{ flex: count }} />
+                <span
+                  className={stageClass(statusStage(status))}
+                  key={status}
+                  style={{ flex: count }}
+                />
               ))}
             </span>
             <span className={`text-xs ${textMutedOnSurfaceMuted}`}>

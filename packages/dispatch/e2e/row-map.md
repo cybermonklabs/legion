@@ -245,8 +245,10 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
+| `e2e/issue-bar.e2e.ts` | the bar's segment geometry and filter round trip read the Legion board the fake daemon serves through Dispatch |
 | `e2e/issue-columns-legion.e2e.ts` | the table's Legion cells are compared with the board the fake daemon serves, then the phase link opens the server timeline |
 | `e2e/issue-views-loading.e2e.ts` | the open and closed-window issue listings and the board snapshot are served by Dispatch; the test delays that live snapshot while it reads the rows |
+| `e2e/issue-views.e2e.ts` | view counts, saved browser-local views, layouts and range chips read the Dispatch listings and Legion board the fake daemon serves |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
 | `e2e/issues-table-legion.e2e.ts` | the table's Legion columns and its phase-or-status bar read the board the fake daemon serves, which the server reads over its own socket and relays |
 | `e2e/issues-table.e2e.ts` | every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload |

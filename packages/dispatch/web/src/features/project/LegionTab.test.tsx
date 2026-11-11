@@ -16,7 +16,7 @@ import type {
   LegionBoardResponse,
   LegionIssueTimeline,
 } from "../../api/types";
-import { legionPhaseScale } from "../../theme/classes";
+import { stageClass } from "../../theme/classes";
 import { LegionTab } from "./LegionTab";
 
 let sockets: FakeLiveSockets;
@@ -387,7 +387,7 @@ test("an open timeline draws its phases with the table's label and colour, and i
     expect(timeline.querySelector('[data-legion-span="reviewing"]')).not.toBeNull()
   );
   const reviewing = timeline.querySelector('[data-legion-span="reviewing"]') as HTMLElement;
-  for (const part of (legionPhaseScale.reviewing ?? "").split(" ")) {
+  for (const part of stageClass("phase:reviewing").split(" ")) {
     expect(reviewing.className).toContain(part);
   }
   expect(reviewing.title).toContain("Reviewing");
