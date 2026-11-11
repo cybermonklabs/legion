@@ -2,7 +2,7 @@
 // a full agent). Each capability is checked at one site — in the image by `legion probe-image`
 // (CheckImage), by each claimed session at an idle tick of the 5 s interval it already runs, which
 // sends the row on a `claims/ready` of its own and the daemon renders (LEGION-663, INFRA-927), by
-// the daemon from the deployment's configuration, or withheld by a ruling — and the probe prints
+// the daemon from the deployment's configuration, or withheld by a decision — and the probe prints
 // the whole table, one line per row, so an operator reads a single declared list in the probe
 // pod's log rather than inferring what was checked from which probes happened to run.
 package capabilities
@@ -63,7 +63,7 @@ const (
 	// SiteDeployment is decided by the deployment's legion.yaml, which the daemon reports: no
 	// image or pod can show it.
 	SiteDeployment Site = "deployment"
-	// SiteWithheld is withheld by a ruling the row cites: a worker never gets it, by design.
+	// SiteWithheld is withheld by a decision the row cites: a worker never gets it, by design.
 	SiteWithheld Site = "withheld"
 )
 
@@ -73,35 +73,35 @@ type Capability struct {
 	Site Site
 	// Summary is one line: what a worker does with it.
 	Summary string
-	// Ruling is the dispatch://LEGION-<n> a withheld row cites; for a live row, the issue whose
+	// Decision is the dispatch://LEGION-<n> a withheld row cites; for a live row, the issue whose
 	// check proves it (never ""); "" otherwise.
-	Ruling string
+	Decision string
 }
 
 // Table is every capability, in the order the probe prints them: the declared list, printed
 // whole. Image rows are checked by CheckImage; the others are rendered as what they are.
 var Table = []Capability{
-	{Name: Subagents, Site: SiteLive, Summary: "dispatches task subagents, each on the model its role configures", Ruling: "dispatch://LEGION-663"},
+	{Name: Subagents, Site: SiteLive, Summary: "dispatches task subagents, each on the model its role configures", Decision: "dispatch://LEGION-663"},
 	{Name: EvalJS, Site: SiteImage, Summary: "evaluates JavaScript in Oh My Pi's own runtime"},
 	{Name: EvalPython, Site: SiteImage, Summary: "evaluates Python through the interpreter `omp setup python` manages"},
 	{Name: Browser, Site: SiteImage, Summary: "drives a headless Chromium through the browser tools"},
 	{Name: LSP, Site: SiteImage, Summary: "reads diagnostics and symbols from the Go, TypeScript and Python language servers"},
 	{Name: CodeGraph, Site: SiteImage, Summary: "queries the CodeGraph index for affected tests, impact and callers"},
-	{Name: WebSearch, Site: SiteLive, Summary: "searches the web through the web-search tool", Ruling: "dispatch://LEGION-663"},
+	{Name: WebSearch, Site: SiteLive, Summary: "searches the web through the web-search tool", Decision: "dispatch://LEGION-663"},
 	{Name: Skills, Site: SiteImage, Summary: "loads the skills Legion's prompts name"},
-	{Name: MCP, Site: SiteLive, Summary: "reaches the MCP servers the deployment configures", Ruling: "dispatch://LEGION-663"},
-	{Name: RepositoryExtensions, Site: SiteLive, Summary: "loads the Oh My Pi extensions the repository it works carries", Ruling: "dispatch://LEGION-629"},
-	{Name: DispatchEnvoyTools, Site: SiteLive, Summary: "reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools", Ruling: "dispatch://LEGION-663"},
-	{Name: GitHub, Site: SiteLive, Summary: "reads and writes GitHub through its plain `gh` and `git` on its role's App token file", Ruling: "dispatch://LEGION-631"},
+	{Name: MCP, Site: SiteLive, Summary: "reaches the MCP servers the deployment configures", Decision: "dispatch://LEGION-663"},
+	{Name: RepositoryExtensions, Site: SiteLive, Summary: "loads the Oh My Pi extensions the repository it works carries", Decision: "dispatch://LEGION-629"},
+	{Name: DispatchEnvoyTools, Site: SiteLive, Summary: "reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools", Decision: "dispatch://LEGION-663"},
+	{Name: GitHub, Site: SiteLive, Summary: "reads and writes GitHub through its plain `gh` and `git` on its role's App token file", Decision: "dispatch://LEGION-631"},
 	{Name: Secrets, Site: SiteDeployment, Summary: "reads the secrets the deployment grants its pod generation through the agent-secrets broker"},
 	{Name: ModelFallback, Site: SiteDeployment, Summary: "falls back to another model when its own is unavailable (retry.modelFallback)"},
 	{Name: Toolchain, Site: SiteImage, Summary: "builds and runs with the generic toolchain: go, gcc, curl, wget, python3, node, bun, uv, kubectl, jq, ssh-keygen, flock, psql, redis-cli, sqlite3, nc and dig"},
 	{Name: ClaudeCode, Site: SiteImage, Summary: "runs a phase worker on Claude Code: the claude-envoy plugin that worker loads, which the image carries, and the pin a pod installs Claude Code from at launch and verifies it against"},
 	{Name: ResourceLimits, Site: SiteDeployment, Summary: "runs within the CPU and memory the deployment's pod resources give it"},
 	{Name: PoolCapacity, Site: SiteDeployment, Summary: "starts in a Legion pool with room for the image probe's reservation at boot"},
-	{Name: Network, Site: SiteWithheld, Summary: "reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload", Ruling: "dispatch://LEGION-5"},
-	{Name: OperatorSetup, Site: SiteWithheld, Summary: "installs or configures its own dependencies in the pod: Legion owns its dependencies", Ruling: "dispatch://LEGION-200"},
-	{Name: ProductionIdentities, Site: SiteWithheld, Summary: "acts under a production identity of its own", Ruling: "dispatch://LEGION-551, dispatch://LEGION-205"},
+	{Name: Network, Site: SiteWithheld, Summary: "reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload", Decision: "dispatch://LEGION-5"},
+	{Name: OperatorSetup, Site: SiteWithheld, Summary: "installs or configures its own dependencies in the pod: Legion owns its dependencies", Decision: "dispatch://LEGION-200"},
+	{Name: ProductionIdentities, Site: SiteWithheld, Summary: "acts under a production identity of its own", Decision: "dispatch://LEGION-551, dispatch://LEGION-205"},
 }
 
 // renderer renders one row of Table at each site but SiteWithheld, which render renders itself:
@@ -113,7 +113,7 @@ type renderer struct {
 }
 
 // render renders every row of Table, in its order, dispatching each to r's function for its site;
-// a withheld row renders itself: State{Name, StatusWithheld, the ruling and the summary}. CheckImage
+// a withheld row renders itself: State{Name, StatusWithheld, the decision and the summary}. CheckImage
 // and Deployment.Report are its two callers, each with the renderer that gives a row's state as
 // that surface knows it. A ctx that ends ends the walk — the rows rendered so far, and an error
 // wrapping ctx's — since an image row's rendering runs commands under it; Report's renderers run

@@ -13,7 +13,7 @@ reach you on `notifications.role.legion-<project>-controller`.
 
 ## Reconcile the weekly plan
 
-Run this pass on the first turn of every UTC day and after every ruling from a person:
+Run this pass on the first turn of every UTC day and after every decision from a person:
 
 1. Read the weekly-planning issue and select its newest `plan-week-*` artifact by its latest
    `artifact.version` event. Read that artifact before changing any issue.
@@ -41,11 +41,11 @@ Run this pass on the first turn of every UTC day and after every ruling from a p
    instead of keeping a change log in it, because the artifact states the current rule. A comment
    or message does not update the one-owner map.
 
-A ruling from a person is a direct Dispatch message to this controller. Answer it first, carry out
+A decision from a person is a direct Dispatch message to this controller. Answer it first, carry out
 its scope or priority decision, then record the resulting current rule in the affected weekly-plan
-row (or its ruling section when it has no one line). Link the message when Dispatch gave it a
+row (or its decisions section when it has no one line). Link the message when Dispatch gave it a
 reference.
-A ruling triggers the full reconciliation pass even when it appears to affect only one issue.
+A decision triggers the full reconciliation pass even when it appears to affect only one issue.
 
 ## Answering controller deliveries
 
@@ -86,9 +86,9 @@ send it waits for it. Recover the work only from an owner that reads `gone`, or 
 `unresponsive` with a `last_seen` more than 20 minutes old, which is as long as an issue claim is
 protected.
 
-For work that a ruling of a person's, recorded in the plan with its link (the ruling section
+For work that a person's decision, recorded in the plan with its link (the decisions section
 above), says moves to Legion when its session stops, preserve its existing labels, add `legion`,
-then set it `todo` with the `legion` tool's `set_status`. A plan row you wrote with no such ruling
+then set it `todo` with the `legion` tool's `set_status`. A plan row you wrote with no such decision
 behind it moves nothing. The label comes first: it is what
 lets the daemon admit the root. Do not apply that recovery to an issue already in a live Legion
 tree (a root in `admission.trees`, or an issue whose `tree` is one); its architect and daemon own its lifecycle. Update the weekly-plan owner row after the move.
@@ -99,5 +99,5 @@ A person's `legion` label outranks a plan's deferral. The daemon queues the root
 person's label on an unrecorded root in `triage` is the root's `todo`, written by the daemon. A
 labelled root the weekly plan says to defer is parked by you at your next backlog pass, not
 before: `set_status` it to `backlog`, or to `icebox` for a longer deferral, and cite the plan's
-ruling in a comment on the issue. The cost is the architect's work between the daemon's `todo`
+decision in a comment on the issue. The cost is the architect's work between the daemon's `todo`
 and your park.

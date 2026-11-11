@@ -13755,7 +13755,7 @@ console.log(JSON.stringify(args));
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
       // another conversation when the command starts. This row expected the command to run and
-      // the agent's copy alone to be withheld; the architect's ruling of 2026-11-09T14:17Z made
+      // the agent's copy alone to be withheld; the architect's decision of 2026-11-09T14:17Z made
       // it a refusal. The half of `sessionOpen` that fails here is the host's live id: no
       // session event fired, so this instance's own `sessionID`, and the `sessionDirectory` it
       // recorded beside it, both still read ses_delivery. The command is the addressed
@@ -14616,7 +14616,7 @@ console.log(JSON.stringify(args));
     // session, and every await before the work - the acknowledgement, the read of the body
     // whole, the accept, the picture load - is a window a `/new` or a `/resume` lands in. The
     // conversation the host moved to must neither run a person's line nor answer for it
-    // (dispatch://INFRA-812, the architect's ruling of 2026-11-09T17:28Z).
+    // (dispatch://INFRA-812, the architect's decision of 2026-11-09T17:28Z).
     describe("a delivery whose session the host leaves", () => {
       /** The sentence each branch refuses with, the `!` path's own with the person's message in
        *  place of their command (`MOVED_SESSION_REFUSAL`, in `extensions/envoy.ts`). */

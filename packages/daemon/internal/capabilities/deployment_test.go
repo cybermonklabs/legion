@@ -37,7 +37,7 @@ func states(report []State) map[Name]State {
 // A deployment that satisfies everything, its image probed, with no session reporting yet,
 // renders every row of Table in its order: the image rows present, the withheld rows as CheckImage
 // renders them (the probe pod's log and `legion state` then read alike), the live rows unchecked
-// with the ruling whose check proves each, the deployment rows present, and nothing open.
+// with the decision whose check proves each, the deployment rows present, and nothing open.
 func TestReportRendersEveryRowInTableOrder(t *testing.T) {
 	report := satisfied.Report()
 
@@ -60,8 +60,8 @@ func TestReportRendersEveryRowInTableOrder(t *testing.T) {
 		if row.Site == SiteWithheld && state.Detail != line.Detail {
 			t.Errorf("%s: detail %q, want CheckImage's %q", row.Name, state.Detail, line.Detail)
 		}
-		if row.Site == SiteLive && state.Detail != "no session has reported yet ("+row.Ruling+"): "+row.Summary {
-			t.Errorf("%s: detail %q, want no session reported, the ruling, the summary", row.Name, state.Detail)
+		if row.Site == SiteLive && state.Detail != "no session has reported yet ("+row.Decision+"): "+row.Summary {
+			t.Errorf("%s: detail %q, want no session reported, the decision, the summary", row.Name, state.Detail)
 		}
 		if row.Site == SiteImage && state.Detail != "checked by the daemon's probe of the worker image, which passed" {
 			t.Errorf("%s: detail %q, want the probe named", row.Name, state.Detail)
@@ -146,7 +146,7 @@ func paneSession(issue string, role claim.Role, measuredAt time.Time, failing ma
 }
 
 // With no session reporting, every live row is unchecked, naming the issue whose check proves it
-// and the row's summary: each detail is pinned whole, so a reworded summary or a moved ruling is
+// and the row's summary: each detail is pinned whole, so a reworded summary or a moved decision is
 // read here.
 func TestLiveRowsAreUncheckedUntilASessionReports(t *testing.T) {
 	report := states(satisfied.Report())

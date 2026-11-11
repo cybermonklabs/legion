@@ -103,7 +103,7 @@ What made this cheap and durable:
 
 - `../legion/fast-follow-pr-mechanics-and-queue-registration.md` — what happens to the
   Fast-follow line *after* the parent merges; this document is about what may go on it.
-- `plan-ruling-that-changes-a-user-decision-goes-back-to-the-user.md` — the case where a
+- `plan-decision-that-changes-a-user-decision-goes-back-to-the-user.md` — the case where a
   re-scope is *not* the architect's to make.
 - `../legion/one-role-keyed-table-decides-which-github-app-acts.md` — the change these rounds
   shaped.

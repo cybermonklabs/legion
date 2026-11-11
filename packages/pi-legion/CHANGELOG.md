@@ -971,12 +971,12 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   The notice is deleted rather than rewritten to a kind the older daemon knows: it says only that a
   merge is still waiting, and the nearest older kind, `merge-refused`, would tell an architect that
   a merge ended when it has not. Dropping it loses one telling; the row goes on submitting.
-- The `legion-controller` skill and its `backlog-stewardship` reference name no person: a ruling is
+- The `legion-controller` skill and its `backlog-stewardship` reference name no person: a decision is
   a direct Dispatch message to this controller from a person rather than from one named individual,
   and the duty list, the pass trigger and both definitions say so (dispatch://INFRA-227). The
   daemon's `controller-root` role prompt and `packages/envoy/AGENTS.md` drop the same name, and the
   root `AGENTS.md` now carries the standing rule that a skill, a role prompt and an `AGENTS.md`
-  name no person and write the role instead. The controller behaves as it did: a ruling still sets
+  name no person and write the role instead. The controller behaves as it did: a decision still sets
   off the full reconciliation pass and a weekly-plan record.
 - Retro's push never carries the `skip-checks: true` trailer line, whatever paths its commits
   touch (INFRA-149). Before, the `legion-worker` skill, the `legion-retro` skill and the daemon's
@@ -1022,7 +1022,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   about any other. A Slack mention a bot posted gets an answer, never an issue or a label. When
   the report issue is found closed, the controller reopens it into `icebox`. Re-filing a
   child as an independent root is an ask the controller opens, acted on only on the person's yes.
-  Stopped-session recovery moves work to Legion only on a person's ruling the weekly plan records,
+  Stopped-session recovery moves work to Legion only on a person's decision the weekly plan records,
   no longer when a session's handoff or a plan row of the controller's own says so.
 
 - The implementer pushes and completes without waiting for CI: its role prompt, the

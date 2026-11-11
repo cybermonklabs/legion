@@ -24,7 +24,7 @@ type Capabilities struct {
 // readCapabilities reads `capabilities`: a mapping whose one member, `decided`, maps a deployment
 // capability (capabilities.Decidable) to the reason the operator decided it. A name the daemon
 // does not measure from its deployment is refused naming the ones it does — nothing else can be
-// decided here, since every other row is the image's, a live check's, or a ruling's — and so is a
+// decided here, since every other row is the image's, a live check's, or a decision's — and so is a
 // blank reason: the reason is what the report shows in the gap's place, and a blank one records
 // nothing.
 func readCapabilities(value *yaml.Node, key string) (*Capabilities, error) {
