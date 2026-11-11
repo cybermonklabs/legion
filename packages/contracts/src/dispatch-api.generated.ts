@@ -1260,7 +1260,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
+    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
     get: operations["getApiV1Inbox"];
     put?: never;
     post?: never;
@@ -1280,7 +1280,7 @@ export interface paths {
     /** @description List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. Each issue carries progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -2159,7 +2159,7 @@ export interface paths {
     /** @description List projects. */
     get: operations["getApiV1Projects"];
     put?: never;
-    /** @description Create a project {key, name}: any signed-in person or agent session; a bearer names its session in actor. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. */
+    /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. */
     post: operations["postApiV1Projects"];
     delete?: never;
     options?: never;
@@ -2432,7 +2432,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Set a project's default assignee {assignee} (the email of a person who has signed in, or null to clear it): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
+    /** @description Move a project's default assignee to another person {assignee} (the email of a person who has signed in): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. A project always names a person, so an assignee that is absent, null or blank is 400 INVALID_PROJECT and the default cannot be cleared. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
     put: operations["putApiV1ProjectsByKeyDefaultAssignee"];
     post?: never;
     delete?: never;
@@ -2671,7 +2671,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List every project that names a default assignee, by project key: the last step of a create's assignee chain. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
+    /** @description List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
     get: operations["getApiV1SettingsProjectDefaultAssignees"];
     put?: never;
     post?: never;
@@ -3649,6 +3649,7 @@ export interface components {
     };
     CreateProjectInput: {
       actor?: components["schemas"]["Actor"] | null;
+      default_assignee?: string;
       key: string;
       name: string;
     };
@@ -5003,17 +5004,18 @@ export interface components {
     Project: {
       /** Format: date-time */
       created_at: string;
+      default_assignee: string;
       gated_steps: string[] | null;
       key: string;
       name: string;
       open_asks: number;
     };
     ProjectDefaultAssignee: {
-      assignee: null | string;
+      assignee: string;
       project: string;
     };
     ProjectDefaultAssigneeInput: {
-      assignee: string | null;
+      assignee: string;
     };
     ProjectGatedSteps: {
       project: string;

@@ -160,10 +160,6 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name".
 	{reflect.TypeOf(createIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
-	// putProjectDefaultAssignee (project_default_assignee.go): null clears the default, a string
-	// names a person who has signed in. Absent is refused (400 INVALID_PROJECT), so a PUT of `{}`
-	// cannot wipe a default, which is why the handler holds the bytes rather than a *string.
-	{reflect.TypeOf(projectDefaultAssigneeInput{}), "assignee"}: rawField{Fragment: openAPIPersonEmail, Nullable: true},
 	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
 	// primary is fixed at issue creation. The field is described so a client reading the document
 	// knows what the bytes would have to be, never because one may send them.

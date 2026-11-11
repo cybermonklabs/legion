@@ -244,6 +244,14 @@ type Project struct {
 	Key      string `json:"key"`
 	Name     string `json:"name"`
 	OpenAsks int    `json:"open_asks"`
+	// DefaultAssignee is the person a project's unowned work lands on: the last step of the
+	// chain that decides who an issue's question reaches, and the column every project names
+	// (20261111210103_projects_default_assignee_not_null). It is a person's lowercase email,
+	// never empty: a create that names none takes the person creating it (createProject,
+	// api/projects.go), and no write clears it. A reader of a Project built by something other
+	// than the project list — loadProject, which reads the columns an owner check needs — sees
+	// the zero value, as it does for OpenAsks and GatedSteps.
+	DefaultAssignee string `json:"default_assignee"`
 	// GatedSteps are the design-gate steps the Legion deployment that serves this project
 	// gates, in the order it gates them, as its daemon last published them
 	// (PUT /api/v1/projects/{key}/gated-steps). Each one names a document of a root issue a
