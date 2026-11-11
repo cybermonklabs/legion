@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
-import { boardMoveMutationKey, projectIssuesQueryKey } from "../../api/queries";
+import { projectIssuesQueryKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
@@ -19,8 +19,10 @@ const everyIssue = () => true;
  * single mutation scope, so a second drop computes its neighbours from the first drop's
  * optimistic state and never overtakes it on the wire. A list the server answered before the
  * move never lands over the optimistic placement: a fetch already on the wire is cancelled at the
- * optimistic write, and one that starts while a move is unanswered waits for the answer
- * (`projectIssuesQuery`, keyed on `boardMoveMutationKey`). Any failure rolls the board back,
+ * optimistic write, and one that starts while a move is unanswered waits for it, as it does for
+ * every other write of an issue: the move is one write of the store on its issue's line
+ * (`issue:<KEY>`), and a project's list holds its fetch while any write of one of its issues may
+ * still land (`projectIssuesQuery`, `Writes.settled`). Any failure rolls the board back,
  * refetches it, and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the drag)
  * gets `staleBoardMessage`; anything else the server's message.
  *
@@ -56,7 +58,6 @@ export function useBoardMoves(
     label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => issuePatchRequest(key, input),
-    mutationKey: boardMoveMutationKey(project),
     scope: { id: `board:${project}` },
   });
   const { mutateAsync } = patch;
