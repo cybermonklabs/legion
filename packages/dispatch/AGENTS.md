@@ -1822,7 +1822,7 @@ Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 `DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
 projects, whose rows a listing naming no project holds none of. The four collect
-at once and cost about six seconds together on a two-core pod, the reading that
+at once and cost about five seconds together on a two-core pod, the reading that
 file's own comment carries. A row may stand all the same as a named exemption
 with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
 the check refuses a stale exemption too — one naming a row the suite no longer

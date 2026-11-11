@@ -391,8 +391,35 @@ const optionsTakingTheNextTokenUnlessItBeginsWithDash: ReadonlySet<string> = new
  *  no `-`, and a dash token behind such an option is read as the option or flag it is. Every other
  *  token beginning with `-` is a flag or a spelling that carries its own value, and is passed
  *  over. What is left is a positional filter, which Playwright matches as a regular expression
- *  against absolute file paths, so the name of a wall-clock file anywhere in one selects that
- *  file.
+ *  against absolute file paths; this reader answers such a filter only where its text holds a
+ *  wall-clock file's whole name, which is the rule the refusal is written for. A PARTIAL name is
+ *  left alone: measured at this head, `bunx playwright test --config e2e/playwright.config.ts
+ *  --list nested` is not refused here and exits 1 with Playwright's own "No tests found. Make
+ *  sure that arguments are regular expressions matching test files." above "Total: 0 tests in 0
+ *  files". That filter does select a wall-clock file - `nested-directive.e2e.ts` - and this
+ *  reader says nothing about it.
+ *
+ *  A user-interface command line answers `undefined`, exactly as this configuration's own
+ *  `isListMode` (`e2e/playwright.config.ts:102-103`) yields to one: any `--ui` token or any
+ *  spelling beginning `--ui-`, read over the whole argv as that function reads it. Playwright has
+ *  two listing paths and they read `default: false` differently. A plain command line leaves the
+ *  flag unset - `runAllTestsWithConfig` calls `filterProjects(config.projects,
+ *  options.projectFilter)` (`playwright/lib/runner/index.js:7131`), and that function (`:2134`)
+ *  answers `projects.filter((project) => includeNonDefault || project.default)` at `:2136` -
+ *  while the user interface's own `listFiles` (`:6937`) and `listTests` (`:6971`, under the
+ *  comment "Non-default projects are listed so that they can be selected by name.") each set
+ *  `includeNonDefaultProjects: true`. So in user-interface mode `chromium-alone` IS listed and
+ *  its rows ARE selectable by a file filter: the refusal's premise - that such a command selects
+ *  no row at all - is false there, and the command it prints drops the `--ui` the reader asked
+ *  for. Measured at this head by importing `e2e/playwright.config.ts` with `process.argv` set to
+ *  the command line and nothing started: with `--ui e2e/heavy-bodies.e2e.ts` the module throws
+ *  the harness's own unset-ports refusal ("The Dispatch e2e harness is not running"), and with
+ *  the same line less `--ui` it throws this refusal.
+ *
+ *  The carve-out gives up no measurement: a wall-clock row started from the user interface still
+ *  meets `refuseASharedRun` (`e2e/main-thread-hold.ts:62`), which fails a measuring row whenever
+ *  the run is wider than one worker, so such a run still reports the page's own work or no
+ *  reading at all.
  *
  *  The project question is `projectsOnCommandLine`'s, so `--project` is read once in this module;
  *  the scan meets it as an option that takes a token, which is all it needs of a flag whose
@@ -405,6 +432,9 @@ export function clockFileOnCommandLine(argv: readonly string[]): string | undefi
   const command = argv.indexOf("test");
   if (command === -1) return undefined;
   if (projectsOnCommandLine(argv).length > 0) return undefined;
+  // The user-interface carve-out above, written as `isListMode` writes it
+  // (`e2e/playwright.config.ts:103`): the whole argv, `--ui` and every `--ui-*`.
+  if (argv.some((word) => word === "--ui" || word.startsWith("--ui-"))) return undefined;
   const separator = argv.indexOf("--", command + 1);
   const scanned = argv.slice(command + 1, separator === -1 ? undefined : separator);
   let pendingValue: "required" | "optional" | undefined;

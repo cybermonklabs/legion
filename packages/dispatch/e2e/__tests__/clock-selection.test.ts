@@ -6,7 +6,9 @@
  *  answer is the whole reason the refusal exists (INFRA-1280). A command the reader answers for
  *  where Playwright would have run it is refused for nothing, and the rows below are the shapes
  *  that invite that reading: an option whose value is a file name or a grep, a `--` the filter
- *  sits behind, and an argv that is not a Playwright command line at all.
+ *  sits behind, a user-interface run, which lists the non-default projects and lets a file filter
+ *  select their rows, a filter holding part of a wall-clock name rather than the whole of it, and
+ *  an argv that is not a Playwright command line at all.
  *
  *  Every row is a command a person or CI can type, written as the whole `process.argv` the
  *  Playwright process reads: the executable, the script, the `test` command word and the rest.
@@ -135,6 +137,29 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
     title: "a `bun test` argv that holds a wall-clock name and no `test` command word",
     argv: ["/usr/local/bin/bun", "e2e/__tests__/heavy-bodies-digests.test.ts"],
   },
+  {
+    // The user interface lists the non-default projects so that they can be selected by name
+    // (`playwright/lib/runner/index.js:6971` and its comment, `:6937`), so this command does
+    // select rows and the refusal's premise does not hold for it; the cure it prints would drop
+    // the `--ui` the reader asked for (e2e/configurations.ts).
+    title: "a wall-clock file in a user-interface run, where that file's rows are selectable",
+    argv: playwrightArgv("--ui", "e2e/heavy-bodies.e2e.ts"),
+  },
+  {
+    // `--ui-port` is one of the options that take the token after them, so the port is read as
+    // its value either way: what this row holds is the carve-out, which reads every `--ui-*`
+    // spelling as `isListMode` does (e2e/playwright.config.ts:103).
+    title: "that file under `--ui-port`, a user-interface run in another spelling",
+    argv: playwrightArgv("--ui-port", "0", "e2e/heavy-bodies.e2e.ts"),
+  },
+  {
+    // Measured at this head: `--list nested` is not refused and Playwright answers "No tests
+    // found. Make sure that arguments are regular expressions matching test files." above
+    // "Total: 0 tests in 0 files". A filter is read as naming a wall-clock file only where its
+    // text holds that file's whole name, and this one holds a part of `nested-directive`.
+    title: "a partial wall-clock name, which this reader does not answer for",
+    argv: playwrightArgv("--list", "nested"),
+  },
 ];
 
 describe("the command lines the configuration refuses", () => {
@@ -205,13 +230,18 @@ describe("the reader's option table against the pinned Playwright's own", () => 
     // An option that takes a value, required or optional, takes the path and the command names no
     // file; an option that declares none leaves the path a positional filter. Behind the dash
     // token `--headed`, which is a flag, the path is readable whatever the option's arity: a
-    // required value takes `--headed` itself, an optional one takes nothing.
-    const expected = rows.map(({ arity, spelling }) =>
-      [
-        `${spelling} <path> → ${arity === "none" ? clockFile : "no file named"}`,
-        `${spelling} --headed <path> → ${clockFile}`,
-      ].join(", ")
-    );
+    // required value takes `--headed` itself, an optional one takes nothing. The user-interface
+    // spellings of this table - `--ui`, `--ui-host` and `--ui-port` - are read before any of
+    // that and name no file in either form: the user interface lists the non-default projects
+    // and a file filter does select their rows, so the refusal's premise does not hold for such
+    // a command (e2e/configurations.ts).
+    const expected = rows.map(({ arity, spelling }) => {
+      const userInterface = spelling === "--ui" || spelling.startsWith("--ui-");
+      return [
+        `${spelling} <path> → ${arity === "none" && !userInterface ? clockFile : "no file named"}`,
+        `${spelling} --headed <path> → ${userInterface ? "no file named" : clockFile}`,
+      ].join(", ");
+    });
     expect(answers).toEqual(expected);
   });
 });

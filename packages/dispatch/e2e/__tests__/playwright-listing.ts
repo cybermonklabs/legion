@@ -23,7 +23,10 @@ const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** What `playwright test --list` reports for the config at `configPath`, relative to
  *  packages/dispatch, run under `environment` and nothing else of the shell's, with `extra`
- *  before the `--list`. The run starts no server and no browser; it costs about five seconds.
+ *  before the `--list`. The run starts no server and no browser. Measured at this head on this
+ *  two-core pod: a listing of `e2e/playwright.config.ts` that names no project takes about three
+ *  and a half seconds (3.44, 3.59 and 3.50 seconds in three runs), and one naming the three
+ *  wall-clock projects about one (1.18 and 1.20 seconds in two).
  *
  *  `extra` is where a caller names the projects or the grep whose selection it is reading -
  *  `e2e/__tests__/pull-request-lane.test.ts` lists the lane the shard job runs. It goes before
@@ -62,11 +65,12 @@ export async function listing(
 /** The `--project` arguments naming `projects` on such a command line, in the list's own order.
  *  The four readers of a listing that names its projects - this directory's `no-browser-rows`,
  *  `pull-request-lane` and `row-configurations` tests, and `e2e/tools/row-map.ts` - spell them
- *  through this rather than each its own way. The detached spelling is safe here where
- *  `--project=<name>` is what a person writes: the option is variadic, and what a caller puts
- *  after these is `--grep` or the `--list` itself, never a path a name could swallow. */
+ *  through this rather than each its own way, and they spell them attached, which is the one
+ *  spelling this suite writes: the option is variadic, so `--project <name>` reads whatever
+ *  follows it as a second name (`packages/dispatch/AGENTS.md`, "Write a project as
+ *  `--project=<name>` and never `--project <name>`"). */
 export function projectArguments(projects: readonly string[]): string[] {
-  return projects.flatMap((project) => ["--project", project]);
+  return projects.map((project) => `--project=${project}`);
 }
 
 /** Keeps a rejection of `promise` from being reported as unhandled before the test that awaits

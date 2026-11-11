@@ -42,8 +42,8 @@ const ambientProcessCount: Record<string, string> =
 
 // The three listings are read-only subprocesses, so they start here rather than in their tests:
 // the second and third collect while the first does, which is most of this file's cost on a
-// two-core runner. Measured at this head on this two-core pod: the real listing alone takes
-// about four seconds, the wall-clock one about one, and the three together about six.
+// two-core runner. What that costs is read once in this file, at the `listingTimeout` it
+// justifies, below.
 //
 // The third names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
@@ -53,7 +53,7 @@ const ambientProcessCount: Record<string, string> =
 //
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
 // these listings and two-process mode declares one project, the multiprocess one: measured at
-// this head, `--project chromium-alone --project firefox-alone --project webkit-alone --list`
+// this head, `--project=chromium-alone --project=firefox-alone --project=webkit-alone --list`
 // under DISPATCH_E2E_PROCESSES=2 exits 1 with `Error: Project(s) "chromium-alone",
 // "firefox-alone", "webkit-alone" not found. Available projects: "chromium"`. Both assertions
 // that read it hold in that mode without it: the one project that mode declares owns rows of
@@ -86,22 +86,40 @@ function keyOfRow(configurations: Map<string, string>): (row: ListedRow) => stri
  *  the config rather than of `clockProjectNames`, because whether a project is named in that
  *  list is exactly what the test below reads this answer to check.
  *
- *  A `string` pattern is a glob, which this cannot expand, so it counts as selecting a file when
- *  it holds that file's own name; every `testMatch` of the config is a RegExp, read at this
- *  head. */
-function selectsAClockSpec(testMatch: string | RegExp | (string | RegExp)[] | undefined): boolean {
+ *  Every `testMatch` of the config is a RegExp, read at this head. A `string` is a glob, which
+ *  this cannot expand and which holds no spec's own name: a glob of two stars, a slash and
+ *  `*.e2e.ts` selects every wall-clock file and holds neither `heavy-bodies` nor
+ *  `nested-directive`, so answering such a pattern at all would answer false for one that does
+ *  select the file, and drop its project out of every assertion below. It throws instead,
+ *  naming the project a glob was written for. */
+function selectsAClockSpec(
+  testMatch: string | RegExp | (string | RegExp)[] | undefined,
+  project: string
+): boolean {
   if (testMatch === undefined) return false;
   const patterns = Array.isArray(testMatch) ? testMatch : [testMatch];
+  const expressions = patterns.map((pattern) => {
+    if (typeof pattern === "string") {
+      throw new Error(
+        `${project} writes a \`testMatch\` of ${JSON.stringify(pattern)}, a glob, and this ` +
+          "file reads a project's selection as a RegExp: a glob holds no spec's own name, so " +
+          "whether it selects a wall-clock file cannot be read from its text. Write the " +
+          "pattern as a RegExp, as every project of e2e/playwright.config.ts does, or teach " +
+          "this reader to expand a glob."
+      );
+    }
+    return pattern;
+  });
   return clockSpecNames.some((name) =>
-    patterns.some((pattern) =>
-      typeof pattern === "string" ? pattern.includes(name) : pattern.test(`${name}.e2e.ts`)
-    )
+    expressions.some((pattern) => pattern.test(`${name}.e2e.ts`))
   );
 }
 
-// The three listings run at once and cost about six seconds together on this two-core pod,
-// measured at this head, so a test may take far longer than Bun's five-second default; a minute
-// and a half is the ceiling at which something is wrong rather than slow.
+// The three listings run at once and cost about five seconds together on this two-core pod -
+// 5.02 and 5.48 seconds in two runs, measured at this head, of which the real listing alone is
+// about three and a half and the wall-clock one about one - so a test may take far longer than
+// Bun's five-second default; a minute and a half is the ceiling at which something is wrong
+// rather than slow.
 const listingTimeout = 90_000;
 
 test(
@@ -195,7 +213,7 @@ test(
 // where the project list holds those projects at all, as the wall-clock listing above is.
 test("the wall-clock projects are the one list, in its order, and run their rows alone", () => {
   const clockProjects = (realConfig.projects ?? []).filter((project) =>
-    selectsAClockSpec(project.testMatch)
+    selectsAClockSpec(project.testMatch, project.name ?? "a project with no name")
   );
   if (harnessProcessCount === 1) {
     expect(

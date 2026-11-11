@@ -60,11 +60,11 @@ const realRows = rowsOfFiles(e2eDirectory, scannedFiles);
 const realUnexplained = unexplainedRows(realRows, exemptions);
 const realStale = staleExemptions(realRows, exemptions);
 
-// The four listings run at once and cost about six seconds together on this two-core pod; the
-// default listing on its own is about four of that and the wall-clock one about one, and the
-// first group of listings a cold process starts cost twelve. All of those are readings taken at
-// this head. This file allows three minutes, which is far above every one of them: the ceiling
-// is the point at which something is wrong rather than slow, not a budget for a listing.
+// The four listings run at once and cost about five seconds together on this two-core pod: 5.31
+// and 5.08 seconds in two runs of the four from a cold Bun process, of which the default listing
+// alone is about three and a half and the wall-clock one about one. All of those are readings
+// taken at this head. This file allows three minutes, which is far above every one of them: the
+// ceiling is the point at which something is wrong rather than slow, not a budget for a listing.
 const listingTimeout = 180_000;
 
 /** The planted controls, read by name rather than by pointing `specFiles` at their directory:
