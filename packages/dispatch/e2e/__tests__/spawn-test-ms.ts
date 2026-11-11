@@ -11,14 +11,25 @@
  * `e2e/__tests__/fixtures/` rely on.
  */
 
-/** The per-test limit of every row in those two files that spawns a process. Three readings of
- *  those rows, each the worst of its run: 9.46 s, measured by the implementer on this issue's
- *  first pod (2 CPUs, 8 runs under 6 busy loops, 3 x nproc); 12.78 s, measured by the reviewer on
- *  the replacement pod; 3.90 s, measured by the implementer on that same replacement pod, 8 runs.
- *  The 12.78 s reading is the one this limit is sized from - 40 s is about 3.1 times it - because
- *  the limit follows the worst reading seen rather than the most recent: the 3.90 s reading came
- *  last, and a limit sized from it would go red the next time a pod reads as the reviewer's did.
- *  It is a limit sized from measurement rather than a hang guard, though a row that hangs is
- *  ended by it. Bun's unwritten 5 s default is under the 9.46 s and the 12.78 s readings, so a
- *  busy machine read as a defect of whatever change was under test. */
-export const SPAWN_TEST_MS = 40_000;
+/** The per-test limit of every row in those two files that spawns a process.
+ *
+ *  Measured on the fast pod shape, each the worst reading of its run: 9.46 s (implementer, this
+ *  issue's first pod, 2 CPUs, 8 runs under 6 busy loops, 3 x nproc), 12.78 s (reviewer, the
+ *  replacement pod) and 3.90 s (implementer, that same replacement pod, 8 runs). The limit
+ *  follows the worst reading rather than the most recent: the 3.90 s reading came last, and a
+ *  limit sized from it would go red the next time a pod reads as the reviewer's did.
+ *
+ *  Inferred for the slow pod shape: about 27.5 s. Pods of the same core count do not read alike,
+ *  and dispatch://INFRA-1505's Verification preamble records the ratio at code that does not
+ *  differ - a 335 s suite on one pod against 156 s on this shape, about 2.15 times - so the
+ *  12.78 s reading above is about 27.5 s there. That figure is inferred from that source and
+ *  measured by nobody; a real reading on that shape replaces it, and then this number is sized
+ *  from the reading rather than from the inference.
+ *
+ *  90 s is three times the inferred 27.5 s, which is this tree's own bar applied to the worst
+ *  shape known to exist. It is deliberately generous, because this limit is no row's subject: a
+ *  number too large costs a slower report of a true hang, a number too small costs a flake that
+ *  ejects a pull request from the merge queue, and the two are not comparable. A row this limit
+ *  cuts off reads about 90 s. Bun's unwritten 5 s default is under every reading above but the
+ *  3.90 s one, which is why a busy machine read as a defect of whatever change was under test. */
+export const SPAWN_TEST_MS = 90_000;
