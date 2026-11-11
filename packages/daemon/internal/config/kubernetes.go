@@ -321,7 +321,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", agentSecretsKey)
 	}
-	fields, err := members(value, agentSecretsKey, "url", "token_file", "operator", "audience", "token_expiry_seconds")
+	fields, err := describedMembers(value, agentSecretsKey, agentSecretsKey)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +387,7 @@ func readPlugins(value *yaml.Node) (*PluginsConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", pluginsKey)
 	}
-	fields, err := members(value, pluginsKey, "pi_legion", "pi_envoy")
+	fields, err := describedMembers(value, pluginsKey, pluginsKey)
 	if err != nil {
 		return nil, err
 	}
@@ -706,7 +706,7 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return IdleReleaseConfig{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "idle_minutes", "backstop_minutes")
+	fields, err := describedMembers(value, key, kubernetesKey+".idle_release")
 	if err != nil {
 		return IdleReleaseConfig{}, err
 	}
@@ -769,7 +769,7 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return PodConfig{}, fmt.Errorf("%s must be a mapping", podKey)
 	}
-	fields, err := members(value, podKey, "env", "volumes", "volume_mounts", "service_account")
+	fields, err := describedMembers(value, podKey, podKey)
 	if err != nil {
 		return PodConfig{}, err
 	}

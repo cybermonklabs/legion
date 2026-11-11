@@ -437,8 +437,8 @@ func rootMapping(document *yaml.Node) (*yaml.Node, error) {
 	return root, nil
 }
 
-// readKeys walks the top-level keys in file order, reading the modelled ones and classifying the
-// rest.
+// readKeys walks the top-level keys in file order, dispatching each modelled one through the key
+// table (keytable.go) and classifying the rest.
 func readKeys(root *yaml.Node) (fileConfig, error) {
 	file := fileConfig{Durations: map[string]int{}, Counts: map[string]int{}}
 	if root == nil {
@@ -447,103 +447,17 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i].Value, root.Content[i+1]
 		var err error
-		switch key {
-		case "project":
-			file.Project, err = readString(value, key)
-		case "bind":
-			file.Bind, err = readString(value, key)
-		case "advertise_host":
-			file.AdvertiseHost, err = readAdvertiseHost(value, key)
-		case "postgres_dsn":
-			file.PostgresDSN, err = readString(value, key)
-		case "state_dir":
-			file.StateDir, err = readString(value, key)
-		case "port":
-			file.Port, err = readInt(value, key)
-		case "admission_cap":
-			file.AdmissionCap, err = readInt(value, key)
-		case "runtime":
-			file.Kubernetes, file.Tmux, err = readRuntime(value)
-		case "daemon_url":
-			file.DaemonURL, err = readString(value, key)
-		case "omp_invocation":
-			file.OmpInvocation, err = readNonEmptyString(value, key)
-		case "omp_launch_prefix":
-			file.OmpLaunchPrefix, err = readLaunchPrefix(value, key)
-		case "provider_keys":
-			file.ProviderKeys, err = readProviderKeys(value, key)
-		case "instructions":
-			file.Instructions, err = readNonEmptyString(value, key)
-		case "worker_stream_port":
-			file.WorkerStreamPort, err = readInt(value, key)
-		case "worker_wakes_per_minute":
-			file.WorkerWakesPerMinute, err = readInt(value, key)
-		case "operator_token_file":
-			file.OperatorTokenFile, err = readNonEmptyString(value, key)
-		case "envoy_url":
-			file.EnvoyURL, err = readString(value, key)
-		case "nats_urls":
-			file.NatsURLs, err = readNatsURLs(value, key)
-		case "envoy_token_file":
-			file.EnvoyTokenFile, err = readNonEmptyString(value, key)
-		case "nats_nkey_seed_file":
-			file.NatsNkeySeedFile, err = readNonEmptyString(value, key)
-		case "nats_daemon_nkey_seed_file":
-			file.NatsDaemonNkeySeedFile, err = readNonEmptyString(value, key)
-		case "dispatch_url":
-			file.DispatchURL, err = readString(value, key)
-		case "dispatch_token_file":
-			file.DispatchTokenFile, err = readNonEmptyString(value, key)
-		case "projects":
-			// The projects' own warnings join whatever a warned key above them raised, in file
-			// order: one list carries both, so neither producer may write over the other.
-			var raised []string
-			file.Projects, raised, err = readProjects(value, key)
-			file.Warnings = append(file.Warnings, raised...)
-		case "gates":
-			file.Gates, err = readGates(value, key)
-		case "github_apps":
-			file.GitHubApps, err = readGitHubApps(value, key)
-		case "linger_hours":
-			file.Linger, err = readHours(value, key)
-		case "production_check_hours":
-			file.ProductionCheckBound, err = readHours(value, key)
-		case "pod_update_retask_hours":
-			file.PodUpdateRetask, err = readHours(value, key)
-		case "pod_update_notice_hours":
-			file.PodUpdateNotice, err = readHours(value, key)
-		// Both round caps are read here rather than through countKeys, which carries a default
-		// for every key it holds and so could never report that the operator named neither.
-		case "pod_update_max_open_rounds":
-			file.PodUpdateMaxOpenRounds, err = readPositiveInteger(value, key, 0)
-		case "pod_update_rounds_per_minute":
-			file.PodUpdateRoundsPerMinute, err = readPositiveInteger(value, key, 0)
-		case "review_round_cap":
-			file.ReviewRoundCap, err = readPositiveInteger(value, key, 0)
-		case "controller":
-			file.Controller, err = readString(value, key)
-		case "capabilities":
-			file.Capabilities, err = readCapabilities(value, key)
-		case "worker_backends":
-			file.WorkerBackends, err = readWorkerBackends(value, key)
-		case "role_config_files":
-			file.RoleConfigFiles, err = readRoleConfigFiles(value, key)
-		case stallBackstopKey:
-			file.WorkerStallBackstops, err = readStallBackstops(value, key)
-		case repositoryRenamesKey:
-			file.RepositoryRenames, err = readRepositoryRenames(value, key)
+		descriptor, modelled := topLevelByName[key]
+		switch {
+		case modelled:
+			err = descriptor.Read(value, key, &file)
+		case warnedKeys[key] != "":
+			// The value is read for nothing, so no shape of it is refused: the key changes
+			// nothing whatever it says.
+			file.Warnings = append(file.Warnings,
+				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
 		default:
-			switch {
-			case isDurationKey(key) || isCountKey(key):
-				err = readPositive(value, key, file)
-			case warnedKeys[key] != "":
-				// The value is read for nothing, so no shape of it is refused: the key changes
-				// nothing whatever it says.
-				file.Warnings = append(file.Warnings,
-					fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
-			default:
-				err = classify(key)
-			}
+			err = classify(key)
 		}
 		if err != nil {
 			return fileConfig{}, err
@@ -573,7 +487,7 @@ func isCountKey(key string) bool {
 // readPositive reads a duration or count key into the file's map: a positive integer and, for a
 // duration, at most the timer bound (config.ts readPositiveInteger, and loadConfigFromFile's
 // lifecycle keys).
-func readPositive(value *yaml.Node, key string, file fileConfig) error {
+func readPositive(value *yaml.Node, key string, file *fileConfig) error {
 	read, err := readInt(value, key)
 	if err != nil || read == nil {
 		return err
@@ -693,12 +607,14 @@ type unknownKeyError struct{ key, name string }
 func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
 
 // members returns a mapping's members by name, refusing a name it does not know or names twice. A
-// member whose value is null is left out, as an unset key.
+// member whose value is null is left out, as an unset key. describedMembers is the form whose
+// names carry a line each for the configuration reference; a call site still here passes names
+// whose lines the key table's `undescribed` list holds instead.
 func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.Node, error) {
 	found := map[string]*yaml.Node{}
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
-		name, member := value.Content[i].Value, value.Content[i+1]
+		name, node := value.Content[i].Value, value.Content[i+1]
 		if !slices.Contains(known, name) {
 			return nil, unknownKeyError{key, name}
 		}
@@ -706,11 +622,30 @@ func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.No
 			return nil, fmt.Errorf("%s names %s twice", key, name)
 		}
 		seen[name] = true
-		if member.Tag != "!!null" {
-			found[name] = member
+		if node.Tag != "!!null" {
+			found[name] = node
 		}
 	}
 	return found, nil
+}
+
+// describedMembers is members for a mapping whose nested keys the configuration reference
+// describes: group is the dotted path of one nestedKeys entry (keytable.go), whose members are the
+// names the mapping may carry, each with the line `legion config-reference --json` prints for it.
+// key is the path this mapping was reached by, which a refusal names, and which differs from group
+// where a project key or a sequence index stands in it. A group nestedKeys does not hold panics:
+// it is a reader naming a mapping the configuration reference does not know, which is a bug
+// TestNoKeyBypassesTheKeyTable catches, never a value.
+func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Node, error) {
+	described, ok := nestedByPath[group]
+	if !ok {
+		panic("config: no nestedKeys group " + group)
+	}
+	known := make([]string, len(described.Members))
+	for i, m := range described.Members {
+		known[i] = m.Name
+	}
+	return members(value, key, known...)
 }
 
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once.

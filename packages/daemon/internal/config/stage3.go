@@ -404,7 +404,7 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 			return nil, errors.New(gatesMergeMessage)
 		}
 	}
-	fields, err := members(value, key, "design")
+	fields, err := describedMembers(value, key, "gates")
 	if err != nil {
 		return nil, err
 	}

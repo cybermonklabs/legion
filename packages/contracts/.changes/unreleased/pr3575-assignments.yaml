@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `assignments` on each issue of `GET /legion/v1/state`, at daemon API contract 60: the experiments
+  the issue was drawn for, each with its variant, the mode it was drawn under and the instant. A
+  caller below 60 is served the body without them, and the three memory fields still answer the
+  `memory` experiment's own answer.
