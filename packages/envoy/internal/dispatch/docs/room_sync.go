@@ -193,7 +193,9 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // the issue of every resident room after each LISTEN (Service.recheckResidentIssues), since a
 // close or a reopen notified while the hub had no connection reached nobody. The removal lane is
 // its own, because closing a room of a row that has gone (Service.documentRemoved) must not wait
-// behind a catch-up reading another document's stored history.
+// behind a catch-up reading another document's stored history; it reads the rows of this
+// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
+// while the hub had no connection reached nobody and nothing announces it again.
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{
@@ -212,7 +214,10 @@ func (r *roomSync) handlers() []roomSyncHandler {
 			channels:  []roomSyncChannel{{name: issueOpenChangedChannel, notified: r.service.issueOpenChanged}},
 			connected: r.service.recheckResidentIssues,
 		},
-		{channels: []roomSyncChannel{{name: documentRemovedChannel, notified: r.service.documentRemoved}}},
+		{
+			channels:  []roomSyncChannel{{name: documentRemovedChannel, notified: r.service.documentRemoved}},
+			connected: r.service.recheckRemovedRooms,
+		},
 		{channels: []roomSyncChannel{{name: documentQueryChannel, notified: r.service.roomQueries.query}}},
 		{channels: []roomSyncChannel{{name: documentAnswerChannel, notified: r.service.roomQueries.answer}}},
 	}

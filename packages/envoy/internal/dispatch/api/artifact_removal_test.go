@@ -3,16 +3,19 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	gws "github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -621,6 +624,16 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 // rather than keeping one whose next append would meet a foreign key that no longer resolves
 // (R10). A build that evicts only on the removing process fails here.
 //
+// A third process then holds a room of a second untouched document with its notification hub
+// between connections, which is R10's "every process that holds one" against "every process
+// listening at that instant": the announcement reaches that process never, and the room goes
+// when its next LISTEN stands. Two passes of that LISTEN each close such a room, and the one
+// that reaches it first does: the removal lane's, which reads the rows of this process's rooms
+// and finds this one gone (docs.Service.recheckRemovedRooms), and the catch-up lane's sweep,
+// which reads a stored history below the room's cursor because the removal took the document's
+// stored updates with it (docs.roomCatchUps.sweep). A build with neither keeps a resident room
+// over a deleted row for the rest of that process's life.
+//
 // The close carries no content: the removal is refused for anything but an untouched document,
 // which the test reads as the document's one empty version before it removes anything.
 func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
@@ -717,6 +730,76 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 			document.ID, documentAppendCount(t, database, document.ID), holding.ResidentRooms(), removing.ResidentRooms())
 	}
 	assertNoRowNamesTheDocument(t, database, document.ID)
+
+	// The third case holds the requirement's own words: every process that holds a room, and
+	// not every process listening when the removal commits. A third process holds a room of a
+	// second untouched document while its notification hub is between connections, so the
+	// announcement reaches it never; the passes that run after a LISTEN stands read the room
+	// instead, the removal lane's own among them (docs.Service.recheckRemovedRooms), so the
+	// room goes when that hub connects again.
+	untouched := emptyDocument(t, handler, issue.Key, "Notes a third process holds")
+	thirdStore := storetest.SecondProcess(t, database)
+	third := docs.New(docs.Deps{Store: thirdStore, Identity: headerIdentity(thirdStore), Settle: time.Hour})
+	t.Cleanup(func() { _ = third.Shutdown(context.Background()) })
+	// The hub's first dial fails and every later one waits on through, so this process hears
+	// nothing until the test lets it dial: the shape
+	// docs.TestAnIssueClosedWhileTheListenerWasDownClosesItsRoomsOnTheReconnect drives the
+	// issue-open lane with.
+	through := make(chan struct{})
+	var dials atomic.Int32
+	dial := documentListenerDial(thirdStore, third)
+	listening := runDocumentRoomSyncDialing(t, third, func(ctx context.Context) (*pgx.Conn, error) {
+		if dials.Add(1) == 1 {
+			return nil, errors.New("the listener hub has no connection")
+		}
+		select {
+		case <-through:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return dial(ctx)
+	})
+
+	// A person opens the document on the third process, which loads its room there; a cold read
+	// would load none. Opening it types nothing, so this is still the untouched document the
+	// route removes, which the read below says.
+	thirdServer := httptest.NewServer(http.HandlerFunc(third.ServeHTTP))
+	t.Cleanup(thirdServer.Close)
+	thirdConnection, thirdResponse, err := gws.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(thirdServer.URL, "http")+"/ws/doc/"+untouched.ID,
+		http.Header{"X-Dispatch-User": []string{"alice"}})
+	if err != nil {
+		t.Fatalf("open the document on the third process: response=%#v err=%v", thirdResponse, err)
+	}
+	t.Cleanup(func() { _ = thirdConnection.Close() })
+	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
+		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
+	}
+	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		return slices.Contains(third.ResidentRooms(), untouched.ID)
+	}) {
+		t.Fatalf("the third process holds the rooms %v, and not %s, whose room the removal must close",
+			third.ResidentRooms(), untouched.ID)
+	}
+
+	removedDocument(t, handler, untouched.ID)
+
+	// The announcement was sent while the third process had no connection, so it reached
+	// nobody there and is never sent again. Its hub is let through, and its LISTEN is waited
+	// for: what closes the room now is a pass that LISTEN runs.
+	close(through)
+	select {
+	case <-listening:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the third process's listener hub never listened after the test let its dial through")
+	}
+	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		return !slices.Contains(third.ResidentRooms(), untouched.ID)
+	}) {
+		t.Fatalf("the third process, whose hub was between connections when %s was removed, still holds the room of it after its LISTEN stood again: %v; it holds a resident room over a deleted row, and its next append meets the doc_updates foreign key",
+			untouched.ID, third.ResidentRooms())
+	}
+	assertNoRowNamesTheDocument(t, database, untouched.ID)
 }
 
 // documentAppendCount is how many stored appends the database holds of a document's room. After

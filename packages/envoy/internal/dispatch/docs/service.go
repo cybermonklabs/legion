@@ -3035,13 +3035,15 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 
 // documentRemoved is documentRemovedChannel's handler, on its room-sync lane (roomSync.handlers):
 // the document artifactID was removed, in a transaction of any process - this one's or another's
-// - whose commit announced it (AnnounceDocumentRemoved). The row has gone, so a room of it here
-// is a room over nothing: its next append would meet a foreign key that no longer resolves, and a
-// settlement would commit against a row that is not there. The room is closed, through the same
-// eviction the removing process runs over its own room after the commit (api.removeArtifact).
+// - whose commit announced it (AnnounceDocumentRemoved). It is what the same lane's pass after a
+// LISTEN calls too, for each room whose row it reads gone (recheckRemovedRooms). The row has
+// gone, so a room of it here is a room over nothing: its next append would meet a foreign key
+// that no longer resolves, and a settlement would commit against a row that is not there. The
+// room is closed, through the same eviction the removing process runs over its own room after
+// the commit (api.removeArtifact).
 //
 // A process holding no room of the document has nothing to close, which is read first
-// (recheckResidentIssues reads residence the same way): every process hears this, the removing
+// (residentLoadedRooms reads residence the same way): every process hears this, the removing
 // one included, and on all but the few holding a room there is no room to take a close's lock
 // for. A room this closes holds nothing that was stored: the removal reads the document's stored
 // updates under this room's lock (LockDocumentRoom) and is refused while any of them stands, so
@@ -3054,18 +3056,21 @@ func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
 		return
 	}
 	if err := s.Evict(ctx, artifactID); err != nil && ctx.Err() == nil {
-		// The room stays open until this process's next close of it. Nothing re-reads a
-		// removal: it is announced once, and the row it names is gone, so the error is what
+		// The room stays open until this process's next close of it. The removal is
+		// announced once and the row it names is gone, so nothing notifies it again; what
+		// reads it again is the lane's pass after the next LISTEN (recheckRemovedRooms),
+		// which this process makes on a reconnect. Until one of those, the error is what
 		// anyone looking at this process has to go on.
 		slog.Error("dispatch: close the editor room of a removed document", "artifact", artifactID, "error", err)
 	}
 }
 
-// recheckResidentIssues is the issue-open lane's work after each LISTEN stands: a close or a
-// reopen notified while the listener had no connection reached nobody and is never sent again, so
-// the issue of every room this process holds is read once more, in one statement, and each room
-// whose record no longer matches takes the issue's state (setRoomIssueOpen).
-func (s *Service) recheckResidentIssues(ctx context.Context) {
+// residentLoadedRooms is every document this process holds a room of now, as the two passes that
+// run after a LISTEN read it (recheckResidentIssues, recheckRemovedRooms). s.roomLoads holds a
+// record of every room loaded since its document was last collected (keepInstance), and the live
+// document says which of those rooms this process still holds; an entry whose room has gone
+// costs a lookup and no more.
+func (s *Service) residentLoadedRooms() []string {
 	var rooms []string
 	s.roomLoads.Range(func(key, _ any) bool {
 		if room := key.(string); s.srv.GetDoc(room) != nil {
@@ -3073,6 +3078,15 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 		}
 		return true
 	})
+	return rooms
+}
+
+// recheckResidentIssues is the issue-open lane's work after each LISTEN stands: a close or a
+// reopen notified while the listener had no connection reached nobody and is never sent again, so
+// the issue of every room this process holds is read once more, in one statement, and each room
+// whose record no longer matches takes the issue's state (setRoomIssueOpen).
+func (s *Service) recheckResidentIssues(ctx context.Context) {
+	rooms := s.residentLoadedRooms()
 	if len(rooms) == 0 {
 		return
 	}
@@ -3085,6 +3099,59 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 	}
 	for _, state := range states {
 		s.setRoomIssueOpen(ctx, state.room, state.open, false)
+	}
+}
+
+// residentArtifactsStatement reads which of the documents in $1 still have an artifacts row. It
+// reads no kind: a row whose kind changed is no removal, and only a row that has gone is one
+// (recheckRemovedRooms).
+const residentArtifactsStatement = `select id::text from artifacts where id = any($1::uuid[])`
+
+// recheckRemovedRooms is the removal lane's work after each LISTEN stands: a removal notified
+// while the hub had no connection reached nobody, and nothing says it again - the announcement
+// is sent once, and the row it named has gone, so no later read of that document brings it
+// back. This reads the rows of the rooms this process holds, in one statement, and every room
+// the answer leaves out is a document that has gone: it is closed through the lane's own
+// handler (documentRemoved, which reads residence again and logs the close it makes). A room
+// left open over a deleted row takes a person's typing that no append can store, the
+// doc_updates foreign key refusing it.
+//
+// The catch-up's sweep after the same LISTEN closes such a room too, where the room holds
+// stored updates: the removal took them with the document, so the room stands above the head
+// of an empty history, which reads as a history replaced under it (roomCatchUps.sweep,
+// storedHistoryReplaced). Whichever pass reads the room first closes it. This one closes it
+// for what it is, and it is the only one that closes a room holding nothing stored, which
+// stands at that empty history's head and reads as current.
+func (s *Service) recheckRemovedRooms(ctx context.Context) {
+	rooms := s.residentLoadedRooms()
+	if len(rooms) == 0 {
+		return
+	}
+	rows, err := s.store.Pool.Query(ctx, residentArtifactsStatement, rooms)
+	var held []string
+	if err == nil {
+		held, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	}
+	if err != nil {
+		// Every room stays as it is until the next LISTEN reads again, as a failed read of
+		// the resident rooms' issues leaves them (recheckResidentIssues).
+		if ctx.Err() == nil {
+			slog.Error("dispatch: read which of the resident documents still exist", "rooms", len(rooms), "error", err)
+		}
+		return
+	}
+	// The usual answer holds every room, each id once, and builds no set to read itself by.
+	if len(held) == len(rooms) {
+		return
+	}
+	stands := make(map[string]struct{}, len(held))
+	for _, room := range held {
+		stands[room] = struct{}{}
+	}
+	for _, room := range rooms {
+		if _, there := stands[room]; !there {
+			s.documentRemoved(ctx, room)
+		}
 	}
 }
 
