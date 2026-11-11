@@ -33,6 +33,7 @@ import {
   LOCAL_ENVOY_NOTICE,
   resetEnvoyPluginInterfaceForTests,
 } from "@legion/pi-shared/interface";
+import { classifySession } from "@legion/pi-shared/legion-session";
 import {
   PHASE_STALL_ENTRY,
   REMINDER,
@@ -79,7 +80,6 @@ import {
   CAPABILITY_FIRST_DUE_TICK,
   CAPABILITY_RETRY_TICKS,
 } from "../src/capability-schedule";
-import { classifySession } from "../src/classify";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
   STALL_WATCH_ENTRY,
@@ -1161,64 +1161,6 @@ function registeredClientInstance(requests: readonly DaemonRequest[], sessionID:
 }
 
 describe.skipIf(skip)("Legion OMP extension", () => {
-  test("classifies controllers, root architects, sub-architects, phase workers, and ordinary sessions", () => {
-    // The root architect's own issue key equals the tree's.
-    expect(
-      classifySession({
-        LEGION_ROLE: "architect",
-        LEGION_TREE: "REPO-42",
-        LEGION_ISSUE: "REPO-42",
-      })
-    ).toEqual({ kind: "root-architect", tree: "REPO-42" });
-    // A sub-architect on a child issue is a phase worker like any other role.
-    expect(
-      classifySession({
-        LEGION_ROLE: "architect",
-        LEGION_TREE: "REPO-42",
-        LEGION_ISSUE: "REPO-43",
-      })
-    ).toEqual({
-      kind: "phase-worker",
-      role: "architect",
-      tree: "REPO-42",
-      issue: "REPO-43",
-    });
-    expect(classifySession({ LEGION_CONTROLLER: "1" })).toEqual({
-      kind: "controller",
-    });
-    expect(
-      classifySession({
-        LEGION_ROLE: "reviewer",
-        LEGION_TREE: "REPO-42",
-        LEGION_ISSUE: "REPO-43",
-      })
-    ).toEqual({
-      kind: "phase-worker",
-      role: "reviewer",
-      tree: "REPO-42",
-      issue: "REPO-43",
-    });
-    expect(classifySession({})).toEqual({ kind: "not-legion" });
-  });
-  test("classifies the controller by LEGION_CONTROLLER alone, ignoring a redundant LEGION_ROLE=controller", () => {
-    expect(classifySession({ LEGION_CONTROLLER: "1", LEGION_ROLE: "controller" })).toEqual({
-      kind: "controller",
-    });
-  });
-  test("rejects an unrecognized LEGION_ROLE value", () => {
-    expect(() => classifySession({ LEGION_ROLE: "explorer", LEGION_TREE: "REPO-42" })).toThrow(
-      'LEGION_ROLE "explorer" is not a Legion role'
-    );
-  });
-  test("rejects a session launched with both controller and tree markers", () => {
-    expect(() =>
-      classifySession({
-        LEGION_CONTROLLER: "1",
-        LEGION_CONTROLLER_SECRET: "controller-secret",
-        LEGION_TREE: "REPO-42",
-      })
-    ).toThrow("both controller and tree launch markers");
-  });
   test("requires the controller capability in the interactive session environment", async () => {
     process.env.ENVOY_URL = "http://envoy.test";
     process.env.LEGION_DAEMON_URL = "http://daemon.test";

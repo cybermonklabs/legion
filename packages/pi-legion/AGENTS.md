@@ -65,7 +65,8 @@ The plugin speaks to the Legion daemon (`packages/daemon`) through the daemon cl
 `legion.daemonApiVersion`: the claim, grant, workflow, controller, and state
 shapes that client parses, and the pane's environment — the identity variables
 `LEGION_TREE`/`LEGION_ISSUE`/`LEGION_ROLE`/`LEGION_CONTROLLER`/`LEGION_PROJECT` (read by
-`src/classify.ts`, `extensions/legion.ts` and the two session modules), `LEGION_STATE_DIR`
+`@legion/pi-shared/legion-session`, which holds the session classifier both plugin entries read,
+`extensions/legion.ts` and the two session modules), `LEGION_STATE_DIR`
 (where the claim session writes its jj attribution overlay, through
 `@legion/pi-shared/jj-attribution`), `LEGION_WORKSPACE` (the issue
 workspace, the pane's cwd; read by `claim-session.ts`, which resolves it and scopes the overlay's

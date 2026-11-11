@@ -29,6 +29,11 @@ import {
   LEGION_PLUGIN_LOADED_KEY,
   readEnvoyPluginInterface,
 } from "@legion/pi-shared/interface";
+import {
+  classifySession,
+  type LegionSessionKind,
+  requiredEnvironment,
+} from "@legion/pi-shared/legion-session";
 import { createPhaseReminder, type EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import {
   assistantRanTool,
@@ -67,7 +72,6 @@ import {
   createCapabilitySchedule,
 } from "../src/capability-schedule";
 import { createClaimSession } from "../src/claim-session";
-import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
 import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";

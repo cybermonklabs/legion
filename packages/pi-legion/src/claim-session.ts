@@ -7,12 +7,13 @@ import {
 } from "@legion/pi-shared/jj-attribution";
 import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
+import { requiredEnvironment } from "@legion/pi-shared/legion-session";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
-import { requiredEnvironment, requiredSecret } from "./classify";
+import { requiredSecret } from "./classify";
 
 export interface ClaimSession {
   /** Boots the claim behind a root architect's or a phase worker's pane (`legion.ts` calls it for

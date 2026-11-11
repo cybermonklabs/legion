@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { LegionSessionKind } from "@legion/pi-shared/legion-session";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
 import {
   createStallWatchdog,
@@ -14,7 +15,6 @@ import {
   type StallWatchdogLog,
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
-import type { LegionSessionKind } from "./classify";
 import { createStallTeller } from "./stall-evidence";
 // The import below is this file's merge-base check: on the merge base there is no `./stall-exits`,
 // so every test here fails to resolve rather than passing vacuously.

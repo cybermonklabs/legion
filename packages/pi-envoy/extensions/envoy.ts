@@ -152,7 +152,12 @@ import {
   noteInjectedUserTurn,
   noteTypedUserTurn,
 } from "@legion/pi-shared/injected-user-turns";
-import { LOCAL_ENVOY_NOTICE, publishEnvoyPluginInterface } from "@legion/pi-shared/interface";
+import {
+  LEGION_PLUGIN_LOADED_KEY,
+  LOCAL_ENVOY_NOTICE,
+  publishEnvoyPluginInterface,
+} from "@legion/pi-shared/interface";
+import { daemonLaunchedAgentProcess } from "@legion/pi-shared/legion-session";
 import type {
   ContentBlock,
   ImageContent,
@@ -305,6 +310,33 @@ export function setNatsConnectForTests(dial: typeof connect): void {
 // file's stand-in, with that file's state. Production callers never call this.
 export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
+}
+
+// The gate below calls this instead of `process.exit` directly, so a test can substitute a
+// throwing stand-in without killing the test runner. It mirrors `setLegionBootstrapExitForTests`
+// in packages/pi-legion/extensions/legion.ts, which the Legion entry's own refusals take.
+// Production callers never override it.
+let exitProcess: (code: number) => never = (code) => process.exit(code) as never;
+export function setEnvoyBootstrapExitForTests(hook: (code: number) => never): void {
+  exitProcess = hook;
+}
+
+/**
+ * The one line a process the daemon launched for a role writes when `@sjawhar/pi-legion` left no
+ * load marker on `globalThis` (INFRA-2883, R2). It is the mirror of `envoyPluginRefusal` in
+ * packages/pi-legion/extensions/legion.ts: a plugin root that throws at load makes Oh My Pi print
+ * `Failed to load extension …` and run on, so without this the role would run a whole phase with
+ * every `envoy_*` tool and no `legion` tool. The daemon reads the exit as a launch failure and
+ * starts the agent again.
+ */
+function missingLegionPluginRefusal(env: NodeJS.ProcessEnv): string {
+  const named = (key: string): string => `${key}=${env[key] ?? "unset"}`;
+  return (
+    `Envoy plugin at ${import.meta.url} is running in an agent the Legion daemon launched ` +
+    `(${named("LEGION_ROLE")}, ${named("LEGION_ISSUE")}, ${named("LEGION_TREE")}) where ` +
+    "@sjawhar/pi-legion did not load, so this session has no legion tool and claims no role; " +
+    "ending the process so the daemon launches it again"
+  );
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
@@ -3652,6 +3684,19 @@ export default function envoyExtension(pi: PiApi): void {
 
   pi.on("session_start", async (_event, context) => {
     if (await isSubagent(context)) return;
+    // A process the daemon launched as a role's agent, with no Legion entry loaded in it, ends
+    // here (INFRA-2883, R2): the same end a failed claim boot gives it, so the daemon launches
+    // it again rather than letting the role run its phase with no `legion` tool. The three marks
+    // name that process and no other (`daemonLaunchedAgentProcess`), and the marker read is the
+    // process-global one the Legion entry sets at load, never this session's claim — a `task`
+    // subagent shares the marker and has returned at the check above either way.
+    if (
+      daemonLaunchedAgentProcess(process.env, process.argv) &&
+      (globalThis as Record<symbol, unknown>)[LEGION_PLUGIN_LOADED_KEY] === undefined
+    ) {
+      logger.error(missingLegionPluginRefusal(process.env));
+      exitProcess(1);
+    }
     bindDispatchSession(context.sessionManager.getSessionId());
     restoreLocalSessionState(context);
     lastHeard = context.sessionManager.getSessionId();
