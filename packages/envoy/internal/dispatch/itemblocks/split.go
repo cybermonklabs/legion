@@ -36,8 +36,10 @@ func Split(body string) []Block {
 
 // split is Split's blocks together with the document the parser read body as, which is nil where
 // the parser refused body and where body holds only whitespace. It is the package's one parse of
-// a body: Check reads the decision blocks of this document rather than parsing the body a second
-// time, since it runs on every body write.
+// a body the parser reads: Check reads the decision blocks of this document rather than parsing
+// the body a second time, since it runs on every body write. A body the parser refused is read
+// once more, by the reader that answers no refusal (pmdoc.FindDecisionCard), which is the only
+// way to see what the browser reader draws for it.
 //
 // Where the parse stands but bySourceStarts cannot place its block starts, the blocks are the
 // blank-line fallback's while the document is still the parser's, so the two count their

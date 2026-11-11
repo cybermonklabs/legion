@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -362,5 +363,100 @@ func TestACommentStoredWithADecisionBlockIsStillReadWholeAndIndexedAsAnAsk(t *te
 	if !listed.Indexed || len(asks) != 1 || asks[0].Text != theDecisionBlock {
 		t.Fatalf("the stored comment lists %+v (indexed=%v), want its decision block indexed as one `ask` block",
 			listed.Blocks, listed.Indexed)
+	}
+}
+
+// decisionRefusedParse are bodies the server's parser refuses - for a block the schema holds
+// nothing like, for a typed block it does not declare, for a line its reader and the browser's
+// read differently, and for nesting past a bound - each holding the same decision block, which
+// the browser reader draws its card for all the same: the reader draws a card for every `ask` its
+// own parser makes, whatever else in the body the server's parse refused (INFRA-1201). Each is
+// named by what makes the parse refuse it, so a reader of a failure reads the class.
+var decisionRefusedParse = []struct{ name, body string }{
+	{name: "a link reference definition", body: theDecisionBlock + "\n\n[a]: http://x\n"},
+	{name: "a block of HTML", body: theDecisionBlock + "\n\n<!-- legion-outbox:1 -->\n"},
+	{name: "a typed block of a type the schema does not declare", body: theDecisionBlock + "\n\n:::unknown{#b1}\nBody.\n:::\n"},
+	{name: "a quoted line the browser's parser reads as a block of HTML", body: theDecisionBlock + "\n\n> </a\t>\n> text\n"},
+	{name: "quotes nested past the block bound", body: theDecisionBlock + "\n\n" + strings.Repeat("> ", 101) + "deep\n"},
+	{
+		name: "a table whose short rows would take more padding than one write may add",
+		body: theDecisionBlock + "\n\n" + strings.Repeat("| a ", 110) + "|\n" +
+			strings.Repeat("| - ", 110) + "|\n" + strings.Repeat("| x |\n", 95),
+	},
+}
+
+// decisionAtTheTop is the whole refusal a body holding its decision block as its first block is
+// answered with, spelled out here as the placements above spell theirs out.
+const decisionAtTheTop = "body block 1 (ask) holds a decision block, which nobody can answer where it stands: " +
+	"ask the question in the issue's own document, as a decision block there, or open an ask with " +
+	"`dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+
+// A body the parser refuses is refused for its decision block too, in the same words and under
+// the same code: every write route answers one such body so, and the comment route answers one of
+// every class of refusal. Before INFRA-1201 each of these was stored while the browser drew its
+// decision card in full, which is the silent failure the rule exists to stop. Nothing is stored by
+// these refusals either.
+func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
+	f := newDecisionFixture(t)
+	// One of the bodies stands for the class on every route - the link reference definition, the
+	// line a writer leaves behind most often - and the comment route below answers every class.
+	onEveryRoute := decisionRefusedParse[0]
+	for _, write := range decisionWrites() {
+		t.Run(write.route+" as "+write.actor, func(t *testing.T) {
+			before := f.stored(t)
+			assertDecisionBlockRefused(t, write.route+" as "+write.actor,
+				write.send(t, f, onEveryRoute.body), decisionAtTheTop)
+			if after := f.stored(t); after != before {
+				t.Fatalf("%s as %s stored something: %+v, want the %+v it found",
+					write.route, write.actor, after, before)
+			}
+		})
+	}
+	for _, refused := range decisionRefusedParse {
+		t.Run("a comment holding "+refused.name, func(t *testing.T) {
+			assertDecisionBlockRefused(t, "POST /api/v1/issues/{key}/comments", dispatchRequest(t, f.handler,
+				http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
+				map[string]any{"body": refused.body}, "alice"), decisionAtTheTop)
+		})
+	}
+}
+
+// No document write path changed: the rule holds bodies, which carry no answer, and a document is
+// where a decision block belongs. A document write takes the markdown the body routes refuse - the
+// same bytes, refused as a comment and stored as a document - and a document whose markdown the
+// parser refuses is still refused for that markdown, under its own code, never for the decision
+// block it holds.
+func TestADocumentWriteStillTakesADecisionBlockTheBodyRoutesRefuse(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "DOCASK", "Decision blocks in documents", "before")
+	content := "# Plan\n\n" + theDecisionBlock + "\n"
+
+	uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/DOCASK/artifacts",
+		map[string]any{"name": "plan.md", "content": content}, "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("the document write answered %d %s, want the decision block stored",
+			uploaded.Code, uploaded.Body.String())
+	}
+	document := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact.ID
+	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+document+"/text", nil, "alice").Body.String()
+	if !strings.Contains(text, ":::ask{") || !strings.Contains(text, "Which transport should we expose?") {
+		t.Fatalf("the document reads back %q, want the decision block it was written with", text)
+	}
+
+	assertDecisionBlockRefused(t, "POST /api/v1/issues/{key}/comments", dispatchRequest(t, handler,
+		http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": content}, "alice"),
+		"body block 2 (ask) holds a decision block, which nobody can answer where it stands: "+
+			"ask the question in the issue's own document, as a decision block there, or open an ask with "+
+			"`dispatch ask`; to show a decision block as an example, put it in a fenced code block")
+
+	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/DOCASK/artifacts",
+		map[string]any{"name": "refused.md", "content": decisionRefusedParse[0].body}, "alice")
+	body := decodeBody[apiErrorBody](t, refused)
+	if refused.Code != http.StatusBadRequest || body.Code == "DECISION_BLOCK_IN_BODY" {
+		t.Fatalf("the document write answered %d %s %q, want the markdown's own refusal",
+			refused.Code, body.Code, body.Error)
 	}
 }

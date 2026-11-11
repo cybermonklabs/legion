@@ -115,10 +115,12 @@ func TestTheDecisionBlockRefusalReadsAsWritten(t *testing.T) {
 
 // A body holding the text of a decision block inside a fenced code block is stored: the fence is
 // how a writer shows the block as an example, and the reader draws no card for it. So is a body
-// the parser refuses, which has no tree to read an `ask` node from and whose lines the reader
-// draws as text: a container directive no block type claims, and the four-colon body of
-// packages/dispatch/e2e/unknown-directive.stub.e2e.ts:50, whose inner `:::note` breaks the ask's
-// content rule.
+// the parser refuses whose lines the reader draws as text rather than as a card, which is a body
+// holding no `ask` its parser reads as a typed directive: a container directive no block type
+// claims and nothing stands in, and the four-colon body of
+// packages/dispatch/e2e/unknown-directive.stub.e2e.ts:50, whose `::::ask` carries no attributes,
+// so neither parser opens an `ask` on it. A refused parse stores nothing by itself: every other
+// refused body is read for the card it draws (decisionRefusalRows).
 func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 	for _, test := range []struct{ name, body string }{
 		{
@@ -155,8 +157,10 @@ func TestCheckRefusesABodyOverABoundForTheBound(t *testing.T) {
 	}
 
 	// The parser weighs a block at three of the 65,536 elements it reads, so no body of more
-	// blocks than a body may hold parses at all: this one has no tree and so no decision block to
-	// read, and its blocks are the blank-line fallback's, where the one-line ask is one block.
+	// blocks than a body may hold parses at all: its blocks are the blank-line fallback's, where
+	// the one-line ask is one block. The decision block it holds is one the reader draws a card
+	// for, and the count is still what the body is refused for, since both bounds are answered
+	// before the card is looked for at all.
 	overTheCount := ":::ask{urgency=\"med\"}\nWhich transport should we expose?\n:::\n\n" +
 		paragraphBody(contracts.DispatchItemBlocks, 1)
 	err = requireRefusal(t, "a decision block beside one block too many", overTheCount,

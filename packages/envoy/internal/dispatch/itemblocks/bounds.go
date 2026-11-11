@@ -43,8 +43,10 @@ func (e *CountExceeded) Error() string {
 // decision card for and which nobody can answer where it stands, since only a document's own
 // decision block and an ask carry an answer. Field is the field the body arrived in, Position the
 // place, counted from 1, of the top-level block holding the decision block, and Type that block's
-// Proof node type, which is the decision block's own type only where it stands at the top. The
-// refusal's wording lives in Error() and nowhere else, as CapExceeded's does.
+// type, which is the decision block's own type only where it stands at the top: the Proof node
+// type of the block the parser read, or, in a body the parser refused, what the reader's own block
+// of that kind is called (pmdoc.FindDecisionCard). The refusal's wording lives in Error() and
+// nowhere else, as CapExceeded's does.
 type DecisionBlock struct {
 	Field    string
 	Position int
@@ -69,13 +71,16 @@ func (e *DecisionBlock) Error() string {
 // The blocks are Split's, the body as its author wrote it, never the canonical rendering: a table
 // the renderer pads and a list it escapes are measured as written, which is what is stored.
 //
-// The decision block is read from the parse tree, not from the blocks: the parser opens a typed
-// directive inside a quote, a list item and a callout, and the reader draws a card for an `ask`
-// node at any depth. A body the parser refused has no tree and so no decision block: it is stored
-// as written, and the reader draws its lines as text rather than as a card. Where the parser read
-// the body but its block starts could not be placed, the blocks are the blank-line fallback's
-// while the tree is the parser's, so the position named here is the tree's own top-level index,
-// which the fallback's count can differ from.
+// The decision block is read from the reader's tree, not from the blocks and not from the parser's
+// verdict: what nobody can answer is the card the browser reader draws, and it draws one for each
+// `ask` its own parser makes, at any depth and whether or not the server's parse went on to refuse
+// the body for something else it holds. So a body the parser read is answered from its tree, where
+// the parser opens a typed directive inside a quote, a list item and a callout, and a body the
+// parser refused is answered from the tree that refusal left behind (pmdoc.FindDecisionCard),
+// which is the one the reader reads. Where the parser read the body but its block starts could not
+// be placed, the blocks are the blank-line fallback's while the tree is the parser's, so the
+// position named here is the tree's own top-level index, which the fallback's count can differ
+// from.
 func Check(field, body string) error {
 	blocks, doc := split(body)
 	if len(blocks) > contracts.DispatchItemBlocks {
@@ -93,6 +98,12 @@ func Check(field, body string) error {
 		}
 	}
 	if doc == nil {
+		// The parse refused the body, which says nothing about the card: the browser reader draws
+		// one for the `ask` its parser reads whether or not the server could store what stands
+		// beside it, so a refused body is read for that card rather than taken as holding none.
+		if card, holds := pmdoc.FindDecisionCard(body); holds {
+			return &DecisionBlock{Field: field, Position: card.Position, Type: card.Type}
+		}
 		return nil
 	}
 	for index, child := range doc.Children {
