@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  The broker removes a stored value's trailing carriage returns and line feeds before it spends
+  the value, so a one-line credential no longer reaches a command, a minter or the airlock
+  proxy's header with the newline of whatever wrote it. A caller that put such a value straight
+  into an HTTP header got a header the service refused, and the error reporting could quote the
+  whole secret.
+  The rule reads the value where its secret says nothing: that trailing run goes only where the
+  rest of the value is not empty and holds no carriage return and no line feed, so a PEM
+  document, a value with a line ending inside it and a value that is only line endings each
+  reach their consumer byte for byte. A secret's owner says what the value is with the new
+  `shape` tag, which the policy version carries: `token` always loses that trailing run,
+  `document` loses nothing, and a word that is neither is refused (`shape-malformed`).
+  `agent-secrets secret create --shape token|document` and
+  `agent-secrets secret retag --shape token|document|none` write and remove it, and
+  `agent-secrets secret show` and `agent-secrets secret list` print it.
+  `agent-secrets secret create` and `agent-secrets secret set` store a value by that same rule,
+  and `set` reads the secret's own shape tag first, so a document's owner stores a document. The
+  line the exec form wrote about a released value that ends in a line ending is gone: its reader
+  could not store the value again. In its place the broker logs one line at INFO for each value
+  it changed, `broker: a stored value's trailing line ending was removed`, with the secret's name
+  and no part of any value.
