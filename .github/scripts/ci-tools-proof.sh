@@ -1790,3 +1790,5 @@ case $verb in
   ladder-report) ladder_report "$@" ;;
   *) die "'$verb' is no verb of this rig (origin-start, stage, shorten-ladder, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, install-bound, report, ladder-report)" ;;
 esac
+
+# INFRA-1413 selection probe, never merged.
