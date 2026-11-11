@@ -75,14 +75,14 @@ type issueCollaborators struct {
 	// LegionRegistry is "unavailable" when the listener's Legion agent registry did not answer
 	// (no listener configured, an error, a timeout): agents then holds only the sessions the
 	// issue's events name.
-	LegionRegistry string `json:"legion_registry"`
+	LegionRegistry string `json:"legion_registry" enum:"ok,unavailable"`
 }
 
 // collaboratorPerson is one person, by canonical login.
 type collaboratorPerson struct {
-	Kind    string   `json:"kind"`
+	Kind    string   `json:"kind" enum:"user"`
 	Login   string   `json:"login"`
-	Reasons []string `json:"reasons"`
+	Reasons []string `json:"reasons" enum:"assignee,claimed,posted,answered"`
 	// LastAt is the newest event that made them a collaborator; null for an assignee who did
 	// nothing else on the issue.
 	LastAt *string `json:"last_at"`
@@ -91,12 +91,12 @@ type collaboratorPerson struct {
 // collaboratorAgent is one agent session, by id. It carries no running state: a reader takes
 // that from the live agents registry, so one agent never shows two states on one page.
 type collaboratorAgent struct {
-	Kind      string `json:"kind"`
+	Kind      string `json:"kind" enum:"session"`
 	SessionID string `json:"session_id"`
 	// Title is the registry entry's title, else the title on the session's newest event; null
 	// when that event carries none.
 	Title   *string  `json:"title"`
-	Reasons []string `json:"reasons"`
+	Reasons []string `json:"reasons" enum:"assignee,claimed,posted,answered"`
 	// LastAt is the newest event that made the session a collaborator; null for a registry
 	// entry with no such event on the issue.
 	LastAt *string `json:"last_at"`

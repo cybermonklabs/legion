@@ -2,6 +2,36 @@
 
 Rules for this repository's tests that the code under test does not show.
 
+## The fixtures a test takes rather than copies
+
+Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
+Each bullet says what the helper does not do, so a site that must keep its own body is not folded into it.
+
+- A test that captures a log takes its buffer from the module's own: `packages/daemon/internal/testlog`'s `Buffer`, and `packages/envoy/internal/logtest`'s, which lives beside that package's default-logger swap and carries `Lines`, the logged lines holding a substring.
+  `packages/envoy/internal/cmdtest`'s `LockedBuffer` and `storetest`'s `LockedLog` are both aliases of it, so either name reaches the same body.
+  It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
+
+- A bounded wait is the module's `internal/testwait`.
+  `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
+
+- A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
+  `Runner` holds the test and the child's whole environment — `Isolated(t, home)` is the usual one — and runs one command four ways: `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
+  `InitBare`, `InitWorkTree` and `JJInit` build the whole argv, and the semantic axes stay the call site's: bare or not, the initial branch, and colocation, with only the quiet spelling normalised.
+  The runner chooses no binary — `argv[0]` does, so a fixture that runs a pinned git or jj passes that path itself.
+  `packages/envoy` has no Go git or jj fixture runner, so this one is the daemon module's alone.
+
+- A fake GitHub server is the module's `internal/githubtest`: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
+  `Spec` carries the opt-in bearer gate and the opt-in request recorder.
+  The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves: a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.
+  A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
+  A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
+
+- An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
+
+
 ## Bun tests
 
 `bun test` runs every file of a package in one process, so what one file leaves behind is what the
@@ -96,7 +126,7 @@ itself, whose tests import its sources by relative path.
   (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
   both builds the two halves into a single list and prints one line, rather than calling
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-lanes.test.ts`).
+  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
@@ -228,7 +258,7 @@ Go's own detector finds a closure that reaches its object:
 
 ```sh
 cd packages/envoy
-GODEBUG=checkfinalizers=1 go test -count=1 -timeout 29m ./internal/dispatch/docs/
+GODEBUG=checkfinalizers=1 go test -count=1 -timeout 34m ./internal/dispatch/docs/
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
@@ -289,6 +319,25 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+## A Go test that opens a NATS client
+
+The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`
+hands it to one test at a time (`URL`, `JetStream`). A test that wants a client of its own takes
+it from `testnats.Connect(t, url)`, which names it after the test and closes it when the test
+ends. A test that dials the shared server itself leaves a connection nobody named.
+
+The fixture reads the server's client connections when a test takes it and again when that test
+ends, so a connection that was not there at the start and is still there at the end fails the
+test that left it, naming each one by the id the server gave it and the name its client carries
+(`packages/daemon/internal/testnats/leakcheck.go`). A client the fixture opened it also closes,
+so the next test still gets the server empty; one it never opened — a child process's, or a raw
+`nats.Connect` — it records, and the next test to take the server fails at once naming the test
+that left it, because nothing in this process can close another client's connection.
+
+The daemon's own production clients are named too: `natsauth.Connect` takes the name as a
+parameter rather than an option, so no call site can leave one empty, and an operator reading
+`/connz` on the Envoy NATS sees which process holds each connection.
+
 ## A test that reads `GET /api/v1/references?since=` reads again
 
 A since read answers only the edges at or below the event log's safe horizon (`getReferences` and
@@ -326,6 +375,37 @@ done
 
 The holder must release each transaction: one that never commits holds the horizon back for good,
 so no bounded re-read succeeds under it and the test fails after `eventFeedWait`, naming the hold.
+
+## A test that waits for the event feed's first frame
+
+The rule above bounds a *re-read*: the route answers at the horizon it has, so the test asks again.
+A test waiting for the event feed's `events_start` has nothing to ask again.
+That frame is the last thing a new subscription sends, not the first: `feedEvents` writes it only once `events.Horizon.Await` has returned
+(`packages/envoy/internal/dispatch/api/live_events.go`, `event_stream_relay.go`), and the horizon's proof is instance-wide, so the frame is as late as the longest write transaction open anywhere on the Postgres instance.
+No fixed deadline bounds that, and a deadline raised to fit the worst run anyone has seen is the same flake on the day someone holds a transaction for a minute.
+
+So the test waits on what the server says about itself.
+`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query.
+`waitEventsStart` (`packages/envoy/cmd/dispatch/live_events_wait_test.go`, which `openLiveEvents` calls) reads the frame on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout, and polls the process's output: while that warning keeps arriving the wait goes on, and it fails when the warning stops.
+Count the lines that hold the message, never `strings.Contains`: a contains check latches on the first warning and waits for ever.
+
+The wait still ends in a named failure, which is what the `eventFeedWait` rule above asks for; the bound is a signal rather than a clock.
+It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the process's own database and says that observation has been pending at least `eventsStartOwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
+Each failure names the newest warning, so the holder is in the output; the own-database failure also names that client's `application_name` and pid out of the warning, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
+The base bound and the extension window are each three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
+The other two numbers are neither: `eventsStartPoll` (250 ms) is the rate at which the wait samples the process's output, below a tenth of the extension window so it costs that window nothing, and `eventsStartDrain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
+`eventsStartOwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of that test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
+The bound is read from the warning's own `pending_for`, the age of the oldest pending observation, so the wait needs no clock of its own; a hold shorter than it extends the wait exactly as a foreign hold does.
+Short thresholds are why the Horizon runs one diagnosis at a time: at a `warnEvery` below that diagnosis bound, several scans at once would queue for the two connections of the horizon's own pool, ahead of the observation the waiting reader needs.
+
+The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.
+Prove it with a transaction held longer than that bound, and hold it so that it is still open when the socket subscribes, not merely when `go test` starts:
+the test builds its own binary inside its own clock (`cmdtest.Build`, from `startDispatchProcessWith`), which is a second on a warm build cache and minutes on a loaded machine, so a one-shot hold started before the command can be spent before the socket exists.
+A rolling hold — a new 25 s transaction every second — does not depend on that, and is the recipe to use.
+Measured in this repository's own pod on 2026-11-10, `nproc` 2, under 8 busy loops at four times `nproc`: under a rolling hold the old 10 s deadline failed all five runs it was measured over, three at one head and two at another, and the wait on the signal passed 50 of 50;
+five runs are enough against that deadline because the rolling hold keeps a transaction open whenever the socket subscribes, so what fails it is the shape of the hold rather than the weight of a sample.
+The same one-shot 90 s holder shows both answers, which is why the condition and not the duration is what the recipe names:
+started about a second before `go test` it left the test green (82.11 s on a cold build cache, 72.65 s on a warm one), and started once Dispatch was connected to its own database it failed it (82.62 s, 51 s of that run being the build), each at `main`.
 
 ## A writer a test holds
 
@@ -402,3 +482,29 @@ that other work shares.
   lists each proof's containers and their limits.
 - Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images
   declare a `VOLUME` that a plain `docker rm -f` leaves on the host.
+
+## A CI job that failed with no log at all
+
+A job that stored no log did not hang: it lost its runner, and the one artifact that outlives the log says so.
+
+GitHub stores a job's log when the runner finalises it.
+A runner the service stops hearing from never finalises, so the logs endpoint answers `HTTP 404` with `<Code>BlobNotFound</Code>`, where a job that was cancelled, that failed and that passed each answers its log.
+The check run's annotation is written by the service and not by the runner, so it is still there:
+
+```sh
+gh api repos/<owner>/<repo>/check-runs/<job id>/annotations
+```
+
+It answers one annotation at `annotation_level: failure`, in these words:
+"The hosted runner lost communication with the server.
+Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error."
+
+Read the job record beside it (`gh api repos/<owner>/<repo>/actions/jobs/<job id>`).
+A lost runner leaves one step `in_progress` with a null conclusion and every step after it `pending`, so the last line of the step record is the last second anything was reported.
+Compare `created_at` with `completed_at` and with the job's own `timeout-minutes`:
+a job its ceiling ended stops at the ceiling, and one that stopped before it was ended by something else.
+
+Those three causes are what GitHub can say, and none of them is a reading of your job.
+A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the memory the kernel reports available and the one-minute load of every second it watched, which is what tells the second cause from the other two on the next run that does store a log.
+`tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
+It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).

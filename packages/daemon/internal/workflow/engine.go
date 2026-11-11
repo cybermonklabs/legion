@@ -20,6 +20,25 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// Hook is one hook of the deployment as the engine runs it: its words are the text, never a
+// path. The configuration holds the same hook with the path a deployment may have written
+// instead (config.Hook), and boot reads that file, so nothing here opens one.
+type Hook struct {
+	Name   string
+	On     string   // the event it stands on
+	Moves  []string // empty selects every backward move
+	Every  int
+	Roles  []claim.Role
+	Prompt string // the words, read at boot
+}
+
+// HookEventWorkBack is the one event a hook of this engine stands on: an issue's work went back
+// a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.BackwardPairs).
+// It is the word the configuration spells as well (config.HookEventWorkBack), written out again
+// here because this package imports no configuration: a hook reaches the engine with its event
+// as the operator wrote it, and recordRound fires the hooks that name this one.
+const HookEventWorkBack = "work_back"
+
 // Config supplies the project-scoped workflow limits and the clock used only to stamp durable
 // outbox deadlines. Zero limits take their shipped defaults. MergeQueueRole is the project's
 // `merge_queue_role`, the role the merger's READY is published to, and its withdrawal when the
@@ -40,7 +59,6 @@ type Config struct {
 	// (classify.DesignGatesOpen), and the empty list gates no step, which is `gates.design: off`.
 	Steps          []record.DesignStep
 	ReviewRoundCap int
-	MaxFixAttempts int
 	Linger         time.Duration
 	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
 	// before its last look (config.Config.ProductionCheckBound, `production_check_hours`): the
@@ -53,8 +71,8 @@ type Config struct {
 	ProductionCheckRole claim.Role
 	MergeQueueRole      string
 	Clock               func() time.Time
-	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A push
-	// by it is never a fix attempt, and a red on its red tests is planned; a review it submits decides
+	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A red
+	// on its red tests is planned, so it sends no work back; a review it submits decides
 	// a round whatever GitHub gives its bot account (DecidesRound) and can be the reviewer's answer
 	// to a round it left undecided (reviewersAnswer). Empty matches no one. A workflow boot never
 	// leaves it empty: it refuses a review App that names no login (daemon.appLoginsAtBoot).
@@ -85,6 +103,13 @@ type Config struct {
 	// the pacing and knows no limiter; what the rate and the burst were is the outbox's to log,
 	// where the wake runs (the daemon's wakeRan).
 	Reserve func(now time.Time) time.Time
+	// Hooks are the deployment's hooks (`hooks`, config.Config.Hooks), each put in front of the
+	// roles it names every Every moves back of what it selects. The empty list fires nothing:
+	// the one hook a deployment that writes no key runs is the configuration's default
+	// (config.DefaultHooks), never this engine's, so a deployment that configures none gets
+	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
+	// a path.
+	Hooks []Hook
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -96,13 +121,10 @@ type Engine struct {
 
 var _ intake.Handler = (*Engine)(nil)
 
-// New constructs a workflow engine with the shipped review and fix caps when callers omit them.
+// New constructs a workflow engine with the shipped review cap when callers omit it.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
-	}
-	if cfg.MaxFixAttempts <= 0 {
-		cfg.MaxFixAttempts = 3
 	}
 	if cfg.ProductionCheckBound <= 0 {
 		cfg.ProductionCheckBound = 336 * time.Hour
@@ -184,12 +206,16 @@ func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.pullRequestMissing(ctx, tx, fact)
 	case intake.MergeFailed:
 		return e.mergeFailed(ctx, tx, fact)
+	case intake.MergeQueueConflict:
+		return e.mergeQueueConflict(ctx, tx, fact)
 	case intake.ClaimReady:
 		return e.claimReady(ctx, tx, fact)
 	case intake.ClaimFailed:
 		return e.claimFailed(ctx, tx, fact)
 	case intake.RetryOrEscalate:
 		return e.retryOrEscalate(ctx, tx, fact)
+	case intake.RestartPhase:
+		return e.restartPhase(ctx, tx, fact)
 	case intake.BackwardMove:
 		return e.backward(ctx, tx, fact)
 	case intake.SignOff:
@@ -739,48 +765,84 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
-	from := issue.Hold.From
-	issue.Phase, issue.Hold = from, nil
-	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+	return intake.Result{}, e.retryPhase(ctx, tx, *issue, issue.Hold.From, "retry held phase")
+}
+
+// restartPhase is the operator's retry of a phase worker whose issue stands in that worker's own
+// phase, through `legion claims retry` (api's retryClaim): the worker failed, or an operator
+// stopped it, and a stop is no death, so no hold is waiting for its architect to decide. The
+// phase is started again, which is what gives the worker — a new session when the operator asked
+// for one — the task of the phase it is to work. An issue whose phase another role works, or that
+// has left the workflow, is refused, since starting that phase under this claim's name would run
+// the wrong role; an issue held for this role is the architect's RetryOrEscalate's, which the
+// route applies instead.
+func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.RestartPhase) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	// A settlement that reached the issue while it was held is acted on first, whatever phase the
-	// hold was from: held, the issue has no checks_red row (Table), so the settlement moved nothing,
-	// and the retry that restores the phase is the fact that lets its red stand there. A red
-	// standing for the head sends the work back to implementing as it would have on arrival
-	// (standingRed), and the restored phase's worker is not started. A phase with no checks_red row
-	// - implementing, planning - moves nothing (sendBack), and a hold from before the pull request
-	// opened has none to read, on which standingRed moves nothing. Only when nothing moved is the
-	// restored phase's worker started. From reviewing a review round held open may already have both
-	// of its halves - the reviewer completed before the hold, and its review was recorded while
-	// held - and ends here (reviewRound); the reviewer is started only if the round is still open,
-	// since a second completion of the same commit would be refused as not new. A round its reviewer
-	// completed that nothing would end is stuck: the reviewer's task says why, so the restarted
-	// reviewer decides it. The architect, who ordered the retry, is told nothing: a notice now would
-	// read as the reviewer's answer to its request.
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	working := workingPhase(*issue)
+	if !record.InWorkflow(*issue) || RoleFor(working) != fact.Role {
+		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
+			fact.Role, issue.Key, working)), nil
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if moved, err := e.standingRed(ctx, tx, *issue, pr); err != nil || moved {
-		return intake.Result{}, err
+	if lingers {
+		return refusedLingering(*issue, fmt.Sprintf("the operator's restart of the %s", fact.Role)), nil
 	}
-	reason := "retry held phase"
+	return intake.Result{}, e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker")
+}
+
+// retryPhase gives issue the phase from back — a held issue leaves its hold — and starts that
+// phase's worker, told why it runs again.
+//
+// A settlement that reached the issue while it was held is acted on first, whatever phase the
+// hold was from: held, the issue has no checks_red row (Table), so the settlement moved nothing,
+// and the retry that restores the phase is the fact that lets its red stand there. A red
+// standing for the head sends the work back to implementing as it would have on arrival
+// (standingRed), and the restored phase's worker is not started. A phase with no checks_red row
+// - implementing, planning - moves nothing (sendBack), and a hold from before the pull request
+// opened has none to read, on which standingRed moves nothing. Only when nothing moved is the
+// restored phase's worker started. From reviewing a review round held open may already have both
+// of its halves - the reviewer completed before the hold, and its review was recorded while
+// held - and ends here (reviewRound); the reviewer is started only if the round is still open,
+// since a second completion of the same commit would be refused as not new. A round its reviewer
+// completed that nothing would end is stuck: the reviewer's task says why, so the restarted
+// reviewer decides it. The architect, who ordered the retry, is told nothing: a notice now would
+// read as the reviewer's answer to its request.
+//
+// Its callers have established that the tree does not linger, which is what holds every member
+// where it stood.
+func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string) error {
+	issue.Phase, issue.Hold = from, nil
+	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	if moved, err := e.standingRed(ctx, tx, issue, pr); err != nil || moved {
+		return err
+	}
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		if err != nil {
-			return intake.Result{}, err
+			return err
 		}
 		// The retry tells nothing of a stuck round: passed as its own before, it is stuck the same way.
-		r := e.reviewRound(*issue, reviewer, pr)
-		if moved, err := e.settleRound(ctx, tx, *issue, reviewer, pr, r, ""); err != nil || moved {
-			return intake.Result{}, err
+		r := e.reviewRound(issue, reviewer, pr)
+		if moved, err := e.settleRound(ctx, tx, issue, reviewer, pr, r, ""); err != nil || moved {
+			return err
 		}
 		if r.outcome == roundStuck {
 			reason += ": " + r.reason
 		}
 	}
-	return intake.Result{}, e.restart(ctx, tx, *issue, RoleFor(from), task(*issue, record.PhaseRow{}, pr, reason))
+	return e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
 }
 
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
@@ -866,9 +928,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// own for a red CI verdict or a head that conflicts with its base. The round tells each pass
 	// through a phase from the last (api/handoff.go): a pass that counted none would give a
 	// completion reporting the last pass's carrying commit that pass's key, answered as already
-	// received instead of refused as a handoff not written anew.
-	if movesBack(issue.Phase, row.To) {
-		if err := e.recordRound(ctx, tx, issue.Key); err != nil {
+	// received instead of refused as a handoff not written anew. The move's two phases go with it
+	// because the count is kept by the move's own pair, and a hook of the deployment stands on
+	// that pair. The pull request goes with it because the cap reads it: a move made while the
+	// record holds this head as conflicting with its base is a conflict round, which
+	// review_round_cap does not count and no pair counts either (recordRound).
+	if phase.MovesBack(issue.Phase, row.To) {
+		if err := e.recordRound(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
 	}
@@ -1199,18 +1265,4 @@ func (e *Engine) ownPullRequest(ctx context.Context, tx pgx.Tx, pr *record.PullR
 // never from the project's whole record.
 func (e *Engine) treeMembers(ctx context.Context, tx pgx.Tx, root record.Issue) ([]record.Issue, error) {
 	return e.store.TreeIssues(ctx, tx, root.Tree)
-}
-
-func phaseIndex(value phase.Phase) int {
-	for index, candidate := range []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, phase.AwaitingMerge} {
-		if candidate == value {
-			return index
-		}
-	}
-	return -1
-}
-
-// movesBack says whether to is a workflow phase before from.
-func movesBack(from, to phase.Phase) bool {
-	return phaseIndex(to) >= 0 && phaseIndex(to) < phaseIndex(from)
 }

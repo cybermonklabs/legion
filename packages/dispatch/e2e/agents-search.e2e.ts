@@ -1,7 +1,6 @@
-import { expect, test } from "@playwright/test";
 import { agentRow, type FakeSession, openAgents, setLiveSessions, shownAgentRows } from "./agents";
 import { createAsk, createComment, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // Three sessions with no field in common, so a match on one field never comes from another: the
@@ -31,10 +30,6 @@ const archivist: FakeSession = {
   title: "Archivist",
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 /** All three sessions live, each with Dispatch activity of its own so none folds under `No
  *  Dispatch activity`: the Scrum session's open ask waits on the viewer, which lists it first, and
  *  the Release session comments last, which lists it above the Archivist. Returns the issue key the
@@ -58,7 +53,8 @@ async function seed(): Promise<string> {
   return issue.key;
 }
 
-test("the search box narrows by a word in the title, directory, machine, session id or issue key, every typed word required wherever it appears, and clears back to every session", async ({
+// @pr: The Agents search box's only row: every typed word must match, in the title, directory, machine, session id or issue key.
+test("the search box narrows by a word in the title, directory, machine, session id or issue key, every typed word required wherever it appears, and clears back to every session @pr", async ({
   browser,
 }, testInfo) => {
   const issueKey = await seed();

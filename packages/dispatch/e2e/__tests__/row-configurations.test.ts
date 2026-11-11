@@ -1,82 +1,37 @@
 import { expect, test } from "bun:test";
-import { fileURLToPath } from "node:url";
 
 import {
   duplicateRows,
   type ListedRow,
-  type Listing,
   listedProjects,
   projectConfigurations,
   rowsOfListing,
 } from "../configurations";
 import { harnessProcessCount } from "../harness-processes";
+import realConfig from "../playwright.config";
+import doubledConfig, { doubledProject, doubledSpec } from "./fixtures/doubled-project.config";
+import { listing, retained } from "./playwright-listing";
 
-// e2e/playwright.config.ts reads the command line as it evaluates: with no harness port set it
-// refuses the run unless that line is a listing, which starts no server and runs no spec
-// (`isListMode` and the unset-ports refusal after it, e2e/playwright.config.ts). This file reads
-// the config for its projects' `use` and starts nothing, so it says `--list` as the listings below
-// do, and puts the command line back for whatever test file this worker runs next. The imports
-// are dynamic because a static one would evaluate the config before this line could say so.
-const commandLine = process.argv;
-process.argv = [...commandLine, "--list"];
-const { default: realConfig } = await import("../playwright.config");
-const {
-  default: doubledConfig,
-  doubledProject,
-  doubledSpec,
-} = await import("./fixtures/doubled-project.config");
-process.argv = commandLine;
+// This file reads e2e/playwright.config.ts for its projects' `use` and starts nothing. Importing
+// it costs nothing but the read: the config starts no server of its own and refuses no run for
+// the harness's sake - `globalSetup` starts the stacks, and nothing here runs it
+// (e2e/global-setup.ts).
 
-// The preload (web/src/__tests__/setup.ts) puts happy-dom's Response on globalThis, which cannot
-// read a subprocess's pipe; the listings below read one with Bun's own, as
-// e2e/__tests__/harness-lanes.test.ts:16-18 does.
-const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
-const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-
-/** What `playwright test --list` reports for the config at `configPath`, relative to
- *  packages/dispatch. The run starts no server and no browser; it costs about five seconds. */
-async function listing(configPath: string): Promise<Listing> {
-  const child = Bun.spawn(
-    ["bunx", "playwright", "test", "--config", configPath, "--list", "--reporter=json"],
-    {
-      cwd: dispatchPackage,
-      // No harness port or lane reaches the listing, so it is the plain one the config exempts
-      // from its unset-port refusal whatever the shell that started this test holds. The process
-      // count does reach it: that is what chooses the project list (the config's `projects:`,
-      // e2e/playwright.config.ts), and the configurations below are read from the config this
-      // process imported with the same environment.
-      env: {
-        HOME: process.env.HOME ?? "",
-        PATH: process.env.PATH ?? "",
-        ...(process.env.DISPATCH_E2E_PROCESSES === undefined
-          ? {}
-          : { DISPATCH_E2E_PROCESSES: process.env.DISPATCH_E2E_PROCESSES }),
-      },
-      stderr: "pipe",
-      stdout: "pipe",
-    }
-  );
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new NativeResponse(child.stderr).text(),
-    new NativeResponse(child.stdout).text(),
-  ]);
-  if (code !== 0) throw new Error(`listing ${configPath} exited ${code}:\n${stderr}\n${stdout}`);
-  return JSON.parse(stdout) as Listing;
-}
-
-/** Keeps a rejection of `promise` from being reported as unhandled before the test that awaits
- *  it runs: the handler is attached the moment the promise is made, and the promise itself, which
- *  still rejects for whoever awaits it, is what this answers. */
-function retained<T>(promise: Promise<T>): Promise<T> {
-  promise.catch(() => {});
-  return promise;
-}
+// The process count reaches the listings below: that is what chooses the project list (the
+// config's `projects:`, e2e/playwright.config.ts), and the configurations below are read from
+// the config this process imported with the same environment. Nothing else of this shell's
+// environment reaches them.
+const ambientProcessCount: Record<string, string> =
+  process.env.DISPATCH_E2E_PROCESSES === undefined
+    ? {}
+    : { DISPATCH_E2E_PROCESSES: process.env.DISPATCH_E2E_PROCESSES };
 
 // Both listings are read-only subprocesses, so they start here rather than in their tests: the
 // second collects while the first does, which is most of this file's cost on a two-core runner.
-const realListing = retained(listing("e2e/playwright.config.ts"));
-const doubledListing = retained(listing("e2e/__tests__/fixtures/doubled-project.config.ts"));
+const realListing = retained(listing("e2e/playwright.config.ts", ambientProcessCount));
+const doubledListing = retained(
+  listing("e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
+);
 
 /** The configuration each row runs in. A project the map holds no key for gets a configuration of
  *  its own, so its rows are never read as repeats of another project's; the assertion on

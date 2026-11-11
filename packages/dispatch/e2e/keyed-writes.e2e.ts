@@ -1,9 +1,7 @@
 import { type AddressInfo, createServer, type Socket } from "node:net";
 
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { type DispatchEvent, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 
-import type { Event } from "../web/src/api/types";
 import { expiredRetryNote } from "../web/src/features/writes/keyed-write";
 import {
   baseUrl,
@@ -31,7 +29,7 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -48,10 +46,6 @@ const agent = {
   as: "agent" as const,
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 /** The shell's one account of the writes Dispatch has not confirmed yet that no composer shows
  *  (`PendingWritesIndicator`); gone while none is pending. */
 function pendingWrites(page: Page): Locator {
@@ -67,13 +61,13 @@ async function uploadedPercent(page: Page): Promise<number> {
 }
 
 /** The events of `type` on `issue`. */
-async function eventsOf(issue: string, type: Event["type"]): Promise<Event[]> {
+async function eventsOf(issue: string, type: DispatchEvent["type"]): Promise<DispatchEvent[]> {
   return (await getIssueEvents(issue)).filter((event) => event.type === type);
 }
 
 /** The `issue.updated` events on `issue` that set its status to `status`, read with the agent
  *  token, which a person's sign-out leaves working. */
-async function statusEvents(issue: string, status: string): Promise<Event[]> {
+async function statusEvents(issue: string, status: string): Promise<DispatchEvent[]> {
   return (await getIssueEvents(issue, {}, agent)).filter(
     (event) => event.type === "issue.updated" && event.payload.status === status
   );
@@ -119,7 +113,8 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
 
 // @webkit @firefox: the keyed write path's request failure, which each engine hands the page its
 // own way.
-test("a comment whose answer is lost lands once, under one key @webkit @firefox", async ({
+// @pr: A keyed write: a comment whose answer is lost lands once, under one key.
+test("a comment whose answer is lost lands once, under one key @webkit @firefox @pr", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -395,7 +390,8 @@ test("an ask answer whose answer is lost lands once, under one key @webkit", asy
 // no page clock can move. 3 s is the shortest hold that still has the key in flight when the
 // page's repeat arrives a second after the abort (`FIRST_BACKOFF_MS`), with room for the press
 // and the attempt's flight: 2 s left Firefox's press on the wrong side of it.
-test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once", async ({
+// @pr: An idempotent repeat: the repeat of a write still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once.
+test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once @pr", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -543,7 +539,8 @@ test("a comment Dispatch takes 20 s to make lands once from the page, every repe
 // SLOW(>=2s): The upload must really keep moving while the page's clock crosses
 // `KEYED_SEND_ATTEMPT_MS`; a throttled 4 s transfer is the shortest one that still emits progress
 // across the fast-forwards.
-test("an upload throttled to take 30 s is one attempt and lands once", async ({
+// @pr: Upload and download: a 30-second upload is one attempt under its key, not a second file.
+test("an upload throttled to take 30 s is one attempt and lands once @pr", async ({
   browser,
   browserName,
 }) => {
@@ -889,7 +886,8 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 // SLOW(>=2s): Two tabs are the property - the discard has to reach the tab that did not sign out
 // - and each is a real page load with a status change held at the network and a label queued
 // behind it. That setup is what is left; the straggler window costs no real time.
-test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab", async ({
+// @pr: Sign-in and tokens across two tabs: a confirmed sign-out sends nothing after the confirm, in the tab that signed out and the one that did not.
+test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab @pr", async ({
   browser,
 }, testInfo) => {
   test.skip(
@@ -1216,7 +1214,8 @@ test("the issue header's pin pressed during an outage survives a reload and land
 // sends. Alice's write is dropped, in memory and in the tab's storage, and nothing runs as bob: an
 // attempt that still reaches Dispatch names alice (`Dispatch-Login`), so Dispatch refuses it
 // `409 LOGIN_CHANGED` before anything runs.
-test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob", async ({
+// @pr: Sign-in and tokens across two tabs: bob's sign-in drops alice's pending write, and nothing of hers runs as him.
+test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob @pr", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });

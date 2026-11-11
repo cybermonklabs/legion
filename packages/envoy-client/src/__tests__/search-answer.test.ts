@@ -5,7 +5,7 @@ import {
   type SearchResponse,
   type SearchResult,
 } from "@legion/contracts";
-import { searchAnswer } from "../search-answer";
+import { type SearchAnswerRead, searchAnswer } from "../search-answer";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const hit: SearchResult = {
@@ -74,8 +74,11 @@ describe("searchAnswer: degraded wording", () => {
   test("names the degraded reason on a legacy no-paging response too", () => {
     // A Dispatch that predates search paging still answers `degraded`: this is the response shape
     // search-answer.ts's `typeof search.total !== "number"` branch handles, whose own degraded
-    // line was also never exercised by a test before this file.
-    const search: SearchResponse = {
+    // line was also never exercised by a test before this file. Such a Dispatch answers no
+    // `query` reading and no applied `filters` either, since both arrived after paging did. The
+    // type below is that arm of `SearchAnswerRead` itself - the one `searchAnswer` reads a legacy
+    // Dispatch with, named by excluding the paged arm - rather than a second copy of its shape.
+    const search: Exclude<SearchAnswerRead, SearchResponse> = {
       results: [hit],
       took_ms: 5,
       degraded: SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
@@ -276,6 +279,21 @@ describe("searchAnswer: where an ask hit stands", () => {
       askHeader,
       askLine,
       "  Answer state not reported by this Dispatch; open the link to read the ask.",
+    ]);
+  });
+
+  // A Dispatch newer than this client can answer with a state the union does not hold, and the
+  // cast is how this test reaches that arm: every state the union holds is covered above. Before
+  // the arm existed the switch returned `undefined` here and the caller's spread threw, so the
+  // whole search answer was lost over one unknown word; the assertion is that the rest of the
+  // answer survives and the unknown state goes on its own line as it came.
+  test("an ask hit in a state newer than this client keeps the rest of the answer", () => {
+    const newerState = { state: "escalated", resolution: undefined } as unknown as SearchAsk;
+
+    expect(searchText(askHit(newerState))).toEqual([
+      askHeader,
+      askLine,
+      '  Answer state "escalated" is newer than this client; open the link to read the ask.',
     ]);
   });
 

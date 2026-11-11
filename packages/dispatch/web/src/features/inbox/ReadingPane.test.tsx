@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
@@ -24,6 +25,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow } from "../threads/replies-fixture";
+import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
 
@@ -41,6 +43,7 @@ beforeEach(() => {
   getArtifact = spyOn(api, "getArtifact").mockRejectedValue(new Error("no document seeded"));
   getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "",
+    token: "",
     version: null,
   });
   // The pane reads one field of the issue: whether it is closed, which it hands the document.
@@ -75,6 +78,8 @@ function document(overrides: Partial<Artifact> = {}): Artifact {
     name: "spec.md",
     primary: true,
     project: "CORE",
+    ref_key: "CORE-1/spec",
+    session_id: null,
     slug: "spec",
     versions: [],
     ...overrides,
@@ -189,17 +194,21 @@ function renderPane({
   const answered: string[] = [];
   /** Every registration the head's Snooze made, in order: `[askId, live]`. */
   const snoozeLiveness: (readonly [string, boolean])[] = [];
+  /** Every registration a card's hand-on made, in order: `[askId, live]`. */
+  const handOnLiveness: (readonly [string, boolean])[] = [];
   const tree = (row: InboxRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
-            <ReadingPane
-              onAnswered={(id) => answered.push(id)}
-              onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
-              row={{ ask: row, kind: "ask" }}
-              viewer="alice"
-            />
+            <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
+              <ReadingPane
+                onAnswered={(id) => answered.push(id)}
+                onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
+                row={{ ask: row, kind: "ask" }}
+                viewer="alice"
+              />
+            </AskHandOnLiveContext>
           </MarginProvider>
         </DocumentRuntime.Provider>
       </QueryClientProvider>
@@ -209,6 +218,7 @@ function renderPane({
   return {
     answered,
     client,
+    handOnLiveness,
     opened,
     rerender: (row: InboxRow) => view.rerender(tree(row)),
     runtime: fake,
@@ -237,6 +247,7 @@ function approvalAsk(approved?: {
     approval: {
       approved,
       artifact_id: "artifact-1",
+      documents: null,
       name: "spec.md",
       requested_version: 4,
       version: 4,
@@ -308,9 +319,9 @@ test("a decision block before any heading sits in no section, so no bar is drawn
     runtime.sync();
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     await waitFor(() =>
-      expect(screen.getByTestId("inbox-pane").textContent).toContain("Ship behind a flag?")
+      expect(screen.getByTestId("inbox-pane")).toHaveTextContent("Ship behind a flag?")
     );
-    expect(screen.queryByTestId("pane-section-bar")).toBeNull();
+    expect(screen.queryByTestId("pane-section-bar")).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -369,9 +380,9 @@ test("an approval of a document nobody has approved marks nothing and offers no 
 
   try {
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
-    await waitFor(() => expect(screen.queryByText("Loading version…")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Loading version…")).not.toBeInTheDocument());
     expect(drawn).toEqual([]);
-    expect(screen.queryByRole("button", { name: "Next change" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next change" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -432,7 +443,7 @@ test("an approval whose baseline loaded but whose marks never drew offers no Nex
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
     await waitFor(() => expect(drawn).toHaveLength(1));
     expect(drawn[0]?.text.length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "Next change" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next change" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -459,7 +470,7 @@ test("an approved document shows the approval it follows in place of the actions
 
   try {
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.getByText(/Approved at version 3 on/)).toBeDefined();
   } finally {
     view.unmount();
@@ -483,7 +494,7 @@ test("an approval draws the request's own question above the document, inside th
     // The block is drawn before the document's own reads land, so it is on screen beside the
     // skeleton as well as beside the version.
     const block = await screen.findByTestId("pane-approval-question");
-    expect(block.textContent).toContain("Approve spec.md at version 4?");
+    expect(block).toHaveTextContent("Approve spec.md at version 4?");
     const drawn = await screen.findByLabelText("Document version 4");
     expect(block.compareDocumentPosition(drawn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeGreaterThan(
       0
@@ -502,7 +513,7 @@ test("an approval that falls back to the card draws the question once, as the ca
   try {
     // `getArtifact` is refused by default, so the column never reads a version to show.
     expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
-    expect(screen.queryByTestId("pane-approval-question")).toBeNull();
+    expect(screen.queryByTestId("pane-approval-question")).not.toBeInTheDocument();
     expect(screen.getAllByText("Approve spec.md at version 4?")).toHaveLength(1);
   } finally {
     view.unmount();
@@ -544,14 +555,16 @@ test("a question in no document is today's card", async () => {
 });
 
 test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
+  const user = userEvent.setup();
   const held = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
   const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
 
   try {
-    fireEvent.change(await screen.findByLabelText("Snooze CORE-1: Which approach?"), {
-      target: { value: "tomorrow" },
-    });
+    await user.selectOptions(
+      await screen.findByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
     // The optimistic snooze folds the row into Later and the column follows the list, so a
     // head that kept its write to itself would be unmounted with the row it wrote about.
     await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
@@ -559,6 +572,38 @@ test("the head's Snooze registers its write, so the list keeps the row the colum
     held.resolve({ snoozed_until: "2026-10-31T09:00:00Z" });
     view.unmount();
     snoozeAsk.mockRestore();
+  }
+});
+
+test("the column's card registers its hand-on, so the list keeps the row the column is on", async () => {
+  const user = userEvent.setup();
+  // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
+  const row = issueAsk({
+    asked_of: "alice",
+    issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
+  });
+  const held = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
+  // The control reads the people as the reader reaches for it, bob among them.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  const { handOnLiveness, view } = renderPane({ ask: row });
+
+  try {
+    await user.selectOptions(await screen.findByLabelText("Hand this question to"), "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalled());
+    // The control sits in the card, not in the head, so the registration reaches the list
+    // through the context the Inbox provides rather than through a prop of this column's: the
+    // optimistic `waiting_on_person` takes the row out of that list as the write starts, and
+    // the card that wrote is the only surface a refusal is shown on.
+    await waitFor(() => expect(handOnLiveness).toEqual([["ask-a", true]]));
+  } finally {
+    held.resolve({ ...row, asked_of: null, waiting_on_person: "bob" });
+    view.unmount();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
   }
 });
 
@@ -583,12 +628,13 @@ test("a project document's head names the project and the document, and opens it
   try {
     expect(await screen.findByText("CORE · Design notes")).toBeDefined();
     // Neither applies to a project document: it has no priority and nobody is assigned to it.
-    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Assign / })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     runtime.sync();
     await waitFor(() =>
-      expect(screen.getByRole("link", { name: "Open page" }).getAttribute("href")).toBe(
+      expect(screen.getByRole("link", { name: "Open page" })).toHaveAttribute(
+        "href",
         "/projects/CORE/documents/design-notes#b-rollout"
       )
     );
@@ -606,7 +652,7 @@ test("a document that cannot be read falls back to the card, with Open page at t
     expect(screen.getByRole("link", { name: "Open page" })).toBeDefined();
     // Never the document page's own repair or rebuild prompt: the column opened no document.
     expect(opened).toEqual([]);
-    expect(screen.queryByText(/Rebuild from the latest version/)).toBeNull();
+    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -630,9 +676,11 @@ test("a document the editor is refused admission to leaves the column on the car
   try {
     expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
     expect(screen.getByRole("link", { name: "Open page" })).toBeDefined();
-    expect(screen.queryByText(/Upload markdown to replace and repair this document/)).toBeNull();
-    expect(screen.queryByText(/Rebuild from the latest version/)).toBeNull();
-    expect(screen.queryByText(/This document is outside the Proof schema/)).toBeNull();
+    expect(
+      screen.queryByText(/Upload markdown to replace and repair this document/)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/This document is outside the Proof schema/)).not.toBeInTheDocument();
     // The refusal is what closed the editor: no room was ever opened.
     expect(opened).toEqual([]);
   } finally {
@@ -746,11 +794,12 @@ test("a comment thread on an issue shows the issue and the thread, with no docum
   const { view } = renderThread(threadRow({ issue: { key: "CORE-1", title: "Fix the thing" } }));
   try {
     const body = await paneBody();
-    expect(body.getAttribute("data-inbox-pane-body")).toBe("issue");
+    expect(body).toHaveAttribute("data-inbox-pane-body", "issue");
     // The head names the owner and opens the thread's own page.
     const pane = screen.getByTestId("inbox-pane");
     expect(within(pane).getByText("CORE-1")).toBeTruthy();
-    expect(within(pane).getByRole("link", { name: "Open page" }).getAttribute("href")).toBe(
+    expect(within(pane).getByRole("link", { name: "Open page" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1?comment=comment-1"
     );
     await waitFor(() => expect(listComments).toHaveBeenCalled());
@@ -770,7 +819,7 @@ test("an issue message conversation reads the issue's messages", async () => {
     })
   );
   try {
-    expect((await paneBody()).getAttribute("data-inbox-pane-body")).toBe("issue");
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "issue");
     await waitFor(() => expect(listIssueMessages).toHaveBeenCalledWith("CORE-1"));
   } finally {
     view.unmount();
@@ -783,12 +832,13 @@ test("an Agent row shows the session's name and reads that session's messages", 
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const { view } = renderThread(plannerAgentRow());
   try {
-    expect((await paneBody()).getAttribute("data-inbox-pane-body")).toBe("agent");
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "agent");
     const pane = screen.getByTestId("inbox-pane");
     expect(within(pane).getByText("Planner")).toBeTruthy();
     // An Agent row has no reference, so the head draws no copy control at all.
     expect(pane.querySelector("[data-copy-ref]")).toBeNull();
-    expect(within(pane).getByRole("link", { name: "Open page" }).getAttribute("href")).toBe(
+    expect(within(pane).getByRole("link", { name: "Open page" })).toHaveAttribute(
+      "href",
       "/agents/planner/live"
     );
     await waitFor(() => expect(listAgentMessages).toHaveBeenCalledWith("planner"));
@@ -811,7 +861,7 @@ test("an ask's thread shows the ask's own card", async () => {
     })
   );
   try {
-    expect((await paneBody()).getAttribute("data-inbox-pane-body")).toBe("ask");
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "ask");
     await waitFor(() => expect(screen.getByTestId("ask-ask-a")).toBeTruthy());
     expect(getAsk).toHaveBeenCalledWith("ask-a");
   } finally {
@@ -831,7 +881,7 @@ test("a comment thread in a document opens that document at its block", async ()
     seedDocument(client, document({ issue_key: null, versions: [version(1)] }));
   });
   try {
-    expect((await paneBody()).getAttribute("data-inbox-pane-body")).toBe("document");
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "document");
     // The live document is opened, not a card: the column connects a room for it.
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     expect(screen.getByTestId("inbox-pane").querySelector("[data-inbox-pane-fallback]")).toBeNull();
@@ -853,7 +903,7 @@ test("an orphaned anchor falls back to the thread alone, with its quote", async 
   });
   try {
     const body = await paneBody();
-    expect(body.getAttribute("data-inbox-pane-body")).toBe("document");
+    expect(body).toHaveAttribute("data-inbox-pane-body", "document");
     expect(body.hasAttribute("data-inbox-pane-fallback")).toBe(true);
     expect(body.querySelector("[data-inbox-thread-quote]")?.textContent).toBe("three attempts");
     // Nothing opened the document: an anchor nothing can be placed at opens no room.

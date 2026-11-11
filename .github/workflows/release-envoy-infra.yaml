@@ -13,13 +13,16 @@ on:
     # Every input the plugin's and the command's builds read: packages/envoy (their module, and
     # through its go.work the Envoy module whose packages they compile in), the notices script that
     # writes their archives' notices, the list of the targets they build, the Pulumi CLI install the
-    # smoke test runs, and this workflow. Which of them cut a version, the version step decides from
-    # what the two compile.
+    # smoke test runs, with the tool manifest that names both sources of that CLI's row and the
+    # fetch helper the install reads them through, and this workflow. Which of them cut a version,
+    # the version step decides from what the two compile.
     paths:
       - "packages/envoy/**"
       - "scripts/go-third-party-notices.sh"
       - ".github/envoy-infra-targets.json"
       - ".github/actions/install-pulumi/**"
+      - ".github/ci-tools.yaml"
+      - ".github/scripts/ci-tools.sh"
       - ".github/workflows/release-envoy-infra.yaml"
   workflow_dispatch:
 

@@ -1,10 +1,9 @@
 import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
-import { expect, test } from "@playwright/test";
 
 import { createIssue, createProject } from "./api";
 import { blockCapRefusal, bodyOf, paragraphsOf } from "./bodies";
 import { barAction, composer, openSpec, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-370: no composer carries a length of its own. A comment field takes a body of 40,000
@@ -17,14 +16,10 @@ import { asUser } from "./users";
 // runs on the result, exactly as for a reader pasting a long body. Typing 40,000 characters key
 // by key would take minutes and would exercise no part of the component that this does not.
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the comment composer takes a 40,000-character body, and shows the server's refusal of one long paragraph", async ({
+// @pr: A write the server refuses: a 40,000-character body goes whole, and one long paragraph comes back with the server's own refusal beside the draft.
+test("the comment composer takes a 40,000-character body, and shows the server's refusal of one long paragraph @pr", async ({
   browser,
 }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the composer");
   test.setTimeout(120_000);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Long comment" });
@@ -63,7 +58,6 @@ test("the comment composer takes a 40,000-character body, and shows the server's
 });
 
 test("the ask composer takes a question past the length it used to cut", async ({ browser }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the composer");
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",

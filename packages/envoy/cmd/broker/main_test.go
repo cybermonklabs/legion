@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testSecretsPrefix and testSecretsKMSKeyARN are the name prefix every agent secret sits under
@@ -112,10 +113,10 @@ func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the seven settings of the airlock's local stack, each as a Config the
-// refusal below reads and as the environment a real broker is started with. One row per
-// setting: the refusal has to name whichever one it found, since an operator reads from it
-// which setting to take out.
+// airlockTestSettings is the eight test-only settings of the broker's local stack, the
+// airlock's seven and the judge's one, each as a Config the refusal below reads and as the
+// environment a real broker is started with. One row per setting: the refusal has to name
+// whichever one it found, since an operator reads from it which setting to take out.
 func airlockTestSettings() []struct {
 	name string
 	cfg  func(*config.Config)
@@ -135,12 +136,13 @@ func airlockTestSettings() []struct {
 		}, "s.airlock.test=127.0.0.1"},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true"},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true"},
+		{"BROKER_JUDGE_TEST_SKIP_CHECKS", func(c *config.Config) { c.JudgeTestSkipChecks = true }, "true"},
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the seven points the broker at
-// a stand-in, lets it dial what no production proxy may, or turns a part of the airlock off, so
-// each on its own refuses a start that is not a local run, naming itself.
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the eight points the broker at
+// a stand-in, lets it dial what no production proxy may, or turns a check off, so each on its
+// own refuses a start that is not a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	for _, setting := range airlockTestSettings() {
 		var cfg config.Config
@@ -156,7 +158,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all seven at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all eight at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -165,7 +167,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all seven with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all eight with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -173,7 +175,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the seven, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the eight, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
@@ -291,13 +293,7 @@ func noAWSEnv(t *testing.T) []string {
 // buildBroker builds cmd/broker into a temporary directory and returns its path.
 func buildBroker(t *testing.T) string {
 	t.Helper()
-	binPath := filepath.Join(t.TempDir(), "broker")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.3")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build ./cmd/broker: %v\n%s", err, out)
-	}
-	return binPath
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "broker", Env: append(os.Environ(), "GOTOOLCHAIN=go1.27.3")})
 }
 
 // runRefusedBroker runs the broker binary with env and returns its output, failing t unless it
@@ -477,14 +473,14 @@ const awaitTimeout = 10 * time.Second
 // rather than reading Boot. It fails t if that line has not come within awaitTimeout.
 func (p *brokerProcess) Await(t *testing.T, want string) string {
 	t.Helper()
-	for deadline := time.Now().Add(awaitTimeout); ; time.Sleep(listeningPoll) {
-		if text := p.Log(); strings.Contains(text, want) {
-			return text
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the broker never logged a line carrying %q:\n%s", want, p.Log())
-		}
+	var text string
+	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
+		text = p.Log()
+		return strings.Contains(text, want)
+	}) {
+		t.Fatalf("the broker never logged a line carrying %q:\n%s", want, p.Log())
 	}
+	return text
 }
 
 // listeningPoll is how often AwaitListening looks for the broker's listening line. The line is
@@ -497,11 +493,10 @@ const listeningPoll = 20 * time.Millisecond
 // ever logging that line, and when within passes with no such line.
 func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
+	if !testwait.Holds(within, listeningPoll, func() bool {
 		if addr, boot, ok := listeningIn(p.Log()); ok {
 			p.Addr, p.Boot = addr, boot
-			return
+			return true
 		}
 		select {
 		case <-p.Exited:
@@ -511,15 +506,14 @@ func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
 			// did bind, instead of being failed for the exit.
 			if addr, boot, ok := listeningIn(p.Log()); ok {
 				p.Addr, p.Boot = addr, boot
-				return
+				return true
 			}
 			t.Fatalf("the broker exited without ever logging %q:\n%s", "broker listening", p.Log())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no %q line within %s:\n%s", "broker listening", within, p.Log())
-		}
-		time.Sleep(listeningPoll)
+		return false
+	}) {
+		t.Fatalf("no %q line within %s:\n%s", "broker listening", within, p.Log())
 	}
 }
 

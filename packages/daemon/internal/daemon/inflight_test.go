@@ -31,9 +31,10 @@ import (
 )
 
 // stopBound is how long run may take to return once its context is cancelled, given the stop's
-// budget: the budget, then the stamp's and the store close's own bounds (stopBudget).
+// budget: the budget, then the NATS close's, the stamp's and the store close's own bounds
+// (stopBudget).
 func stopBound(budget time.Duration) time.Duration {
-	return budget + stampTimeout + storeCloseTimeout
+	return budget + natsCloseTimeout + stampTimeout + storeCloseTimeout
 }
 
 // stopHangGuard is the bound for a row whose claim is that the stop needed none of its budget,
@@ -678,12 +679,8 @@ exec sleep 600`},
 // awaitLog waits up to bound for log to hold want, failing the test with what it does hold.
 func awaitLog(t *testing.T, log *syncBuffer, want string, bound time.Duration, why string) {
 	t.Helper()
-	deadline := time.Now().Add(bound)
-	for !strings.Contains(log.String(), want) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: no %q within %s; the log holds:\n%s", why, want, bound, log)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(bound, testwait.Poll, func() bool { return strings.Contains(log.String(), want) }) {
+		t.Fatalf("%s: no %q within %s; the log holds:\n%s", why, want, bound, log)
 	}
 }
 

@@ -141,6 +141,43 @@ projects:
 #                                      # refuses acme/a -> acme/b beside acme/c -> d/c.
 #                                      # --check-config prints one line
 #                                      # per pair, to read the equivalence back before a transfer.
+# hooks:                               # optional: the words the daemon puts in front of an
+#   - name: work-back                  # issue's workers when its work keeps going back to an
+#     on: work_back                    # earlier phase. A file that names no hooks key runs this
+#     moves: any                       # one hook, hooks: [] runs none, and a file that names the
+#     every: 5                         # key runs what it names and no default. name is the
+#     roles: [implementer, tester, reviewer] # hook's own and is named once in the file. on is
+#                                      # the event: work_back, a move to an earlier phase, is the
+#                                      # one event the daemon has. moves are the moves back the
+#                                      # hook counts, each written <from>-<to> of two workflow
+#                                      # phases (testing-implementing, reviewing-implementing,
+#                                      # awaiting_merge-implementing and the 19 other pairs), or
+#                                      # the word any, which a hook that leaves the key out takes
+#                                      # as well. every is a positive whole number: the hook
+#                                      # fires when the counts of the moves it counts, added up,
+#                                      # are a whole multiple of it. roles are the roles it
+#                                      # writes to, at least one of implementer, tester,
+#                                      # reviewer, planner and merger; the architect is refused,
+#                                      # since the daemon's own wake to an architect is a notice.
+#                                      # The words are prompt here or prompt_file below, never
+#                                      # both and never neither. Each refusal at load names the
+#                                      # hook by its place in the list and the key at fault, as
+#                                      # hooks[0].every.
+#     prompt: >-
+#       We read no progress on this issue: its work has gone back the number of times recorded
+#       below. Report to the architect what is in your way, in your own words. The architect
+#       takes a step back, reads what each of you says, and decides the path. Carry on with the
+#       work while you wait, and say so if you read it as on track.
+#   - name: back-to-implementing       # a second hook on the same event, counting one kind of
+#     on: work_back                    # move back alone and writing to two roles: each hook
+#     moves: [reviewing-implementing]  # counts its own moves and fires on its own multiple.
+#     every: 3
+#     roles: [implementer, reviewer]
+#     prompt_file: ./hooks/back-to-implementing.md # the words, read at boot and resolved against
+#                                      # this file's directory, as instructions is: an edited
+#                                      # file reaches the workers at the next start of the
+#                                      # daemon, and a missing, unreadable or empty one refuses
+#                                      # the boot and --check-config with it.
 gates:
   design: [spec]                       # the design gate steps, in the order a person approves
                                        # them: decisions (the root issue's decisions document),
@@ -188,6 +225,33 @@ github_apps:
 #                                      # without fallback keep the capability report's model-fallback row
 #                                      # open; record that with capabilities.decided.model-fallback
 #                                      # (docs/kubernetes.md, Operator configuration).
+# worker_stall_backstop_hours:         # the daemon's own backstop under a worker whose turn has
+#   implementer: 6                     # stopped: how long after that role's last recorded step the
+#   controller: 1.5                    # daemon ends the turn that step belongs to, so the task that
+#                                      # turn was serving goes back to waiting and the session comes
+#                                      # back and is sent it again, with nothing charged to the
+#                                      # claim. Keys: an issue role (architect, planner, implementer,
+#                                      # tester, reviewer, merger), or controller; values: a decimal
+#                                      # number of hours, and 0 the backstop off for that role, which
+#                                      # nothing else does. A role left out runs on twice the bound
+#                                      # that worker's plugin holds a tool call no deadline judges
+#                                      # to — 8 hours for an implementer and a reviewer, 2 for every
+#                                      # other role and the controller — so the worker's own
+#                                      # recovery always acts first. The
+#                                      # floor under any bound you set is that worker's whole stall
+#                                      # ladder: the longer of that bound and the hour the host
+#                                      # clamps a call's own declared deadline to, plus the grace
+#                                      # over a declared deadline, plus the two gaps between the
+#                                      # ladder's three recovery steps. The loader refuses a bound
+#                                      # below it, naming the role and that arithmetic, because the
+#                                      # daemon cannot see that ladder running. Where a deployment
+#                                      # switches the worker's own watch off with
+#                                      # LEGION_STALL_CALL_BOUND_MS=0, both numbers are reckoned
+#                                      # from that role's default bound instead, since a worker that
+#                                      # has been told to stop acting is no reason for the daemon to
+#                                      # start ending healthy turns. The issue's architect is told
+#                                      # what the record held, and a tree architect's own stall
+#                                      # reaches the controller too.
 # Under runtime: tmux — the daemon and every pane on one host, as one Unix user — the runtime block
 # is instead (docs/deployment.md, "The runtime.tmux block"):
 # runtime:
@@ -222,7 +286,7 @@ runtime:
     session_dsn_secret: SESSION_DSN    # required with postgres: the key of the providers Secret holding that
                                        # database's postgres:// URL, which every pod mounts
     # resources:                       # two keys, each a pod's reservation: issue, every issue pod's (its one
-    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers), and
+    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers, three with a skills_repository), and
     #   controller: { cpu: 2, memory: 8Gi }  # controller, the daemon-launched controller's pod's (controller:
     #                                  # daemon only, else refused). cpu and memory are the limits, each
     #                                  # requested in full unless cpu_request or memory_request sets less (at most

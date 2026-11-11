@@ -1,5 +1,3 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
@@ -20,12 +18,9 @@ import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { clearIssueCreator, resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("database reset clears fake Envoy subscribers before the next issue", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -40,6 +35,10 @@ test("database reset clears fake Envoy subscribers before the next issue", async
       ],
     },
   ]);
+  // The one reset this file calls itself, and the row is about it: the `test` of this suite
+  // empties the database before the row (e2e/test.ts), and this call proves what a reset does
+  // IN a row - the fake Envoy's subscribers go with the tables, so the recycled issue key below
+  // starts with none. Deleting it would leave the row asserting nothing.
   await resetDatabase();
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "No stale subscriber" });
@@ -59,7 +58,8 @@ test("database reset clears fake Envoy subscribers before the next issue", async
   }
 });
 
-test("issue header closes an issue and reopens it into Backlog", async ({ browser }) => {
+// @pr: Create through answer to close: the header's own Close, and the Reopen that puts the issue back into Backlog.
+test("issue header closes an issue and reopens it into Backlog @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Close from the header" });
 
@@ -447,7 +447,7 @@ test("editing the parent line moves the issue across Children tabs live", async 
     await moverPage.getByRole("button", { name: "Edit parent issue" }).click();
     await moverPage.getByLabel("Parent").fill("");
     await moverPage.getByRole("button", { name: "Save parent" }).click();
-    await expect(moverPage.getByRole("button", { name: "Set parent issue" })).toBeVisible();
+    await expect(moverPage.getByRole("button", { name: "None, set parent issue" })).toBeVisible();
     await expect
       .poll(() => getIssue(mover.key), { intervals: [50, 50, 100, 200, 500] })
       .toMatchObject({ parent: null });
@@ -527,7 +527,8 @@ test("a quote-anchored ask identifies its document in the margin and Conversatio
   }
 });
 
-test("closing an issue removes its asks from the inbox and pinning stays private", async ({
+// @pr: Create through answer to close: a close has to take the issue's asks out of the Inbox, and a pin stays the pinner's own.
+test("closing an issue removes its asks from the inbox and pinning stays private @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1299,10 +1300,9 @@ test("an issue's whole title wraps at every width, whether prose or one unbroken
   }
 });
 
-test("the details rail fades its trailing edge only while it has somewhere to scroll @phone", async ({
+test("the details rail fades its trailing edge only while it has somewhere to scroll @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the rail only overflows at a phone width");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Rail fade" });
 

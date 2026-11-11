@@ -1,8 +1,6 @@
-import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, getIssueArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The server's reader (the Go reader behind every document) and the browser's engine (the one
@@ -23,10 +21,6 @@ const agentSession = {
 const footnoteDefinition = 'dl[data-type="footnote_definition"]';
 /** The inline HTML node, the only node the Proof schema holds a tag in. */
 const inlineHtml = 'span[data-type="html"]';
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The project, an issue whose spec is `spec` (when given) and one comment of `body` (when
  *  given), written by an agent as a person's collaborator writes them. */
@@ -101,7 +95,8 @@ async function refusalOf(write: Promise<unknown>): Promise<{ code?: string; erro
 const definitionUnderline = "Text[^g].\n\n[^g]: other\n|-|-|\n    ===\n";
 const underlinedHeading = ["other |-|-|"];
 
-test("a footnote definition over a delimiter-like line and an indented underline draws one heading in the spec editor and in a comment", async ({
+// @pr: The one row of the read-alike family on the lane: the spec editor and a comment must draw the same markdown the same way.
+test("a footnote definition over a delimiter-like line and an indented underline draws one heading in the spec editor and in a comment @pr", async ({
   browser,
 }) => {
   const { commentId, key } = await seed({
@@ -206,7 +201,10 @@ test("a lazy line holding one tag keeps its blockquote's text in a comment and i
 
 // 5. A code span crossing three quoted lines, the middle one holding a complete tag: written
 // without the quote's prefix, that line would open a block of HTML in a reader and take the
-// quote, the paragraph and the code with it, so the stored bytes keep the prefix there.
+// quote, the paragraph and the code with it, so the stored bytes keep the prefix there. Where
+// such a block would swallow the line under it instead, no bytes read back as written and the
+// write is refused naming the line, which is proved in the pmdoc package's own tests and, at the
+// issue-create route, in the api package's.
 const codeSpanTagLine = "> a `x\n> <b>\n> y` z\n";
 const codeSpanStored = "# Quote\n\n> a `x\n> <b>\ny` z\n";
 const codeSpanText = ["x\n<b>\ny"];
@@ -231,25 +229,7 @@ test("a code span's tag line is stored behind the quote's prefix and draws the s
   });
 });
 
-// 6. A quoted closing tag a tab ends opens a block of HTML in the browser's engine and none in
-// the server's reader. Where the block holds that one line and nothing else the two agree, and
-// the document is stored; where the block swallows the line under it, as here, nothing the
-// document could be stored as reads back as written, so the write is refused, naming the line.
-test("a spec whose quoted closing tag ends in a tab is refused as invalid markdown, naming the line", async () => {
-  await createProject({ key: "CORE", name: "Core" });
-  const answer = await refusalOf(
-    createIssue(
-      { project: "CORE", spec: "> </a\t>\n> text\n", title: "A closing tag a tab ends" },
-      agentSession
-    )
-  );
-  expect(answer.code).toBe("INVALID_MARKDOWN");
-  expect(answer.error).toContain(
-    'line 1, "> </a\\t>", opens with HTML the browser editor\'s parser reads as a block of HTML'
-  );
-});
-
-// 7. A U+0000 is U+FFFD to CommonMark, and so to both readers. A raw one never reaches a reader:
+// 6. A U+0000 is U+FFFD to CommonMark, and so to both readers. A raw one never reaches a reader:
 // PostgreSQL holds no such character, so the API's input layer refuses the write that carries it,
 // naming the field, and only a browser's own edit can put one in a live document, as a tree and
 // never as markdown (pmdoc's nulAsReplacement). Written as the character reference a caller may
@@ -280,7 +260,7 @@ test("a NUL reads as the replacement character in the spec editor and in a past 
   });
 });
 
-// 8. A block of HTML stands where only a block node may, and the Proof schema has no node for
+// 7. A block of HTML stands where only a block node may, and the Proof schema has no node for
 // one: the engine used to throw on the whole body, so the card drew none of it. It draws as a
 // paragraph holding the block's own bytes, and the Conversation goes on drawing around it.
 test("a comment holding a block of HTML draws it as a paragraph, and the Conversation goes on drawing", async ({
@@ -301,7 +281,7 @@ test("a comment holding a block of HTML draws it as a paragraph, and the Convers
   });
 });
 
-// 9. A blank line inside a typed block in a list item is a blank line of the item to the engine,
+// 8. A blank line inside a typed block in a list item is a blank line of the item to the engine,
 // which spaces the item by it; the server's reader read it as no block's and left the item tight,
 // so a document holding one beside a shape only the two read alike was refused outright and a
 // person could not save it. The reader reads the line as the engine does, so the write is stored

@@ -1,6 +1,7 @@
 package record
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -473,7 +474,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, verdict, summary, last_handoff, decision, completed_at, merge_note, assignment from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, merge_note, assignment from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -501,16 +502,27 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the review decision: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, verdict, summary, last_handoff,
+	// backward_moves is not null and defaults to the empty object, so a row with no move counted
+	// yet holds '{}' rather than null: a nil or empty map is written as that same empty object,
+	// which is what scanPhase reads back as nil.
+	backwardMoves := []byte("{}")
+	if len(phase.BackwardMoves) > 0 {
+		var err error
+		if backwardMoves, err = json.Marshal(phase.BackwardMoves); err != nil {
+			return fmt.Errorf("put %s phase on %s: encode the backward move counts: %w", phase.Role, phase.Issue, err)
+		}
+	}
+	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
 		decision, completed_at, merge_note, assignment)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
-		rounds = excluded.rounds, verdict = excluded.verdict,
+		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
+		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at, merge_note = excluded.merge_note, assignment = excluded.assignment`,
-		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.Verdict, phase.Summary, phase.LastHandoff,
-		decision, phase.CompletedAt, phase.MergeNote, phase.Assignment,
+		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
+		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.MergeNote, phase.Assignment,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -521,9 +533,9 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
-	var decision []byte
-	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.Verdict, &phase.Summary, &phase.LastHandoff,
-		&decision, &phase.CompletedAt, &phase.MergeNote, &phase.Assignment); err != nil {
+	var decision, backwardMoves []byte
+	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
+		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.MergeNote, &phase.Assignment); err != nil {
 		return PhaseRow{}, err
 	}
 	phase.CompletedAt = phase.CompletedAt.UTC()
@@ -533,14 +545,30 @@ func scanPhase(row scanner) (PhaseRow, error) {
 			return PhaseRow{}, fmt.Errorf("decode the review decision: %w", err)
 		}
 	}
+	// A row that counted no backward move reads as a nil map and never as an empty one: the
+	// column holds the empty object for it, and a scanned row of a phase nothing went back from
+	// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
+	// row holds, and this scan runs on every phase row of every state read, so those bytes answer
+	// the nil map without a decode of their own, as the decision column above answers nil without
+	// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
+	// its error.
+	if !bytes.Equal(backwardMoves, []byte("{}")) {
+		moves := map[string]int{}
+		if err := json.Unmarshal(backwardMoves, &moves); err != nil {
+			return PhaseRow{}, fmt.Errorf("decode the backward move counts: %w", err)
+		}
+		if len(moves) > 0 {
+			phase.BackwardMoves = moves
+		}
+	}
 	phase.Role, phase.Claim = claim.Role(role), claim.Token(token)
 	return phase, nil
 }
 
 const pullRequestColumns = `issue, repo, number, branch, head_sha, head_updated_at,
-	failing, cancelled, fix_attempts, blocked_attempts, check_runs,
-	generation, snapshot, pushes, head_moves, head_counted, head_run, planned_red, review_seen, review_seen_at, state,
-	checked_head, required, required_workflows, required_workflows_head, mergeability, merge_sha`
+	failing, cancelled, check_runs,
+	generation, snapshot, pushes, head_moves, head_run, planned_red, review_seen, review_seen_at, state,
+	checked_head, required, required_workflows, required_workflows_head, mergeability, conflicting_head, merge_sha`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -674,27 +702,31 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 			return fmt.Errorf("put pull request for %s: encode the head run: %w", pr.Issue, err)
 		}
 	}
+	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
+	// attempt or caps one since dispatch://INFRA-956 R4, and they are kept rather than dropped so
+	// a rollback to the daemon before it still runs. Each is `not null` with no default (migration
+	// 0004), so a new row is given its zero here and no write ever touches it again.
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
-		failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, pushes, head_moves,
-		head_counted, head_run, planned_red, review_seen, review_seen_at, state, checked_head, required,
-		required_workflows, required_workflows_head, mergeability, merge_sha)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+		failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
+		head_run, planned_red, review_seen, review_seen_at, state, checked_head, required,
+		required_workflows, required_workflows_head, mergeability, conflicting_head, merge_sha,
+		fix_attempts, blocked_attempts, head_counted)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
-		failing = excluded.failing, cancelled = excluded.cancelled, fix_attempts = excluded.fix_attempts,
-		blocked_attempts = excluded.blocked_attempts, check_runs = excluded.check_runs,
+		failing = excluded.failing, cancelled = excluded.cancelled, check_runs = excluded.check_runs,
 		generation = excluded.generation, snapshot = excluded.snapshot,
-		pushes = excluded.pushes, head_moves = excluded.head_moves, head_counted = excluded.head_counted, head_run = excluded.head_run,
+		pushes = excluded.pushes, head_moves = excluded.head_moves, head_run = excluded.head_run,
 		planned_red = excluded.planned_red, review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		required = excluded.required, required_workflows = excluded.required_workflows,
 		required_workflows_head = excluded.required_workflows_head, mergeability = excluded.mergeability,
-		merge_sha = excluded.merge_sha`,
+		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.HeadSHA, pr.HeadUpdatedAt,
-		failing, cancelled, pr.FixAttempts, pr.BlockedAttempts, checkRuns,
-		pr.Generation, pr.Snapshot, pushes, moves, pr.HeadCounted, run, pr.PlannedRed,
+		failing, cancelled, checkRuns,
+		pr.Generation, pr.Snapshot, pushes, moves, run, pr.PlannedRed,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead, required,
-		workflows, pr.WorkflowsHead, pr.Mergeability, pr.MergeSHA,
+		workflows, pr.WorkflowsHead, pr.Mergeability, pr.ConflictingHead, pr.MergeSHA,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1088,19 +1120,27 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
-		// not: its counters and its checks settlement are of a head nobody has judged since, and the
+		// not: its checks settlement is of a head nobody has judged since, and the
 		// review round's decision goes with the phases below, and so does its head run, whose
 		// replay would put the old generation's judgement back. Its pushes stay, each a fact about
 		// two commits, and so does its newest review, which orders every review it will have, and
-		// the checks its base branch requires, which belong to the base, not the generation.
-		"update pull_requests set fix_attempts = 0, blocked_attempts = 0, head_counted = '', " +
+		// the checks its base branch requires, which belong to the base, not the generation. So
+		// does conflicting_head, the head the daemon last judged conflicting with its base: like
+		// mergeability beside it, it is GitHub's answer about that head and that base, which a new
+		// generation of the issue's work does not make false. A head that still does not merge
+		// still does not merge, and the count it excuses starts again with the rounds below, so
+		// nothing of the old generation's counting survives it.
+		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb where " + where,
 		"delete from design_gates where " + where,
 		// The assignment goes with the run too: the start that re-enters the phase mints the next
 		// one, and until it does the cleared row names none, which the completion route reads as
-		// nothing to compare rather than as a mismatch to refuse.
-		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, verdict = '', summary = '', decision = null, merge_note = '', " +
+		// nothing to compare rather than as a mismatch to refuse. The counts go with the rounds:
+		// the new generation counts its moves back from nothing, and the cap mark goes with them,
+		// so the architect is told again at the new generation's own first crossing of the cap.
+		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
+			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, merge_note = '', " +
 			"assignment = '' where " + where,
 		// A READY the gate refused waits on the merger's packet, which the statement above clears.
 		// The step goes with the version: the stored shape holds both or neither.
@@ -1117,9 +1157,9 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
 	var failing, cancelled, checkRuns, pushes, moves, required, workflows, run []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.HeadSHA, &pr.HeadUpdatedAt,
-		&failing, &cancelled, &pr.FixAttempts, &pr.BlockedAttempts, &checkRuns, &pr.Generation, &pr.Snapshot,
-		&pushes, &moves, &pr.HeadCounted, &run, &pr.PlannedRed, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &required, &workflows, &pr.WorkflowsHead, &pr.Mergeability, &pr.MergeSHA); err != nil {
+		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
+		&pushes, &moves, &run, &pr.PlannedRed, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
+		&pr.CheckedHead, &required, &workflows, &pr.WorkflowsHead, &pr.Mergeability, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1658,11 +1698,16 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 	return registered, nil
 }
 
-func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind) (bool, error) {
+// ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
+// issue when the caller named one and to one role of that issue when it named a role as well:
+// the same read every way, with the issue and the role as two more terms that an empty string
+// leaves out, so a project-wide wake's answer is what it always was.
+func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox
-		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3)`,
-		string(OutboxKindControllerNotice), project, string(kind)).Scan(&pending); err != nil {
+		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
+		and ($4 = '' or issue = $4) and ($5 = '' or payload->>'role' = $5))`,
+		string(OutboxKindControllerNotice), project, string(kind), issue, string(role)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has a %s controller notice pending: %w", project, kind, err)
 	}
 	return pending, nil
@@ -1805,6 +1850,15 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // (StillWorked) and every completion of it is refused HANDOFF_STALE_ASSIGNMENT. A row that has
 // never been leased keeps the empty token, which is what an unleased row carries.
 //
+// The rewrite takes a fresh number from outbox_write_mark_seq, the sequence an insert takes one
+// from through the column's own default. The row keeps the id that holds its place in the line,
+// so its id says when the issue first came to wait and nothing about when this payload was
+// written; the write mark says the second, which is what the stop rule needs of it (admit's
+// stopOutlivedStart, and store's putClaim for what the sequence orders). A rewrite that left
+// the mark where it stood would hand that rule a start written after an operator's stop under
+// the number the row took before it, and the rule would end the start the retry had just
+// written.
+//
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
@@ -1813,6 +1867,7 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 		return false, fmt.Errorf("replace the owed start of %s: payload is not JSON", row.Issue)
 	}
 	tag, err := tx.Exec(ctx, `update outbox set payload = $2, lease_until = null,
+			write_mark = nextval('outbox_write_mark_seq'),
 			lease_token = case when lease_token = '' then '' else gen_random_uuid()::text end
 		where id = (select id from outbox
 			where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
@@ -1828,19 +1883,20 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 
 // OwedStarts is every pending worker start of project's issues that waits for its issue's
 // admission slot and that no live lease holds, oldest first by the pair the waiting line orders
-// them on (OwedStart), with the role, phase and generation each row serves and the lease token
-// it still carries. A row a lane holds now is left out: its slot came, so it is neither waiting
-// in the line nor safe for admission's repair to finish. A row whose lease has lapsed is not
-// that — the lane that held it is gone and only a finished delivery removes a row — so it is
-// listed, exactly as the outbox's own due predicate lists it again (outboxUnleasedDue); left
-// out, its issue would stand in no part of the line and nothing would ever deliver or repair it.
+// them on (OwedStart), with the write mark of the write that last set each row's payload, the
+// role, phase and generation each row serves and the lease token it still carries. A row a lane
+// holds now is left out: its slot came, so it is neither waiting in the line nor safe for
+// admission's repair to finish. A row whose lease has lapsed is not that — the lane that held
+// it is gone and only a finished delivery removes a row — so it is listed, exactly as the
+// outbox's own due predicate lists it again (outboxUnleasedDue); left out, its issue would
+// stand in no part of the line and nothing would ever deliver or repair it.
 //
 // The lapse is judged against the database's own clock, the one moment a read with no caller's
 // now can ask for. The lane that wrote the lease and the rows' other readers compare against the
 // daemon's clock, which the deployment keeps on the same time.
 func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([]OwedStart, error) {
-	rows, err := tx.Query(ctx, `select issue, created_at, id, coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''),
-			coalesce((payload->>'generation')::bigint, 0), lease_token
+	rows, err := tx.Query(ctx, `select issue, created_at, id, write_mark, coalesce(payload->>'role', ''),
+			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), lease_token
 		from outbox where kind = $1 and split_part(issue, '-', 1) = $2
 			and payload->>'op' = 'start' and payload->>'needsSlot' = 'true'
 			and (lease_until is null or lease_until <= now())
@@ -1852,8 +1908,8 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 	var owed []OwedStart
 	for rows.Next() {
 		var start OwedStart
-		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.Role, &start.Phase, &start.Generation,
-			&start.LeaseToken); err != nil {
+		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.WriteMark, &start.Role, &start.Phase,
+			&start.Generation, &start.LeaseToken); err != nil {
 			return nil, fmt.Errorf("list the starts %s owes its workers: %w", project, err)
 		}
 		owed = append(owed, start)
@@ -1883,7 +1939,7 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
 // the row retries. And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
-// admission cap counts the issues at work, and this row is the delivery that puts one to work, so
+// admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. Supervise rows need no other such rule: a stop names the run it
 // ends through the claim's own record of the newest start run against it (claims.last_start_row),
 // so ordering them here would buy nothing that survives a retry the runtime delayed.
@@ -2279,6 +2335,17 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
+// ReplaceOutboxPayload replaces the payload of a leased row with one of the row's own kind,
+// answering false for a row the lease no longer holds.
+//
+// The rewrite takes a fresh number from outbox_write_mark_seq, as ReplaceOwedStart's rewrite
+// and an insert through the column's own default do: the mark is the write that last put a
+// payload in the row, and a rewrite that left it where it stood would be a payload written at
+// one moment carrying the number of another. No reader weighs this caller's row — auto-merge's
+// ready_merge row, which the stop rule never reads. The two upserts that rewrite a payload of
+// their own kind in place (EnqueueGatedSteps' and readyMergeConflict's) leave the mark the row's
+// first insert took, so the column is held to say when a payload was written only for the
+// supervise start rows the stop rule reads (OwedStarts).
 func (s *Postgres) ReplaceOutboxPayload(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, payload OutboxPayload) (bool, error) {
 	if err := validateOutboxPayload(payload); err != nil {
 		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
@@ -2298,7 +2365,8 @@ func (s *Postgres) ReplaceOutboxPayload(ctx context.Context, tx pgx.Tx, id int64
 	if kind != string(payload.OutboxKind()) {
 		return false, fmt.Errorf("replace the payload of outbox row %d: the row is %s, and the payload %s", id, kind, payload.OutboxKind())
 	}
-	if _, err := tx.Exec(ctx, "update outbox set payload = $2 where id = $1", id, string(encoded)); err != nil {
+	if _, err := tx.Exec(ctx, `update outbox set payload = $2,
+		write_mark = nextval('outbox_write_mark_seq') where id = $1`, id, string(encoded)); err != nil {
 		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
 	}
 	return true, nil
@@ -2342,7 +2410,9 @@ type roleRunIdentity struct {
 // misses was deleted before the second one ran, and the second one reads the claim state that
 // delete stands for. Reading the rows first is therefore what keeps a caller from ever seeing a
 // queued start gone beside a claim that has not yet moved, which is the one pair a rule that
-// deletes a row would read as a worker nothing is starting again (admit's finishFencedStarts).
+// weighs a claim against rows it has read would take for a worker nothing is starting again
+// (workflow.StartFor, for admit's resumeSlottedWorkers and startMidPhaseMembers; RoleClaims
+// says what the same order means for a caller that reads the claims alone).
 func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error) {
 	runs := make(map[claim.Token]RoleRun, len(keys))
 	if len(keys) == 0 {
@@ -2405,11 +2475,55 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	}
 	rows.Close()
 
-	rows, err = tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, d.claim_token is not null,
-		coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
+	if err := readRoleClaims(ctx, tx, tokens, func(token claim.Token, held *RoleClaim) {
+		run := runs[token]
+		run.Claim = held
+		runs[token] = run
+	}); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
+// statement alone, for a caller that judges a role run by its claim and never reads the queued
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart). A token the store
+// holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
+// It saves that caller RoleRuns' first statement, which selects and strictly decodes every
+// supervise row of every issue that owes a start, once per admission pass.
+//
+// Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
+// claims must be read after the owed rows they are judged against, so that a stop made between
+// the two reads is in the claim read here and the rule acts on this pass rather than the next.
+// The mark it weighs each owed row against is RoleClaim.RetiredAtWriteMark, taken in store's
+// putClaim, whose doc holds what the sequence behind it orders. That is where the call sits —
+// the pass reads its owed rows into record.LineFacts first, and weighs them here after.
+func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error) {
+	held := make(map[claim.Token]*RoleClaim, len(tokens))
+	if len(tokens) == 0 {
+		return held, nil
+	}
+	names := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		names = append(names, string(token))
+	}
+	if err := readRoleClaims(ctx, tx, names, func(token claim.Token, c *RoleClaim) {
+		held[token] = c
+	}); err != nil {
+		return nil, err
+	}
+	return held, nil
+}
+
+// readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
+// RoleClaims share, with the task pending on each claim read beside it (the two tables are
+// written apart and read together, as claimSelect reads them).
+func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
+		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
-		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -2418,8 +2532,9 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var pending bool
 		var task supervise.Delivery
 		var confirmed *time.Time
-		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &pending, &task.Generation, &task.Phase, &confirmed); err != nil {
-			return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
+			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if pending {
 			if confirmed != nil {
@@ -2427,14 +2542,12 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			}
 			held.Pending = &task
 		}
-		run := runs[claim.Token(token)]
-		run.Claim = &held
-		runs[claim.Token(token)] = run
+		found(claim.Token(token), &held)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
+		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 	}
-	return runs, nil
+	return nil
 }
 
 // PendingStatusWrites lists every Dispatch status write of project's issues the outbox has not

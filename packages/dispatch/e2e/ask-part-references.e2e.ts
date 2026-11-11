@@ -1,8 +1,5 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createAsk, createComment, createIssue, createProject, getAsk } from "./api";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, type Locator, type Page, test } from "./test";
 
 // A part of an ask - its question, each of its options and its answer - is a block of the
 // reference graph, named `dispatch://KEY/ask/<ask id>#b-<part id>`. These rows drive the surfaces
@@ -18,9 +15,9 @@ const agent = {
   as: "agent" as const,
 };
 
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
+// The project every row of this file seeds into. The reset and alice's sign-in are the `test`
+// this file imports (e2e/test.ts), so what is left here is the seeding alone.
+test.beforeEach(async () => {
   await createProject({ key: "CORE", name: "Core" });
 });
 
@@ -36,7 +33,8 @@ async function openCard(page: Page, link: Locator): Promise<Locator> {
   return card;
 }
 
-test("a reference to an ask's option in a comment is a link that opens the ask at that part", async ({
+// @pr: The ask-part reference's only reading row: a link to an option opens the ask at that part.
+test("a reference to an ask's option in a comment is a link that opens the ask at that part @pr", async ({
   page,
 }) => {
   const issue = await createIssue({ project: "CORE", title: "Ask part references" });
@@ -57,7 +55,7 @@ test("a reference to an ask's option in a comment is a link that opens the ask a
   // A write's own answer carries no part id: the ask's own read is what names the part each of
   // its options is stored as.
   const read = await getAsk(ask.id);
-  const option = read.ask.options[1];
+  const option = (read.ask.options ?? [])[1];
   expect(
     option?.id,
     "the ask's read names the part each of its options is stored as"
@@ -143,7 +141,7 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
 
   // It opens the ask at the part the option is stored as, which the ask's own read names.
   const read = await getAsk(ask.id);
-  const option = read.ask.options[1];
+  const option = (read.ask.options ?? [])[1];
   expect(
     option?.id,
     "the ask's read names the part each of its options is stored as"

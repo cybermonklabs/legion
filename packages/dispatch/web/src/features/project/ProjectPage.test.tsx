@@ -1,17 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  waitForElementToBeRemoved,
-  within,
-} from "@testing-library/react";
+import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { answerRequests } from "../../__tests__/network";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow } from "../../api/types";
+import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
 
@@ -25,17 +22,26 @@ function LocationProbe() {
   );
 }
 
+/** One open ask. The person it waits on is resolved as the server resolves it
+ *  (`coalesce(a.asked_of, i.assignee)`), so an override that moves the issue's assignee, or
+ *  hands the ask to somebody, moves that person with it. */
 function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-11T00:00:00Z",
     edited_at: null,
     id: "ask-1",
     // The pill counts the reader's own: `renderPage` signs in as `alice`.
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
+    last_reply: null,
     kind: "question",
     multiple: false,
     opened_event_id: 1,
@@ -59,6 +65,7 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  return withWaitingOnPerson(row);
 }
 
 /** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a
@@ -67,11 +74,24 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
  *  that never settles. */
 function renderPage(
   path: string,
-  projects = [{ created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 }],
+  projects = [
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
+  ],
   login: string | null = "alice",
   inboxRows: InboxRow[] = [],
   sources: ArchitectureSource[] | ApiError | "pending" = []
 ) {
+  // The project's issue list is read through `api.listIssues`, which the spy below answers -
+  // except for a fetch the last assertion of a test starts: its query function awaits the
+  // board-move gate first, so the call lands a microtask later, after this render's spies are
+  // restored. That one reaches the client, and this answers it with the same empty list.
+  answerRequests(http.get("/api/v1/issues", () => Response.json([])));
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(inboxRows);
   const whoAmI = spyOn(api, "whoAmI");
   if (login === null) {
@@ -145,6 +165,7 @@ const coreSource: ArchitectureSource = {
 };
 
 test("the bare project path opens on Architecture when the project has sources, forwarding nothing, from one read", async () => {
+  const user = userEvent.setup();
   const page = renderPage(
     "/projects/CORE",
     undefined,
@@ -155,14 +176,15 @@ test("the bare project path opens on Architecture when the project has sources, 
   try {
     await screen.findByRole("heading", { name: "Core" });
     expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/architecture");
-    expect(screen.getByRole("tab", { name: "Architecture" }).getAttribute("aria-selected")).toBe(
+    expect(screen.getByRole("tab", { name: "Architecture" })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
     expect(screen.getByRole("tab", { name: "Issues" })).toBeTruthy();
     // The List / Board control belongs to Issues only.
-    expect(screen.queryByRole("button", { name: "Board" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Board" })).not.toBeInTheDocument();
     // `v` is inert here.
-    fireEvent.keyDown(document.body, { key: "v" });
+    await user.keyboard("v");
     expect(window.localStorage.getItem("dispatch.project.issue-view:alice")).toBeNull();
     // One read of the project's source list decides it; the Architecture pane reads the tree.
     expect(page.listProjectArchitectureSources).toHaveBeenCalledTimes(1);
@@ -181,9 +203,9 @@ test("the bare project path opens on Issues with the filter parameters forwarded
         "/projects/CORE/issues?label=frontend&q=core"
       )
     );
-    expect(screen.queryByRole("tab", { name: "Architecture" })).toBeNull();
-    expect(screen.getByRole("tab", { name: "Issues" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Issues" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
   } finally {
     page.restore();
   }
@@ -197,7 +219,7 @@ test("any other failure of the source lookup is shown, never silently turned int
       expect.stringContaining("Could not load this project's architecture sources.")
     );
     expect(screen.getByTestId("location").textContent).toBe("/projects/CORE");
-    expect(screen.queryByRole("tab", { name: "Issues" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Issues" })).not.toBeInTheDocument();
   } finally {
     page.restore();
   }
@@ -222,18 +244,17 @@ test("/architecture renders nothing while the source lookup is pending, like the
 });
 
 test("renders header, tabs, and the Issues panel; /documents selects Documents", async () => {
+  const user = userEvent.setup();
   const page = renderPage("/projects/CORE");
 
   try {
     await screen.findByRole("heading", { name: "Core" });
     expect(screen.getByText("CORE", { exact: true })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Issues" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Issues" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: "Issues" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Documents" }));
-    expect(screen.getByRole("tab", { name: "Documents" }).getAttribute("aria-selected")).toBe(
-      "true"
-    );
+    await user.click(screen.getByRole("tab", { name: "Documents" }));
+    expect(screen.getByRole("tab", { name: "Documents" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: "Documents" })).toBeTruthy();
   } finally {
     page.restore();
@@ -242,9 +263,7 @@ test("renders header, tabs, and the Issues panel; /documents selects Documents",
   const documents = renderPage("/projects/CORE/documents");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(screen.getByRole("tab", { name: "Documents" }).getAttribute("aria-selected")).toBe(
-      "true"
-    );
+    expect(screen.getByRole("tab", { name: "Documents" })).toHaveAttribute("aria-selected", "true");
   } finally {
     documents.restore();
   }
@@ -254,8 +273,8 @@ test("shows a compact blocker link only when asks await the viewer", async () =>
   const waiting = renderPage("/projects/CORE", undefined, "alice", [inboxRow()]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(screen.getByRole("link", { name: "Blocked on you · 1" }).getAttribute("href")).toBe("/");
-    expect(screen.queryByText(/oldest/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Blocked on you · 1" })).toHaveAttribute("href", "/");
+    expect(screen.queryByText(/oldest/)).not.toBeInTheDocument();
   } finally {
     waiting.restore();
   }
@@ -269,7 +288,7 @@ test("shows a compact blocker link only when asks await the viewer", async () =>
   ]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(screen.queryByRole("link", { name: /Blocked on you/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Blocked on you/ })).not.toBeInTheDocument();
   } finally {
     clear.restore();
   }
@@ -294,7 +313,7 @@ test("keeps the issue view preference separate for each signed-in user", async (
   const alice = renderPage("/projects/CORE", undefined, "alice");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Board" })).toHaveAttribute("aria-pressed", "true");
   } finally {
     alice.restore();
   }
@@ -302,7 +321,7 @@ test("keeps the issue view preference separate for each signed-in user", async (
   const bob = renderPage("/projects/CORE", undefined, "bob");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
   } finally {
     bob.restore();
     window.localStorage.removeItem(aliceStorageKey);
@@ -311,6 +330,7 @@ test("keeps the issue view preference separate for each signed-in user", async (
 });
 
 test("the Icebox & Done toggle lives in Board view only and persists per signed-in user", async () => {
+  const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const edgesKey = "dispatch.project.board-edges:alice";
   window.localStorage.setItem(viewKey, "board");
@@ -319,16 +339,17 @@ test("the Icebox & Done toggle lives in Board view only and persists per signed-
   try {
     await screen.findByRole("heading", { name: "Core" });
     const toggle = await screen.findByRole("button", { name: "Show Icebox & Done" });
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    expect(toggle.classList.contains("min-h-11")).toBe(true);
-    fireEvent.click(toggle);
-    expect(
-      screen.getByRole("button", { name: "Hide Icebox & Done" }).getAttribute("aria-pressed")
-    ).toBe("true");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).toHaveClass("min-h-11");
+    await user.click(toggle);
+    expect(screen.getByRole("button", { name: "Hide Icebox & Done" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     expect(window.localStorage.getItem(edgesKey)).toBe("shown");
 
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
-    expect(screen.queryByRole("button", { name: /Icebox & Done/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "List" }));
+    expect(screen.queryByRole("button", { name: /Icebox & Done/ })).not.toBeInTheDocument();
   } finally {
     first.restore();
   }
@@ -337,11 +358,10 @@ test("the Icebox & Done toggle lives in Board view only and persists per signed-
   const second = renderPage("/projects/CORE", undefined, "alice");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(
-      (await screen.findByRole("button", { name: "Hide Icebox & Done" })).getAttribute(
-        "aria-pressed"
-      )
-    ).toBe("true");
+    expect(await screen.findByRole("button", { name: "Hide Icebox & Done" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   } finally {
     second.restore();
   }
@@ -350,12 +370,11 @@ test("the Icebox & Done toggle lives in Board view only and persists per signed-
   try {
     window.localStorage.setItem("dispatch.project.issue-view:bob", "board");
     await screen.findByRole("heading", { name: "Core" });
-    fireEvent.click(screen.getByRole("button", { name: "Board" }));
-    expect(
-      (await screen.findByRole("button", { name: "Show Icebox & Done" })).getAttribute(
-        "aria-pressed"
-      )
-    ).toBe("false");
+    await user.click(screen.getByRole("button", { name: "Board" }));
+    expect(await screen.findByRole("button", { name: "Show Icebox & Done" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
   } finally {
     bob.restore();
     window.localStorage.removeItem(viewKey);
@@ -366,18 +385,19 @@ test("the Icebox & Done toggle lives in Board view only and persists per signed-
 });
 
 test("v toggles List and Board on the issues tab and writes the preference; it is inert on Documents", async () => {
+  const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
 
-    fireEvent.keyDown(document.body, { key: "v" });
-    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
+    await user.keyboard("v");
+    expect(screen.getByRole("button", { name: "Board" })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem(viewKey)).toBe("board");
 
-    fireEvent.keyDown(document.body, { key: "v" });
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    await user.keyboard("v");
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem(viewKey)).toBe("list");
   } finally {
     page.restore();
@@ -387,8 +407,8 @@ test("v toggles List and Board on the issues tab and writes the preference; it i
   const documents = renderPage("/projects/CORE/documents");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    fireEvent.keyDown(document.body, { key: "v" });
-    expect(screen.queryByRole("button", { name: "Board" })).toBeNull();
+    await user.keyboard("v");
+    expect(screen.queryByRole("button", { name: "Board" })).not.toBeInTheDocument();
     expect(window.localStorage.getItem(viewKey)).toBeNull();
   } finally {
     documents.restore();
@@ -396,14 +416,15 @@ test("v toggles List and Board on the issues tab and writes the preference; it i
 });
 
 test("keeps an unpersisted List or Board choice while identity is pending", async () => {
+  const user = userEvent.setup();
   const pendingKey = "dispatch.project.issue-view:undefined";
   window.localStorage.removeItem(pendingKey);
   const page = renderPage("/projects/CORE", undefined, null);
 
   try {
     await screen.findByRole("heading", { name: "Core" });
-    fireEvent.click(screen.getByRole("button", { name: "Board" }));
-    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
+    await user.click(screen.getByRole("button", { name: "Board" }));
+    expect(screen.getByRole("button", { name: "Board" })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem(pendingKey)).toBeNull();
   } finally {
     page.restore();
@@ -411,32 +432,22 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
   }
 });
 
-test("one filter strip serves both views: chips survive the toggle and only List folds in Status", async () => {
+test("List table and Board strip share the URL's status, labels and search", async () => {
+  const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
-  const page = renderPage("/projects/CORE?label=frontend&q=core");
+  const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
   try {
-    await screen.findByRole("heading", { name: "Core" });
-    // One strip instance on the List, holding the URL-backed chips.
-    expect(screen.getAllByRole("button", { name: /Filters · \d+ active/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
-    // The List folds the URL's Status filter into the strip's count and chips.
-    fireEvent.click(await screen.findByRole("button", { name: "Status" }));
-    fireEvent.click(screen.getByRole("option", { name: "Todo" }));
-    expect(screen.getByRole("button", { name: "Filters · 3 active" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove Status: Todo filter" })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Board" }));
-    // Still one strip; the URL chips survive the toggle; the Board has no Status picker or chip.
-    expect(screen.getAllByRole("button", { name: /Filters · \d+ active/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    await screen.findByRole("table", { name: "Project issues table" });
+    expect(screen.getByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
+    await user.click(screen.getByRole("button", { name: "Board" }));
+    expect(await screen.findByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Status( · \d+)?$/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Remove Status: Todo filter" })).toBeNull();
-
-    // Back on the List the held Status filter counts again.
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
-    expect(screen.getByRole("button", { name: "Filters · 3 active" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "List" }));
+    expect(await screen.findByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).toContain("status=todo");
   } finally {
     page.restore();
     window.localStorage.removeItem(viewKey);
@@ -445,17 +456,21 @@ test("one filter strip serves both views: chips survive the toggle and only List
 });
 
 test("typing v in the strip's search input never toggles the view", async () => {
+  const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend");
   try {
     await screen.findByRole("heading", { name: "Core" });
     const search = await screen.findByRole("searchbox", { name: "Search issues" });
-    fireEvent.keyDown(search, { key: "v" });
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    // The key reaches the field as a typed character, which is what a reader pressing it does.
+    await user.click(search);
+    await user.keyboard("v");
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem(viewKey)).toBeNull();
     // Outside an editable target the same key still toggles.
-    fireEvent.keyDown(document.body, { key: "v" });
-    expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
+    await user.click(document.body);
+    await user.keyboard("v");
+    expect(screen.getByRole("button", { name: "Board" })).toHaveAttribute("aria-pressed", "true");
   } finally {
     page.restore();
     window.localStorage.removeItem(viewKey);
@@ -463,6 +478,7 @@ test("typing v in the strip's search input never toggles the view", async () => 
 });
 
 test("the Lanes toggle lives in Board view only and persists per signed-in user", async () => {
+  const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const lanesKey = "dispatch.project.board-lanes:alice";
   window.localStorage.setItem(viewKey, "board");
@@ -471,16 +487,17 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
   try {
     await screen.findByRole("heading", { name: "Core" });
     const toggle = await screen.findByRole("button", { name: "Show lanes" });
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    expect(toggle.classList.contains("min-h-11")).toBe(true);
-    fireEvent.click(toggle);
-    expect(screen.getByRole("button", { name: "Hide lanes" }).getAttribute("aria-pressed")).toBe(
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).toHaveClass("min-h-11");
+    await user.click(toggle);
+    expect(screen.getByRole("button", { name: "Hide lanes" })).toHaveAttribute(
+      "aria-pressed",
       "true"
     );
     expect(window.localStorage.getItem(lanesKey)).toBe("shown");
 
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
-    expect(screen.queryByRole("button", { name: /lanes/i })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "List" }));
+    expect(screen.queryByRole("button", { name: /lanes/i })).not.toBeInTheDocument();
   } finally {
     first.restore();
   }
@@ -489,9 +506,10 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
   const second = renderPage("/projects/CORE", undefined, "alice");
   try {
     await screen.findByRole("heading", { name: "Core" });
-    expect(
-      (await screen.findByRole("button", { name: "Hide lanes" })).getAttribute("aria-pressed")
-    ).toBe("true");
+    expect(await screen.findByRole("button", { name: "Hide lanes" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   } finally {
     second.restore();
   }
@@ -500,10 +518,11 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
   try {
     window.localStorage.setItem("dispatch.project.issue-view:bob", "board");
     await screen.findByRole("heading", { name: "Core" });
-    fireEvent.click(screen.getByRole("button", { name: "Board" }));
-    expect(
-      (await screen.findByRole("button", { name: "Show lanes" })).getAttribute("aria-pressed")
-    ).toBe("false");
+    await user.click(screen.getByRole("button", { name: "Board" }));
+    expect(await screen.findByRole("button", { name: "Show lanes" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
   } finally {
     bob.restore();
     window.localStorage.removeItem(viewKey);

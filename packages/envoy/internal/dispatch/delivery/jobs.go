@@ -251,7 +251,7 @@ func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, b
 // cover it in any case.
 func (j *JobIntake) deliver(msg *natsgo.Msg) {
 	if j.ctx.Err() != nil {
-		negativelyAcknowledge(msg)
+		redeliverAfter(msg, 0)
 		return
 	}
 	if err := msg.Ack(); err != nil {

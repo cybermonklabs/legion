@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { exchangeDelivery } from "../web/src/features/agents/exchange-delivery";
 import { setLiveSessions } from "./agents";
 import {
@@ -29,7 +27,7 @@ import {
   sessionActor,
   THREAD_SESSION,
 } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -40,10 +38,6 @@ import { asUser } from "./users";
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Selects a row the way the pointer does: the click lands on the row's own time. */
 async function selectRow(page: Page, id: string): Promise<Locator> {
@@ -191,7 +185,7 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
     );
   }
   const listed = await listMyReplies({ state: "unread" });
-  const row = listed.rows.find((candidate) => candidate.thread_id === root.id);
+  const row = (listed.rows ?? []).find((candidate) => candidate.thread_id === root.id);
   expect(row?.unread).toBe(true);
   // Every reply read: the thread leaves the unread list and stays in the Inbox, drawn as read.
   await markThreadRead(root.id, row?.reply.created_at ?? "");
@@ -277,7 +271,7 @@ async function seedThreeShapes(): Promise<{
   const messages = (await listIssueMessages(issue.key)).find(
     (read) => read.message.id === message.id
   );
-  await markThreadRead(message.id, messages?.replies[2]?.created_at ?? "");
+  await markThreadRead(message.id, (messages?.replies ?? [])[2]?.created_at ?? "");
   const exchange = (await listAgentMessages(THREAD_SESSION.session_id)).find(
     (read) => read.message.id === agent
   );
@@ -286,9 +280,9 @@ async function seedThreeShapes(): Promise<{
   });
 
   const listed = await listMyReplies({ kind: ["reply", "agent"], state: "unread" });
-  expect(listed.rows.map((row) => row.unread_count).sort((left, right) => left - right)).toEqual([
-    2, 2, 2,
-  ]);
+  expect(
+    (listed.rows ?? []).map((row) => row.unread_count).sort((left, right) => left - right)
+  ).toEqual([2, 2, 2]);
   return { agent, comment: comment.id, message: message.id };
 }
 
@@ -323,7 +317,8 @@ test("a comment thread, a message conversation and an Agent thread are drawn ali
   }
 });
 
-test("a reply sent from the pane reaches the thread, and an Agent reply goes in the Agents page's mode", async ({
+// @pr: A write a person makes: a reply sent from the thread pane reaches the thread, and an Agent reply goes out in the Agents page's mode.
+test("a reply sent from the pane reaches the thread, and an Agent reply goes in the Agents page's mode @pr", async ({
   browser,
 }) => {
   await setLiveSessions([THREAD_SESSION]);
@@ -393,8 +388,10 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
         const read = (await listAgentMessages(THREAD_SESSION.session_id)).find(
           (candidate) => candidate.message.id === agent
         );
-        const sent = read?.replies.find((reply) => reply.body === "Hold the mirror for an hour.");
-        return sent?.deliveries.at(-1)?.delivery;
+        const sent = (read?.replies ?? []).find(
+          (reply) => reply.body === "Hold the mirror for an hour."
+        );
+        return (sent?.deliveries ?? []).at(-1)?.delivery;
       })
       .toBe(expected.delivery);
   } finally {

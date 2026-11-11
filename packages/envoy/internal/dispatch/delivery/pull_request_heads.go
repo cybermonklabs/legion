@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -51,6 +53,12 @@ type PullRequestHead struct {
 	URL                 string
 	EventAt             *time.Time
 	CheckedAt           *time.Time
+	// MergeCommitSHA is the commit GitHub made when this pull request merged. It is set only
+	// for a merged pull request, and only by a writer that read it; one that did not read it
+	// leaves it empty, which asks for nothing. It is written to no column of
+	// pull_request_heads: it exists to seed branch_commits with the one fact the merge itself
+	// proves, that the base branch held this commit (UpsertPullRequestHead).
+	MergeCommitSHA string
 }
 
 // PullRequestHeadState is the state a `pull_request` event leaves the row in: a pull request
@@ -66,6 +74,41 @@ func PullRequestHeadState(action string, merged bool) string {
 		return "open"
 	}
 	return "closed"
+}
+
+// ErrHeadNotStored marks a failure that left a pull request's head row unwritten and that
+// making the same attempt again may get past, as against a failure to attribute one: nothing
+// else in Dispatch repairs a head row that was never stored — the reconcile's passes read the
+// rows that exist (ListStalePullRequestHeads), so a row no write ever made is offered to
+// nothing. The `pull_request` envelope's handler tests for it and hands the envelope back for
+// redelivery rather than acking it (Intake.handlePullRequestEnvelope, Intake.deliver), up to
+// headWriteMaxDeliveries deliveries of it, since both of the statements behind the write are
+// `on conflict … do update` and a redelivery writes the same pair.
+//
+// It marks every database failure on the way to that write and not the write alone, because
+// they all end the same way and a connection-level outage reaches the earlier ones first. The
+// envelope's path to the write is two reads and the write: the canonical name of the
+// repository (refs.CanonicalRepo) and the attribution's own read of the issues its candidates
+// name (headAttribution, through resolveAttributionCandidates). A head row lost because
+// Postgres refused the first of those is as lost as one lost at the insert, so
+// recordPullRequestHead marks all three (markHeadNotStored).
+//
+// One failure of that path is deliberately left unmarked, because no redelivery mends it. A
+// read of GitHub the App refused is answered by the reconcile's own next pass, and handing
+// every rate-limited envelope back would spend the whole limit over again — the rate limit is
+// the only refusal of GitHub that comes back as an error at all, since attributeHead logs
+// every other one at Debug and writes an incomplete row.
+var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
+
+// markHeadNotStored marks err as ErrHeadNotStored unless it is the one failure that sentinel's
+// doc comment leaves unmarked: a rate limit (githubapp.AsRateLimit). Everything else the steps
+// before the head write answer is Postgres refusing a read, which is the fault the sentinel is
+// for.
+func markHeadNotStored(err error) error {
+	if _, limited := githubapp.AsRateLimit(err); limited {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 }
 
 // UpsertPullRequestHead writes one pull request's head row. An event older than the one the row
@@ -99,8 +142,86 @@ func PullRequestHeadState(action string, merged bool) string {
 // rule that never judged it. An insert writes it outright: a row this build has just made was
 // judged by this build's rule. A test that needs a row of an older rule sets attribution_rule
 // itself, with one update.
+//
+// A merged pull request's merge commit is recorded as on its base branch, for good, as soon as
+// this row is written: GitHub completing the merge is itself the proof that the branch held
+// that commit, and branch_commits keeps a yes for good (branch.go). Nothing can prove it
+// later. In a repository that deletes a branch when its pull request merges and merges by
+// squash, by the time an `after_merge` result of an issue that merged into an integration
+// branch is measured — once the integration branch has itself landed on the default branch and
+// been deleted — no compare read can show that commit on the base branch, because the branch is
+// gone, and the default branch holds only a squash of it. Without the row written here such a
+// result could never read `current`. Only a merged row writes one: GitHub answers a test-merge
+// commit for an open pull request too, and that commit is on no branch at all.
+//
+// The row is written whether or not the `where` guard above applied this write's facts. The
+// guard is about which event's facts the row keeps, not about whether the merge happened, and
+// GitHub's merge proves the fact whatever order the events arrive in. The time recorded is
+// time.Now() rather than a clock threaded through every caller of this function, which would
+// buy nothing: a yes never goes stale, so checked_at only records when the fact was learned
+// and no reader measures a yes against it.
+//
+// The head row and that seed are written in one transaction, so the two land together or
+// neither does and the caller is told. branch.go logs its own failed writes and carries on,
+// which is right for every answer it writes: those are answers a compare read can earn again a
+// moment later. This one can never be earned again — the paragraph above is the whole argument
+// that nothing proves it once the base branch is gone — so a seed lost behind a Warn line
+// leaves every `after_merge` result of that issue reading `older` for good, with the merged
+// head row stored beside it as if all was well. Failing the write instead puts that in front
+// of the caller: the reconcile logs it and leaves the row for its next pass
+// (reconcilePullRequestHeads), and the results read's read-through hands it back to the route
+// (ReadThroughCommitPulls). Both statements are `on conflict … do update`, so a write made
+// again writes the same pair and costs nothing.
+//
+// A write with nothing to pair — an open pull request, a merge whose base branch or merge
+// commit nobody read — runs its one statement on the pool as it always did. A transaction
+// around a single statement buys nothing and costs a round trip at each end, and every caller
+// of this function makes far more writes of that shape than of the other.
+//
+// Every error this function answers is ErrHeadNotStored: nothing of the pair was written, and
+// the caller may write the same pair again.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullRequestHead) error {
-	_, err := pool.Exec(ctx, `
+	if head.State != "merged" || head.BaseRef == "" || head.MergeCommitSHA == "" {
+		return upsertHeadRow(ctx, pool, head)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: open the write of the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+	}
+	// The rollback runs on a context of its own, not the caller's: the caller's is cancelled
+	// exactly when the rollback matters — a webhook consumer shutting down mid-write, a results
+	// read whose browser went away — and pgx answers a rollback on a cancelled context by
+	// destroying the connection instead of returning it to the pool, which leaves a backend on
+	// the database for as long as the process lives (api/duplicates.go makes the same argument
+	// for its own read). A commit that already ran absorbs this one (store.Pool's trackedTx).
+	defer func() {
+		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
+		defer cancel()
+		_ = tx.Rollback(rollback)
+	}()
+	if err := upsertHeadRow(ctx, tx, head); err != nil {
+		return err
+	}
+	if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
+		return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("%w: store the head of %s#%d with its merge commit's branch: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+	}
+	return nil
+}
+
+// headWriteRollback bounds the rollback of that transaction, which runs on a context of its
+// own and so is bounded by nothing else. Two seconds is longer than the one statement each
+// rollback here can be undoing and far inside any caller's own patience.
+const headWriteRollback = 2 * time.Second
+
+// upsertHeadRow is the head row's own statement, which UpsertPullRequestHead's doc comment
+// explains in full: it is here, on a refs.Execer — the pool, or a transaction already open on
+// it — so that one statement runs on the pool where it is the whole write and inside the
+// transaction where the merge's branch answer goes with it.
+func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) error {
+	_, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at, attribution_rule
@@ -130,7 +251,7 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullReque
 		head.AttributionComplete, AttributionRuleVersion,
 	)
 	if err != nil {
-		return fmt.Errorf("store the head of %s#%d: %w", head.Repo, head.Number, err)
+		return fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
 	}
 	return nil
 }
@@ -219,6 +340,55 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 		return false, fmt.Errorf("read the stored pull request heads of %s at %s: %w", repoFull, sha, err)
 	}
 	return found, nil
+}
+
+// BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
+// into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
+// issue is measured against (api/results_currency.go). An issue whose pull request merged
+// into an integration branch has reached that branch and no other, so a result of it is
+// current at a commit that branch's history carries, where the repository's default branch
+// answers nothing about the work until the integration branch itself lands. The merged row
+// last updated answers: event_at is the pull request's updated_at as its newest event carried
+// it, which is the time of the merge only until a later event of that pull request (an edit, a
+// label) moves it. The rows are ordered by event_at descending with the rows carrying none
+// last, since a row with no event time is one whose envelope reported none and says less than
+// any row that did, and by the pull request's own number descending where two share a time, so
+// the answer does not turn on whichever row the planner returned first.
+//
+// The read is keyed by the issue and not by the result's commit because Legion merges with
+// squash: the commit that lands on the base branch is the one the squash makes, which is no
+// pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
+// commit is such a head — can never answer for it. Keying by the issue costs nothing in
+// honesty, since a row is attributed to an issue only where the pull request's head is a
+// branch of the repository that issue resolves to (headAttribution), so the branch this
+// answers is one the issue's own work merged into.
+//
+// An empty answer is "no branch to measure against", which a merged row carrying no base_ref
+// gives as much as no merged row at all. The column is declared not null with the empty string
+// as its default, and a `pull_request` envelope published before Dispatch carried the field
+// writes exactly that, so such a row names no base branch; the empty answer leaves the caller
+// on its own fallback, the repository's default branch, where handing that value on as a
+// branch would have it build a GitHub compare read against a branch with no name.
+//
+// No index is added for this lookup: pull_request_heads_issue_head is partial on
+// `issue_key is not null` and keyed `(issue_key, head_sha)`, so a read by the issue alone uses
+// its leading column, and the rows one issue's key holds are the handful of pull requests
+// attributed to that issue.
+func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, error) {
+	var branch string
+	err := pool.QueryRow(ctx, `
+		select base_ref from pull_request_heads
+		where issue_key = $1 and state = 'merged'
+		order by event_at desc nulls last, number desc
+		limit 1
+	`, issueKey).Scan(&branch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
+	}
+	return branch, nil
 }
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
@@ -438,7 +608,7 @@ func headRow(repoFull string, payload pullRequestPayload, attributed headAttribu
 		BaseRef: payload.Base.Ref, State: PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
-		EventAt: payload.UpdatedAt, CheckedAt: checkedAt,
+		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, MergeCommitSHA: mergeCommitOf(payload),
 	}
 }
 
@@ -449,6 +619,17 @@ func headRepositoryOf(payload pullRequestPayload) string {
 		return ""
 	}
 	return payload.Head.Repo.FullName
+}
+
+// mergeCommitOf is the commit GitHub made when a pull request merged, as its answer names it,
+// and "" where it names none. GitHub answers this field for an open pull request too, with the
+// test merge it keeps for the mergeability check, so only a merged pull request's value says
+// anything about a branch (UpsertPullRequestHead tests the state before it believes it).
+func mergeCommitOf(payload pullRequestPayload) string {
+	if payload.MergeCommitSHA == nil {
+		return ""
+	}
+	return *payload.MergeCommitSHA
 }
 
 // attributePayload attributes one pull request GitHub itself answered: the four facts its
@@ -624,11 +805,20 @@ func ReadThroughCommitPulls(
 // written under a name a repository was renamed away from. It is also what the head is held to:
 // an envelope keyed by an old name carries a `head_repo` GitHub spells under the new one, and
 // comparing those two would make every such pull request a fork's (headInOwnRepository).
+//
+// Three of the four steps here can fail, and each failure is marked, or left bare, by what a
+// redelivery of the envelope would do with it (markHeadNotStored, ErrHeadNotStored). The
+// canonical read and the attribution are reads of Postgres before any row is written, so a
+// failure of either loses the head row exactly as a refused insert does and both are marked;
+// the attribution's own exception, a rate limit, is not. The split this function makes for
+// itself is the one failure it returns bare without asking markHeadNotStored at all: a name
+// that is not `owner/repo` is malformed in the envelope, so the next delivery of the same
+// envelope carries the same name and would fail on it again.
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) ([]string, error) {
 	given := payload["repo"]
 	repoFull, err := refs.CanonicalRepo(ctx, in.pool, given)
 	if err != nil {
-		return nil, err
+		return nil, markHeadNotStored(err)
 	}
 	owner, repo, err := splitRepo(repoFull)
 	if err != nil {
@@ -641,7 +831,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 			HeadRef: payload["head_ref"],
 		}, payload["head_repo"], number)
 	if err != nil {
-		return nil, err
+		return nil, markHeadNotStored(err)
 	}
 	// The envelope is itself a fresh read of the head, so the row is stamped read and the
 	// reconcile does not spend three GitHub calls re-reading what the event just delivered —
@@ -658,6 +848,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,
+		MergeCommitSHA: payload["merge_commit_sha"],
 	}, given)
 }
 

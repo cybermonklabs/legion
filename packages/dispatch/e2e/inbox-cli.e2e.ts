@@ -1,7 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -19,12 +18,13 @@ import {
   replyToMessageDelivery,
   requestApproval,
   snoozeAsk,
+  withOpenedAsk,
 } from "./api";
 import { cliSession, runDispatch } from "./dispatch-cli";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -238,7 +238,7 @@ async function seedInbox(): Promise<SeededInbox> {
   await snoozeAsk(deferredAsk.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), {
     login: "alice",
   });
-  const approval = await requestApproval(gate.primary_artifact_id, {}, asker);
+  const approval = withOpenedAsk(await requestApproval(gate.primary_artifact_id, {}, asker));
   await createAsk(elsewhere.key, { question: "Does this block bob's release?" }, asker);
 
   // A document has no assignee, so its question is nobody's own: neither list holds it.
@@ -296,14 +296,10 @@ async function seedInbox(): Promise<SeededInbox> {
   };
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it", async ({
+// @pr: Sign-in and tokens: `dispatch inbox` under a person's own token lists what the page lists, and every act it makes is theirs.
+test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it @pr", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+}) => {
   // Cold `bun` starts for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   const seeded = await seedInbox();
@@ -501,8 +497,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
 test("dispatch inbox lists the reader's unread threads, the page's own thread rows: the thread an agent wrote in and the message a session answered, each with its owner, its replier and its age", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+}) => {
   // A cold `bun` start for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   await seedInbox();
@@ -526,12 +521,13 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
     // The threads the server answers this reader, and no others: the comment thread of hers an
     // agent has written in, and the message she sent a session that it answered.
     const listed = await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" });
+    const listedRowsRead = listed.rows ?? [];
     expect(listed.total).toBe(2);
-    expect(printedThreads(printed)).toEqual(listed.rows.map((row) => row.ref).sort());
+    expect(printedThreads(printed)).toEqual(listedRowsRead.map((row) => row.ref).sort());
 
     // And the same two on the page, which lists a thread row beside the asks under the id the
     // server's row is named by. Polled, because the page reads its threads of its own accord.
-    const threadRows = listed.rows
+    const threadRows = listedRowsRead
       .map((row) => (row.kind === "agent" ? agentRowId(row.thread_id) : replyRowId(row.thread_id)))
       .sort();
     await page.goto("/");
@@ -540,9 +536,9 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
       .toEqual(threadRows);
     expect(printed.rows).toHaveLength(threadRows.length);
 
-    const replyRow = listed.rows.find((row) => row.kind !== "agent");
+    const replyRow = listedRowsRead.find((row) => row.kind !== "agent");
     if (replyRow === undefined) throw new Error("the server answered this reader no Reply row");
-    const agentRow = listed.rows.find((row) => row.kind === "agent");
+    const agentRow = listedRowsRead.find((row) => row.kind === "agent");
     if (agentRow === undefined) throw new Error("the server answered this reader no Agent row");
 
     // The Reply row is named by the issue its thread sits on and carries the head of the line

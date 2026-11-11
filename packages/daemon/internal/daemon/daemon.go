@@ -81,12 +81,23 @@ const (
 	// for the work the drain's end cuts short to return before the budget runs out. Work still
 	// running at the budget's end, a call into a process that does not answer, is logged with each
 	// claim still deciding and not waited on: the next boot re-adopts each process a claim records
-	// and relaunches each launch left unrecorded. stampTimeout bounds the stamp, and storeCloseTimeout
-	// the store's close after it, so the daemon returns at most
-	// stopBudget+stampTimeout+storeCloseTimeout (22 s) after its stop begins, inside the 30 seconds a
-	// pod is given between SIGTERM and SIGKILL. Before the boot is recorded, a signal ends the daemon
-	// through each boot step's own bounds, as Run says.
-	stopBudget        = 10 * time.Second
+	// and relaunches each launch left unrecorded. natsCloseTimeout bounds the close of the
+	// workflow's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
+	// after it, so the daemon returns at most
+	// stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after its stop begins,
+	// inside the 30 seconds a pod is given between SIGTERM and SIGKILL. Before the boot is
+	// recorded, a signal ends the daemon through each boot step's own bounds, as Run says.
+	stopBudget = 10 * time.Second
+	// natsCloseTimeout bounds the close of the workflow's Envoy NATS connection on the stop path
+	// (closeWorkflowNATS). nats.Conn.Close flushes the outbound buffer while it holds the
+	// connection's own lock (nats.go v1.53.1, nats.go:6098-6101: nc.bw.flush() when the socket is
+	// up and no reconnect is in progress), that write goes through timeoutWriter, whose deadline
+	// is Opts.FlusherTimeout (nats.go:2295-2296, :6827), and the default is a minute
+	// (nats.go:67), which natsauth.Connect leaves as it is. So a server that has stopped reading
+	// from a full send buffer would hold the stop there for up to that minute. A connection the
+	// daemon stops waiting for costs nothing: the process is ending, and the server drops the
+	// socket when it goes.
+	natsCloseTimeout  = 2 * time.Second
 	stampTimeout      = 10 * time.Second
 	storeCloseTimeout = 2 * time.Second
 	// streamSocket is the worker stream's unix socket under the state directory: the one address
@@ -108,26 +119,18 @@ const (
 	// busyBackoffFirst is the Sandbox runtime's first wait before a launch's request the API server
 	// answered overloaded is sent again (sandbox.Options.BusyBackoff), doubled up to 8 s.
 	busyBackoffFirst = 250 * time.Millisecond
-	// cleanSessionStopBudget bounds one clean stop of an Envoy session registration
-	// (cleanSessionStop). It is longer than the listener's own budget for that route
-	// (sendRequestBudget, packages/envoy/cmd/listener/api.go: 3.5 s), so a listener that answers
-	// at all answers inside it, and short enough that one that never answers is abandoned while
-	// the claim's relaunch is still a launch backoff and a process boot away
-	// (launchBackoffFirst), rather than left in flight for as long as the listener likes. What
-	// keeps a stop that does land late off the relaunch's registration is the condition the stop
-	// carries (cleanSessionStop), not this bound.
+	// cleanSessionStopBudget bounds one clean stop of an Envoy session registration — the
+	// registry read and the delete that follows it, together (cleanSessionStop). It is longer
+	// than the listener's own budget for one route (sendRequestBudget,
+	// packages/envoy/cmd/listener/api.go: 3.5 s) and shorter than two of them, so a listener
+	// answering promptly answers both inside it, while a read that spends the whole budget sends
+	// no delete and one answered late leaves the delete less than its own route's budget — which
+	// costs that session at most the wait it already had. It is short enough that a listener
+	// which never answers is abandoned while the claim's relaunch is still a launch backoff and
+	// a process boot away (launchBackoffFirst), rather than left in flight for as long as the
+	// listener likes. What keeps a stop that does land late off the relaunch's registration is
+	// the two conditions the stop carries (cleanSessionStop), not this bound.
 	cleanSessionStopBudget = 5 * time.Second
-	// cleanSessionStopSkewAllowance is how far before the moment its probe judged a dead role's
-	// process gone the clean stop dates itself (cleanSessionStop). The listener compares that
-	// moment with the registration's UpdatedAt, which the registering process stamped on its own
-	// clock, so a daemon clock ahead of the listener's by δ would otherwise delete a relaunch's
-	// registration written up to δ after the stop. Dating the stop earlier moves every skew
-	// toward the safe answer, which is the refusal: a stop that is kept costs the session only
-	// the wait it already had, where one that deletes the live registration of the process that
-	// replaced the dead one is the loss this whole path exists to stop. Half the first launch
-	// backoff is the size of it, because the relaunch's registration cannot land sooner than
-	// that backoff plus a process boot, so no stop that is owed is refused by it.
-	cleanSessionStopSkewAllowance = launchBackoffFirst / 2
 )
 
 // overrides are the parts of a daemon a test replaces, and the listener `legion start` inherited;
@@ -305,7 +308,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// GitHub's transient failures within appMintRetry; a repository whose installation read fails
 	// is left out and read again, never a refused boot. The boot budget bounds none of them, as it
 	// does not bound the plugin gate or the image probe: the work after them has a budget of its own.
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -331,6 +334,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
+		plan.providerErrorRunReached = workflow.providerErrorRunReached
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -521,6 +525,21 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		lived <- err
 	}()
 	liveErr := s.awaitStop(lived, failed, bootID)
+	// awaitStop can return through its deadline arm while the goroutine above is still inside
+	// supervision.stop, whose wait is unbounded (stop's own comment), so the connection the stop
+	// asked workflowRuntime.stop to close is still open when run returns, and the daemon dials
+	// under natsauth.ReconnectForever, which never gives a connection up by itself. Only the
+	// connection is closed here, not the whole of workflowRuntime.stop: that also closes the token
+	// manager, whose Close waits for every running token_command with no bound
+	// (internal/appauth/tokencommand.go, Manager.Close), while the daemon's stop contract is that
+	// it returns at most stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after
+	// its stop begins, inside a pod's 30 s grace. The close itself is bounded as well
+	// (closeWorkflowNATS), because nats.Conn.Close flushes the connection's outbound buffer under
+	// its own lock with the default minute's write deadline, which a server that has stopped
+	// reading would otherwise hold the stop in, long past that contract. The close is harmless
+	// when the goroutine later reaches workflowRuntime.stop, because closing the connection is
+	// idempotent.
+	closeWorkflowNATS(workflow, log)
 
 	// The stop cancelled store queries in flight, and a pooled connection one of them ran on can
 	// still carry the read deadline that cancellation set, which failed the stamp with `stop boot N:
@@ -556,6 +575,26 @@ func (s *supervision) awaitStop(lived, failed <-chan error, bootID int64) error 
 		return err
 	default:
 		return nil
+	}
+}
+
+// closeWorkflowNATS closes the workflow's Envoy NATS connection and nothing else
+// (workflowRuntime.closeNATS), waiting for it up to natsCloseTimeout: nats.Conn.Close flushes the
+// outbound buffer under the connection's own lock, with a write deadline of a minute by default,
+// which the stop has no room for (natsCloseTimeout). It is safe on a nil workflow, as
+// workflowRuntime.closeNATS is.
+func closeWorkflowNATS(workflow *workflowRuntime, log *slog.Logger) {
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		workflow.closeNATS()
+	}()
+	timer := time.NewTimer(natsCloseTimeout)
+	defer timer.Stop()
+	select {
+	case <-closed:
+	case <-timer.C:
+		log.Warn("legion daemon stopped waiting for its NATS connection to close", "after", natsCloseTimeout.String())
 	}
 }
 
@@ -605,6 +644,9 @@ type plan struct {
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
+	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
+	// in a provider error; nil without a workflow, where nobody is told.
+	providerErrorRunReached func(c supervise.Claim, reason string)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
 	tools         map[string]string
@@ -621,7 +663,10 @@ type plan struct {
 	memoryInstructions string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
-	prompts       *prompts.Composer
+	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
+	// hook name (readBoot): the engine is given words and never a path (engineConfig).
+	hookPrompts map[string]string
+	prompts     *prompts.Composer
 	// roleReferences are the task agents and skills the shared role prompts name
 	// (prompts.RoleReferences), which the gate on either runtime resolves beside the plugin's own.
 	roleReferences promptrefs.Names
@@ -756,7 +801,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
 		memoryInstructions: memoryInstructions,
-		dispatchToken:      reads.dispatchToken, prompts: composer, roleReferences: prompts.RoleReferences(),
+		dispatchToken:      reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		pluginRelaunchable: pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
@@ -1132,6 +1177,14 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
+	// the store has refused, by claim, waiting for the next sweep to write them
+	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
+	// one and the sweep writes it. Nothing of it goes in the store, as the pod-update sweep's
+	// own pace does not (podUpdateOpenings), and one claim owes at most one: a later stall of
+	// the same claim carries the record its owner wants.
+	backstopMu   sync.Mutex
+	backstopOwed map[claim.Token]stallNoticeOwed
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1299,16 +1352,17 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
 		},
-		Identity:      adoptIdentity(p.identity, p.repository),
-		Secrets:       p.secretsEnroller,
-		PhaseHolds:    p.phaseHolds,
-		RootHears:     p.rootHears,
-		RootTask:      p.rootTask,
-		TreeClosable:  p.treeClosable,
-		TaskConfirmed: p.taskConfirmed,
-		SessionGone:   cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
-		Clock:         p.clock,
-		Log:           log,
+		Identity:                adoptIdentity(p.identity, p.repository),
+		Secrets:                 p.secretsEnroller,
+		PhaseHolds:              p.phaseHolds,
+		RootHears:               p.rootHears,
+		RootTask:                p.rootTask,
+		TreeClosable:            p.treeClosable,
+		TaskConfirmed:           p.taskConfirmed,
+		ProviderErrorRunReached: p.providerErrorRunReached,
+		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
+		Clock:                   p.clock,
+		Log:                     log,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,
@@ -1333,12 +1387,17 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PodUpdateRetask:    cfg.PodUpdateRetask,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
-	return &supervision{
+	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
-	}, nil
+	}
+	// The machines' report of a stalled turn they ended goes to supervision, which is built
+	// after their deps: the one callback whose receiver is supervision itself, set here before
+	// any machine exists, as the workflow sets enqueue where it attaches.
+	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	return supervisionOf, nil
 }
 
 // cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone
@@ -1350,41 +1409,36 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 //
 // The machine calls it inside its own decision, under its lock, so the call is made on a
 // goroutine of its own, on supervising — supervision's lifetime, not the decision's context,
-// which the machine's caller can end the moment the decision returns.
+// which the machine's caller can end the moment the decision returns. goneAt, the moment the
+// stop belongs to, is read here, inside the decision and before any relaunch (Machine.died
+// calls sessionGone first), where no lock is waited on.
 //
-// That delete must never remove a registration newer than the stop it belongs to: the very
-// decision that asks for the stop goes on to relaunch the claim under the same session id
-// (Machine.died), and a delete still in flight by then would otherwise take the live
-// registration of the process that replaced the dead one — the loss this change exists to stop.
-// So the stop carries the moment it belongs to, read here, inside the decision and before any
-// relaunch (Machine.died calls sessionGone first), and the listener deletes only while the
-// stored registration has not been written since
-// (if_not_registered_after, notify.HTTPPublisher.DeleteSession). The judgement is the listener's,
-// at the revision it deletes, as the session registry's own compare-and-swap is: a stop that
-// lands after the relaunch registered is refused there, whatever this daemon knew when it sent
-// it. So every stop is sent, and the one that would have done the damage is the one the listener
-// keeps.
+// That delete must never take the registration of the process that replaced the dead one: the
+// very decision that asks for the stop goes on to relaunch the claim under the same session id
+// (Machine.died), and the relaunch registers that id again. So the stop names the dead
+// process's own registration — its client instance id, read from the listener first (send) —
+// and carries goneAt beside it, and the listener deletes only under both. What each condition
+// is for, and why neither alone would do, is on notify.DeleteConditions.
 //
-// The two clocks are not one. goneAt is read on this daemon's clock and compared with an
-// UpdatedAt the registering process stamped on its own, so a daemon ahead of the listener by δ
-// would call a registration written up to δ after the stop older than it, and delete exactly the
-// relaunch registration the condition is for. The stop therefore carries goneAt less
-// cleanSessionStopSkewAllowance, which moves every skew toward the refusal: the direction that
-// costs a session only the wait it already had.
+// The listener keeps the entry when either condition refuses it, so the id rescues no
+// registration the moment refuses: a heartbeat whose write lands after the probe, or a listener
+// clock ahead of this daemon's, is kept even where the id names the dead process, and that
+// session waits the gone horizon out.
 //
-// The request is bounded by cleanSessionStopBudget, so a listener that never answers does not
-// leave it in flight for as long as it likes.
+// The read and the delete share one budget, cleanSessionStopBudget, so a listener that never
+// answers does not leave the stop in flight for as long as it likes, and supervision's own end
+// ends it too.
 //
-// A listener that refuses the delete or cannot be reached costs the session nothing beyond the
-// wait it already had: the registration lapses on its own at the gone horizon. With no listener
-// configured nothing is told.
+// A listener that refuses the delete, keeps the registration, or cannot be reached costs the
+// session nothing beyond the wait it already had: the registration lapses on its own at the
+// gone horizon. With no listener configured nothing is told.
 func cleanSessionStop(supervising context.Context, envoyURL, token string, log *slog.Logger) func(string) {
 	if envoyURL == "" {
 		return nil
 	}
 	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
 	return func(session string) {
-		goneAt := time.Now().Add(-cleanSessionStopSkewAllowance)
+		goneAt := time.Now()
 		go stop.send(supervising, session, goneAt)
 	}
 }
@@ -1396,21 +1450,54 @@ type sessionStop struct {
 	log      *slog.Logger
 }
 
-// send is the goroutine cleanSessionStop starts, with goneAt the moment the stop belongs to -
-// the moment the probe judged the process gone, less cleanSessionStopSkewAllowance - which the
-// listener judges the stored registration against. It reports the stop refused, kept or done,
-// one line either way, since nothing waits on its answer.
+// send is the goroutine cleanSessionStop starts, with goneAt the moment the probe judged the
+// process gone. It reads what the listener holds for the session and then deletes that
+// registration by name: one read, one delete, one answer, and nothing is sent twice.
+//
+// A read the listener does not answer sends no delete at all. The moment is this daemon's own,
+// but the instance id is not: a failed read leaves unknown whether the entry names a client
+// process, and a delete sent then would rest on the moment alone for an entry that may well name
+// one, which is the case where the id is the relaunch's guard against a daemon clock ahead of
+// the listener's. An entry the listener answers with no instance id is known to name none, so
+// the moment-only delete is the only delete there is, and it is sent. A registration left
+// standing lapses at the gone horizon, the wait the session already had. An answer of no
+// registration is the outcome the stop asked for, already reached.
+//
+// It reports the stop refused, kept or done, one line either way, since nothing waits on its
+// answer. The listener keeps a registration for three separate reasons — another client
+// instance owns it, it was written after the moment, or the delete lost its compare-and-swap —
+// so the line says only that it was kept and carries the listener's own words for which
+// (SessionDeleted.Reason), beside the two conditions the stop named and the registration the
+// read answered with. The registration is what the read saw, not what the delete compared, so
+// where the entry changed between the two the line cannot say whose write refused it; where it
+// did not, it tells a stop refused for a successor's registration from one refused for the dead
+// process's own last heartbeat without asking the listener anything.
 func (s sessionStop) send(supervising context.Context, session string, goneAt time.Time) {
 	ctx, cancel := context.WithTimeout(supervising, cleanSessionStopBudget)
 	defer cancel()
-	stopped, err := s.sessions.DeleteSession(ctx, session, goneAt)
+	registration, err := s.sessions.ReadSessionRegistration(ctx, session)
+	if err != nil {
+		s.log.Warn("the Envoy listener did not answer what a dead role's session registration is, so no clean stop was sent",
+			"session", session, "error", err)
+		return
+	}
+	if !registration.Registered {
+		s.log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped", "session", session)
+		return
+	}
+	stopped, err := s.sessions.DeleteSession(ctx, session, notify.DeleteConditions{
+		ClientInstanceID:   registration.ClientInstanceID,
+		NotRegisteredAfter: goneAt,
+	})
 	if err != nil {
 		s.log.Warn("the Envoy listener did not take the clean stop of a dead role's session", "session", session, "error", err)
 		return
 	}
 	if !stopped.Deleted {
-		s.log.Info("the Envoy listener kept the registration of a dead role's session: it was written after the stop",
-			"session", session, "goneAt", goneAt.UnixMilli(), "reason", stopped.Reason)
+		s.log.Info("the Envoy listener kept the registration of a dead role's session",
+			"session", session, "goneAt", goneAt.UnixMilli(),
+			"clientInstanceID", registration.ClientInstanceID, "lastSeen", registration.LastSeen,
+			"reason", stopped.Reason)
 		return
 	}
 	s.log.Info("the Envoy session of a role whose process is gone was stopped", "session", session)
@@ -1716,9 +1803,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 // reconcileOrphans ends, every sweep interval, whatever the runtime holds that belongs to none of
 // the claims the daemon has not retired, once it has idled past the grace, re-posts StalePlugin
 // for every live claim whose contract still differs — the retry a relaunch the boot pass
-// (refreshStalePlugins) could not complete needs — and carries every update round a step
-// (reconcilePodUpdates). Both ride the sweep because it is the one periodic pass that already
-// reads every claim, rather than running a timer of their own.
+// (refreshStalePlugins) could not complete needs — carries every update round a step
+// (reconcilePodUpdates), and ends the turn of every claim whose agent has stopped stepping
+// (backstopStalledTurns). All three ride the sweep because it is the one periodic pass that
+// already reads every claim, rather than running a timer of their own; its minute is far below
+// the smallest backstop bound a configuration can hold.
 func (s *supervision) reconcileOrphans(ctx context.Context) {
 	ticker := time.NewTicker(s.plan.orphanSweep)
 	defer ticker.Stop()
@@ -1740,6 +1829,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		}
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
+		s.backstopStalledTurns(ctx, claims)
 	}
 }
 
@@ -1875,6 +1965,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		Backend:            cfg.BackendFor,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
 		Decisions:          s.decided,

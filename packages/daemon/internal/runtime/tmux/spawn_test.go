@@ -202,28 +202,40 @@ func TestPanePairs(t *testing.T) {
 	}
 }
 
-// The four stall limits a phase worker's reminder runs on reach a pane as ordinary -e pairs: the
-// daemon merges the ones it holds into the spec's Env (the daemon package's workerSpawnSpec) and
-// a pane carries Env verbatim, so nothing of them is tmux's own.
+// The seven stall limits a Legion session's turn runs on reach a pane as ordinary -e pairs: the
+// daemon merges the ones it holds into the spec's Env (the daemon package's SpawnSpec, after its
+// fork) and a pane carries Env verbatim, so nothing of them is tmux's own, and the controller's
+// pane is told them exactly as a phase worker's is.
 func TestPanePairsCarryTheStallLimits(t *testing.T) {
-	spec := testSpec()
 	limits := map[string]string{
-		"LEGION_STALL_REMINDER_MS":     "45000",
-		"LEGION_STALL_WAITING_MS":      "900000",
-		"LEGION_STALL_RESUME_MS":       "15000",
 		"LEGION_STALL_ARCHITECT_AFTER": "3",
+		"LEGION_STALL_CALL_BOUND_MS":   "3600000",
+		"LEGION_STALL_CALL_GRACE_MS":   "300000",
+		"LEGION_STALL_REMINDER_MS":     "45000",
+		"LEGION_STALL_RESUME_MS":       "15000",
+		"LEGION_STALL_STEP_MS":         "120000",
+		"LEGION_STALL_WAITING_MS":      "900000",
 	}
-	maps.Copy(spec.Env, limits)
 	in := PaneInputs{
 		StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", DaemonURL: "http://127.0.0.1:13370",
 		EnvoyURL: "http://127.0.0.1:9020", GHOwnersDir: "/state/secrets/legion-omp-legion-43-tester-gh",
 		GHDefault: "acme", GH: "/usr/bin/gh",
 	}
-	pairs := panePairs(spec, in, secretFiles("/state", spec))
-	for name, value := range limits {
-		if !slices.Contains(pairs, name+"="+value) {
-			t.Errorf("the pane's -e pairs = %q, want %q among them", pairs, name+"="+value)
-		}
+	controller := runtime.SpawnSpec{
+		Claim: claim.ControllerToken("omp"), Project: "omp", Role: claim.RoleController, Generation: 1,
+		BootToken: "boot-secret", Env: map[string]string{},
+		Prompt: runtime.PromptParts{RolePromptPaths: []string{"/roles/controller-root.md"}},
+	}
+	for kind, spec := range map[string]runtime.SpawnSpec{"a phase worker": testSpec(), "the controller": controller} {
+		t.Run(kind, func(t *testing.T) {
+			maps.Copy(spec.Env, limits)
+			pairs := panePairs(spec, in, secretFiles("/state", spec))
+			for name, value := range limits {
+				if !slices.Contains(pairs, name+"="+value) {
+					t.Errorf("%s's -e pairs = %q, want %q among them", kind, pairs, name+"="+value)
+				}
+			}
+		})
 	}
 }
 
@@ -430,6 +442,12 @@ func TestNewRefusesAProviderDispatchTokenOnlyWhenDispatchIsConfigured(t *testing
 // the pairs and not to runtimeOwned is one a spec could override; a name left in runtimeOwned that
 // the pairs no longer set is one a spec is refused for nothing. A controller pane is told the same
 // gh pairs as any other, so the sets are equal.
+//
+// PUBLIC_LEAK_CHECK is the one pair the runtime sets that is deliberately not owned, so it is
+// left out of the inputs here and read on its own below: an operator's pane variable and a
+// spec's own Env must be able to point a pane at another copy of the check, and a name the
+// runtime owned could be set by neither
+// (TestAnOperatorsCheckAndASpecsOutrankTheResolvedOne).
 func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	spec := testSpec()
 	spec.Env, spec.Secrets = nil, nil
@@ -448,6 +466,22 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	}
 	if !reflect.DeepEqual(told, runtimeOwned) {
 		t.Errorf("a pane is told %v by the runtime, and runtimeOwned is %v", slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwned)))
+	}
+	// The resolved check is the one name beyond that set, and it joins neither owned set.
+	in.LeakCheck = "/opt/machine/public-leak-check.sh"
+	withCheck := map[string]bool{}
+	pairs = panePairs(spec, in, secretFiles("/state", spec))
+	for i := 1; i < len(pairs); i += 2 {
+		name, _, _ := strings.Cut(pairs[i], "=")
+		withCheck[name] = true
+	}
+	want := maps.Clone(runtimeOwned)
+	want["PUBLIC_LEAK_CHECK"] = true
+	if !reflect.DeepEqual(withCheck, want) {
+		t.Errorf("a pane told a resolved check is told %v, want the runtime's own names and PUBLIC_LEAK_CHECK", slices.Sorted(maps.Keys(withCheck)))
+	}
+	if ownedNames["PUBLIC_LEAK_CHECK"] {
+		t.Error("PUBLIC_LEAK_CHECK is in ownedNames, so a spec that points its pane at another copy of the check is refused")
 	}
 }
 

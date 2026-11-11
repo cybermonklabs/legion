@@ -128,19 +128,22 @@ func (s *server) createAsk(w http.ResponseWriter, r *http.Request) {
 	s.createAskFor(w, r, issueOwner(r.PathValue("key")))
 }
 
+// createAskInput is the body of POST /api/v1/issues/{key}/asks and POST /api/v1/artifacts/{id}/asks.
+type createAskInput struct {
+	Question string             `json:"question" required:"true"`
+	Kind     string             `json:"kind"`
+	Options  []model.AskOption  `json:"options"`
+	Multiple *bool              `json:"multiple"`
+	Urgency  string             `json:"urgency"`
+	Anchor   *model.AnchorInput `json:"anchor"`
+	Actor    *model.Actor       `json:"actor"`
+}
+
 func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owner) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Question string             `json:"question"`
-		Kind     string             `json:"kind"`
-		Options  []model.AskOption  `json:"options"`
-		Multiple *bool              `json:"multiple"`
-		Urgency  string             `json:"urgency"`
-		Anchor   *model.AnchorInput `json:"anchor"`
-		Actor    *model.Actor       `json:"actor"`
-	}
+	var input createAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -318,17 +321,20 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	WriteJSON(w, http.StatusCreated, withSuggestions(ask, advice, suggestions))
 }
 
+// editAskInput is the body of PATCH /api/v1/asks/{id}.
+type editAskInput struct {
+	Question *string            `json:"question"`
+	Options  *[]model.AskOption `json:"options"`
+	Multiple *bool              `json:"multiple"`
+	Urgency  *string            `json:"urgency"`
+	Actor    *model.Actor       `json:"actor"`
+}
+
 func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	var input struct {
-		Question *string            `json:"question"`
-		Options  *[]model.AskOption `json:"options"`
-		Multiple *bool              `json:"multiple"`
-		Urgency  *string            `json:"urgency"`
-		Actor    *model.Actor       `json:"actor"`
-	}
+	var input editAskInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -595,6 +601,9 @@ type openAsk struct {
 	HumanReplied bool                `json:"human_replied"`
 	LastReply    *model.AskLastReply `json:"last_reply"`
 	WaitingOn    string              `json:"waiting_on"`
+	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression), empty when
+	// nobody does: an ask on a project document or an unassigned issue that nobody was handed.
+	WaitingOnPerson string `json:"waiting_on_person"`
 }
 
 type openAsksResponse struct {
@@ -674,7 +683,8 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 					'author', lr.author,
 					'created_at', lr.created_at
 				) end as last_reply,
-				`+waitingOnExpression+` as waiting_on
+				`+waitingOnExpression+` as waiting_on,
+				`+askedOfPersonExpression+` as waiting_on_person
 			from mine a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id`+lastReplyJoin+`
@@ -816,6 +826,13 @@ func parseAskListThread(r *http.Request) (bool, error) {
 	return true, nil
 }
 
+// askRead is the body GET /api/v1/asks/{id} answers: the single-ask read is a thread with the
+// ask beside it.
+type askRead struct {
+	Ask model.Ask `json:"ask"`
+	askThread
+}
+
 func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask") {
 		return
@@ -864,10 +881,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// The single-ask read is a thread with the ask beside it, so it and every Inbox or ask-list
 	// thread serialise through one definition and carry the same keys.
-	WriteJSON(w, http.StatusOK, struct {
-		Ask model.Ask `json:"ask"`
-		askThread
-	}{Ask: ask, askThread: askThread{
+	WriteJSON(w, http.StatusOK, askRead{Ask: ask, askThread: askThread{
 		Replies: replies, Edits: edits, Answers: answers, Followers: followers, askReach: reaches[ask.ID],
 	}})
 }

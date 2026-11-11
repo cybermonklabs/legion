@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, type Response, test } from "@playwright/test";
-
 import type { ArtifactUploadResponse } from "../web/src/api/types";
 import {
   REF_PREVIEW_CLOSE_DELAY_MS,
@@ -18,9 +16,9 @@ import {
   getIssueArtifactText,
 } from "./api";
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
-import { resetDatabase } from "./seed";
 import { ONE_PIXEL_PNG, pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, type Response, test } from "./test";
 import { asUser } from "./users";
 
 // A picture pasted into a message, an ask's answer or a direct message is uploaded and written as
@@ -33,10 +31,6 @@ const agentSession = {
   actor: { kind: "session" as const, id: "e2e-pictures" },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Waits for `picture` to have loaded real pixels: scrolled to first, since it loads lazily. */
 async function expectDrawn(picture: Locator, src: string): Promise<void> {
@@ -77,7 +71,8 @@ async function expectSucceeded(answer: Promise<Response>): Promise<Response> {
   return response;
 }
 
-test("a picture pasted into an issue message shows inline in the conversation", async ({
+// @pr: Upload and download: a picture pasted into a message is uploaded and drawn inline in the conversation.
+test("a picture pasted into an issue message shows inline in the conversation @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -277,7 +272,9 @@ test("a picture written into a spec draws in the editor and in a past version, w
     );
     const newestVersion = async () =>
       Math.max(
-        ...(await getArtifact(issue.primary_artifact_id)).versions.map(({ number }) => number)
+        ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(
+          ({ number }) => number
+        )
       );
     await expect.poll(newestVersion).toBeGreaterThan(1);
     const pictured = await newestVersion();

@@ -1,9 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createIssue, createProject, editArtifact, getArtifact, getIssueArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A bare email address in Markdown a document is written from - a spec an issue starts with, or
@@ -35,11 +33,8 @@ const entry = fixture("email-autolinks-in-a-spec");
  *  it, so the two versions the past-version half of the row needs are the entry's own text. */
 const [firstBlock, ...insertedBlocks] = entry.markdown.trimEnd().split("\n\n");
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("an email address written into a spec is a mailto link in the editor and in a past version", async ({
+// @pr: The mailto family's only row: an address written into a spec is a link in the editor and in a past version.
+test("an email address written into a spec is a mailto link in the editor and in a past version @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -59,7 +54,7 @@ test("an email address written into a spec is a mailto link in the editor and in
   );
   const newestVersion = async () =>
     Math.max(
-      ...(await getArtifact(issue.primary_artifact_id)).versions.map(({ number }) => number)
+      ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(({ number }) => number)
     );
   await expect.poll(newestVersion).toBeGreaterThan(1);
   const written = await newestVersion();

@@ -1,5 +1,4 @@
 import { AGENT_STREAM_LIMITS, capAgentStreamText } from "@legion/contracts";
-import { expect, type Page, test } from "@playwright/test";
 
 import { agentRow, type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
@@ -12,8 +11,8 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { expectConsecutiveLinksClear, expectUncovered } from "./layout";
-import { resetDatabase } from "./seed";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -87,7 +86,12 @@ const replay = {
   v: 1,
 };
 
-function assistantFrame(seq: number, text: string, streaming: boolean, model?: string): object {
+function assistantFrame(
+  seq: number,
+  text: string,
+  streaming: boolean,
+  model?: string
+): Record<string, unknown> {
   return {
     kind: "message",
     message: {
@@ -107,7 +111,12 @@ function assistantFrame(seq: number, text: string, streaming: boolean, model?: s
  *  its place in time, past the replay's last turn, so the thread orders it newest, while `seq`
  *  orders the snapshots of one turn. `assistantFrame` reuses one id and one time, so every call
  *  to it is another snapshot of one turn, dated into the middle of a long replay. */
-function liveTurn(index: number, seq: number, text: string, streaming: boolean): object {
+function liveTurn(
+  index: number,
+  seq: number,
+  text: string,
+  streaming: boolean
+): Record<string, unknown> {
   return {
     kind: "message",
     message: {
@@ -123,7 +132,7 @@ function liveTurn(index: number, seq: number, text: string, streaming: boolean):
 }
 
 /** A replay long enough that the thread must scroll at any viewport: forty turns of prose. */
-function longReplay(sessionID: string): object {
+function longReplay(sessionID: string): Record<string, unknown> {
   const frames = Array.from({ length: 40 }, (_, index) => ({
     kind: "message",
     message: {
@@ -158,17 +167,14 @@ const FOLD_FRAMES = replay.frames.map((frame, index) =>
  *  older ones gone and `extra` frames behind them. The frames keep their own `at`, so the turns
  *  that survive are read where they always were, and a `seq` is last-writer-wins per message, so
  *  `extra` only orders its own snapshots. */
-function rebuiltReplay(sessionID: string, from: number, extra: readonly object[] = []): object {
-  const { frames } = longReplay(sessionID) as { frames: object[] };
+function rebuiltReplay(
+  sessionID: string,
+  from: number,
+  extra: readonly Record<string, unknown>[] = []
+): Record<string, unknown> {
+  const { frames } = longReplay(sessionID) as { frames: Record<string, unknown>[] };
   return { frames: [...frames.slice(from), ...extra], session_id: sessionID, v: 1 };
 }
-
-/** The phone layout runs on Chromium (the `iphone` project) and on WebKit (`webkit-iphone`). */
-const PHONE_PROJECTS = ["iphone", "webkit-iphone"];
-
-/** Reading back through a live transcript is the same in both engines, so it runs on the desktop
- *  project and the phone one; what the phone's WebKit is for is the layout row below. */
-const READING_PROJECTS = ["chromium", "iphone"];
 
 interface LiveViewLayout {
   /** The document's scrollable height and the layout viewport's height. */
@@ -307,7 +313,10 @@ async function expectNewestTurnAboveComposer(page: Page): Promise<void> {
  * same live socket and asks the session for its replay again. `publishAgentStreamFrame` sets what
  * that next subscription is answered with rather than pushing into the open one, so `next` is in
  * place before the viewer is dropped. */
-async function rebuildThroughResubscribe(sessionID: string, next: object): Promise<void> {
+async function rebuildThroughResubscribe(
+  sessionID: string,
+  next: Record<string, unknown>
+): Promise<void> {
   await publishAgentStreamFrame(sessionID, next, "replay");
   await dropAgentStreamViewers(sessionID);
 }
@@ -364,11 +373,11 @@ async function lowerKeyboard(page: Page): Promise<void> {
 }
 
 test.beforeEach(async () => {
-  await resetDatabase();
   await setLiveSessions([planner]);
 });
 
-test("the conversation view replays what the session held, streams its next turn, and sends as Send, the terminal's Enter, through the existing delivery", async ({
+// @pr: Live delivery: the transcript replays, the next turn streams in, and Send reaches the session through the existing delivery.
+test("the conversation view replays what the session held, streams its next turn, and sends as Send, the terminal's Enter, through the existing delivery @pr", async ({
   browser,
 }) => {
   await publishAgentStreamFrame(planner.session_id, replay, "replay");
@@ -577,6 +586,10 @@ test("mid-turn, an empty box refuses Send, says why on screen, and sends nothing
     const sent = (await getSentMessages()).length;
     await send.click({ force: true });
     await field.press("Enter");
+    // Neither the forced click nor Enter may send while the box is empty, and a send that never
+    // happens marks nothing to wait on: this window is the check. One would be a POST made in
+    // the task of the gesture that made it and recorded by the fake Envoy a server hop later, so
+    // 500 ms of real time is many frames past where it would show.
     await page.waitForTimeout(500);
     expect(await getSentMessages()).toHaveLength(sent);
 
@@ -936,13 +949,9 @@ test("a turn whose thinking Claude Code hid reads as the turn's thinking, beside
   }
 });
 
-test("on a phone the live view never scrolls the page, keeps its header and composer on screen, and follows the keyboard @phone", async ({
+test("on a phone the live view never scrolls the page, keeps its header and composer on screen, and follows the keyboard @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the phone layout runs on the phone projects"
-  );
+}) => {
   const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-0000000390a4" };
   await setLiveSessions([planner, phone]);
   await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
@@ -1005,13 +1014,9 @@ test("on a phone the live view never scrolls the page, keeps its header and comp
 // session's own publisher (packages/pi-shared/src/agent-stream.ts), is still an unbroken
 // identifier with no spaces: on a 390 px phone it does not fit the header pill or the turn's own
 // label, and without an ellipsis it forced the whole page to scroll sideways rather than wrapping.
-test("a capped model name ends in an ellipsis on a phone, in the header and on the turn, and never forces the page to scroll sideways @phone", async ({
+test("a capped model name ends in an ellipsis on a phone, in the header and on the turn, and never forces the page to scroll sideways @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the phone layout runs on the phone projects"
-  );
+}) => {
   const longModel = capAgentStreamText(
     `anthropic/${"x".repeat(300)}`,
     AGENT_STREAM_LIMITS.modelChars
@@ -1056,13 +1061,9 @@ test("a capped model name ends in an ellipsis on a phone, in the header and on t
 // A turn's reasoning is 12px italic text on 16px lines. Two reasoning links on consecutive lines:
 // the lower one's padded box has to start at or below the upper one's own text, or a tap on the
 // upper line can open the lower link.
-test("on a phone the live view keeps a reasoning link's padded box off the line above @phone", async ({
+test("on a phone the live view keeps a reasoning link's padded box off the line above @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the padding is the phone media query's: at desktop width it is off, so the row would pass whatever the CSS"
-  );
+}) => {
   const reasoning: FakeSession = {
     ...planner,
     session_id: "01a0e0c1-0000-7000-8000-0000000304a1",
@@ -1115,8 +1116,7 @@ test("on a phone the live view keeps a reasoning link's padded box off the line 
 
 test("at desktop width the live view fills the main column beside the navigation and the thread is its scroller", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const desktop: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-000000001280" };
   await setLiveSessions([planner, desktop]);
   await publishAgentStreamFrame(desktop.session_id, longReplay(desktop.session_id), "replay");
@@ -1136,13 +1136,9 @@ test("at desktop width the live view fills the main column beside the navigation
   }
 });
 
-test("a document-scrolling route is never capped for the keyboard, at mount or after focus and resize @phone", async ({
+test("a document-scrolling route is never capped for the keyboard, at mount or after focus and resize @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the phone layout runs on the phone projects"
-  );
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -1189,11 +1185,7 @@ test("a document-scrolling route is never capped for the keyboard, at mount or a
 // message, with the thread's scroll measured after each.
 test("a reader scrolled back into a live session's transcript keeps their place, and Jump to latest carries what arrived @phone", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !READING_PROJECTS.includes(testInfo.project.name),
-    "reading back runs on the desktop and phone Chromium projects"
-  );
+}) => {
   const reading: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a001" };
   await setLiveSessions([planner, reading]);
   await publishAgentStreamFrame(
@@ -1308,8 +1300,7 @@ test("a reader scrolled back into a live session's transcript keeps their place,
 // is no arrival at all - it leaves them on the line they were reading, where the refusal is.
 test("sending a message from the live view while scrolled back takes the reader to the live end, and a refused send leaves them where they are", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const sender: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a002" };
   await setLiveSessions([planner, sender]);
   await publishAgentStreamFrame(sender.session_id, longReplay(sender.session_id), "replay");
@@ -1360,8 +1351,7 @@ test("sending a message from the live view while scrolled back takes the reader 
 // up on - a count carried over from the session before would be about turns nobody missed.
 test("opening a session, switching to another, and reloading each land the reader at the newest text with no count", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const first: FakeSession = {
     ...planner,
     session_id: "01a0e0c1-0000-7000-8000-00000000a003",
@@ -1454,8 +1444,7 @@ test("on a phone the live view's Jump to latest covers none of the composer and 
 // list the composer opens over it, so the row a reader presses is the row that is picked.
 test("a transcript shorter than the viewport shows no Jump to latest, and the control never swallows the composer's slash commands", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const commander: FakeSession = {
     ...planner,
     session_id: "01a0e0c1-0000-7000-8000-00000000a006",
@@ -1511,8 +1500,7 @@ test("a transcript shorter than the viewport shows no Jump to latest, and the co
 // hold a number that means another turn entirely once the turns above it are gone.
 test("a rebuilt transcript keeps a scrolled-back reader on the turn they were reading", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const kept: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a007" };
   await setLiveSessions([planner, kept]);
   await publishAgentStreamFrame(kept.session_id, longReplay(kept.session_id), "replay");
@@ -1566,8 +1554,7 @@ test("a rebuilt transcript keeps a scrolled-back reader on the turn they were re
 // instead, following again, with nothing left to catch up on.
 test("a rebuilt transcript that dropped the reader's turn lands them at the newest text", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const dropped: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a008" };
   await setLiveSessions([planner, dropped]);
   await publishAgentStreamFrame(dropped.session_id, longReplay(dropped.session_id), "replay");
@@ -1600,8 +1587,7 @@ test("a rebuilt transcript that dropped the reader's turn lands them at the newe
 // theirs alone - no compensation, the hook's or the browser's, may be read into it.
 test("a rebuilt transcript leaves a reader who was at the live end at the live end, and still sees their next scroll back", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const held: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a009" };
   await setLiveSessions([planner, held]);
   await publishAgentStreamFrame(held.session_id, longReplay(held.session_id), "replay");

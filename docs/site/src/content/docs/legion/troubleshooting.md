@@ -37,6 +37,7 @@ legion start --config legion.yaml --check-config
 | `role_config_files.<role> entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | Under Kubernetes a role's overlay must be a file the operator's mounts carry: mount the ConfigMap holding it, or add the item. |
 | `role_config_files.<role> names <file>, which the <role>'s Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
 | `role_config_files.<role> …` (another refusal) | The message names the entry: a role that is not Legion's, an empty list, a relative path, a path named twice or already every role's, the controller without `controller: daemon`, or a role on `claude`. |
+| `worker_stall_backstop_hours.<role> (<bound>) is below the whole stall ladder the <role>'s own plugin runs (<longest call> + <grace> + 2 × <step> = <ladder>, where the first number is …): …` | Raise that role's bound to the ladder the message names, or set `0` to switch the backstop off for that role. The daemon's backstop is there for a worker whose own stall watch is itself broken, and the daemon cannot see that watch running, so a bound below the ladder would end a turn the plugin it backs up is still recovering. The ladder is the longest one call of that worker can legitimately run, plus the grace over a deadline a call declared for itself (`LEGION_STALL_CALL_GRACE_MS`, 5 minutes), plus the two gaps between the recovery steps (`LEGION_STALL_STEP_MS`, 2 minutes each). The longest call is the larger of two numbers, and the message says which one it took: the bound a tool call no deadline judges gets (`LEGION_STALL_CALL_BOUND_MS`, by default 4 hours for an implementer and a reviewer and 1 hour for every other role and the controller, and that default again where the deployment sets `0`, which switches the worker's watch off rather than bounding its calls at zero), and the hour the host clamps a deadline a call declares for itself to ([legion.yaml](/legion/legion/running-legion/#legionyaml)). |
 | `projects.<KEY>.memory.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a project with no `memory` block gets), `on`, or `random`. |
 | `projects.<KEY>.memory is <mode> and names no config_files: …` | A mode other than `off` draws new trees into the memory group, and those trees read their overlays from that key: name at least one, or set `mode: off`. |
 | `projects.<KEY>.memory names config_files, and worker_backends.<role> is claude, which reads no PI_CONFIG_FILES: …` | A block that names overlays hands them to every memory-group tree's roles whatever the mode is, and Claude Code reads no `PI_CONFIG_FILES`: put every issue role on Oh My Pi, or take the overlays out of the block. |
@@ -271,7 +272,7 @@ Check, in order:
 
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
-   counts issues at work, not trees). A parent whose own first phase waits for its open children
+   counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -296,8 +297,8 @@ Check, in order:
 ## A tree waits on a person
 
 When a root's architect asked a person a question on the root and nothing else of its tree runs,
-its phase is `awaiting_person`: it returned its admission slot while its architect stays live to
-read the person's comments and replies. Read the wait:
+its phase is `awaiting_person`: it keeps the slot it took when the daemon started it, while its
+architect stays live to read the person's comments and replies. Read the wait:
 
 ```sh
 legion state --config legion.yaml --json |
@@ -313,10 +314,17 @@ the approval request is on the architect's turn), `closed` (a session or anyone 
 person closed the question), `turn` (a session handed it back to the agent's turn), `retracted`
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
-`gates.design` while the root waited on it. The root is
-at the front of `admission.waiting` and resumes itself there: at once, holding no slot, once its
-design gate has opened at every gated step, and at the next free slot while its architect is
-still writing the first design. Do not park it or
+`gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
+issue keeps its admission slot from the moment the daemon starts it
+until it is done, leaves the workflow or waits only for its merge;
+once it is answered it stands in `admission.waiting` too,
+among the issues whose work came back, oldest first, until the pass that resumes it. That resume
+takes no further slot, so it happens however full the cap is, whether or not the design gate has
+opened. While the root stands in the line, `waitingLine` on the
+issue gives its place in the line and the line's length. Nothing is sent to its architect about
+the wait, and the daemon resumes the root by itself on that pass, so neither the
+place nor the wait is anything to act on.
+Do not park it or
 start it by hand. Without `answeredAt`, check, in order:
 
 1. **The question is still with the person.** `dispatch read <KEY>` shows the root's asks. A
@@ -351,7 +359,7 @@ A root whose architect registered its spec while the approval request waits on t
 `admitted` waiting on its design gate keeps its slot for one of the reasons above, or because
 Dispatch shows the request on the architect's turn (a reply or a newer version since the request),
 when the architect has nothing handed to the person. A root waiting on its gate at a daemon's deploy
-gives its slot back at that daemon's first boot. The gate stays closed until a person approves the
+is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
 earlier version does not count: the spec changed since. The merger's `READY` waits on the same approval.
@@ -416,6 +424,47 @@ its next start walks the parked roots. That walk reads only the last 10 events o
 
 ## An issue is held
 
+**A provider's failure almost never holds the issue.** A turn that ends in an error the model's
+provider returned keeps its task: the daemon sends the same task to the same session again after 30
+seconds, then 60, then 120, doubling to at most 10 minutes between sends, with no attempt limit and
+no new session. Each such turn logs the warning `supervise: the turn this task's prompt ran ended
+in a provider error; the task is kept and sent again`, which names the model, the HTTP status and
+whether the provider marked the error retryable, and the send that follows it logs `supervise: this
+provider error can clear; the task goes to the same session again after a wait`, with the attempt
+and the wait. The re-sent prompt tells the agent the turn stopped, names the HTTP status the
+provider answered when it answered one, and carries none of the provider's own words. A content
+filter is sent again because the session has already stepped down to the next model of its
+fallback chain, so the next prompt goes to another model
+([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
+a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are sent again
+too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
+any other and the controller's notice at six is what tells a person. A newer
+task for that claim replaces the one the error took back and is sent at once, so it does not wait
+out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
+waits for the compaction's end instead, as everything the claim is owed does. An update round's
+question waits behind the owed task, as any other task does: the question needs a turn of the
+worker's own, and that turn would fail the way the task's did, so the pod's round waits until a
+turn of the owed task ends with no provider error.
+
+**One provider error does hold the issue**, for its architect: one whose HTTP status is a client
+error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
+the case it exists for. The claim fails with `why` reading `a provider error that cannot clear
+ended this claim's turn: <cause>`, where the cause names that status, and the hold is the
+architect's to retry or escalate as any held phase is.
+
+**After six turns of one claim in a row have ended in a provider error**, the project's controller
+is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
+(`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
+held and nothing is stopped by that count: the task is still kept and still sent again. The run
+goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
+compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
+Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
+recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
+`fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
+go. The notice is the claim's own — the issue and the role that names it — so
+two claims of one issue each get a notice of their own, and in a provider outage every claim that
+reaches six is told.
+
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON
 lines; the one to look for is the error whose `msg` is `supervise: claim failed`, and its `why`
@@ -462,16 +511,55 @@ its tree stands:
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
 budgets, and retries a failed phase worker whose issue is held for that worker's own role by
-applying the held phase's retry, as its architect's `retry_or_escalate` would. It refuses a claim
-in any other state, naming the state, a failed phase worker whose issue is not held or is held for
-another role, and a failed controller, naming who retries it; a retry that leaves the issue held,
-as a lingering tree's does, is refused naming the issue. `legion claims retry --failed` asks the
-same of every failed claim the daemon holds, in turn, prints each one it retried, and exits 1
-naming each it refused: run it once the cause of a run of failed launches is gone (a host moved
-onto tmux, a broken key replaced).
+applying the held phase's retry, as its architect's `retry_or_escalate` would. It reaches a claim an
+operator stopped as well as a failed one, since `legion claims stop` retires the claim it stops: a
+stopped phase worker is started again on the task of the phase its issue stands in now. Every other
+state is refused and named: a queued claim is spawned rather than retried, a suspended claim is
+resumed, and the daemon's own controller is its keeper's to retry, which the refusal says. A retry
+that leaves the issue held, as a lingering tree's does, is refused naming the issue.
+`legion claims retry --failed` asks the same of every failed claim the daemon holds, in turn,
+prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
+failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
+claim, which is retired rather than failed, so name that one with `--claim`.
 
-When a failed architect's session was lost with its volume or wedged by a provider refusal, clear
-the stopped claim's matching record before retrying:
+`legion claims compact --claim <token>` is the first recovery for a claim whose session a
+provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
+sends the claim whatever task it owed again, so the session, its workspace and everything the
+worker knows of its issue stay, and only the transcript the provider is asked to read gets shorter.
+It reaches a claim whose agent is ready or idle, a root architect included, and refuses a
+suspended, failed or retired claim naming what starts it again: `--fresh-session` for a workflow
+role, and the daemon's controller keeper for the project's own controller claim, which only
+`--claim` can name and which `--fresh-session` refuses in every state, a keeper whose resume an
+operator's own suspension holds.
+It also refuses a claim the daemon records as working, which may be in a turn, a claim a
+suspension is held over, a claim whose launch is in flight, a claim whose agent has registered
+and is not ready yet, which `--fresh-session` reaches, a claim left working under a relaunch the
+wake pacing parked, a claim left working over a process the daemon's last report of it found
+gone, and a claim whose role runs on Claude Code, which has no Oh My Pi session.
+A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
+printed with its reason, and whatever task the claim owed has gone again all the same.
+
+`legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
+left refused: it forgets the session that claim recorded and starts the claim
+in a new session with its phase's task, so no `legion claims forget-session` comes before it. It
+reaches a claim whose agent is registered, ready or idle as well as one that is suspended,
+failed or retired, with no suspension held over it, so it is what starts a claim the
+compaction could not reach, and a new session loses everything the old one held. It
+forgets that session before it starts the phase, because the start runs the moment the restart
+commits and would otherwise resume the very session you are dropping. A retry the daemon then
+refuses has forgotten the session all the same: the claim keeps its state and its task, the
+daemon's log names the session it dropped, and the same command works once the refusal's cause
+is gone. What a refusal does on its own, before any of this, is in the paragraphs above and in
+[Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged).
+When the workflow refused that phase's restart — a lingering tree, whose members stay where they
+stood, is the usual cause — the command prints a second line under the claim's own, saying the
+claim is back in a new session owing no task and why nothing restarted its phase, and the
+controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
+empty answer: the claim is running with no work, so clear what the line names and run the
+command again to hand the claim its phase's task.
+
+When a failed architect's session was lost with its volume, clear the stopped claim's matching
+record before retrying:
 
 ```sh
 legion claims forget-session --config legion.yaml --operator-token-file operator-token --claim <token> --session <recorded session id>
@@ -616,7 +704,7 @@ something will still start: a worker whose phase is not its own is started again
 comes, a parked tree's claims wait for its re-admission, and an issue whose start waits for a free
 slot has that start queued already. A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
-and the answer's task is delivered once the root takes a slot. Never resume or retry by hand a
+and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
 A claim an operator suspended is listed even when a workflow start is queued for it: that start
@@ -629,7 +717,8 @@ is queued for it, since the next phase start or re-admission resumes it as befor
   an issue pod at the defaults) and lands wherever the pool has room, so a pool at its limits leaves
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
-  reason. `admission_cap` counts the issues at work, and an issue that only waits keeps its pod,
+  reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
+  issue that only waits keeps both its slot and its pod,
   so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
@@ -767,20 +856,29 @@ is queued for it, since the next phase start or re-admission resumes it as befor
 
 ## The work loops or stops
 
-These arrive as messages on the Dispatch issue, and the architect is told:
+These arrive as messages on the Dispatch issue:
 
-- **`Issue reached review_round_cap=3.`** The implementer's round count reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)). The work goes on, and the
-  architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
+- **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
+  implementer's counted rounds reached three
+  ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
+  phase raises the count, and a move made while the head conflicts with its base is a conflict
+  round, which the cap leaves out and the message's second number names. The daemon posts it and
+  tells the architect once for each value the cap holds, so the rounds after it say nothing again
+  until you change `review_round_cap` or the issue runs again as a new generation. The work goes
+  on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
   let rounds that are converging run, and posts that decision on the issue; it asks you only for a
   decision that needs your authority.
-- **`Pull request #<n> reached max_fix_attempts=3.`** A check or workflow the base branch requires
-  stayed red through three fix attempts. Red CI within the attempt that ran the count out (the
-  counted head and every head pushed on top of it until a push lands on a head CI judged green, or
-  on a settled head whose base branch requires no check and no workflow; such a push raises no
-  count) no longer sends the work back by itself, so the issue waits in testing, review, acceptance,
-  retro or merging for the architect, or for a worker's own decision such as a reviewer's request
-  for changes. A `READY` is still withdrawn on red CI.
+- **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
+  A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
+  move back and fired: the daemon wrote the hook's words to each role the line names, on that
+  role's own topic, and posted this record of it. Nothing is held: the phase the move opened
+  started its worker, and each role answers in its own turn. No hook writes to an architect: the
+  daemon's own wake to an architect is a notice.
+- **No message for red CI.** A pull request is never blocked for a count of failed fixes: a check
+  or workflow the base branch requires that stands red sends the work back to the implementer every
+  time, however many reds came before, and reaches the architect as a `checks-red` notice rather
+  than as a message on the issue. The architect decides when to stop, and `review_round_cap` is the
+  one reason a `pr-blocked` notice has left. A `READY` is still withdrawn on red CI.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
@@ -868,9 +966,11 @@ assignment retro handed it while the phase holds the implementing one, so it is 
 and completes that work with a handoff of its own, never retro's commit; the merger's row
 still names the assignment merging gave it, so a completion it sends for the phase it lost is
 refused (`HANDOFF_NOT_CURRENT_PHASE`). One back in `in_progress` after its `READY`,
-while it awaited its merge, had a required check or workflow turn red on the head itself, or its
+while it awaited its merge, had a required check or workflow turn red on the head itself, its
 head conflicts with its base (GitHub computes no merge ref for a conflicting head and runs no
-checks on it at all): the daemon sent it back to the implementer, told the architect which checks
+checks on it at all), or GitHub's merge queue reported its entry for the head unmergeable while
+the queue had built that entry on the base branch's own tip, where nothing queued ahead of it can
+be the cause: the daemon sent it back to the implementer, told the architect which checks
 or that the head conflicts, and posted on the issue, and told the project's `merge_queue_role` when
 one is set, that the `READY` is withdrawn: the merge the daemon had submitted names a commit about
 to be replaced, so it takes its own submission back. The work comes back through testing, review

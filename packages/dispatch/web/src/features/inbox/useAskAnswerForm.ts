@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
-import { inboxQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
   Ask,
@@ -22,6 +22,7 @@ import {
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
 import { markAnswerOutstanding } from "./outstanding-answers";
+import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
@@ -218,14 +219,18 @@ export function useAskAnswerForm({
           queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
             current === undefined
               ? undefined
-              : { ...current, answers: [...current.answers, changedAnswer], ask: updatedAsk }
+              : {
+                  ...current,
+                  answers: [...(current.answers ?? []), changedAnswer],
+                  ask: updatedAsk,
+                }
           );
         }
         void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
         void queryClient.invalidateQueries({ queryKey: ["me", "answers"] });
       }
       if (!changed) onAnswered?.(ask.id);
-      invalidateOwnerReads();
+      invalidateOwnerReads(queryClient, ask);
     },
   });
   // How long the Inbox's reading column keeps the question: while this answer is the reader's to
@@ -245,7 +250,7 @@ export function useAskAnswerForm({
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {
         return api.createArtifactComment(
-          documentArtifactId(),
+          askArtifactId(ask),
           { ask_id: ask.id, body: text },
           bounds
         );
@@ -262,30 +267,9 @@ export function useAskAnswerForm({
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,
       // not just the Inbox.
-      invalidateOwnerReads();
+      invalidateOwnerReads(queryClient, ask);
     },
   });
-
-  /** A document ask's artifact; the server always sets it, so its absence is a contract error. */
-  function documentArtifactId(): string {
-    if (ask.artifact_id === null || ask.artifact_id === undefined) {
-      throw new Error("document ask is missing its artifact id");
-    }
-    return ask.artifact_id;
-  }
-
-  /** The reads that carry this ask besides its own thread: the Inbox and its owner's lists. */
-  function invalidateOwnerReads(): void {
-    void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-    if (ask.issue_key === null) {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", documentArtifactId()] });
-      void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
-      return;
-    }
-    void queryClient.invalidateQueries({ queryKey: ["asks", ask.issue_key] });
-    void queryClient.invalidateQueries({ queryKey: ["issue", ask.issue_key] });
-    void queryClient.invalidateQueries({ queryKey: ["issues"] });
-  }
 
   // The thread read is the truth once the question changed under the draft, and once the ask
   // was answered or resolved elsewhere while this card still holds its open row (an Inbox row
@@ -303,8 +287,8 @@ export function useAskAnswerForm({
   const startChanging = () => {
     if (!canChangeAnswer || recordedAsk?.answer === null || recordedAsk === null) return;
     const current = recordedAsk.answer;
-    const realSelected = current.selected.filter((label) =>
-      recordedAsk.options.some((option) => option.label === label)
+    const realSelected = (current.selected ?? []).filter((label) =>
+      (recordedAsk.options ?? []).some((option) => option.label === label)
     );
     replacing.current = current;
     mutation.reset();
@@ -332,7 +316,7 @@ export function useAskAnswerForm({
     initialChangeConsumed.current = true;
     if (canChangeAnswer) startChanging();
   });
-  const hasOptions = displayedAsk.options.length > 0;
+  const hasOptions = (displayedAsk.options ?? []).length > 0;
   const isApproval = displayedAsk.kind === "approval";
   const isSubmitting = mutation.isPending || clarification.isPending;
   const trimmedAnswer = answerText.trim();

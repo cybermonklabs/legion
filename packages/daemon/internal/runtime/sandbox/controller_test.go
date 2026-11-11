@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 var controllerToken = claim.ControllerToken(testProject)
@@ -202,7 +203,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
 		"LEGION_BOOT_TOKEN_FILE", "LEGION_CONTROLLER", "LEGION_DAEMON_URL",
 		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
-		"OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "TMPDIR",
+		"OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
 		"XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
 	}; !slices.Equal(told, want) {
 		t.Errorf("the controller is told the runtime's variables %v, want exactly %v", told, want)
@@ -680,22 +681,7 @@ func TestAControllerSandboxWrittenSinceItsDeleteWasDecidedStays(t *testing.T) {
 }
 
 // lockedLog is a log the runtime's goroutines write to while a test reads it.
-type lockedLog struct {
-	mu  sync.Mutex
-	buf strings.Builder
-}
-
-func (l *lockedLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.Write(p)
-}
-
-func (l *lockedLog) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.String()
-}
+type lockedLog = testlog.Buffer
 
 // setResourceVersion stamps the Sandbox name in the tracker with version, as a write to it would:
 // the fake tracker keeps whatever version an object carries.

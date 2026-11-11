@@ -117,7 +117,7 @@ env:
     skills/thermonuclear-code-quality/ skills/thermonuclear-deep-review/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Legion Oh My Pi plugin, seeded as the Envoy one is. scripts/pi-plugin-prepack.sh copies
-  # this plugin's seven skills into dist/skills, which a Legion pane's prompts load, so a commit
+  # this plugin's six skills into dist/skills, which a Legion pane's prompts load, so a commit
   # there releases whatever its type. Its notices generator, the prepack itself and patches/ (the
   # bundle inlines nats.js through envoy-client, with its patch applied) are shipped build inputs
   # too, so they get the same patch release.
@@ -125,14 +125,13 @@ env:
     --first-npm @sjawhar/pi-legion-envoy
     --patch-path skills/legion-architect/ --patch-path skills/legion-controller/
     --patch-path skills/legion-oracle/ --patch-path skills/legion-retro/
-    --patch-path skills/legion-worker/ --patch-path skills/leading-a-work-stream/
-    --patch-path skills/simplify-settled-diff/
+    --patch-path skills/legion-worker/ --patch-path skills/simplify-settled-diff/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
     -- packages/pi-legion/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
     packages/broker-client/
     skills/legion-architect/ skills/legion-controller/ skills/legion-oracle/ skills/legion-retro/
-    skills/legion-worker/ skills/leading-a-work-stream/ skills/simplify-settled-diff/
+    skills/legion-worker/ skills/simplify-settled-diff/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Claude Code plugin, @sjawhar/claude-envoy. Its build runs from
   # packages/claude-envoy/scripts/build-inputs.txt, the one statement of what can change this
@@ -781,11 +780,17 @@ jobs:
 
   # Publishes what the four build jobs made, in one job for all four packages, so their release
   # waits for a runner once: pi-envoy, pi-legion, claude-envoy, then legion, which links the two
-  # Oh My Pi plugins and so goes only once both are on npm. It runs no bun, no node, no Go, no
-  # built binary and no scripts/
+  # Oh My Pi plugins and so goes only once both are on npm. It runs no bun, no node, no Go,
+  # nothing a build job made and no scripts/
   # program, only release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of a handed
   # tarball) and the pinned actions below, so the scopes and the deploy key it holds never meet the
-  # code the build jobs ran. It runs on main even when nothing releases: its pair_ok output decides
+  # code the build jobs ran. release-push.sh itself also runs curl, tar and one binary of its own:
+  # the gitleaks release it fetches and holds to a pinned sha256, which runs this repository's
+  # private-name rules (packages/daemon/internal/leakguard/private-names.toml, from this checkout)
+  # over every write below to a public repository and refuses the write when they match. That
+  # binary reads what is about to be published and nothing else, and it is a pinned upstream
+  # release, not code from a build job.
+  # It runs on main even when nothing releases: its pair_ok output decides
   # whether worker_image_attest attests the image, and each step decides for its own package.
   #
   # A package's first step runs when its build released, and each later step when the one before it

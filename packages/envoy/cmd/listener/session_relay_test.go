@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relayRig is a listener's /v1 routes over the in-process server, its session consumers relayed as
@@ -912,7 +913,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 // observeConsumers opens the test's own view of the session consumers on uri.
 func observeConsumers(t *testing.T, uri string) *bus.SessionConsumers {
 	t.Helper()
-	consumers, err := bus.ConnectSessionConsumers([]string{uri})
+	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -1010,12 +1011,8 @@ func deliveryExceptionsFor(t *testing.T, exceptions *natsgo.Subscription, sessio
 // within the bound.
 func awaitLogLine(t *testing.T, rig *relayRig, line string, within time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !strings.Contains(rig.harness.logs.String(), line) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener never logged %q within %s", line, within)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testwait.Holds(within, 20*time.Millisecond, func() bool { return strings.Contains(rig.harness.logs.String(), line) }) {
+		t.Fatalf("the listener never logged %q within %s", line, within)
 	}
 }
 

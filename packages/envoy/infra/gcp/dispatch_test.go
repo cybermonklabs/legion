@@ -61,14 +61,25 @@ func setApp(a *gcp.DispatchArgs) {
 	a.AppPrivateKeySecretKey = "private-key.b64"
 }
 
+// dispatchOidcAudience is the audience a caller's projected ServiceAccount token must carry for
+// Dispatch to verify it, and dispatchOidcIssuer another cluster's issuer, the value oidcIssuer
+// renders in place of this component's own.
+const (
+	dispatchOidcAudience = "example-dispatch-audience"
+	dispatchOidcIssuer   = "https://container.googleapis.com/v1/projects/example-other/locations/us-central1/clusters/example-other-dispatch"
+)
+
 // dispatchBrokerAndAppArgs is dispatchArgs with both optional groups set: the secrets-broker relay
 // (agentSecretsUrl with agentSecretsAudience) and the GitHub App (appClientId, appId and the
-// existing Kubernetes Secret and key that hold the private key).
+// existing Kubernetes Secret and key that hold the private key). It sets oidcAudience with them,
+// the other half of the broker's traffic: the broker's judge reads Dispatch with its own pod's
+// projected token, which Dispatch verifies only with that pair rendered.
 func dispatchBrokerAndAppArgs(t *testing.T) *gcp.DispatchArgs {
 	t.Helper()
 	args := dispatchArgs()
 	args.AgentSecretsUrl = "https://example-broker.internal.example"
 	args.AgentSecretsAudience = "example-broker-audience"
+	args.OidcAudience = dispatchOidcAudience
 	setApp(args)
 	return args
 }
@@ -769,6 +780,10 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed in an allowed namespace", "allowedNamespaces[1]", func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy", lower} }},
 		{"a seed inside the agent secrets URL", "agentSecretsUrl", func(a *gcp.DispatchArgs) { a.AgentSecretsUrl = "https://" + lower + ".internal.example" }},
 		{"a seed inside the agent secrets audience", "agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "https://" + lower + ".internal.example" }},
+		{"a seed as the OIDC audience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = seed }},
+		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
+			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
+		}},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
@@ -2507,6 +2522,59 @@ func TestDispatchBrokerAndAppLeaveTheOtherWorkloadsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	requirePodGolden(t, m, "example-dispatch-listener", "dispatch-listener-pod.golden")
 	requirePodGolden(t, m, "example-dispatch-tailnet", "dispatch-tailnet-pod.golden")
+}
+
+// Dispatch verifies a caller's projected ServiceAccount token with DISPATCH_OIDC_ISSUER and
+// DISPATCH_OIDC_AUDIENCE, and refuses to boot holding one of the two alone
+// (internal/oidc.ConfigFromEnv), so the component renders the pair whole or not at all: without
+// an audience neither variable, with one both, the issuer this component's own cluster unless
+// oidcIssuer names another. azureIssuer is that cluster's issuer, the value the
+// serviceAccountIssuer output carries for these arguments.
+func TestDispatchRendersTheServiceAccountVerifierWhole(t *testing.T) {
+	for _, row := range []struct {
+		name           string
+		edit           func(*gcp.DispatchArgs)
+		issuer, admits string
+	}{
+		{name: "no audience", edit: func(*gcp.DispatchArgs) {}},
+		{
+			name:   "an audience alone",
+			edit:   func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience },
+			issuer: azureIssuer, admits: dispatchOidcAudience,
+		},
+		{
+			name: "an audience with an issuer of its own",
+			edit: func(a *gcp.DispatchArgs) {
+				a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer
+			},
+			issuer: dispatchOidcIssuer, admits: dispatchOidcAudience,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			if row.admits == "" {
+				require.NotContains(t, env, "DISPATCH_OIDC_ISSUER")
+				require.NotContains(t, env, "DISPATCH_OIDC_AUDIENCE")
+				return
+			}
+			require.Equal(t, row.issuer, env["DISPATCH_OIDC_ISSUER"])
+			require.Equal(t, row.admits, env["DISPATCH_OIDC_AUDIENCE"])
+		})
+	}
+}
+
+// The audience is what turns the verifier on, so an oidcIssuer with no oidcAudience would
+// configure nothing: it is refused by the resolver, before the component registers anything.
+func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
+	args := dispatchArgs()
+	args.OidcIssuer = dispatchOidcIssuer
+	m, err := runDispatch(t, args, true)
+	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when oidcIssuer is set")
+	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so

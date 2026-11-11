@@ -21,6 +21,7 @@ function agent(sessionID: string): Agent {
     last_seen: 1,
     open_asks: 0,
     last_activity: null,
+    state: "live",
   };
 }
 
@@ -52,6 +53,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     rank: "U",
     title: "Core work",
     updated_at: "2026-09-10T00:00:00Z",
+    created_by: null,
+    created_at: "2026-09-10T00:00:00Z",
     ...overrides,
   };
 }
@@ -74,9 +77,8 @@ test("parses every filter from the URL and counts them", () => {
   );
   try {
     expect(hook.result.current.labels).toEqual(["a", "b"]);
-    // Status is the List's alone: parsed here, but the Board renders the strip without it, so
-    // neither the count nor the chips include it.
-    expect(hook.result.current.statuses).toEqual(["todo", "done"]);
+    // A `?status=` in the URL is the table's own column filter: this hook neither reads it nor
+    // counts or chips it.
     expect(hook.result.current.search).toBe("ship");
     expect(hook.result.current.needsYou).toBe(true);
     expect(hook.result.current.unread).toBe(true);
@@ -101,10 +103,6 @@ test("setters round-trip through the URL and clearing removes the parameter", ()
     act(() => hook.result.current.setNeedsYou(true));
     act(() => hook.result.current.setUnread(true));
     act(() => hook.result.current.setLabels(["frontend"]));
-    act(() => hook.result.current.setStatuses(["todo", "testing"]));
-    expect(hook.result.current.statuses).toEqual(["todo", "testing"]);
-    act(() => hook.result.current.setStatuses([]));
-    expect(hook.result.current.statuses).toEqual([]);
     expect(hook.result.current.activeFilterCount).toBe(4);
     // One chip per click, a render between them - as the strip drives it.
     while (hook.result.current.activeFilters.length > 0) {
@@ -124,7 +122,7 @@ test("matches applies needs-you, unread and search but never status", () => {
     const { matches } = hook.result.current;
     const match = issue({ key: "CORE-2", last_seq: 4, open_asks: 1, title: "Ship the work" });
     expect(matches(match, 3)).toBe(true);
-    // Status never enters the predicate: the List applies it separately, the Board's columns
+    // Status never enters the predicate: the table applies it separately, the Board's columns
     // are the statuses.
     expect(matches({ ...match, status: "done" }, 3)).toBe(true);
     expect(matches({ ...match, open_asks: 0 }, 3)).toBe(false);

@@ -1,5 +1,4 @@
-import { INBOX_DISMISSED_PAGE, type InboxDismissSeen } from "@legion/contracts";
-import { type BrowserContext, expect, type Page, type Request, test } from "@playwright/test";
+import { INBOX_DISMISSED_PAGE, type InboxDismissSeen, inboxThreadRow } from "@legion/contracts";
 import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 
 import { setLiveSessions } from "./agents";
@@ -25,8 +24,8 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
-import { resetDatabase } from "./seed";
 import { refusePosts, WRITE_REFUSED } from "./sends";
+import { type BrowserContext, expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -133,7 +132,7 @@ async function dismissedThreads(): Promise<number> {
   let cursor: string | undefined;
   do {
     const page = await listMyReplies({ cursor, kind: ["reply", "agent"], state: "dismissed" });
-    counted += page.rows.length;
+    counted += (page.rows ?? []).length;
     cursor =
       page.next_cursor === undefined || page.next_cursor === "" ? undefined : page.next_cursor;
   } while (cursor !== undefined);
@@ -153,12 +152,14 @@ async function inboxThreads(): Promise<number> {
 async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
   const { rows } = await listMyReplies({ kind: ["reply", "agent"], state: "inbox" });
   return Object.fromEntries(
-    rows.map((row) => [
-      row.kind === "agent" ? agentRowId(row.thread_id) : replyRowId(row.thread_id),
-      row.kind === "agent"
-        ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
-        : { version: row.version },
-    ])
+    (rows ?? [])
+      .map(inboxThreadRow)
+      .map((row) => [
+        row.kind === "agent" ? agentRowId(row.thread_id) : replyRowId(row.thread_id),
+        row.kind === "agent"
+          ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
+          : { version: row.version },
+      ])
   );
 }
 
@@ -171,10 +172,6 @@ async function chooseShow(page: Page, label: string): Promise<void> {
   if ((await menu.count()) !== 0) await page.locator("[data-inbox-view]").click();
   await expect(menu).toHaveCount(0);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // ---------------------------------------------------------------------------
 // A thread stays until it is dismissed.
@@ -228,7 +225,8 @@ test("a Reply thread and an Agent thread read in the pane stay in the list after
 // Dismiss, by the row's own control and by `e`.
 // ---------------------------------------------------------------------------
 
-test("the row's Dismiss takes a thread out of the list, the counts and the Inbox number, and the selection moves on", async ({
+// @pr: A write the server settles: Dismiss takes the thread out of the list, the counts and the Inbox number, and moves the selection on.
+test("the row's Dismiss takes a thread out of the list, the counts and the Inbox number, and the selection moves on @pr", async ({
   browser,
 }) => {
   const seeded = await seedInbox();

@@ -1,5 +1,4 @@
 import { type LegionRole, roleToken } from "@legion/contracts";
-import { expect, type Locator, test } from "@playwright/test";
 
 import {
   legionAgentEntry,
@@ -16,7 +15,7 @@ import {
   listComments,
   patchIssue,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -42,10 +41,6 @@ interface Fixture {
   readonly issueKey: string;
   readonly tokens: Readonly<Record<"implementer" | "reviewer" | "tester", string>>;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seed(): Promise<Fixture> {
   await createProject({ key: "E2E", name: "Collaborators" });
@@ -108,7 +103,8 @@ function agentRowName(legion: Locator, sessionId: string): Locator {
 // No `@phone` tag: this row starts at the project's own desktop width and narrows the window
 // itself, so under `iphone` it would start from the wrong layout (packages/dispatch/AGENTS.md,
 // "Phone acceptance").
-test("the Collaborators tab lists an issue's people and its Legion agents, running or not", async ({
+// @pr: The Collaborators tab's only row: the issue's people and its Legion agents, running or not.
+test("the Collaborators tab lists an issue's people and its Legion agents, running or not @pr", async ({
   browser,
 }) => {
   const { issueKey } = await seed();
@@ -281,7 +277,7 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
         async () =>
           (await listComments(issueKey)).find((comment) =>
             comment.body.endsWith("please review the fix")
-          )?.mentions[0]?.target
+          )?.mentions?.[0]?.target
       )
       .toBe(`role:${tokens.reviewer}`);
   } finally {

@@ -241,7 +241,7 @@ func (m *Machine) relaunchStale(ctx context.Context, trigger string) error {
 // it starts its process, and the registration after it is the second in a row.
 func (m *Machine) relaunchMarked(ctx context.Context, interruption string) error {
 	m.markPluginRelaunch()
-	err := m.replaceProcess(ctx, interruption, ordinaryEnd)
+	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd)
 	m.takePluginRelaunch()
 	return err
 }

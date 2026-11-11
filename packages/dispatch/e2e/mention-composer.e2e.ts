@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import {
@@ -23,8 +21,8 @@ import {
   retryCommentDelivery,
 } from "./api";
 import { barAction, documentEditor, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -101,11 +99,8 @@ async function sendBesideReply(page: Page, issueKey: string, parent: string): Pr
   await expect(cancelReply).toHaveCount(0);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("E1 and E2: explicit role mentions deliver once while /btw without a mention stays a plain comment", async ({
+// @pr: A write a person makes: an explicit role mention is delivered once, and a /btw with no mention stays a plain comment.
+test("E1 and E2: explicit role mentions deliver once while /btw without a mention stays a plain comment @pr", async ({
   browser,
 }) => {
   await setLiveSessions([planner]);

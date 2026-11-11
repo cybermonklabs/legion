@@ -1,5 +1,3 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import {
   baseUrl,
@@ -10,7 +8,7 @@ import {
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -67,17 +65,17 @@ function settingsFrame(
   model: string,
   thinking: { level: string | null; levels: string[] } | null,
   models: string[] = MODELS
-): object {
+): Record<string, unknown> {
   return { kind: "settings", model, models, reported: true, seq, thinking, v: 1 };
 }
 
 /** The settings of a session at `model` on thinking `level`, offering every level. */
-function reported(seq: number, model: string, level: string | null): object {
+function reported(seq: number, model: string, level: string | null): Record<string, unknown> {
   return settingsFrame(seq, model, { level, levels: LEVELS });
 }
 
 /** The `commands` frame of a session that runs typed input, listing the built-ins a pick runs. */
-function commandsFrame(seq: number): object {
+function commandsFrame(seq: number): Record<string, unknown> {
   return {
     commands: [
       { description: "Switch the session's model", name: "model", source: "builtin" },
@@ -91,7 +89,7 @@ function commandsFrame(seq: number): object {
 }
 
 /** One settled assistant turn on `model`. */
-function assistantTurn(seq: number, model: string): object {
+function assistantTurn(seq: number, model: string): Record<string, unknown> {
   return {
     kind: "message",
     message: {
@@ -107,13 +105,13 @@ function assistantTurn(seq: number, model: string): object {
   };
 }
 
-function replayOf(sessionID: string, frames: object[]): object {
+function replayOf(sessionID: string, frames: Record<string, unknown>[]): Record<string, unknown> {
   return { frames, session_id: sessionID, v: 1 };
 }
 
 /** What a session at `model-a` on `auto` that runs `/model` and `/effort` replays before any
  *  turn: its settings and its commands, and nothing else. */
-function freshReplay(sessionID: string): object {
+function freshReplay(sessionID: string): Record<string, unknown> {
   return replayOf(sessionID, [reported(1, "anthropic/model-a", "auto"), commandsFrame(2)]);
 }
 
@@ -247,10 +245,6 @@ function answer(
     { id: sessionID, kind: "session" }
   );
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // A1: a session on this change's pi-envoy reports its settings in its replay, before any turn has
 // run, and every later report replaces them, with no turn run.
@@ -405,7 +399,8 @@ test("the header says why a session shows less: an Oh My Pi that does not report
 // the thread shows as theirs; Send waits for the session's answer, and the header moves only when
 // the session reports the switch. A pick is a steer whatever the composer's mode, since a BTW is a
 // side question the session answers rather than input it runs.
-test("a model picked in the header is the viewer's own Send of /model, holds Send until the session answers, and goes as a steer whatever Send as says", async ({
+// @pr: A write the server settles: the header's model pick goes out as the viewer's own Send and holds until the session answers.
+test("a model picked in the header is the viewer's own Send of /model, holds Send until the session answers, and goes as a steer whatever Send as says @pr", async ({
   browser,
 }) => {
   const session = liveSession(4);

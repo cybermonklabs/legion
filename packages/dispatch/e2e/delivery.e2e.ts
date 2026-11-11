@@ -1,17 +1,15 @@
-import { expect, type Page, test } from "@playwright/test";
 import { mintAgentToken } from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
   seedDeliveryFixture,
   seedMeasuresFixture,
+  TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { pressFinger } from "./touch";
 import { asUser } from "./users";
-
-const FIXTURE_WINDOW = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
 /** Where the chart draws a run's shape: its series' name, its column on the x axis (the deploys
  *  at 0.15 and the failures at 0.85 of the Deploys/fails column, `Timeline.tsx`'s
@@ -95,7 +93,7 @@ async function shapePosition(
  *  around it. The poll's answer names both so a failure says which of the two the chart never
  *  reached. */
 async function openTimeline(page: Page, query = ""): Promise<void> {
-  await page.goto(`/delivery?${FIXTURE_WINDOW}${query}`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}${query}`);
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await page.getByTestId("delivery-chart").scrollIntoViewIfNeeded();
   await expect
@@ -113,10 +111,6 @@ async function clickShape(page: Page, shape: { series: string; x: number; at: st
   if (position === null) throw new Error(`no ${shape.series} shape painted at ${shape.at}`);
   await page.mouse.click(position.x, position.y);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the Delivery sidebar nav entry opens the delivery timeline", async ({ browser }) => {
   await seedDeliveryFixture();
@@ -279,10 +273,9 @@ test("dragging the zoom slider zooms without setting a brush window", async ({ b
   await context.close();
 });
 
-test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone", async ({
+test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "a finger drag exercises the phone project");
+}) => {
   await seedDeliveryFixture();
   // The reconcile pass the server runs on its own five-minute tick (`ReconcileInterval`,
   // `delivery/reconcile.go`) can land anywhere inside this row: the fake GitHub holds no
@@ -354,10 +347,9 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
 // laid out once around the longest text the rows can carry; here the failure is written while
 // the finger is down, so the rewrap itself happens under the finger and the width is read
 // across it.
-test("on a phone a reconcile error arriving under the finger widens nothing @phone", async ({
+test("on a phone a reconcile error arriving under the finger widens nothing @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "a finger on the chart is the phone project's");
+}) => {
   await seedDeliveryFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -418,7 +410,7 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
   await seedDeliveryFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?${FIXTURE_WINDOW}&mode=list`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
 
   // The rows are one tab stop: the first row takes focus, the arrow key moves to the next.
   const rows = page.locator("tbody tr[aria-rowindex]");
@@ -450,7 +442,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   // happy: last_reconcile_at is set (a prior pass did succeed once) but last_error names the most
   // recent failure, and the freshness row must show that failure by name, not the generic
   // "Reconcile X ago"/"never ran" wording a merely-stale-but-healthy row gets (lib/freshness.ts's
-  // reconcileRow). The lane's own server runs the delivery reconcile on a ticker of its own, so a
+  // reconcileRow). The stack's own server runs the delivery reconcile on a ticker of its own, so a
   // pass can land between the write below and the page's read of it, and a failing pass
   // overwrites last_error (store.go's RecordReconcileError). Hence the fake GitHub: acme/widgets
   // with Contents and Pull-requests but no Actions makes every such pass fail with exactly the
@@ -458,7 +450,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   // read on acme/widgets"), so a pass inside this row's window changes nothing. The SQL seed
   // stays: the page must show the failure the instant it loads, before any pass has run.
   // To see that for oneself, run this row with DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1s, which
-  // e2e/run-server.sh forwards to the lane's server: several passes then land inside the window
+  // e2e/run-server.sh forwards to the stack's server: several passes then land inside the window
   // below and the row still reads the same.
   await seedFakeGithub({
     "acme/widgets": { contents: "read", installation_id: 690, pull_requests: "read" },
@@ -472,7 +464,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${FIXTURE_WINDOW}`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
 
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await expect(
@@ -497,7 +489,7 @@ test("an unfetchable pull request shows on the freshness row by count", async ({
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${FIXTURE_WINDOW}`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
 
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await expect(
@@ -507,7 +499,8 @@ test("an unfetchable pull request shows on the freshness row by count", async ({
   await context.close();
 });
 
-test("an unconfigured Delivery page sets itself up from its form and then shows the timeline", async ({
+// @pr: Live delivery: the Delivery page from nothing - the setup form saved against the GitHub App's own read, then the timeline it draws.
+test("an unconfigured Delivery page sets itself up from its form and then shows the timeline @pr", async ({
   browser,
 }, testInfo) => {
   // The save proves the GitHub App can read the deploy repository (the installation with
@@ -518,7 +511,7 @@ test("an unconfigured Delivery page sets itself up from its form and then shows 
   const page = await context.newPage();
 
   try {
-    await page.goto(`/delivery?${FIXTURE_WINDOW}`);
+    await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
     await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toBeVisible();
     await expect(page.getByLabel("Deploy repository")).toHaveValue("");
     await expect(page.getByLabel("Deploy repository")).toHaveAttribute("placeholder", "owner/repo");

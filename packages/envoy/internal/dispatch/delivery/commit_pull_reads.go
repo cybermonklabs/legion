@@ -6,9 +6,9 @@ import (
 )
 
 // commit_pull_reads.go bounds how often one commit's pull requests are read through
-// (ReadThroughCommitPulls). It is default_branch.go's twin: that file holds how long an answer
-// about a repository and a commit's place on its default branch is believed, this one how long
-// an answer about the pull requests of a commit stands before GitHub is asked again. Its one
+// (ReadThroughCommitPulls). It is branch.go's twin: that file holds how long an answer about a
+// repository and a commit's place on one of its branches is believed, this one how long an
+// answer about the pull requests of a commit stands before GitHub is asked again. Its one
 // caller is the results read (api/results_currency.go, currencyReader.readThroughHead), which
 // keeps a memo for the span of one request and no policy.
 
@@ -19,10 +19,9 @@ import (
 // Verification tab refetches an issue's results on every result.recorded, so without a bound
 // every refetch would spend those calls again for every result at a commit heading no pull
 // request Dispatch knows — for ever, since nothing about such a commit is stored. Five minutes
-// is the span every other answer about a commit is believed for
-// (DefaultBranchCommitStaleAfter) and the one the reconcile re-reads an open head on
-// (PullRequestHeadStaleAfter), so a pull request opened at a recorded commit is read as that
-// result's current head within it.
+// is the span every other answer about a commit is believed for (BranchCommitStaleAfter) and
+// the one the reconcile re-reads an open head on (PullRequestHeadStaleAfter), so a pull request
+// opened at a recorded commit is read as that result's current head within it.
 const CommitPullReadStaleAfter = 5 * time.Minute
 
 // CommitPullSettledFor is how long the answer "GitHub names a pull request for this commit whose
@@ -39,8 +38,8 @@ const CommitPullSettledFor = time.Hour
 // CommitPullReads is the moment before which one commit of one repository is not read through
 // again, held across reads so a commit costs at most one read-through per span rather than one
 // per read of the results. Its zero value is an empty cache, and the server holds one for the
-// process (api.server.commitPulls), as it holds one DefaultBranches: the answer is a commit's,
-// not a request's, and every goroutine reading results shares it.
+// process (api.server.commitPulls), as it holds one Branches: the answer is a commit's, not a
+// request's, and every goroutine reading results shares it.
 //
 // Only the read-time read-through records here, and the one a recorded result makes
 // (api/results.go's readThroughPullRequests) must not: a result recorded while no pull request

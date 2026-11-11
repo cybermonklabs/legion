@@ -1,8 +1,6 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { listAgentMessages, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -42,7 +40,7 @@ function liveSession(row: number): FakeSession {
 }
 
 /** The settings of a session at `model` on thinking `level`, offering every model and level. */
-function reported(seq: number, model: string, level: string): object {
+function reported(seq: number, model: string, level: string): Record<string, unknown> {
   return {
     kind: "settings",
     model,
@@ -55,7 +53,7 @@ function reported(seq: number, model: string, level: string): object {
 }
 
 /** The `commands` frame of a session that runs typed input, listing the built-ins a pick runs. */
-function commandsFrame(seq: number): object {
+function commandsFrame(seq: number): Record<string, unknown> {
   return {
     commands: [
       { description: "Switch the session's model", name: "model", source: "builtin" },
@@ -70,7 +68,7 @@ function commandsFrame(seq: number): object {
 
 /** What a session at `model-a` on `auto` that runs `/model` and `/effort` replays before any
  *  turn: its settings and its commands, and nothing else. */
-function freshReplay(sessionID: string): object {
+function freshReplay(sessionID: string): Record<string, unknown> {
   return {
     frames: [reported(1, "anthropic/model-a", "auto"), commandsFrame(2)],
     session_id: sessionID,
@@ -131,7 +129,10 @@ async function storedSwitch(
   await expect
     .poll(async () => {
       const read = (await listAgentMessages(sessionID)).find((row) => row.message.body === body);
-      found = read === undefined || read.message.deliveries.length === 0 ? undefined : read.message;
+      found =
+        read === undefined || (read.message.deliveries ?? []).length === 0
+          ? undefined
+          : read.message;
       return found !== undefined;
     }, PROBE)
     .toBe(true);
@@ -171,10 +172,6 @@ function answer(sessionID: string, messageID: string, body: string): Promise<unk
   );
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // A2: a picker whose change switches a live session follows the rule the issue picker already
 // keeps (`markKeyStep` in `AgentMessageComposer.tsx`, `keyboard-agents-picker.e2e.ts`): the arrows
 // choose and Enter commits, so a keyboard reader can pass the next model to reach the one after
@@ -183,7 +180,8 @@ test.beforeEach(async () => {
 // SLOW(>=2s): two switches through the fake Envoy and back, each read from the server, in every
 // engine the rule has to hold in.
 // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
-test("the arrows move a header picker's choice without switching the session, and Enter switches it once @webkit @firefox", async ({
+// @pr: A write a person makes: the header picker must step without switching the session, and Enter must switch it once.
+test("the arrows move a header picker's choice without switching the session, and Enter switches it once @webkit @firefox @pr", async ({
   browser,
 }) => {
   const session = liveSession(11);

@@ -188,8 +188,10 @@ describe("EnvoyClient", () => {
       stream_id: "stream-1",
       gap: false,
     };
+    const started: DeliveryAnswer = { ...consumer, consumer_start: 42 };
     const recorded = recordFetch([
       jsonResponse({ ...interest, delivery: consumer }),
+      jsonResponse({ ...interest, delivery: started }),
       jsonResponse({ ...interest, delivery: { mode: "core", reason: "no_grant" } }),
       jsonResponse(interest),
       jsonResponse({ ...interest, delivery: { mode: "push" } }),
@@ -208,7 +210,10 @@ describe("EnvoyClient", () => {
         plugin: PLUGIN,
       });
 
+    // A listener of an earlier release answers no `consumer_start`, and one that carries it is
+    // read with it: the session keeps it as the floor of its resume point.
     expect((await register()).delivery).toEqual(consumer);
+    expect((await register()).delivery).toEqual(started);
     expect((await register()).delivery).toEqual({ mode: "core", reason: "no_grant" });
     // A listener of an earlier release answers no `delivery`: core.
     expect((await register()).delivery).toEqual({ mode: "core", reason: "not_answered" });
@@ -1730,7 +1735,12 @@ describe("EnvoyClient", () => {
   });
 
   // The deadline is AbortSignal.timeout's, on the platform's clock, which no fake timer moves: the
-  // case holds the request until its signal aborts and checks that a short deadline gave up first.
+  // case holds the request until its signal aborts and the row reads no clock to see that a short
+  // deadline gave up first. The request it must not wait for never answers at all, and the client's
+  // own replay deadline is 10 s, so a client that ignored the caller's 50 ms deadline would wait
+  // that out. The row's 5 s limit is what catches it, and it stays on the row below the suite's
+  // 30 s default for exactly that reason. It has 11 times the 0.45 s the row costs at most under
+  // 16 busy loops (8 x nproc) in a 2-CPU pod, in a whole-suite run and with this file alone alike.
   test("gives up a replay at the deadline its caller names", async () => {
     const client = createEnvoyClient({
       baseUrl: "http://listener",
@@ -1742,7 +1752,6 @@ describe("EnvoyClient", () => {
         return aborted.promise;
       },
     });
-    const started = performance.now();
     const failure = await client
       .replay({
         sessionID: "ses_a",
@@ -1751,8 +1760,7 @@ describe("EnvoyClient", () => {
       })
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
-    expect(performance.now() - started).toBeLessThan(5_000);
-  });
+  }, 5_000);
 });
 
 describe("newClientInstanceID", () => {

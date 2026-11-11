@@ -4,22 +4,38 @@ import { MemoryRouter } from "react-router-dom";
 
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import { BlockedOnYou } from "./BlockedOnYou";
+import { withWaitingOnPerson } from "./inbox-fixture";
 
 function request(record_id: string, requested_at: string): CredentialPendingRow {
-  return { identifiers: ["DEMO_API_KEY"], kind: "agent_secret", record_id, requested_at };
+  return {
+    identifiers: ["DEMO_API_KEY"],
+    kind: "agent_secret",
+    record_id,
+    requested_at,
+    session: { enrollment: null, request: null },
+  };
 }
 
+/** One open ask. The person it waits on is resolved as the server resolves it
+ *  (`coalesce(a.asked_of, i.assignee)`), so an override that moves the issue's assignee, or
+ *  hands the ask to somebody, moves that person with it. */
 function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-11T00:00:00Z",
     edited_at: null,
     id,
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
@@ -42,6 +58,7 @@ function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  return withWaitingOnPerson(row);
 }
 
 // The broker's `requested_at` reaches the SPA verbatim, and the count this rule gives also drives

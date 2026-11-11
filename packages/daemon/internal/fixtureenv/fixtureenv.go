@@ -17,10 +17,12 @@ import (
 )
 
 // reaches is whether a variable can lead git or jj to a workspace, repository, remote or
-// credential other than the test's own (Isolated's doc says how each does), HOME and
+// credential other than the test's own (Isolated's doc says how each does), or can hand the leak
+// guard a shared check of the machine's rather than the test's own stand-in (PUBLIC_LEAK_CHECK
+// and the rest of the check's own prefix, which internal/leakguard reads), HOME and
 // XDG_CONFIG_HOME aside.
 func reaches(key string) bool {
-	for _, prefix := range []string{"LEGION_", "GIT_", "JJ_", "GH_", "GITHUB_"} {
+	for _, prefix := range []string{"LEGION_", "GIT_", "JJ_", "GH_", "GITHUB_", "PUBLIC_LEAK_CHECK"} {
 		if strings.HasPrefix(key, prefix) {
 			return true
 		}
@@ -134,6 +136,15 @@ func Live(t testing.TB) {
 		key, value, _ := strings.Cut(entry, "=")
 		t.Setenv(key, value)
 	}
+}
+
+// Kept is the names the last Guard kept beyond the test inputs, nil before any Guard. A TestMain
+// that reads it immediately after its own Guard holds what that Guard was handed, which a Guard a
+// test runs later cannot change: a package whose gated proofs read an operator's variables can
+// then assert that its entry point kept them, where reading the live state would pass on whatever
+// the test that ran first had set.
+func Kept() []string {
+	return slices.Clone(guardedKeep)
 }
 
 // RequireGuarded fails the test unless the package's TestMain ran Guard and the process holds

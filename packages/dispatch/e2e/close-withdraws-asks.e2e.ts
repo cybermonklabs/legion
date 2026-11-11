@@ -1,5 +1,3 @@
-import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
 import type { Actor } from "../web/src/api/types";
 import {
   createAsk,
@@ -11,20 +9,17 @@ import {
   getIssue,
   patchIssue,
   requestApproval,
+  withOpenedAsk,
 } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Closing an issue withdraws each of its open asks, naming the closer, and reopening it brings
 // back exactly those asks. Every row seeds an issue holding a plain ask, a decision block in its
 // spec and an approval request on the spec, opens the issue page and the Inbox, and only then
 // closes it, so what is checked is what a reader already looking at the issue sees.
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The agent that asks: every seeded ask waits on a person, so each is in alice's Inbox. */
 const asker = { actor: { id: "e2e-seed", kind: "session" } as Actor, as: "agent" as const };
@@ -58,19 +53,23 @@ async function seedIssue(project: string): Promise<Seeded> {
   // The block is an ask once settlement has indexed it.
   await expect
     .poll(
-      async () => (await getIssue(issue.key)).open_asks.some((ask) => ask.block_id === "decision"),
+      async () =>
+        ((await getIssue(issue.key)).open_asks ?? []).some((ask) => ask.block_id === "decision"),
       PROBE
     )
     .toBe(true);
-  const block = (await getIssue(issue.key)).open_asks.find((ask) => ask.block_id === "decision");
+  const block = ((await getIssue(issue.key)).open_asks ?? []).find(
+    (ask) => ask.block_id === "decision"
+  );
   if (block === undefined) {
     throw new Error("the decision block was not indexed");
   }
   // Neither write reads the other, and the ids they return are the only order the row keeps.
-  const [plain, approval] = await Promise.all([
+  const [plain, requested] = await Promise.all([
     createAsk(issue.key, { question: "Which region first?" }, asker),
     requestApproval(issue.primary_artifact_id, {}, asker),
   ]);
+  const approval = withOpenedAsk(requested);
   return {
     askIds: [plain.id, block.id, approval.ask.id],
     artifactId: issue.primary_artifact_id,
@@ -150,7 +149,8 @@ async function expectWithdrawn(
 
 // SLOW(>=2s): two pages of the issue, one of them the document editor with its own socket, then a
 // close, the version history, a reopen and a reload.
-test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back", async ({
+// @pr: Create through answer to close: the Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings them back.
+test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back @pr", async ({
   browser,
 }) => {
   const seeded = await seedIssue("CLOSE");
@@ -163,7 +163,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     // The newest saved version predates the close: opened from the history, it still shows the
     // decision as it was then, open, and nothing of the withdrawal.
     const { versions } = await getArtifact(seeded.artifactId, { login: "alice" });
-    const latest = Math.max(...versions.map((version) => version.number));
+    const latest = Math.max(...(versions ?? []).map((version) => version.number));
     expect((await getArtifactVersion(seeded.artifactId, latest)).markdown).toContain(
       ":::ask{#decision"
     );

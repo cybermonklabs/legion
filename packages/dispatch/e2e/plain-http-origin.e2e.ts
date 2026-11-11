@@ -1,9 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
 import { httpsTarget, plainHttpHost, plainHttpSkipReason } from "./plain-http-origin";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asPlainHttpUser } from "./users";
 
 // Runs only in the `chromium-plain-http` project (e2e/playwright.config.ts, e2e/plain-http-origin.ts):
@@ -17,9 +15,11 @@ const typed = "Typed on a plain-HTTP origin.";
 
 test.skip(httpsTarget, plainHttpSkipReason);
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
+// The default context is left signed out: this project's host name resolves only inside Chromium
+// (its `--host-resolver-rules`), and the sign-in behind that option goes through
+// `context.request`, which resolves names in Node and would answer ENOTFOUND (e2e/test.ts,
+// e2e/users.ts). The rows below sign in through a page instead, with `asPlainHttpUser`.
+test.use({ signedIn: false });
 
 /** Each test checks its own origin once its page opens. On a secure origin `crypto.randomUUID`
  * exists and both tests pass with or without the fix, so a fixture that drifted there must fail
