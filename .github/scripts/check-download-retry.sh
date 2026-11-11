@@ -411,6 +411,16 @@
 #          retried call inside the function is counted once.
 #        * a function that calls itself: counted once, because a reading that cannot see the
 #          second call cannot price it.
+#        * A SCRIPT'S PATH WRITTEN IN PROSE IS READ AS A CALL OF IT, so a comment citing
+#          another script by path charges this step that script's whole arithmetic a second
+#          time. This check reads a step's text for the scripts it names and no reading of it
+#          asks whether the line is a command or a comment. Measured on this tree in round 23
+#          of dispatch://INFRA-1545: one sentence of .github/scripts/ci-tools-proof.sh citing
+#          `.github/scripts/ci-tools.sh` for its own derivation took every step that runs the
+#          rig from 741 s to 1482 s and refused 49 sites, and the refusal names the step and
+#          the seconds, never a comment. Cite such a file by its name alone, as that sentence
+#          does now. This one over-prices rather than under-prices, so it refuses a step
+#          instead of passing one, which is why it sits at the end of this list.
 #        * a script run through another program rather than by its own path, such as an
 #          `xargs -n1 .github/scripts/x.sh`.
 #        * a `for ((i = 0; i < ${#name[@]}; i++))` over an array the body writes as words this

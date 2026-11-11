@@ -705,6 +705,30 @@ func main() {
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
+	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
+	// functions set it from the deploy on, and this labels the rows stored before it, in
+	// committed batches of its own (20261109120100 holds the cursor it records its place in).
+	//
+	// In the background, where the document_search fill above blocks the boot: a label costs
+	// about 253 bytes of heap and 4.9 KiB of growth in the vector index, and the pass is one to
+	// two hours on a deployment of a million rows (INFRA-988, store.EmbeddingProjectKeyBatch), so
+	// a boot that waited for it would outlast any rollout. What waiting would buy is nothing a
+	// search needs: an unlabelled row is invisible to the column's own predicate, which is worse
+	// than the release before this one, so a project-scoped meaning search is answered by the
+	// owner each arm joins, as that release answered it, until this pass records itself done
+	// (api/search.go, meaningProjectScope), and every batch moves rows onto the faster predicate
+	// the pass exists for. A failure is logged and the process serves on, for the same reason.
+	//
+	// Here, among the loops, and not beside the document_search fill above, because it needs the
+	// lease pool, which is opened below that: one process of a roll fills and the other skips,
+	// since two of them would each pay the same hours for one result. The process that skipped
+	// tries again every five minutes until the labelling is over, so a holder killed mid-pass
+	// costs the fill that wait rather than lasting until something next boots
+	// (api.RunEmbeddingProjectKeyFill, which says why the retry is written there and not taken
+	// from duty's loops). It is the one leased caller here that stops of its own accord, so its
+	// goroutine and its connection of the lease pool go back for good once the rows are labelled.
+	go api.RunEmbeddingProjectKeyFill(ctx, database, leases)
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
 	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
 	go documentService.RunSettlementResumption(ctx, leases)
@@ -767,24 +791,30 @@ func main() {
 	// from GitHub and records the completed checks Envoy's record of that head lacks. It is a
 	// timer that stays, as the webhook redelivery sweep and the delivery reconcile beside it are:
 	// GitHub has no feed of the webhook it never delivered, so there is nothing to wake on.
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID)
+	ciReconcileInterval := cireconcile.Interval
+	if boot.CIReconcileInterval > 0 {
+		ciReconcileInterval = boot.CIReconcileInterval
+	}
+	// The interval is the pass's own bound as well as the loop's period: a pass reads from the
+	// cursor the pass before it left and ends on that bound, so the loop's lease is free when
+	// the next pass is due and the one line each pass logs says how far round the cycle it got.
+	// ciInstance is filled in once this process is registered, below, and each pass records its
+	// counts in ci_reconcile_passes under the id it then holds.
+	ciInstance := &registeredInstance{}
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
 	}
 	if reconciler != nil {
-		interval := cireconcile.Interval
-		if boot.CIReconcileInterval > 0 {
-			interval = boot.CIReconcileInterval
-		}
-		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", interval)
+		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
 		}
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
-		go duty.RunLeased(ctx, leases, cireconcile.Lease, interval, duty.TickAfterInterval, reconciler.Pass)
+		go duty.RunLeased(ctx, leases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
 	} else {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
@@ -889,6 +919,9 @@ func main() {
 		slog.Error("dispatch: register this server process", "error", err)
 		os.Exit(1)
 	}
+	// The CI reconcile loop started before this, so it has been reading the holder and finding
+	// nothing; from here each of its passes records its counts under this process's row.
+	ciInstance.set(registration.ID)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool.

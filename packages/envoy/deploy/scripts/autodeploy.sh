@@ -12,6 +12,10 @@ COMPOSE_FILE="$COMPOSE_DIR/dispatch.compose.yml"
 COMPOSE_ENV="$COMPOSE_DIR/.env"
 # pg_dump N dumps servers <= N; the production database is Aurora PostgreSQL 16.
 PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16.11-alpine}"
+# SCHEMA_READ_DEADLINE is how long schema_applied polls the migration advisory key before it
+# gives up on reading the applied set. It bounds the whole read and not merely the start of its
+# last try: each try's own timeout is the time this deadline leaves, capped at a minute.
+SCHEMA_READ_DEADLINE="${SCHEMA_READ_DEADLINE:-60}"
 
 case "$#" in
   0)
@@ -164,11 +168,16 @@ pg_client() {
 # wait out its lock_timeout), and under ON_ERROR_STOP=1 that failure ends psql non-zero, which
 # would end this read in its caller rather than try the key again. Once the deadline passes with
 # the key still held the read fails, and the caller refuses to deploy rather than wait for ever.
+# The deadline bounds the whole read, not merely the start of its last try: each try's timeout is
+# the time the deadline leaves, capped at the minute a try is given where the deadline leaves
+# more, so a try that starts a second before the deadline ends at it rather than a minute past
+# it. With SCHEMA_READ_DEADLINE where it stands, a first try against a free key still gets the
+# whole minute.
 #
 # psql's stderr is dropped, since its diagnostics can quote the connection; a failure prints
 # nothing and returns psql's status, or 1 for an answer that is no list of versions.
 schema_applied() {
-  local sql answer versions line count max digest deadline try
+  local sql answer versions line count max digest deadline try left
   # The script reaches psql on its standard input, since \gset and \if are psql's own and -c
   # takes SQL alone. The here-document is the container shell's, so the script travels as part of
   # sh -c's argument (pg_client) and nothing of it reaches psql's own arguments; it carries no
@@ -182,19 +191,28 @@ select version from schema_migrations order by version;
 \\endif
 PSQL
 "
-  deadline=$((SECONDS + 60))
+  deadline=$((SECONDS + SCHEMA_READ_DEADLINE))
   try=0
   while true; do
-    answer=$(pg_client 60 "$sql" 2>/dev/null) ||
+    # Two bounds on the poll, whichever comes first, both read before a try is sent rather than
+    # after one is refused: the deadline, and the count of tries a deadline of seconds can hold
+    # with a second between two of them. The count is what bounds the poll where a sleep returns
+    # early (the test suite's own sleep returns at once, but for the cases that ask it for a real
+    # one); without it such a run would reach for the key as fast as it can until the deadline
+    # passes. The deadline is tested here and nowhere else, so a poll that lost this test would
+    # run its 60 tries out past it, which is what the suite's three-second case reads.
+    ((SECONDS < deadline && try++ < 60)) || return 1
+    # What this try is given: the time the deadline leaves, capped at a minute. That is how the
+    # read ends inside the deadline rather than a timeout past it, where a try starting a second
+    # before the deadline would otherwise get a minute of its own. The test above has left at
+    # least a second, and pg_client must never be given 0: it reads 0 as unbounded.
+    left=$((deadline - SECONDS))
+    ((left > 60)) && left=60
+    answer=$(pg_client "$left" "$sql" 2>/dev/null) ||
       return
     [[ "$answer" == t || "$answer" == t$'\n'* ]] && break
     # f: another session holds the key. Any other answer is none of this read's.
     [[ "$answer" == f || "$answer" == f$'\n'* ]] || return 1
-    # Two bounds on the poll, whichever comes first: the deadline, and the count of tries a
-    # deadline of seconds can hold with a second between two of them. The count is what bounds
-    # the poll where a sleep returns early (the test suite's own sleep returns at once); without
-    # it such a run would reach for the key as fast as it can until the deadline passes.
-    ((SECONDS < deadline && ++try < 60)) || return 1
     sleep 1
   done
   versions="${answer#t}"
