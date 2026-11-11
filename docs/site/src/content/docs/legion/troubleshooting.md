@@ -273,7 +273,8 @@ Check, in order:
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for.
+   is in `blocked`, with each child it waits for. An issue in neither `active` nor `waiting` is in
+   `held`, with the word for what holds it (below).
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
    branch, as the implement App, and again before each tree member's planner starts, so no agent's
@@ -293,6 +294,40 @@ Check, in order:
 6. **Someone else holds it.** The architect's first act is to claim the issue in Dispatch. When a
    person or another session already holds the claim, the architect starts nothing and asks the
    holder, on the issue, to release it or take the issue back; the tree keeps its slot meanwhile.
+
+**When none of those six is it, read the held list.** Every issue the daemon's record holds in
+the workflow stands in `admission.active`, in `admission.waiting` or in `admission.held`. The
+third list is the issues that hold no slot and stand in no line, one row each for why the daemon
+left this one where it is:
+
+```sh
+legion state --config legion.yaml --json | jq '.admission.held'
+```
+
+Find the row whose `issue` is the key. Its `reason` is one word of eleven, the first of them the
+daemon found true of the issue, and `heldBy` names the issues that hold it, absent where no other
+issue holds the one that waits. An issue in this list holds no slot, so it counts for nothing
+against `admission_cap`: a slot falling free is not what starts it. The word says what does, and
+the table reads in the order the daemon reads the words:
+
+| `reason` | `heldBy` | What ends the hold |
+| --- | --- | --- |
+| `tree_closed` | the tree root | The root carries the Dispatch status `done`, or its tree lingers. **No pass of the daemon ends this hold:** an architect of a live tree takes the issue, by writing its Dispatch parent to an issue of that tree and then releasing it, which adopts it into that tree at the phase `admitted`, with its repository unchanged and its generation one higher. |
+| `tree_parked` | the tree root | The root left the workflow to `backlog` or `icebox`. **No pass of the daemon ends this hold:** a person parked that tree, and a person's own `todo` on that root is what moves it. |
+| `label_off` | absent | The record says the `legion` label on this root is off. **No pass of the daemon ends this hold:** a person took the issue out of Legion, and a person putting the label back is what moves it. |
+| `ancestry` | the live root its chain reaches | The issue is that tree's unreleased work. Its architect releases the issue or its parent, or no live tree is left on its Dispatch chain. |
+| `root_awaiting_person` | the tree root | A person answers the root, which resumes it ([A tree waits on a person](#a-tree-waits-on-a-person)). |
+| `design_gate` | the tree root | A person approves that root's spec, which opens the gate. |
+| `dispatch_blocker` | the unfinished blockers | The last issue a Dispatch `blocked_by` link names is `done`. |
+| `children_first` | the open children | Each open child Dispatch shows under the issue is done or leaves the workflow. |
+| `accepted_ancestor` | the accepted ancestor | That ancestor closes, and the issue starts at its close. |
+| `at_work` | absent | Nothing, and nothing is wrong: the issue stands in a phase that holds no admission slot and that the line does not carry, such as `awaiting_merge`. The workers of such a phase run as they did before, and the word says nothing about them. |
+| `unclassified` | absent | No act on the issue: the word is the daemon's own reading falling short, not a state of the issue. |
+
+`unclassified` is the one row to report. It means no word above was true of the issue, which is a
+defect of the daemon rather than anything wrong with the issue; the daemon carries the issue all
+the same and logs the word once for that issue and run. Report it with the issue's key and its
+phase, so the daemon's reading can be corrected.
 
 ## A tree waits on a person
 
