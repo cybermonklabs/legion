@@ -738,6 +738,7 @@ test("a draft's Retry after Dispatch's refusal sends the file whose refusal it s
   const view = renderWith(<DraftHarness />);
 
   try {
+    // user-event's paste carries text, never the files this field uploads.
     fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [notes, chart] } });
     // Each file is kept before its press goes out, so the second press's refusal reaches the
     // field a few turns after the paste.
