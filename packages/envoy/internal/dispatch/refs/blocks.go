@@ -128,20 +128,26 @@ const MaxBlockNodeBytes = text.MaxTargetBytes / 2
 // nearest block above it that is a node, or the document.
 func blockNodeFits(address string) bool { return len(address) <= MaxBlockNodeBytes }
 
-// blockAddresses is each block's address, whether that address fits the store's key, and how
-// many of them do not.
-func blockAddresses(refKey string, nodes []model.ArtifactBlock) ([]string, []bool, int) {
-	addresses := make([]string, len(nodes))
+// blockIDFits is whether the address a block's id would take is inside that bound, read off
+// the two lengths that make the address rather than off the address itself: a pass over a
+// document's blocks asks this of every block and writes the address of the few it states
+// something about, so building a string per block here would be a string per block thrown
+// away.
+func blockIDFits(refKey, blockID string) bool {
+	return len(refKey)+len("#")+len(blockID) <= MaxBlockNodeBytes
+}
+
+// blockFits is whether each block's address fits the store's key, and how many do not.
+func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 	fits := make([]bool, len(nodes))
 	past := 0
 	for index, block := range nodes {
-		addresses[index] = blockNodeAddress(refKey, block.ID)
-		fits[index] = blockNodeFits(addresses[index])
+		fits[index] = blockIDFits(refKey, block.ID)
 		if !fits[index] {
 			past++
 		}
 	}
-	return addresses, fits, past
+	return fits, past
 }
 
 // blockNode is one block's node as a version's index writes it: project-visible, in state, made
@@ -220,7 +226,7 @@ func IndexBlocks(
 	if err != nil {
 		return nil, false, BlockIndexWrite{}, err
 	}
-	stored, err := storedBlockSums(ctx, tx, artifactID)
+	stored, err := storedBlockSums(ctx, tx, artifactID, len(blocks))
 	if err != nil {
 		return nil, false, BlockIndexWrite{}, err
 	}
@@ -230,7 +236,7 @@ func IndexBlocks(
 		slog.Warn("dispatch: block ids past the bound are not graph nodes; a mention inside one of their blocks starts at the block holding it",
 			"artifact", artifactID, "version", version, "blocks", long, "longest_bytes", longest, "bound_bytes", text.MaxBlockIDBytes)
 	}
-	addresses, fits, unaddressable := blockAddresses(refKey, nodes)
+	fits, unaddressable := blockFits(refKey, nodes)
 	if unaddressable > 0 {
 		slog.Warn("dispatch: block addresses past the bound are no nodes of the store; their rows carry no node address and the pass states no fact about them",
 			"artifact", artifactID, "version", version, "blocks", unaddressable, "ref_key_bytes", len(refKey), "bound_bytes", MaxBlockNodeBytes)
@@ -240,15 +246,19 @@ func IndexBlocks(
 	var ids, types, sums, excerpts []string
 	var textIDs []string
 	var texts []*string
+	// A block whose text no version moved needs no string of its sum: the comparison against
+	// the sum the index holds reads the hex out of one buffer this loop keeps, and only a
+	// block this version writes a row for takes a string of its own.
+	var sum blockSumHex
 	for _, block := range nodes {
 		body := markdown[block.From:block.To]
-		hexSum := BlockTextSum(body)
+		blockTextSum(&sum, body)
 		previous, held := stored[block.ID]
 		delete(stored, block.ID)
-		if held && previous == hexSum {
+		if held && previous == string(sum[:]) {
 			continue
 		}
-		ids, types, sums = append(ids, block.ID), append(types, block.Type), append(sums, hexSum)
+		ids, types, sums = append(ids, block.ID), append(types, block.Type), append(sums, string(sum[:]))
 		excerpts = append(excerpts, text.HeadRunes(body, BlockExcerptRunes))
 		textIDs, texts = append(textIDs, block.ID), append(texts, &body)
 	}
@@ -283,18 +293,17 @@ func IndexBlocks(
 		if _, moved := changed[block.ID]; !moved {
 			continue
 		}
-		write.Nodes = append(write.Nodes, blockNode(addresses[index], writer, versionAt, graphstore.StateLive))
+		write.Nodes = append(write.Nodes, blockNode(blockNodeAddress(refKey, block.ID), writer, versionAt, graphstore.StateLive))
 	}
 	// A block the version no longer holds has its node stated gone. The tuple that says so is
 	// not written here: graphstore.Write states a base attribute it moved, with this write's
 	// own time, writer and cause, so a block restored by a later version is stated live by the
 	// same rule and no writer of this store states a base attribute of its own.
 	for _, id := range deleted {
-		address := blockNodeAddress(refKey, id)
-		if !blockNodeFits(address) {
+		if !blockIDFits(refKey, id) {
 			continue
 		}
-		write.Nodes = append(write.Nodes, blockNode(address, writer, versionAt, graphstore.StateGone))
+		write.Nodes = append(write.Nodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateGone))
 	}
 	// The nodes go in before any projection row that names one: the foreign key is checked
 	// inside the statement writing that row, so a node written afterwards would be too late.
@@ -334,12 +343,11 @@ func IndexBlocks(
 		}
 		for _, id := range ids {
 			joined, inserted := fresh[id]
-			address := blockNodeAddress(refKey, id)
-			if !inserted || !blockNodeFits(address) {
+			if !inserted || !blockIDFits(refKey, id) {
 				continue
 			}
 			write.Tuples = append(write.Tuples, BlockTuple{Tuple: graphstore.Tuple{
-				FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,
+				FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, id), Kind: TupleInDocument,
 				ToKind: "artifact", ToID: refKey,
 				At: joined, Who: writer, Asserted: true,
 			}})
@@ -354,7 +362,7 @@ func IndexBlocks(
 			return nil, false, BlockIndexWrite{}, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
-	if err := reconcileBlockParents(ctx, tx, artifactID, refKey, nodes, addresses, fits, versionAt, writer, &write); err != nil {
+	if err := reconcileBlockParents(ctx, tx, artifactID, refKey, nodes, fits, versionAt, writer, &write); err != nil {
 		return nil, false, BlockIndexWrite{}, err
 	}
 
@@ -364,12 +372,10 @@ func IndexBlocks(
 		return nil, false, BlockIndexWrite{}, err
 	}
 	write.Tuples = append(write.Tuples, links...)
-	changedBlocks := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		changedBlocks[id] = struct{}{}
-	}
+	// A pair held by a block whose text this version moved is a link whose excerpt moved with
+	// it, which is the same set of blocks the nodes above were stated for.
 	for _, pair := range pairs {
-		if _, changed := changedBlocks[pair.blockID]; changed {
+		if _, wrote := changed[pair.blockID]; wrote {
 			moved = append(moved, pair.target)
 		}
 	}
@@ -482,6 +488,12 @@ type blockFarEnd struct{ kind, id string }
 // one. A re-index of a document nothing moved states nothing, which is what keeps a second pass
 // from asserting a parent twice, since no code may update or delete a tuple row.
 //
+// The comparison is the read's own (heldBlockParentDifferences): the parent the render gives
+// travels with the probe, so a document nothing moved reads back no row at all rather than one
+// row per block for Go to compare. Both statements name a block by its id and build its node
+// address from the document's ref_key, as the insert above does, so a pass over thousands of
+// blocks holds no address for the thousands it states nothing about.
+//
 // The projection is a statement of its own rather than a column of the insert above, so that
 // insert keeps firing only for a block whose text changed: a block that only moved keeps its
 // changed_version and changed_at. The statement carries the node columns beside the parent, so
@@ -491,7 +503,6 @@ func reconcileBlockParents(
 	tx pgx.Tx,
 	artifactID, refKey string,
 	nodes []model.ArtifactBlock,
-	addresses []string,
 	fits []bool,
 	at time.Time,
 	writer model.Actor,
@@ -514,55 +525,49 @@ func reconcileBlockParents(
 			}
 		}
 	}
-	stated := make([]string, 0, len(nodes))
 	blockIDs := make([]string, 0, len(nodes))
 	parentIDs := make([]*string, 0, len(nodes))
 	for index := range nodes {
 		if !fits[index] {
 			continue
 		}
-		stated, blockIDs = append(stated, addresses[index]), append(blockIDs, nodes[index].ID)
+		blockIDs = append(blockIDs, nodes[index].ID)
 		var parent *string
 		if parents[index] >= 0 {
 			parent = &nodes[parents[index]].ID
 		}
 		parentIDs = append(parentIDs, parent)
 	}
-	if len(stated) == 0 {
+	if len(blockIDs) == 0 {
 		return nil
 	}
-	asserted, err := heldBlockParents(ctx, tx, stated)
+	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs)
 	if err != nil {
 		return fmt.Errorf("read the parents the blocks of %s hold: %w", artifactID, err)
 	}
-	for index := range nodes {
-		if !fits[index] {
+	for _, difference := range differences {
+		address := blockNodeAddress(refKey, blockIDs[difference.block])
+		for _, far := range difference.retract {
+			write.Tuples = append(write.Tuples, parentTuple(address, far.kind, far.id, at, writer, false))
+		}
+		if difference.holds {
 			continue
 		}
 		toKind, toID := "artifact", refKey
-		if parents[index] >= 0 {
-			toKind, toID = BlockNodeKind, addresses[parents[index]]
+		if parent := parentIDs[difference.block]; parent != nil {
+			toKind, toID = BlockNodeKind, blockNodeAddress(refKey, *parent)
 		}
-		holds := false
-		for _, far := range asserted[addresses[index]] {
-			if far.kind == toKind && far.id == toID {
-				holds = true
-				continue
-			}
-			write.Tuples = append(write.Tuples, parentTuple(addresses[index], far.kind, far.id, at, writer, false))
-		}
-		if !holds {
-			write.Tuples = append(write.Tuples, parentTuple(addresses[index], toKind, toID, at, writer, true))
-		}
+		write.Tuples = append(write.Tuples, parentTuple(address, toKind, toID, at, writer, true))
 	}
 	if _, err := tx.Exec(ctx, `
 		update document_blocks d
-		set node_kind = $3, node_address = p.address, parent_block_id = p.parent
-		from unnest($2::text[], $4::text[], $5::text[]) as p (block_id, address, parent)
+		set node_kind = $3, node_address = $4 || '#' || p.block_id, parent_block_id = p.parent
+		from unnest($2::text[], $5::text[]) as p (block_id, parent)
 		where d.artifact_id = $1::uuid and d.block_id = p.block_id
 		  and (d.parent_block_id is distinct from p.parent
-		       or d.node_kind is distinct from $3 or d.node_address is distinct from p.address)
-	`, artifactID, blockIDs, BlockNodeKind, stated, parentIDs); err != nil {
+		       or d.node_kind is distinct from $3
+		       or d.node_address is distinct from $4 || '#' || p.block_id)
+	`, artifactID, blockIDs, BlockNodeKind, refKey, parentIDs); err != nil {
 		return fmt.Errorf("project the parents of the blocks of %s: %w", artifactID, err)
 	}
 	return nil
@@ -578,38 +583,83 @@ func parentTuple(address, toKind, toID string, at time.Time, writer model.Actor,
 	}}
 }
 
-// heldBlockParents is the parent each of addresses holds in the store now, read the way the
-// store reads a current relation - the newest tuple per far end, kept while it asserts
-// (graphstore.CurrentOut) - but in one statement for every block of the document rather than
-// one per block, which on a document of thousands of blocks would be thousands of round trips.
-// The lateral reads through graph_tuples_current, whose column order is the one the distinct on
-// walks.
-func heldBlockParents(ctx context.Context, tx pgx.Tx, addresses []string) (map[string][]blockFarEnd, error) {
+// blockParentDifference is one block whose part_of in the store is not what the render gives:
+// where the block sits in the arrays the read was handed, the far ends the store still asserts
+// and the render does not give, and whether the render's own parent is among the far ends it
+// asserts. A block the store already places where the render does answers no difference at all.
+type blockParentDifference struct {
+	block   int
+	retract []blockFarEnd
+	holds   bool
+}
+
+// heldBlockParentDifferences is each block of a document whose parent in the store is not the
+// one the render gives, read the way the store reads a current relation - the newest tuple per
+// far end, kept while it asserts (graphstore.CurrentOut) - but in one statement for every block
+// of the document rather than one per block, which on a document of thousands of blocks would
+// be thousands of round trips. The lateral reads through graph_tuples_current, whose column
+// order is the one the distinct on walks.
+//
+// blockIDs are the blocks that are nodes of the store, in document order, and parentIDs the
+// block each of them sits in, nil for a block the document itself holds. The statement builds
+// both addresses from refKey, as the insert of document_blocks does, so the caller hands over
+// one ref_key and not one address per block.
+//
+// The comparison is the statement's: a block answers a row only where the store asserts a far
+// end the render does not give, or asserts none the render does, so an edit that moved nothing
+// reads back no row and a document of thousands of blocks costs its probe and nothing more. The
+// having clause is that rule, and the two array_aggs carry the far ends the pass retracts.
+func heldBlockParentDifferences(
+	ctx context.Context,
+	tx pgx.Tx,
+	refKey string,
+	blockIDs []string,
+	parentIDs []*string,
+) ([]blockParentDifference, error) {
 	rows, err := tx.Query(ctx, `
-		select held.from_id, held.to_kind, held.to_id
-		from unnest($1::text[]) as block (address)
-		join lateral (
-			select distinct on (held.to_kind, held.to_id) held.from_id, held.to_kind, held.to_id, held.asserted
-			from graph_tuples held
-			where held.from_kind = $2 and held.from_id = block.address and held.kind = $3
-			  and held.to_kind <> $4
-			order by held.to_kind, held.to_id, held.seq desc
-		) held on held.asserted
-	`, addresses, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue)
+		select block.ordinality,
+		       array_agg(current.to_kind) filter (where not current.wanted),
+		       array_agg(current.to_id) filter (where not current.wanted),
+		       coalesce(bool_or(current.wanted), false)
+		from unnest($1::text[], $2::text[]) with ordinality as block (id, parent)
+		left join lateral (
+			select held.to_kind, held.to_id,
+			       held.to_kind = case when block.parent is null then $6 else $3 end
+			       and held.to_id = case when block.parent is null then $7 else $7 || '#' || block.parent end
+			         as wanted
+			from (
+				select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted
+				from graph_tuples t
+				where t.from_kind = $3 and t.from_id = $7 || '#' || block.id and t.kind = $4
+				  and t.to_kind <> $5
+				order by t.to_kind, t.to_id, t.seq desc
+			) held
+			where held.asserted
+		) current on true
+		group by block.ordinality
+		having not coalesce(bool_or(current.wanted), false)
+		    or count(*) filter (where not current.wanted) > 0
+		order by block.ordinality
+	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, "artifact", refKey)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	held := map[string][]blockFarEnd{}
+	var differences []blockParentDifference
 	for rows.Next() {
-		var address string
-		var far blockFarEnd
-		if err := rows.Scan(&address, &far.kind, &far.id); err != nil {
+		var ordinality int64
+		var kinds, ids []string
+		var holds bool
+		if err := rows.Scan(&ordinality, &kinds, &ids, &holds); err != nil {
 			return nil, err
 		}
-		held[address] = append(held[address], far)
+		difference := blockParentDifference{block: int(ordinality) - 1, holds: holds}
+		for index, kind := range kinds {
+			difference.retract = append(difference.retract, blockFarEnd{kind: kind, id: ids[index]})
+		}
+		differences = append(differences, difference)
 	}
-	return held, rows.Err()
+	return differences, rows.Err()
 }
 
 // DocumentWindowKind is the embeddings kind of a window of a document's blocks, as
@@ -856,21 +906,36 @@ func citedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, ids []string
 	return cited, nil
 }
 
+// blockSumHex is a block text's sha256 as document_blocks stores it: the hex of the 32 bytes,
+// held in an array so the pass over a document's blocks can hash each one into a buffer of its
+// own and compare it against the stored sum with no string made (string(sum[:]) == stored
+// allocates nothing).
+type blockSumHex [2 * sha256.Size]byte
+
+// blockTextSum writes the sha256 (hex) of a block's text (markdown[From:To]) into sum.
+func blockTextSum(sum *blockSumHex, body string) {
+	hashed := sha256.Sum256([]byte(body))
+	hex.Encode(sum[:], hashed[:])
+}
+
 // BlockTextSum is the sha256 (hex) of a block's text (markdown[From:To]), as document_blocks
 // stores it in text_sha256.
 func BlockTextSum(body string) string {
-	sum := sha256.Sum256([]byte(body))
-	return hex.EncodeToString(sum[:])
+	var sum blockSumHex
+	blockTextSum(&sum, body)
+	return string(sum[:])
 }
 
 // storedBlockSums is each block the document's index holds, by id, with its text's sha256.
-func storedBlockSums(ctx context.Context, tx pgx.Tx, artifactID string) (map[string]string, error) {
+// blocks is how many blocks the version being indexed holds, which is about how many rows the
+// read answers: a map made at that size is not grown once per thousand rows read into it.
+func storedBlockSums(ctx context.Context, tx pgx.Tx, artifactID string, blocks int) (map[string]string, error) {
 	rows, err := tx.Query(ctx, `select block_id, text_sha256 from document_blocks where artifact_id = $1`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
-	stored := make(map[string]string)
+	stored := make(map[string]string, blocks)
 	for rows.Next() {
 		var id, sum string
 		if err := rows.Scan(&id, &sum); err != nil {

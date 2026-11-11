@@ -124,6 +124,11 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 		}
 		if own == nil {
 			own = statedAttributes(stated)
+			// Two attributes per node at most. The slice is made at that size by the
+			// first node that states one, so a write that states none - a re-index of a
+			// document nothing moved - makes none, and one that states thousands grows
+			// none.
+			base = make([]Tuple, 0, 2*len(nodes))
 		}
 		node := nodes[position-1]
 		if made {

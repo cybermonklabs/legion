@@ -232,8 +232,23 @@ func arrayList(first int, types ...string) string {
 }
 
 // splitTuples parts the relations from the attributes: the two carry different repeat keys, so
-// each is appended by a statement, or an arm, of its own.
+// each is appended by a statement, or an arm, of its own. It counts the attributes before it
+// copies, so each of the two slices is made once at the size it ends at: a first index of a
+// document of thousands of blocks hands this thousands of tuples, and a slice grown from empty
+// over them is allocated again and again on the way.
 func splitTuples(tuples []Tuple) (relations, values []Tuple) {
+	attributes := 0
+	for _, tuple := range tuples {
+		if tuple.ToKind == KindValue {
+			attributes++
+		}
+	}
+	if attributes < len(tuples) {
+		relations = make([]Tuple, 0, len(tuples)-attributes)
+	}
+	if attributes > 0 {
+		values = make([]Tuple, 0, attributes)
+	}
 	for _, tuple := range tuples {
 		if tuple.ToKind == KindValue {
 			values = append(values, tuple)

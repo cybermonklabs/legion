@@ -1141,14 +1141,22 @@ func (w commentStoreWrite) writeNode(ctx context.Context, tx pgx.Tx) error {
 // onto that event: a node row is the projection of its own tuples and may be written again,
 // while a tuple may not be updated. event is graphstore.NoEvent where no event recorded the
 // write, which is what the seed states.
+//
+// The node is not written again: graphstore.Caused moves the event onto the row writeNode
+// already wrote, as refs.BlockIndexWrite.Caused does for a version's blocks. A second
+// graphstore.Write would move nothing, since that write's upsert fires only where the
+// supertag, the visibility, the state or the attributes of the row moved and none of them has,
+// and the node would keep the sentinel its first write gave it.
 func (w commentStoreWrite) caused(ctx context.Context, tx pgx.Tx, event int64) error {
-	w.node.SourceEvent = event
+	if err := graphstore.Caused(ctx, tx, []graphstore.Node{w.node}, event); err != nil {
+		return fmt.Errorf("record what stored comment %s: %w", w.node.ID, err)
+	}
 	tuples := make([]graphstore.Tuple, len(w.tuples))
 	for index, tuple := range w.tuples {
 		tuple.SourceEvent = event
 		tuples[index] = tuple
 	}
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{w.node}, tuples); err != nil {
+	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
 		return fmt.Errorf("state what comment %s is: %w", w.node.ID, err)
 	}
 	return nil
