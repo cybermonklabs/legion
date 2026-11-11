@@ -53,6 +53,20 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
 		return err
 	}
+	// The issue's jump mark goes with its departure. A mark is the controller's instruction about
+	// a merge that is about to be submitted (record.MergeJump), and an issue that has left the
+	// workflow submits none: a mark left behind would be spent weeks later by whatever merge a
+	// re-admission of this issue reaches, against a decision nobody made about that merge. The
+	// clear stands ahead of every branch below, so no departure this function makes can leave
+	// one, and the one branch that returns before them clears it itself (leaveUnderOperator).
+	//
+	// These two are the only places that clear a mark for a departure, because the one other way
+	// an issue leaves the record takes the mark with it: the mark's row is bound to the issue's
+	// with `on delete cascade` (migration 20261110235352), so the deletion of an issue's record,
+	// by a tree's cleanup, deletes its mark in the same statement.
+	if _, err := e.store.ClearMergeJump(ctx, tx, issue.Key); err != nil {
+		return err
+	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() {
 			return nil
@@ -171,12 +185,22 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under
 // its key: its record's phase is done, so todo with the label re-admits it as a closed root's does,
-// and nothing else is written. Its claims, its pod and its tree's cleanup are the operator's, which
-// share the root's tokens and names, so no suspend, IssueSuspend, linger close or disarm is queued
-// for the workflow's record, and the workflow never ran a phase of it to check in production.
+// and nothing is written but that record and the clearing of the root's jump mark. Its claims, its
+// pod and its tree's cleanup are the operator's, which share the root's tokens and names, so no
+// suspend, IssueSuspend, linger close or disarm is queued for the workflow's record, and the
+// workflow never ran a phase of it to check in production.
+//
+// The mark goes here as it goes at every other departure (leave): the controller marked a merge
+// this root was about to make, the root is out of the workflow and makes none, and a mark left
+// standing would be spent by a merge of some later re-admission. The one departure that clears
+// no mark is the deletion of the issue's own record, which takes the mark with it through the
+// table's `on delete cascade`.
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
+	if _, err := e.store.ClearMergeJump(ctx, tx, root.Key); err != nil {
+		return err
+	}
 	root.Phase, root.Hold, root.Awaiting, root.ReadyPending = phase.Done, nil, nil, nil
 	return e.store.PutIssue(ctx, tx, root)
 }

@@ -235,3 +235,36 @@ func (s *Postgres) MergeHeldIssues(ctx context.Context, tx pgx.Tx, project strin
 	}
 	return held, nil
 }
+
+// DeferredReadyMerges is every ready_merge row of project that runs later than now, oldest row
+// first, with everything of the row the outbox holds. It answers the rows themselves, where
+// MergeHeldIssues answers the issues a hold keeps back, because its caller hands each row to
+// ExpediteOutbox, which takes a row and not an id so that the lane it wakes on commit is the
+// row's own (Store.ExpediteOutbox).
+//
+// It asks for no reason the row waits: a row deferred by a merge hold and one deferred by the
+// submission's own backoff are both merges that have not gone out, and a hold list the
+// controller just replaced is read again by whichever runs. Making a row due that was waiting on
+// a backoff costs one submission attempt and never a wrong merge, where reading the payload's
+// heldSince instead would leave behind the row a hold caught and then failed on.
+func (s *Postgres) DeferredReadyMerges(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and next_at > $2 and split_part(issue, '-', 1) = $3 order by id`,
+		string(OutboxKindReadyMerge), now, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the deferred merges of %s: %w", project, err)
+	}
+	defer rows.Close()
+	deferred := []OutboxRow{}
+	for rows.Next() {
+		row, err := scanOutbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list the deferred merges of %s: %w", project, err)
+		}
+		deferred = append(deferred, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the deferred merges of %s: %w", project, err)
+	}
+	return deferred, nil
+}

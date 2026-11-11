@@ -434,6 +434,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/roots/close", s.closeRoot)
 	mux.HandleFunc("POST /legion/v1/children/park", s.parkChild)
 	mux.HandleFunc("POST /legion/v1/children/rerun", s.rerunChild)
+	mux.HandleFunc("POST /legion/v1/merge/jump", s.mergeJump)
+	mux.HandleFunc("POST /legion/v1/merge/jump/clear", s.mergeJumpClear)
+	mux.HandleFunc("POST /legion/v1/merge/holds", s.mergeHolds)
 
 	mux.HandleFunc("POST /legion/v1/operator/claims", s.operator(s.spawn))
 	mux.HandleFunc("GET /legion/v1/operator/claims", s.operator(s.list))

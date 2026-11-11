@@ -1597,6 +1597,10 @@ type Store interface {
 	// back — the row's payload carries a heldSince — each with the moment that row is due again,
 	// by issue.
 	MergeHeldIssues(ctx context.Context, tx pgx.Tx, project string) ([]MergeHeldIssue, error)
+	// DeferredReadyMerges is every ready_merge row of project due later than now, oldest first:
+	// the merges that have not gone out yet, which the controller's replacement of the hold list
+	// expedites so that a hold it took off or shortened releases its merge at once.
+	DeferredReadyMerges(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
