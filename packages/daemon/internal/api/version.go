@@ -845,4 +845,45 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 62: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
+// live tree gains that tree's quiet time: `treeMovedAt`, the newest movement the daemon has
+// seen anywhere in the tree, and `quietHours`, how long the tree has been still at this read,
+// as a number of hours. The pair is the tree's and not the issue's, so every issue of one tree
+// carries the same two values — the root, a child past its own review, which holds no admission
+// slot since 62's first slice, and a done child recorded under the tree alike — and a reader
+// that wants to know whether a tree has stopped asks any one of its issues. The measure behind
+// the keys is `record.QuietTrees`, the one statement of the question the admission pass reads
+// too, so the state and the pass can never say different things about one tree: the movement is
+// the newest of the `MovedAt` of every member the workflow still runs and the step times of
+// those members' claims, and a tree that has never moved at all is measured from the zero time,
+// where the daemon's duration saturates: such a tree reads as quiet for 2562047.788 hours, 292
+// years, rather than carrying no key. An issue whose tree has left the workflow — one no longer
+// among `admission.trees` — carries neither key, and neither does an issue the workflow does
+// not record. Nothing of the operator's plain `legion state` output changes: a line per issue
+// would print hundreds of them on a live deployment, so the two values are in `--json` and in
+// the one issue a pane prints, which is where the memory keys and the waiting line each landed.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 62 is served the issues without the two keys (api's stateFor,
+// withoutQuietTime), as a caller below 58 is served the issues with no `waitingLine`, one below
+// 57 the claim views with no `step`, one below 56 the stranded report without its retired
+// entries, one below 55 the issues without the gated steps, one below 53 a body with no wakes
+// waiting, one below 51 the issues without the admission's trees and each issue's tree, one
+// below 49 without the memory draw and one below 46 without the claim views' update rounds; the
+// nine compose, and every reader from 62 on takes both keys as optional
+// (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 61 does not refuse them, as a
+// plugin before one of the earlier contracts above refuses its own: every answer-side schema of
+// `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788. The strip
+// is still what serves such a caller: a reader that did not ask for the keys is not given them,
+// and a plugin built before #2788 is strict and would refuse the whole body for one of them.
+// This change adds no route, no setting and no store migration: the record column the movement
+// is read from (`issues.moved_at`) and the measure over it are the slices before this one.
+// (The base this branch stands on, 5a585b02, carries 59, and two open pull requests declare the
+// numbers above it: cybermonklabs/legion#2731 declares 60 and #2230 declares 61, neither of
+// which carries these shapes. `.github/scripts/check-daemon-api-contract.sh` names the free
+// number as the lowest above the base's that no open pull request declares, which is 62, so
+// that is what this change takes rather than 60, which would force this change or #2731 to
+// renumber after its review had run. The open pull requests were read at this bump, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says; read them again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 62

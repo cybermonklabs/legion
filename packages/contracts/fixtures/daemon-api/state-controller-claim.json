@@ -91,7 +91,9 @@
       "slot": {
         "index": 0,
         "admittedAt": "2026-10-06T18:02:11Z"
-      }
+      },
+      "treeMovedAt": "2026-10-06T18:03:01Z",
+      "quietHours": 0.002777777777777778
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -101,7 +103,9 @@
       "tree": "LEGION-208",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "treeMovedAt": "2026-10-06T18:03:01Z",
+      "quietHours": 0.002777777777777778
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -115,7 +119,9 @@
       "waitingLine": {
         "place": 1,
         "length": 2
-      }
+      },
+      "treeMovedAt": "0001-01-01T00:00:00Z",
+      "quietHours": 2562047.7880152157
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -129,7 +135,9 @@
       "waitingLine": {
         "place": 2,
         "length": 2
-      }
+      },
+      "treeMovedAt": "0001-01-01T00:00:00Z",
+      "quietHours": 2562047.7880152157
     }
   },
   "pendingStatusWrites": [],

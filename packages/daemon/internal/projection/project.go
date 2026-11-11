@@ -294,6 +294,29 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[issue.Key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	// Every issue of a live tree carries that tree's quiet time (contract 62): `treeMovedAt`,
+	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
+	// it has been still at the instant the rest of this state is measured at. The pair is the
+	// tree's, so every issue of one tree carries the same two values — a child past its own
+	// review, which holds no slot, and a done child recorded under the tree among them, since
+	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
+	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
+	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	//
+	// The measure is read once for the whole state (quietTrees), from the records and the claims
+	// this pass already holds, and a live root is always one of its trees whatever its own
+	// status says (record.QuietTrees), so the lookup below cannot miss.
+	quiet := quietTrees(own, claims, now)
+	for _, issue := range own {
+		if _, live := trees[issue.Tree]; !live {
+			continue
+		}
+		measure := quiet[issue.Tree]
+		movedAt, hours := measure.MovedAt, measure.Quiet.Hours()
+		view := projected.Issues[issue.Key]
+		view.TreeMovedAt, view.QuietHours = &movedAt, &hours
+		projected.Issues[issue.Key] = view
+	}
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {
@@ -328,13 +351,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 // (record.TreeClaimsOf), so the state never reads the claims a second time; now is the instant
 // the rest of the state is measured at.
 //
-// Where it is called from: Project, beside `trees := record.LiveRoots(own, facts)`, whose roots
-// the measure answers for. No caller is there yet — the state keys that report a tree's quiet
-// time are the slice that follows this one (dispatch://INFRA-2560) — and it is a function of
-// its own rather than a line of Project so that those keys and the measure behind them land
-// together. The admission pass measures the same thing with the same statement, over the claims
-// its own read gives it (admit's quietTrees), so the state and the pass cannot say different
-// things about one tree.
+// Where it is called from: Project, just past the live roots the measure answers for, which
+// writes each live tree's measure onto every issue of that tree (`treeMovedAt`, `quietHours`).
+// It stays a function of its own rather than a line of Project because its three arguments are
+// the three facts the measure may read and no others: a later reader of the same question takes
+// it from here and cannot quietly read a fourth. The admission pass measures the same thing
+// with the same statement, over the claims its own read gives it (admit's quietTrees), so the
+// state and the pass cannot say different things about one tree.
 func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
 	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }

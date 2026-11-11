@@ -136,9 +136,11 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds, the gated steps, the claim views' step record and the places in the admission
-// line among the keys it is served without, since such a pod is below treeContract,
-// wakesWaitingContract, gatedStepsContract, stallRecordContract and waitingLineContract too. A
+// pacing holds, the gated steps, the claim views' step record, the places in the admission
+// line and each issue's tree quiet time among the keys it is served without, since such a pod
+// is below treeContract, wakesWaitingContract, gatedStepsContract, stallRecordContract,
+// waitingLineContract and quietTimeContract too. The fixture carries no quiet time, so that
+// last gate takes nothing out of these bodies and quiet_time_test.go holds it. A
 // pod at this contract, and a caller in no pod — the operator's `legion state`, whose
 // open-rounds line reads both fields, whose queue line reads those wakes and whose tool-call
 // line reads the step records — are served everything. The claims are the state snapshot's own,
@@ -204,7 +206,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// field contract 55 added, with contract 56's retired entries under
 			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
 			// `step` gone, the record contract 57 added (withoutStallRecord), and with the
-			// places in the admission line gone, the field contract 58 added.
+			// places in the admission line gone, the field contract 58 added. The two keys
+			// contract 62 added are in no body here, served or stripped: the fixture's issues
+			// stand in no tree this state measures.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)

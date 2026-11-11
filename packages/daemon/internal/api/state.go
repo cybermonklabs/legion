@@ -447,6 +447,22 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
+	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
+	// is how long that tree has been still at this read, in hours (contract 62). The two are one
+	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
+	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
+	// a done child recorded under a live tree each answer their tree's quiet time, because what
+	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
+	// together for an issue whose tree is not live — one whose tree has left the workflow, and
+	// one the workflow does not record — since there is no tree of the deployment's to measure,
+	// and both are absent from the body the route serves a caller below quietTimeContract (api's
+	// stateFor, withoutQuietTime). A tree the record shows no movement for at all is measured
+	// from the zero time, as the measure defines it, and a Go duration saturates there, so such
+	// a tree reads as quiet for 2562047.788 hours — the largest span a duration holds, 292
+	// years. That is the pair saying the tree has never moved, not a fault: the alternative,
+	// leaving the keys off, would read as a tree nobody measures at all.
+	TreeMovedAt *time.Time `json:"treeMovedAt,omitempty"`
+	QuietHours  *float64   `json:"quietHours,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -718,6 +734,15 @@ type WaitingLineView struct {
 	Place  int `json:"place"`
 	Length int `json:"length"`
 }
+
+// TreeMovedAtField and QuietHoursField are the names `treeMovedAt` and `quietHours` carry on the
+// wire, read from here by the tests that look for the fields rather than repeating the strings.
+// The two are named together because they are served and stripped together: a reader that holds
+// one without the other holds half a measure.
+const (
+	TreeMovedAtField = "treeMovedAt"
+	QuietHoursField  = "quietHours"
+)
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull
 // request and merge commit the check looks for in production (MergeCommit is empty for a pull

@@ -20,7 +20,10 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // record of what each claim's agent last did, its admission block names the live trees, its
 // stranded claims hold a retired one, it carries the wakes the pacing holds, every root of it
 // carries the deployment's gated step and the two issues of its admission line carry their
-// place in it, so one state proves all eight downgrades and that they compose.
+// place in it, so one state proves eight of the nine downgrades and that they compose. The
+// ninth, the tree quiet time quietTimeContract added, is held by quiet_time_test.go over a
+// state of its own: this fixture carries no live tree's measure, so a band of this table is
+// silent about those two keys rather than proving anything of them.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -77,17 +80,20 @@ var contract46Issue = []string{
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys
-// the last strict reader before it knows, and the rest of the body as it is. The eight
+// the last strict reader before it knows, and the rest of the body as it is. The nine
 // downgrades compose, band by band: a pod at 46 to 48 is served the update rounds it reads and
 // none of the memory draws, the trees, the wakes the pacing holds, the gated steps, the retired
 // stranded entries, the step records and the places in the admission line; a pod at 49 or 50
 // the memory draws as well, and still none of the rest; a pod at 51 or 52 the trees too; a pod
 // at 53 or 54 the wakes too; a pod at 55 the steps too, and still none of the retired entries,
 // the step records and the places; a pod at 56 the retired entries too, and still neither a
-// step record nor a place; a pod at 57 the step records too, and still no place; a pod below 46
-// none of the eight; and a pod at this contract, a pod whose claims record none and a caller in
-// no pod — the operator's `legion state`, whose memory line reads the draws, whose queue line
-// reads the wakes and whose tool-call line reads the step records — are served all of them.
+// step record nor a place; a pod at 57 the step records too, and still no place; a pod from 58
+// to 61 the places too, which is every key of this fixture; a pod below 46 none of the nine; and
+// a pod at this contract, a pod whose claims record none and a caller in no pod — the
+// operator's `legion state`, whose memory line reads the draws, whose queue line reads the
+// wakes and whose tool-call line reads the step records — are served all of them. The ninth
+// band, the tree quiet time of a pod below 62, is no row here: the fixture carries no live
+// tree's measure, and quiet_time_test.go holds that boundary over a state that does.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -114,12 +120,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), this daemon's own contract, so a pod at it is served the places
-		// and a pod still running an older plugin is not.
+		// (waitingLineContract), the contract four below this daemon's own, so a pod from 58 to
+		// 61 is served the places and a pod still running an older plugin is not. There is no
+		// column for the tree quiet time of quietTimeContract, this daemon's own: the fixture
+		// carries none, so every row of this table is served the same nothing of it.
 		line bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
-		{name: "a pod below PodUpdateContract, below all eight", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "a pod below PodUpdateContract, below all nine", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
 		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
 		// is served and the two tree keys, `wakesWaiting`, the gated steps, the retired stranded
@@ -142,6 +150,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band at 57 alone, from stallRecordContract to below waitingLineContract: the step
 		// record is served too, and the places in the admission line are the one key held back.
 		{name: "a pod at stallRecordContract", remote: statePodAddr + ":41000", claims: podClaims(stallRecordContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true},
+		// The band from 58 to 61, from waitingLineContract to below quietTimeContract: the places
+		// in the admission line are served too, which is every key this fixture carries, and
+		// what such a pod is held back from is the tree quiet time alone.
+		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},

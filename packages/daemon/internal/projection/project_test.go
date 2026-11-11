@@ -835,3 +835,61 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 			got.Admission.Waiting)
 	}
 }
+
+// Every issue of a live tree is served that tree's quiet time (contract 62): `treeMovedAt`, the
+// newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
+// has been still at the instant the state is measured at. The pair is the tree's, so the root
+// and a child of it past its own review carry the same two values, though that child holds no
+// admission slot and the root holds one: what has stopped is the tree, and an issue past its
+// review is measured like every other member of it. The child's own record is the newest
+// movement here, which is what makes the two values the tree's rather than each issue's.
+//
+// An issue whose tree has left the workflow carries neither key: it is the root of no live tree,
+// there is nothing of the deployment's left waiting on it, and a quiet time for it would be the
+// age of a finished piece of work rather than a measure of anything that stopped.
+func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
+	root := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Implementing, "A")
+	root.MovedAt = projectedAt.Add(-3 * time.Hour)
+	child := lineIssue("LEGION-11", "LEGION-10", "retro", phase.Retro, "B")
+	child.MovedAt = projectedAt.Add(-90 * time.Minute)
+	left := lineIssue("LEGION-20", "LEGION-20", "done", phase.Done, "C")
+	left.MovedAt = projectedAt.Add(-10 * time.Minute)
+	store := projectionStore{
+		issues: []record.Issue{root, child, left},
+		// The one tree whose lifecycle stands open under the workflow, which is what makes it
+		// live; LEGION-20's closed with its issue, so no root of it is among the live ones.
+		lifecycles: []string{"LEGION-10"},
+		slots:      []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if trees := got.Admission.Trees; !slices.Equal(trees, []string{"LEGION-10"}) {
+		t.Fatalf("admission.trees = %v, want LEGION-10 alone: the tree that left the workflow must be no live root, or this test proves nothing", trees)
+	}
+	if got.Issues["LEGION-10"].Slot == nil || got.Issues["LEGION-11"].Slot != nil {
+		t.Fatalf("the root holds slot %+v and the child past its review holds %+v, want a row on the root and none on the child; this test proves nothing",
+			got.Issues["LEGION-10"].Slot, got.Issues["LEGION-11"].Slot)
+	}
+	for _, key := range []string{"LEGION-10", "LEGION-11"} {
+		view := got.Issues[key]
+		if view.TreeMovedAt == nil || view.QuietHours == nil {
+			t.Fatalf("%s is served movement %v and quiet hours %v, want its tree's measure on both",
+				key, view.TreeMovedAt, view.QuietHours)
+		}
+		if !view.TreeMovedAt.Equal(child.MovedAt) {
+			t.Errorf("%s's movement = %s, want %s, the newest movement of its tree, which is the child's",
+				key, view.TreeMovedAt, child.MovedAt)
+		}
+		if *view.QuietHours != 1.5 {
+			t.Errorf("%s's quiet hours = %v, want 1.5, the hours between its tree's newest movement and this read",
+				key, *view.QuietHours)
+		}
+	}
+	if view := got.Issues["LEGION-20"]; view.TreeMovedAt != nil || view.QuietHours != nil {
+		t.Errorf("the issue whose tree left the workflow is served movement %v and quiet hours %v, want neither",
+			view.TreeMovedAt, view.QuietHours)
+	}
+}
