@@ -2945,14 +2945,22 @@ which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-reques
 
 Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
 person takes and a baseline CI compares must be the same rendering, and a host's browser build,
-fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it starts a
-stack on the host (`e2e/harness-up.ts`), seeds it there, where `psql` is, then starts the
-container and runs those two projects in it. Run it from this package, and give it
-`--update-snapshots` to take the baselines again:
+fonts and GPU stack are not the image's.
+`e2e/visual-run.sh` starts a stack on the host (`e2e/harness-up.ts`), seeds it there, where `psql` is, then starts the container and runs those two projects in it.
+It does not build the web bundle, and it does not check the one it finds: the only build it names is the server, which Playwright's `globalSetup` makes, so the container shoots whatever `web/dist` the checkout already holds.
+A workspace carrying a bundle from an earlier run shoots that one however new the checkout is, and the baselines come back as a picture of a tree the head no longer is.
+Build first, prove the bundle is the new one, then run it from this package with `--update-snapshots` to take the baselines again:
 
 ```sh
-e2e/visual-run.sh --update-snapshots
+bun install && bun run build:contracts && bun run build:web
+test -d web/dist && grep -rq '<a string only the new code writes>' web/dist || echo 'STALE OR MISSING BUNDLE: do not shoot'
+unset DATABASE_URL
+DISPATCH_E2E_PG_IMAGE=<the pinned ci image> e2e/visual-run.sh --update-snapshots
 ```
+
+The script refuses an empty `DATABASE_URL` with `run-server.sh: DATABASE_URL must name an isolated Dispatch e2e database`, and it needs a Postgres provider, which is why those two lines are there.
+The grep is the only check that catches a stale bundle, because running the script twice does not: two runs of the same stale bytes reproduce each other exactly, so a reproduction proves determinism and says nothing about freshness.
+Read the result the same way: a regenerated baseline byte-identical to the same path at a commit before a change the head carries is a picture of the wrong tree.
 
 Outside that container the rows reach the runner and every one of them skips itself, since
 `DISPATCH_E2E_VISUAL_SEED` is unset.
