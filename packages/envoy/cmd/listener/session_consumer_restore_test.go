@@ -132,7 +132,7 @@ func TestARestoredConsumerDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 			t.Errorf("write the record of %s back as the registration that raced its delete does: %v", sessionID, err)
 		}
 	})
-	if !deleteSessionConsumer(ctx, rig.deps.consumers, rig.deps, sessionID) {
+	if !rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
 
@@ -238,7 +238,7 @@ func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *
 			t.Errorf("the entry write that raced the delete of %s: %v", sessionID, err)
 		}
 	})
-	if !deleteSessionConsumer(ctx, rig.deps.consumers, deleteDeps, sessionID) {
+	if !rig.deps.consumers.deleteConsumer(ctx, deleteDeps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
 
@@ -297,7 +297,7 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 				t.Errorf("the second listener could not delete the record of %s: %v", sessionID, err)
 				return
 			}
-			if !deleteSessionConsumer(ctx, deleting.deps.consumers, deleting.deps, sessionID) {
+			if !deleting.deps.consumers.deleteConsumer(ctx, deleting.deps, sessionID, nil) {
 				t.Errorf("the delete the second listener made of %s's consumer reported it standing; want it gone, the bucket holding no record of this registration yet", sessionID)
 				return
 			}
@@ -363,7 +363,7 @@ func TestADeleteThatRacesARegistrationLeavesTheConsumerWithTheTopicItAnswered(t 
 		raced.Do(func() {
 			go func() {
 				defer close(deleted)
-				gone = deleteSessionConsumer(ctx, rig.deps.consumers, rig.deps, sessionID)
+				gone = rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil)
 			}()
 			awaitDeleteWaitingOrDone(t, &rig.deps.consumers.locks, sessionID, deleted, 10*time.Second)
 		})
@@ -429,7 +429,7 @@ func TestADeleteRestoresTheConsumerOfASessionItsCacheHasNoRecordOf(t *testing.T)
 	if entry, err := deleting.deps.sessions.Get(sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
 		t.Fatalf("the cache of the deleting listener holds %+v (%v) for %s; this case needs it holding none, which is what the bucket read is for", entry, err, sessionID)
 	}
-	if !deleteSessionConsumer(ctx, deleting.deps.consumers, deleting.deps, sessionID) {
+	if !deleting.deps.consumers.deleteConsumer(ctx, deleting.deps, sessionID, nil) {
 		t.Fatalf("the delete made on the listener whose cache holds no record of %s reported the consumer standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
 
@@ -504,7 +504,7 @@ func TestADeleteRestoresTheConsumerWithTheTopicItsCacheHasNotHeardOf(t *testing.
 			t.Errorf("the entry write that raced the delete of %s: %v", sessionID, err)
 		}
 	})
-	if !deleteSessionConsumer(ctx, deleting.deps.consumers, deleting.deps, sessionID) {
+	if !deleting.deps.consumers.deleteConsumer(ctx, deleting.deps, sessionID, nil) {
 		t.Fatalf("the delete made on the listener whose cache is behind the row of %s reported the consumer standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
 
@@ -568,7 +568,7 @@ func TestARegistrationsOwnRepairGivesBackTheTopicAnotherListenersRestoreLeftOut(
 					t.Errorf("the entry write that raced the delete of %s: %v", sessionID, err)
 				}
 			})
-			if !deleteSessionConsumer(ctx, deleting.deps.consumers, deleting.deps, sessionID) {
+			if !deleting.deps.consumers.deleteConsumer(ctx, deleting.deps, sessionID, nil) {
 				t.Errorf("the delete the second listener made inside the registration of %s reported the consumer standing; want it gone, the bucket holding no record when it read", sessionID)
 				return
 			}
@@ -590,16 +590,6 @@ func TestARegistrationsOwnRepairGivesBackTheTopicAnotherListenersRestoreLeftOut(
 	// sets the filter the restore left.
 	registering.store(t, "notifications.dispatch.issue.CONFIRM.comment")
 	registering.awaitPending(t, sessionID, 1)
-}
-
-// deleteSessionConsumer makes the one delete of sessionID's consumer this listener makes - a
-// reaped record's, a deregistration's or the sweep's - through m and the stores d holds
-// (sessionDelivery.deleteConsumer): it confirms against the leader of the session bucket's
-// stream that the bucket holds no record, reads the consumer's resume floor, deletes, and gives
-// the consumer back to a session whose record it finds when it reads the bucket again. It
-// answers what that body answers: whether the consumer is gone.
-func deleteSessionConsumer(ctx context.Context, m *sessionDelivery, d *listenerDeps, sessionID string) bool {
-	return m.deleteConsumer(ctx, d, sessionID, nil)
 }
 
 // raceTheDeleteWithARegistration holds open, for the next delete m makes, the window that delete

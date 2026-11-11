@@ -62,9 +62,6 @@ func (m *sessionDelivery) awaitDeletes(ctx context.Context) {
 // have spent sendRequestBudget. ctx is the caller's context with its cancellation dropped
 // (context.WithoutCancel), since the registration is gone whatever the caller does next.
 //
-// The deregistration holds no consumer info, so the delete reads it for itself and records the
-// resume floor from that read (bus.SessionConsumers.Delete).
-//
 // The shutdown waits for every delete started here before it drains the connection they run on
 // (awaitDeletes). One that is not started because the listener is stopping is logged rather
 // than lost silently: the sweep deletes the consumer of every session the registry judges gone,
@@ -91,11 +88,11 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 // deleteConsumer removes sessionID's consumer once the session's registration is gone, so the
 // consumer holds a slot of the stream's consumer cap no longer rather than waiting out the
 // server's inactivity threshold (inactiveThresholdFor, main.go). listed is the consumer's info
-// when the caller holds it already, as the sweep holds what its consumer list answered, and nil
-// where reading it is the bus call's to do (bus.SessionConsumers.Delete). It reports whether the
-// consumer is gone, which is what the sweep counts; a failure is logged, not returned, since the
-// deregistration that asked for it answers the same either way, and the listener's sweep and that
-// threshold each reach the consumer again.
+// when the caller holds it already and nil where reading it is the bus call's to do
+// (bus.SessionConsumers.Delete); which caller holds one is this file's header. It reports whether
+// the consumer is gone, which is what the sweep counts; a failure is logged, not returned, since
+// the deregistration that asked for it answers the same either way, and the listener's sweep and
+// that threshold each reach the consumer again.
 //
 // Under the session's lock the bucket is read again (listenerDeps.sessions), and only
 // nats.ErrKeyNotFound - no record for the session at all - lets the delete through. A record

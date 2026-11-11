@@ -144,7 +144,7 @@ func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
 			registering.subscribe(t, consumerRegistration(sessionID, "epoch-2", kept, added))
 		})
 	}
-	if !deleteSessionConsumer(ctx, deleting.deps.consumers, deleting.deps, sessionID) {
+	if !deleting.deps.consumers.deleteConsumer(ctx, deleting.deps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
 	deleting.deps.consumers.afterRepairPlan = nil
@@ -978,7 +978,7 @@ func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, s
 
 	// The delete a reaper pass makes, whose restore gives the consumer back
 	// to a session whose record the bucket holds again (deleteConsumer, repairRegistered).
-	if !deleteSessionConsumer(ctx, rig.deps.consumers, rig.deps, sessionID) {
+	if !rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
 	rig.deps.consumers.beforeRepairPlan, rig.deps.consumers.afterRepairPlan = nil, nil

@@ -800,12 +800,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // handler's goroutine, because a handler holds its written response until it returns: the
 // delete waits on the session's lock with no bound of its own and then makes the bucket read
 // that confirms the session is gone, the delete, which records the consumer's resume floor
-// first, and the repair's own calls under a budget of its own, after a KV delete that may
-// already have spent sendRequestBudget,
-// so a deregistration that succeeded would read as failed to a caller whose attempt ends at 5 s
-// (LISTENER_CALL_TIMEOUT_MS). The shutdown waits for a delete still running before it drains
-// the connection it runs on, and one the listener was too late to start is logged and left to
-// the sweep (sessionDelivery.awaitDeletes).
+// first, and the repair's own calls under a budget of its own, after a KV delete that may already
+// have spent sendRequestBudget, so a deregistration that succeeded would read as failed to a
+// caller whose attempt ends at 5 s (LISTENER_CALL_TIMEOUT_MS). The shutdown waits for a delete
+// still running before it drains the connection it runs on, and one the listener was too late to
+// start is logged and left to the sweep (sessionDelivery.awaitDeletes).
 //
 // Which consumer that delete removes is settled under the session's lock rather than by the
 // outcome above: it reads the session bucket again there, from the leader of that bucket's
