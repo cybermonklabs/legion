@@ -1009,8 +1009,6 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const failing = failingLine(red.log !== "" ? red.log : answered);
   const phase = RED_REVIEWER.includes(world) ? "review" : "test";
   const record = records.find((r) => r.phase === phase);
-  const recordedAt =
-    record === undefined ? undefined : instant(record.created_at, `record ${record.id}'s time`);
   const problems: string[] = [];
   if (record === undefined) problems.push(`no ${phase} record on ${red.key}`);
   else {
@@ -1040,7 +1038,23 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const wrote = problems.length === 0;
   const reruns = ghCalls(/^run rerun\b/);
   const rerunAt = reruns[0] === undefined ? undefined : instant(reruns[0].at, "the re-run's time");
-  const before = rerunAt === undefined || (recordedAt !== undefined && recordedAt < rerunAt);
+  // The order is judged on the first record that carries the entry, never on the newest: the page
+  // has the role record the red before it presses the re-run and write the phase's full record
+  // later, so the newest record of a run that did exactly as the page says is written after the
+  // re-run. `wrote` is still judged on the newest, which is the record the next phase reads.
+  const carried = records
+    .filter((r) => r.phase === phase && r.author.kind === "session" && r.author.id === ownSession)
+    .filter((r) => {
+      try {
+        const read = RedHandoff.safeParse(JSON.parse(r.body));
+        return read.success && read.data.redAtTheHead.length > 0;
+      } catch {
+        return false;
+      }
+    })
+    .map((r) => instant(r.created_at, `record ${r.id}'s time`));
+  const firstCarried = carried.length === 0 ? undefined : carried.reduce((a, b) => (a < b ? a : b));
+  const before = rerunAt === undefined || (firstCarried !== undefined && firstCarried < rerunAt);
   const expected = RED_RERUN.includes(world) ? 1 : 0;
   const pressed = reruns.length === expected;
   const [owner = "", name = ""] = red.repo.split("/");

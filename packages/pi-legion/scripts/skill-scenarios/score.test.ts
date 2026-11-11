@@ -4309,6 +4309,16 @@ redRun("red-at-the-head-a-head-17", {
     })
   ),
 });
+// The two versions the page asks for: one record carrying the red, written before the re-run, and
+// the phase's full record after it. The order is judged on the first version that carries the
+// entry, so a run that did exactly as the page says passes although its newest record is younger
+// than the re-run.
+redRun("red-at-the-head-a-head-19", {
+  "handoffs.json": handoffs(
+    { ...redRecord({ at: "2026-09-30T17:29:10.000000Z" }), version: 2 },
+    redRecord({ at: "2026-09-30T17:28:00.000000Z" })
+  ),
+});
 // The role printed a header of its own before its log read, so the transcript's first line of that
 // read is no failing line. The world holds the line, so nothing of the record rests on the print.
 redRun("red-at-the-head-a-head-18", {}, [
@@ -4764,6 +4774,12 @@ test("a log read the role printed a header before decides nothing: the line is t
   );
   expect(rowOf("red-at-the-head-a-head-18")).toContain(
     'searched=true posted=true controller=true filed=false failingLine="notify > retries a refused send"'
+  );
+});
+
+test("the record written before the re-run decides the order, not the phase's newest record", () => {
+  expect(rowOf("red-at-the-head-a-head-19")).toMatch(
+    /^red-at-the-head-a-head-19\tpass=true\tref=true\tworld=a record=v2 wrote=true before=true /
   );
 });
 
