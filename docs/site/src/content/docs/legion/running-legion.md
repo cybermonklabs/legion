@@ -515,7 +515,8 @@ What each part is for:
   attributes drops every other key, so no spend row names an issue yet. A spend row grouped by
   issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list.
   The project controller serves no issue and carries the role alone. The image probe's container
-  and the tmux boot gate's probe run no role, so each keeps your value as you wrote it.
+  runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
+  role either and keeps it with its trailing commas and whitespace dropped and nothing added.
   Legion reads that value for its content as well as its name, and refuses a member the agent's
   OpenTelemetry detector would throw on: one that does not split on `=` into one key and one
   value, one with an empty key, one whose key or value does not percent-decode or runs past 255

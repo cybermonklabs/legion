@@ -50,8 +50,10 @@ type setter struct {
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
 // image (imageEnv), every launch's spec (the role App's git identity, and each launch secret's
 // `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
-// of the operator's own value (composed, roleOperatorEnv: the settings overlays and the spend
-// attributes), and the operator's own pod env. The first setter of a name is the one named.
+// of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
+// since `composed` deliberately leaves them out, and every name of `composed`, the spend
+// attributes alone today), and the operator's own pod env. The first setter of a name is the one
+// named.
 func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {

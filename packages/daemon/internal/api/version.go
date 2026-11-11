@@ -871,7 +871,8 @@ package api
 // image whose pi-legion declares another, so no pane and no pod runs an agent of one contract
 // under a daemon of the other. (Read on 2026-11-11 at main's tip and over every open pull request
 // of this repository: main declares 59, and open pull requests declare 60
-// (cybermonklabs/legion#2731, #3511 and #3519), 61 (#2230), 62 (#3522) and 63 (#3534), each open
+// (cybermonklabs/legion#2539, #2731, #3511 and #3519), 61 (#2230), 62 (#3522) and 63 (#3534),
+// each open
 // on that day and none of them carrying these attributes, so this change takes the number above
 // them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md

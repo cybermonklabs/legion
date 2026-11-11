@@ -10,8 +10,10 @@ import (
 
 // liveSpendAttributes is what the live deployment writes into the operator's
 // OTEL_RESOURCE_ATTRIBUTES, one value per lane: legion/Pulumi.prod.yaml of theorem-labs/agent-infra
-// at main on 2026-11-11, lines 102, 276, 386, 1056 and 1270. The five values differ in the project
-// as well as the lane, so each is written out as the deployment writes it.
+// at main on 2026-11-11, one entry per lane under each project's pod env. No line is cited,
+// because that file moves under every edit of it; search it for the variable's name. The five
+// values differ in the project as well as the lane, so each is written out as the deployment
+// writes it.
 var liveSpendAttributes = []struct{ lane, value string }{
 	{"legion-smoke", "theorem.project=legion,theorem.lane=legion-smoke,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
 	{"legion-linux", "theorem.project=verified-linux,theorem.lane=legion-linux,theorem.credential=gateway,theorem.person=sami@theorem.dev"},

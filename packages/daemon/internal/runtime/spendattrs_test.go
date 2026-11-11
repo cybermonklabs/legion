@@ -38,10 +38,13 @@ func liveAttributes(pairs ...string) map[string]string {
 // each case is checked against what the agent would read rather than against the string the
 // composer happened to build.
 //
-// It is not the detector itself and nothing beyond a composed value should be held to it:
-// url.PathUnescape accepts a percent escape that is not valid UTF-8, such as %FF, where
-// decodeURIComponent throws, and it applies no 255-code-unit bound. SpendAttributesRefusal is
-// the exact model of the detector; this is enough for a value whose escapes the composer wrote.
+// It is not the detector itself and nothing beyond a composed value should be held to it, in
+// three ways: url.PathUnescape accepts a percent escape that is not valid UTF-8, such as %FF,
+// where decodeURIComponent throws; it applies no 255-code-unit bound; and it trims with Go's
+// whitespace set rather than the detector's (spendDetectorSpace), which differ in U+0085 and
+// U+FEFF, so a case holding either one inside a member would be read here otherwise than the
+// agent reads it. SpendAttributesRefusal is the exact model of the detector; this is enough for
+// a value whose escapes and whitespace the composer wrote.
 func detectorAttributes(t *testing.T, value string) map[string]string {
 	t.Helper()
 	attrs := map[string]string{}
