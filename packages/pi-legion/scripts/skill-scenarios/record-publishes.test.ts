@@ -95,17 +95,24 @@ async function recording(name: string, prefix: string) {
 
 /** An envelope as the listener publishes one: its own topic, which stays the role topic on every
  * subject a copy travels on, with the message as `payload_summary` (a message of one line) or
- * `payload` (a longer one). */
-const envelope = (topic: string, summary: string, payload = "") => ({
-  event_id: `e-${summary.length}-${topic}`,
-  source: "agent",
-  source_session: "01a0f2cc",
-  topic,
-  dedupe_key: `publish.${summary.length}`,
-  issued_at: Date.UTC(2026, 8, 30, 17, 42, 0),
-  payload_summary: summary,
-  payload,
-});
+ * `payload` (a longer one). Each call mints an id of its own, as Envoy does, since the recorder
+ * writes one line per id: two envelopes built from one id are one message to it, which is what
+ * a copy of a forward is and what two messages of a run never are. A test that wants the same
+ * message twice publishes the one envelope twice. */
+let minted = 0;
+const envelope = (topic: string, summary: string, payload = "") => {
+  minted += 1;
+  return {
+    event_id: `e-${minted}`,
+    source: "agent",
+    source_session: "01a0f2cc",
+    topic,
+    dedupe_key: `publish.${minted}`,
+    issued_at: Date.UTC(2026, 8, 30, 17, 42, 0),
+    payload_summary: summary,
+    payload,
+  };
+};
 
 // Catches: a recorder that reads the subject a copy arrived on rather than the envelope's own
 // topic. A role message with a live holder never travels on its role subject — the publish route

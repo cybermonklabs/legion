@@ -3372,9 +3372,11 @@ const toldImplementer = (commit: string, at?: string) =>
     `Approved ${commit}: docs/cli.md and .github/workflows/greet.yml are yours to close above it.`,
     at
   );
-/** The daemon line a clean round leaves: the completion the stand-in accepted. The round's own
- * state reads are no part of the score, which reads the reviewer's `read_record` and its answer
- * from the transcript. */
+/** The daemon line a clean round leaves: the completion the stand-in accepted. No term of
+ * `reviewerTextFindings` reads this file — the verdict is in the calls, the ordering in the
+ * reviewer's own `read_record` and its answer in the transcript — and the run writes it because
+ * `unscored` makes a run with no daemon.log a rig error (head-53 below is that run). So the
+ * line is what the rig would have logged and is scored nowhere. */
 const reviewDaemon = [
   {
     at: "2026-09-30T17:40:00.000Z",
@@ -3551,11 +3553,6 @@ reviewRun(
     ...readRecord("2026-09-30T17:40:30.000Z", "reviewing"),
   ]
 );
-// head-41: the reviewer completed, read `accepting` and published, and only then submitted its
-// approval. The stand-in moves to `accepting` on any accepted completion of `reviewing`, while
-// the daemon needs the review as well, so the read alone cannot see that window — and that window
-// is the one the rule exists to close. The passing order is every other text-only head run:
-// submission, then the read, then the publish.
 // head-45: a cell and an `xd://legion` write that each mention `read_record` without naming the
 // op, the write answering with a record. Neither is a read: the op decides on every route, and
 // the write's answer carries a record only because this fixture put one there. So the run has no
@@ -3642,7 +3639,7 @@ reviewRun(
   {
     "case.txt": "text-only\n",
     "calls.jsonl": calls([submission(approval())]),
-    "pushes.log": `${head}\n`,
+    "pushes.log": `2026-09-30T17:29:25.000Z refs/heads/legion/LWEVAL-1 ${"0".repeat(40)} ${head}\n`,
   },
   [...header, ...turn, ...readRecordVia("eval-unreadable")]
 );
@@ -3674,6 +3671,11 @@ reviewRun(
   },
   [...header, ...turn, ...readRecord()]
 );
+// head-41: the reviewer completed, read `accepting` and published, and only then submitted its
+// approval. The stand-in moves to `accepting` on any accepted completion of `reviewing`, while
+// the daemon needs the review as well, so the read alone cannot see that window — and that window
+// is the one the rule exists to close. The passing order is every other text-only head run:
+// submission, then the read, then the publish.
 reviewRun("reviewer-text-findings-text-only-head-41", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([{ ...submission(approval()), at: "2026-09-30T17:45:00.000Z" }]),
@@ -4441,9 +4443,9 @@ const toldArchitectOfHead = (commit: string) =>
 /** The run's own remote: the head the reviewer approved, a commit that changes the threads' two
  * files alone, one that changes the code with them, and one that changes only the first of the
  * two files. Each run that reads a push gets a bare clone of it in its own directory, as rig.sh's
- * worker_fixture leaves one.
+ * worker_fixture leaves one, and `remoteFor` is how a run asks for its clone.
  */
-function fixRemotes(names: string[]) {
+function fixRemotes() {
   const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-threads-"));
   const git = (...args: string[]) => {
     const result = Bun.spawnSync(
@@ -4482,93 +4484,22 @@ function fixRemotes(names: string[]) {
   git("checkout", "-q", "legion/LWEVAL-1");
   // The commits are made here, because every fixture below names their SHAs, and the clones wait
   // for the hook that makes the runs directory: a clone here would make that directory whether or
-  // not a row of this file runs.
+  // not a row of this file runs. Each run names itself through `remoteFor` as the module body
+  // runs, and the body is over before the hook drains this staging, so no list of the runs is
+  // kept by hand — the one written here had gone out of order and had to be edited for every
+  // fixture added.
+  const wanted: string[] = [];
   stagings.push(() => {
-    for (const name of names) {
+    for (const name of wanted) {
       const remote = path.join(runs, name, "remote.git");
       mkdirSync(path.dirname(remote), { recursive: true });
       git("clone", "-q", "--bare", dir, remote);
     }
     rmSync(dir, { recursive: true, force: true });
   });
-  return { approved, fixed, withCode, docOnly };
+  return { approved, fixed, withCode, docOnly, remoteFor: (name: string) => wanted.push(name) };
 }
-const fixNames = [
-  "threads-closed-text-fixes-head-1",
-  "threads-closed-text-fixes-head-2",
-  "threads-closed-text-fixes-head-3",
-  "threads-closed-text-fixes-head-4",
-  "threads-closed-text-fixes-head-5",
-  "threads-closed-text-fixes-head-6",
-  "threads-closed-text-fixes-head-7",
-  "threads-closed-text-fixes-head-8",
-  "threads-closed-text-fixes-head-10",
-  "threads-closed-text-fixes-head-11",
-  "threads-closed-text-fixes-head-12",
-  "threads-closed-text-fixes-head-13",
-  "threads-closed-text-fixes-head-14",
-  "threads-closed-text-fixes-head-15",
-  "threads-closed-text-fixes-head-16",
-  "threads-closed-text-fixes-head-17",
-  "threads-closed-text-fixes-head-18",
-  "threads-closed-text-fixes-head-19",
-  "threads-closed-text-fixes-head-20",
-  "threads-closed-text-fixes-head-21",
-  "threads-closed-text-fixes-head-22",
-  "threads-closed-text-fixes-head-23",
-  "threads-closed-text-fixes-head-24",
-  "threads-closed-text-fixes-head-25",
-  "threads-closed-text-fixes-head-26",
-  "threads-closed-text-fixes-head-27",
-  "threads-closed-text-fixes-head-28",
-  "threads-closed-text-fixes-head-29",
-  "threads-closed-text-fixes-head-30",
-  "threads-closed-text-fixes-head-32",
-  "threads-closed-text-fixes-head-31",
-  "threads-closed-text-fixes-head-33",
-  "threads-closed-text-fixes-base-1",
-  "threads-closed-code-defect-head-1",
-  "threads-closed-code-defect-head-2",
-  "threads-closed-code-defect-head-3",
-  "threads-closed-code-defect-head-4",
-  "threads-closed-code-defect-head-5",
-  "threads-closed-code-defect-head-6",
-  "threads-closed-code-defect-head-7",
-  "threads-closed-code-defect-head-8",
-  "threads-closed-code-defect-head-10",
-  "threads-closed-text-fixes-head-34",
-  "threads-closed-text-fixes-head-35",
-  "threads-closed-text-fixes-head-36",
-  "threads-closed-text-fixes-head-37",
-  "threads-closed-text-fixes-head-38",
-  "threads-closed-text-fixes-head-39",
-  "threads-closed-text-fixes-head-40",
-  "threads-closed-text-fixes-head-41",
-  "threads-closed-text-fixes-head-42",
-  "threads-closed-text-fixes-head-43",
-  "threads-closed-text-fixes-head-44",
-  "threads-closed-text-fixes-head-45",
-  "threads-closed-text-fixes-head-46",
-  "threads-closed-text-fixes-head-47",
-  "threads-closed-text-fixes-head-48",
-  "threads-closed-text-fixes-head-49",
-  "threads-closed-text-fixes-head-50",
-  "threads-closed-text-fixes-head-51",
-  "threads-closed-text-fixes-head-52",
-  "threads-closed-text-fixes-head-53",
-  "threads-closed-text-fixes-head-54",
-  "threads-closed-text-fixes-head-55",
-  "threads-closed-text-fixes-head-56",
-  "threads-closed-text-fixes-head-57",
-  "threads-closed-text-fixes-head-58",
-  "threads-closed-code-defect-head-11",
-  "threads-closed-code-defect-head-12",
-  "threads-closed-code-defect-head-13",
-  "threads-closed-code-defect-head-14",
-  "threads-closed-code-defect-head-15",
-  "threads-closed-head-9",
-];
-const fix = fixRemotes(fixNames);
+const fix = fixRemotes();
 const pushed = (sha: string) =>
   `2026-09-30T17:35:00.000Z refs/heads/legion/LWEVAL-1 ${fix.approved} ${sha}\n`;
 /** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,
@@ -4580,6 +4511,7 @@ function fixRun(
   files: Record<string, string | null>,
   transcripts: { implementer?: object[]; reviewer?: object[] | null } = {}
 ) {
+  fix.remoteFor(name);
   run(
     name,
     {
@@ -5525,6 +5457,22 @@ beforeAll(() => {
   scoredExitCode = scored.exitCode;
 }, 120_000);
 
+/** The summary line `score.ts runs` prints for one scenario key and label, built from the run
+ * rows of that same output: `<scenario>\t<label>\t<passed>/<scored>\t<with ref>/<scored>\t<rig
+ * errors>\t<flagged>`. The counts are what the summary is for — the table read against the rows
+ * it aggregates — and the alternative is a line written by hand that every fixture added to this
+ * file makes wrong. `flagged` is no part of a run row and no scenario summarised this way flags
+ * one, so it is 0 here. */
+function summaryLine(scenario: string, label: string): string {
+  const prefix = `${scenario.replace(":", "-")}-${label}-`;
+  const rows = out.split("\n").filter((line) => line.startsWith(prefix));
+  const scored = rows.filter((line) => line.includes("\tpass="));
+  const passed = scored.filter((line) => line.includes("\tpass=true\t"));
+  const withRef = passed.filter((line) => line.includes("\tref=true\t"));
+  const errors = rows.length - scored.length;
+  return `${scenario}\t${label}\t${passed.length}/${scored.length}\t${withRef.length}/${scored.length}\t${errors}\t0\n`;
+}
+
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
   for (const name of ["tester-proof-head-1", "ask-on-message-head-1"]) {
@@ -5644,9 +5592,12 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t12/40\t0/40\t9\t0\n");
-  expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
-  expect(out).toContain("reviewer-text-findings:defect\thead\t2/5\t0/5\t1\t0\n");
+  for (const [scenario, label] of [
+    ["reviewer-text-findings:text-only", "head"],
+    ["reviewer-text-findings:text-only", "base"],
+    ["reviewer-text-findings:defect", "head"],
+  ] as const)
+    expect(out).toContain(summaryLine(scenario, label));
 });
 
 // Catches: a rig whose two records of the case can disagree without being caught, which would
@@ -5804,9 +5755,12 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t14/48\t0/48\t9\t0\n");
-  expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
-  expect(out).toContain("threads-closed:code-defect\thead\t4/13\t0/13\t1\t0\n");
+  for (const [scenario, label] of [
+    ["threads-closed:text-fixes", "head"],
+    ["threads-closed:text-fixes", "base"],
+    ["threads-closed:code-defect", "head"],
+  ] as const)
+    expect(out).toContain(summaryLine(scenario, label));
 });
 
 // Catches: a scorer that reads a code-defect run with no reviewer half as a rig error. The

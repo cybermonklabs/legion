@@ -307,9 +307,9 @@ root=$(cd "$here/../../../.." && pwd -P)
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
-# The worker world (worker_fixture below), which tester-proof and reviewer-text-findings share:
-# its repository, and the run's own issue, which each scenario's runner sets once seed.ts has
-# filed it.
+# The worker world (worker_fixture below), which tester-proof, reviewer-text-findings and
+# threads-closed share: its repository, and the run's own issue, which each scenario's runner
+# sets once seed.ts has filed it.
 worker_key=''
 worker_repo=example/widgets
 
@@ -654,10 +654,14 @@ install_superpowers() {
 # Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's, the
 # label's profile, the run's stand-ins first on PATH, its own TMPDIR, and nothing else from the
 # caller's environment. A run that boots a second agent calls this again, and that agent gets a
-# HOME copied afresh from the label's, as the first one did.
+# HOME copied afresh from the label's, as the first one did; the HOME the agent before it wrote
+# in is kept beside its logs and its output, under $R/home-<its role> (worker_boot).
 base_env() {
   mkdir -p "$R/tmp"
-  rm -rf "$R/home"
+  # Nothing is removed here: the HOME of the agent before this one is moved to home-<its role>
+  # by the caller, so this copy lands on nothing. A directory still here is that move not made,
+  # which `cp -a` would answer by nesting the label's home inside the last agent's.
+  [ ! -e "$R/home" ] || fail "base_env: $R/home is still there; worker_boot moves it to home-<role>"
   cp -a "$P/home" "$R/home"
   {
     echo "HOME=$R/home"
@@ -1587,19 +1591,19 @@ text_finding_trigger=' and on every push to main'
 # .github/workflows/greet.yml, whose comment names TRIGGER beside the pull request trigger `on:`
 # carries (a file the implement App may push and the review App may not) — the implementer's
 # handoff over the four files its change touches, the tester's handoff body at $R/test.json,
-# which the runner records beside the implementer's, the issue workspace, and the diff `gh pr
-# diff` serves, which fixture_round_handoff leaves in $diff. DOC_LINE and TRIGGER are the world's
-# own and are required: every caller names the text findings it means its world to carry, an
-# empty TRIGGER being an honest comment and so a finding the world has not got. GUARD is
-# fixture_cli's: `dropped` drops the CLI's blank-name guard, so a blank name prints a greeting
-# where R2 of the seeded spec asks for the usage line and exit 2, and a behavioural finding
-# stands.
+# which the runner records beside the implementer's, and the issue workspace. DOC_LINE and
+# TRIGGER are the world's own and are required: every caller names the text findings it means
+# its world to carry, an empty TRIGGER being an honest comment and so a finding the world has
+# not got. GUARD is fixture_cli's: `dropped` drops the CLI's blank-name guard, so a blank name
+# prints a greeting where R2 of the seeded spec asks for the usage line and exit 2, and a
+# behavioural finding stands.
 #
-# It leaves the caller's own $src, $when, $C1, $diff, $worker_pr and $worker_pr_url set, as the
-# steps it calls do, and in $base_routes the two gh routes both worlds serve: `resolveReviewThread`,
+# It leaves the caller's own $src, $when, $C1, $worker_pr and $worker_pr_url set, as the steps it
+# calls do, and in $resolve_route the one gh route both worlds serve: `resolveReviewThread`,
 # which answers success, as GitHub answers a role with write access and as it does in every world
-# of this fixture, and `gh pr diff`. Each world adds its own routes around them, in the order the
-# stand-in matches them (gh-standin.ts).
+# of this fixture. Each world adds its own routes around it, in the order the stand-in matches
+# them (gh-standin.ts). No world routes `gh pr diff`: the stand-in answers that from the run's own
+# remote at the call, since a diff frozen here would read the same whatever the run pushed.
 round_world() {
   [ $# = 5 ] || fail "round_world: expected INDEX START GUARD DOC_LINE TRIGGER, got $# argument(s)"
   local index=$1 start=$2 guard=$3 doc_line=$4 workflow_trigger=$5
@@ -1610,12 +1614,10 @@ round_world() {
   fixture_round_files "$doc_line" "$workflow_trigger"
   fixture_head_commit
   fixture_implement '["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
-  fixture_round_handoff
+  fixture_test_handoff
   fixture_workspace
-  base_routes=$(jq -n --arg diff "$diff" '{
-    resolve:{match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
-    diff:{match:"^gh pr diff", stdout:$diff}
-  }')
+  resolve_route=$(jq -n '{match:"^gh api .*resolveReviewThread",
+    stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}}')
 }
 
 # The world a review round reads, which reviewer-text-findings' two cases build: the round's base
@@ -1625,17 +1627,16 @@ round_world() {
 # behavioural finding. A push to legion/<key> is this world's own failure, since a review round
 # pushes nothing at all.
 review_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff base_routes extra
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body resolve_route extra
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
-  extra=$(jq -n --argjson base "$base_routes" '[
-    $base.resolve,
+  extra=$(jq -n --argjson resolve "$resolve_route" '[
+    $resolve,
     {match:"^gh api .*graphql",
      stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
        nodes:[{id:"PRRT_kwDOrig0001", isResolved:false,
                comments:{nodes:[{author:{login:"style-bot[bot]"},
-                 body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}}]}}}}}},
-    $base.diff
+                 body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}}]}}}}}}
   ]')
   fixture_write "$extra" '""' '[]'
 }
@@ -1651,7 +1652,7 @@ review_world() {
 # on that evidence. The base branch is protected by nothing, so no route serves its protection and
 # the stand-in's 404 is GitHub's own answer for a branch that requires no check; `gh pr checks` is
 # green at the head, and `gh pr diff` is the diff of the run's own remote at the call, so the
-# reviewer reads the fix the implementer pushed rather than the diff the fixture froze
+# reviewer reads the fix the implementer pushed and no world freezes a diff of its own
 # (gh-standin.ts). The `reviewThreads` route is the fixture's own answer and no record of the run:
 # a reply the implementer wrote does not appear under its thread, and a thread the reviewer
 # resolved still reads `isResolved: false`. The score reads the calls each role made and never
@@ -1664,7 +1665,7 @@ review_world() {
 # blank name exits 2: that sentence is false only because the code is wrong, so no text fix closes
 # the thread and it is a message to the architect. It is the negative control.
 approved_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff base_routes extra
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body resolve_route extra
   local threads entries threads_line reviews
   # The threads the approval left, and the two files the world is written with. Every world but
   # the dropped guard's documents the name as printed exactly as given, which the trim makes
@@ -1719,9 +1720,9 @@ $entries"
   # would create, ahead of the route that reads the reviews already there, which are the one
   # approval. Nothing here records what a run did: the score reads the calls the stand-in
   # recorded, never these answers.
-  extra=$(jq -n --argjson base "$base_routes" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
+  extra=$(jq -n --argjson resolve "$resolve_route" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
     --argjson threads "$threads" --argjson reviews "$reviews" '[
-    $base.resolve,
+    $resolve,
     {match:"^gh api .*addPullRequestReviewThreadReply",
      stdout:{data:{addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/comments/[0-9]+/replies"),
@@ -1730,20 +1731,16 @@ $entries"
      stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
        nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
          comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
-    {match:("^gh api .*(-X|--method) ?POST.*pulls/" + ($number|tostring) + "/reviews"),
+    {match:("^gh api (?=.*(-X|--method) ?POST).*pulls/" + ($number|tostring) + "/reviews"),
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
-    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews.*(-X|--method) ?POST"),
-     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
-    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews},
-    $base.diff
+    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews}
   ]')
   fixture_write "$extra" '"APPROVED"' "$reviews"
 }
 
 # The steps the three worlds are built from. Each reads and sets the world function's own
 # variables: $src and $when, the checkout and the date every commit of this world carries; $C1,
-# the implementer's commit, which is the pull request's head; $diff, the diff `gh pr diff` serves;
-# and $body, the pull request body.
+# the implementer's commit, which is the pull request's head; and $body, the pull request body.
 
 # fixture_open INDEX START opens the run's remote and its checkout: the pull request's number and
 # URL (1000 plus INDEX), the date of this world's commits (INDEX seconds after START), a bare
@@ -1874,15 +1871,13 @@ fixture_implement() {
     {schemaVersion:1, phase:"implement", issue:$key, filesChanged:$files}' >"$R/implement.json"
 }
 
-# fixture_round_handoff writes the tester's handoff body, as the tester wrote it before this
-# round, and leaves the diff the round reads in $diff: the gh stand-in serves it, since the
-# stand-in reaches no GitHub.
-fixture_round_handoff() {
+# fixture_test_handoff writes the tester's handoff body at $R/test.json, as the tester wrote it
+# before this round; the runner records it on the issue beside the implementer's.
+fixture_test_handoff() {
   jq -n --arg key "$worker_key" --arg head "${C1:0:12}" '
     {schemaVersion:1, phase:"test", issue:$key,
      implementerProof:{verdict:"verified", how:("ran `bun greet.ts Ada` at " + $head)},
      failures:[]}' >"$R/test.json"
-  diff=$(fixture_git diff main "legion/$worker_key")
 }
 
 # fixture_workspace clones the remote into $R/ws, the issue workspace every role of the run
@@ -2025,6 +2020,10 @@ worker_boot() {
     daemon_pid=''
     mv "$R/logs/daemon.log" "$R/logs/daemon-$booted.log"
     cp "$R/out.txt" "$R/out-$booted.txt"
+    # base_env copies a HOME afresh from the label's for the agent starting now, so the one the
+    # agent before it wrote in is moved aside rather than removed with it: a run's evidence is
+    # every half's, and the half that ran first left its own files there.
+    mv "$R/home" "$R/home-$booted"
     sessions_dir=$R/sessions/$role
   else
     sessions_dir=$R/sessions
@@ -2140,12 +2139,9 @@ start_recorder() {
 # the order Envoy accepted them, as one JSON array; an implementer that published none prints an
 # empty one. It asks score.ts, which is the one reader of a publish this rig has: the harness and
 # the score read the same record, so a message one of them reads and the other does not cannot
-# score a wake that reached nobody. Two readers disagreed until 2026-11-09 — this function read
-# the `envoy_publish` tool's own arguments and a write to `xd://envoy_publish`, while the score
-# also read a publish made from `eval`, so a run whose implementer published from a cell scored
-# `toldReviewer` with its reviewer booted on an empty prompt. Every message is given, not the
-# last: Envoy delivers each one, and a reviewer handed only the last would be missing a wake its
-# own run sent.
+# score a wake that reached nobody. What two readers of that one fact cost is in
+# record-publishes.ts's header. Every message is given, not the last: Envoy delivers each one,
+# and a reviewer handed only the last would be missing a wake its own run sent.
 reviewer_wake() {
   bun "$here/score.ts" published "$R" reviewer
 }
@@ -2188,8 +2184,7 @@ run_threads_closed() {
   # have been handed; an implementer that published none leaves the prompt empty.
   jq -r --arg key "$worker_key" '.[] | "Implementer → reviewer, \($key). \(.message)"' \
     <<<"$wake" >"$R/prompt.txt"
-  jq -n --argjson wake "$wake" --rawfile prompt "$R/prompt.txt" \
-    '{from:"implementer", wake:$wake, prompt:$prompt}' >"$R/reviewer-wake.json"
+  jq -n --argjson wake "$wake" '{wake:$wake}' >"$R/reviewer-wake.json"
   # In code-defect the implementer's own act is to tell the architect and send the reviewer
   # nothing, so a wake of none is the loop ending where the rule ends it and there is no second
   # half to run. Booting one anyway put a reviewer in front of an empty prompt and then counted

@@ -26,9 +26,12 @@ function git(dir: string, ...args: string[]): string {
   return result.stdout.toString().trim();
 }
 
-/** A run directory with the pull-request route of rig.sh's worker_fixture, and, unless `remote` is
- * false, a bare remote of its own whose issue branch holds two commits. */
-function runDir(options: { remote: boolean }): { dir: string; first: string; second: string } {
+/** A run directory with the pull-request route of rig.sh's worker_fixture. With `fixture` it is
+ * the run of a scenario that builds a worker world: a world.json and a bare remote of its own
+ * whose issue branch holds two commits. Without it, it is the run of a scenario that builds
+ * none, which has neither — rig.sh writes the world and opens the remote together
+ * (worker_fixture), so no run of this rig has one and not the other. */
+function runDir(options: { fixture: boolean }): { dir: string; first: string; second: string } {
   const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-"));
   made.push(dir);
   const work = path.join(dir, "work");
@@ -43,14 +46,14 @@ function runDir(options: { remote: boolean }): { dir: string; first: string; sec
   git(work, "commit", "-qm", "docs: the text fix");
   const second = git(work, "rev-parse", "HEAD");
   git(work, "update-ref", "refs/heads/legion/LWEVAL-1", first);
-  if (options.remote) {
+  if (options.fixture) {
     git(dir, "clone", "-q", "--bare", work, path.join(dir, "remote.git"));
     git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", first);
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({ key: "LWEVAL-1", branch: "legion/LWEVAL-1", base: "main", head: first })
+    );
   }
-  writeFileSync(
-    path.join(dir, "world.json"),
-    JSON.stringify({ key: "LWEVAL-1", branch: "legion/LWEVAL-1", base: "main", head: first })
-  );
   writeFileSync(
     path.join(dir, "fixtures.json"),
     JSON.stringify({
@@ -79,16 +82,16 @@ const headOf = (dir: string) =>
 // Catches: a stand-in that answers the fixture's commit after the role pushed, so every pushing
 // role reads a head that is not its own and stops.
 test("the pull request's head is the tip of the run's own remote", () => {
-  const { dir, first, second } = runDir({ remote: true });
+  const { dir, first, second } = runDir({ fixture: true });
   expect(headOf(dir)).toBe(first);
   git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
   expect(headOf(dir)).toBe(second);
 });
 
-// Catches: a stand-in that refuses or empties the answer for a run with no remote of its own,
-// which every scenario without a worker fixture is.
-test("a run with no remote keeps the route's own head", () => {
-  const { dir, first } = runDir({ remote: false });
+// Catches: a stand-in that refuses or empties the answer for a run with no worker fixture of its
+// own, which every scenario that builds no world is.
+test("a run with no worker fixture keeps the route's own head", () => {
+  const { dir, first } = runDir({ fixture: false });
   expect(headOf(dir)).toBe(first);
 });
 
@@ -109,7 +112,7 @@ const answer = (dir: string, args: string[], by?: string) =>
 // pull request, so a reviewer reading the fix the implementer pushed sees the change without it
 // and resolves nothing. The run's own remote is the fact, as it is for the head.
 test("the pull request's diff is the diff of the run's own remote", () => {
-  const { dir, second } = runDir({ remote: true });
+  const { dir, second } = runDir({ fixture: true });
   const remote = path.join(dir, "remote.git");
   git(
     remote,
@@ -125,10 +128,8 @@ test("the pull request's diff is the diff of the run's own remote", () => {
 
 // Catches: a stand-in that drops the run's world for a scenario that builds none, which would
 // crash every `gh pr diff` of a run with no world.json instead of answering its route.
-test("a run with no world keeps the route's own diff", () => {
-  const { dir } = runDir({ remote: false });
-  rmSync(path.join(dir, "world.json"));
-  expect(answer(dir, ["pr", "diff", "1001"])).toBe("the frozen diff");
+test("a run with no worker fixture keeps the route's own diff", () => {
+  expect(answer(runDir({ fixture: false }).dir, ["pr", "diff", "1001"])).toBe("the frozen diff");
 });
 
 // Catches: a stand-in that reads a world.json it cannot parse as a run with no world of its own.
@@ -140,7 +141,7 @@ test("a run with no world keeps the route's own diff", () => {
 // `base`, which rig.sh's fixture_write writes into every world and this schema defaults for none.
 test("a world.json that does not parse exits with an error, and one with no base too", () => {
   for (const text of ["{not json", JSON.stringify({ branch: "legion/LWEVAL-1" })]) {
-    const { dir } = runDir({ remote: true });
+    const { dir } = runDir({ fixture: true });
     writeFileSync(path.join(dir, "world.json"), text);
     const call = Bun.spawnSync(["bun", STANDIN, "gh", "pr", "view", "1001"], {
       env: { ...process.env, SKILL_SCENARIO_RUN: dir },
@@ -153,7 +154,7 @@ test("a world.json that does not parse exits with an error, and one with no base
 // Catches: a stand-in that records no agent, so a run that boots one agent per role cannot tell
 // which role made a call and the score reads one role's work as the other's.
 test("each call records the agent the run named, and none when it names one", () => {
-  const { dir } = runDir({ remote: true });
+  const { dir } = runDir({ fixture: true });
   answer(dir, ["pr", "view", "1001"], "implementer");
   answer(dir, ["pr", "view", "1001"]);
   const recorded = readFileSync(path.join(dir, "calls.jsonl"), "utf8")
@@ -171,7 +172,7 @@ test("each call records the agent the run named, and none when it names one", ()
 // failed in all 10 text-fixes head runs of that batch. The two heads a comparison names are the
 // run's own, so it is read from the run's remote and no route serves it.
 test("a comparison of two commits is read from the run's own remote", () => {
-  const { dir, first, second } = runDir({ remote: true });
+  const { dir, first, second } = runDir({ fixture: true });
   const compared = answer(dir, [
     "api",
     `repos/example/widgets/compare/${first}...${second}`,
@@ -204,7 +205,7 @@ test("a comparison of two commits is read from the run's own remote", () => {
 // would hand an agent counts of a comparison nobody made. GitHub answers 404 for a comparison of
 // commits a repository does not hold, and so does the stand-in, through the routes.
 test("a comparison the run's remote cannot resolve is 404, as GitHub answers it", () => {
-  const { dir } = runDir({ remote: true });
+  const { dir } = runDir({ fixture: true });
   const call = Bun.spawnSync(
     ["bun", STANDIN, "gh", "api", "repos/example/widgets/compare/deadbeef...cafed00d"],
     { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }

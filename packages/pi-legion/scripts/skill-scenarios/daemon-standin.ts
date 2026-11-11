@@ -222,6 +222,13 @@ function numberField(body: unknown, key: string): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
+/** `{<key>: <value>}` for a value the request carried, and no key at all for one it did not: an
+ * absent key is how a line says the body named none, which is what the log's readers take it for
+ * (score.ts's DaemonLine). */
+function carried<K extends string, V>(key: K, value: V | undefined): Record<K, V> | undefined {
+  return value === undefined ? undefined : ({ [key]: value } as Record<K, V>);
+}
+
 /** Mirrors the real daemon's rule: present and not yet expired, nothing else. Each route parses
  * its body with its own contract schema first, exactly as the daemon's route table does, and
  * hands the parsed id here. */
@@ -359,21 +366,13 @@ const server = Bun.serve({
       at: new Date().toISOString(),
       path,
       status: response.status,
-      ...(stringField(body, "grantId") === undefined
-        ? {}
-        : { grantId: stringField(body, "grantId") }),
-      ...(stringField(body, "sessionId") === undefined
-        ? {}
-        : { sessionId: stringField(body, "sessionId") }),
-      ...(mintedGrantId === undefined ? {} : { mintedGrantId }),
-      ...(stringField(body, "handoffId") === undefined
-        ? {}
-        : { handoffId: stringField(body, "handoffId") }),
-      ...(numberField(body, "handoffVersion") === undefined
-        ? {}
-        : { handoffVersion: numberField(body, "handoffVersion") }),
-      ...(stringField(body, "to") === undefined ? {} : { to: stringField(body, "to") }),
-      ...(stringField(body, "reason") === undefined ? {} : { reason: stringField(body, "reason") }),
+      ...carried("grantId", stringField(body, "grantId")),
+      ...carried("sessionId", stringField(body, "sessionId")),
+      ...carried("mintedGrantId", mintedGrantId),
+      ...carried("handoffId", stringField(body, "handoffId")),
+      ...carried("handoffVersion", numberField(body, "handoffVersion")),
+      ...carried("to", stringField(body, "to")),
+      ...carried("reason", stringField(body, "reason")),
     };
     await appendFile(logFile, `${JSON.stringify(line)}\n`);
     return response;

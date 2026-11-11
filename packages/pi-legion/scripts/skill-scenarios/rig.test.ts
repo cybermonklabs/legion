@@ -727,7 +727,7 @@ describe("round_world and the worlds' own text findings", () => {
         fn(world),
         'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
         "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001;",
-        '  base_routes=\'{"resolve":{"match":"r"},"diff":{"match":"d"}}\'; }',
+        '  resolve_route=\'{"match":"r"}\'; }',
         "fixture_body() { :; }",
         "fixture_checks() { :; }",
         "fixture_write() { :; }",
@@ -871,8 +871,9 @@ describe("start_recorder", () => {
 // wake stays the fail on toldReviewer it already was.
 describe("run_threads_closed", () => {
   /** The loop run for CASE on a wake of WAKE, with both agents and the services stubbed: each
-   * worker_boot it made, in order. */
-  function boots(threadsCase: string, wake: string): string[] {
+   * worker_boot it made, in order, the prompt the reviewer half would have been given, and the
+   * record of that wake the run keeps. */
+  function loop(threadsCase: string, wake: string) {
     const dir = freshDir(`threads-loop-${threadsCase}`);
     writeFileSync(path.join(dir, "threads.json"), "[]\n");
     writeFileSync(path.join(dir, "wake.json"), wake);
@@ -891,27 +892,66 @@ describe("run_threads_closed", () => {
       [dir, threadsCase]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    return readFileSync(path.join(dir, "boots"), "utf8").trim().split("\n");
+    return {
+      boots: readFileSync(path.join(dir, "boots"), "utf8").trim().split("\n"),
+      prompt: readFileSync(path.join(dir, "prompt.txt"), "utf8"),
+      wake: JSON.parse(readFileSync(path.join(dir, "reviewer-wake.json"), "utf8")),
+    };
   }
 
   test("code-defect boots no reviewer when the implementer sent it nothing", () => {
-    expect(boots("code-defect", "[]\n")).toEqual([
+    expect(loop("code-defect", "[]\n").boots).toEqual([
       "the-run-implementer skillsproject1 implementer accepting",
     ]);
   });
 
   test("code-defect boots the reviewer when the implementer woke it", () => {
-    expect(boots("code-defect", '[{"message":"pushed 0123456789ab"}]\n')).toEqual([
+    expect(loop("code-defect", '[{"message":"pushed 0123456789ab"}]\n').boots).toEqual([
       "the-run-implementer skillsproject1 implementer accepting",
       "the-run-reviewer skillsproject1 reviewer accepting",
     ]);
   });
 
   test("text-fixes boots the reviewer on an empty wake, which it fails on", () => {
-    expect(boots("text-fixes", "[]\n")).toEqual([
+    expect(loop("text-fixes", "[]\n").boots).toEqual([
       "the-run-implementer skillsproject1 implementer accepting",
       "the-run-reviewer skillsproject1 reviewer accepting",
     ]);
+  });
+
+  // The reviewer's own wake is the implementer's message and nothing else (review-threads.md
+  // step 2), and Envoy delivers each message of it, so the prompt is one delivery line per
+  // message in the order Envoy accepted them. Catches: a prompt built from the last message
+  // alone, which drops a wake the run did send; one that invents a head the implementer never
+  // named; and a run that boots its reviewer on a prompt of some other run's making.
+  test("the reviewer's prompt is one delivery line per message, in Envoy's own order", () => {
+    const { prompt, wake } = loop(
+      "text-fixes",
+      `${JSON.stringify([
+        { message: "The text fixes are pushed: the head to read is 0123456789ab." },
+        { message: "Both threads carry my reply." },
+      ])}\n`
+    );
+    expect(prompt).toBe(
+      "Implementer → reviewer, LWEVAL-1. The text fixes are pushed: the head to read is 0123456789ab.\n" +
+        "Implementer → reviewer, LWEVAL-1. Both threads carry my reply.\n"
+    );
+    // <run>/reviewer-wake.json keeps what the reviewer was given and nothing else: the prompt is
+    // in prompt.txt, which the agent is booted on.
+    expect(wake).toEqual({
+      wake: [
+        { message: "The text fixes are pushed: the head to read is 0123456789ab." },
+        { message: "Both threads carry my reply." },
+      ],
+    });
+  });
+
+  // Catches: a rig that writes the implementer's own prompt for the reviewer when the
+  // implementer published nothing, which would hand the second half a wake nobody sent.
+  test("an implementer that published nothing leaves the reviewer an empty prompt", () => {
+    const { prompt, wake } = loop("text-fixes", "[]\n");
+    expect(prompt).toBe("");
+    expect(wake).toEqual({ wake: [] });
   });
 });
 
@@ -955,6 +995,167 @@ describe("fixture_write", () => {
     );
     expect(listed.stdout.toString().trim()).toBe("1001");
     expect(listed.exitCode).toBe(0);
+  });
+});
+
+// A world is its routes in order: the gh stand-in answers the first one whose regex matches
+// "gh <argv…>" (gh-standin.ts), so a route moved above another changes what every agent of the
+// scenario is told with nothing else in the rig changing, and no row of this file read that
+// order before. Catches: the `resolveReviewThread` mutation answered by the `reviewThreads`
+// query's route, which would tell an implementer its resolution listed the threads; a review
+// submission answered by the route that lists the reviews already on the pull request, which
+// would hand a reviewer the fixture's own approval as the review it just created; a REST thread
+// reply answered by fixture_write's catch-all POST, whose id is no comment's; and a world whose
+// `reviewThreads` serves fixture_write's empty list in place of the threads the approval left.
+describe("the worlds' routes, in the order the stand-in matches them", () => {
+  /** WORLD built for real under a run directory of its own, with two steps stubbed out:
+   * `fixture_workspace`, which clones the issue workspace with jj and which no route of any
+   * world reads, and `fixture_cli`, whose heredoc holds a line that is `}` alone, which
+   * `scriptFunctions` reads as the end of the function. The stub writes the two files that step
+   * writes, since the diff of the world's own remote is one of the answers below, and no route
+   * reads what is in them. */
+  function built(world: string, guard = ""): string {
+    const dir = freshDir(`world-routes-${world}`);
+    const result = bash(
+      [
+        fn("fail"),
+        ...[
+          "fixture_open",
+          "fixture_git",
+          "fixture_docs_before",
+          "fixture_first_commit",
+          "fixture_round_files",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_test_handoff",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "round_world",
+          world,
+        ].map(fn),
+        'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
+        "fixture_workspace() { :; }",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return dir;
+  }
+  /** What the gh stand-in answers for `gh <args…>` in the world under `dir`, and its status. */
+  function answer(dir: string, ...args: string[]) {
+    const call = Bun.spawnSync(
+      ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      }
+    );
+    return { code: call.exitCode, out: call.stdout.toString().trim() };
+  }
+  /** A thread resolved as review-threads.md resolves one, reading the mutation's own answer
+   * back: the call every world's `resolveReviewThread` route answers. */
+  const RESOLVE = [
+    "api",
+    "graphql",
+    "-f",
+    'query=mutation { resolveReviewThread(input: {threadId: "PRRT_kwDOfix001"}) { thread { isResolved } } }',
+    "--jq",
+    ".data.resolveReviewThread.thread.isResolved",
+  ];
+  /** The pull request's review threads listed as review-threads.md lists them, reading `jq` out
+   * of the answer: the call the world's `reviewThreads` route answers. */
+  const threadQuery = (jq: string) => [
+    "api",
+    "graphql",
+    "-f",
+    "query=query { repository { pullRequest { reviewThreads(first: 50) { nodes { id path } } } } }",
+    "--jq",
+    jq,
+  ];
+  const IDS = '[.data.repository.pullRequest.reviewThreads.nodes[].id] | join(",")';
+
+  test("the approved world resolves, lists, replies and creates a review, each by its own route", () => {
+    const dir = built("approved_world");
+    expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
+    expect(answer(dir, ...threadQuery(IDS))).toEqual({
+      code: 0,
+      out: "PRRT_kwDOfix001,PRRT_kwDOfix002",
+    });
+    const reply = [
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/comments/5001/replies",
+      "-f",
+      "body=fixed",
+    ];
+    expect(answer(dir, ...reply, "--jq", ".id")).toEqual({ code: 0, out: "7001" });
+    // The submission's route takes the verdict's `--method POST` on either side of the path, and
+    // the read of the reviews already there takes neither: one route for the POST, one for the
+    // GET, and the POST's first.
+    for (const argv of [
+      ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews"],
+      ["api", "repos/example/widgets/pulls/1001/reviews", "--method", "POST"],
+    ])
+      expect(answer(dir, ...argv, "--jq", ".id")).toEqual({ code: 0, out: "5002" });
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", ".[0].state")
+    ).toEqual({ code: 0, out: "APPROVED" });
+    // No world routes `gh pr diff`: it is the diff of the run's own remote at the call, which is
+    // the change the implementer's commit carries over the branch the pull request is open
+    // against.
+    expect(answer(dir, "pr", "diff", "1001", "--name-only")).toEqual({
+      code: 0,
+      out: [".github/workflows/greet.yml", "docs/cli.md", "greet.test.ts", "greet.ts"].join("\n"),
+    });
+  });
+
+  test("the review round's world resolves a thread and lists the bot's, each by its own route", () => {
+    const dir = built("review_world");
+    expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
+    expect(answer(dir, ...threadQuery(IDS))).toEqual({ code: 0, out: "PRRT_kwDOrig0001" });
+  });
+
+  // <run>/threads.json is what threadsClosed reads the scenario's threads from, and the route
+  // and the pull request's body are what the agents read them from: three copies of one fact.
+  // Catches: a world whose record and whose answers name different threads, where an
+  // implementer would reply on threads the score does not count and the score would ask for
+  // replies on threads no agent can see.
+  test("the approved world's threads.json is the threads its route serves and its body names", () => {
+    const dir = built("approved_world");
+    const threads = JSON.parse(readFileSync(path.join(dir, "threads.json"), "utf8")) as {
+      id: string;
+      path: string;
+    }[];
+    expect(threads.map((thread) => [thread.id, thread.path])).toEqual([
+      ["PRRT_kwDOfix001", "docs/cli.md"],
+      ["PRRT_kwDOfix002", ".github/workflows/greet.yml"],
+    ]);
+    const served = answer(
+      dir,
+      ...threadQuery(
+        '[.data.repository.pullRequest.reviewThreads.nodes[] | .id + " " + .path] | join(",")'
+      )
+    );
+    expect(served.out).toBe(threads.map((thread) => `${thread.id} ${thread.path}`).join(","));
+    const body = answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out;
+    expect(body).toContain(`**Threads:** 0 resolved, ${threads.length} unresolved.`);
+    for (const thread of threads) expect(body).toContain(`- Thread ${thread.id}: still open`);
+  });
+
+  // The negative control's world: one thread, on the sentence the dropped guard makes false, and
+  // no text finding of its own. Catches a control that gains the two text findings the measured
+  // arm carries, which would give it a thread a text fix closes.
+  test("the dropped guard's world carries the one thread no text fix closes", () => {
+    const dir = built("approved_world", "dropped");
+    expect(
+      (JSON.parse(readFileSync(path.join(dir, "threads.json"), "utf8")) as { id: string }[]).map(
+        (thread) => thread.id
+      )
+    ).toEqual(["PRRT_kwDOfix101"]);
   });
 });
 

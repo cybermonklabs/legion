@@ -6,9 +6,10 @@
 // kept, if any), then answered from the
 // first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". Three
 // answers are the run's own remote rather than a route's, since each is a fact of the run and no
-// frozen answer could tell one run from another: the pull request's head, its diff, and the
-// comparison of two commits (`comparison`, which needs no route at all). A call no route matches
-// and no remote serves prints `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
+// frozen answer could tell one run from another: the pull request's head, which a route carries
+// and this answer replaces, and its diff and the comparison of two commits, which need no route
+// at all (`branchDiff`, `comparison`). A call no route matches and no remote serves prints
+// `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
 // `--json a,b` picks fields and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr
 // edit --body`, `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an
 // object that has a `body` then answers with the new one, as GitHub's next read would, and the
@@ -231,7 +232,15 @@ function comparison(): Record<string, unknown> | undefined {
  * read before the route check, since no route answers a comparison and a 404 there reads to the
  * agent as a repository that does not hold the two commits its own run made. */
 const compared = comparison();
-if (!route && compared === undefined) {
+/** The pull request's diff, where this call asks for one the run's remote can answer. It is read
+ * before the route check for the same reason: rig.sh's worlds carry no `gh pr diff` route, since
+ * a diff frozen into a fixture would read the same whatever the run pushed, and a 404 here reads
+ * to the agent as a pull request carrying no change at all. */
+const diffed =
+  as === "gh" && args[0] === "pr" && args[1] === "diff"
+    ? branchDiff(args.includes("--name-only"))
+    : undefined;
+if (!route && compared === undefined && diffed === undefined) {
   console.error(as === "gh" ? "gh: Not Found (HTTP 404)" : `unknown command: ${args.join(" ")}`);
   exit(1);
 }
@@ -256,12 +265,9 @@ if (typeof output === "object" && output !== null && "headRefOid" in output) {
     output = { ...output, headRefOid: tip, ...nested };
   }
 }
-if (as === "gh" && args[0] === "pr" && args[1] === "diff") {
-  // An empty diff is GitHub's own answer for a pull request whose branch carries no change, so
-  // it stands as the answer rather than falling back to the route's.
-  const diff = branchDiff(args.includes("--name-only"));
-  if (diff !== undefined) output = diff === "" ? "" : `${diff}\n`;
-}
+// An empty diff is GitHub's own answer for a pull request whose branch carries no change, so it
+// stands as the answer rather than falling back to the route's.
+if (diffed !== undefined) output = diffed === "" ? "" : `${diffed}\n`;
 const jsonIndex = args.indexOf("--json");
 if (jsonIndex >= 0 && typeof output === "object" && output !== null && !Array.isArray(output)) {
   const record: Record<string, unknown> = { ...output };

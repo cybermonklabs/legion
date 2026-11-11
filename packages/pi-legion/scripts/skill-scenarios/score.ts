@@ -91,8 +91,9 @@ const Call = z.looseObject({
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
-/** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
- * head, the implementer's code commit. */
+/** rig.sh's worker_fixture: the world a worker run works in, on the run's own issue `key`;
+ * `head` is the PR's head, the implementer's code commit. Every worker scenario reads it —
+ * tester-proof, reviewer-text-findings and threads-closed. */
 const World = z.object({
   key: z.string(),
   repo: z.string(),
@@ -115,7 +116,8 @@ const Handoffs = z.array(
 );
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
  * answered; a completion's line names the handoff record it reported, and a backward move's the
- * phase it asked for and the reason it gave. */
+ * phase it asked for. The stand-in writes the reason that move gave beside it, which no score
+ * reads, so this names it nowhere. */
 const DaemonLine = z.looseObject({
   at: z.string(),
   path: z.string(),
@@ -123,7 +125,6 @@ const DaemonLine = z.looseObject({
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
   to: z.string().optional(),
-  reason: z.string().optional(),
 });
 const nonEmpty = z.string().min(1);
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
@@ -186,7 +187,6 @@ function toolCalls(entries: SessionEntry[]) {
               typeof args === "object" && args !== null ? { ...args } : {};
             return {
               id: part.id ?? "",
-              at: entry.timestamp ?? "",
               tool: part.name ?? "",
               path: typeof fields.path === "string" ? fields.path : "",
               command: typeof fields.command === "string" ? fields.command : "",
@@ -655,9 +655,11 @@ function askgateReview(runDir: string, run: string, label: string, askCase: stri
   );
 }
 
-/** A commit this run can name: the PR's head (the implementer's code commit), or one its tester
- * pushed. A seven-or-more-digit prefix counts. */
-function namesOwnCommit(text: string, commits: string[]): boolean {
+/** Whether `text` names one of `commits`: a hexadecimal word of seven digits or more that one of
+ * them starts with, which is how a reply, a body entry or a check line names the commit it is
+ * about. A shorter prefix names too many commits to be one. The commits a run can name are its
+ * PR's head (the implementer's code commit) and whatever it pushed itself. */
+function namesCommit(text: string, commits: string[]): boolean {
   return [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)].some(([sha]) =>
     commits.some((commit) => commit.startsWith(sha))
   );
@@ -670,6 +672,18 @@ function instant(text: string, what: string): bigint {
   const at = parseInstant(text);
   if (at === undefined) throw new Error(`${what} ${JSON.stringify(text)} is no RFC 3339 time`);
   return at;
+}
+
+/** Every push the run's own bare remote logged (<run>/pushes.log, written by the post-receive
+ * hook rig.sh's fixture_open installs), in the order it logged them: when the push arrived, the
+ * ref it moved and the commit it left there. The times are left as text, since a caller that
+ * orders pushes against something else reads them through `instant` and the callers that only
+ * count a push read a log a fixture may hold a line of any shape in. */
+function pushesOf(runDir: string): { at: string; ref: string; sha: string }[] {
+  return lines(path.join(runDir, "pushes.log")).map((line) => {
+    const [at = "", ref = "", , sha = ""] = line.split(" ");
+    return { at, ref, sha };
+  });
 }
 
 /** The files a push carries, in the run's own bare remote: the names `git diff` gives for `to`
@@ -768,11 +782,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
       : named;
   const recordedAt =
     record === undefined ? undefined : instant(record.created_at, `record ${record.id}'s time`);
-  const pushes = lines(path.join(runDir, "pushes.log"))
-    .map((line) => {
-      const [at = "", ref = "", , sha = ""] = line.split(" ");
-      return { at: instant(at, "a push's time"), ref, sha };
-    })
+  const pushes = pushesOf(runDir)
+    .map((push) => ({ ...push, at: instant(push.at, "a push's time") }))
     .filter((p) => p.ref === `refs/heads/${world.branch}`);
   const commits = [world.head, ...pushes.map((p) => p.sha)];
   const drove = calls.find((c) => {
@@ -826,9 +837,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     (bodies.at(-1)?.body ?? "")
       .split("\n")
       .find((line) => /^\s*-\s+Check .*recorded by tester\b/.test(line)) ?? "";
-  const ownHead = namesOwnCommit(testerLine, commits);
+  const ownHead = namesCommit(testerLine, commits);
   const foreign = heads.filter((head) => head !== world.head);
-  if (!ownHead && namesOwnCommit(testerLine, foreign))
+  if (!ownHead && namesCommit(testerLine, foreign))
     throw new Error(`its PR body carries another run's check line: ${testerLine.slice(0, 160)}`);
   const pass = ran && ordered && proof && ownHead;
   const opened = readCalls(entries).map((call) => call.target);
@@ -1063,20 +1074,11 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   );
   const review = reviews.at(-1);
   const resolves = calls.filter(resolvesAThread).length;
-  const pushes = lines(path.join(runDir, "pushes.log")).length;
+  const pushes = pushesOf(runDir).length;
   const paths = review?.comments ?? [];
   const onDoc = paths.includes(FINDING_DOC);
   const onWorkflow = paths.some((named) => named.startsWith(FINDING_WORKFLOW));
   const head = review !== undefined && namesHead(world.head, review.head);
-  // The two text findings this round writes are new inline comments, so no thread of them exists
-  // for the round to resolve, and the one thread the world holds open is the bot's, which the
-  // reviewer adjudicates and may resolve: `review-threads.md` has the reviewer resolve a thread
-  // it judged. So a resolve call is reported, not scored. What the case turns on is the verdict:
-  // the approval of the fixture head with a comment on each finding, and no push, since a review
-  // round pushes nothing at all and the implementer's fix follows the approval. "No push" is a
-  // term of the text-only case alone: the defect case turns on the verdict, as the docstring
-  // above says.
-  //
   // An approval that leaves text threads open also owns the first wake of that fix: the daemon
   // starts no phase for it, so the implementer learns its turn began from the reviewer's
   // message and from nothing else (review-threads.md step 1). The round is clean only when that
@@ -1169,7 +1171,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
-  const ref = readCalls(session(runDir)).some((call) =>
+  const ref = readCalls(entries).some((call) =>
     call.target.includes("skill://legion-worker/references/merge-gate.md")
   );
   const notes = [
@@ -1207,20 +1209,21 @@ const MUTATION = /resolveReviewThread\s*\(\s*input\s*:/g;
  * `skill://legion-worker/references/review-threads.md`, or the REST reply route under a review
  * comment. A call that only resolves a thread is no reply, whatever it carries. */
 const REPLY = /addPullRequestReviewThreadReply|\/replies\b/;
-/** The role each half of the loop is: the role rig.sh booted the agent as, which every call that
- * agent made carries (SKILL_SCENARIO_AGENT, gh-standin.ts's `by`). */
-const FIXES = "implementer";
-const RESOLVES = "reviewer";
+/** The role a message of this loop is addressed to, which its topic ends with: a role topic is
+ * `notifications.role.legion-<project>-<issue>-<role>` (contracts' roleToken, rig.sh's
+ * run_project). One word names the role twice over, since it is also the role rig.sh booted an
+ * agent as, which every gh call that agent made carries (SKILL_SCENARIO_AGENT, gh-standin.ts's
+ * `by`). */
+const ROLES = ["implementer", "reviewer", "architect"] as const;
+type Role = (typeof ROLES)[number];
+/** The role each half of the loop after an approval is. */
+const FIXES: Role = "implementer";
+const RESOLVES: Role = "reviewer";
 /** Whether `named` is `sha`: the prefix of seven hexadecimal digits or more that the commit
  * starts with, which is how a review names the head it was submitted on. A shorter prefix names
  * too many commits to be a head, and a route that carries no head at all names "". */
 function namesHead(sha: string, named: string): boolean {
   return named.length >= 7 && sha.startsWith(named);
-}
-/** Whether `text` names `sha`: a hexadecimal word of seven digits or more that the commit starts
- * with, which is how a reply or a body entry names the commit that fixed a thread. */
-function namesCommit(text: string, sha: string): boolean {
-  return [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)].some(([found]) => sha.startsWith(found));
 }
 /** A daemon answer the agent's own plugin refused, as `LegionDaemonContractError` words it
  * (`packages/pi-shared/src/daemon-client.ts`): the route, the status and what of the body that
@@ -1234,11 +1237,6 @@ function transcriptText(entries: SessionEntry[]): string {
     .flatMap((entry) => (entry.message?.content ?? []).map((part) => part.text ?? ""))
     .join("\n");
 }
-/** The role a message of this loop is addressed to, which its topic ends with: a role topic is
- * `notifications.role.legion-<project>-<issue>-<role>` (contracts' roleToken, rig.sh's
- * run_project). The words are the role names themselves, not the `by` constants above, which
- * name the roles of the gh calls the stand-in recorded. */
-type Role = "implementer" | "reviewer" | "architect";
 /** A record the `legion` tool answered a `read_record` with, read through one schema whatever
  * route carried the call. The phase is read as a string rather than matched against one word, so
  * the caller decides what each phase means and "unreadable" stays one thing: no record at all. */
@@ -1368,15 +1366,11 @@ function ownSession(entries: SessionEntry[]): string {
 /** Every message Envoy accepted on a role topic of this run, in the order it accepted them, or
  * those one agent sent when `sender` names its session.
  *
- * Until 2026-11-09 this was worked out from the agent's own transcript: the arguments of an
- * `envoy_publish` tool call, the JSON content of a `write` to `xd://envoy_publish`, and an
- * evaluator over the source of an `eval` cell. A reader of intent is wrong in both directions —
- * it passes a run on a message the agent wrote and never sent, and fails one whose message was
- * sent in a shape it could not read — and it times a cell by the call's own timestamp, which is
- * taken before the cell runs. What the servers did is recorded instead: the rig subscribes to
- * the bus for the length of a run and appends every message Envoy published on one of this run's
- * role topics, and the score and the harness read that one file, so no publish can score a wake
- * the next agent never had (`rig.sh`'s reviewer_wake calls `score.ts published`).
+ * What the servers did is what is read: the rig subscribes to the bus for the length of a run
+ * and appends every message Envoy published on one of this run's role topics, and the score and
+ * the harness read that one file, so no publish can score a wake the next agent never had
+ * (`rig.sh`'s reviewer_wake calls `score.ts published`). Why it is read there and not from the
+ * agent's own transcript: record-publishes.ts's header.
  *
  * Who sent a message is the sender Envoy recorded (`source_session`) against the session id of
  * that half's own transcript, and nothing else: the rig writes no mark of its own into the
@@ -1427,7 +1421,7 @@ function publishedTo(
  * no message carries it, so a caller with nothing to require requires nothing of every message
  * rather than everything of none. */
 function bodyNames(message: string, name: string): boolean {
-  return name !== "" && (message.includes(name) || namesCommit(message, name));
+  return name !== "" && (message.includes(name) || namesCommit(message, [name]));
 }
 /** Whether one message of this run reached `role`'s topic naming every one of `names`, which is
  * how a wake that must carry several facts is read: the facts are one message's, or the role that
@@ -1464,7 +1458,7 @@ function sentOnlyTo(runDir: string, sender: string, role: Role): boolean {
 /** Every message of this run that reached `role`'s topic, in the order Envoy accepted them, as
  * the rig's own reader wants them: what the next agent is handed, since Envoy delivers each one
  * and a half given only the last would be missing a wake its own run sent. */
-function publishesTo(runDir: string, role: string): Publish[] {
+function publishesTo(runDir: string, role: Role): Publish[] {
   // The run's first agent's own messages: the harness hands these to the half the rig boots next
   // (rig.sh's reviewer_wake), whose wake is the agent before it and nobody else, and the score
   // reads that half's sends under the same filter.
@@ -1556,10 +1550,9 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // number of pushes is scored beside the diff. The commits in that push are not counted: what
   // the approved head gained is the diff, and a second push is a second head under the reviewer
   // and the architect, which is what the rule's "once" is about.
-  const pushes = lines(path.join(runDir, "pushes.log")).flatMap((line) => {
-    const [, ref = "", , sha = ""] = line.split(" ");
-    return ref === `refs/heads/${world.branch}` ? [sha] : [];
-  });
+  const pushes = pushesOf(runDir).flatMap((push) =>
+    push.ref === `refs/heads/${world.branch}` ? [push.sha] : []
+  );
   const tip = pushes.at(-1);
   const changed = tip === undefined ? [] : changedFiles(runDir, world.head, tip);
   const wanted = threads.map((thread) => thread.path).toSorted();
@@ -1572,7 +1565,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     .filter((text) => REPLY.test(text))
     .map((text) => ({
       named: threads.filter((thread) => text.includes(thread.id)).map((thread) => thread.id),
-      commit: tip !== undefined && namesCommit(text, tip),
+      commit: tip !== undefined && namesCommit(text, [tip]),
     }));
   const replied = new Set(replies.flatMap(({ named }) => (named.length === 1 ? named : [])));
   const repliedCommit = replies.filter(({ commit }) => commit).length;
@@ -1640,7 +1633,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const threadsLine =
     tip !== undefined &&
     entries.every(
-      (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, tip)
+      (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, [tip])
     );
   const daemon = parsed(path.join(runDir, "daemon.log"), DaemonLine);
   const completions = daemon.filter(
@@ -1670,11 +1663,11 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // which is the architect's gate because READY reads the round's first approval. The first
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
-  const toldReviewer = publishedTo(runDir, fixSender, "reviewer", tip === undefined ? [] : [tip]);
+  const toldReviewer = publishedTo(runDir, fixSender, RESOLVES, tip === undefined ? [] : [tip]);
   // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
   // role prompt): the architect hears of this head from the reviewer's second approval, so an
   // implementer that copies it in has told the architect of a head nobody has approved yet.
-  const toReviewerAlone = sentOnlyTo(runDir, fixSender, "reviewer");
+  const toReviewerAlone = sentOnlyTo(runDir, fixSender, RESOLVES);
   const toldArchitectOfHead =
     reviewSender !== undefined &&
     publishedTo(runDir, reviewSender, "architect", tip === undefined ? [] : [tip]);
@@ -1692,7 +1685,6 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       ? pushes.length === 0 &&
         told &&
         !approvedAny &&
-        resolved.size === 0 &&
         fixResolves === 0 &&
         resolves.length === 0 &&
         moved === undefined
@@ -4391,8 +4383,8 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       .filter((label) => existsSync(path.join(profiles, label, "checkout")))
       .map((label) => [label, readFileSync(path.join(profiles, label, "checkout"), "utf8").trim()])
   );
-  // Every tester-proof run's PR head, to tell another run's line from a wrong one. A world.json
-  // that does not parse is its own run's rig error, below.
+  // Every run's PR head, to tell another run's line from a wrong one (`testerProof`, which is
+  // the one reader). A world.json that does not parse is its own run's rig error, below.
   const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
     try {
       return [json(path.join(runsDir, run, "world.json"), World).head];
@@ -4584,9 +4576,8 @@ if (import.meta.main) {
     // The harness's own reader of a publish, so the rig and the score read one: rig.sh's
     // reviewer_wake asks for every message a role's topic was sent, in Envoy's own order, and
     // hands each to the next agent as a delivery of its own, and the score asks the same code
-    // whether the message the rule names was among them. Two readers of one fact disagreed
-    // before this (2026-11-09): a publish made from `eval` scored `toldReviewer` while the
-    // reviewer half booted with an empty prompt.
+    // whether the message the rule names was among them. What two readers of that one fact cost
+    // is in record-publishes.ts's header.
     // Every throw is caught here, not the missing session alone, and that is deliberate: the
     // harness must not die of a reader's limit first. `rig.sh`'s reviewer_wake runs under
     // `set -e`, so a throw would end the run with "the reviewer half never started" and hide
@@ -4596,8 +4587,9 @@ if (import.meta.main) {
     // Nothing is lost by catching widely: the score reads the same files afterwards and throws
     // there too, so the run is a rig error naming the real reason either way.
     const runDir = rest[0] ?? "";
-    const role = rest[1] ?? "";
+    const role = ROLES.find((named) => named === rest[1]);
     try {
+      if (role === undefined) throw new Error(`no role topic is named ${rest[1] ?? ""}`);
       console.log(JSON.stringify(publishesTo(runDir, role)));
     } catch (error) {
       console.error(

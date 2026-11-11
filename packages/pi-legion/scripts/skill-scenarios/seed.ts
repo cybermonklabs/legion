@@ -2,7 +2,8 @@
 // left there. DISPATCH_E2E_PORT names the server, which e2e/api.ts addresses. e2e/api.ts addresses
 // PLAYWRIGHT_BASE_URL instead, with E2E_AGENT_TOKEN as its bearer, whenever it is set, so seed.ts
 // refuses to run while either is set. Each mode is also an exported function, which seed.test.ts
-// calls against a stubbed fetch.
+// calls against a stubbed fetch; the four handoff modes are seed-handoffs.ts's, and this file
+// runs them.
 //
 //   seed.ts project                        project LWEVAL, which each run's own issue is filed in;
 //                                          the world of every scenario but brainstorm
@@ -94,21 +95,13 @@
 //                                          artifacts.json in <run dir>)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  Actor,
-  ArtifactBlock,
-  Ask,
-  AskOption,
-  Handoff,
-  HandoffSummary,
-} from "@legion/contracts";
+import type { Actor, ArtifactBlock, Ask, AskOption } from "@legion/contracts";
 import { z } from "zod";
 import {
   answerAsk,
   baseUrl,
   createAsk,
   createComment,
-  createHandoff,
   createIssue,
   createIssueArtifact,
   createMessage,
@@ -126,6 +119,13 @@ import {
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { parseInstant } from "./production-dispatch";
+import {
+  captureHandoffs,
+  implementHandoff,
+  reviewHandoff,
+  type TesterFixture,
+  testerResult,
+} from "./seed-handoffs";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -144,19 +144,6 @@ const SpecFixture = z.object({ issue: z.string(), spec_artifact: z.string() });
 type SpecFixture = z.infer<typeof SpecFixture>;
 /** The session a seeded ask is opened as: another agent's, never the run's own. */
 export const SEED_ASKER = { kind: "session", id: "spec-source-agent" } as const;
-/** What `tester-proof` writes, and `implement-handoff`, `tester-result`, `review-handoff` and
- * `capture-handoffs` read: the run's issue, and each phase record a seed has written on it. */
-const TesterFixture = z.object({
-  issue: z.string(),
-  implement: z.object({ id: z.string(), version: z.number().int() }).optional(),
-  test: z.object({ id: z.string(), version: z.number().int() }).optional(),
-  review: z.object({ id: z.string(), version: z.number().int() }).optional(),
-});
-/** The sessions the worker's predecessors wrote their handoffs as: the implementer's, and the
- * tester's and the reviewer's where a scenario seeds one, never the run's own. */
-export const IMPLEMENTER = { kind: "session", id: "rig-implementer" } as const;
-export const TESTER = { kind: "session", id: "rig-tester" } as const;
-export const REVIEWER = { kind: "session", id: "rig-reviewer" } as const;
 /** The person who files the run's issue, posts the source's input and answers every ask. */
 const PERSON = "alice";
 /** Dispatch's approval answer (packages/envoy/internal/dispatch/docs/approval_review.go). */
@@ -642,111 +629,6 @@ export async function testerProofIssue(file: string): Promise<void> {
   const fixture: z.infer<typeof TesterFixture> = { issue: issue.key };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   console.log(`seeded ${issue.key}`);
-}
-
-/** One predecessor's handoff on the run's issue, as `dispatch handoff-write` records it under
- * that predecessor's own session, and, for a phase whose role records one, its passing result
- * against the issue's check `k1` at `result.commit`, as `dispatch result` records it; the record
- * goes into the fixture under its phase. A
- * body that is no JSON object is the fixture's fault, refused before anything is written. */
-async function phaseHandoff(
-  file: string,
-  bodyFile: string,
-  phase: "implement" | "test" | "review",
-  actor: Actor,
-  result?: { role: "implementer" | "tester"; commit: string }
-): Promise<void> {
-  const fixture = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const body: unknown = JSON.parse(readFileSync(bodyFile, "utf8"));
-  if (typeof body !== "object" || body === null || Array.isArray(body))
-    throw new Error(`${bodyFile} holds no JSON object, which a handoff body is`);
-  const recorded = await createHandoff(fixture.issue, phase, body, actor);
-  if (result !== undefined)
-    await agentPost(`/api/v1/issues/${encodeURIComponent(fixture.issue)}/results`, {
-      check: "k1",
-      role: result.role,
-      verdict: "pass",
-      commit: result.commit,
-      surface: "cli",
-      run: "bun greet.ts Ada",
-      observed: "prints Hello, Ada! and exits 0",
-      negative_control: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-      actor,
-    });
-  const record = { id: recorded.id, version: recorded.version };
-  writeFileSync(file, `${JSON.stringify({ ...fixture, [phase]: record })}\n`);
-  console.log(
-    `seeded ${fixture.issue}'s ${phase} handoff, version ${recorded.version} (${recorded.id})`
-  );
-}
-
-/** `implement-handoff <file> <body file> <commit>`: the implementer's handoff and its passing
- * result, under the implementer's session. */
-export async function implementHandoff(
-  file: string,
-  bodyFile: string,
-  commit: string
-): Promise<void> {
-  await phaseHandoff(file, bodyFile, "implement", IMPLEMENTER, {
-    role: "implementer",
-    commit,
-  });
-}
-
-/** `tester-result <file> <body file> <commit>`: the tester's handoff and its passing result,
- * under the tester's session. A reviewer refuses an approval while a `before_merge` check of the
- * issue has no passing result current at the head it reads, so the reviewer scenario seeds this
- * one beside the implementer's and the reviewer's verdict rests on what it found in the change;
- * threads-closed seeds both so that neither of its agents reads a gate of its own as open. */
-export async function testerResult(file: string, bodyFile: string, commit: string): Promise<void> {
-  await phaseHandoff(file, bodyFile, "test", TESTER, { role: "tester", commit });
-}
-
-/** `review-handoff <file> <body file>`: the round's review handoff, under the reviewer's session
- * and with no result of its own, since a reviewer records none against a check. The task of each
- * agent of threads-closed names its version, and the record is the approval they work from. */
-export async function reviewHandoff(file: string, bodyFile: string): Promise<void> {
-  await phaseHandoff(file, bodyFile, "review", REVIEWER);
-}
-
-/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
-async function agentGet<T>(route: string): Promise<T> {
-  const response = await fetch(new URL(route, baseUrl), {
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  if (!response.ok)
-    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
-}
-
-/** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
- * Dispatch's answer. */
-async function agentPost(route: string, input: unknown): Promise<void> {
-  const response = await fetch(new URL(route, baseUrl), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${e2eAgentToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(input),
-  });
-  if (!response.ok)
-    throw new Error(`POST ${route} failed: ${response.status} ${await response.text()}`);
-}
-
-/** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
- * implement record among them, newest first as `GET …/handoffs` lists them, each read whole by id
- * (`GET /api/v1/handoffs/{id}`) for its body. */
-export async function captureHandoffs(file: string, runDir: string): Promise<void> {
-  const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const summaries = await agentGet<HandoffSummary[]>(
-    `/api/v1/issues/${encodeURIComponent(issue)}/handoffs`
-  );
-  const records: Handoff[] = [];
-  for (const summary of summaries)
-    records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
-  writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
-  console.log(`captured ${issue}: ${records.length} handoff records`);
 }
 
 async function askOnMessage(file: string): Promise<void> {

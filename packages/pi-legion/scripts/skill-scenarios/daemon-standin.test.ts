@@ -71,6 +71,9 @@ async function standin(role: string, startIn = "") {
     z
       .looseObject({ settings: z.record(z.string(), z.unknown()) })
       .parse(await (await fetch(`${url}/legion/v1/state`)).json()).settings;
+  /** `POST /legion/v1/handoff/complete` on a grant minted for it, naming a handoff record when
+   * `handoff` and naming none otherwise, which is the completion of a worker that has written
+   * no record. */
   const complete = async (handoff: boolean) => {
     const minted = await (
       await fetch(`${url}/legion/v1/grants`, {
@@ -112,6 +115,31 @@ test.skipIf(skip)(
       expect(await daemon.phase()).toBe("reviewing");
       expect((await daemon.complete(true)).status).toBe(200);
       expect(await daemon.phase()).toBe("accepting");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that accepts a completion naming no record for a phase that ends with
+// one. The daemon refuses it 400 HANDOFF_RECORD_REQUIRED and names the `dispatch handoff-write`
+// that cures it (packages/daemon/internal/api/handoff.go), and the skill has the worker write
+// the record and complete again: a 200 here teaches an agent that a phase ends without the
+// record the next role reads.
+test.skipIf(skip)(
+  "a completion of a phase that ends with a record, naming none, is refused as the daemon refuses it",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const refused = await daemon.complete(false);
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({
+        code: "HANDOFF_RECORD_REQUIRED",
+        error: expect.stringContaining("dispatch handoff-write --issue LWEVAL-1 --phase review"),
+      });
+      // Nothing moved: the round has not ended, so the issue stands in `reviewing`.
+      expect(await daemon.phase()).toBe("reviewing");
     } finally {
       daemon.stop();
     }
