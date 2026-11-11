@@ -64,7 +64,7 @@ interface LaneSpan {
   readonly span: LegionTimelineSpan;
   readonly label: string;
   readonly fill: string;
-  readonly hatch?: "children" | "parked";
+  readonly hatch?: "children" | "parked" | "many";
 }
 
 /** One lane of the axis: its name and its stretches. */
@@ -460,6 +460,48 @@ function spanLabel(label: string, px: number): string {
   return first !== label && fits(first) ? first : "";
 }
 
+/** The axis removes visual noise below one percent, while the table keeps every source stretch. */
+function displaySpans(lane: Lane, at: (iso: string) => number): LaneSpan[] {
+  const shown: LaneSpan[] = [];
+  let slivers: LaneSpan[] = [];
+  const flush = () => {
+    if (slivers.length === 0) return;
+    const first = slivers[0] as LaneSpan;
+    const last = slivers.at(-1) as LaneSpan;
+    const same = slivers.every((one) => one.span.name === first.span.name);
+    const hours = slivers.reduce((sum, one) => sum + one.span.hours, 0);
+    if (same && shown.at(-1)?.span.name === first.span.name) {
+      const previous = shown.at(-1) as LaneSpan;
+      shown[shown.length - 1] = {
+        ...previous,
+        span: { ...previous.span, to: last.span.to, hours: previous.span.hours + hours },
+      };
+    } else {
+      shown.push(
+        same
+          ? { ...first, span: { ...first.span, to: last.span.to, hours } }
+          : {
+              ...first,
+              fill: surfaceMutedBg,
+              hatch: "many",
+              label: `many changes: ${slivers.map((one) => one.label).join(", ")}`,
+              span: { ...first.span, to: last.span.to, hours },
+            }
+      );
+    }
+    slivers = [];
+  };
+  for (const span of lane.spans) {
+    if (at(span.span.to) - at(span.span.from) < 1) slivers.push(span);
+    else {
+      flush();
+      shown.push(span);
+    }
+  }
+  flush();
+  return shown;
+}
+
 function LaneRow({
   at,
   lane,
@@ -473,6 +515,7 @@ function LaneRow({
   widthPx: number;
 }): ReactNode {
   const child = lane.name.startsWith("Child ") ? lane.name.slice("Child ".length) : null;
+  const spans = displaySpans(lane, at);
   return (
     <>
       <span className={`mt-1 truncate text-xs md:mt-0 ${textMutedOnSurface}`} title={lane.name}>
@@ -489,7 +532,7 @@ function LaneRow({
         )}
       </span>
       <div className={`relative h-5 rounded-sm ${surfaceMutedBg}`} data-legion-lane={lane.name}>
-        {lane.spans.map(({ span, label, fill, hatch }) => {
+        {spans.map(({ span, label, fill, hatch }) => {
           const left = at(span.from);
           const width = Math.max(at(span.to) - left, 0.3);
           return (
