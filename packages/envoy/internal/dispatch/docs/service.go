@@ -2983,14 +2983,19 @@ type roomIssueState struct {
 	open bool
 }
 
-// issueDocumentsStatement reads every document of issue $1 and whether the issue is open now.
+// issueDocumentsStatement reads every document of issue $1 and whether the issue is open now. The
+// answer names each document as a.id::text, Postgres's canonical uuid spelling, which the rooms
+// this process holds of it need not be named in (issueOpenChanged).
 const issueDocumentsStatement = `
 	select a.id::text, i.closed_at is null
 	from artifacts a join issues i on i.key = a.issue_key
 	where a.issue_key = $1 and a.kind = 'doc'`
 
 // residentIssuesStatement reads whether the issue of each document in $1 is open now, true for a
-// document of no issue (as issueOpen has it).
+// document of no issue (as issueOpen has it). $1 holds canonical uuid spellings and a.id::text
+// answers in them, while a room is named as its browser's URL spelled it, so its caller asks in
+// the canonical spellings its rooms parse into and reads each answer back to every room key held
+// under one (recheckResidentIssues, residentRoomsByDocument).
 const residentIssuesStatement = `
 	select a.id::text, coalesce(i.closed_at is null, true)
 	from artifacts a left join issues i on i.key = a.issue_key
@@ -3016,6 +3021,15 @@ func (s *Service) readRoomIssueStates(ctx context.Context, sql string, arg any) 
 // succession may both be read as the second, which is the truth by then. Every room this process
 // holds of the issue's documents takes that state (setRoomIssueOpen). A document no room here
 // holds has nothing to tell: its next load reads the issue.
+//
+// The answer names each document in Postgres's canonical uuid spelling, and the rooms are named
+// as their browsers' URLs spelled them, so a document's state goes to that canonical name and to
+// every other room key this process holds under it (residentRoomsByDocument); the removal pass
+// says where a second spelling of one id comes from (recheckRemovedRooms). Giving it to the
+// canonical name alone left a room resident under another spelling of its own id taking no close
+// when its issue closed and no reopen when it opened. The canonical call is made whether or not
+// a resident key equals it: a room still loading holds no record and is in no resident set, and
+// that call is what reaches it (setRoomIssueOpen's notified).
 func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 	states, err := s.readRoomIssueStates(ctx, issueDocumentsStatement, issueKey)
 	if err != nil {
@@ -3028,8 +3042,14 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 		}
 		return
 	}
+	keys, _ := s.residentRoomsByDocument()
 	for _, state := range states {
 		s.setRoomIssueOpen(ctx, state.room, state.open, true)
+		for _, room := range keys[state.room] {
+			if room != state.room {
+				s.setRoomIssueOpen(ctx, room, state.open, true)
+			}
+		}
 	}
 }
 
@@ -3065,11 +3085,11 @@ func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
 	}
 }
 
-// residentLoadedRooms is every document this process holds a room of now, as the two passes that
-// run after a LISTEN read it (recheckResidentIssues, recheckRemovedRooms). s.roomLoads holds a
-// record of every room loaded since its document was last collected (keepInstance), and the live
-// document says which of those rooms this process still holds; an entry whose room has gone
-// costs a lookup and no more.
+// residentLoadedRooms is the name of every room this process holds now, each as its browser's URL
+// spelled it, which the passes that read the resident rooms take through the grouping below
+// (residentRoomsByDocument). s.roomLoads holds a record of every room loaded since its document
+// was last collected (keepInstance), and the live document says which of those rooms this process
+// still holds; an entry whose room has gone costs a lookup and no more.
 func (s *Service) residentLoadedRooms() []string {
 	var rooms []string
 	s.roomLoads.Range(func(key, _ any) bool {
@@ -3081,24 +3101,59 @@ func (s *Service) residentLoadedRooms() []string {
 	return rooms
 }
 
+// residentRoomsByDocument is every room this process holds now, grouped by the canonical uuid
+// spelling of the document it names, with those spellings listed once each: what the three
+// passes that ask the database about the resident rooms read them by (recheckResidentIssues,
+// issueOpenChanged, recheckRemovedRooms). A room's name is whatever the browser's URL spelled,
+// since the admission parses it and keeps the caller's spelling (ServeHTTP), while the database
+// answers in the canonical spelling alone, so two keys can spell one document and what is read
+// for that document belongs to both. A room uuid.Parse refuses is left out: it names no document
+// the database can be asked about, and sending it would error a statement that casts to uuid.
+// recheckRemovedRooms says what that costs its own pass.
+func (s *Service) residentRoomsByDocument() (keys map[string][]string, documents []string) {
+	keys = make(map[string][]string)
+	for _, room := range s.residentLoadedRooms() {
+		id, err := uuid.Parse(room)
+		if err != nil {
+			continue
+		}
+		canonical := id.String()
+		if _, asked := keys[canonical]; !asked {
+			documents = append(documents, canonical)
+		}
+		keys[canonical] = append(keys[canonical], room)
+	}
+	return keys, documents
+}
+
 // recheckResidentIssues is the issue-open lane's work after each LISTEN stands: a close or a
 // reopen notified while the listener had no connection reached nobody and is never sent again, so
 // the issue of every room this process holds is read once more, in one statement, and each room
 // whose record no longer matches takes the issue's state (setRoomIssueOpen).
+//
+// It asks in the canonical uuid spellings its rooms parse into and gives each answered state to
+// every room key held under that spelling (residentRoomsByDocument), since the answer names
+// documents, which Postgres writes canonically, and the rooms are named as their browsers' URLs
+// spelled them; the removal pass below says where a second spelling of one id comes from
+// (recheckRemovedRooms). Sending the room keys and acting on the answer's own text left a room
+// resident under another spelling of its own id taking no close when its issue closed and no
+// reopen when it opened.
 func (s *Service) recheckResidentIssues(ctx context.Context) {
-	rooms := s.residentLoadedRooms()
-	if len(rooms) == 0 {
+	keys, documents := s.residentRoomsByDocument()
+	if len(documents) == 0 {
 		return
 	}
-	states, err := s.readRoomIssueStates(ctx, residentIssuesStatement, rooms)
+	states, err := s.readRoomIssueStates(ctx, residentIssuesStatement, documents)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read the open state of the resident documents' issues", "rooms", len(rooms), "error", err)
+			slog.Error("dispatch: read the open state of the resident documents' issues", "documents", len(documents), "error", err)
 		}
 		return
 	}
 	for _, state := range states {
-		s.setRoomIssueOpen(ctx, state.room, state.open, false)
+		for _, room := range keys[state.room] {
+			s.setRoomIssueOpen(ctx, room, state.open, false)
+		}
 	}
 }
 
@@ -3120,20 +3175,21 @@ const residentArtifactsStatement = `select id::text from artifacts where id = an
 // deleted row takes a person's typing that no append can store, the doc_updates foreign key
 // refusing it.
 //
-// The match is made on each room's parsed id and the close on the room's own key, because a
-// room's name is whatever the browser's URL spelled: the admission parses the name and keeps
-// the caller's spelling (ServeHTTP), while id::text comes back in Postgres's canonical one,
-// lower case and hyphenated. Comparing the two read a room resident under another spelling of
-// its own id - an upper-case one, which is what a link in upper case gives a person - as a row
-// that had gone, and closed a live room under the person in it whenever any other document was
-// really removed. Sending the parsed spellings is also what keeps the statement castable, since
-// a name Postgres cannot read as a uuid would error the read and leave this pass doing nothing
-// for as long as such a room stood. Two keys can spell one document, so each canonical spelling
-// keeps every key this process holds under it and a removal closes them all; a key uuid.Parse
-// refuses is passed over, as recheckResidentIssues passes over a room the database answered
-// nothing for - no such room can be admitted today, the admission parsing the name and the
-// issue read behind it casting it, so this is the pass refusing to act on a room it cannot
-// identify rather than a case anyone can reach.
+// The match is made on each room's parsed id and the close on the room's own key, which is how
+// the rooms are collected for every pass that asks the database about them
+// (residentRoomsByDocument), because a room's name is whatever the browser's URL spelled: the
+// admission parses the name and keeps the caller's spelling (ServeHTTP), while id::text comes
+// back in Postgres's canonical one, lower case and hyphenated. Comparing the two read a room
+// resident under another spelling of its own id - an upper-case one, which is what a link in
+// upper case gives a person - as a row that had gone, and closed a live room under the person
+// in it whenever any other document was really removed. Sending the parsed spellings is also
+// what keeps the statement castable, since a name Postgres cannot read as a uuid would error
+// the read and leave this pass doing nothing for as long as such a room stood. Two keys can
+// spell one document, so each canonical spelling keeps every key this process holds under it
+// and a removal closes them all; a key uuid.Parse refuses is passed over, as recheckResidentIssues
+// passes over a room the database answered nothing for - no such room can be admitted today,
+// the admission parsing the name and the issue read behind it casting it, so this is the pass
+// refusing to act on a room it cannot identify rather than a case anyone can reach.
 //
 // The catch-up's sweep after the same LISTEN closes such a room too, where the room holds
 // stored updates: the removal took them with the document, so the room stands above the head
@@ -3142,19 +3198,7 @@ const residentArtifactsStatement = `select id::text from artifacts where id = an
 // for what it is, and it is the only one that closes a room holding nothing stored, which
 // stands at that empty history's head and reads as current.
 func (s *Service) recheckRemovedRooms(ctx context.Context) {
-	keys := make(map[string][]string)
-	var documents []string
-	for _, room := range s.residentLoadedRooms() {
-		id, err := uuid.Parse(room)
-		if err != nil {
-			continue
-		}
-		canonical := id.String()
-		if _, asked := keys[canonical]; !asked {
-			documents = append(documents, canonical)
-		}
-		keys[canonical] = append(keys[canonical], room)
-	}
+	keys, documents := s.residentRoomsByDocument()
 	if len(documents) == 0 {
 		return
 	}

@@ -700,6 +700,66 @@ func TestAnIssueClosedWhileTheListenerWasDownClosesItsRoomsOnTheReconnect(t *tes
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
 }
 
+// A room stands under the name its browser's URL spelled, which the admission parses and keeps as
+// it stands (ServeHTTP), while the issue-open passes read their documents from Postgres, which
+// writes a uuid canonically. So a person who opens /ws/doc/<the id in upper case> holds a room
+// named in upper case over a row whose id::text is lower case, and a close of its issue has to
+// reach her room as surely as it reaches one named canonically. Applied to the answer's own text
+// alone it reached neither: her room took no close when the issue closed and no reopen when it
+// opened, so her browser kept the writable admission it connected with until the append gate
+// refused a keystroke of hers taken more than closeMargin after the close
+// (refuseClosedIssueAppend), and after the reopen it stayed read-only until ygo retired the room
+// as idle. Both ways a state reaches a room are driven here: the live one, the notification's own
+// handler (issueOpenChanged), and the pass after a LISTEN stands (recheckResidentIssues). What is
+// read at each step is what alice meets - her browser's socket ending, and the scope the room
+// grants her when she connects again.
+func TestAnIssuesCloseAndReopenReachARoomHeldUnderAnotherSpellingOfItsId(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service, server := newTestServiceInstance(t, database)
+	seedServiceText(t, service, artifactID, "before")
+	waitForLandedAppends(t, service, artifactID)
+	// The seed loaded the document's room under its canonical id. Evicting it leaves this
+	// process holding the document under alice's upper-case spelling alone, so a pass that
+	// reaches the canonical name only reaches no room of it at all.
+	if err := service.Evict(context.Background(), artifactID); err != nil {
+		t.Fatalf("evict the room the seed loaded: %v", err)
+	}
+	stored := storedMarkdown(t, database, artifactID)
+	upper := strings.ToUpper(artifactID)
+	alice := connectWithScope(t, server.URL, upper, "alice", "read-write", stored)
+	if roomResident(service, artifactID) {
+		t.Fatalf("the process holds a room of %s under its canonical id, which a pass reaching that spelling alone would close: the room under test is the one named %s", artifactID, upper)
+	}
+	if !roomResident(service, upper) {
+		t.Fatalf("the process holds the rooms %v, want alice's one named %s", service.ResidentRooms(), upper)
+	}
+
+	live := func() {
+		// What the room-sync lane hands the handler (roomSync.register).
+		service.issueOpenChanged(store.WithTransactionTracking(context.Background()), "DOC-1")
+	}
+	recheck := func() { service.recheckResidentIssues(context.Background()) }
+	for _, step := range []struct {
+		what    string
+		closed  bool
+		scope   string
+		deliver func()
+	}{
+		{"the close the notification carried", true, "readonly", live},
+		{"the reopen the notification carried", false, "read-write", live},
+		{"the close read after a LISTEN stood again", true, "readonly", recheck},
+		{"the reopen read after a LISTEN stood again", false, "read-write", recheck},
+	} {
+		writeIssueClosed(t, database, "DOC-1", step.closed)
+		step.deliver()
+		requireEnds(t, alice, step.what+" left alice's browser on the room "+upper+" connected")
+		// Her browser comes back with the scope the issue now allows, which is what a room
+		// that took the state grants and a room that missed it cannot.
+		alice = connectWithScope(t, server.URL, upper, "alice", step.scope, stored)
+	}
+}
+
 // roomResident is whether service holds a room of artifactID now (ResidentRooms).
 func roomResident(service *Service, artifactID string) bool {
 	return slices.Contains(service.ResidentRooms(), artifactID)
