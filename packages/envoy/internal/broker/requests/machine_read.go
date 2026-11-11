@@ -35,12 +35,15 @@ const MintFailedMessage = "broker: mint failed"
 // an owner whose value it reads wrongly can retag that secret shape=document.
 const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line ending was removed"
 
-// NarrowingRefusedMessage is logged, at WARN, each time a release's narrowing of its GitHub App
-// tokens is refused for what it names: an account a github-app secret of the grant does not list
-// (403 NARROWING_OWNER_NOT_LISTED, before any minter runs), or GitHub's 422 to the narrowed token
-// (422 NARROWING_REFUSED). It is followed by grant=, enrollment=, name=<the secret's name> and
-// error=, which never holds a value or a token. A refused authorization the caller fixes, not a
-// mint failure the operator acts on.
+// NarrowingRefusedMessage is logged, at WARN, each time a narrowing of a GitHub App token is
+// refused for what it names, which happens in two places. A release's refusal is one: an account
+// a github-app secret of the grant does not list (403 NARROWING_OWNER_NOT_LISTED, before any
+// minter runs), or GitHub's 422 to the narrowed token (422 NARROWING_REFUSED); that case carries
+// grant=, enrollment=, name=<the secret's name> and error=. Create's check of a request's
+// narrowing is the other (narrowing_check.go): every refusal it makes before anybody is asked to
+// approve the request, which carries enrollment=, name= and error= and no grant= key at all,
+// since no grant exists and the refusal is why none will. Neither case holds a value or a token
+// in any key. A refused authorization the caller fixes, not a mint failure the operator acts on.
 const NarrowingRefusedMessage = "broker: narrowing refused"
 
 // Release is one release of a grant: the values the session may hold, when the grant expires,

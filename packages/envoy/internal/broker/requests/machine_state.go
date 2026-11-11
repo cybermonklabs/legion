@@ -254,6 +254,16 @@ type Machine struct {
 	// MissRereads bounds, per enrollment, the single-name policy rereads Create makes for names the
 	// live policy does not serve (rereadMissing); nil means DefaultMissRereads.
 	MissRereads *ratelimit.Limit
+	// NarrowingCheckBudget bounds the whole check Create makes of a request's GitHub App
+	// narrowing before it asks a person (narrowing_check.go), and NarrowingCheckMint one mint of
+	// that check and that mint's revoke; zero means DefaultNarrowingCheckBudget and
+	// DefaultNarrowingCheckMint.
+	NarrowingCheckBudget time.Duration
+	NarrowingCheckMint   time.Duration
+	// NarrowingChecks bounds, per enrollment, the checks of that narrowing that reach GitHub;
+	// nil means DefaultNarrowingChecks. An enrollment past the bound has the GitHub part of its
+	// check skipped and its request goes to its approver, as it did before the check existed.
+	NarrowingChecks *ratelimit.Limit
 	// ServicesByAccount are the registered services' accounts (BROKER_SERVICES): for each account,
 	// the service a pod whose projected token proved it runs as that account proves, when its
 	// launcher's service is that one (requester).
@@ -292,6 +302,10 @@ type Machine struct {
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
+	// narrowingChecks is NarrowingChecks' per-enrollment buckets, built on first use
+	// (narrowingCheckLimiter).
+	narrowingChecks     *ratelimit.Keyed
+	narrowingChecksOnce sync.Once
 	// testAdoptionHook, when set, runs in applyDecisionAttempt between the read that locks the
 	// requesting enrollment and the read that locks the request. It exists only so a test can
 	// deterministically move the request to another enrollment in that window, which is where an
@@ -350,6 +364,10 @@ type enrollmentRow struct {
 // its lease's end. A caller that decides
 // for the session reads it after locking the session's row, which RevokeByApprover holds while it
 // withholds, so a withhold either committed before the read or waits for the caller.
+// Create's check of a narrowing is the one caller that reads it on the pool under no lock
+// (checkNarrowing): it decides only whether that request would reach a person and so whether to
+// ask GitHub about the narrowing, never what the request is given, so a withhold that commits
+// beside it changes nothing but whether one check runs.
 // The withheld names are read by the enrollment's own id, and an adoption carries a session's
 // withheld_secrets rows to the enrollment it moves to, so these are the names withheld from the
 // session rather than from a box it has left.
@@ -448,6 +466,14 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	} else if ok {
 		return existing, nil
+	}
+	if narrowing != nil {
+		// The verdict on the narrowing, before a row is written and before anybody is asked
+		// (checkNarrowing, narrowing_check.go): a refusal returns here, so the approval a
+		// narrowing the broker cannot serve would have spent is never asked for.
+		if err := m.checkNarrowing(ctx, enr, names, set, obj.Reason, narrowing); err != nil {
+			return Request{}, err
+		}
 	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
