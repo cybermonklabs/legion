@@ -29,16 +29,11 @@ export function statusStage(status: string): string {
 }
 
 /** Which lifecycle stage an issue stands in: its Legion phase where the board holds it, else its
- * Dispatch status. A Legion-labelled issue without a card reads as the phase its status names. */
+ * Dispatch status. */
 export function stageOf(item: Pick<Item, "issue" | "legion">): string {
   if (item.legion !== undefined) {
     const stage = `phase:${item.legion.id}`;
     return LIFECYCLE_ORDER.includes(stage) ? stage : "phase:other";
-  }
-  if (item.issue.labels?.some((label) => label.toLowerCase() === "legion")) {
-    if (item.issue.status === "in_progress") return "phase:implementing";
-    if (item.issue.status === "needs_review") return "phase:reviewing";
-    if (item.issue.status === "todo") return "phase:queue";
   }
   return statusStage(item.issue.status);
 }

@@ -215,7 +215,7 @@ test("a pending Legion settings read does not start a listing with the wrong vie
   await screen.findByRole("table", { name: "Project issues table" });
 });
 
-test("Finished draws its done rows while the board is pending, then applies its Legion filter", async () => {
+test("Finished waits for Legion data before it draws its Legion-filtered rows", async () => {
   const { requests } = table({
     path: "/projects/ACME/issues?view=finished",
     settings: Promise.resolve([legionSetting()]),
@@ -228,11 +228,11 @@ test("Finished draws its done rows while the board is pending, then applies its 
   const socket = sockets.latest();
   act(() => socket.open());
   await waitFor(() => socket.subscribed("legion"));
-  await expect(screen.getByText("Waiting for Legion data")).toBeDefined();
-  await waitFor(() => expect(document.querySelectorAll("[data-issue-row]")).toHaveLength(3));
+  expect(screen.getByLabelText("Loading Legion data")).toBeDefined();
+  expect(document.querySelectorAll("[data-issue-row]")).toHaveLength(0);
   act(() =>
     socket.receive(snapshotFrame(socket.subscribed("legion").sub, boardWithFacts({ columns: [] })))
   );
+  await screen.findByRole("table", { name: "Project issues table" });
   await waitFor(() => expect(document.querySelectorAll("[data-issue-row]")).toHaveLength(2));
-  expect(screen.queryByText("Waiting for Legion data")).toBeNull();
 });

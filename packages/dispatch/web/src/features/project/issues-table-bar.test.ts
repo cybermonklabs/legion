@@ -82,6 +82,40 @@ test("counts the in-flight stages across every listed row", () => {
   );
 });
 
+test("All open puts one not-started segment after its working stages", () => {
+  const rows = [
+    stageItem("status:triage"),
+    stageItem("status:icebox"),
+    stageItem("status:backlog"),
+    stageItem("status:todo"),
+    stageItem("phase:queue"),
+    stageItem("status:in_progress"),
+    stageItem("phase:awaiting_person"),
+  ];
+
+  expect(countBy(rows, "stage", true, { collapseNotStarted: true })).toEqual([
+    {
+      count: 1,
+      label: "In progress · not in Legion",
+      stage: "status:in_progress",
+      value: "status:in_progress",
+    },
+    {
+      count: 1,
+      label: "Waiting on a person",
+      stage: "phase:awaiting_person",
+      value: "phase:awaiting_person",
+    },
+    {
+      count: 5,
+      detail: "Triage 1 · Icebox 1 · Backlog 1 · Todo 1 · Queue 1",
+      label: "Not started",
+      stage: "status:triage",
+      value: "not_started",
+    },
+  ]);
+});
+
 test("counts only rows with a slot use in slot-use order", () => {
   const counted = countBy([slotItem("working"), slotItem("held_children")], "slot_use", true);
 

@@ -71,6 +71,12 @@ test("in-flight expands to every lifecycle stage and its sort", () => {
   ]);
 });
 
+test("Finished opens with Work time descending", () => {
+  expect(readUrl(new URLSearchParams("view=finished"), true).sorting).toEqual([
+    { id: "work_hours", desc: true },
+  ]);
+});
+
 test("explicit view parameters replace a view's matching filter", () => {
   expect(filterValue("view=in-flight&f.stage=phase:implementing", "stage")).toEqual([
     "phase:implementing",
@@ -94,7 +100,7 @@ test("writing keeps only state that differs from a view", () => {
       },
       true
     ).toString()
-  ).toBe("view=finished&sort=-work_hours");
+  ).toBe("view=finished");
 
   const slots = readUrl(new URLSearchParams("view=slots"), true);
   expect(

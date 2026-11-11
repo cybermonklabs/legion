@@ -1,7 +1,7 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
 import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { UserState } from "../../api/types";
+import type { LegionBoardCard, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { InfoHint } from "../../components/InfoHint";
 import { LabelPill, StatusPill } from "../../components/Pill";
@@ -30,6 +30,7 @@ import {
   COLUMNS,
   COMPACT_COLUMN_MIN,
   type ColumnId,
+  ciText,
   formatPhaseTime,
   type Item,
   legionPhaseLabel,
@@ -81,6 +82,17 @@ function HeaderWithHint({ children, hint }: { children: string; hint: string }):
   );
 }
 
+/** The current phase start, or admission where the daemon has no phase entry time. */
+function phaseTiming(card: LegionBoardCard): {
+  readonly at: string | null;
+  readonly admitted: boolean;
+} {
+  return {
+    admitted: card.phase_since === null && card.slot_since !== null,
+    at: card.phase_since ?? card.slot_since,
+  };
+}
+
 export interface PhaseHoursDisplay {
   readonly mode: "share" | "hours";
   readonly setMode: (mode: "share" | "hours") => void;
@@ -130,7 +142,8 @@ export const columnLabel = <Row,>(column: { id: string; columnDef: ColumnDef<Row
 const renderings = (
   userState: UserState | undefined,
   phase: PhaseHoursDisplay,
-  timelineHref: (key: string) => string
+  timelineHref: (key: string) => string,
+  phaseNameOnly: boolean
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -160,6 +173,7 @@ const renderings = (
     sortDescFirst: false,
     cell: ({ row }) => (
       <PriorityControl
+        compact
         disabled={row.original.issue.status === "done"}
         issueKey={row.original.issue.key}
         priority={issuePriority(row.original.issue.priority)}
@@ -274,7 +288,11 @@ const renderings = (
     meta: { control: true },
     cell: ({ row }) =>
       row.original.legion ? (
-        <LegionPhaseCell href={timelineHref(row.original.issue.key)} phase={row.original.legion} />
+        <LegionPhaseCell
+          href={timelineHref(row.original.issue.key)}
+          phase={row.original.legion}
+          phaseNameOnly={phaseNameOnly}
+        />
       ) : (
         <span className={textMutedOnCanvas} data-cell="phase" data-value="">
           {NO_PHASE}
@@ -325,7 +343,7 @@ const renderings = (
         CI
       </HeaderWithHint>
     ),
-    accessorFn: (item) => item.legion?.card.checks_verdict ?? "No verdict",
+    accessorFn: (item) => ciText(item.legion?.card.checks_verdict),
     meta: { control: true },
     cell: ({ getValue }) => <span data-legion-fact="checks">{getValue<string>()}</span>,
   },
@@ -478,15 +496,22 @@ const renderings = (
   time_in_phase: {
     header: COLUMN_LABELS.time_in_phase,
     accessorFn: (item) => {
-      const since = item.legion?.card.phase_since;
-      return since === null || since === undefined ? undefined : Date.now() - Date.parse(since);
+      const timing = item.legion === undefined ? undefined : phaseTiming(item.legion.card);
+      return timing?.at === null || timing === undefined
+        ? undefined
+        : Date.now() - Date.parse(timing.at);
     },
     sortUndefined: "last",
     cell: ({ row }) => {
-      const since = row.original.legion?.card.phase_since ?? undefined;
+      const timing =
+        row.original.legion === undefined ? undefined : phaseTiming(row.original.legion.card);
       return (
-        <span data-cell="time_in_phase" data-value={since ?? ""}>
-          {since === undefined ? null : formatPhaseTime(since, Date.now())}
+        <span data-cell="time_in_phase" data-value={timing?.at ?? ""}>
+          {timing?.at === undefined || timing.at === null
+            ? null
+            : `${formatPhaseTime(timing.at, Date.now())}${
+                timing.admitted ? " since admission" : ""
+              }`}
         </span>
       );
     },
@@ -611,10 +636,11 @@ export function useIssueTableColumns(
   compact: boolean,
   hasLegion: boolean,
   phase: PhaseHoursDisplay,
-  timelineHref: (key: string) => string
+  timelineHref: (key: string) => string,
+  phaseNameOnly = false
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState, phase, timelineHref);
+    const rendering = renderings(userState, phase, timelineHref, phaseNameOnly);
     const shown = hasLegion ? COLUMNS : COLUMNS.filter((c) => !LEGION_COLUMNS.includes(c.id));
     return shown.map((column) => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
@@ -641,16 +667,19 @@ export function useIssueTableColumns(
         },
       };
     });
-  }, [userState, compact, hasLegion, phase, timelineHref]);
+  }, [userState, compact, hasLegion, phase, timelineHref, phaseNameOnly]);
 }
 
 export function LegionPhaseCell({
   href,
   phase,
+  phaseNameOnly = false,
 }: {
   href?: string;
   phase: NonNullable<Item["legion"]>;
+  phaseNameOnly?: boolean;
 }): ReactNode {
+  const timing = phaseTiming(phase.card);
   const label = legionPhaseLabel(phase.label, phase.card.phase);
   return (
     <span
@@ -666,15 +695,19 @@ export function LegionPhaseCell({
           {label}
         </Link>
       )}
-      <span
-        className={`text-xs ${textMutedOnCanvas}`}
-        data-legion-fact="phase-time"
-        title={phase.card.phase_since ?? "Phase entry time unknown"}
-      >
-        {phase.card.phase_since === null
-          ? "—"
-          : `${formatPhaseTime(phase.card.phase_since, Date.now())} in phase`}
-      </span>
+      {phaseNameOnly ? null : (
+        <span
+          className={`text-xs ${textMutedOnCanvas}`}
+          data-legion-fact="phase-time"
+          title={timing.at ?? "Phase entry time unknown"}
+        >
+          {timing.at === null
+            ? "—"
+            : `${formatPhaseTime(timing.at, Date.now())}${
+                timing.admitted ? " since admission" : " in phase"
+              }`}
+        </span>
+      )}
       {phase.card.blocked_by.length > 0 ? (
         <span className="text-xs" data-legion-fact="blocked-by">
           Blocked by {phase.card.blocked_by.join(", ")}

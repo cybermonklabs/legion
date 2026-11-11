@@ -43,6 +43,38 @@ test("each view's tab count equals its row count @legion @phone", async ({ brows
   }
 });
 
+test("default columns fit desktop views and phone titles use two lines @legion @phone", async ({
+  browser,
+}) => {
+  const daemon = await startFakeLegionDaemon({});
+  await seedLegionFixture(daemon.url);
+  await seedLegionMetricsCorpus();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    for (const view of ["open", "triage", "waiting", "in-flight", "slots", "finished", "mine"]) {
+      await page.goto(`/projects/ACME/issues?view=${view}`);
+      const scroll = page.getByTestId("issues-table-scroll");
+      await expect(scroll).toBeVisible();
+      expect(await scroll.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+        true
+      );
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const view of ["open", "triage", "waiting", "in-flight", "slots", "finished", "mine"]) {
+      await page.goto(`/projects/ACME/issues?view=${view}`);
+      const title = page.locator("[data-grid-title-row]").first();
+      await expect(title).toBeVisible();
+      expect(await title.locator("span").first().getAttribute("class")).toContain("line-clamp-2");
+    }
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
 test("an override marks the view changed and Reset view clears it @legion", async ({ browser }) => {
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);

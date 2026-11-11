@@ -710,6 +710,7 @@ async function checkK5(browser: Browser, options: Options): Promise<string[]> {
   const cases: readonly {
     readonly query: string;
     readonly expected: (urls: URL[]) => boolean;
+    readonly waitsForLegion?: boolean;
   }[] = [
     {
       query: "view=open",
@@ -722,6 +723,7 @@ async function checkK5(browser: Browser, options: Options): Promise<string[]> {
         urls.some(
           (url) => url.searchParams.get("status") === "done" && url.searchParams.has("closed_since")
         ),
+      waitsForLegion: true,
     },
     {
       query: "view=finished&f.closed=2026-11-03..2026-11-04",
@@ -732,6 +734,7 @@ async function checkK5(browser: Browser, options: Options): Promise<string[]> {
             url.searchParams.has("closed_since") &&
             url.searchParams.has("closed_before")
         ),
+      waitsForLegion: true,
     },
     {
       query: "view=open&nofilter=1",
@@ -740,6 +743,12 @@ async function checkK5(browser: Browser, options: Options): Promise<string[]> {
         urls.some(
           (url) => url.searchParams.get("status") === "done" && url.searchParams.has("closed_since")
         ),
+    },
+    {
+      query: "view=in-flight",
+      expected: (urls) =>
+        urls.length > 0 && urls.every((url) => url.searchParams.get("open") === "true"),
+      waitsForLegion: true,
     },
   ];
   const evidence: string[] = [];
@@ -756,16 +765,23 @@ async function checkK5(browser: Browser, options: Options): Promise<string[]> {
         )
           requests.push(url);
       });
-      const started = Date.now();
-      const root = await openIssuesView(page, options, item.query, false);
-      try {
-        await root
-          .locator("[data-issue-row]")
-          .first()
-          .waitFor({ state: "attached", timeout: Math.max(5_000 - (Date.now() - started), 1) });
-      } catch (error) {
-        if (!(error instanceof errors.TimeoutError)) throw error;
-        throw new Error(`${item.query} issue rows did not show within 5 s`);
+      if (item.waitsForLegion) {
+        await page.goto(projectUrl(options, `/issues?${item.query}`));
+        await page.getByLabel("Loading Legion data").waitFor({ state: "attached", timeout: 5_000 });
+        if ((await page.locator("[data-issue-row]").count()) !== 0)
+          throw new Error(`${item.query} drew rows before Legion answered`);
+      } else {
+        const started = Date.now();
+        const root = await openIssuesView(page, options, item.query, false);
+        try {
+          await root
+            .locator("[data-issue-row]")
+            .first()
+            .waitFor({ state: "attached", timeout: Math.max(5_000 - (Date.now() - started), 1) });
+        } catch (error) {
+          if (!(error instanceof errors.TimeoutError)) throw error;
+          throw new Error(`${item.query} issue rows did not show within 5 s`);
+        }
       }
       if (requests.some((url) => !url.searchParams.has("open") && !url.searchParams.has("status")))
         throw new Error(`${item.query} made a full issue listing request`);

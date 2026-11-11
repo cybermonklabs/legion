@@ -459,10 +459,10 @@ test("a project that maps the deploy repository gets a CI and a deploys section"
   );
 });
 
-test("when one tree holds a large share of the finished issues, a note under work time names it and leaves it out", async () => {
+test("the work-time tree picker writes its exclusion to the shared URL", async () => {
   const { metrics } = await renderSections((query) =>
     report(
-      (query as { exclude_tree?: string[] }).exclude_tree?.length
+      query.exclude_tree?.length
         ? { excluded_trees: ["ACME-6"], finished: 1 }
         : {
             largest_tree: {
@@ -476,26 +476,12 @@ test("when one tree holds a large share of the finished issues, a note under wor
     )
   );
 
-  const note = await waitFor(() => {
-    const found = document.querySelector(
-      '[data-legion-section="work_time"] [data-legion-tree-note]'
-    );
-    if (found === null) throw new Error("no note");
-    return found;
-  });
-  // The button names the tree and nothing more; its counts and its title are in its (i).
-  expect(note.querySelector("button")?.textContent).toBe("Leave out ACME-6's tree");
-  fireEvent.click(screen.getByRole("button", { name: "About ACME-6" }));
-  await waitFor(() =>
-    expect(document.body.textContent).toContain(
-      "ACME-6: A standing reviewer. Its tree has 2 of the 2 issues"
-    )
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Leave out ACME-6's tree" }));
+  const picker = await screen.findByRole("combobox", { name: "Leave out a tree" });
+  expect(picker).toHaveValue("");
+  fireEvent.change(picker, { target: { value: "ACME-6" } });
   await waitFor(() =>
     expect(metrics).toHaveBeenCalledWith(expect.objectContaining({ exclude_tree: ["ACME-6"] }))
   );
-  // The choice is in the address, so a shared link keeps it.
   expect(document.body.dataset.search).toBe("?exclude_tree=ACME-6");
   await screen.findByRole("button", { name: "Count ACME-6's tree again" });
 });

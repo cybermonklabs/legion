@@ -22,7 +22,14 @@ import {
 } from "../../theme/classes";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { columnLabel } from "./issues-table-columns";
-import { ALL_ROWS, closedWindow, countBy, type Item, PAGE_SIZES } from "./issues-table-model";
+import {
+  ALL_ROWS,
+  closedWindow,
+  countBy,
+  type Item,
+  NOT_STARTED_STAGES,
+  PAGE_SIZES,
+} from "./issues-table-model";
 import { RangeFilter } from "./RangeFilter";
 
 function FunnelIcon(): ReactNode {
@@ -280,6 +287,7 @@ export function IssueTableStatus({
   viewValue,
   hasLegion = false,
   board,
+  collapseNotStarted = false,
 }: {
   table: Table<Item>;
   rows: readonly Item[];
@@ -287,11 +295,14 @@ export function IssueTableStatus({
   viewValue: readonly string[] | undefined;
   hasLegion?: boolean;
   board?: LegionBoardResponse;
+  collapseNotStarted?: boolean;
 }): ReactNode {
-  const shown = countBy(rows, column, hasLegion);
+  const shown = countBy(rows, column, hasLegion, { collapseNotStarted });
   const widths = segmentWidths(shown.map(({ count }) => count));
   const current = table.getColumn(column)?.getFilterValue();
   const picked = Array.isArray(current) ? current.map(String) : [];
+  const valuesFor = (value: string) =>
+    value === "not_started" ? NOT_STARTED_STAGES : ([value] as readonly string[]);
   const groupLabel =
     column === "stage"
       ? hasLegion
@@ -303,8 +314,14 @@ export function IssueTableStatus({
   const legendLabel =
     column === "stage" ? (hasLegion ? "Phases and statuses" : "Statuses") : groupLabel;
   const titleCount = rows.length;
-  const isLit = (value: string) => picked.length === 0 || picked.includes(value);
-  const isPicked = (value: string) => picked.length === 1 && picked[0] === value;
+  const isLit = (value: string) =>
+    picked.length === 0 || valuesFor(value).some((candidate) => picked.includes(candidate));
+  const isPicked = (value: string) => {
+    const values = valuesFor(value);
+    return (
+      picked.length === values.length && values.every((candidate) => picked.includes(candidate))
+    );
+  };
   const pick = (value: string) => {
     const undo = isPicked(value);
     table.setColumnFilters((filters) => [
@@ -313,7 +330,7 @@ export function IssueTableStatus({
         ? viewValue?.length
           ? [{ id: column, value: [...viewValue] }]
           : []
-        : [{ id: column, value: [value] }]),
+        : [{ id: column, value: [...valuesFor(value)] }]),
     ]);
   };
   return (
@@ -329,7 +346,9 @@ export function IssueTableStatus({
             {titleCount === 1 ? "issue" : "issues"}
           </span>
           <InfoHint label="About this bar">
-            The bar counts the rows this view lists. Press a colour to show only those rows.
+            {collapseNotStarted
+              ? "All open puts working stages first and groups not-started stages at the end."
+              : "The bar counts the rows this view lists. Press a colour to show only those rows."}
             {hasLegion && board?.header.read_ok && board.header.read_at ? (
               <>
                 {" "}
@@ -367,42 +386,48 @@ export function IssueTableStatus({
         data-issues-bar
         role={hasLegion ? "group" : undefined}
       >
-        {shown.map(({ value, label, count, stage }, index) => (
-          <button
-            aria-label={`${label} ${count}`}
-            className={`h-full p-0 ${stageClass(stage)} ${
-              isPicked(value) ? pickedSegmentRing : isLit(value) ? "" : "opacity-30"
-            }`}
-            data-bar-segment={value}
-            data-count={count}
-            key={value}
-            onClick={() => pick(value)}
-            style={{ width: `${widths[index] ?? 0}%`, minWidth: 0, minHeight: 0 }}
-            title={`${label}: ${count}`}
-            type="button"
-          />
-        ))}
+        {shown.map(({ value, label, detail, count, stage }, index) => {
+          const text = `${label} ${count}${detail === undefined ? "" : `: ${detail}`}`;
+          return (
+            <button
+              aria-label={text}
+              className={`h-full p-0 ${stageClass(stage)} ${
+                isPicked(value) ? pickedSegmentRing : isLit(value) ? "" : "opacity-30"
+              }`}
+              data-bar-segment={value}
+              data-count={count}
+              key={value}
+              onClick={() => pick(value)}
+              style={{ width: `${widths[index] ?? 0}%`, minWidth: 0, minHeight: 0 }}
+              title={text}
+              type="button"
+            />
+          );
+        })}
       </fieldset>
       <ul aria-label={legendLabel} className="mt-1 flex flex-wrap gap-x-1" data-issues-legend>
-        {shown.map(({ value, label, count, stage }) => (
-          <li key={value}>
-            <button
-              aria-label={`${label}: ${count}`}
-              aria-pressed={isPicked(value)}
-              className={`inline-flex min-h-11 items-center gap-1.5 rounded px-2 text-xs whitespace-nowrap md:min-h-7 ${surfaceMutedHoverBg} ${
-                isPicked(value) ? `font-semibold ${textPrimaryOnCanvas}` : textSecondaryOnCanvas
-              } ${isLit(value) ? "" : "opacity-50"}`}
-              onClick={() => pick(value)}
-              type="button"
-            >
-              <span
-                aria-hidden="true"
-                className={`size-3 shrink-0 rounded-sm ${stageClass(stage)}`}
-              />
-              {label} <span className="tabular-nums">{count}</span>
-            </button>
-          </li>
-        ))}
+        {shown.map(({ value, label, detail, count, stage }) => {
+          const text = `${label} ${count}${detail === undefined ? "" : `: ${detail}`}`;
+          return (
+            <li key={value}>
+              <button
+                aria-label={detail === undefined ? `${label}: ${count}` : text}
+                aria-pressed={isPicked(value)}
+                className={`inline-flex min-h-11 items-center gap-1.5 rounded px-2 text-xs whitespace-nowrap md:min-h-7 ${surfaceMutedHoverBg} ${
+                  isPicked(value) ? `font-semibold ${textPrimaryOnCanvas}` : textSecondaryOnCanvas
+                } ${isLit(value) ? "" : "opacity-50"}`}
+                onClick={() => pick(value)}
+                type="button"
+              >
+                <span
+                  aria-hidden="true"
+                  className={`size-3 shrink-0 rounded-sm ${stageClass(stage)}`}
+                />
+                {text}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -533,16 +558,19 @@ export function IssueTablePager<Row>({
   table,
   items,
   pagerRef,
+  total,
 }: {
   table: Table<Row>;
   items: readonly Row[];
   pagerRef: RefObject<HTMLDivElement | null>;
+  total?: number;
 }): ReactNode {
   const { pageIndex, pageSize } = table.getState().pagination;
   const { grouping } = table.getState();
   const rowsOnPages = table.getPrePaginationRowModel().rows.length;
   const leafCount = table.getFilteredRowModel().rows.length;
   const groupCount = table.getGroupedRowModel().rows.length;
+  const baseTotal = total ?? items.length;
   // The row wraps inside the table's own box, and nothing in it holds a width the box cannot
   // give: `min-w-0` on the row and on each piece of text, so a phone reads the count, the rows,
   // the pages and the page size on as many lines as they need rather than pushing the page
@@ -554,7 +582,8 @@ export function IssueTablePager<Row>({
       className={`flex min-w-0 grow flex-wrap items-center gap-x-3 gap-y-2 text-sm ${textSecondaryOnCanvas}`}
     >
       <span className="min-w-0">
-        {leafCount} of {items.length} {items.length === 1 ? "issue" : "issues"}
+        {baseTotal > leafCount ? `${leafCount} of ${baseTotal}` : leafCount}{" "}
+        {baseTotal === 1 ? "issue" : "issues"}
         {grouping.length > 0 ? ` in ${groupCount} ${groupCount === 1 ? "group" : "groups"}` : ""}
       </span>
       <span className="ml-auto min-w-0">

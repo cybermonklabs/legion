@@ -269,6 +269,22 @@ export function slotUseText(value: string): string {
   }
 }
 
+/** The one CI vocabulary the Issues table, Board and Evals use. */
+export function ciText(value: string | null | undefined): string {
+  switch (value) {
+    case "passing":
+    case "passed":
+      return "Passing";
+    case "failing":
+    case "failed":
+      return "Failing";
+    case "running":
+      return "Running";
+    default:
+      return "—";
+  }
+}
+
 export function waitingReasonText(value: string): string {
   switch (value) {
     case "ready":
@@ -302,8 +318,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
     id: "priority",
-    size: 140,
-    min: 140,
+    size: 100,
+    min: 100,
     pinned: true,
     filter: one((item) => String(item.issue.priority ?? ""), {
       order: ["0", "1", "2", "3", ""],
@@ -312,8 +328,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "queue",
-    size: 96,
-    min: 124,
+    size: 80,
+    min: 80,
     filter: one((item) => (item.queue === undefined ? "Not queued" : "Queued"), {
       order: ["Queued", "Not queued"],
       groups: false,
@@ -329,7 +345,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "title",
-    size: 380,
+    size: 280,
     min: 116,
     compactMin: 120,
     pinned: true,
@@ -337,8 +353,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "status",
-    size: 128,
-    min: 132,
+    size: 112,
+    min: 112,
     filter: {
       kind: "picks",
       values: (item) => [item.issue.status],
@@ -354,7 +370,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "phase",
-    size: 220,
+    size: 160,
     min: 132,
     filter: {
       kind: "picks",
@@ -367,8 +383,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "slot",
-    size: 96,
-    min: 116,
+    size: 80,
+    min: 80,
     filter: one((item) => legionSlotValue(item), { groups: false }),
   },
   {
@@ -385,13 +401,13 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "ci",
-    size: 160,
-    min: 164,
-    filter: one((item) => item.legion?.card.checks_verdict ?? "No verdict", { groups: false }),
+    size: 100,
+    min: 100,
+    filter: one((item) => ciText(item.legion?.card.checks_verdict), { groups: false }),
   },
   {
     id: "phase_hours",
-    size: 300,
+    size: 260,
     min: 160,
     filter: {
       kind: "picks",
@@ -404,12 +420,12 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "closed",
-    size: 120,
-    min: 120,
+    size: 110,
+    min: 110,
     filter: { kind: "range", value: (item) => item.closedAt },
   },
-  { id: "work_hours", size: 112, min: 112 },
-  { id: "review_rounds", size: 96, min: 96 },
+  { id: "work_hours", size: 100, min: 100 },
+  { id: "review_rounds", size: 80, min: 80 },
   {
     id: "slot_use",
     size: 140,
@@ -421,11 +437,11 @@ export const COLUMNS: readonly ColumnSpec[] = [
       show: slotUseText,
     },
   },
-  { id: "waited", size: 112, min: 112 },
+  { id: "waited", size: 100, min: 100 },
   {
     id: "waiting_reason",
-    size: 160,
-    min: 160,
+    size: 140,
+    min: 140,
     filter: {
       kind: "picks",
       values: (item) => (item.legion?.card.waiting ? [item.legion.card.waiting.reason] : []),
@@ -457,14 +473,14 @@ export const COLUMNS: readonly ColumnSpec[] = [
   { id: "epic", size: 220, min: 116, filter: one((item) => item.epic) },
   {
     id: "assignee",
-    size: 180,
-    min: 148,
+    size: 140,
+    min: 140,
     filter: one((item) => item.issue.assignee ?? "Unassigned"),
   },
   {
     id: "author",
-    size: 200,
-    min: 164,
+    size: 150,
+    min: 150,
     filter: {
       kind: "picks",
       values: (item) => (item.mine ? [item.author, "@me"] : [item.author]),
@@ -503,8 +519,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "created",
-    size: 120,
-    min: 148,
+    size: 104,
+    min: 104,
     filter: one((item) => ageOf(item.issue.created_at), { order: AGES }),
   },
   {
@@ -753,12 +769,12 @@ export function isLegionFilter(filter: ColumnFiltersState[number]): boolean {
   );
 }
 
-/** Keeps listing rows visible until the board has supplied the facts a Legion filter needs. */
+/** Legion-filtered views wait for their board snapshot instead of guessing from listing rows. */
 export function effectiveFilters(
   filters: ColumnFiltersState,
-  boardReady: boolean
+  _boardReady: boolean
 ): ColumnFiltersState {
-  return boardReady ? filters : filters.filter((filter) => !isLegionFilter(filter));
+  return filters;
 }
 
 /** Resolves the closed-issue window a URL filter names, or rejects malformed input. */
@@ -1015,6 +1031,7 @@ export function reorder(current: readonly string[], dragged: string, before: str
 export interface BarCount {
   readonly value: string;
   readonly label: string;
+  readonly detail?: string;
   readonly count: number;
   readonly stage: string;
 }
@@ -1041,6 +1058,14 @@ const STATUSES_NAMED_LIKE_A_PHASE: readonly string[] = ["in_progress", "needs_re
 /** What a segment of those statuses is called, where Legion serves the project. */
 export const NOT_IN_LEGION = "not in Legion";
 
+export const NOT_STARTED_STAGES = [
+  "status:triage",
+  "status:icebox",
+  "status:backlog",
+  "status:todo",
+  "phase:queue",
+] as const;
+
 function stageLabel(stage: string, hasLegion: boolean): string {
   const [kind, id = stage] = stage.split(":");
   if (kind === "status")
@@ -1057,7 +1082,8 @@ function stageLabel(stage: string, hasLegion: boolean): string {
 export function countBy(
   rows: readonly Item[],
   column: "stage" | "waiting_reason" | "slot_use",
-  hasLegion: boolean
+  hasLegion: boolean,
+  options: { readonly collapseNotStarted?: boolean } = {}
 ): BarCount[] {
   const values =
     column === "stage"
@@ -1075,7 +1101,7 @@ export function countBy(
           : item.legion?.card.slot_use;
     if (value !== undefined && value !== null) counts.set(value, (counts.get(value) ?? 0) + 1);
   }
-  return values.flatMap((value) => {
+  const segments = values.flatMap((value) => {
     const count = counts.get(value);
     if (count === undefined) return [];
     const stage =
@@ -1092,6 +1118,18 @@ export function countBy(
           : slotUseText(value);
     return [{ value, label, count, stage }];
   });
+  if (!options.collapseNotStarted || column !== "stage") return segments;
+
+  const count = NOT_STARTED_STAGES.reduce((total, stage) => total + (counts.get(stage) ?? 0), 0);
+  if (count === 0) return segments;
+  const detail = NOT_STARTED_STAGES.flatMap((stage) => {
+    const stageCount = counts.get(stage);
+    return stageCount === undefined ? [] : [`${stageLabel(stage, hasLegion)} ${stageCount}`];
+  }).join(" · ");
+  return [
+    ...segments.filter((segment) => !NOT_STARTED_STAGES.includes(segment.value as never)),
+    { value: "not_started", label: "Not started", detail, count, stage: "status:triage" },
+  ];
 }
 
 /** The issues behind a number the reader clicked on the Evals tab, as the URL holds them:

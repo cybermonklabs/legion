@@ -16,6 +16,20 @@ test("corrupt saved-view storage reads as no views", () => {
   expect(readSavedViews('{"ACME":"not an array"}')).toEqual({});
 });
 
+test("one malformed saved view does not discard the valid saved views", () => {
+  expect(
+    readSavedViews(
+      JSON.stringify({
+        ACME: [triage, { name: "", query: "view=open" }],
+        OPS: [{ name: "Queue", query: "sort=queue" }],
+      })
+    )
+  ).toEqual({
+    ACME: [triage],
+    OPS: [{ name: "Queue", query: "sort=queue" }],
+  });
+});
+
 test("saved views serialize by project", () => {
   const views = { ACME: [triage] };
 

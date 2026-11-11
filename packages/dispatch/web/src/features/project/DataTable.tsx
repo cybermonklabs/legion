@@ -136,6 +136,8 @@ export interface DataTableOptions<Row> {
   readonly onVisibilityChanged?: () => void;
   readonly primary?: readonly string[];
   readonly fit?: "window" | "rows";
+  /** The active view's unfiltered count, for the pager's `N of M` summary. */
+  readonly listedTotal?: number;
   readonly controlled?: DataTableControlled;
   readonly initialSort?: SortingState;
   readonly pageSize?: number | "all";
@@ -164,6 +166,7 @@ export interface DataTableModel<Row> {
   readonly displayRows: readonly DisplayRow<Row>[];
   readonly pageLeaves: readonly Row[];
   readonly listedLeaves: readonly Row[];
+  readonly listedTotal?: number;
   readonly layout: ReturnType<typeof useTableLayout>;
   readonly openFilter: string | undefined;
   readonly setOpenFilter: (id: string | undefined) => void;
@@ -241,7 +244,10 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
     primaryColumns: primary,
   });
   const narrow =
-    layout.boxWidth < 640 && primary.length > 0 && options.columnsOverride === undefined;
+    layout.boxWidth > 0 &&
+    layout.boxWidth < 640 &&
+    primary.length > 0 &&
+    options.columnsOverride === undefined;
   const visibilityChanged = useRef(false);
   const visibility = useMemo(() => {
     if (options.columnsOverride !== undefined && !visibilityChanged.current) {
@@ -382,6 +388,7 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
     fit: options.fit ?? "window",
     layout,
     listedLeaves,
+    listedTotal: options.listedTotal,
     narrow,
     openFilter,
     pageLeaves,
@@ -472,7 +479,7 @@ export function DataTable<Row>({
           style={{ width: table.getTotalSize() + trailingWidth }}
         >
           <span
-            className={`line-clamp-3 break-words ${textMutedOnCanvas}`}
+            className={`line-clamp-2 break-words ${textMutedOnCanvas}`}
             title={String(title.getValue())}
           >
             {flexRender(title.column.columnDef.cell, title.getContext())}
@@ -581,7 +588,12 @@ export function DataTable<Row>({
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <IssueTablePager items={table.options.data} pagerRef={layout.pagerRef} table={table} />
+        <IssueTablePager
+          items={table.options.data}
+          pagerRef={layout.pagerRef}
+          table={table}
+          total={model.listedTotal}
+        />
         <ColumnsMenu columns={table.getAllLeafColumns()} />
       </div>
     </>

@@ -163,6 +163,24 @@ test("PriorityControl shows the issue's priority and offers Unset and P0-P3", ()
   }
 });
 
+test("PriorityControl's compact form shows a dash instead of a Priority tag when unset", () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <PriorityControl compact issueKey="CORE-1" priority={null} />
+    </QueryClientProvider>
+  );
+  try {
+    expect(screen.getByText("—", { selector: "span" })).toBeTruthy();
+    expect(screen.queryByText("Priority", { selector: "span" })).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+  }
+});
+
 test("PriorityControl saves the picked priority, shows it before the server answers, and keeps focus", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import type { ReactNode } from "react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { IssueViewTabs } from "./IssueViewTabs";
 import type { BuiltInViewId } from "./issues-table-views";
@@ -15,6 +16,10 @@ const counts: Partial<Record<BuiltInViewId, number | string>> = {
   waiting: 2,
 };
 
+function Location(): ReactNode {
+  return <output data-testid="view-location">{useLocation().search}</output>;
+}
+
 function tabs(
   search = "",
   hasLegion = true,
@@ -23,6 +28,7 @@ function tabs(
   return render(
     <MemoryRouter initialEntries={[`/projects/ACME/issues${search}`]}>
       <IssueViewTabs counts={tabCounts} hasLegion={hasLegion} project="ACME" saved={[]} />
+      <Location />
     </MemoryRouter>
   );
 }
@@ -69,6 +75,15 @@ test("Legion counts stay absent before the board answers", () => {
   }
 });
 
+test("Finished shows its 28-day window while its count has not loaded", () => {
+  const view = tabs("", true, { mine: 1, open: 8, triage: 3 });
+  try {
+    expect(screen.getByRole("tab", { name: "Finished 28 d" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
 test("an overridden built-in view marks its active tab", () => {
   const view = tabs("?view=in-flight&f.stage=phase%3Aimplementing");
 
@@ -92,7 +107,7 @@ test("switching to each built-in view leaves its selected tab unmarked", async (
       /^Waiting line 2$/u,
       /^In flight 4$/u,
       /^Slots 2\/4$/u,
-      /^Finished$/u,
+      /^Finished 28 d$/u,
       /^Created by me 1$/u,
     ]) {
       const tab = screen.getByRole("tab", { name });
@@ -100,6 +115,17 @@ test("switching to each built-in view leaves its selected tab unmarked", async (
       expect(tab).toHaveAttribute("aria-selected", "true");
       expect(tab.querySelector("[data-tab-marked]")).toBeNull();
     }
+  } finally {
+    view.unmount();
+  }
+});
+
+test("selecting In flight writes only its view id", async () => {
+  const user = userEvent.setup();
+  const view = tabs();
+  try {
+    await user.click(screen.getByRole("tab", { name: "In flight 4" }));
+    expect(screen.getByTestId("view-location")).toHaveTextContent("?view=in-flight");
   } finally {
     view.unmount();
   }

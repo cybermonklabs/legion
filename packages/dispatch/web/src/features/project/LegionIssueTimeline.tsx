@@ -410,7 +410,7 @@ function TimelineBody({
           </li>
         ) : null}
       </ul>
-      <details>
+      <details open>
         <summary className={`cursor-pointer text-xs ${textSecondaryOnCanvas}`}>Stretches</summary>
         <div className="max-h-72 overflow-auto">
           <table className="w-full text-left text-xs" data-legion-timeline-table>

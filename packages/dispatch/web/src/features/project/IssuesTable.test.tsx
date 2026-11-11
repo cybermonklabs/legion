@@ -165,6 +165,14 @@ test("rows keep parent links, unread marks, asks, progress and route reach, with
   expect(within(row).getByRole("combobox", { name: "Priority of CORE-1" })).toBeDefined();
 });
 
+test("an unset table priority is a muted dash, not a Priority tag", async () => {
+  table([issue("CORE-1")]);
+
+  const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(within(row).getByText("—", { selector: "span" })).toBeTruthy();
+  expect(within(row).queryByText("Priority", { selector: "span" })).toBeNull();
+});
+
 test("j and k focus table issues and o and Enter open the issue rather than its parent", async () => {
   const user = userEvent.setup();
   table([issue("CORE-1", { parent: "CORE-9" }), issue("CORE-2")]);
@@ -475,9 +483,7 @@ test("Reset view clears Needs you, Unread and the lapsed-claim filter", async ()
   const user = userEvent.setup();
   table([issue("CORE-1", { open_asks: 2 })], "?needs-you=1&unread=1&unclaimed=1");
   await user.click(await screen.findByRole("button", { name: "Reset view" }));
-  expect(
-    screen.getByRole("button", { name: /^Filter Claimed by/ }).getAttribute("aria-label")
-  ).toBe("Filter Claimed by");
+  expect(screen.getByTestId("route-search")).toHaveTextContent("");
   for (const name of ["Needs you", "Unread"]) {
     await waitFor(() =>
       expect(screen.getByRole("button", { name }).getAttribute("aria-pressed")).toBe("false")
@@ -576,7 +582,7 @@ test("a live unseen ancestor keeps the same scroll box and marks unknown ancestr
   const read = Promise.withResolvers<IssueDetails>();
   const get = spyOn(api, "getIssue").mockReturnValue(read.promise);
   restores.push(() => get.mockRestore());
-  const { client } = table([issue("CORE-1")]);
+  const { client } = table([issue("CORE-1")], "?cols=key,title,epic");
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const box = screen.getByTestId("issues-table-scroll");
   box.scrollTop = 200;
@@ -808,8 +814,8 @@ test("the legend names each state the bar draws, in the bar's order, and the seg
   ]);
   const legend = screen.getByRole("list", { name: "Statuses" });
   expect([...legend.querySelectorAll("button")].map((item) => item.textContent?.trim())).toEqual([
-    "Todo 1",
     "In progress 2",
+    "Not started 1: Todo 1",
   ]);
 });
 
@@ -821,10 +827,12 @@ test("pressing a legend item shows that state alone, and pressing it again shows
     issue("CORE-3", { status: "in_progress" }),
   ]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const item = screen.getByRole("button", { name: "In progress: 2" });
-  await user.click(item);
+  const legend = screen.getByRole("list", { name: "Statuses" });
+  await user.click(within(legend).getByRole("button", { name: "In progress: 2" }));
   await waitFor(() => expect(document.querySelectorAll("[data-issue-row]").length).toBe(2));
-  expect(item.getAttribute("aria-pressed")).toBe("true");
+  expect(
+    within(legend).getByRole("button", { name: "In progress: 2" }).getAttribute("aria-pressed")
+  ).toBe("true");
   // The bar marks the segment the table is showing alone.
   const bar = screen.getByRole("group", { name: "Issues by status" });
   expect(
@@ -832,9 +840,11 @@ test("pressing a legend item shows that state alone, and pressing it again shows
       segment.className.includes("ring-inset")
     ).length
   ).toBe(1);
-  await user.click(item);
+  await user.click(within(legend).getByRole("button", { name: "In progress: 2" }));
   await waitFor(() => expect(document.querySelectorAll("[data-issue-row]").length).toBe(3));
-  expect(item.getAttribute("aria-pressed")).toBe("false");
+  expect(
+    within(legend).getByRole("button", { name: "In progress: 2" }).getAttribute("aria-pressed")
+  ).toBe("false");
 });
 
 test("Claimed by picks the issues nobody is working, and ?unclaimed=1 still opens that view", async () => {
@@ -844,7 +854,7 @@ test("Claimed by picks the issues nobody is working, and ?unclaimed=1 still open
     actor: { kind: "user", id: "bob" },
     at: "2026-09-10T00:00:00Z",
   };
-  table([issue("CORE-1", { claim: held }), issue("CORE-2")], "?unclaimed=1");
+  table([issue("CORE-1", { claim: held }), issue("CORE-2")], "?unclaimed=1&cols=key,title,claim");
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
   // And no chip of its own: the rule is the Claimed by column's, picked like any other value.
@@ -1576,7 +1586,7 @@ test("one unreadable ancestor leaves every other row its epic", async () => {
       : ({ ...savedIssue(key), labels: ["epic"], title: `Epic ${key}` } as never)
   );
   restores.push(() => get.mockRestore());
-  const { client } = table([issue("CORE-1")]);
+  const { client } = table([issue("CORE-1")], "?cols=key,title,epic");
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   client.setQueryData(
     projectIssuesQuery("CORE", [], true).queryKey,

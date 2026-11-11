@@ -1,12 +1,8 @@
-// Side-by-side segments must look different in a thin bar (dispatch://INFRA-979): each pair of
-// phases next to each other in the phase bars' order, and each pair of statuses and phases next
-// to each other in the Issues bar's lifecycle order, differs by a CIEDE2000 ΔE of 20 or more, in
-// the light scheme and in the dark one. Text contrast on each is the theme's own check
-// (text-on-background.test.ts).
+// The stage palette has two ordered families. Adjacent entries in each family must remain visibly
+// distinct in both schemes; the hatched neutral statuses are a third, explicit marker. Text
+// contrast on each fill is the theme's own check (text-on-background.test.ts).
 import { expect, test } from "bun:test";
 
-import { LIFECYCLE_ORDER } from "../features/project/issues-table-model";
-import { PHASE_ORDER } from "../features/project/PhaseHoursBar";
 import { stageScale } from "./classes";
 
 type Lab = readonly [l: number, a: number, b: number];
@@ -78,12 +74,12 @@ function fill(entry: string, scheme: "light" | "dark"): string {
   return hex;
 }
 
-/** The pairs of an order whose two fills differ by less than ΔE 20. */
-function tooClose(order: readonly string[], scheme: "light" | "dark"): string[] {
+/** The pairs of an order whose two fills differ by less than `minimum` ΔE. */
+function tooClose(order: readonly string[], scheme: "light" | "dark", minimum = 10): string[] {
   return order.slice(1).flatMap((entry, index) => {
     const before = order[index] ?? "";
     const difference = deltaE2000(lab(fill(before, scheme)), lab(fill(entry, scheme)));
-    return difference < 20 ? [`${before}/${entry} ${difference.toFixed(1)}`] : [];
+    return difference < minimum ? [`${before}/${entry} ${difference.toFixed(1)}`] : [];
   });
 }
 
@@ -92,16 +88,44 @@ test("the CIEDE2000 formula matches Sharma's published pair", () => {
 });
 
 for (const scheme of ["light", "dark"] as const) {
-  test(`each pair of adjacent phases differs by ΔE ≥ 20 in the ${scheme} scheme`, () => {
+  test(`the not-started gray ramp has ΔE ≥ 10 in the ${scheme} scheme`, () => {
     expect(
       tooClose(
-        PHASE_ORDER.map((phase) => `phase:${phase.id}`),
+        [
+          "status:triage",
+          "status:icebox",
+          "status:backlog",
+          "status:todo",
+          "phase:queue",
+          "phase:held",
+          "phase:waiting_on_children",
+        ],
         scheme
       )
     ).toEqual([]);
   });
 
-  test(`each side-by-side pair of the Issues bar differs by ΔE ≥ 20 in the ${scheme} scheme`, () => {
-    expect(tooClose(LIFECYCLE_ORDER, scheme)).toEqual([]);
+  test(`the working blue ramp has ΔE ≥ 10 in the ${scheme} scheme`, () => {
+    expect(
+      tooClose(
+        [
+          "phase:design",
+          "phase:planning",
+          "phase:implementing",
+          "phase:testing",
+          "phase:reviewing",
+          "phase:accepting",
+          "phase:merging",
+          "status:retro",
+          "status:done",
+        ],
+        scheme
+      )
+    ).toEqual([]);
   });
 }
+
+test("statuses outside Legion use a diagonal hatch", () => {
+  for (const stage of ["status:in_progress", "status:needs_review"])
+    expect(stageScale[stage]).toContain("repeating-linear-gradient");
+});

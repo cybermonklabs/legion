@@ -155,7 +155,7 @@ test("omits status columns outside the view filter while retaining in-view targe
   });
 });
 
-test("uses the lifecycle stage mapping without a Legion board card", () => {
+test("uses the status stage without a Legion board card", () => {
   const [item] = buildItems(
     [issue({ key: "CORE-1", labels: ["legion"], status: "in_progress" })],
     (actor) => actor.id
@@ -164,8 +164,8 @@ test("uses the lifecycle stage mapping without a Legion board card", () => {
 
   const columns = groupItemsByStage([item]);
 
-  expect(columns.find((column) => column.stage === "phase:implementing")?.items).toEqual([item]);
-  expect(columns.find((column) => column.stage === "status:in_progress")?.items).toEqual([]);
+  expect(columns.find((column) => column.stage === "phase:implementing")).toBeUndefined();
+  expect(columns.find((column) => column.stage === "status:in_progress")?.items).toEqual([item]);
 });
 
 test("groups the same populated stages the bar counts", () => {
@@ -181,10 +181,7 @@ test("groups the same populated stages the bar counts", () => {
     .filter((column) => column.items.length > 0)
     .map((column) => [column.stage, column.items.length]);
 
-  expect(barCounts).toEqual([
-    ["status:in_progress", 1],
-    ["phase:implementing", 1],
-  ]);
+  expect(barCounts).toEqual([["status:in_progress", 2]]);
   expect(boardCounts).toEqual(barCounts);
 });
 

@@ -223,7 +223,7 @@ export function LegionSections({ project }: { readonly project: string }): React
             title="Work time"
             trend={workTimeTrendSeries}
           >
-            <LargestTree excluded={excluded} onExclude={setExcluded} report={report} />
+            <TreePicker excluded={excluded} onExclude={setExcluded} report={report} />
           </TrendSection>
           <TrendSection
             compare={source(compared.data)}
@@ -268,12 +268,8 @@ const count = (value: number): string => value.toLocaleString("en-US");
 /** A count of issues as the headlines write it: "1 issue", "1,259 issues". */
 const issues = (value: number): string => `${count(value)} issue${value === 1 ? "" : "s"}`;
 
-/** The share of the finished issues one tree holds at or past which its note is shown. */
-const LARGE_TREE_SHARE = 0.25;
-
-/** Under the work-time chart, when one tree holds a large share of the finished issues: one
- *  button that leaves that tree out of every number on the page, or counts it again. */
-function LargestTree({
+/** A selector for the most prominent finished trees, kept in the shared URL as `exclude_tree`. */
+function TreePicker({
   excluded,
   onExclude,
   report,
@@ -282,34 +278,40 @@ function LargestTree({
   onExclude: (roots: readonly string[]) => void;
   report: LegionMetricsResponse;
 }): ReactNode {
-  const tree = report.largest_tree;
+  const roots = [
+    ...new Set([
+      ...(report.largest_tree === null ? [] : [report.largest_tree.root]),
+      ...report.work_time.issues.filter((issue) => issue.root).map((issue) => issue.key),
+    ]),
+  ].slice(0, 5);
+  if (roots.length === 0) return null;
   const button = `rounded border px-2 py-1 text-xs ${borderDefault} ${textPrimaryOnCanvas}`;
-  if (excluded.length > 0) {
-    return (
-      <div className="flex items-center gap-1.5" data-legion-tree-note>
-        <button className={button} onClick={() => onExclude([])} type="button">
-          Count {excluded.map((root) => `${root}'s tree`).join(", ")} again
-        </button>
-        <InfoHint label={`About ${excluded.join(", ")}`}>
-          The numbers on this page do not include the issues of {excluded.join(", ")}'s tree.
-        </InfoHint>
-      </div>
-    );
-  }
-  if (tree === null || tree.finished < 2 || tree.finished < report.finished * LARGE_TREE_SHARE) {
-    return null;
-  }
+  const selected = excluded[0] ?? "";
   return (
-    <div className="flex items-center gap-1.5" data-legion-tree-note>
-      <button className={button} onClick={() => onExclude([tree.root])} type="button">
-        Leave out {tree.root}'s tree
-      </button>
-      <InfoHint label={`About ${tree.root}`}>
-        {tree.root}: {tree.title}. Its tree has {count(tree.finished)} of the{" "}
-        {issues(report.finished)} finished. Their median work time is{" "}
-        {formatHours(tree.median_hours)}, and {formatHours(tree.rest_median_hours)} for the other
-        issues.
-      </InfoHint>
+    <div className="flex flex-wrap items-center gap-1.5" data-legion-tree-note>
+      <select
+        aria-label="Leave out a tree"
+        className={button}
+        onChange={(event) => onExclude(event.target.value === "" ? [] : [event.target.value])}
+        value={selected}
+      >
+        <option value="">Leave out a tree</option>
+        {roots.map((root) => (
+          <option key={root} value={root}>
+            {root}
+          </option>
+        ))}
+      </select>
+      {excluded.length === 0 ? null : (
+        <>
+          <button className={button} onClick={() => onExclude([])} type="button">
+            Count {excluded.map((root) => `${root}'s tree`).join(", ")} again
+          </button>
+          <InfoHint label={`About ${excluded.join(", ")}`}>
+            The numbers on this page do not include the issues of {excluded.join(", ")}'s tree.
+          </InfoHint>
+        </>
+      )}
     </div>
   );
 }

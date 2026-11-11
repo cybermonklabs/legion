@@ -188,6 +188,27 @@ test("Legion cells expose the board values that their row reads", async () => {
   expect(cell("ACME-1", "stage")?.dataset.value).toBe("phase:implementing");
 });
 
+test("Phase and In phase fall back to the slot admission time", async () => {
+  const base = boardWithFacts();
+  const board = {
+    ...base,
+    columns: base.columns.map((column) => ({
+      ...column,
+      cards: column.cards.map((card) =>
+        card.key === "ACME-1"
+          ? { ...card, phase_since: null, slot_since: "2026-11-10T00:00:00Z" }
+          : card
+      ),
+    })),
+  };
+  const user = userEvent.setup();
+  await renderTable({ board });
+  await showColumns(user, ["In phase"]);
+
+  expect(cell("ACME-1", "phase")?.textContent).toContain("since admission");
+  expect(cell("ACME-1", "time_in_phase")?.textContent).toContain("since admission");
+});
+
 test("a project without Legion hides its optional cells while keeping Place", async () => {
   await renderTable({ hasLegion: false });
 

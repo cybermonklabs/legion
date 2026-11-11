@@ -432,7 +432,7 @@ test("phase facets and workflow ordering come from the board, not alphabetical o
         matchesFilters(row, [
           { id: "slot", value: ["0"] },
           { id: "roles", value: ["implementer"] },
-          { id: "ci", value: ["failing"] },
+          { id: "ci", value: ["Failing"] },
         ])
       )
       .map((row) => row.issue.key)
@@ -497,7 +497,7 @@ test("the bar reads in lifecycle order: Queue before the phases, Triage never af
   ]);
 });
 
-test("an issue Legion works is never under In progress or Needs review", () => {
+test("an issue without a board card reads its Dispatch status", () => {
   const rows = buildItems(
     [
       issue("CORE-1", { labels: ["legion"], status: "in_progress" }),
@@ -507,19 +507,16 @@ test("an issue Legion works is never under In progress or Needs review", () => {
     (actor) => actor.id,
     [],
     undefined,
-    // A configured project whose board has not answered: no card holds any of the three.
     null
   );
   expect(countBy(rows, "stage", false).map(({ count, value }) => [value, count])).toEqual([
-    ["status:in_progress", 1],
-    ["phase:implementing", 1],
-    ["phase:reviewing", 1],
+    ["status:in_progress", 2],
+    ["status:needs_review", 1],
   ]);
 });
 
-// In progress, Needs review and Retro name a Dispatch status and a Legion phase both, and the
-// bar's segment under the status name holds only what Legion does not run. The name says so
-// where a daemon serves the project, and nowhere else.
+// In progress, Needs review and Retro name a Dispatch status and a Legion phase both. Where a
+// daemon serves the project, the status segment names the issues it does not currently hold.
 test("a status named like a phase says it holds the issues Legion does not run", () => {
   const rows = buildItems(
     [
@@ -539,21 +536,15 @@ test("a status named like a phase says it holds the issues Legion does not run",
       countBy(rows, "stage", legion).map(({ value, label, count }) => [value, `${label} ${count}`])
     );
 
-  // The issue Legion works is under the phase, which is named as it always was; the three
-  // statuses say what they hold, and a status that names no phase is left alone.
   expect(named(true)).toEqual({
     "status:todo": "Todo 1",
-    "status:in_progress": "In progress · not in Legion 1",
-    "phase:implementing": "Implementing 1",
+    "status:in_progress": "In progress · not in Legion 2",
     "status:needs_review": "Needs review · not in Legion 1",
     "status:retro": "Retro · not in Legion 1",
   });
-
-  // No daemon serves the project, so there is nothing to tell apart.
   expect(named(false)).toEqual({
     "status:todo": "Todo 1",
-    "status:in_progress": "In progress 1",
-    "phase:implementing": "Implementing 1",
+    "status:in_progress": "In progress 2",
     "status:needs_review": "Needs review 1",
     "status:retro": "Retro 1",
   });
@@ -676,7 +667,7 @@ test("exclude_tree removes every row in the named Legion tree", () => {
   ).toEqual(["ACME-3"]);
 });
 
-test("pending Legion data holds back only Legion filters", () => {
+test("pending Legion data keeps the filters that make the view wait for its board snapshot", () => {
   const pending = buildItems([issue("ACME-8", { status: "todo" })], (actor) => actor.id)[0];
   if (pending === undefined) throw new Error("pending fixture has no row");
   const legionFilters = [
@@ -691,17 +682,11 @@ test("pending Legion data holds back only Legion filters", () => {
     expect(matchesFilters(pending, [filter], undefined, false)).toBe(true);
     expect(matchesFilters(pending, [filter], undefined, true)).toBe(false);
   }
-  expect(matchesFilters(pending, [{ id: "status", value: ["triage"] }], undefined, false)).toBe(
-    false
-  );
-  expect(
-    matchesFilters(pending, [{ id: "stage", value: ["status:triage"] }], undefined, false)
-  ).toBe(false);
   const heldBack = effectiveFilters(
     readUrl(new URLSearchParams("view=finished"), true).filters,
     false
   );
   expect(heldBack).toContainEqual({ id: "status", value: ["done"] });
   expect(heldBack).toContainEqual({ id: "closed", value: "28d" });
-  expect(heldBack.some((filter) => filter.id === "legion")).toBe(false);
+  expect(heldBack).toContainEqual({ id: "legion", value: ["worked"] });
 });

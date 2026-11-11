@@ -73,7 +73,13 @@ import {
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
 import { LegionPhaseCell } from "./issues-table-columns";
-import { type Item, legionRolesText, legionSlotText, stageText } from "./issues-table-model";
+import {
+  ciText,
+  type Item,
+  legionRolesText,
+  legionSlotText,
+  stageText,
+} from "./issues-table-model";
 
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
@@ -121,6 +127,7 @@ function CardLegion({ item }: { item: Item }): ReactNode {
       <LegionPhaseCell phase={item.legion} />
       <span data-legion-fact="slot">{legionSlotText(item.legion.card)}</span>
       <span data-legion-fact="roles">{legionRolesText(item.legion.card)}</span>
+      <span data-legion-fact="checks">{ciText(item.legion.card.checks_verdict)}</span>
     </div>
   );
 }
@@ -179,6 +186,7 @@ function IssueCard({ item, unread }: { item: Item; unread: boolean }): ReactNode
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {unread ? <UnreadDot /> : null}
         <PriorityControl
+          compact
           disabled={issue.status === "done"}
           issueKey={issue.key}
           priority={issuePriority(issue.priority)}
@@ -229,7 +237,7 @@ const BoardColumnView = memo(function BoardColumnView({
   return (
     <section
       aria-label={stageText(column.stage)}
-      className={`w-72 shrink-0 snap-start ${boardFocusRing}`}
+      className={`flex h-full w-72 shrink-0 snap-start flex-col ${boardFocusRing}`}
       data-board-column={column.stage}
       data-board-lane={lane === undefined ? undefined : laneKey(lane)}
       ref={setNodeRef}
@@ -250,7 +258,7 @@ const BoardColumnView = memo(function BoardColumnView({
       </header>
       {column.items.length === 0 ? (
         <div
-          className={`mt-3 min-h-40 rounded-xl border border-dashed px-3 py-6 text-center text-xs ${textMutedOnCanvas} ${
+          className={`mt-3 min-h-40 flex-1 rounded-xl border border-dashed px-3 py-6 text-center text-xs ${textMutedOnCanvas} ${
             isOver ? selectedCardBorder : borderStrong
           }`}
         >
@@ -261,7 +269,7 @@ const BoardColumnView = memo(function BoardColumnView({
           items={column.items.map((item) => item.issue.key)}
           strategy={verticalListSortingStrategy}
         >
-          <div className="mt-3 space-y-3">
+          <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             {column.items.map((item) => (
               <IssueCard
                 item={item}
@@ -679,7 +687,11 @@ export function IssueBoard({
     },
   ]);
   return (
-    <section aria-label="Project board" className="min-w-0" ref={boardRef}>
+    <section
+      aria-label="Project board"
+      className="h-[calc(100dvh-22rem)] min-h-80 min-w-0"
+      ref={boardRef}
+    >
       {error === undefined ? null : (
         <div
           aria-live="assertive"
@@ -722,10 +734,10 @@ export function IssueBoard({
             </div>
           ) : (
             <div
-              className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+              className={`h-full overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
               data-testid="board-scroll-container"
             >
-              <div className="flex w-max items-stretch gap-4">
+              <div className="flex h-full w-max items-stretch gap-4">
                 {columns.map((column) =>
                   isCollapsed(column) ? (
                     <CollapsedColumn column={column} key={column.stage} />

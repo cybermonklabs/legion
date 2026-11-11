@@ -3,27 +3,26 @@ export interface SavedView {
   readonly query: string;
 }
 
+function isSavedView(view: unknown): view is SavedView {
+  if (view === null || typeof view !== "object" || Array.isArray(view)) return false;
+  const saved = view as { readonly name?: unknown; readonly query?: unknown };
+  return (
+    typeof saved.name === "string" &&
+    saved.name.length > 0 &&
+    saved.name.length <= 14 &&
+    typeof saved.query === "string"
+  );
+}
+
 export function readSavedViews(stored: string | null): Record<string, SavedView[]> {
   try {
     const parsed: unknown = JSON.parse(stored ?? "{}");
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const views = Object.entries(parsed).map(([project, saved]) => {
-      if (
-        !Array.isArray(saved) ||
-        !saved.every(
-          (view): view is SavedView =>
-            view !== null &&
-            typeof view === "object" &&
-            typeof view.name === "string" &&
-            view.name.length > 0 &&
-            view.name.length <= 14 &&
-            typeof view.query === "string"
-        )
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([project, saved]) =>
+        Array.isArray(saved) ? [[project, saved.filter(isSavedView)]] : []
       )
-        throw new Error("Invalid saved views");
-      return [project, saved] as const;
-    });
-    return Object.fromEntries(views);
+    );
   } catch {
     return {};
   }

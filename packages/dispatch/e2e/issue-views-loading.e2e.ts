@@ -18,9 +18,9 @@ function issueReads(urls: readonly string[]): URL[] {
     );
 }
 
-// A delayed live snapshot must not turn the board's load time into the table's first row time,
-// and every URL must select one bounded listing read rather than the former full listing.
-test("the views read only what they list, and rows show before the board @legion", async ({
+// A delayed live snapshot never turns a board-free view into a skeleton, and every URL still
+// selects one bounded listing read rather than the former full listing.
+test("the views read only what they list, while board-free views draw before the board @legion", async ({
   browser,
 }) => {
   const daemon = await startFakeLegionDaemon({});
@@ -30,7 +30,11 @@ test("the views read only what they list, and rows show before the board @legion
     VALUES ('ACME-8', 'ACME', 8, 'Finished in the custom window', 'done', '{"kind":"user","id":"alice"}', 'Zb', '2026-11-03T12:00:00Z')`);
   const context = await asUser(browser, "alice");
   try {
-    const views: readonly { path: string; expected: readonly Record<string, string>[] }[] = [
+    const views: readonly {
+      path: string;
+      expected: readonly Record<string, string>[];
+      waitsForLegion?: boolean;
+    }[] = [
       {
         expected: [{ open: "true" }],
         path: "/projects/ACME/issues?view=open",
@@ -38,6 +42,7 @@ test("the views read only what they list, and rows show before the board @legion
       {
         expected: [{ closed_since: "present", status: "done" }],
         path: "/projects/ACME/issues?view=finished",
+        waitsForLegion: true,
       },
       {
         expected: [
@@ -48,6 +53,7 @@ test("the views read only what they list, and rows show before the board @legion
           },
         ],
         path: "/projects/ACME/issues?view=finished&f.closed=2026-11-03..2026-11-04",
+        waitsForLegion: true,
       },
       {
         expected: [{ open: "true" }, { closed_since: "present", status: "done" }],
@@ -60,7 +66,10 @@ test("the views read only what they list, and rows show before the board @legion
       page.on("request", (request) => requests.push(request.url()));
       await delayLegionBoard(page, 5_000);
       await page.goto(entry.path);
-      await expect(page.locator("[data-issue-row]").first()).toBeVisible({ timeout: 4_000 });
+      if (entry.waitsForLegion) {
+        await expect(page.getByLabel("Loading Legion data")).toBeVisible({ timeout: 4_000 });
+        await expect(page.locator("[data-issue-row]")).toHaveCount(0);
+      } else await expect(page.locator("[data-issue-row]").first()).toBeVisible({ timeout: 4_000 });
       const reads = issueReads(requests);
       expect(reads).not.toHaveLength(0);
       expect(
@@ -91,7 +100,7 @@ test("the views read only what they list, and rows show before the board @legion
   }
 });
 
-test("a cold Finished view shows done rows before the board, then narrows to Legion work @legion", async ({
+test("a cold Finished view waits for the board before it draws Legion-filtered rows @legion", async ({
   browser,
 }) => {
   const daemon = await startFakeLegionDaemon({});
@@ -104,10 +113,9 @@ test("a cold Finished view shows done rows before the board, then narrows to Leg
     const page = await context.newPage();
     await delayLegionBoard(page, 5_000);
     await page.goto("/projects/ACME/issues?view=finished");
-    await expect(page.locator("[data-issue-row]")).toHaveCount(3, { timeout: 4_000 });
-    await expect(page.locator("[data-legion-pending-chip]")).toHaveText("Waiting for Legion data");
+    await expect(page.getByLabel("Loading Legion data")).toBeVisible({ timeout: 4_000 });
+    await expect(page.locator("[data-issue-row]")).toHaveCount(0);
     await expect(page.locator("[data-issue-row]")).toHaveCount(2, { timeout: 8_000 });
-    await expect(page.locator("[data-legion-pending-chip]")).toHaveCount(0);
   } finally {
     await context.close();
     await daemon.close();

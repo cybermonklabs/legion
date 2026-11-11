@@ -32,7 +32,7 @@ export function IssueViewTabs({ counts, hasLegion, saved }: IssueViewTabsProps):
     activeSaved === undefined && viewIsChanged(params, readUrl(params, hasLegion), hasLegion);
   const tabs = [
     ...builtIn.map((builtInView) => ({
-      count: counts[builtInView.id],
+      count: builtInView.id === "finished" ? (counts.finished ?? "28 d") : counts[builtInView.id],
       id: builtInView.id,
       label: builtInView.name,
       marked: marked && builtInView.id === view.id,
@@ -57,9 +57,9 @@ export function IssueViewTabs({ counts, hasLegion, saved }: IssueViewTabsProps):
         }
         const next = builtIn.find((candidate) => candidate.id === id);
         if (next === undefined) return;
-        const query = next.params(hasLegion);
-        if (next.id !== "open") query.set("view", next.id);
-        setParams(query);
+        setParams(
+          next.id === "open" ? new URLSearchParams() : new URLSearchParams({ view: next.id })
+        );
       }}
       tabs={tabs}
     />

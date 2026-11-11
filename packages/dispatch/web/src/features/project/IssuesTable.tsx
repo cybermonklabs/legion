@@ -68,6 +68,16 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 const ACTION_WIDTH = 104;
 
+const PHONE_PRIMARY: Record<BuiltInViewId, readonly ColumnId[]> = {
+  open: ["status", "phase"],
+  triage: ["created"],
+  waiting: ["queue", "waited"],
+  "in-flight": ["phase", "time_in_phase"],
+  slots: ["slot", "slot_use"],
+  finished: ["phase_hours", "work_hours"],
+  mine: ["status"],
+};
+
 export function IssuesTable({
   project,
   showEdges = false,
@@ -186,6 +196,7 @@ function IssuesTableContent({
     viewer: viewer.data?.login,
   });
   const boardReady = !hasLegion || legion.data !== undefined;
+  const requiresLegionData = hasLegion && filters.some(isLegionFilter);
   const finishedRead = useQuery({ ...projectDoneIssuesQuery(project, "28d"), enabled: false });
   const finishedItems = useMemo(() => {
     if (!finishedRead.data?.length) return [];
@@ -267,8 +278,19 @@ function IssuesTableContent({
     search,
     userState.data,
   ]);
+  const viewTotal = useMemo(
+    () => viewCount(activeView, allItems, hasLegion, Date.now()),
+    [activeView, allItems, hasLegion]
+  );
 
-  const columns = useIssueTableColumns(userState.data, true, hasLegion, phase, timelineHref);
+  const columns = useIssueTableColumns(
+    userState.data,
+    true,
+    hasLegion,
+    phase,
+    timelineHref,
+    activeView.id === "waiting"
+  );
   const tableColumns = useMemo(
     () =>
       columns.map((column) =>
@@ -297,16 +319,9 @@ function IssuesTableContent({
   const onFiltersChange = useCallback(
     (update: ColumnFiltersState | ((current: ColumnFiltersState) => ColumnFiltersState)) => {
       const next = typeof update === "function" ? update(tableFilters) : update;
-      if (boardReady) {
-        setFilters(next);
-        return;
-      }
-      setFilters([
-        ...next.filter((filter) => !isLegionFilter(filter)),
-        ...filters.filter((filter) => isLegionFilter(filter)),
-      ]);
+      setFilters(next);
     },
-    [boardReady, filters, setFilters, tableFilters]
+    [setFilters, tableFilters]
   );
   const facets = useCallback(
     (id: string) => facetCounts(items, id, filters, search, boardReady),
@@ -334,6 +349,8 @@ function IssuesTableContent({
     columnsOverride,
     hiddenByDefault,
     layoutKey,
+    primary: PHONE_PRIMARY[activeView.id],
+    listedTotal: viewTotal,
     longestKeyChars: all.reduce((most, issue) => Math.max(most, issue.key.length), 0),
     onOpenFilterChange: setOpenFilter,
     onVisibilityChanged: dropColumnsOverride,
@@ -503,6 +520,17 @@ function IssuesTableContent({
         </button>
       </p>
     );
+  if (requiresLegionData && legion.isError)
+    return (
+      <p className={dangerText} role="alert">
+        Legion data did not load.{" "}
+        <button type="button" onClick={() => void legion.refetch()}>
+          Retry
+        </button>
+      </p>
+    );
+  if (requiresLegionData && legion.data === undefined)
+    return <LoadingSkeleton label="Loading Legion data" />;
 
   return (
     <section
@@ -541,12 +569,7 @@ function IssuesTableContent({
             Loading closed issues…
           </p>
         ) : null}
-        {filters.some(isLegionFilter) && !boardReady ? (
-          <p data-legion-pending-chip className={textMutedOnCanvas}>
-            Waiting for Legion data
-          </p>
-        ) : null}
-        {hasLegion && legion.isError ? (
+        {hasLegion && legion.isError && !requiresLegionData ? (
           <p className={dangerText} role="alert">
             Legion data did not refresh.{" "}
             <button type="button" onClick={() => void legion.refetch()}>
@@ -603,6 +626,7 @@ function IssuesTableContent({
             column={barColumn}
             hasLegion={hasLegion}
             rows={model.listedLeaves}
+            collapseNotStarted={activeSaved === undefined && activeView.id === "open"}
             table={table}
             viewValue={barViewValue}
           />
