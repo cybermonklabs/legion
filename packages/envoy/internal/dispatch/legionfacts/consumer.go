@@ -229,9 +229,10 @@ func safeHorizon(ctx context.Context, horizon *events.Horizon) (int64, error) {
 }
 
 // passPage is one page of one pass: it reads where each feed stands, reads a page of each,
-// computes the rows those pages and the sweep name, and writes the rows and the three cursors in
-// one transaction. It answers the keys whose stored rows it changed and whether a page was full,
-// which means more rows are waiting.
+// computes the rows those pages and the sweep name, and writes those rows, the deletion of the
+// stale rows inside the set it stated, and the three cursors in one transaction. It answers the
+// keys whose stored rows it changed and whether a page was full, which means more rows are
+// waiting.
 //
 // sweep says whether this page carries the work no feed announces: the recomputation of the open
 // rows, and the backfill of a project a feed cannot answer for. Only the first page of a pass
@@ -305,15 +306,17 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		}
 	}
 
+	// Every project this page owes work for is kept, whatever its computation answered. A
+	// project whose issues have all lost their Legion phase work answers no row at all and
+	// still owes the deletion of the stale rows its stated set holds, which is the one pass
+	// that takes those rows away.
 	computed := []projectRows{}
 	for _, project := range slices.Sorted(maps.Keys(work)) {
 		rows, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
 		if err != nil {
 			return nil, false, err
 		}
-		if len(rows) > 0 {
-			computed = append(computed, projectRows{project: project, rows: rows})
-		}
+		computed = append(computed, rows)
 	}
 
 	positions := map[string]int64{
@@ -336,35 +339,60 @@ type projectWork struct {
 	backfill bool
 }
 
-// projectRows is one project's computed rows, kept with its project because Write writes the
-// rows of one project in one statement.
+// projectRows is one project's computed rows and the set its pass stated, kept with its project
+// because Write writes the rows of one project in one statement. The stated set reaches the
+// write because the write is where the deletion of the stale rows belongs, inside the one
+// transaction: stated is the keys the pass computed over, and whole says the pass read the
+// project whole, whose stated set is every issue the project has.
 type projectRows struct {
 	project string
+	stated  []string
+	whole   bool
 	rows    []Row
 }
 
-// computeProjectWork computes the rows one project owes. A backfill reads the whole project
-// (ComputeProject) and the keys its feeds named are left out of the call, because the whole
-// project already holds them. Every other project is computed over the rows its changes touch
-// (rowsToCompute), and no row outside that set is written.
-func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) ([]Row, error) {
+// deleteStale deletes the stored rows of the set this pass stated that its computation answered
+// no row for, and no row outside that set. kept is the keys the computation answered a row for.
+func (p projectRows) deleteStale(ctx context.Context, tx pgx.Tx, kept []string) ([]string, error) {
+	if p.whole {
+		return DeleteStaleProjectRows(ctx, tx, p.project, kept)
+	}
+	return DeleteStaleRows(ctx, tx, p.project, p.stated, kept)
+}
+
+// computeProjectWork computes the rows one project owes and answers them with the set the pass
+// stated for that project. A backfill reads the whole project (ComputeProject) and the keys its
+// feeds named are left out of the call, because the whole project already holds them: its
+// stated set is the project itself. Every other project is computed over the rows its changes
+// touch (rowsToCompute), and no row outside that set is written or deleted.
+func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectRows, error) {
 	if work.backfill {
-		return ComputeProject(ctx, pool, project, now)
+		rows, err := ComputeProject(ctx, pool, project, now)
+		if err != nil {
+			return projectRows{}, err
+		}
+		return projectRows{project: project, whole: true, rows: rows}, nil
 	}
 	parents, err := parentLinks(ctx, pool, project)
 	if err != nil {
-		return nil, err
+		return projectRows{}, err
 	}
 	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, parents)
 	if err != nil {
-		return nil, err
+		return projectRows{}, err
 	}
-	return Compute(ctx, pool, project, keys, now)
+	rows, err := Compute(ctx, pool, project, keys, now)
+	if err != nil {
+		return projectRows{}, err
+	}
+	return projectRows{project: project, stated: keys, rows: rows}, nil
 }
 
-// writePass writes every project's rows and the three cursors in one transaction, and answers
-// the keys whose stored rows changed. A failure leaves the cursors where they were, so the next
-// pass reads the same rows again.
+// writePass writes every project's rows, deletes the stale rows inside the set each project's
+// pass stated, and moves the three cursors, all in one transaction. It answers the keys whose
+// stored rows changed, the deleted keys among them, because a row that went is a change of the
+// stored facts as much as a row that moved. A failure leaves the cursors where they were, so the
+// next pass reads the same rows again.
 func writePass(ctx context.Context, pool *store.Pool, computed []projectRows, positions map[string]int64, now time.Time) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -373,11 +401,17 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectRows, po
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	changed := []string{}
 	for _, project := range computed {
-		keys, err := Write(ctx, tx, project.rows)
+		kept := computedKeys(project.rows)
+		written, err := Upsert(ctx, tx, project.rows, kept)
 		if err != nil {
 			return nil, err
 		}
-		changed = append(changed, keys...)
+		changed = append(changed, written...)
+		deleted, err := project.deleteStale(ctx, tx, kept)
+		if err != nil {
+			return nil, err
+		}
+		changed = append(changed, deleted...)
 	}
 	if err := advanceCursors(ctx, tx, positions, now); err != nil {
 		return nil, err
