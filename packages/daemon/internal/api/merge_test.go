@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -74,6 +75,37 @@ func jumpOf(t *testing.T, h *harness, issue string) *record.MergeJump {
 		t.Fatalf("read the jump mark of %s: %v", issue, err)
 	}
 	return mark
+}
+
+// markInRecord writes a jump mark straight into the record, as another project's daemon writes
+// its own: the shared table is keyed by the issue alone, and a test that asks whether a refused
+// call took a mark off needs one there that this project's routes would not have set.
+func markInRecord(t *testing.T, h *harness, issue, reason string) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), h.store.Pool(), func(tx pgx.Tx) error {
+		return record.NewStore().SetMergeJump(context.Background(), tx, record.MergeJump{
+			Issue: issue, Reason: reason, Session: "ses_other_controller", SetAt: mergeNow})
+	}); err != nil {
+		t.Fatalf("write the jump mark of %s: %v", issue, err)
+	}
+}
+
+// departIssue writes issue's record where a departure leaves it, change naming the state it left
+// in. It writes the record rather than running the workflow because the workflow's own departure
+// takes the issue's mark with it (workflow's leave), and these tests are about the mark that is
+// there when it has not.
+func departIssue(t *testing.T, h *harness, issue string, change func(*record.Issue)) {
+	t.Helper()
+	recorded := recordedChild(t, h, issue)
+	if recorded == nil {
+		t.Fatalf("no record of %s to send out of the workflow", issue)
+	}
+	change(recorded)
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return record.NewStore().PutIssue(context.Background(), tx, *recorded)
+	}); err != nil {
+		t.Fatalf("record %s out of the workflow: %v", issue, err)
+	}
 }
 
 // holdsAt is the project's merge hold list as the daemon and the controller read it at at: the
@@ -299,6 +331,123 @@ func TestMergeJumpRefusesWhatItCannotMark(t *testing.T) {
 			}
 			if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
 				t.Fatalf("a refused request wrote the mark %+v of LEGION-208, want nothing written", *mark)
+			}
+		})
+	}
+}
+
+// A jump mark is this daemon's own project's to set and to take off. The daemons of several
+// projects share one database and a mark is kept under the issue's key alone, so a controller
+// naming another project's issue is refused by both routes and nothing is written: a mark set
+// there would be spent by that project's daemon on its next submission, against a decision its
+// controller never made, and a clear would take off one its controller did make. The refusal
+// stands ahead of the read of the record, which is why an issue of another project the daemon
+// records and one it does not are refused by the same code. This project's own issue is marked
+// and cleared by the same two calls.
+func TestMergeJumpRoutesRefuseAnotherProjectsIssue(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	seedTree(t, h, "OTHER-7")
+	markInRecord(t, h, "OTHER-7", "another project's own decision")
+	for _, tc := range []struct {
+		name  string
+		route string
+		body  func(grant, issue string) any
+	}{
+		{name: "setting a mark on", route: "/legion/v1/merge/jump", body: func(grant, issue string) any {
+			return MergeJumpRequest{GrantID: grant, Issue: issue, Reason: "another project's release waits on this merge"}
+		}},
+		{name: "taking a mark off", route: "/legion/v1/merge/jump/clear", body: func(grant, issue string) any {
+			return MergeJumpClearRequest{GrantID: grant, Issue: issue}
+		}},
+	} {
+		for _, issue := range []string{"OTHER-7", "OTHER-404"} {
+			t.Run(tc.name+" "+issue, func(t *testing.T) {
+				grant := controllerGrant(t, h)
+
+				recorder := h.request(http.MethodPost, tc.route, tc.body(grant.GrantID, issue), nil)
+
+				refusal := recorder.Body.String()
+				assertFailure(t, recorder, http.StatusForbidden, "ISSUE_OUTSIDE_PROJECT")
+				assertNames(t, refusal, issue)
+				assertNames(t, refusal, testDispatchProject)
+				if mark := jumpOf(t, h, "OTHER-7"); mark == nil || mark.Reason != "another project's own decision" {
+					t.Fatalf("the other project's mark after the refusal = %+v, want it where it was", mark)
+				}
+				if mark := jumpOf(t, h, "OTHER-404"); mark != nil {
+					t.Fatalf("the refused request wrote the mark %+v of OTHER-404, want nothing written", *mark)
+				}
+			})
+		}
+	}
+
+	set := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+		GrantID: set.GrantID, Issue: "LEGION-208", Reason: "the release waits on this merge",
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("the mark of this project's own issue = %d: %s", recorder.Code, recorder.Body)
+	}
+	if mark := jumpOf(t, h, "LEGION-208"); mark == nil || mark.Reason != "the release waits on this merge" {
+		t.Fatalf("the mark of this project's own issue = %+v, want the one the route wrote", mark)
+	}
+	clear := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump/clear", MergeJumpClearRequest{
+		GrantID: clear.GrantID, Issue: "LEGION-208",
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("taking the mark off this project's own issue = %d: %s", recorder.Code, recorder.Body)
+	}
+	if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+		t.Fatalf("the mark after the clear = %+v, want none", *mark)
+	}
+}
+
+// A mark is refused on an issue that has left the workflow, and one it still carries is taken off
+// all the same. Such an issue submits no merge, and the departure's own clear (workflow's leave)
+// has already taken its mark off, so a mark set after it would stand until a re-admission brought
+// the issue back and be spent by whatever merge that run reached. The three states are the three
+// halves of record.Stopped, the one reading the refusal and the departure share: a status out of
+// the workflow, a phase of done, and a tree lingering after its close.
+func TestMergeJumpRefusesAnIssueThatHasLeftTheWorkflowAndStillTakesItsMarkOff(t *testing.T) {
+	lingerUntil := mergeNow.Add(24 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		change func(*record.Issue)
+	}{
+		{name: "closed as done", change: func(issue *record.Issue) { issue.Status, issue.Phase = "done", phase.Done }},
+		{name: "parked in backlog", change: func(issue *record.Issue) { issue.Status = "backlog" }},
+		{name: "lingering after its close", change: func(issue *record.Issue) { issue.LingerUntil = &lingerUntil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newMergeHarness(t)
+			controllerSessionOf(t, h)
+			set := controllerGrant(t, h)
+			if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+				GrantID: set.GrantID, Issue: "LEGION-208", Reason: "the mark it carried while it ran",
+			}, nil); recorder.Code != http.StatusOK {
+				t.Fatalf("the mark set while the issue ran = %d: %s", recorder.Code, recorder.Body)
+			}
+			departIssue(t, h, "LEGION-208", tc.change)
+			grant := controllerGrant(t, h)
+
+			recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+				GrantID: grant.GrantID, Issue: "LEGION-208", Reason: "a merge this issue will never submit",
+			}, nil)
+
+			refusal := recorder.Body.String()
+			assertFailure(t, recorder, http.StatusConflict, "ISSUE_LEFT_WORKFLOW")
+			assertNames(t, refusal, "LEGION-208")
+			if mark := jumpOf(t, h, "LEGION-208"); mark == nil || mark.Reason != "the mark it carried while it ran" {
+				t.Fatalf("the mark after the refusal = %+v, want the one it carried while it ran", mark)
+			}
+
+			off := controllerGrant(t, h)
+			if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump/clear", MergeJumpClearRequest{
+				GrantID: off.GrantID, Issue: "LEGION-208",
+			}, nil); recorder.Code != http.StatusOK {
+				t.Fatalf("taking the mark off an issue that has left the workflow = %d: %s", recorder.Code, recorder.Body)
+			}
+			if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+				t.Fatalf("the mark of an issue that has left the workflow after the clear = %+v, want none", *mark)
 			}
 		})
 	}

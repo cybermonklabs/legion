@@ -75,7 +75,8 @@ func (s *server) mergeJump(w http.ResponseWriter, r *http.Request) {
 		field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"reason", req.Reason}) {
 		return
 	}
-	if !s.recordedMarkIssue(w, r, req.Issue, "mark for the jump") {
+	recorded, ok := s.recordedMarkIssue(w, r, req.Issue, "mark for the jump")
+	if !ok || !runningMarkIssue(w, *recorded) {
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -111,7 +112,9 @@ func (s *server) mergeJumpClear(w http.ResponseWriter, r *http.Request) {
 		field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
 		return
 	}
-	if !s.recordedMarkIssue(w, r, req.Issue, "take a jump mark off") {
+	// The clear takes no runningMarkIssue: a mark on an issue that has left the workflow is
+	// exactly what a controller must be able to take off (runningMarkIssue).
+	if _, ok := s.recordedMarkIssue(w, r, req.Issue, "take a jump mark off"); !ok {
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
@@ -294,24 +297,73 @@ func heldRepository(w http.ResponseWriter, served []ghrepo.Repository, named, wh
 	return parsed.String(), true
 }
 
-// recordedMarkIssue refuses an issue the daemon does not record, naming it and what the caller
-// asked for it. A mark governs a merge the daemon submits for the issue's own ready_merge row, so
-// an issue it holds no record of has no merge to mark: the mark's row is bound to the issue's
-// record in the first place (migration 20261110235352's `on delete cascade`), and the write would
-// be refused by the database with nothing a controller could act on.
-func (s *server) recordedMarkIssue(w http.ResponseWriter, r *http.Request, issue, asked string) bool {
+// recordedMarkIssue is the issue both jump-mark routes check before either writes anything, and
+// answers its record, which the setting route reads once more (runningMarkIssue).
+//
+// An issue outside this daemon's own Dispatch project is refused first, ahead of the read of the
+// record and so ahead of anything that could be written. The daemons of several projects share
+// one database, and a mark is kept under the issue's key alone (record.Store.SetMergeJump), so a
+// key of another project names a row that project's daemon spends on its next submission,
+// against a decision its controller never made, and a clear takes off one that controller did
+// make. The project is the key's own prefix, which is how the daemon reads a key's project
+// everywhere else — this package's own ownDispatchIssue and the state's list of the project's
+// marks (record.Store.MergeJumps, `split_part(issue, '-', 1)`), which would not even show such
+// a row to the controller that set it. A server given no Dispatch project — a test's — takes
+// every key as its own. The status is 403 and not 404: the caller is this project's controller
+// holding a good grant, and what refuses it is that the issue is not this daemon's to act on at
+// all, which is the refusal an architect reaching outside its tree meets (ISSUE_OUTSIDE_TREE).
+//
+// Then an issue the daemon does not record is refused, naming it and what the caller asked for
+// it. A mark governs a merge the daemon submits for the issue's own ready_merge row, so an issue
+// it holds no record of has no merge to mark: the mark's row is bound to the issue's record in
+// the first place (migration 20261110235352's `on delete cascade`), and the write would be
+// refused by the database with nothing a controller could act on.
+func (s *server) recordedMarkIssue(w http.ResponseWriter, r *http.Request, issue, asked string) (*record.Issue, bool) {
+	if !s.ownDispatchIssue(issue) {
+		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_PROJECT", fmt.Sprintf(
+			"%s is not an issue of %s, the Dispatch project of this daemon, so there is no merge of it to %s",
+			issue, s.dispatchProject, asked))
+		return nil, false
+	}
 	recorded, err := s.recordedIssue(r.Context(), issue)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the issue a merge mark names", "issue", issue)
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", issue))
-		return false
+		return nil, false
 	}
 	if recorded == nil {
 		writeFailure(w, http.StatusNotFound, "ISSUE_NOT_RECORDED", fmt.Sprintf(
 			"the daemon records no issue %s, so there is no merge of it to %s", issue, asked))
-		return false
+		return nil, false
 	}
-	return true
+	return recorded, true
+}
+
+// runningMarkIssue refuses a mark on an issue the daemon no longer runs. Only the setting route
+// calls it: taking a mark off such an issue is a thing a controller may always do, and is how a
+// mark that outlived its issue goes, so mergeJumpClear works on every recorded issue of the
+// project.
+//
+// The states refused are the ones record.Stopped names, the daemon's one statement of work that
+// has stopped, so that this refusal and the departure that clears a mark read one record the same
+// way: a status out of the workflow — done, backlog, icebox or triage, the issue closed or parked
+// — a phase of done, and a tree lingering after its close. Such an issue submits no merge, and
+// the departure already cleared the mark it carried (workflow's leave, whose comment states the
+// harm): a mark set after that would stand in the record until a re-admission brought the issue
+// back, and "would be spent weeks later by whatever merge a re-admission of this issue reaches,
+// against a decision nobody made about that merge".
+//
+// The status is 409 and not 400: the request is well formed and the caller is authorized, and
+// what refuses it is the state the record is in, as the lingering tree of a rerun is
+// (TREE_LINGERING).
+func runningMarkIssue(w http.ResponseWriter, recorded record.Issue) bool {
+	if !record.Stopped(recorded) {
+		return true
+	}
+	writeFailure(w, http.StatusConflict, "ISSUE_LEFT_WORKFLOW", fmt.Sprintf(
+		"%s has left the workflow (status %s, phase %s), so the daemon submits no merge of it to mark; a mark it still carries can be taken off",
+		recorded.Key, recorded.Status, recorded.Phase))
+	return false
 }
 
 // markSession is the controller session a mark records as its author (record.MergeJump.Session,
