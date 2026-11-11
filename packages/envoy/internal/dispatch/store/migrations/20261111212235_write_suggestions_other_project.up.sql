@@ -1,0 +1,31 @@
+-- 20261111212235_write_suggestions_other_project.up.sql — a cross-project offer joins the roles.
+--
+-- INFRA-2337: the related-item check of a question also offers the answered asks of the other
+-- projects, and api.persistSuggestions records every item a check offered, one row per item. Such
+-- an item is recorded under the role `other_project`, beside the `related` rows of the same check,
+-- so the outcome sweep (api.RunSuggestionOutcomeSweep) resolves it like any other row, and the
+-- records route counts the writes that made one.
+--
+-- The check is dropped and added again in one statement, so no moment passes with the column
+-- unchecked, and the new one admits everything the old one did. Widening it is safe beside the
+-- release before this migration. That release writes `related` and `decision` alone, each of which
+-- the wider check admits, and it reads the column without asking what values the column may hold.
+-- It is the next release that writes `other_project`, and by then every server runs with this
+-- check (internal/dispatch/store/README.md).
+--
+-- The new check keeps `decision`, so every row already written stays valid. No release after this
+-- one writes a new row of that role, because the check no longer claims that a past decision
+-- answers the write, but the stored rows of that role are the record of what earlier checks
+-- offered, and the sweep and the counts read them as before.
+--
+-- No row is backfilled and no row is rewritten: the role of a stored row is what the check that
+-- wrote it offered, and the census refuses a migration that rewrites rows.
+--
+-- Adding a check constraint scans write_suggestions under the ACCESS EXCLUSIVE lock this statement
+-- takes, so the hold grows with the table. Every stored row satisfies the new check, since the one
+-- it replaces is narrower, so the scan refuses none. Its identifier is the UTC moment it was
+-- written, as `migrationid` requires of every migration past the numbered series, which closed at
+-- 0161 (cmd/dispatch/README.md, "Database migrations").
+alter table write_suggestions
+    drop constraint write_suggestions_role_check,
+    add constraint write_suggestions_role_check check (role in ('related', 'decision', 'other_project'));
