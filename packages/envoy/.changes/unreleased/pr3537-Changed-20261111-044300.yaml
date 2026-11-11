@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `gcp:ClusteredNatsHub` runs Envoy's session listener as a workload of its own, one pod, with a Service, a NetworkPolicy that admits the tailnet entry's pods alone, a ServiceAccount that mounts no token and a budget that allows that pod's eviction. The tailnet entry's pods now run the tailscale container and the advertiser alone and forward the Tailscale Service's port 9020 to the listener's Service, and each host advertises the Service on its own readiness, so a listener fault no longer takes NATS's port 4222 off the tailnet. The listener binds every address of its own pod and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is now a supported mode for a listener a network policy fences rather than a temporary flag; its readiness reads the HTTP status of `/healthz` alone, while startup and liveness stay status-blind. `name` is now at most 43 bytes, since `<name>-listener` is the longest name the component derives.
+time: 2026-11-11T04:43:00.000000000Z
+custom:
+    Issue: pr3537
