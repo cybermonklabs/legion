@@ -30,7 +30,7 @@ import {
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
@@ -758,13 +758,20 @@ interface CompactDispatch {
   readonly askId: string | undefined;
 }
 
+// How a closed ask reads on the card: the kind, the person's own reason where the record holds
+// one, and the words Dispatch wrote for the asking agent where it holds those (a decline), under
+// the label every reader of them names them with (`dispatchWordsText`), so nobody reads
+// Dispatch's instruction as the person's note. A decline the person wrote no note with is the
+// ordinary one, so an empty reason leaves no separator behind.
 function askResolutionText(
   resolution: z.infer<typeof AskPayloadSchema>["resolution"]
 ): string | undefined {
   if (resolution === null || resolution === undefined) return undefined;
   const kind = resolution.kind ?? "resolved";
   const reason = resolution.reason ?? "";
-  return reason === "" ? kind : `${kind}: ${reason}`;
+  const closed = reason === "" ? kind : `${kind}: ${reason}`;
+  const words = dispatchWordsText(resolution.dispatch_words);
+  return words === undefined ? closed : `${closed} · ${words}`;
 }
 
 function dispatchCompact(

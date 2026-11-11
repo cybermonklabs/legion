@@ -98,6 +98,11 @@ func TestDeleteCommentClearsEveryCopyOfItsBody(t *testing.T) {
 	if vector := commentSearchVector(t, database, comment.ID); vector == "" {
 		t.Fatalf("the comment's search vector is empty before the delete")
 	}
+	// A write of a post records its blocks and writes no window: the windows those blocks
+	// stand in are the block-index tick's window arm's to write, one tick behind the write
+	// (refs.WriteItemWindows, INFRA-988). So the windows the delete has to drop are written
+	// here, as that arm writes them.
+	windowOwedItems(t, database)
 	if windows := postEmbeddingWindows(t, database, "comment/"+comment.ID); windows == 0 {
 		t.Fatalf("the comment holds no embedding window before the delete, so dropping them proves nothing")
 	}
@@ -130,8 +135,10 @@ func TestDeleteCommentClearsEveryCopyOfItsBody(t *testing.T) {
 		t.Fatalf("the event log is missing comment.deleted")
 	}
 	// A deleted post is reachable by no meaning search: the re-index with the empty body leaves
-	// the comment with no block, and an owner left with no block loses every window it had
-	// (refs/blocks.go, writeWindows).
+	// the comment with no block, and the arm's next pass drops every window of an owner left
+	// with no block in the statement that clears its marker (refs.WriteItemWindows,
+	// refs/blocks.go, writeWindows).
+	windowOwedItems(t, database)
 	if windows := postEmbeddingWindows(t, database, "comment/"+comment.ID); windows != 0 {
 		t.Fatalf("the deleted comment keeps %d embedding windows, want none: a meaning search would reach it", windows)
 	}

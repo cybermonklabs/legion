@@ -979,7 +979,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status,
+			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status, false,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {

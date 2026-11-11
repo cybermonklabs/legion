@@ -372,8 +372,16 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		if ask.Restored {
 			return DispatchAskRestored{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), Mark: event.mark()}, nil
 		}
-		return DispatchAskClosed{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), State: strings.TrimPrefix(event.Type, "ask."),
-			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}, nil
+		closed := DispatchAskClosed{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), State: strings.TrimPrefix(event.Type, "ask."),
+			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}
+		// A person's decline is the one resolution the daemon acts on: it resumes the root's
+		// architect with Dispatch's own words and the person's note (workflow's resumeTask), so
+		// both travel as data from Dispatch rather than as a copy of four sentences here. Any
+		// other resolution kind, and a close whose payload carries none, is the close alone.
+		if ask.Resolution != nil && ask.Resolution.Kind == ResolutionDeclined {
+			closed.Decline = &record.AskDecline{Note: ask.Resolution.Reason, Words: ask.Resolution.DispatchWords}
+		}
+		return closed, nil
 	case "ask.handed_back":
 		// An approval request its asker returned to the person (Dispatch's handBackApprovalAsk):
 		// whatever the thread held, it now waits on the human, as a session's human-turn reply does.
@@ -497,8 +505,10 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself
 // (Dispatch's model.AskEventPayload and AskEditEventPayload): its id, its kind, the author of an
-// opening, settlement's restored mark, and an approval request's document with the version it now
-// names and the version its agent last handed to the person.
+// opening, settlement's restored mark, an approval request's document with the version it now
+// names and the version its agent last handed to the person, and a close's resolution
+// (Dispatch's model.AskResolution), which says why a resolved ask needs no human answer and
+// carries the person's note and Dispatch's own words apart.
 type askPayload struct {
 	ID     string `json:"id"`
 	Kind   string `json:"kind"`
@@ -512,6 +522,11 @@ type askPayload struct {
 		Version          *int   `json:"version"`
 		RequestedVersion *int   `json:"requested_version"`
 	} `json:"approval"`
+	Resolution *struct {
+		Kind          string `json:"kind"`
+		Reason        string `json:"reason"`
+		DispatchWords string `json:"dispatch_words"`
+	} `json:"resolution"`
 	kind string
 }
 

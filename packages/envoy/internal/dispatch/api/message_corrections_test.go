@@ -272,9 +272,6 @@ func TestMessageBlockIndexFollowsAnEditAndADelete(t *testing.T) {
 	if blocks := messageBlockRows(t, database, message.ID); len(blocks) != 2 {
 		t.Fatalf("the message indexed %d blocks, want the body's two", len(blocks))
 	}
-	if windows := postEmbeddingWindows(t, database, "message/"+message.ID); windows == 0 {
-		t.Fatalf("the message holds no embedding window before the delete, so dropping them proves nothing")
-	}
 
 	editIssueMessage(t, handler, message.ID, "The one paragraph that replaces both.", "")
 
@@ -297,6 +294,15 @@ func TestMessageBlockIndexFollowsAnEditAndADelete(t *testing.T) {
 		t.Fatalf("the edited body holds %d blocks, want the one it splits into", current)
 	}
 
+	// The windows the delete has to drop. A write of a post records its blocks and writes no
+	// window: the windows those blocks stand in are the block-index tick's window arm's to
+	// write, one tick behind the write (refs.WriteItemWindows, INFRA-988). This pass is that
+	// arm, over the body the edit left.
+	windowOwedItems(t, database)
+	if windows := postEmbeddingWindows(t, database, "message/"+message.ID); windows == 0 {
+		t.Fatalf("the message holds no embedding window before the delete, so dropping them proves nothing")
+	}
+
 	deleteIssueMessage(t, handler, message.ID, "")
 
 	if owed, _ := messageBlockState(t, database, message.ID); owed {
@@ -314,8 +320,10 @@ func TestMessageBlockIndexFollowsAnEditAndADelete(t *testing.T) {
 		t.Fatalf("the issue holds %d message.deleted events, want the one the delete appended", len(events))
 	}
 	// A deleted post is reachable by no meaning search: the re-index with the empty body leaves
-	// the message with no block, and an owner left with no block loses every window it had
-	// (refs/blocks.go, writeWindows).
+	// the message with no block, and the arm's next pass drops every window of an owner left
+	// with no block in the statement that clears its marker (refs.WriteItemWindows,
+	// refs/blocks.go, writeWindows).
+	windowOwedItems(t, database)
 	if windows := postEmbeddingWindows(t, database, "message/"+message.ID); windows != 0 {
 		t.Fatalf("the deleted message keeps %d embedding windows, want none: a meaning search would reach it", windows)
 	}

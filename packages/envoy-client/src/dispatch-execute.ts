@@ -77,7 +77,7 @@ import {
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
 import { actorText } from "./actor-text";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine, commandName } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import {
@@ -139,7 +139,7 @@ import {
 import { ownerSubscribeLine } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
 import { humanEditHead } from "./human-edit";
-import { decisionBlockLines, relatedCheckLines } from "./related-check";
+import { decisionBlockLines, declinedAskLines, relatedCheckLines } from "./related-check";
 import { pageSummaryText, searchAnswer } from "./search-answer";
 import { isNoAnswersRoute, renderSessionAnswersList } from "./session-answers";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
@@ -353,11 +353,28 @@ function renderAdvice(
   // it stored, the approval that version replaced and how that approval comes back - rather than a
   // rule about editing a spec, because the server sends it only on the write that superseded the
   // approval.
+  //
+  // The gate clause comes from `design_gates`, the server's record of which issues' design gates
+  // name the document just written: it names those issues, and it is silent for every other
+  // document. Absent (an older Dispatch keeps no such record), empty, and anything that is not a
+  // list of gates all print no clause, which is the safe direction - a reader told nothing asks
+  // the tree's architect, a reader told a gate that is not there stops working for no reason.
   const superseded = advice.superseded_approval;
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
-    lines.push(
-      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since: a Legion design gate on this document is closed meanwhile, so every READY in its tree is refused. Meant to change the approved design? Request approval with \`dispatch request-approval\`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.`
+    const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
+    const parts = [
+      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since.`,
+    ];
+    if (gates.length > 0) {
+      const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");
+      parts.push(
+        `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`
+      );
+    }
+    parts.push(
+      "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan."
     );
+    lines.push(parts.join(" "));
   }
 
   // The cadence line comes last and opens by saying the write went through: behind `| tail -1`
@@ -2917,6 +2934,7 @@ function askSummary(
     `${reply.id} · ${actorText(reply.author)}`,
     ...postBodyLines(reply),
   ]);
+  const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
     `Question: ${ask.question}`,
     ...anchorLines(ask),
@@ -2955,7 +2973,12 @@ function askSummary(
           "Resolution:",
           `- By: ${ask.resolution.actor.id}`,
           `- Kind: ${ask.resolution.kind}`,
-          `- Reason: ${ask.resolution.reason}`,
+          // A decline the person wrote no note with holds no reason, so the line is left out
+          // rather than printed empty; the sentences Dispatch wrote for the asking agent stand
+          // on a bullet of their own, under the label every reader of them names them with
+          // (`dispatchWordsText`), so nobody reads them as the person's words.
+          ...(ask.resolution.reason === "" ? [] : [`- Reason: ${ask.resolution.reason}`]),
+          ...(resolutionWords === undefined ? [] : [`- ${resolutionWords}`]),
         ]),
     "Replies:",
     ...(chain.length === 0 ? ["- none"] : chain),
@@ -4921,13 +4944,18 @@ export async function executeDispatchTool(
           : resolved === undefined
             ? issueTopic(issue())
             : documentTopic(resolved.artifact);
-      // The check's form sits right under the line naming the ask; renderAdvice's cadence line
-      // must stay the result's last line.
-      const checkLines = relatedCheckLines(ask.advice?.suggestions, {
+      // The check's form sits right under the line naming the ask, and the issue's declined
+      // asks under that; renderAdvice's cadence line must stay the result's last line.
+      const checkContext = {
         project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
         text: stringArg(args, "question"),
         configUrl: linkBase,
-      });
+      };
+      const checkLines = relatedCheckLines(ask.advice?.suggestions, checkContext);
+      // An ask on a project document stands on no issue, and the server sends declined asks
+      // only for a write that does, so there is nothing to print there.
+      const declinedLines =
+        ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
@@ -4935,6 +4963,7 @@ export async function executeDispatchTool(
         text: [
           `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
           ...checkLines,
+          ...declinedLines,
           await followsAsk(askOwner, input.subscriptions),
           ...adviceLines,
         ].join("\n"),
@@ -5264,11 +5293,19 @@ export async function executeDispatchTool(
           .find((text) => text !== undefined) ??
         resolved.issue?.title ??
         "";
-      const checkLines = decisionBlockLines(edited.advice, {
+      const checkContext = {
         project: resolved.artifact.project,
         text: editAskText,
         configUrl: linkBase,
-      });
+      };
+      const checkLines = decisionBlockLines(edited.advice, checkContext);
+      // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line
+      // must stay the result's last line. A project document stands on no issue, and the server
+      // sends declined asks only for a write that does.
+      const declinedLines =
+        resolved.issue === undefined
+          ? []
+          : declinedAskLines(edited.advice, resolved.issue.key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
       );
@@ -5280,6 +5317,7 @@ export async function executeDispatchTool(
         text: [
           `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
           ...checkLines,
+          ...declinedLines,
           ...tokenTrailer,
           ...adviceLines,
         ].join("\n"),

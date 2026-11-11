@@ -17,16 +17,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+// declinedResolution is the SQL predicate, on a resolution the events carry, that holds for an
+// ask a person declined to answer (model.AskResolutionDeclined).
+const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
 // $1 since $2, $3 being the session's own topic (contracts.AgentSubject). Its three sources:
 //
 //   - S1 (reached): events a person wrote of a type that carries a person's words to a session -
-//     ask.answered, comment.created, message.created and message.answered (a reply to a message) -
-//     created since the window's start, whose published_destinations hold the session's topic: the
-//     outbox's own record of each topic it published the event to (outbox.publishDestination), so
-//     the list holds what the follower, author and session routes delivered, and never what an
-//     issue's role: route delivered to a role topic, which names no session. It reads the partial
-//     index events_person_words (0145) for the window and filters the array on those rows.
+//     ask.answered, comment.created, message.created, message.answered (a reply to a message) and
+//     ask.resolved, of which the list takes the declines alone (an ask a person chose not to
+//     answer) - created since the window's start, whose published_destinations hold the session's
+//     topic: the outbox's own record of each topic it published the event to
+//     (outbox.publishDestination), so the list holds what the follower, author and session routes
+//     delivered, and never what an issue's role: route delivered to a role topic, which names no
+//     session. It reads the partial index events_person_words_with_declines for the window and
+//     filters the array on those rows.
 //   - S2 (message_ids' second arm): the session's sent message deliveries: targeted messages, direct
 //     or on an issue, and broadcast copies. It is an index-only scan of
 //     message_deliveries_session_created (0147), whose predicate is the arm's state = 'sent' and
@@ -48,24 +54,28 @@ import (
 // is one row. Every row is then read at its current words: an ask's current answer (asks.answer)
 // when that answer's own time is in the window, a comment's current body, a message's body, each
 // with the time of its edit and the mark of its delete, so a reader meets a post its author
-// withdrew as deleted and not as an empty line. A comment or message an agent or the system
-// wrote is left out by its author; an answer is a
-// person's by construction. The ids are compared as text, through the asks_id_text, comments_id_text
-// and messages_id_text indexes, so a payload id that is not a uuid cannot fail the read.
+// withdrew as deleted and not as an empty line. A decline is read from its ask.resolved event
+// instead, since that event is where the read already keeps the rows whose published_destinations
+// hold the session's topic, which is what makes "each session the delivery reached" the set this
+// lists; the asks row gives it the ask's question and owner alone. A comment or message an agent
+// or the system wrote is left out by its author; an answer is a person's by construction. The ids
+// are compared as text, through the asks_id_text, comments_id_text and messages_id_text indexes,
+// so a payload id that is not a uuid cannot fail the read.
 //
 // replaced counts an ask's real answers as api's answerEventsQuery does: the ask.answered events
 // whose actor is the user the answer names, one per answer time (a settlement that restores an
 // answered block writes the same answer again under its editor). answer_events reads the listed
 // asks' ask.answered events by their payload id alone (events_ask_payload_id) and is materialized,
 // so the actor check runs on those few rows: with it inside the scan, the planner ANDs in
-// events_person_words, whose predicate the check implies, and reads every entry of that index for
-// each ask.
+// events_person_words_with_declines, whose predicate the check implies, and reads every entry of
+// that index for each ask.
 const query = `
 	with reached as (
-		select e.type, e.payload->>'id' as id
+		select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution
 		from events e
 		where e.actor->>'kind' = 'user'
-		  and e.type in ('ask.answered', 'comment.created', 'message.created', 'message.answered')
+		  and e.type in ('ask.answered', 'comment.created', 'message.created', 'message.answered',
+		                 'ask.resolved')
 		  and e.created_at >= $2
 		  and $3 = any(e.published_destinations)
 	), mentioned as (
@@ -78,6 +88,18 @@ const query = `
 		select e.payload->>'id' as id, e.actor, e.payload->'answer' as answer
 		from events e
 		where e.type = 'ask.answered' and e.payload->>'id' in (select id from answer_ids)
+	), decline_ids as (
+		-- A decline carries its own words, so the arm keeps the resolution the event recorded.
+		-- An ask holds at most one decline: a resolved ask is not resolved again (api's
+		-- transitionAskTx), and the only resolutions anything takes back are the retraction a
+		-- document's settlement wrote when the block left (docs.settlementRetraction) and the
+		-- withdrawal an issue's close wrote, which its reopen undoes - never a decline. The
+		-- distinct on is what holds the list to one item per ask, the latest decline of it,
+		-- whatever the events hold.
+		select distinct on (id) id, resolution
+		from reached
+		where type = 'ask.resolved' and ` + declinedResolution + `
+		order by id, (resolution->>'at')::timestamptz desc
 	), comment_ids as (
 		select id, bool_or(m) as mentioned
 		from (
@@ -95,7 +117,7 @@ const query = `
 	)
 	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,
 	       null::timestamptz as edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by,
-	       null::jsonb as author, null::text as body, a.answer,
+	       null::jsonb as author, null::text as body, null::text as dispatch_words, a.answer,
 	       (select count(distinct ae.answer->>'at') from answer_events ae
 	         where ae.id = x.id and ae.actor->>'kind' = 'user' and ae.actor->>'id' = ae.answer->>'user') > 1 as replaced,
 	       a.id::text as ask_id, a.question as ask_question,
@@ -108,7 +130,7 @@ const query = `
 	left join artifacts ar on ar.id = a.artifact_id
 	where a.answer is not null and (a.answer->>'at')::timestamptz >= $2
 	union all
-	select 'comment', c.id::text, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.author, c.body, null, false,
+	select 'comment', c.id::text, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.author, c.body, null, null, false,
 	       q.id::text, q.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       x.mentioned,
@@ -122,7 +144,7 @@ const query = `
 	left join artifacts ar on ar.id = c.artifact_id
 	where c.author->>'kind' = 'user' and c.created_at >= $2
 	union all
-	select 'message', m.id::text, m.created_at, m.edited_at, m.deleted_at, m.deleted_by, m.author, m.body, null, false,
+	select 'message', m.id::text, m.created_at, m.edited_at, m.deleted_at, m.deleted_by, m.author, m.body, null, null, false,
 	       null, null,
 	       i.key, i.title, null, null, null,
 	       false, false, false, false,
@@ -132,11 +154,27 @@ const query = `
 	join messages m on m.id::text = x.id
 	left join issues i on i.key = m.issue_key
 	where m.author->>'kind' = 'user' and m.created_at >= $2
+	union all
+	-- A decline has no answer to take a time from, so it sits at the resolution's own time, and
+	-- that time, not the event's, is what the window holds it to: the event is written moments
+	-- after the resolution it carries.
+	select 'declined', a.id::text, (x.resolution->>'at')::timestamptz, null, null, null,
+	       x.resolution->'actor', x.resolution->>'reason', x.resolution->>'dispatch_words',
+	       null, false,
+	       a.id::text, a.question,
+	       i.key, i.title, ar.project_key, ar.slug, ar.name,
+	       false, false, false, false,
+	       false
+	from decline_ids x
+	join asks a on a.id::text = x.id
+	left join issues i on i.key = a.issue_key
+	left join artifacts ar on ar.id = a.artifact_id
+	where (x.resolution->>'at')::timestamptz >= $2
 	order by at desc, id desc`
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
-// time, then by id descending: an ask's current answer, or a comment or a message at its current
-// body with the mark of a delete, each (kind, id) once (query).
+// time, then by id descending: an ask's current answer, a comment or a message at its current
+// body with the mark of a delete, or a person's decline of an ask, each (kind, id) once (query).
 //
 // An item reached several ways carries one relation, the most specific to the session, in this
 // order of precedence: a comment is mentioned_you when a mention delivered it to the session (it
@@ -144,8 +182,9 @@ const query = `
 // replied_in_a_comment_thread when it replies to another comment, else commented_on_a_document when
 // it is on a document (anchored on one, or on a project document), else commented_on_an_issue. A
 // message is replied_to_your_message when it replies to a message the session wrote, else
-// sent_you_a_message. An answer is always answered_your_ask: an ask's answer reaches its asker and
-// its followers, and the session route reaches the session an issue is routed to.
+// sent_you_a_message. An answer is always answered_your_ask and a decline declined_your_ask: an
+// ask's answer, and the word that nobody will answer it, reach its asker and its followers, and
+// the session route reaches the session an issue is routed to.
 func List(ctx context.Context, pool *store.Pool, session string, since time.Time) ([]model.SessionAnswer, error) {
 	rows, err := pool.Query(ctx, query, session, since, contracts.AgentSubject(session))
 	if err != nil {
@@ -168,14 +207,14 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	var (
 		item                                                model.SessionAnswer
 		author, answer, deletedBy                           []byte
-		body, askID, askQuestion                            *string
+		body, dispatchWords, askID, askQuestion             *string
 		issueKey, issueTitle, docProject, docSlug, docName  *string
 		mentioned, inAskThread, inCommentThread, onDocument bool
 		repliesToSession                                    bool
 	)
 	if err := row.Scan(
 		&item.Kind, &item.ID, &item.At, &item.EditedAt, &item.DeletedAt, &deletedBy,
-		&author, &body, &answer, &item.Replaced,
+		&author, &body, &dispatchWords, &answer, &item.Replaced,
 		&askID, &askQuestion, &issueKey, &issueTitle, &docProject, &docSlug, &docName,
 		&mentioned, &inAskThread, &inCommentThread, &onDocument, &repliesToSession,
 	); err != nil {
@@ -203,6 +242,21 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 			item.Text = *current.Text
 		}
 		item.Selected = current.Selected
+	case model.SessionAnswerKindDeclined:
+		// The person who declined, with the agent that acted for them beside them where the
+		// resolution's actor carries one, as an answer's author carries its act.
+		if err := json.Unmarshal(author, &item.Author); err != nil {
+			return model.SessionAnswer{}, fmt.Errorf("decode ask %s resolution actor: %w", item.ID, err)
+		}
+		item.Relation = model.SessionAnswerRelationDeclinedYourAsk
+		// The person's own note, which they need not write, and beside it the words Dispatch wrote
+		// for the asking agent. Nobody chose an option, so the item draws none.
+		if body != nil {
+			item.Text = *body
+		}
+		if dispatchWords != nil {
+			item.DispatchWords = *dispatchWords
+		}
 	case model.SessionAnswerKindComment, model.SessionAnswerKindMessage:
 		if err := json.Unmarshal(author, &item.Author); err != nil {
 			return model.SessionAnswer{}, fmt.Errorf("decode %s %s author: %w", item.Kind, item.ID, err)
@@ -250,7 +304,8 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 func place(kind, id, session string, issueKey, issueTitle, docProject, docSlug, docName *string) (*model.OpenAskOwner, *string, string) {
 	var segment string
 	switch kind {
-	case model.SessionAnswerKindAnswer:
+	// A decline is about an ask, as an answer is, so it lives at that ask's address.
+	case model.SessionAnswerKindAnswer, model.SessionAnswerKindDeclined:
 		segment = "ask"
 	case model.SessionAnswerKindComment:
 		segment = "comment"
