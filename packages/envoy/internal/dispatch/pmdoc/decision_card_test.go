@@ -277,6 +277,24 @@ func TestFindDecisionCardMissesAnOpenerALoneCarriageReturnEnds(t *testing.T) {
 	}
 }
 
+// The other opener the rule does not reach: a body whose opening line stands behind a byte-order
+// mark. The browser's parser drops one U+FEFF before it reads the line and opens the `ask`;
+// goldmark reads the mark as the line's first character, so the line is a paragraph and the tree
+// holds no `ask` - and the rewrite opens no line either, since the colon run it looks for does
+// not start where the mark stands. What parts the two is the mark itself and not the opener, so
+// no spelling closes it; the rule drops the mark in its own copy of the body before it reads
+// here (itemblocks.Check).
+func TestFindDecisionCardMissesAnOpenerAByteOrderMarkStandsBefore(t *testing.T) {
+	for _, markdown := range []string{
+		"\ufeff:::ask\nShip it?\n:::\n",
+		"\ufeff:::ask{urgency=\"med\"}\nShip it?\n:::\n",
+	} {
+		if card, found := FindDecisionCard(markdown); found {
+			t.Fatalf("FindDecisionCard(%q) = %+v, %v, want the measured miss", markdown, card, found)
+		}
+	}
+}
+
 // A body heavy enough to stop goldmark where it reads it (nodeGuard) is read on from the line it
 // stopped at, so a decision block standing past that line is found too, at its own place in the
 // body: a mebibyte of markdown, which is what one write may send, carries far more lines than the

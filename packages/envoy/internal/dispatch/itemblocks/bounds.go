@@ -83,14 +83,17 @@ func (e *DecisionBlock) Error() string {
 // position named here is the tree's own top-level index, which the fallback's count can differ
 // from.
 //
-// A body holding a lone carriage return is read for a decision block a second time, over a copy
-// whose lone carriage returns are line feeds: the browser's reader ends a line at a lone carriage
-// return and this parser ends none there, so a body written with them reaches the parse here as
-// one line holding no block while the reader reads its lines and draws its card for the decision
-// block standing among them. The copy is this rule's own reading and reaches nothing else: the
-// bounds above are measured on the body as written, Split's blocks are the body as written, and
-// the body a caller goes on to store is the one it passed in, byte for byte. The position named
-// from that reading is the reader's own top-level index, which is the one the card stands at.
+// A body the browser's own reader reads differently from this parser is read for a decision block
+// a second time, over the copy that reader reads: one leading byte-order mark dropped and every
+// lone carriage return written as a line feed. That reader drops one U+FEFF before it reads a
+// line, where this parser reads the mark as the first character of a paragraph, and it ends a
+// line at a lone carriage return, where this parser ends none; so a body written either way
+// reaches the parse here as text holding no block while the reader reads the decision block
+// standing in it and draws its card. The copy is this rule's own reading and reaches nothing
+// else: the bounds above are measured on the body as written, Split's blocks are the body as
+// written, and the body a caller goes on to store is the one it passed in, byte for byte. The
+// position named from that reading is the reader's own top-level index, which is the one the
+// card stands at.
 func Check(field, body string) error {
 	blocks, doc := split(body)
 	if len(blocks) > contracts.DispatchItemBlocks {
@@ -114,15 +117,15 @@ func Check(field, body string) error {
 	if card, holds := decisionCard(body, doc); holds {
 		return &DecisionBlock{Field: field, Position: card.Position, Type: card.Type}
 	}
-	asTheReaderEndsItsLines, loneCarriageReturn := lineFeedsForLoneCarriageReturns(body)
-	if !loneCarriageReturn {
+	asTheReaderReadsIt, readDifferently := readerCopy(body)
+	if !readDifferently {
 		return nil
 	}
-	reread, err := pmdoc.Parse(asTheReaderEndsItsLines)
+	reread, err := pmdoc.Parse(asTheReaderReadsIt)
 	if err != nil {
 		reread = nil
 	}
-	if card, holds := decisionCard(asTheReaderEndsItsLines, reread); holds {
+	if card, holds := decisionCard(asTheReaderReadsIt, reread); holds {
 		return &DecisionBlock{Field: field, Position: card.Position, Type: card.Type}
 	}
 	return nil
@@ -147,28 +150,21 @@ func decisionCard(body string, doc *pmdoc.Node) (pmdoc.DecisionCard, bool) {
 	return pmdoc.DecisionCard{}, false
 }
 
-// lineFeedsForLoneCarriageReturns is body with every carriage return that no line feed follows
-// written as a line feed, and whether body held such a carriage return at all. A carriage return
-// a line feed follows is half of one CR LF line ending and stands as it was: making a line feed
-// of it too would end two lines where both parsers end one, splitting a block neither of them
-// splits. A body holding no lone carriage return is answered as it came, unread and uncopied, so
-// an ordinary body pays one scan for its carriage returns and nothing more.
-func lineFeedsForLoneCarriageReturns(body string) (string, bool) {
-	first := firstLoneCarriageReturn(body)
-	if first < 0 {
-		return body, false
+// readerCopy is body as the browser's own reader reads it, and whether that reading differs from
+// the body at all: one leading U+FEFF dropped, since that reader drops one byte-order mark before
+// it reads a line and reads a second as the text it is, and every line ending written as a line
+// feed (pmdoc.LineFeeds), since it ends a line at a lone carriage return where this parser ends
+// none. A body the reader reads as it stands is answered as it came, unread and uncopied, so an
+// ordinary body pays one scan for its carriage returns and nothing more.
+func readerCopy(body string) (string, bool) {
+	withoutTheMark := strings.TrimPrefix(body, "\ufeff")
+	// pmdoc.LineFeeds writes a CR LF pair as one line feed, as both parsers end one line there,
+	// so a body whose every carriage return is half of a pair is read alike by both and is left
+	// uncopied rather than parsed a second time for a reading that cannot differ.
+	if firstLoneCarriageReturn(withoutTheMark) < 0 {
+		return withoutTheMark, len(withoutTheMark) != len(body)
 	}
-	var written strings.Builder
-	written.Grow(len(body))
-	written.WriteString(body[:first])
-	for index := first; index < len(body); index++ {
-		if body[index] == '\r' && (index+1 == len(body) || body[index+1] != '\n') {
-			written.WriteByte('\n')
-			continue
-		}
-		written.WriteByte(body[index])
-	}
-	return written.String(), true
+	return pmdoc.LineFeeds(withoutTheMark), true
 }
 
 // firstLoneCarriageReturn is where body's first carriage return that no line feed follows stands,

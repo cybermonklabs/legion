@@ -7,14 +7,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/yuin/goldmark/ast"
-	extensionast "github.com/yuin/goldmark/extension/ast"
 )
 
 // DecisionCard is where the browser reader draws a decision card in a body: Position is the place,
 // counted from 1, of the top-level block that holds the first `ask` the reader draws a card for,
 // and Type is that block's type, named as the conversion names the Proof node it makes of such a
-// block (readerBlockType). The decision block's own type is that block's type only where the
-// decision block stands at the top of the body. A card nowhere is the zero DecisionCard.
+// block (blockType). The decision block's own type is that block's type only where the decision
+// block stands at the top of the body. A card nowhere is the zero DecisionCard.
 type DecisionCard struct {
 	Position int
 	Type     string
@@ -93,7 +92,7 @@ func cardInSource(source []byte) DecisionCard {
 		for block := root.FirstChild(); block != nil; block = block.NextSibling() {
 			blocks++
 			if holdsAnAsk(block) {
-				return DecisionCard{Position: position + blocks, Type: readerBlockType(block)}
+				return DecisionCard{Position: position + blocks, Type: blockType(block)}
 			}
 		}
 		if count == nil || !count.stopped {
@@ -137,41 +136,6 @@ func holdsAnAsk(block ast.Node) bool {
 		}
 	}
 	return false
-}
-
-// readerBlockType names one of goldmark's blocks as the conversion names the Proof node it makes
-// of it (parseBlock), so a refusal of a body the parse refused names its block the way a refusal of
-// a body the parse read names the same block: a typed block is its own type, declared by the schema
-// or not, since that is the block its author wrote. A block the conversion refuses rather than
-// converts is named by its goldmark kind; no such block holds a decision block, since none of them
-// holds a block at all.
-func readerBlockType(block ast.Node) string {
-	switch current := block.(type) {
-	case *ast.Paragraph, *ast.TextBlock:
-		return "paragraph"
-	case *ast.Heading:
-		return "heading"
-	case *ast.Blockquote:
-		return "blockquote"
-	case *ast.List:
-		if current.IsOrdered() {
-			return "ordered_list"
-		}
-		return "bullet_list"
-	case *ast.ListItem:
-		return "list_item"
-	case *ast.FencedCodeBlock, *ast.CodeBlock:
-		return "code_block"
-	case *ast.ThematicBreak:
-		return "hr"
-	case *extensionast.Footnote:
-		return "footnote_definition"
-	case *extensionast.Table:
-		return "table"
-	case *typedDirective:
-		return current.Name
-	}
-	return block.Kind().String()
 }
 
 // askOpenersRespelled is source with every line the browser reader opens an `ask` container on
