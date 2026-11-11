@@ -190,6 +190,8 @@ such a row loses is feedback on the pull request itself.
 | `e2e/ask-blocks.e2e.ts` | decision answers the server records, and pastes in the live document editor |
 | `e2e/ask-concurrent-edit.e2e.ts` | two editors crossing in one `/ws/doc` room |
 | `e2e/ask-part-references.e2e.ts` | the reference and backlink index the server builds from the write |
+| `e2e/asked-of-cli.e2e.ts` | runs the real `dispatch open-asks` against the server and reads the person it names, which the server's own expression answers, before and after a hand-on made in a browser |
+| `e2e/asked-of.e2e.ts` | hands an ask on and re-reads the write on every surface that draws it; whose Inbox the row sits in is the server's own expression, and each move arrives over the live socket with no reload |
 | `e2e/attention.e2e.ts` | the new card arrives over the live socket; a read-mark write moves under the reader |
 | `e2e/bare-references.e2e.ts` | opens the spec's live editor and its margin for every assertion |
 | `e2e/block-references.e2e.ts` | uploads, then asserts the server re-resolved the reference; an edit after load must arrive live; a delete after load must arrive live |

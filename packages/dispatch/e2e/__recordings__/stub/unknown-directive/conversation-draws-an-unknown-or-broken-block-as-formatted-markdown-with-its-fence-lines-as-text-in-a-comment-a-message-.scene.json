@@ -6,7 +6,7 @@
         "A heading",
         "Body text"
       ],
-      "turn": "ask:e30ad80c-60e8-4a26-9daa-e025900327d1"
+      "turn": "ask:62244a7c-0a8f-41fe-a121-5f9dfd69431f"
     },
     {
       "lines": [
@@ -16,17 +16,17 @@
         ":::note",
         "A note line"
       ],
-      "turn": "message:88a8c031-7c28-4ca5-8c43-a304091968cc"
+      "turn": "message:efc77a2e-18ed-4f04-9bb3-d49b2b41df06"
     }
   ],
   "container": {
-    "ask": "1b58071f-9aac-4baa-baca-6b69912a5c3c",
-    "comment": "b94126df-724f-43f8-86da-e093d549fb20",
-    "message": "ca98bb26-47ee-4fab-b992-f54c3ee24aba"
+    "ask": "f74b4126-d460-4e19-84a7-4d7f080ae734",
+    "comment": "88d4e503-ef88-433e-a9ea-c8f278c017df",
+    "message": "f7494e21-d9de-4c33-91f5-5cb2f4d30577"
   },
   "issue": "CORE-1",
   "stored": [
-    "01712fe7-3184-4b42-a749-161f4f544501",
-    "c6567253-59d1-479c-a982-f8f48dee7bcc"
+    "517215e1-46c5-4d29-ad5e-113a267b3800",
+    "fbd4cb62-3693-4e7d-9514-4cfea9c8eace"
   ]
 }

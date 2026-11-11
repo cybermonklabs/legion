@@ -130,6 +130,17 @@ export function optionalString(args: Record<string, unknown>, name: string): str
   return typeof value === "string" ? value : undefined;
 }
 
+/** A field the server reads as a tri-state: absent leaves it, null clears it, a string sets it.
+ *  `assignee` is one, and `--clear-assignee` is how the command sends its null. */
+export function optionalNullableString(
+  args: Record<string, unknown>,
+  name: string
+): string | null | undefined {
+  const value = args[name];
+  if (value === null) return null;
+  return typeof value === "string" ? value : undefined;
+}
+
 export function optionalBoolean(args: Record<string, unknown>, name: string): boolean | undefined {
   const value = args[name];
   return typeof value === "boolean" ? value : undefined;

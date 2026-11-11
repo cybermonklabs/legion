@@ -27,6 +27,7 @@ import {
   defined,
   optionalBoolean,
   optionalComponents,
+  optionalNullableString,
   optionalNumber,
   optionalPriority,
   optionalPriorityFilter,
@@ -233,6 +234,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const rankBefore = optionalString(args, "before");
   const rankAfter = optionalString(args, "after");
   const priority = optionalPriority(args, "priority");
+  const assignee = optionalNullableString(args, "assignee");
   const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
   const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
   const requestedLinks = Array.isArray(args.external_links)
@@ -309,6 +311,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(title === undefined ? {} : { title }),
       ...(labels === undefined ? {} : { labels }),
       ...(priority === undefined ? {} : { priority }),
+      ...(assignee === undefined ? {} : { assignee }),
       ...(route === undefined ? {} : { route }),
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
       ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
@@ -363,6 +366,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     ...(priority === undefined
       ? []
       : [after.priority === null ? "priority cleared" : `priority -> P${after.priority}`]),
+    ...(assignee === undefined
+      ? []
+      : [after.assignee === null ? "assignee cleared" : `assignee -> ${after.assignee}`]),
     ...(rank === undefined
       ? []
       : [

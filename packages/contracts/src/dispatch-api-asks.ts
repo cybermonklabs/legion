@@ -184,6 +184,18 @@ export const askFields = {
    *  ask's thread, or null when nobody has replied. Who spoke last; whose turn it is comes from
    *  `waiting_on`. Absent on every other ask read. */
   last_reply: AskLastReplySchema.nullable().optional(),
+  /** The three stored fields of a hand-on, carried by every ask read and by every ask payload as
+   *  the row carries them: whom the ask waits on, who handed it there and when. `asked_of` is
+   *  null until somebody hands the ask on, and a null one waits on the assignee of its issue,
+   *  which is where every ask starts; a hand-on back to that assignee nulls it again and still
+   *  writes `asked_of_by` and `asked_of_at`, so an ask card can say who gave it back.
+   *
+   *  `waiting_on_person` - the person the server resolved the ask to, `asked_of` or the issue's
+   *  assignee - is deliberately absent: it is read-time only, as `waiting_on` is, and this object
+   *  is the base of the strict payload schema, which Dispatch never writes it on. */
+  asked_of: z.string().nullable(),
+  asked_of_by: z.string().nullable(),
+  asked_of_at: z.string().nullable(),
   /** Whose reply an open ask needs next. A moved approval request stays with its agent while
    *  `requested_version` is below `version`; a hand-back (`ask.handed_back`) returns it to the
    *  human until a reply newer than the one it answered decides it by its `turn`. Present on every
@@ -247,7 +259,9 @@ export const AskFollowerSchema = z
  *  anything new. A restore the release before Dispatch kept the mark writes - every one already in
  *  the event log, and one written during a rollout or an image rollback - carries no mark, so a
  *  missing `restored` does not prove an event is a new answer. `thread_logins` (the ask's own
- *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`. */
+ *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`; on `ask.asked_of` it
+ *  is the two people the hand-on moved the ask between instead, since no reader of the thread
+ *  changes list there. */
 export const askEventPayloadFields = {
   ...askFields,
   ...referenceChangesFields,
@@ -350,6 +364,15 @@ const inboundAskEventPayloadFields = {
       at: askResolutionFields.at.optional(),
     })
     .nullish(),
+  // The three stored fields of a hand-on, as the row carries them: whom the ask waits on, who
+  // handed it there and when. A frame retained from before the hand-on existed carries none of
+  // them, so each is read as optional as well as nullable. `waiting_on_person` is deliberately
+  // absent: it is read-time only (the ask row never stores it), as `waiting_on` is, and this
+  // object keeps only the keys it declares, so a payload that somehow carried it would reach no
+  // reader with it.
+  asked_of: askFields.asked_of.optional(),
+  asked_of_by: askFields.asked_of_by.optional(),
+  asked_of_at: askFields.asked_of_at.optional(),
   thread_logins: threadLoginsFields.thread_logins,
 };
 

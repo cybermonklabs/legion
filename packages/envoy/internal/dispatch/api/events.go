@@ -412,7 +412,7 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
 		switch events[index].Type {
-		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back":
+		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of":
 		default:
 			continue
 		}

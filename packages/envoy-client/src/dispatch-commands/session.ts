@@ -268,10 +268,10 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * band are the server's order and nothing re-sorts them.
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
- * on a person that the viewer has not deferred and that sit on their own issues (`waitingOnYou`),
+ * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request, which is the viewer's by construction because the list is read
  * as `?approver=me`. Here that is the band's own rows and nothing narrower, since `?assignee=me`
- * keeps only the asks on issues assigned to the caller, as the page's default view does; counting
+ * keeps only the asks that wait on the caller, as the page's default view does; counting
  * the rows it prints is therefore the page's rule, and it is the one count that cannot disagree
  * with the lines under it.
  *

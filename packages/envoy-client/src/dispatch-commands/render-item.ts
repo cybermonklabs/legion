@@ -140,9 +140,22 @@ function openAskAge(ageSeconds: number): string {
   return `${days}d${hours % 24 === 0 ? "" : ` ${hours % 24}h`}`;
 }
 
+/** The person an open ask is asked of, as the server resolved it (`waiting_on_person`: whoever
+ *  the ask was handed to, and the assignee of its issue until somebody hands it on), and
+ *  `nobody` where the server names none — an ask on a project document, or on an issue nobody
+ *  holds, that nobody was handed. */
+function openAskAskedOf(ask: OpenAsk): string {
+  const person = ask.waiting_on_person;
+  return person === undefined || person === "" ? "nobody" : person;
+}
+
+/** One row of `dispatch open-asks`, in both of the listing's groups: the person it is asked of
+ *  is on every row, since one row renderer is one rule. The word is the ask card's own, `asked
+ *  of`, rather than `waiting on`, because a row under `Waiting on agent (N):` waits on the
+ *  agent - the next move there is the agent's, and naming the person must not claim otherwise. */
 function openAskLine(ask: OpenAsk, baseUrl: string): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${openAskAskedOf(ask)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {

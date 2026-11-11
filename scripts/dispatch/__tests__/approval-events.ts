@@ -82,6 +82,12 @@ export function approvalAsk(version: number, requestedVersion: number, summary =
     opened_event_id: 1,
     created_at: recordedAt(1),
     edited_at: null,
+    // The person this ask waits on, who handed it there and when: null on an ask nobody has
+    // handed on, which is what these fixtures are. An empty asked_of waits on the issue's
+    // assignee, and every ask read carries all three.
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
     approval: {
       artifact_id: ARTIFACT,
       name: "spec.md",
@@ -257,6 +263,9 @@ export function blockAsk(block: string, artifact = ARTIFACT) {
     opened_event_id: 1,
     created_at: recordedAt(1),
     edited_at: null,
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   } satisfies Ask;
 }
 

@@ -356,6 +356,10 @@ function eventHead(event: DispatchEvent): string | undefined {
       const previousAnswer = event.payload.previous_answer;
       return `${textHead(event.payload.question)} -> ${textHead(askAnswerText(event.payload.answer))}${previousAnswer === undefined ? "" : ` (was: ${textHead(askAnswerText(previousAnswer))})`}`;
     }
+    case "ask.asked_of":
+      // Whom the question waits on after the hand-on. An empty `asked_of` handed it to the
+      // assignee of its own issue, whom the payload does not name.
+      return `${textHead(event.payload.question)} -> asked of ${event.payload.asked_of ?? "the assignee of its issue"}`;
     case "comment.created":
     case "comment.answered":
     case "comment.anchor_refreshed":

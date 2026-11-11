@@ -155,6 +155,33 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
+
+A pane keeps the machine's own `git` and `jj`, unwrapped.
+Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
+`/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
+a shared box has no such boundary: the daemon, its panes and the operator are one Unix user, so a
+wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
+pinned for it one the pane can override.
+A copy of them here would read as a guard and hold nothing.
+What a pane does run the guard in is `legion gh` and the rescue helper, the same binary with the
+same rules compiled in, and each of them resolves the shared public leak check from the pane's
+own `PUBLIC_LEAK_CHECK`.
+A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
+daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
+operator's home, and the check's installer puts its files on no `PATH` a pane has.
+So the daemon resolves it instead, once per launch and in its own environment — the machine's
+own `PUBLIC_LEAK_CHECK`, a `public-leak-check.sh` on its `PATH`, or the pointer file under its
+configuration home — and tells the pane where it is
+(`resolveLeakCheck` and `panePairs`, `packages/daemon/internal/runtime/tmux`).
+An operator who points one pane at another copy still wins: `runtime.tmux.pane_env` and a spec's
+own `Env` are told after the resolved one, and the last value of a name is what the pane holds.
+Legion installs no check on a shared box — the pinned install is the pod's, from a tag the worker
+image carries — so a box that writes to public repositories carries it through the check's own
+installer, run on the machine the daemon runs on.
+A daemon that resolves none logs one line per launch naming the pane, tells that pane no
+`PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
+error naming the missing check.
+
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's
 shim), boot refuses it, naming it and `LEGION_GH_PATH` (`RefuseScriptGH`): run as the real gh, a

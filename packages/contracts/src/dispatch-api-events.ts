@@ -195,6 +195,14 @@ export type DispatchEvent =
       readonly type: "ask.handed_back";
       readonly payload: AskEventPayload;
     })
+  /** One person handed an open ask to another: `asked_of` is whom it waits on from now on, empty
+   *  where that is the assignee of its own issue, and `asked_of_by` who handed it on. The ask
+   *  keeps its question, its thread and its followers; only whose list it sits in moves, so
+   *  `thread_logins` names those two people and nobody else. */
+  | (DispatchEventBase & {
+      readonly type: "ask.asked_of";
+      readonly payload: AskEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "ask.answered";
       readonly payload: AskAnsweredEventPayload;

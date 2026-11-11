@@ -71,6 +71,9 @@ test("EventBody shows the answer a change replaced, struck through", async () =>
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: { at: "2026-09-11T00:00:00Z", selected: ["Hold"], text: null, user: "alice" },
       author: { id: "session-1", kind: "session" },
@@ -130,6 +133,9 @@ test("EventBody names the agent an answer was given through, beside the person",
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: { ...alice, act: { session: "0123456789abcdef", scopes: ["person"] } },
       author: { id: "session-1", kind: "session" },
@@ -181,6 +187,9 @@ test("EventBody names how an ask was resolved: a withdrawal by the close, a retr
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: null,
       author: { id: "session-1", kind: "session" },
@@ -259,6 +268,9 @@ test("EventBody reads a null selected list on an answer and its previous answer 
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: {
         at: "2026-09-11T00:00:00Z",

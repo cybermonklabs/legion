@@ -151,6 +151,13 @@ type AppContextOptions struct {
 	// ListenerTakeoverWindow replaces how long a sender keeps trying a listener that is being
 	// replaced; zero keeps the server's twelve seconds. See api.Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning and how often each of that
+	// Horizon's three warnings repeats - the stall warning, the failed-observation warning and
+	// the failed-persist warning; zero keeps the horizon's own five and thirty seconds. See
+	// api.Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
@@ -211,6 +218,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
 		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
+		HorizonStallAfter:      opts.HorizonStallAfter,
+		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
