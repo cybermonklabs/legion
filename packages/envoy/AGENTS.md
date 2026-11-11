@@ -2611,7 +2611,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Every writer passes `MoveApprovalAsk` the actor whose edit moved the request:
   a route passes its own actor, settlement its latest known browser editor, and ambiguous browser content `SettlementActor`, `{kind: "system", id: "document-settlement"}`;
   how many authors the version credits does not choose the mover.
-  What resolving an ask stores is written in one place, `docs.WriteAskResolution`, which settlement's retraction of a removed ask block and the resolve route both call.
+  What resolving an ask stores is written in one place, `docs.WriteAskResolution`, which settlement's retraction of a removed ask block, an issue's close, the resolve route and the decline route all call.
   A request while the latest version is approved returns the approval and opens nothing.
 
 - Answering an approval ask (the `person` and `approve` scopes;

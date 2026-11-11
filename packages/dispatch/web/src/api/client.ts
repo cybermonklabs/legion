@@ -395,6 +395,9 @@ export type ArtifactOwner = { issue: string } | { project: string } | { session:
 
 export type CreateArtifactReviewInput = Body<"/api/v1/artifacts/{id}/reviews", "post">;
 
+/** What a decline carries: the person's own note, which is optional. */
+export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
+
 /** Every write verb, as the document names a route's operation; the request carries the method
  *  it uppercases to, which is `WRITE_METHODS`' member of the same name. */
 type WriteVerb = Lowercase<WriteMethod>;
@@ -1184,6 +1187,13 @@ export class DispatchApiClient {
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/asks/{id}/answer", { id }, input, bounds);
+  }
+
+  /** `POST /api/v1/asks/{id}/decline`: close an open question with no answer, keeping the
+   *  person's note. Needs the `person` scope, as the answer route does; an approval request is
+   *  refused `409 ASK_NOT_DECLINABLE`. */
+  declineAsk(id: string, input: DeclineAskInput, bounds: WriteBounds) {
+    return this.post("/api/v1/asks/{id}/decline", { id }, input, bounds);
   }
 
   getAsk(id: string) {

@@ -690,7 +690,7 @@ func (s *server) storeArtifact(
 	var advice *writeAdvice
 	if target.IssueKey != nil && issueStatus != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, "", *issueStatus,
+			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, "", *issueStatus, false,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -1201,13 +1201,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	var superseded *supersededApproval
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, "POST /api/v1/artifacts/{id}/edits", artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 	}
+	// An edit hears about the asks of this issue a person declined to answer only where it added
+	// an ask block, which is the write R6 asks the reminder for: "an edit of one of the issue's
+	// documents that adds an ask block". Every other edit puts no question to anyone and runs no
+	// such read.
 	var advice *writeAdvice
 	if artifact.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/artifacts/{id}/edits", *artifact.IssueKey, actor, "", *status,
+			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, "", *status, len(edit.AddedAskBlocks) > 0,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {

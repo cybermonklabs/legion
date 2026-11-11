@@ -10,7 +10,7 @@ import { ASK_URGENCIES, isIdPrefix } from "@legion/contracts";
 import { textHead } from "../ask-answer";
 import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { issueTopic, type Owner, parseDispatchRef } from "../dispatch-owner";
-import { relatedCheckLines } from "../related-check";
+import { declinedAskLines, relatedCheckLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import { askQuestionWithRef } from "./check";
@@ -254,13 +254,17 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
       : resolved === undefined
         ? issueTopic(issue())
         : documentTopic(resolved.artifact);
-  // The check's form sits right under the line naming the ask; renderAdvice's cadence line
-  // must stay the result's last line.
+  // The check's form sits right under the line naming the ask, and the issue's declined asks
+  // under that; renderAdvice's cadence line must stay the result's last line.
   const checkLines = relatedCheckLines(ask.advice?.suggestions, {
     project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
     text: stringArg(args, "question"),
     configUrl: linkBase,
   });
+  // An ask on a project document stands on no issue, and the server sends declined asks only
+  // for a write that does, so there is nothing to print there.
+  const declinedLines =
+    ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
   const adviceLines = await otherAdviceLines(() =>
     renderAdvice(input.tool, askOwner.label, ask.advice, {})
   );
@@ -268,6 +272,7 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
     text: [
       `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
       ...checkLines,
+      ...declinedLines,
       await followsAsk(askOwner, input.subscriptions),
       ...adviceLines,
     ].join("\n"),

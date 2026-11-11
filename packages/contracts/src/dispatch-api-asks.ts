@@ -61,9 +61,14 @@ export const AskAnswerSchema = z.strictObject(askAnswerFields).readonly();
 
 export const askResolutionFields = {
   /** `withdrawn` is written by the server alone, when the ask's issue is closed; no caller can
-   *  resolve an ask with it, and reopening the issue opens the ask again. */
-  kind: z.enum(["retracted", "resolved", "withdrawn"]),
+   *  resolve an ask with it, and reopening the issue opens the ask again. `declined` is a
+   *  person's own act, written by `POST /api/v1/asks/{id}/decline` alone: they chose not to
+   *  answer the question, so the ask closes with no answer. */
+  kind: z.enum(["retracted", "resolved", "withdrawn", "declined"]),
   reason: z.string(),
+  /** What Dispatch wrote beside a decline for the asking agent, kept apart from `reason`, which
+   *  is the person's own note. Written on a `declined` resolution alone. */
+  dispatch_words: z.string().optional(),
   actor: ActorSchema,
   at: z.string(),
 };
@@ -354,8 +359,17 @@ const inboundAskEventPayloadFields = {
     .optional(),
   resolution: z
     .object({
-      kind: askResolutionFields.kind.optional(),
+      // The kind is a plain string rather than the list of kinds the server writes today
+      // (`askResolutionFields.kind`), for the reason the ask's own `kind` is one: this object
+      // strips what it does not declare, so a closed list would make the next kind cost every
+      // older reader the whole card, and the kind is the part a reader prints first.
+      kind: z.string().optional(),
       reason: askResolutionFields.reason.optional(),
+      // `dispatch_words` is declared for the same reason the other way round: a reader keeps
+      // only the parts its schema names, so the words Dispatch writes beside a decline reach
+      // only a reader built with this change, and they stay apart from `reason`, the person's
+      // own note.
+      dispatch_words: askResolutionFields.dispatch_words,
       // The resolver of a frame retained from an earlier release may name neither kind nor id.
       actor: z
         .object({ kind: z.string().optional(), id: z.string().optional() })

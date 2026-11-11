@@ -24,7 +24,7 @@ import {
   sniffPictureType,
   toolImage,
 } from "../dispatch-pictures";
-import { decisionBlockLines } from "../related-check";
+import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import {
   type CommandContext,
@@ -433,6 +433,13 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
     text: editAskText,
     configUrl: linkBase,
   });
+  // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line must
+  // stay the result's last line. A project document stands on no issue, and the server sends
+  // declined asks only for a write that does.
+  const declinedLines =
+    resolved.issue === undefined
+      ? []
+      : declinedAskLines(edited.advice, resolved.issue.key, linkBase);
   const adviceLines = await otherAdviceLines(() =>
     renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
   );
@@ -444,6 +451,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
     text: [
       `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
       ...checkLines,
+      ...declinedLines,
       ...tokenTrailer,
       ...adviceLines,
     ].join("\n"),

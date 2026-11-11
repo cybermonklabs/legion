@@ -309,12 +309,15 @@ export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
 
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
  *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
- *  replied in its ask's thread, replied in a comment thread it wrote in, commented on a document it
- *  wrote, commented on an issue routed to it, mentioned it, sent it a message (direct, on an issue,
- *  or a broadcast's copy), or replied to its message. Mirrored in Go as the
- *  `model.SessionAnswerRelation*` constants. */
+ *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
+ *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
+ *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
+ *  the item of the new kind `declined`, whose `text` is the person's own note and whose
+ *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
+ *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
 export const SESSION_ANSWER_RELATIONS = [
   "answered_your_ask",
+  "declined_your_ask",
   "replied_on_your_ask",
   "replied_in_a_comment_thread",
   "commented_on_a_document",

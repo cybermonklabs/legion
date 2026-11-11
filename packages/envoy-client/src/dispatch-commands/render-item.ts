@@ -12,7 +12,7 @@ import type {
 } from "@legion/contracts";
 import { actorActText, encodeBlockId } from "@legion/contracts";
 import { actorText } from "../actor-text";
-import { askAnswerText, textHead } from "../ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
@@ -43,6 +43,7 @@ export function askSummary(
     `${reply.id} · ${actorText(reply.author)}`,
     `Body: ${reply.body}`,
   ]);
+  const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
     `Question: ${ask.question}`,
     ...anchorLines(ask),
@@ -81,7 +82,12 @@ export function askSummary(
           "Resolution:",
           `- By: ${ask.resolution.actor.id}`,
           `- Kind: ${ask.resolution.kind}`,
-          `- Reason: ${ask.resolution.reason}`,
+          // A decline the person wrote no note with holds no reason, so the line is left out
+          // rather than printed empty; the sentences Dispatch wrote for the asking agent stand
+          // on a bullet of their own, under the label every reader of them names them with
+          // (`dispatchWordsText`), so nobody reads them as the person's words.
+          ...(ask.resolution.reason === "" ? [] : [`- Reason: ${ask.resolution.reason}`]),
+          ...(resolutionWords === undefined ? [] : [`- ${resolutionWords}`]),
         ]),
     "Replies:",
     ...(chain.length === 0 ? ["- none"] : chain),
