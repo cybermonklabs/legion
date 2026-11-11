@@ -53,7 +53,8 @@ on:
         description: >-
           Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
           and the two stubbed projects, held to the rows tagged `@pr`, or `full` for every
-          project, the `-alone` ones and the two-process job among them, over every row. The shard job reads it for the projects it runs; no job reads it for a
+          project, the `-alone` ones and the two-process job among them, over every row. The shard job reads it for the projects it runs, and the binaries job reads it for
+          whether to build the second rollout bundle, which the full lane alone needs; no job reads it for a
           browser to install any more, since the image the shard and alone jobs run in carries
           all three engines. Any other value fails the shard job's browser step by name, before
           it starts a row.

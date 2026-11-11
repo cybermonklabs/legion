@@ -811,7 +811,12 @@ chronological event list: collapsed comment turns provide a reply summary, a com
 marks its card and opens its thread there, and on phones opening one uses a full-height dialog
 with a bottom-pinned reply composer and Back or Escape close.
 
-`AuthGate` resolves `GET /auth/whoami`; unauthenticated visitors see the Google
+`AuthGate` resolves the `["whoami"]` query, whose read is `GET /api/v1/landing`: one request
+that answers the viewer, the shell and the page the address names, and seeds each part under
+the key that part's own route uses (`whoAmIQuery` and `readLanding` in `web/src/api/queries.ts`).
+A server that does not answer that route answers 404, and the read falls back to
+`GET /auth/whoami` and seeds nothing, so every page reads as it read before.
+Unauthenticated visitors see the Google
 sign-in link at `/auth/start`. Authenticated humans can create native projects,
 manage repository-to-project mappings (each row's **Default** radio makes it its project's one
 default repository, the one an issue with no repository of its own or on its parent chain
@@ -1478,9 +1483,11 @@ through — has a `Fetch` of its own rather than `globalThis.fetch`.
 A request no handler answers is errored and recorded with its method and path, and the preload's
 `afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
 a `catch`, and a write still retrying after a file's last test, are reported all the same.
-The module answers six routes with the API's empty shape: the five the application shell reads on
-every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
-`/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
+The module answers seven routes with the API's empty shape: the five the application shell reads
+on every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
+`/api/v1/credential-requests`, `/api/v1/me/agents/state`), `/api/v1/projects`, and
+`/api/v1/landing` as the 404 a Dispatch older than that route answers, which is what leaves
+every page under test reading each resource from the route its own test answers or spies.
 The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
 with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
 are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
@@ -1770,18 +1777,27 @@ against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 
 Every browser row of the suite runs in `.github/workflows/dispatch-browser.yaml`, which
 `.github/workflows/ci.yaml`'s `dispatch-browser` job calls with one of two lanes.
-A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`
-and `iphone`, split over four
-shard machines, each leg running `--shard=N/4` with four workers.
+A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`,
+`iphone`, `stub` and `stub-phone`, held to the rows tagged `@pr`, split over two
+shard machines, each leg running `--shard=N/2` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
-run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
-projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
+run the `full` lane: all eight parallel projects and the two stubbed ones over those same two
+shards, the three `-alone` projects one after another on a single machine of their own with
+`--no-deps` and one worker, the two-process job, the fake-embedder job and the visual review.
+Seven jobs in all, and the first of them builds what the other six run: the `binaries` job
+compiles the Go commands the stacks execute, builds the dashboard bundle every browser row
+serves and, on the full lane, the second rollout bundle beside it, and uploads the two as
+artefacts (dispatch://INFRA-1109).
+Every other job downloads what it needs of those two and builds no dashboard bundle and no Go
+command of its own, except the dev OIDC issuer the two-process job's sign-in step builds; the
+jobs that run Playwright themselves still build `@legion/contracts`, which their Node runner
+reads.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
-line rather than in an `env:`, for the reason that step's comment gives: a name outside
+line rather than in an `env:`, for the reason that job's head gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
-steps', drops `e2e/run-server.sh`'s `go build` out of `.github/scripts/check-ci-filters.sh`'s
-reduction.
+steps', is counted as reaching a go command unseen, and the `binaries` job's build step is read
+under this workflow's own `env:` and defaults for the same reason.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
@@ -1792,8 +1808,9 @@ it is working on.
 
 One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
 samplers, run from `packages/dispatch` with a Postgres provider the stacks above name:
-`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4 --workers 4`.
-The `full` lane's leg names all eight parallel projects in place of those two.
+`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --project=stub --project=stub-phone --grep='(^|\s)@pr(\s|$)' --shard=1/2 --workers 4`.
+The `full` lane's leg names all eight parallel projects and the two stubbed ones in place of
+those four, and passes no `--grep`.
 A local run retries nothing; CI retries a failed row once
 (`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
 projects and the two-process project, which set `retries: 0` of their own: a row whose claim is a
@@ -1825,6 +1842,13 @@ it proves: most of a short row is the floor every row pays, measured in an issue
 pod at a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle
 that context cannot cache (0.40 s) and the dashboard's boot reads before its
 first draw (0.80 s).
+That last reading is older than the landing this release ships: it was taken
+when a cold issue page sent 21 reads in four waves, and the same page now sends
+3 in two (`e2e/landing-reads.e2e.ts`, which prints every landing's waterfall
+and holds each page to its bound).
+So the boot-read part of the floor is smaller than 0.80 s at this head, by how
+much nothing has measured yet; the two readings above it are untouched by that
+change.
 
 A row that drives no browser does not belong in this suite: it takes no page
 fixture, it runs in one project because every other would repeat it, and it
@@ -2368,8 +2392,11 @@ twice (`web/dist`, then `web/dist-b` with `DISPATCH_BUILD=e2e-b`, so its entry c
 A's even where CI sets `GITHUB_SHA`; `web/vite.config.ts` takes `DISPATCH_BUILD` first) and runs
 Playwright in two-process mode with B on `dist-b`, passing on extra arguments
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`).
-The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs it, on the full lane
-alone.
+Its two halves are scripts of their own: `build:web-b` writes the second bundle, and
+`e2e:multiprocess:run` runs Playwright over bundles that are already there.
+The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs `e2e:multiprocess:run`
+and no build, on the full lane alone: both bundles come out of the `binaries` job's artefact
+(dispatch://INFRA-1109).
 Two-process mode starts its own servers, so the Playwright config refuses it with
 `PLAYWRIGHT_BASE_URL`, and `bun run dispatch:local` refuses it.
 
@@ -2400,8 +2427,9 @@ the memory of the process that started it, B answers the callback 400 `invalid o
 `e2e/__tests__/harness-signin.test.ts` (`bun run test`) holds the refusals and the listener
 table's wiring.
 Run it as `DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess`; the `multiprocess` job of
-`.github/workflows/dispatch-browser.yaml` runs it after the dev sign-in specs, on the dashboard
-the step before built.
+`.github/workflows/dispatch-browser.yaml` runs the same row after the dev sign-in specs, as a
+`bunx playwright test` of its own under `DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc`,
+on the dashboard the `binaries` job built and that job downloaded.
 
 `bun run dispatch:local` (`e2e/local-instance.ts`) is that harness, left running and seeded: it
 starts the harness through `e2e/harness-start.ts`, then imports the e2e modules that read a port

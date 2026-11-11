@@ -1,0 +1,5 @@
+kind: Added
+body: '`GET /api/v1/landing` answers a cold dashboard page in one read: who the caller is, what every page of the dashboard draws whatever its route, and what the page named by `?page=` (`issue`, `board`, `inbox` or `document`) draws before it can paint. Each part calls the same function the per-resource route calls, so the landing answers nothing that route would not. A part the caller may not read, or that names an issue or a document that is not there, is answered `null` instead of refusing the whole landing, and the caller reads that one part from its own route. A server that does not serve this route answers 404, which leaves a caller free to read every part as it read them before.'
+time: 2026-11-11T09:14:40.371048661Z
+custom:
+    Issue: pr3513

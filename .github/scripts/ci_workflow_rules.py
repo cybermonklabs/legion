@@ -157,11 +157,11 @@ def cache_steps(document: dict, action: str) -> list:
 def restores_of(document: dict) -> dict:
     """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
     can be is where its job's steps are, which is the engine's step_holders walk: ci.yaml's own
-    jobs, and the jobs of each local workflow one of them calls - dispatch-browser.yaml's shard
-    and alone jobs restore the browser and apt archive families for ci.yaml's dispatch-browser
-    job - so a save paired against ci.yaml alone would read as a fill nobody wants. That walk
-    lists the jobs of a workflow once per caller, and those are the same jobs, so each is taken
-    once."""
+    jobs, and the jobs of each local workflow one of them calls - dispatch-browser.yaml's
+    binaries and multiprocess jobs restore the go-envoy-test family for ci.yaml's
+    dispatch-browser job - so a save paired against ci.yaml alone would read as a fill nobody
+    wants. That walk lists the jobs of a workflow once per caller, and those are the same jobs,
+    so each is taken once."""
     restores, seen = defaultdict(list), set()
     for _, path, job_id, _, job in step_holders(document, document.get("jobs") or {}, {}):
         if (path, job_id) in seen:

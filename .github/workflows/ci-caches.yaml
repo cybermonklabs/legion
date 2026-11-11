@@ -16,9 +16,10 @@ name: CI caches
 # family's own module installs: go-notices (lint's notices step), go-daemon (typecheck, test and
 # pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers,
 # listener-server-change, envoy-e2e-local and envoy-session-stall), go-envoy-test (envoy-go, and
-# the binaries, multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which
-# ci.yaml's dispatch-browser job calls: those three build the Dispatch server and the real
-# broker's commands, whose packages the go-envoy entry's build of the listener and natsd alone
+# the binaries and multiprocess jobs of .github/workflows/dispatch-browser.yaml, which
+# ci.yaml's dispatch-browser job calls: the binaries job builds the Dispatch server and the
+# real broker's commands for the whole run, and the multiprocess job builds the dev OIDC
+# issuer, whose packages the go-envoy entry's build of the listener and natsd alone
 # does not hold) and go-envoy-infra (envoy-infra-go). One
 # Go setup, since the key carries the version that module's go.mod names: the daemon's go.mod for
 # go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for

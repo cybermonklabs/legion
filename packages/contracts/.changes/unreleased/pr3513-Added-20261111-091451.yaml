@@ -1,0 +1,5 @@
+kind: Added
+body: '`LandingResponse` and its members (`LandingViewer`, `LandingShell`, `LandingPage`, `LandingIssuePage`, `LandingIssueDocument`, `LandingBoardPage`, `LandingInboxPage`, `LandingDocumentPage`), the answer of Dispatch''s `GET /api/v1/landing`: the viewer, the shell every page of the dashboard draws, and the page the caller opened, in one read.'
+time: 2026-11-11T09:14:51.368487702Z
+custom:
+    Issue: pr3513
