@@ -129,6 +129,24 @@ const schemas: Record<string, z.ZodType> = {
       noBody: z.boolean(),
     })
   ),
+  // Nor this one: what the daemon serves every contract it supports
+  // (`internal/api/contract_shapes_test.go`). One record per answer per contract, from the
+  // contract the answer arrived at up to the daemon's own, holding the sorted key paths of the
+  // body a caller at that contract reads. A key path is one key of a body, written as the
+  // dotted path from the body's root, with a map's key and a list's index written as `*`, so
+  // `issues.*.pullRequest.fixAttempts` is one path, whichever issues the body holds and
+  // whichever of them carries a pull request. `noBody` says the answer writes no body at all,
+  // which reads differently from a body whose set of key paths is empty: the four routes that
+  // answer 204 are `"noBody": true` with no path, and the empty object the eight fact routes
+  // answer is `"noBody": false` with no path.
+  "contract-shapes.json": z.array(
+    z.strictObject({
+      contract: z.number().int().positive(),
+      answer: z.string().min(1),
+      noBody: z.boolean(),
+      keyPaths: z.array(z.string().min(1)),
+    })
+  ),
 };
 
 function fixture(name: string): unknown {
