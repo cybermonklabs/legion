@@ -1039,11 +1039,14 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
+              - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_test.go'
+              - '!packages/daemon/internal/store/unowned_release_pairing_test.go'
               - '!packages/daemon/internal/store/wake_test.go'
               - '!packages/daemon/internal/store/workspace_bundles_test.go'
               - '!packages/daemon/internal/supervise/**/*_test.go'
@@ -1699,11 +1702,14 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
+              - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_test.go'
+              - '!packages/daemon/internal/store/unowned_release_pairing_test.go'
               - '!packages/daemon/internal/store/wake_test.go'
               - '!packages/daemon/internal/store/workspace_bundles_test.go'
               - '!packages/daemon/internal/stream/**/*_test.go'
@@ -1885,11 +1891,14 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
+              - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_test.go'
+              - '!packages/daemon/internal/store/unowned_release_pairing_test.go'
               - '!packages/daemon/internal/store/wake_test.go'
               - '!packages/daemon/internal/store/workspace_bundles_test.go'
               - '!packages/daemon/internal/stream/**/*_test.go'
@@ -2262,11 +2271,14 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_outbox_test.go'
               - '!packages/daemon/internal/store/migration_20261109060737_test.go'
+              - '!packages/daemon/internal/store/migration_20261110225246_test.go'
+              - '!packages/daemon/internal/store/migration_20261111001612_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_migration_test.go'
               - '!packages/daemon/internal/store/tree_lifecycle_test.go'
+              - '!packages/daemon/internal/store/unowned_release_pairing_test.go'
               - '!packages/daemon/internal/store/wake_test.go'
               - '!packages/daemon/internal/store/workspace_bundles_test.go'
               - '!packages/daemon/internal/stream/**/*_test.go'
@@ -2932,6 +2944,11 @@ jobs:
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
               - 'packages/envoy/internal/dispatch/benchtime/*'
+              # The API's CI-reconcile passes route reads cireconcile's own record, so the race
+              # build of ./internal/dispatch/api compiles that package too. Its testdata is not
+              # here, for the reason this filter's header gives: a dependency's testdata is read
+              # by that package's own tests, which run in a job of their own.
+              - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/delivery/*'
               - 'packages/envoy/internal/dispatch/delivery/measures/*'
               # internal/dispatch/api/delivery_measures_test.go:82 and delivery_test.go:714 read
@@ -3023,6 +3040,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
               - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/cireconcile/**/*_test.go'
               - '!packages/envoy/internal/dispatch/delivery/**/*_test.go'
               - '!packages/envoy/internal/dispatch/docs/**/*_test.go'
               - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
@@ -3222,6 +3240,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/architecture/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
+              # The API's CI-reconcile passes route reads cireconcile's own record, so the soak's
+              # Dispatch server compiles that package too (go list -deps ./cmd/listener).
+              - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -3725,6 +3746,8 @@ jobs:
               - '.github/scripts/check-ci-tools.sh'
               - '.github/scripts/ci-tools-proof.sh'
               - '.github/scripts/ci-fault-proxy.py'
+              # The two jobs read the machine they run on with it.
+              - '.github/scripts/disk_watch.py'
               - '.github/actions/install-crane/**'
               - '.github/actions/install-changie/**'
               - '.github/actions/install-jj/**'
@@ -3907,6 +3930,37 @@ jobs:
   # The removals the cases do make are about this job's own state: a case that must read the
   # second source takes ~/.bun/bin/bun and the bunx beside it away before its install, so what
   # it reads is not the bun an earlier case left.
+  #
+  # READING THIS JOB WHEN IT IS RED AND HAS NO LOG AT ALL.
+  # A job whose log GitHub answers `HTTP 404` with `<Code>BlobNotFound</Code>` for did not hang
+  # and was not cancelled: it lost its runner. The log is written when the runner finalises it,
+  # and a runner the service stops hearing from never finalises, while a job that was cancelled
+  # keeps its log. What outlives the log is the check run's annotation, which the service
+  # writes:
+  #   gh api repos/<owner>/<repo>/check-runs/<job id>/annotations
+  # On 2026-11-10 that answered, for this job: "The hosted runner lost communication with the
+  # server. Anything in your workflow that terminates the runner process, starves it for
+  # CPU/Memory, or blocks its network access can cause this error."
+  # Read the job record beside it: a lost runner leaves one step `in_progress` and every step
+  # after it `pending`, and the job ends before its own `timeout-minutes` would have fired.
+  # Three wrong causes were offered for that one job before anyone ran that command
+  # (dispatch://INFRA-2605). `docs/testing.md` says the same for any job of this repository.
+  #
+  # BEFORE YOU PUT A BOUND ON A STEP OF THIS JOB: A BOUND BELONGS ONLY WHERE FIRING IT IS LOUD.
+  # A step the runner ends at its `timeout-minutes` leaves the same `outcome` behind it as a
+  # step that failed on its own, and GitHub gives a later step nothing that tells the two apart.
+  # That is measured and not assumed: on this change's own run a step with `continue-on-error`
+  # and `timeout-minutes: 1` whose action slept 180 s was ended after 72 s, and the step after
+  # it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an
+  # assertion reads while the job's own result says nothing happened.
+  # So on a step with no `continue-on-error` a bound is loud: it fails the job. This job's steps
+  # are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-four installs
+  # there whose control passes a step whose `outcome` is `failure`, a bound is silent: a hang
+  # would satisfy that control and leave the job green, where the job's own ceiling would have
+  # cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
+  # the eight with nowhere to go by the control step beside them, the sixteen corrupted cases by
+  # `report` itself - and why a new bound on a step some later assertion accepts the failure of
+  # needs the same treatment or none at all (dispatch://INFRA-2605).
   tool-fallback:
     needs: [changes, ci-images]
     if: ${{ !cancelled() && needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}

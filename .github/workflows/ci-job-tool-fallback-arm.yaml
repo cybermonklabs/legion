@@ -37,9 +37,10 @@ jobs:
     # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, which
     # `--retry-max-time 60` bounds at a minute of new attempts plus one last attempt of the
     # row's `max_time` 60 s, so two minutes at worst (4) — the 107 MB npm tarball, its gunzip
-    # and the write (3), the two readings, each a sha256 of that binary (2), and the report step
-    # (1). That is 14, and a job its own limit cuts off reports `cancelled`, which ci-ok fails,
-    # so the limit is the next minute up.
+    # and the write (3), the two readings, each a sha256 of that binary (2), the report step
+    # (1), and the machine watch's start and its report (1). That is 15, and a job its own
+    # limit cuts off reports `cancelled`, which ci-ok fails, so the limit is the next minute
+    # up.
     # Measured, this job sits far inside that budget, and the ladder those two minutes allow for
     # is not driven in the runs measured. In five green runs on 2026-11-10 it took 41 s, 41 s,
     # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
@@ -54,15 +55,32 @@ jobs:
     # This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
     # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
     # drive no such ladder, must not move.
-    timeout-minutes: 15
+    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
+    # tool-fallback job's comment gives (.github/workflows/ci-job-tool-fallback.yaml). Neither
+    # of them carries `continue-on-error`, so a held install here is loud by itself: the bound
+    # fails the job at about 11.5 minutes, the steps after it are skipped, and the job uploads
+    # its log. This job's own 16-minute limit reaches that install first only when the steps
+    # before it took more than about five minutes, which the 41 s to 50 s measured above says
+    # they do not. The reading either way is a job with a log, which is what the twenty-four
+    # installs of tool-fallback cannot give and why their clock exists.
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The same reading as the tool-fallback job's, over both halves of this one, and for the
+      # same reason: this is the only job of this repository that installs a tool on arm64, so
+      # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
+      # that job's own pair (.github/workflows/ci-job-tool-fallback.yaml) says what the series
+      # shows and what it cannot.
+      - name: Start the machine watch over both halves
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
+
       # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
       # fourth step holds what it installed to the row its third step read out of `uname -m`.
-      - uses: ./.github/actions/setup-bun
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
 
       - name: Read the Bun the release asset served
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
@@ -84,13 +102,19 @@ jobs:
 
       # The npm path on arm64: the release asset answers nothing behind the fault, so the
       # action's third step reads the @oven/bun-linux-aarch64 package the row names.
-      - uses: ./.github/actions/setup-bun
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
 
       # --expect-refused is this half's own reading of the source: the proxy's 504 for
       # github.com after the probe is the refusal that sent this install to npm, and the
       # version and the digest cannot say it, since both sources serve one binary.
       - name: Read the Bun npm served
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
+
+      # `always()`, because the reading a reader wants most is the one from a job that failed.
+      - name: Report what this job ran on
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise

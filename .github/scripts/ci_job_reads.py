@@ -1300,10 +1300,14 @@ TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before th
 TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
 TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
 TOOL_BUN_BYTE_STEP = "Change the last byte of the installed Bun"
+TOOL_WATCH_STEP = "Start the machine watch over every faulted install"
+# Both jobs name their report step alike, so one constant cites it in both gates.
+TOOL_REPORT_STEP = "Report what this job ran on"
 # The step of the tool-fallback-arm job the reads below cite, beside the fault step that job
 # shares with the one above: the reading of the Bun this runner holds, which the rig makes
 # against the bun-linux-aarch64 row.
 TOOL_ARM_READ_STEP = "Read the Bun the release asset served"
+TOOL_ARM_WATCH_STEP = "Start the machine watch over both halves"
 # The session message-wait suite's own job: the test job's one step that needs a database.
 SESSIONS_JOB = "sessions-script"
 SESSIONS_STEP = "Test the session message-wait script"
@@ -2465,6 +2469,8 @@ GATES = [
                                                "ARG MISE_VERSION and ARG MISE_SHA256 by .github/scripts/check-ci-tools.sh"),
         (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
                          ".github/actions/setup-bun installs the Bun it pins"),
+        (".github/scripts/disk_watch.py", f"{at('tool-fallback', TOOL_WATCH_STEP)} runs it, and "
+                                          f"{at('tool-fallback', TOOL_REPORT_STEP)} runs it again"),
     )),
 
     # A second gate on tool_fallback: the tool-fallback-arm job proves the same two halves of
@@ -2489,6 +2495,8 @@ GATES = [
                                               "and probe steps of this job do"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback-arm', TOOL_FAULT_STEP)}: the rig starts it in "
                                               "front of GitHub's release assets"),
+        (".github/scripts/disk_watch.py", f"{at('tool-fallback-arm', TOOL_ARM_WATCH_STEP)} runs it, and "
+                                          f"{at('tool-fallback-arm', TOOL_REPORT_STEP)} runs it again"),
     )),
 ] + SCRIPT_TEST_GATES
 
