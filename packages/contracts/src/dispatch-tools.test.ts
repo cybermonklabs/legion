@@ -128,8 +128,8 @@ const DECISION_BLOCK_RULE =
 
 /** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
 const SKILL_DECISION_BLOCK_RULE =
-  "A comment, message or close reason holding a decision block is refused: ask in the issue's " +
-  "document, as a decision block, or with `dispatch ask`.";
+  "A decision block in a comment, message or close reason is refused: ask in the issue's " +
+  "document, or `dispatch ask`.";
 
 /** Every tool that writes a body, with the argument carrying that body: the close reason, the
  *  comment, the suggestion, the message and the send to a session. */
@@ -204,7 +204,7 @@ function schemaFor(name: keyof typeof validCalls) {
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -727,6 +727,8 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
+      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },
       { issue: "DSP-1", parent: "DSP-2" },

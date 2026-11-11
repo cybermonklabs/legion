@@ -1,5 +1,4 @@
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   answerAsk,
@@ -33,7 +32,7 @@ import {
   seedReferenceWorld,
   settledQuestions,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -50,10 +49,6 @@ import { asUser } from "./users";
  * becomes the same number of characters of the real record's id, so an eight-character prefix
  * stays an eight-character prefix.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 type Row = (typeof DISPATCH_TEXT_REFERENCES)[number];
 
