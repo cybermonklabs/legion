@@ -879,3 +879,85 @@ func TestThreeFaultsInARowEndThePodsTrimmerForTheLifeOfTheProcess(t *testing.T) 
 		t.Fatal("Run returned with the pod's trimmer still running")
 	}
 }
+
+// A volume this process cannot read is said once per run of the interval loop, so it is said
+// again when the settings go away and come back: `enabled: false` and the operator turning it
+// back on, and the daemon rolled back and rolled forward of the case above, neither of which
+// replaces the pod. The memory that holds the error to one line (trimmer.saidRead) is cleared
+// by a reading that worked and by the loop's own entry, and by nothing else.
+//
+// Without that second clearing the pod's log carries the started: line of the run that came
+// back and then nothing at all for as long as the fault lasts: no reading line, because the
+// interval returns at the failed read, and no read-error line, because the memory still holds
+// the text from before the settings went away. The roles container's log is the only place this
+// work is visible to a person.
+//
+// The whole loop is driven and not tick alone (volumetrim_test.go's
+// TestAVolumeTheTrimmerCannotReadIsSaidOnce), because the clearing is on the loop's entry,
+// which is the one path an interval never takes.
+func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	f.useVolume(steady(50)) // below the high mark: a reading that got through would sweep nothing
+	f.setSettings(trimSettings())
+
+	// The reader the case drives, over the fixture's own: the volume cannot be read for the
+	// whole of this case, as the statfs behind a real fault answers the same way every minute
+	// for as long as it lasts.
+	working := readVolumeUsage
+	readVolumeUsage = func(path string) (volumeUsage, error) {
+		return volumeUsage{}, errors.New("launcher: statfs " + path + ": input/output error")
+	}
+	t.Cleanup(func() { readVolumeUsage = working })
+	trims := useLauncherTrimmer(t, f)
+
+	pod := newFleetDialed(t, 2*time.Second, podRoles...)
+	ackPod(pod, trimSettings())
+	trim := trims.await()
+
+	const unreadable = "could not be read"
+	started := volumeTrimLog + "started: trimmer " + trim.id
+	testwait.Eventually(t, "the trimmer to start on the settings the pod was answered with", func() bool {
+		return f.logged(started) == 1
+	})
+	f.tick(unreadable)
+	if said := f.logged(unreadable); said != 1 {
+		t.Fatalf("the trimmer wrote %d lines about a volume it cannot read in its first interval, want the one a standing state gets; it wrote %q",
+			said, f.linesWritten())
+	}
+
+	// The settings go away and come back, in the pod and the launcher process the trimmer has
+	// run in all along, with the volume no more readable than before.
+	_ = pod.role(podRoles[0]).conn.Close()
+	rolledBack := acceptRole(t, pod.listener)
+	rolledBack.acknowledgeWith(shimwire.LauncherHelloAck{})
+	pod.conns[podRoles[0]] = rolledBack
+	f.tick("sweeps nothing more")
+	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
+	})
+
+	_ = pod.role(podRoles[0]).conn.Close()
+	rolledForward := acceptRole(t, pod.listener)
+	rolledForward.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
+	pod.conns[podRoles[0]] = rolledForward
+	offerSettingsTick(t, f)
+	testwait.Eventually(t, "the trimmer to start again on the settings that came back", func() bool {
+		return f.logged(started) == 2
+	})
+
+	// The interval that must say it again, and a second offer the loop takes only once that
+	// interval has ended: an interval that writes no line is exactly what a trimmer gone silent
+	// here would give, and the fixture's own tick waits for a line (trimFixture.tick).
+	offerTick(t, f)
+	offerTick(t, f)
+	if said := f.logged(unreadable); said != 2 {
+		t.Errorf("the trimmer wrote %d lines about the volume it still cannot read, want one for the run before the settings went away and one for the run after they came back; it wrote %q",
+			said, f.linesWritten())
+	}
+	if swept := len(f.gone()); swept != 0 {
+		t.Errorf("%d entries were deleted by a trimmer that never once read the volume", swept)
+	}
+	assertIntervals(t, f, settingsInterval(*trimSettings()), volumeSettingsWait)
+	f.assertProtected()
+	f.assertPrefixed()
+}

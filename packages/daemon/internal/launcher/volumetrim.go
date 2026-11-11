@@ -311,6 +311,14 @@ func (t *trimmer) awaitSettings(ctx context.Context) (shimwire.LauncherVolumeTri
 func (t *trimmer) intervals(ctx context.Context, inForce shimwire.LauncherVolumeTrim) trimEnding {
 	t.logf(volumeTrimLog+"started: trimmer %s, high %d%%, low %d%%, minimum age %d min, interval %d s, volume %s",
 		t.id, inForce.HighPercent, inForce.LowPercent, inForce.MinAgeMinutes, inForce.IntervalSeconds, t.volumeRoot)
+	// A fresh run of this loop is a new standing state, as a fresh set of settings is for said:
+	// a volume this process still cannot read is news again under the settings that came back,
+	// and without this the started: line above would be the last thing the pod's log carried for
+	// as long as the fault lasts. It is cleared here rather than in saidNothing because tick
+	// calls that on every interval whose settings are runnable, which is every interval a
+	// failing statfs happens on: clearing it there would put the read-error line back to one per
+	// interval and undo what TestAVolumeTheTrimmerCannotReadIsSaidOnce pins.
+	t.saidRead = ""
 	ticks, stop := t.ticks(settingsInterval(inForce))
 	defer func() { stop() }()
 	for {
