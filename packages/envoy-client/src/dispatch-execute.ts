@@ -77,7 +77,7 @@ import {
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
 import { actorText } from "./actor-text";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine, commandName } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import {
@@ -139,7 +139,7 @@ import {
 import { ownerSubscribeLine } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
 import { humanEditHead } from "./human-edit";
-import { decisionBlockLines, relatedCheckLines } from "./related-check";
+import { decisionBlockLines, declinedAskLines, relatedCheckLines } from "./related-check";
 import { pageSummaryText, searchAnswer } from "./search-answer";
 import { isNoAnswersRoute, renderSessionAnswersList } from "./session-answers";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
@@ -2830,6 +2830,7 @@ function askSummary(
     `${reply.id} · ${actorText(reply.author)}`,
     `Body: ${reply.body}`,
   ]);
+  const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
     `Question: ${ask.question}`,
     ...anchorLines(ask),
@@ -2868,7 +2869,12 @@ function askSummary(
           "Resolution:",
           `- By: ${ask.resolution.actor.id}`,
           `- Kind: ${ask.resolution.kind}`,
-          `- Reason: ${ask.resolution.reason}`,
+          // A decline the person wrote no note with holds no reason, so the line is left out
+          // rather than printed empty; the sentences Dispatch wrote for the asking agent stand
+          // on a bullet of their own, under the label every reader of them names them with
+          // (`dispatchWordsText`), so nobody reads them as the person's words.
+          ...(ask.resolution.reason === "" ? [] : [`- Reason: ${ask.resolution.reason}`]),
+          ...(resolutionWords === undefined ? [] : [`- ${resolutionWords}`]),
         ]),
     "Replies:",
     ...(chain.length === 0 ? ["- none"] : chain),
@@ -4780,13 +4786,19 @@ export async function executeDispatchTool(
             ? issueTopic(issue())
             : documentTopic(resolved.artifact);
       // The check's form sits right under the line naming the ask, the standing review under
-      // that; renderAdvice's cadence line must stay the result's last line.
-      const checkLines = relatedCheckLines(ask.advice?.suggestions, {
+      // that, and the issue's declined asks under that; renderAdvice's cadence line must stay
+      // the result's last line.
+      const checkContext = {
         project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
         text: stringArg(args, "question"),
         configUrl: linkBase,
-      });
+      };
+      const checkLines = relatedCheckLines(ask.advice?.suggestions, checkContext);
       const reviewLines = await otherAdviceLines(() => standingReviewLines(ask.advice));
+      // An ask on a project document stands on no issue, and the server sends declined asks
+      // only for a write that does, so there is nothing to print there.
+      const declinedLines =
+        ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
@@ -4795,6 +4807,7 @@ export async function executeDispatchTool(
           `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
           ...checkLines,
           ...reviewLines,
+          ...declinedLines,
           await followsAsk(askOwner, input.subscriptions),
           ...adviceLines,
         ].join("\n"),
@@ -5123,11 +5136,19 @@ export async function executeDispatchTool(
           .find((text) => text !== undefined) ??
         resolved.issue?.title ??
         "";
-      const checkLines = decisionBlockLines(edited.advice, {
+      const checkContext = {
         project: resolved.artifact.project,
         text: editAskText,
         configUrl: linkBase,
-      });
+      };
+      const checkLines = decisionBlockLines(edited.advice, checkContext);
+      // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line
+      // must stay the result's last line. A project document stands on no issue, and the server
+      // sends declined asks only for a write that does.
+      const declinedLines =
+        resolved.issue === undefined
+          ? []
+          : declinedAskLines(edited.advice, resolved.issue.key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
       );
@@ -5139,6 +5160,7 @@ export async function executeDispatchTool(
         text: [
           `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
           ...checkLines,
+          ...declinedLines,
           ...tokenTrailer,
           ...adviceLines,
         ].join("\n"),
