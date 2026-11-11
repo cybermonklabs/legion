@@ -366,7 +366,7 @@ func (s *server) createStoredMessage(
 	var advice *writeAdvice
 	if issueKey != nil {
 		advice = s.writeAdvice(
-			ctx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status,
+			ctx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status, false,
 		)
 	}
 	if message.Target != nil {

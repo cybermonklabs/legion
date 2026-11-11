@@ -338,10 +338,13 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// (writeAdvice), so none of its queries holds this write's locks. The ask this request
 	// opened is excluded from the session's open asks by its row id, as it was inside the
 	// transaction.
+	//
+	// This write opens a question, so it hears about the asks of this issue a person declined to
+	// answer, and the same question is not put to them again.
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), "POST /api/v1/issues/{key}/asks", *owner.IssueKey, actor, rowID, *status,
+			r.Context(), routeOpenAsk, *owner.IssueKey, actor, rowID, *status, true,
 		)
 	}
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's

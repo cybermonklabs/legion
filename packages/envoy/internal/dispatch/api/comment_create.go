@@ -1049,7 +1049,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status,
+			r.Context(), "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status, false,
 		)
 	}
 	// On a context the client's going away does not cancel: a send this sender refuses gives its

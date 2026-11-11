@@ -449,7 +449,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// The issue-scoped advice runs here: after the commit, after the gates, on the pool
 		// (writeAdvice), so none of its queries holds the issue row this patch locked.
 		advice := s.writeAdvice(
-			r.Context(), "PATCH /api/v1/issues/{key}", key, actor, "", before.Status,
+			r.Context(), "PATCH /api/v1/issues/{key}", key, actor, "", before.Status, false,
 		)
 		WriteJSON(w, http.StatusOK, withAdvice(before, advice))
 		return
@@ -628,7 +628,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// (writeAdvice), so none of its queries holds the rows this patch locked. It reports the
 	// status the patch wrote, read under those locks and passed in.
 	advice := s.writeAdvice(
-		r.Context(), "PATCH /api/v1/issues/{key}", key, actor, "", after.Status,
+		r.Context(), "PATCH /api/v1/issues/{key}", key, actor, "", after.Status, false,
 	)
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
 }

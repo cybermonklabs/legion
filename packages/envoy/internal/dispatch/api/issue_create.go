@@ -471,7 +471,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The issue-scoped advice runs here: after the commit, on the pool (writeAdvice), so none
 	// of its queries holds the issue row this create locked.
 	advice := s.writeAdvice(
-		r.Context(), "POST /api/v1/issues", key, actor, "", issue.Status,
+		r.Context(), "POST /api/v1/issues", key, actor, "", issue.Status, false,
 	)
 	// The block report of the spec this create seeded is the write's own read of what it wrote,
 	// so it rides whatever advice the response carries, the issue advice's or the check's alone
@@ -606,7 +606,7 @@ func (s *server) respondWithExistingExternalIssue(
 	// The advice runs once that read has ended, on the pool (writeAdvice): the status it
 	// reports is the one read above under the issue's row lock, as a create's is.
 	advice := s.writeAdvice(
-		r.Context(), "POST /api/v1/issues", existingKey, actor, "", existingStatus,
+		r.Context(), "POST /api/v1/issues", existingKey, actor, "", existingStatus, false,
 	)
 	suggestions := s.relatedCheckNotRun(r.Context(), relatedInput{
 		project: project,

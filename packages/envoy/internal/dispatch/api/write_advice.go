@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,32 @@ type adviceAsk struct {
 	ID       string `json:"id"`
 	Question string `json:"question"`
 }
+
+// adviceDeclinedAsk is one ask of the issue a person declined to answer: its id, the head of the
+// question that was asked, and the head of the person's own note, "" where they wrote none. Both
+// texts are cut to what the one reader of them prints (declinedAskHeadUnits), so the field costs
+// the write no more than the line it becomes.
+//
+// A type of its own rather than a third field on adviceAsk, which is the item of
+// your_open_asks: that shape is published as its own schema (AdviceAsk) and read as a pair by
+// the client, and no open ask ever carries a note, so a note on it would be a field every open
+// ask serialises empty. The four sentences Dispatch writes beside the note are the same for
+// every decline (model.DeclineDispatchWords), so they are the reader's to print once, not
+// something to repeat per item.
+type adviceDeclinedAsk struct {
+	ID       string `json:"id"`
+	Question string `json:"question"`
+	Note     string `json:"note"`
+}
+
+// The routes of the two writes whose author may be about to put a question to a person: the ask
+// route, and a document edit, whose ops can add the ask blocks that settle into asks. Each names
+// itself in its own writeAdvice call, which is where the log line of an omitted advice query
+// gets its route, and routeEditDocument names the same write to supersededApprovalAdvice.
+const (
+	routeOpenAsk      = "POST /api/v1/issues/{key}/asks"
+	routeEditDocument = "POST /api/v1/artifacts/{id}/edits"
+)
 
 type writeAdvice struct {
 	IssueStatus             string      `json:"issue_status"`
@@ -44,6 +71,12 @@ type writeAdvice struct {
 	// SupersededApproval is set by a document write that stored a version replacing the one a
 	// person had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
+	// DeclinedAsks is each ask of this issue a person declined to answer, so a session about to
+	// ask does not ask one of them again. Set only on a write that opens a question (the
+	// opensAQuestion its caller passes writeAdvice) and omitted when empty, so a write with
+	// nothing to report and a write that was never asked the question look the same to a
+	// reader: both have no declined ask to name.
+	DeclinedAsks []adviceDeclinedAsk `json:"declined_asks,omitempty"`
 	// Suggestions is the related-item check's result, set only on an issue or ask
 	// creation; nil (omitted) everywhere else.
 	Suggestions *model.Suggestions `json:"suggestions,omitempty"`
@@ -77,10 +110,12 @@ func (e *adviceQueryError) Unwrap() error {
 // about the calling session itself - its own writes since the last human event, its own open
 // asks - so writeAdvice calls this only for a session actor. The third, whether Legion owns the
 // issue's status, runs only on an issue whose status is triage: that is the only line the answer
-// decides, so an ordinary write on an ordinary issue gains no query at all. status is the
-// issue's status as the write committed it, the same value writeAdvice reports. route names the
-// caller for the one query whose failure is logged rather than returned
-// (legionManagedStatusAdvice).
+// decides, so an ordinary write on an ordinary issue gains no query at all. The fourth, the asks
+// of the issue a person declined to answer, runs only where opensAQuestion says this write is
+// about to put another question to a person: the ask route, and an edit of one of the issue's
+// documents that adds an ask block. status is the issue's status as the write committed it, the
+// same value writeAdvice reports. route names the caller for the two queries whose failure is
+// logged rather than returned (legionManagedStatusAdvice, declinedAsksAdvice).
 //
 // q is the request pool, not the write's transaction: every one of these queries reads rows the
 // write has already committed (writeAdvice).
@@ -92,6 +127,7 @@ func (s *server) computeWriteAdvice(
 	actor model.Actor,
 	excludeAskID string,
 	status string,
+	opensAQuestion bool,
 ) (*writeAdvice, error) {
 	advice := &writeAdvice{YourOpenAsks: []adviceAsk{}, IssueStatus: status}
 	if err := s.runAdviceQueryHook(ctx, q, "session_writes_since_human"); err != nil {
@@ -137,18 +173,24 @@ func (s *server) computeWriteAdvice(
 	if status == model.IssueStatusTriage {
 		advice.LegionManagedStatus = s.legionManagedStatusAdvice(ctx, q, route, issueKey)
 	}
+	// The issue's declined asks, for a write that opens a question. Its failure is not fatal to
+	// the advice either, and it runs last of the four (declinedAsksAdvice).
+	if opensAQuestion {
+		advice.DeclinedAsks = s.declinedAsksAdvice(ctx, q, route, issueKey)
+	}
 	return advice, nil
 }
 
 // legionManagedStatusAdvice answers whether Legion owns the issue's status for a write's advice,
-// or nil when the walk failed. It is the last step of computeWriteAdvice and the only one whose
-// failure is not fatal to the advice: the two before it are what a session asked for, while this
-// one decides a single line, and every issue is created in triage, so returning an
-// adviceQueryError here would put a third failure mode on the path that runs for every
-// session-authored `dispatch issue`. What that would cost a creation is its issue state alone: the
-// related-item check runs after the write commits whatever the advice answered, and rides a
-// suggestions-only advice when it failed (withSuggestions). Nothing runs after this step, so the
-// advice already assembled is complete without it.
+// or nil when the walk failed. It is the third step of computeWriteAdvice and, with the declined
+// asks read after it, one of the two whose failure the advice survives: the two reads at the
+// top are what a session asked for, while this one decides a single line, and every issue is
+// created in triage, so returning an adviceQueryError here would put a third failure mode on
+// the path that runs for every session-authored `dispatch issue`. What that would cost a
+// creation is its issue state alone: the related-item check runs after the write commits
+// whatever the advice answered, and rides a suggestions-only advice when it failed
+// (withSuggestions). The one step after it carries no line this one decides, so the advice
+// already assembled is complete without it.
 //
 // It takes no savepoint: the advice runs on the pool after the write committed (writeAdvice), so
 // a failed statement here aborts nothing - there is no transaction to abort, and the write it
@@ -166,6 +208,107 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, q queryer, route
 		return nil
 	}
 	return &managed
+}
+
+// declinedAsksAdvice is each ask of issueKey a person declined to answer, for the advice of a
+// write that is about to open another question, or nil when the read failed. It names every one
+// of them, oldest first, because R6 asks for each declined ask of the issue: a row cap would
+// silently drop exactly the question the session is about to put again, which is the one thing
+// this field exists to prevent. What bounds the read is the allowance the advice holds every
+// query of a write to (adviceAllowance), not a count of rows.
+//
+// Its failure is not fatal to the advice, and it takes no savepoint, both for the reasons
+// legionManagedStatusAdvice gives for its own. It runs last of the four because the allowance
+// bounds the advice as a whole: this is the only read whose rows grow with the issue, so a slow
+// one here costs this field and nothing else. What a failure costs is the reminder alone: the
+// two reads at the top are what the calling session asked about - the write it just made, and
+// its own open asks - and the walk before it decides the triage line, while this one only keeps
+// the session from asking again what a person has already refused to answer.
+func (s *server) declinedAsksAdvice(ctx context.Context, q queryer, route, issueKey string) []adviceDeclinedAsk {
+	declined, err := s.readDeclinedAsks(ctx, q, issueKey)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "declined_asks", err)
+		return nil
+	}
+	return declined
+}
+
+// declinedAskHeadUnits is how much of a declined ask's question and of the person's note the
+// reminder carries, in UTF-16 units. The one reader of the field, declinedAskLines in
+// packages/envoy-client/src/related-check.ts, prints what it was sent and cuts nothing itself;
+// this number is held equal to QUESTION_HEAD in packages/envoy-client/src/ask-answer.ts, the
+// length every other surface quotes a question at, so the field carries exactly what the line
+// shows, and neither side can grow the other's cost by itself. Every declined ask of the issue
+// is still named, and the whole note stands at the ask's own link, which the same line prints.
+const declinedAskHeadUnits = 200
+
+// declinedAskHead is the server's copy of the client's textHead (packages/envoy-client/src/
+// ask-answer.ts), which read the whole text until this read began cutting it: the text on one
+// line, runs of whitespace collapsed to a single space and the ends trimmed, cut to
+// declinedAskHeadUnits UTF-16 units with an ellipsis where it was cut, so a reader is never
+// shown a sentence that stops for no reason.
+//
+// The count is itemblocks.Units16's, the unit the rest of this package bounds a text in, and
+// the walk reads whole runes, so a character whose UTF-16 form is a surrogate pair is carried
+// whole or not at all (model.EventBody cuts the same way). A combining sequence can still be
+// cut in two, exactly as textHead's own slice cuts one: the two sides agree, and the mark that
+// is left behind sits on the ellipsis.
+func declinedAskHead(text string) string {
+	flat := strings.Join(strings.Fields(text), " ")
+	units := 0
+	for index, r := range flat {
+		if units+utf16.RuneLen(r) > declinedAskHeadUnits {
+			return flat[:index] + "…"
+		}
+		units += utf16.RuneLen(r)
+	}
+	return flat
+}
+
+// declinedAsk is the SQL predicate, on asks, that holds for an ask a person declined to answer
+// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew.
+const declinedAsk = `state = 'resolved' and resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+
+// readDeclinedAsks is declinedAsksAdvice's read, apart from it as legionManagedStatus is apart
+// from legionManagedStatusAdvice: the read answers an error, and the one above it turns that
+// error into the single log line an omitted advice query takes. Nil, not an empty list, where
+// the issue holds no declined ask: the field is omitted rather than sent empty.
+//
+// The cut is here rather than in the statement because what it must match is the reader, not
+// the database: Postgres counts code points where the reader counts UTF-16 units, its
+// whitespace classes are not JavaScript's, and the ellipsis would be a CASE over a second
+// length call - three near-misses of textHead where Go matches it in one pass. What crosses
+// from Postgres whole is a read of rows the query already fetched, inside the allowance the
+// advice bounds every query to; what the cut saves is the write's own answer, which every
+// session on the issue pays for.
+func (s *server) readDeclinedAsks(ctx context.Context, q queryer, issueKey string) ([]adviceDeclinedAsk, error) {
+	if err := s.runAdviceQueryHook(ctx, q, "declined_asks"); err != nil {
+		return nil, err
+	}
+	// The note is the resolution's reason, which a person who wrote none leaves empty.
+	rows, err := q.Query(ctx, `
+		select id::text, question, coalesce(resolution->>'reason', '') from asks
+		where issue_key = $1 and `+declinedAsk+`
+		order by created_at, id
+	`, issueKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var declined []adviceDeclinedAsk
+	for rows.Next() {
+		var ask adviceDeclinedAsk
+		if err := rows.Scan(&ask.ID, &ask.Question, &ask.Note); err != nil {
+			return nil, err
+		}
+		ask.Question = declinedAskHead(ask.Question)
+		ask.Note = declinedAskHead(ask.Note)
+		declined = append(declined, ask)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return declined, nil
 }
 
 // runAdviceQueryHook runs the test seam before an advice query, on whatever that query runs on:
@@ -209,6 +352,11 @@ var errAdviceAllowanceEnded = errors.New("the write advice's allowance ended")
 // artifact owner row, the document's advisory lock and the document's writer gate. Each round
 // trip is scheduling latency under load, not database time, which is why the horizon's stall
 // warnings named an advice statement as the holder's last query in 23 of 36 samples (INFRA-592).
+//
+// opensAQuestion says the write is about to put a question to a person, which is what the
+// issue's declined asks are read for (computeWriteAdvice): the ask route passes true, a
+// document edit passes whether its ops added an ask block, and every other write passes false
+// and runs no such read.
 func (s *server) writeAdvice(
 	ctx context.Context,
 	route string,
@@ -216,6 +364,7 @@ func (s *server) writeAdvice(
 	actor model.Actor,
 	excludeAskID string,
 	status string,
+	opensAQuestion bool,
 ) *writeAdvice {
 	// A person's write has no advice query to run - every one of them is about the calling
 	// session, and the triage line this answers is about what a session is told - so it is
@@ -238,7 +387,7 @@ func (s *server) writeAdvice(
 	}
 	bounded, cancel := context.WithTimeoutCause(ctx, adviceAllowance, errAdviceAllowanceEnded)
 	defer cancel()
-	advice, err := s.computeWriteAdvice(bounded, pool, route, issueKey, actor, excludeAskID, status)
+	advice, err := s.computeWriteAdvice(bounded, pool, route, issueKey, actor, excludeAskID, status, opensAQuestion)
 	if err != nil {
 		query := "unknown"
 		if queryErr, ok := err.(*adviceQueryError); ok {
