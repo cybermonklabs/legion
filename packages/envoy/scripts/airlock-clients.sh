@@ -113,6 +113,12 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
+# ROOT is made absolute once both of its setters, --dir above and the environment at the top,
+# have had their say: this script writes links into $ROOT/bin whose target is built from ROOT,
+# and a relative target resolves from the link's own directory, so a relative ROOT leaves every
+# one of them pointing at nothing.
+case "$ROOT" in /*) ;; *) ROOT="$PWD/$ROOT" ;; esac
+
 for needed in curl tar sha256sum uv python3; do
 	command -v "$needed" >/dev/null 2>&1 || {
 		echo "airlock-clients: $needed is needed and is not on PATH" >&2
