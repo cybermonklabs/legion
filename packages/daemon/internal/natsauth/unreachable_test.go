@@ -64,7 +64,7 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 func TestWithLastErrorNamesAPermissionViolationOnceTheConnectionIsClosed(t *testing.T) {
 	refused := make(chan struct{}, 1)
 	url := fakeServer(t, "-ERR 'Permissions Violation for Publish to \"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS\"'\r\n")
-	conn, err := natsauth.Connect([]string{url}, "", nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{url}, "", t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		signalled(refused, make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1)))
 	if err != nil {
@@ -103,7 +103,7 @@ func TestConnectAgainstAClosedPortReturnsAnErrorUnreachableAccepts(t *testing.T)
 	addr := reserved.Addr().String()
 	reserved.Close() // nothing answers here.
 
-	_, err = natsauth.Connect([]string{"nats://" + addr}, "", nats.Timeout(500*time.Millisecond))
+	_, err = natsauth.Connect([]string{"nats://" + addr}, "", t.Name(), nats.Timeout(500*time.Millisecond))
 	if err == nil {
 		t.Fatal("Connect against a closed port must fail")
 	}

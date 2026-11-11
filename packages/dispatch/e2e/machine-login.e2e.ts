@@ -1,13 +1,7 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import type { RecordResponse } from "../web/src/api/types";
 import { setBrokerDeviceGrant, setMachineLogins } from "./fake-broker-helpers";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { withAlice } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The code as the operator types it off the machine's screen: the page upper-cases it and puts
  *  the hyphen back, and the broker normalizes it again before it looks it up. */

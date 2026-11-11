@@ -1,19 +1,13 @@
-import { type Browser, expect, type Page, test } from "@playwright/test";
-
 import { getArtifactText } from "./api";
 import { documentEditor, openIssue, openWithCaret, paste } from "./editor";
 import { engineTables, goReadBack } from "./read-back";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Page, test } from "./test";
 
 // What is left of the clipboard matrix: the rows no headless test can make. Every other row
 // asserted the markdown the server stored for the document the paste built, and runs in a
 // fraction of the time in packages/proof-editor/tests/paste-matrix.test.ts, which rebuilds that
 // document headless and compares its own serializer's spelling of it - each column's alignment
 // included - against that same stored markdown (INFRA-1415).
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 const table = "| alpha one | beta two |\n| --- | --- |\n| gamma three | delta four |\n";
 

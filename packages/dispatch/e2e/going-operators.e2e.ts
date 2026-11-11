@@ -1,9 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, patchIssue } from "./api";
 import { usesFakeEmbedder } from "./harness-embedder";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Check k18 of dispatch://INFRA-1042/artifact/verification-md, serving R16: the operator forms
@@ -45,10 +43,6 @@ function threeDaysBack(): { text: string; value: string } {
     value: day.toISOString().slice(0, 10),
   };
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): five seeded issues and five searches of them, one per form the person adds to
 // the words in the box.

@@ -246,7 +246,7 @@ func writeGCSObject(w http.ResponseWriter, bucket, key string, object memoryObje
 // alone as plain text.
 func writeGCSError(w http.ResponseWriter, media bool, status int, reason, message string) {
 	if media {
-		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, message)
 		return

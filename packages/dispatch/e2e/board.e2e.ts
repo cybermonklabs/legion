@@ -1,17 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The visible priority tag inside a card or row - the `<select>` options carry the same text. */
 function priorityBadge(scope: Locator, label: string): Locator {
@@ -734,10 +728,9 @@ async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
 
 // SLOW(>=2s): a real finger: per-frame touch steps, two snap-scroll flings, the sensor's own
 // 150 ms activation twice over, an issue opened and left, and a carried card.
-test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone", async ({
+test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "touch gestures exercise the phone project");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]) {
@@ -933,8 +926,7 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
 
 test("a filtered drag names the visible neighbours and the hidden card interleaves without error", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the mouse drag exercises a desktop viewport");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Todo ranks Alpha < Bravo < Charlie < Delta (creation order); the filter hides Bravo -
   // every other Todo card carries the label.
@@ -1073,10 +1065,9 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
 // The board's own toggles are controls a finger presses, so on a phone each holds the 44 px
 // touch target; what the toggles do is the two walks above, which assert it at any width.
-test("the board's view, lanes and edge toggles keep touch-sized targets @phone", async ({
+test("the board's view, lanes and edge toggles keep touch-sized targets @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 44 px touch rule applies below 1280 px");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Toggle card" });
 
