@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,6 +155,67 @@ func (s *Store) ReleasedClaimsIn(ctx context.Context, project, issue string) ([]
 		return err
 	})
 	return claims, err
+}
+
+// ClaimRoleState is one claim of an issue as a log line names it: the role, and the state the
+// record holds that role's claim in. It is the claim's state alone and never the whole claim,
+// because the one reader of it logs what a pod's roles were doing when the pod went, and a
+// reader of that line needs no session, no locator and no budget to understand it.
+type ClaimRoleState struct {
+	Role  claim.Role
+	State supervise.ClaimState
+}
+
+// ClaimStates is every claim of one issue, in role order, in the one shape a log line renders:
+// `architect=retired implementer=failed`. The release of a pod no role can use logs it beside
+// the issue and the Sandbox it deleted (outbox.releaseIssue), since the whole case for that
+// release is that every one of those claims is failed, retired or suspended, and the line is
+// what lets a reader of the daemon's log check that for themselves.
+type ClaimStates []ClaimRoleState
+
+// String is the states as that line renders them, one `role=state` per claim, space separated.
+func (c ClaimStates) String() string {
+	states := make([]string, 0, len(c))
+	for _, s := range c {
+		states = append(states, string(s.Role)+"="+string(s.State))
+	}
+	return strings.Join(states, " ")
+}
+
+// MarshalText is String for a handler that encodes an attribute rather than formatting it:
+// slog's text handler reads a TextMarshaler and its JSON handler marshals the value, and
+// encoding/json writes a TextMarshaler as its text, so the line reads the same under either and
+// a deployment that ships JSON logs gets one field rather than an array of objects.
+func (c ClaimStates) MarshalText() ([]byte, error) { return []byte(c.String()), nil }
+
+// ClaimStatesIn is the state of every claim of issue, in role order, whatever state it is in:
+// what the teardown of a release that suspends no role reads before it deletes the pod
+// (outbox.releaseIssue). It is ReleasedClaimsIn's neighbour and not its sibling — that read
+// answers the released claims a wake resumes, and this one answers every claim, since a release
+// whose whole case is that no claim of the issue can take a turn must say so claim by claim.
+//
+// One statement reads it, so it runs on the pool rather than in a transaction of its own: there
+// is nothing here for a transaction to make consistent, and the read is of a pod the release is
+// about to delete anyway.
+func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (ClaimStates, error) {
+	rows, err := s.pool.Query(ctx, `select role, state from claims
+		where project = $1 and issue = $2 order by role`, project, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	var states ClaimStates
+	for rows.Next() {
+		var role, state string
+		if err := rows.Scan(&role, &state); err != nil {
+			return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+		}
+		states = append(states, ClaimRoleState{Role: claim.Role(role), State: supervise.ClaimState(state)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+	}
+	return states, nil
 }
 
 // PodWakeBackstop is one armed backstop: the phase worker it wakes and when it comes due.
