@@ -13,7 +13,6 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
-import { Timestamp } from "../refs/Timestamp";
 import { AskHitStatus } from "../search/AskHitStatus";
 import { kindLabel, searchResultKind } from "../search/search-model";
 import { RELATED_DEBOUNCE_MS, RELATED_TITLE_MIN } from "./related-timing";
@@ -97,10 +96,9 @@ export function RelatedItems({ project, title }: { project: string; title: strin
 }
 
 /**
- * Exactly one of the check's three forms, then the past decision when the check found one.
- * Which form the answer holds is the contract's judgement (`relatedCheckFormOf`), the same one
- * the CLI reads; this only renders it. `title_matches` is not shown: this route writes nothing,
- * so no title overlap was forced past.
+ * Exactly one of the check's three forms. Which form the answer holds is the contract's
+ * judgement (`relatedCheckFormOf`), the same one the CLI reads; this only renders it.
+ * `title_matches` is not shown: this route writes nothing, so no title overlap was forced past.
  */
 function RelatedForm({
   suggestions,
@@ -109,7 +107,6 @@ function RelatedForm({
   suggestions: Suggestions;
   title: string;
 }): ReactNode {
-  const { decision } = suggestions;
   const check = relatedCheckFormOf(suggestions);
   let form: ReactNode;
   if (check.form === "not_made") {
@@ -145,36 +142,7 @@ function RelatedForm({
       </p>
     );
   }
-  return (
-    <>
-      {form}
-      {decision === undefined ? null : (
-        <div className="space-y-1">
-          <p className={`font-medium ${textSecondaryOnSurface}`}>
-            A past decision may already answer this:
-          </p>
-          <ul>
-            <RelatedItemRow item={decision}>
-              <p className={`text-xs ${textMutedOnSurface}`}>
-                Answered by {decision.answered_by}
-                {decision.answered_at === undefined ? null : (
-                  <>
-                    {" · "}
-                    <Timestamp at={decision.answered_at} />
-                  </>
-                )}
-              </p>
-              {/* One item per owner can collapse the decision's ask out of the related items,
-                  so where its ask stands is named here, inside the decision's own item. */}
-              {decision.ask === undefined ? null : (
-                <AskHitStatus ask={decision.ask} muted={false} />
-              )}
-            </RelatedItemRow>
-          </ul>
-        </div>
-      )}
-    </>
-  );
+  return form;
 }
 
 /** A suggestion's kind as the badge says it. The kind reaches the browser as the string the route

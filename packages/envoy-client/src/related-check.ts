@@ -24,8 +24,8 @@ export interface RelatedCheckContext {
  * The related-item check's lines. They hold exactly one of three forms, so a check
  * that never ran cannot read as one that found nothing: the items it found and how it searched,
  * that it searched and found nothing, or that no check was made, why, and the `dispatch search` to
- * run instead. A past decision, with where its ask stands, the likely duplicate an unforced
- * create was nudged about, and the near copies a forced create went past follow the form.
+ * run instead. The likely duplicate an unforced create was nudged about, and the near copies a
+ * forced create went past, follow the form.
  *
  * A server predating the forms sends less, and each of its shapes maps to one form: no result at
  * all, `missing`, items with no `outcome`, and nothing at all with no `outcome`.
@@ -49,16 +49,6 @@ export function relatedCheckLines(
     ];
   }
   try {
-    const { decision } = suggestions;
-    if (decision !== undefined && decision !== null) {
-      const when = decision.answered_at === undefined ? "" : ` on ${decision.answered_at}`;
-      lines.push(
-        `A past decision may already answer this: ${suggestionLabel(decision)}, answered by ${decision.answered_by}${when} → ${absoluteHref(decision.href, context.configUrl)}`
-      );
-      // One item per owner can collapse the decision's ask out of the related items, so where it
-      // stands prints here, as under any ask item.
-      lines.push(...askLines(decision.ask));
-    }
     const likely = suggestions.likely_duplicate;
     if (likely !== undefined && likely !== null) {
       lines.push(
@@ -77,7 +67,7 @@ export function relatedCheckLines(
       );
     }
   } catch (error) {
-    lines.push(`The check's past decision or near copies could not be shown: ${messageFor(error)}`);
+    lines.push(`The check's near copies could not be shown: ${messageFor(error)}`);
   }
   return lines;
 }

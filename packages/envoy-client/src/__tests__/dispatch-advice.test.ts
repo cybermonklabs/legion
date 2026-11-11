@@ -958,22 +958,7 @@ describe("the related-item check", () => {
     expect(lines).toHaveLength(3);
   });
 
-  test("dispatch_ask prints the form between the asked line and the follow line, then a past decision and its latest answer", async () => {
-    // The decision's issue ranks higher, so one item per owner collapses its ask out of the
-    // related items: only the decision lines can show what was chosen.
-    const decision: WriteSuggestion = {
-      ...askItem("DSP-9", "ask-old", {
-        state: "answered",
-        answer: {
-          user: "alice",
-          selected: ["Exponential", "Capped"],
-          text: "Changed my mind.\nBack off exponentially.",
-          at: "2026-09-12T13:20:00Z",
-        },
-      }),
-      answered_by: "alice",
-      answered_at: "2026-09-12T13:20:00Z",
-    };
+  test("dispatch_ask prints the form between the asked line and the follow line", async () => {
     const result = await executeWrite(
       "dispatch_ask",
       { issue: "DSP-42", question: "Should the billing service retry?" },
@@ -982,7 +967,6 @@ describe("the related-item check", () => {
           outcome: "found",
           search: "meaning_and_keywords",
           related: [issueItem("DSP-9", "Billing retries", "in_progress")],
-          decision,
         },
       })
     );
@@ -992,41 +976,6 @@ describe("the related-item check", () => {
         askedLine,
         "Related items (searched by meaning and keywords):",
         "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
-        "A past decision may already answer this: DSP-9 [in_progress] Billing retries, answered by alice on 2026-09-12T13:20:00Z → http://dispatch.test/issues/DSP-9#ask-ask-old",
-        "  Answered by alice at 2026-09-12T13:20:00Z · options chosen: Exponential, Capped",
-        "  Answer text: Changed my mind.",
-        "    Back off exponentially.",
-        followsLine,
-      ].join("\n")
-    );
-  });
-
-  test("an older server's past decision, with no ask state, says its state was not reported", async () => {
-    const decision: WriteSuggestion = {
-      ...askItem("DSP-9", "ask-old"),
-      answered_by: "alice",
-      answered_at: "2026-09-12T13:20:00Z",
-    };
-    const result = await executeWrite(
-      "dispatch_ask",
-      { issue: "DSP-42", question: "Should the billing service retry?" },
-      advice({
-        suggestions: {
-          outcome: "found",
-          search: "meaning_and_keywords",
-          related: [issueItem("DSP-9", "Billing retries", "in_progress")],
-          decision,
-        },
-      })
-    );
-
-    expect(result.text).toBe(
-      [
-        askedLine,
-        "Related items (searched by meaning and keywords):",
-        "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
-        "A past decision may already answer this: DSP-9 [in_progress] Billing retries, answered by alice on 2026-09-12T13:20:00Z → http://dispatch.test/issues/DSP-9#ask-ask-old",
-        "  Answer state not reported by this Dispatch; open the link to read the ask.",
         followsLine,
       ].join("\n")
     );
