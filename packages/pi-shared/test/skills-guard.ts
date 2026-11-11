@@ -272,32 +272,169 @@ export function unresolvedAgentDispatches(
     );
 }
 
+/**
+ * `markdown` with every run of whitespace collapsed to one space, beside the offset in `markdown`
+ * each character of that collapsed text came from. A rule written over a sentence reads the
+ * collapsed text, because these files are wrapped and a sentence of one crosses lines; the offsets
+ * give a hit back the line of the file a reader opens.
+ */
+function collapsedWithOffsets(markdown: string): { text: string; offsets: number[] } {
+  const parts: string[] = [];
+  const offsets: number[] = [];
+  const whitespace = /\s+/g;
+  let read = 0;
+  for (let run = whitespace.exec(markdown); run !== null; run = whitespace.exec(markdown)) {
+    for (let at = read; at < run.index; at += 1) offsets.push(at);
+    parts.push(markdown.slice(read, run.index));
+    offsets.push(run.index);
+    parts.push(" ");
+    read = run.index + run[0].length;
+  }
+  for (let at = read; at < markdown.length; at += 1) offsets.push(at);
+  parts.push(markdown.slice(read));
+  return { text: parts.join(""), offsets };
+}
+
+/**
+ * The prohibition INFRA-1303 retired from the tester's evidence rule
+ * (skills/legion-worker/references/pr-body.md): "no CI lane is rerun as evidence", and the same
+ * sentence in the active voice, "never re-run a CI lane as evidence", which the tester's prompt
+ * part carried beside it. A red at the head that the change did not make is now the phase
+ * holder's to re-run once (`skill://legion-worker/references/red-at-the-head.md`), so a file that
+ * still forbids the re-run of a lane costs the tree a whole lap for a failure its code never
+ * caused.
+ *
+ * Two shapes, each with its subject enumerated rather than left open. The passive: a universal
+ * negative (`no`, `neither`) over a lane noun — `lane`, `check`, `suite`, `job` — that is re-run.
+ * The active: `never re-runs a …` over the same nouns behind a determiner. `run` is deliberately
+ * no such noun, which is what lets the sentences the change keeps pass: "A merge-group run is
+ * never re-run" (merge-gate.md, pr-body.md and the implementer's prompt overlay) and "Where no
+ * run at the head holds the failing check, the role re-runs nothing" (red-at-the-head.md). "No
+ * role re-runs a group build." passes because a role is no lane, and "it gets no re-run", said of
+ * a check that judges the pull request itself, because a re-run is no lane either.
+ */
+const NO_LANE_IS_RERUN =
+  /\b(?:no|neither)\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,40}?\bre-?run\b|\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+(?:CI\s+|required\s+|test\s+)?(?:lane|check|suite|job)\b/i;
+
+/**
+ * The prohibition INFRA-1303 retired from the tester's prompt part
+ * (packages/daemon/internal/prompts/roles/core/tester.md): "rerun none of them yourself", said of
+ * the CI lanes the tester has just been told to read on GitHub. The tester holds `testing`, so
+ * the head's one re-run is its to press (`skill://legion-worker/references/red-at-the-head.md`),
+ * and a tester told to re-run none of them reads that rule as written for somebody else.
+ *
+ * The object is enumerated — `them`, `these`, `those`, or the lane nouns themselves — rather than
+ * left open, and the verb must be a re-run, never a bare `run`. That is what lets the sentence
+ * the prompt keeps in its place pass: "do not run in your own pod what CI runs for you", which
+ * forbids the local run and says nothing of the re-run.
+ */
+const RERUN_NONE_OF_THEM_YOURSELF =
+  /\bre-?runs?\s+(?:none|neither)\s+of\s+(?:them|these|those|the\s+(?:lanes|checks|suites|jobs))\b|\b(?:never|do not|don't)\s+re-?run\s+(?:any\s+of\s+)?(?:them|these|those)\b[^.]{0,40}?\byourself\b/i;
+
+/**
+ * The prohibition INFRA-1303 retired from the reviewer's thread rule
+ * (skills/legion-worker/references/review-threads.md): "you re-run nothing", said to the reviewer
+ * of a review bot that is red while a thread it opened still stands. The reviewer holds
+ * `reviewing`, so such a red is one it may re-run once
+ * (`skill://legion-worker/references/red-at-the-head.md`); what that file keeps is the reason a
+ * re-run does not clear this particular red, never a ban on pressing one.
+ *
+ * The subject is enumerated — the reviewer, by name or as `you` — rather than left open, so the
+ * sentences that deny the re-run to a role holding no phase still pass: "The merger, the
+ * architect in `accepting` and an implementer that runs retro re-run nothing." and "A role that
+ * is told of a red whose phase it does not hold re-runs nothing." (both red-at-the-head.md), and
+ * "a re-run does not clear that red" (review-threads.md), which names no re-runner at all. The
+ * gap is bounded by `[^.]{0,40}`, so a `the reviewer` of the sentence before a full stop cannot
+ * reach across it to the `re-run nothing` of the next.
+ */
+const REVIEWER_RERUNS_NOTHING =
+  /\b(?:you|the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b/i;
+
+/** The three prohibitions the re-run rule retired, in the order they are written above. */
+const RETIRED_RERUN_PROHIBITIONS = [
+  NO_LANE_IS_RERUN,
+  RERUN_NONE_OF_THEM_YOURSELF,
+  REVIEWER_RERUNS_NOTHING,
+];
+
+/**
+ * Every place in the Markdown files under `roots` that still forbids the re-run INFRA-1303 turned
+ * on, each as one `<file>:<line>`. The three prohibitions were deleted from six skill files and
+ * two daemon prompt parts at once, and a forward merge keeps both sides of a deletion in silence,
+ * so the rule is written over whole partitions rather than over the eight files it cleared: a
+ * ninth file that acquires one fails here too.
+ *
+ * Each prohibition is matched against the whitespace-collapsed text, because each crosses a line
+ * in the file it came from, and the hit's offset is mapped back through `collapsedWithOffsets` to
+ * the line a reader opens. One hit per prohibition per file: the patterns carry no `g` flag, so a
+ * file that says it twice is named once and reads the same after the first is fixed.
+ */
+export function retiredRerunProhibitions(roots: readonly string[]): string[] {
+  return roots.flatMap((root) =>
+    files(root)
+      .filter((file) => file.endsWith(".md"))
+      .flatMap((file) => {
+        const markdown = readFileSync(file, "utf8");
+        const { text, offsets } = collapsedWithOffsets(markdown);
+        // A hit under the repository reads from its root (`skills/…`, `packages/daemon/…`); a hit
+        // in a staged partition reads as that partition has it
+        // (`legion-worker/references/pr-body.md`), since its root is a temporary directory.
+        const name = file.startsWith(`${REPO_ROOT}${path.sep}`)
+          ? path.relative(REPO_ROOT, file)
+          : path.relative(root, file);
+        return RETIRED_RERUN_PROHIBITIONS.flatMap((prohibition) => {
+          const found = text.match(prohibition);
+          if (found?.index === undefined) return [];
+          return [`${name}:${markdown.slice(0, offsets[found.index]).split("\n").length}`];
+        });
+      })
+  );
+}
+
 /** The worker skill, the one file the release rule below is written over. */
 export const WORKER_SKILL = path.join(REPO_ROOT, "skills/legion-worker/SKILL.md");
 
 /** The worker skill's tool reference, the one file the shared-database rules are written over. */
 export const WORKER_TOOLS = path.join(REPO_ROOT, "skills/legion-worker/references/tools.md");
 
+/** The page that holds the re-run rule, the one file that rule is pinned in. */
+export const RED_AT_THE_HEAD = path.join(
+  REPO_ROOT,
+  "skills/legion-worker/references/red-at-the-head.md"
+);
+
+/** The merge gate, which carries the merger's merge-queue rule and one pointer to that page. */
+export const MERGE_GATE = path.join(REPO_ROOT, "skills/legion-worker/references/merge-gate.md");
+
+/** The pull-request body reference, which points at that page twice. */
+export const PR_BODY = path.join(REPO_ROOT, "skills/legion-worker/references/pr-body.md");
+
 /**
  * What one skill file gets wrong about a rule pinned over the repository's own `skills/`: it
  * still carries a claim the rule retired (`retired.claim`, a pattern rather than its one wording,
- * so a reword of the same shape is caught too), or it has lost the sentence the rule turns on
- * (`required.sentence`, pinned whole and literally). Each fault is one sentence naming `file` and
- * saying what a reader of the wrong text would believe. The text is whitespace-normalized first,
- * because these files are wrapped and a sentence of one crosses lines.
+ * so a reword of the same shape is caught too), or it has lost one of the sentences the rule
+ * turns on (each of `required`, pinned whole and literally). A rule that retired no claim, whose
+ * pins are all that hold it, passes `null` for `retired`. Each fault is one sentence naming
+ * `file` and saying what a reader of the wrong text would believe. The text is
+ * whitespace-normalized first, because these files are wrapped and a sentence of one crosses
+ * lines.
  */
 function prosePinFaults(
   file: string,
   markdown: string,
-  retired: { claim: RegExp; because: string },
-  required: { sentence: string; because: string }
+  retired: { claim: RegExp; because: string } | null,
+  required: readonly { sentence: string; because: string }[]
 ): string[] {
   const text = markdown.replace(/\s+/g, " ");
   const faults: string[] = [];
-  const found = text.match(retired.claim);
-  if (found !== null) faults.push(`${file} says "${found[0]}": ${retired.because}`);
-  if (!text.includes(required.sentence)) {
-    faults.push(`${file} does not say "${required.sentence}": ${required.because}`);
+  if (retired !== null) {
+    const found = text.match(retired.claim);
+    if (found !== null) faults.push(`${file} says "${found[0]}": ${retired.because}`);
+  }
+  for (const { sentence, because } of required) {
+    if (!text.includes(sentence)) {
+      faults.push(`${file} does not say "${sentence}": ${because}`);
+    }
   }
   return faults;
 }
@@ -333,10 +470,12 @@ export function retiredWorkerLifecycleClaims(markdown: string): string[] {
       because:
         "a released pod ends every role process of it, so no role stays live for as long as its issue is in the workflow",
     },
-    {
-      sentence: RELEASE_IS_NO_STOP,
-      because: "a worker told nothing about release reads its pod's deletion as a crash",
-    }
+    [
+      {
+        sentence: RELEASE_IS_NO_STOP,
+        because: "a worker told nothing about release reads its pod's deletion as a crash",
+      },
+    ]
   );
 }
 
@@ -373,10 +512,119 @@ export function brokenSharedDatabaseRules(markdown: string): string[] {
       because:
         "the skill cannot know what a deployment's session login may do, so it claims no power for that login",
     },
-    {
-      sentence: NO_READ_THROUGH_SESSION_URL,
-      because:
-        "a role told nothing about reads reaches the shared store through the write-capable session URL",
-    }
+    [
+      {
+        sentence: NO_READ_THROUGH_SESSION_URL,
+        because:
+          "a role told nothing about reads reaches the shared store through the write-capable session URL",
+      },
+    ]
   );
+}
+
+/**
+ * The sentence of `## Who may re-run` that carries INFRA-1303's rule, pinned whole and literally.
+ * A reader who lost it would believe the re-run belongs to whoever notices the red: the merger,
+ * the architect in `accepting`, an implementer in retro, or a role merely told of a red in a
+ * phase it does not hold — each of which the three sentences beside it refuse. The grant is what
+ * the page exists for; the sentences that deny the re-run read as a list of exceptions to
+ * nothing once it is gone.
+ */
+const PHASE_HOLDER_PRESSES_THE_RERUN =
+  "The holder of the issue's phase presses the re-run: the tester in `testing`, the reviewer in `reviewing`, the implementer in `implementing`.";
+
+/**
+ * The merger's merge-queue rule, its two sentences pinned whole and literally. The first is the
+ * one re-queue: a role that lost it sends the work back to `implementing` on the first
+ * `failed_checks` ejection of a head GitHub itself may queue again, which is the lap this change
+ * exists to save. The second is the bound on it, and a role that lost that one reads the first as
+ * leave to re-run the group build — which puts nothing back in the queue, since GitHub deletes
+ * the entry's branch (measured on cybermonklabs/legion#2811).
+ */
+const EJECTION_IS_QUEUED_ONCE_MORE =
+  "When GitHub takes the pull request out of the merge queue because the group build failed a check (`failed_checks`) and the head has not changed, the merger queues that same head once more.";
+const NO_ROLE_RERUNS_A_GROUP_BUILD = "No role re-runs a group build.";
+
+/**
+ * The four pointers to the page, each pinned whole and literally: the worker skill's own
+ * References row, which is how a role reaches the page at all; the merge gate's; and the two in
+ * the pull-request body reference — the one in `## Never waiting on CI`, beside the
+ * implementer's own re-run, and the one in the tester's evidence bullet, where the prohibition
+ * this change retired used to stand. A reference is reached only through a link from somewhere a
+ * role reads, so a lost pointer leaves the rule shipped and unread: the role goes on from the
+ * text around the gap, which tells it to finish its round on a red the change never made.
+ */
+const SKILL_LINKS_THE_PAGE =
+  "| A check is red at the head of the pull request, in the phase the role holds | `skill://legion-worker/references/red-at-the-head.md` |";
+const MERGE_GATE_POINTS_AT_THE_PAGE =
+  "A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.";
+const NEVER_WAITING_POINTS_AT_THE_PAGE =
+  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: the test of whether the head's one re-run is already spent, and the record the role writes before it re-runs.";
+const TESTER_EVIDENCE_POINTS_AT_THE_PAGE =
+  "A red at the head that the change did not make is the tester's to re-run once, and `skill://legion-worker/references/red-at-the-head.md` holds the rule.";
+
+/**
+ * What the four files INFRA-1303 wrote or changed get wrong about a red at the head: the worker
+ * skill (`WORKER_SKILL`), the page that holds the rule (`RED_AT_THE_HEAD`), the merge gate
+ * (`MERGE_GATE`) and the pull-request body reference (`PR_BODY`), each read by its caller. These
+ * pins alone hold the change's positive half; the prohibitions it retired are refused across
+ * whole partitions by `retiredRerunProhibitions`, so nothing here carries a retired claim of its
+ * own.
+ */
+export function redAtTheHeadFaults(pages: {
+  workerSkill: string;
+  redAtTheHead: string;
+  mergeGate: string;
+  prBody: string;
+}): string[] {
+  return [
+    ...prosePinFaults("skills/legion-worker/SKILL.md", pages.workerSkill, null, [
+      {
+        sentence: SKILL_LINKS_THE_PAGE,
+        because:
+          "a reference the skill does not link is a page no role opens, and a read by path stops at 300 lines",
+      },
+    ]),
+    ...prosePinFaults(
+      "skills/legion-worker/references/red-at-the-head.md",
+      pages.redAtTheHead,
+      null,
+      [
+        {
+          sentence: PHASE_HOLDER_PRESSES_THE_RERUN,
+          because:
+            "a page that grants the re-run to nobody leaves every role that reads a red free to press it",
+        },
+      ]
+    ),
+    ...prosePinFaults("skills/legion-worker/references/merge-gate.md", pages.mergeGate, null, [
+      {
+        sentence: EJECTION_IS_QUEUED_ONCE_MORE,
+        because:
+          "a merger told nothing of the re-queue sends the work back on the first failed_checks ejection of a head GitHub would queue again",
+      },
+      {
+        sentence: NO_ROLE_RERUNS_A_GROUP_BUILD,
+        because:
+          "a role that re-runs a group build puts nothing back in the queue, since GitHub deletes the entry's branch",
+      },
+      {
+        sentence: MERGE_GATE_POINTS_AT_THE_PAGE,
+        because:
+          "a reviewer reading the merge gate reaches the re-run rule only through this pointer",
+      },
+    ]),
+    ...prosePinFaults("skills/legion-worker/references/pr-body.md", pages.prBody, null, [
+      {
+        sentence: NEVER_WAITING_POINTS_AT_THE_PAGE,
+        because:
+          "an implementer reading `## Never waiting on CI` reaches the spent-re-run test only through this pointer",
+      },
+      {
+        sentence: TESTER_EVIDENCE_POINTS_AT_THE_PAGE,
+        because:
+          "a tester reading its evidence rule reaches the re-run rule only through this pointer",
+      },
+    ]),
+  ];
 }

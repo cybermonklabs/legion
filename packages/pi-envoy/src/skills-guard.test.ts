@@ -16,6 +16,7 @@ import {
   misnamedSkills,
   oversizedFiles,
   REPO_ROOT,
+  retiredRerunProhibitions,
   shippedAgents,
   skillLinks,
   stageSkills,
@@ -138,6 +139,15 @@ test("every skill://<name>/<path> link names a file that exists, and its #anchor
 
 test("every relative link resolves to a file inside the staged partition", () => {
   expect(brokenRelativeLinks(staged)).toEqual([]);
+});
+
+// INFRA-1303 gave the role that holds a phase one re-run of a red at the head the change did not
+// make (`skill://legion-worker/references/red-at-the-head.md`), and took the sentence that
+// forbade it out of skills/envoy/SKILL.md, which this partition ships. A forward merge keeps both
+// sides of a deletion with no conflict for anyone to read, so the prohibitions are refused over
+// the whole partition rather than over the one file they were deleted from.
+test("no staged skill forbids the phase holder's re-run of a red at the head", () => {
+  expect(retiredRerunProhibitions([staged])).toEqual([]);
 });
 
 // This plugin's skills reach every session with Dispatch, including one with no other plugin
