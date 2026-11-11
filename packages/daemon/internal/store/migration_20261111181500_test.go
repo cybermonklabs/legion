@@ -26,10 +26,14 @@ const seenReleaseVersion = 20261111181500
 // The negative control is the column's absence, read before the migration: a write naming it is
 // refused, so no row could have carried one.
 //
-// The three rows are the three readings a deployment's table holds: a resume a release of the
-// issue came after, which is stale and is healed by its first wake; one that saw every release
-// there is, which is a pod on its way back and is left alone; and one of an issue with no release
-// at all, which keeps the default and waits for that issue's first release to make it stale.
+// The six rows are the readings a deployment's table holds. Three are what the backfill writes:
+// a resume a release of the issue came after, which is stale and is healed by its first wake;
+// one that saw every release there is, which is a pod on its way back and is left alone; and one
+// of an issue with no release at all, which keeps the default and waits for that issue's first
+// release to make it stale. Two pin the halves of the open-rows where clause, a resume with a
+// first turn and one already closed, each of which keeps the default because no wake heals it.
+// The sixth pins the floor: a wake whose own clock stands before the release it paired with,
+// which the `p.at <= r.at` proxy would stamp below its own release_id.
 func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -163,7 +167,7 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 					t.Fatalf("the heal of %s: %v", tc.issue, err)
 				}
 				if answered != tc.gone {
-					t.Fatalf("the heal of %s answered release %d, want %d: it names the release that made the row stale, and 0 where it closed none",
+					t.Fatalf("the heal of %s answered release %d, want %d: it names the issue's newest release, which stands above the row it closed, and 0 where it closed none",
 						tc.issue, answered, tc.gone)
 				}
 				return nil
