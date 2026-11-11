@@ -924,7 +924,40 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 65: INFRA-1077 -- three fields of `GET /legion/v1/state`, each required by the reader this
+// 68: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
+// (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
+// any other — rather than answer it, so nobody will answer that question. The daemon then starts
+// the root's architect again, as a person's answer starts it, with a task that names the declined
+// ask and carries the four sentences Dispatch writes for the asking agent and the person's own
+// note. The value is the whole of the wire change: no field is added, no field is removed, and a
+// root nobody declined an ask of is served exactly as before.
+// `packages/contracts/src/legion-api.ts` lists the nine values in `LEGION_WAIT_ANSWERS`, and
+// that list is a `z.enum`, which refuses a value it does not name rather than stripping it like
+// an unknown key: a plugin at any earlier contract reading a declined root's state would refuse
+// the whole body, so the bump keeps the two apart from here on. It does not keep them apart on the way back: the
+// migration is forward-only and the answer stands on the root's own row, so an older daemon
+// binary put back on this schema serves `answeredBy: "declined"` from the rows this release
+// wrote, and the plugin at the earlier contract it is gated to then refuses the whole
+// `GET /legion/v1/state` body and not the one root that declined. The daemon ships store migration
+// `20261111021610_ask_declined.up.sql` with it, which adds the three columns the decline is kept
+// on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
+// the ninth value; an older daemon binary reads that schema without them and resumes such a root
+// through `resumeTask`'s default arm, so the root still starts and only Dispatch's words are
+// lost. (This entry first took 60, when the base carried 59, then 65 at the forward merge of
+// 2026-11-11 that brought main in, and 68 here. main declares 64, the entry right above this
+// one, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 126 open
+// pull requests of this repository on 2026-11-11 gives 64 (#2404, #2461, #2603, #3577), 65
+// (#2731, #3519 and this one), 66 (#3534) and 70 (#3573), so this change takes 68, which no open
+// head declares and which this tree published as its own. That reading is of this file at
+// refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds answers without
+// this path. Read the base's own number and every open pull request again at the next merge
+// rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 69: INFRA-1077 -- three fields of `GET /legion/v1/state`, each required by the reader this
 // commit ships (`packages/contracts/src/legion-api.ts` mirrors all three), so a plugin built
 // from here refuses a state an older daemon sends. The `daemon` block names the commit the
 // daemon was built from (`commit`, the release build's own revision, empty in a build that is
@@ -937,7 +970,7 @@ package api
 // ones `settings` withholds among them, so a rotated credential is visible without the
 // credential. `settings` itself is untouched, and stays the loose object it was. `GET
 // /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a contract
-// below 65 is served the state without all three (api's stateFor, withoutSettingSources), as a
+// below 69 is served the state without all three (api's stateFor, withoutSettingSources), as a
 // caller below 62 is served the workers without their counts of the moves back, one below 58 is
 // served the issues with no place in the admission line, one below 57 the claim views with no
 // `step`, one below 56 is served the report of claims nothing will wake without its retired
@@ -958,10 +991,10 @@ package api
 // waiting line at 58, again without these shapes, so this branch took 59; main then landed
 // INFRA-956's end of fix-attempt counting and its provider-error retry at 59, again without these
 // shapes, so this branch took 60; main then landed INFRA-2551's counts of the moves back at 62,
-// again without these shapes, so this branch takes the number above it, as the collision note
-// says. main then landed INFRA-312's launch spend attributes at 64, again without these shapes, so this
-// branch takes 65. main held 64 at the forward merge that renumbered this entry, 5f5b18f8; read
-// main's own number again at the next merge rather than from this line, and note that main's own
-// 64 entry reads this pull request at 60, which was true when it was written and is two
-// renumbers old.)
-const DaemonAPIVersion = 65
+// again without these shapes, so this branch took 65, the number above the 64 main held then; main
+// then landed INFRA-1282's declined ask at 68, the entry right above this one and again without
+// these shapes, so this branch takes 69. main held 68 at the forward merge that renumbered this
+// entry, 475d76095a6a; read main's own number again at the next merge rather than from this line,
+// and note that main's own 64 entry reads this pull request at 60 and main's 68 entry reads it at
+// 65, each true when it was written and each a renumber or more old.)
+const DaemonAPIVersion = 69

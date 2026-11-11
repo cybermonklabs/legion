@@ -673,7 +673,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await navigateInApp(page, "/");
     const inboxCard = page.getByTestId(`ask-${askId}`);
     await inboxCard.getByRole("checkbox", { name: "Ship" }).check();
-    await inboxCard.getByRole("button", { name: "Answer" }).click();
+    await inboxCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({

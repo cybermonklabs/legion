@@ -132,7 +132,7 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 		if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
 			return err
 		}
-		if err := e.store.ClearGeneration(ctx, tx, member.Key); err != nil {
+		if err := e.store.ClearGeneration(ctx, tx, member.Key, e.now()); err != nil {
 			return err
 		}
 		if member.Status == "todo" {
