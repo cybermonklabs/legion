@@ -91,14 +91,21 @@ func mergeJumpsSummary(jumps []api.MergeJumpView, records []api.MergeJumpRecordV
 
 // displacedBy is what one spent jump went in front of, as mergeJumpsSummary names it: the
 // entries GitHub's queue held when the daemon submitted, each by number and state, and how long
-// that queue was. A refused jump says so with GitHub's own answer, because the mark was spent
-// either way and a refusal read as a jump would name a pull request that never moved; a queue
-// GitHub did not answer is told apart from an empty one, since the record keeps the two apart
-// (record.MergeJumpRecord.EntriesUnknown) and an operator reading "in front of nothing" of an
-// unread queue would be reading a guess.
+// that queue was. A jump that did not go through says so with the refusal's own words, because
+// the mark was spent either way and such a jump read as one would name a pull request that never
+// moved; a queue GitHub did not answer is told apart from an empty one, since the record keeps
+// the two apart (record.MergeJumpRecord.EntriesUnknown) and an operator reading "in front of
+// nothing" of an unread queue would be reading a guess.
+//
+// The line says that the jump did not go through and never who refused it. Refused is true for
+// both shapes of a jump that failed — one GitHub answered and one Legion could not deliver — and
+// the record keeps no column for which, by decision: the words are what a reader reads
+// (record.MergeJumpRecord, the daemon's jumpRefusalRecorded). So this line prints the words and
+// adds no assertion of its own, since "refused by GitHub" over a request GitHub never saw sends
+// an operator to the repository's merge-queue settings for a fault in the network.
 func displacedBy(jump api.MergeJumpRecordView) string {
 	if jump.Refused {
-		return "refused by GitHub: " + quotedOrNone(jump.Refusal)
+		return "the jump did not go through: " + quotedOrNone(jump.Refusal)
 	}
 	if jump.EntriesUnknown {
 		return "in front of a queue GitHub did not answer"

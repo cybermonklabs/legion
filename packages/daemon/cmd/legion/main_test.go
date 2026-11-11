@@ -1702,6 +1702,13 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 	refused := `{"repository":"zeta/tools","issue":"LEGION-209","number":77,"head":"deadbee","at":"2026-11-10T08:30:00Z",` +
 		`"reason":"the hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"refused":true,` +
 		`"refusal":"the merge queue is not enabled on this repository"}`
+	// The other shape a failed jump leaves: GitHub answered nothing at all, so the refusal names
+	// the failure to deliver (the daemon's jumpRefusalRecorded). The record keeps `refused` true
+	// for both and no column for which, so the two differ in these words alone, and the line must
+	// read them rather than assert who refused.
+	undelivered := `{"repository":"zeta/tools","issue":"LEGION-210","number":78,"head":"facade1","at":"2026-11-10T08:45:00Z",` +
+		`"reason":"the second hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"refused":true,` +
+		`"refusal":"Legion could not deliver the jump to GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
 	for _, tc := range []struct {
 		name, jumps, records, want string
 	}{
@@ -1711,7 +1718,15 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 			records: `[` + displaced + `,` + refused + `]`,
 			want: `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; the newest of each repository: ` +
 				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", in front of 3 queued: #401 QUEUED, #402 MERGEABLE; ` +
-				`zeta/tools LEGION-209 #77 at 2026-11-10T08:30:00Z "the hotfix", refused by GitHub: "the merge queue is not enabled on this repository"` + "\n",
+				`zeta/tools LEGION-209 #77 at 2026-11-10T08:30:00Z "the hotfix", the jump did not go through: "the merge queue is not enabled on this repository"` + "\n",
+		},
+		{
+			name:    "a jump GitHub never answered, whose words are the only thing that tells it apart",
+			jumps:   `[]`,
+			records: `[` + undelivered + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`zeta/tools LEGION-210 #78 at 2026-11-10T08:45:00Z "the second hotfix", the jump did not go through: ` +
+				`"Legion could not deliver the jump to GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"` + "\n",
 		},
 		{
 			name:    "a mark nothing has spent yet",
