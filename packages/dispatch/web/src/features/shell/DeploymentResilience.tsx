@@ -46,6 +46,10 @@ interface Navigation {
 declare global {
   interface Window {
     readonly navigation?: Navigation;
+    /** Set while this bundle's chunk-failure recovery is installed, and read by `web/index.html`'s
+     *  inline script: a `<link rel="modulepreload">` that fails while the bundle runs is one the
+     *  bundle itself asked for, and `installChunkFailureRecovery` below judges it. */
+    __dispatchChunkRecovery?: boolean;
   }
 }
 
@@ -206,9 +210,60 @@ function spendAskedChunkReload(): void {
   }
 }
 
+// Chunk downloads nobody is waiting for, and chunk downloads a reader is waiting for.
+//
+// The entry starts the landed route's chunks beside the landing read, before React has rendered
+// anything (`app.tsx`, `preloadRouteChunk`), and the router asks for the same chunk again when it
+// renders that route (`renderChunk`, used by the `lazy` routes there). A prefetch is nobody
+// waiting: its failure says only that the download has not happened yet, and the router's own ask
+// for the same chunk fails a moment later, in front of a reader whose page cannot draw. That
+// second failure is the one this recovery was written for.
+//
+// Reloading for the prefetch instead costs the reader what the render's failure does not. It
+// throws the document away while it is still loading - measured on the stubbed layer: with the
+// prefetch judged, the three reloads of a chunk that never downloads all happen before the
+// document fires `load`, so the reader is shown nothing at all until the budget is spent - and a
+// download that only the prefetch lost, one the render would have got, would spend a reload for
+// nothing. So a failure while the entry's prefetch is still out and no route render is waiting on
+// a chunk is read as the prefetch's, and reloads nothing.
+//
+// `vite:preloadError` is dispatched from the rejection itself, before any `then` of the promise
+// these hold runs, so a render's failure always finds its own count still up.
+let prefetchedChunksOut = 0;
+let renderedChunksOut = 0;
+
+/** Starts a chunk nothing is waiting for yet, and swallows its failure: the same import runs
+ *  again under `renderChunk` when the router renders the route, and that is where a reader meets
+ *  a chunk that will not download. */
+export function prefetchChunk(load: () => Promise<unknown>): void {
+  prefetchedChunksOut += 1;
+  void load()
+    .catch(() => undefined)
+    .finally(() => {
+      prefetchedChunksOut -= 1;
+    });
+}
+
+/** Starts a chunk the router is rendering, which is a reader waiting on the download. */
+export function renderChunk<T>(load: () => Promise<T>): Promise<T> {
+  renderedChunksOut += 1;
+  const chunk = load();
+  void chunk
+    .catch(() => undefined)
+    .finally(() => {
+      renderedChunksOut -= 1;
+    });
+  return chunk;
+}
+
 // Reloads the page for a chunk that failed to download while online, from the tab's budget.
 function reloadForChunkFailure(): void {
   if (leavingPage) {
+    return;
+  }
+  // A chunk the entry prefetched and no render has asked for yet: the router asks again, and
+  // that failure is the one a reader meets (`prefetchChunk` above).
+  if (prefetchedChunksOut > 0 && renderedChunksOut === 0) {
     return;
   }
   // A chunk that fails to download while the browser is offline is a network outage, not a
@@ -232,10 +287,13 @@ function reloadForChunkFailure(): void {
 // reads as a module and fails on with a TypeError that says nothing about the download; a
 // prevented stylesheet failure loads the module without its styles. So the handler never
 // prevents it: the importer always sees the failure itself, and the page also reloads from the
-// tab's budget, never while it is being left. A failed chunk or stylesheet Vite preloaded through a
-// `<link>` is seen first by `web/index.html`'s inline script, which reloads; a reload fires
-// `beforeunload` before it returns, so this event for the same failure finds the page being left
-// and spends nothing more.
+// tab's budget, never while it is being left. A failed chunk or stylesheet Vite preloaded through
+// a `<link rel="modulepreload">` is a download this bundle asked for, so `web/index.html`'s
+// inline script leaves it to this handler while `__dispatchChunkRecovery` says the handler is
+// installed: Vite reports the same failure here, with the prefetch rule above and the offline and
+// leaving rules applied, while the inline script knows only the path. The inline script keeps
+// every failure of the document's own assets - the entry chunk, its preload links and the main
+// stylesheet - since those fail before this bundle can run, or while it never does.
 export function installChunkFailureRecovery(): () => void {
   const navigation = window.navigation;
   window.addEventListener("beforeunload", markPageLeaving);
@@ -247,6 +305,7 @@ export function installChunkFailureRecovery(): () => void {
   window.addEventListener("keydown", markPageStaying, { capture: true });
   document.addEventListener("visibilitychange", markPageStayingWhenVisible);
   window.addEventListener("vite:preloadError", reloadForChunkFailure);
+  window.__dispatchChunkRecovery = true;
 
   return () => {
     window.removeEventListener("beforeunload", markPageLeaving);
@@ -257,6 +316,7 @@ export function installChunkFailureRecovery(): () => void {
     window.removeEventListener("keydown", markPageStaying, { capture: true });
     document.removeEventListener("visibilitychange", markPageStayingWhenVisible);
     window.removeEventListener("vite:preloadError", reloadForChunkFailure);
+    window.__dispatchChunkRecovery = undefined;
     markPageStaying();
   };
 }

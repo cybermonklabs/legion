@@ -1,18 +1,19 @@
 /** What the application shell draws when its own assets fail to download, and what it reserves
  *  for the rails beside a route.
  *
- *  Every row here is about the page: a chunk the browser could not download, a `whoami` the row
- *  itself refuses, a sidebar taller than the viewport, the gutter a route with no margin takes.
- *  None of it is a claim about what the server computes, so each runs against a recording rather
- *  than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). Three of them run
- *  with no recording at all, and take no `scene`: their page never reaches the API, because the
- *  row answers `whoami` itself or the entry chunk never loads.
+ *  Every row here is about the page: a chunk the browser could not download, the viewer read the
+ *  row itself refuses, a sidebar taller than the viewport, the gutter a route with no margin
+ *  takes. None of it is a claim about what the server computes, so each runs against a recording
+ *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). Three of
+ *  them run with no recording at all, and take no `scene`: their page never reaches the API,
+ *  because the row answers every read the page makes for its viewer, or the entry chunk never
+ *  loads.
  *
  *  What stayed in `shell.e2e.ts`, and why, is written there.
  */
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect } from "@playwright/test";
+import { expect, type Route } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { createIssue, createProject } from "./api";
@@ -41,13 +42,20 @@ const test = stubbed(async () => {
 // so the page asks again only as any read does, and then shows that it could not reach Dispatch,
 // with Retry, rather than loading for ever.
 //
-// It takes no `scene`: every `whoami` is this row's own refusal, the app never opens, and so no
-// read of it reaches the API. There is nothing for a recording to answer.
+// The read the page makes for its viewer is the landing (`web/src/api/queries.ts`,
+// `readLanding`), which answers that same 503 under that same code; `/auth/whoami` is what it
+// falls back to for every other failure. So both are refused here, and both are counted. A row
+// that refused the fallback alone would leave the landing to whatever stands behind it: in a
+// recording run that is the real harness, which answers a page that has not signed in with 401
+// and draws the sign-in page, so the row would say nothing about the page a reader meets.
+//
+// It takes no `scene`: every read of the viewer is this row's own refusal, the app never opens,
+// and so no read of it reaches the API. There is nothing for a recording to answer.
 test("a page stops on Couldn't reach Dispatch. while whoami answers EVENT_HEAD_READ_FAILED @pr", async ({
   page,
 }) => {
   let refused = 0;
-  await page.route("**/auth/whoami", (route) => {
+  const refuse = (route: Route) => {
     refused++;
     return route.fulfill({
       body: JSON.stringify({
@@ -57,7 +65,9 @@ test("a page stops on Couldn't reach Dispatch. while whoami answers EVENT_HEAD_R
       contentType: "application/json",
       status: 503,
     });
-  });
+  };
+  await page.route("**/auth/whoami", refuse);
+  await page.route(/\/api\/v1\/landing(\?|$)/u, refuse);
 
   await page.clock.install();
   await page.goto("/");

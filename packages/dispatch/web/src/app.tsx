@@ -36,6 +36,7 @@ import {
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
+import { prefetchChunk, renderChunk } from "./features/shell/DeploymentResilience";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
@@ -114,9 +115,12 @@ const loadProjectPage = () =>
 const loadDocumentPage = () =>
   import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }));
 
-const IssuePage = lazy(loadIssuePage);
-const ProjectPage = lazy(loadProjectPage);
-const DocumentPage = lazy(loadDocumentPage);
+// Each route chunk under `renderChunk`, which is what tells the chunk-failure recovery that a
+// reader is waiting on this download rather than the entry having prefetched it
+// (`features/shell/DeploymentResilience.tsx`).
+const IssuePage = lazy(() => renderChunk(loadIssuePage));
+const ProjectPage = lazy(() => renderChunk(loadProjectPage));
+const DocumentPage = lazy(() => renderChunk(loadDocumentPage));
 
 /** The chunks the live document pulls as it renders, which the route chunk does not carry: the
  *  editor's own library (`features/doc/editor.ts`, `loadEditorLibrary`) and the Yjs transport it
@@ -146,8 +150,8 @@ const loadDocumentChunks = () =>
  * decides both. An issue page and a project document page each draw a live document, so both
  * take the document chunks; the board and the Inbox draw none and take none, and an address that
  * is no page of a cold landing starts nothing. A chunk that fails here is left to the router:
- * `lazy` asks for the same import again, and a failure there is what `DeploymentResilience`
- * already decides about (`vite:preloadError`).
+ * `lazy` asks for the same import again, and that failure - a reader in front of a page that
+ * cannot draw - is the one `DeploymentResilience` reloads for (`prefetchChunk`).
  */
 export function preloadRouteChunk(pathname: string = window.location.pathname): void {
   const page = landingReadOf(pathname).page;
@@ -159,9 +163,7 @@ export function preloadRouteChunk(pathname: string = window.location.pathname): 
         : page === "board"
           ? [loadProjectPage]
           : [];
-  // A failure is swallowed here and nowhere else: the same imports run again under the router,
-  // where the Suspense boundary and the chunk-failure recovery decide what a reader sees.
-  for (const load of chunks) void load().catch(() => undefined);
+  for (const load of chunks) prefetchChunk(load);
 }
 
 const AgentsPage = lazy(() =>

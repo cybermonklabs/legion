@@ -1316,7 +1316,14 @@ holds the lazy chunk through an SPA replacement. A stale Vite chunk reloads the 
 three times in any five minutes (never while the browser is offline — that is an outage, not a
 deployment); if rendering still fails, `MarkdownBody` exposes its literal-text fallback with
 `data-markdown-fallback`. The budget renews, so a tab open across many deployments recovers from
-each, and a page whose assets fail on every load stops after three reloads. A stale entry chunk or
+each, and a page whose assets fail on every load stops after three reloads. A chunk the entry
+only prefetched is the one failure that reloads nothing: `preloadRouteChunk` (`web/src/app.tsx`)
+starts the landed route's chunks beside the landing read, before React has rendered anything, and
+nobody is waiting on those downloads. The router asks for the same chunk when it renders the
+route (`renderChunk`, which each `lazy` route goes through), and that failure — a reader in front
+of a page that cannot draw — is the one the recovery reloads for, so a prefetch costs the reader
+no reload the render's own failure does not, and the page is never thrown away before it has
+loaded. A stale entry chunk or
 stylesheet reloads the page too, from that same budget. During a rolling deploy the load balancer
 can send a page's HTML to one server and its hashed assets to another, which never built them.
 Every server answers another build's assets from the database (`packages/envoy/cmd/dispatch/AGENTS.md`,
@@ -1333,8 +1340,13 @@ the three reloads in five minutes whichever failed first; storage it cannot read
 nothing. The once-only key of earlier builds, `dispatch.reloaded-for-chunk`, is neither read nor
 written. It keeps the offline rule, and skips a page being left from `beforeunload`, `pagehide`, or
 a Navigation API `navigate` to another document that is not a download, until `pageshow`; it never
-clears that before `pageshow`, since a failure of a preload or stylesheet Vite inserted also
-reaches the bundle's own handler, which judges it. `pagehide` fires as a navigation commits,
+clears that before `pageshow`, unlike the bundle's finer rule. A `modulepreload` link that fails
+while the bundle is running (`window.__dispatchChunkRecovery`, set by
+`installChunkFailureRecovery`) is a chunk the bundle asked for, and is left to the bundle's own
+handler, which sees the same failure as `vite:preloadError` and knows a prefetch from a render;
+the document's own assets — the entry chunk, the preload links beside it and the main stylesheet
+— stay the inline script's, since each of those fails before the bundle can run or while it never
+does. `pagehide` fires as a navigation commits,
 after Firefox has already cancelled the entry's download, so in a browser that fires no
 `beforeunload` it does not stop that reload; Chromium and WebKit fire no error for a download a
 navigation cancels. `shell.e2e.ts` misses the entry once (the page reloads and renders), on every

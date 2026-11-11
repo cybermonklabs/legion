@@ -1,7 +1,8 @@
 /** What the machine pages draw from one fixed answer: the servers, strips and pane boxes of a
  *  seeded tmux layout, the lines the page writes when it has nothing to draw, the addresses a
  *  window pick writes, and the reads the page makes. Every row here asserts the drawing and
- *  nothing the server decides, so each runs against a recording of `GET /api/v1/agents` rather
+ *  nothing the server decides, so each runs against a recording of the agent registry - which a
+ *  cold page reads inside `GET /api/v1/landing` (`web/src/api/queries.ts`, `seedShell`) - rather
  *  than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
  *
  *  What is not here is what the clock decides: a pane's state and a drawing's age are read from
@@ -380,8 +381,17 @@ test.describe("@machines-readonly", () => {
       const read = [
         ...new Set(made.filter((r) => r.path.startsWith("/api/")).map((r) => r.path)),
       ].sort();
-      // The agents list is the one read the drawing itself needs, and it is the shell's own.
-      expect(read).toContain("/api/v1/agents");
+      // The agents list is the one read the drawing itself needs, and it is the shell's own. On
+      // a cold page that read is `GET /api/v1/landing`: its answer carries the registry and
+      // seeds it under the key every surface reads it by (`web/src/api/queries.ts`, `seedShell`),
+      // so a page that asked the landing has read the registry. A page that asked
+      // `/api/v1/agents` for it instead - a warm tab, or a Dispatch older than the landing route
+      // - made the same read under its own route. Either is that read, and neither is a route of
+      // this page's own.
+      expect(
+        read.filter((path) => path === "/api/v1/landing" || path === "/api/v1/agents"),
+        "the page read the agent registry"
+      ).not.toEqual([]);
       expect(
         read.filter((path) => OWN_ROUTE.test(path)),
         "the page asked for a route of its own"
