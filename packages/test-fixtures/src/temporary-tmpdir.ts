@@ -26,8 +26,9 @@ import { temporaryDirectory } from "./temporary-directories";
  *
  * Both hooks carry an explicit hang guard — a limit of their own rather than Bun's unwritten 5 s
  * default, which has failed correct runs of the suites that call this fixture — so a capture or
- * a restore that never returns reddens with its test named; the comments beside them have the
- * measurements they are sized from.
+ * a restore that never returns reddens with this file named rather than cancelling the job; Bun
+ * reports a timed-out `beforeAll` or `afterAll` as `(unnamed)`, so the row itself is not named.
+ * The comments beside them have the measurements they are sized from.
  */
 export function temporaryTmpdir(prefix: string): string {
   const root = temporaryDirectory(prefix, { real: true });
@@ -41,8 +42,9 @@ export function temporaryTmpdir(prefix: string): string {
   // hooks whose own work was a fraction of this one's, since a starved host charges a hook for
   // the time it is not scheduled. 60_000 is 3.8 times the worst of those charges, and sits well
   // inside the consumers' timeout-minutes: 10 (.github/workflows/ci.yaml, 600 s), so a capture
-  // that never returns reddens with its test named instead of cancelling the job, which names
-  // nothing.
+  // that never returns reddens with this file named instead of cancelling the job, which names
+  // nothing. Bun reports a timed-out `beforeAll` as `(unnamed)`, so the file is as far as that
+  // naming goes.
   beforeAll(() => {
     // `??=`, so a `beforeAll` that runs a second time without its `afterAll` between captures
     // nothing: it would capture the root this fixture set, and the restore would then point
@@ -60,7 +62,8 @@ export function temporaryTmpdir(prefix: string): string {
   // charges against hooks whose own work was a fraction of this one's, so the limit is sized
   // from them: 60_000 is 3.8 times the worst, and sits well inside the consumers'
   // timeout-minutes: 10 (.github/workflows/ci.yaml, 600 s), so a restore that never returns
-  // reddens with its test named instead of cancelling the job, which names nothing.
+  // reddens with this file named instead of cancelling the job, which names nothing. Bun reports
+  // a timed-out `afterAll` as `(unnamed)`, so the row itself is not named.
   afterAll(() => {
     restore?.();
     restore = undefined;

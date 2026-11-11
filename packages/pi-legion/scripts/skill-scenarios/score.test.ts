@@ -39,7 +39,8 @@ const stagings: (() => void)[] = [];
 // 600 s the pi-legion job's timeout-minutes: 10 allows (.github/workflows/ci.yaml); 180_000, 2.4
 // times that worst, is the value taken because this change already carries 180_000 on
 // claude-envoy's hook row, so there is one precedent rather than two. It leaves the job room to
-// redden with this test named instead of cancelling, which names nothing.
+// redden with this file named instead of cancelling, which names nothing; Bun reports a
+// timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -3115,8 +3116,8 @@ let scoredExitCode: number | null = null;
 // and at that default no loaded run reached this hook at all: the drain above it was charged past
 // the default first. 180_000 is 3.0 times the worst measured here and the number the hook above
 // carries, and sits well inside the pi-legion job's timeout-minutes: 10 (600 s), so a subprocess
-// that never returns reddens with this test named instead of cancelling the job, which names
-// nothing.
+// that never returns reddens with this file named instead of cancelling the job, which names
+// nothing; Bun reports a timed-out `beforeAll` as `(unnamed)`, so the row itself is not named.
 beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();

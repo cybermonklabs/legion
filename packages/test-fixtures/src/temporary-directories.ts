@@ -135,8 +135,9 @@ export function temporaryDirectories(
  *
  * Both hooks carry an explicit hang guard — a limit of their own rather than Bun's unwritten 5 s
  * default, which has failed correct runs of the suites that call this fixture — so a making or a
- * removal that never returns reddens with its test named; the comments beside them have the
- * measurements they are sized from.
+ * removal that never returns reddens with this file named rather than cancelling the job; Bun
+ * reports a timed-out `beforeAll` or `afterAll` as `(unnamed)`, so the row itself is not named.
+ * The comments beside them have the measurements they are sized from.
  */
 export function temporaryDirectory(
   prefix: string,
@@ -157,8 +158,9 @@ export function temporaryDirectory(
   // not bodies, since a starved host charges a hook for the time it is not scheduled. 60_000 is
   // 56 times the worst body measured here and 3.8 times the worst of those charges, and sits
   // well inside the consumers' timeout-minutes: 10 (.github/workflows/ci.yaml, 600 s), so a
-  // making that never returns reddens with its test named instead of cancelling the job, which
-  // names nothing.
+  // making that never returns reddens with this file named instead of cancelling the job, which
+  // names nothing. Bun reports a timed-out `beforeAll` as `(unnamed)`, so the file is as far as
+  // that naming goes.
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
   }, 60_000);
@@ -177,7 +179,8 @@ export function temporaryDirectory(
   // 300_000 is half of it, 1.4 times that worst. Plainly: at 120 busy loops per CPU, a load far
   // past anything CI applies, removing a large tree can cost minutes, so this guard catches a
   // removal that never returns and nothing smaller, and leaves the job room to redden with this
-  // test named rather than cancelling, which names nothing.
+  // file named rather than cancelling, which names nothing. Bun reports a timed-out `afterAll`
+  // as `(unnamed)`, so the row itself is not named.
   afterAll(() => {
     removeTree(directory);
   }, 300_000);
