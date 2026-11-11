@@ -4678,7 +4678,7 @@ The listener this checkout builds refuses a registration it can give no session 
 a tree from before they did is run with `--build-from`, which serves it the listener of its own revision.
 
 `--disruptions a,c` runs only the windows named, any subset of `a` to `h`.
-A subset that publishes no comment of the followed issue (`g` alone) has no comment order to compare, and the run says so rather than judging it.
+A subset that publishes no comment of the followed issue (`h` alone) has no comment order to compare, and the run says so rather than judging it.
 It says so only on the evidence of its own `events.jsonl`, read back and holding no issue event: a record the run cannot read is named and fails the run, since it tells nothing about what was published.
 
 | input | default | meaning |

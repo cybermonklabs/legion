@@ -59,7 +59,11 @@ type SessionReaper struct {
 	// is handed to it, and the caller bounds the call as it bounds its other consumer calls
 	// (cmd/listener sessionDelivery.deleteConsumer): a pass carries no caller's deadline, and the
 	// records behind this one are not held up by a server that does not answer.
-	DeleteConsumer func(ctx context.Context, sessionID string) error
+	//
+	// It answers nothing, because the body behind it answers nothing: it logs what became of the
+	// consumer - kept, deleted, or a call the server refused - and the pass has nothing to add
+	// to those lines and nothing to decide on them.
+	DeleteConsumer func(ctx context.Context, sessionID string)
 }
 
 // goneCandidate is one record a pass judged gone, with the revision the copy held for it when the
@@ -126,10 +130,12 @@ func (r *SessionRegistry) StartSessionReaper(ctx context.Context, interval time.
 // session whose record is there (cmd/listener's sessionDelivery.deleteConsumer), since the pass
 // deleted the record of the session it judged gone and not of the one that registered after it.
 //
-// Nothing here fails the pass: an age it could not write, a bucket that did not answer a delete,
-// a consumer it could not delete and a stored-message count that failed are each logged and the
-// pass goes on, since the next tick asks the same questions again. A consumer left behind stands
-// until the stream's inactive threshold takes it, as every session consumer did before.
+// Nothing here fails the pass: an age it could not write, a bucket that did not answer a delete
+// and a stored-message count that failed are each logged and the pass goes on, since the next
+// tick asks the same questions again. A consumer the deleter could not remove is logged by that
+// deleter and reported to the pass not at all: the consumer stands until the stream's inactive
+// threshold takes it, as every session consumer did before, and the records behind this one are
+// reaped whatever became of it.
 func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper) int {
 	if err := r.applyMaxAge(); err != nil {
 		r.logger().Warn("session reaper could not settle the session bucket's maximum age", slog.String("error", err.Error()))
@@ -158,12 +164,7 @@ func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper
 			continue // registered again between the pass's decision and its delete
 		}
 		reaped++
-		if err := reaper.deleteConsumer(ctx, candidate.sessionID); err != nil {
-			r.logger().Warn("session reaper deleted a record and could not delete its session consumer",
-				slog.String("session_id", candidate.sessionID),
-				slog.String("error", err.Error()),
-			)
-		}
+		reaper.deleteConsumer(ctx, candidate.sessionID)
 		stored, bounded := reaper.storedAfterLastSeen(ctx, candidate.sessionID, candidate.lastSeen, stream, deadline)
 		reaper.Reaped.Inc()
 		reaper.StoredAfterLastSeen.Add(int64(stored))
@@ -281,11 +282,11 @@ func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessio
 // deleteConsumer deletes sessionID's session consumer, sessionID being a session whose record
 // this pass has just deleted (SessionReaper.DeleteConsumer). A reaper that holds no deleter
 // deletes no consumer, which is what a pass that only tests the deletes makes.
-func (reaper SessionReaper) deleteConsumer(ctx context.Context, sessionID string) error {
+func (reaper SessionReaper) deleteConsumer(ctx context.Context, sessionID string) {
 	if reaper.DeleteConsumer == nil {
-		return nil
+		return
 	}
-	return reaper.DeleteConsumer(ctx, sessionID)
+	reaper.DeleteConsumer(ctx, sessionID)
 }
 
 // streamState is the sequence space the notification stream holds, read once per pass (one

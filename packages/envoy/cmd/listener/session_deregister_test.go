@@ -204,8 +204,8 @@ func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
 
 // A deregistration answers before the consumer's delete it leaves running: the delete waits on
 // the session's lock with no bound of its own - a relay restart of this listener's can hold it
-// for its own 5 s - and then makes the bucket read, the floor read, the delete and the repair's
-// own calls, where the client's attempt
+// for its own 5 s - and then makes the bucket read, the delete, which records the consumer's
+// resume floor first, and the repair's own calls, where the client's attempt
 // ends at 5 s (LISTENER_CALL_TIMEOUT_MS) and the route promises an answer inside it. The
 // consumer goes once the wait ends, so nothing is given up for the earlier answer.
 func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
@@ -355,9 +355,7 @@ func TestTheConsumerDeleteReadsTheSessionBucketsLeader(t *testing.T) {
 	// The two reads above are the row's own; what the delete reads is counted from here.
 	directGets.Store(0)
 
-	gone := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, func(ctx context.Context) error {
-		return rig.deps.consumers.consumers.Delete(ctx, sessionID)
-	})
+	gone := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil)
 
 	if gone {
 		t.Error("the delete reported the consumer gone; the bucket's leader holds this session's registration, so the consumer that delivers to it must stand")

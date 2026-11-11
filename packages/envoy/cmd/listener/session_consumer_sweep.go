@@ -154,10 +154,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		// The info the list already answered is handed to the delete, which records the
 		// consumer's floor from it rather than reading the consumer again: a session the
 		// delete confirms gone has nobody left to move that floor.
-		remove := func(ctx context.Context) error {
-			return s.delivery.consumers.DeleteListed(ctx, sessionID, info)
-		}
-		if s.delivery.deleteConsumer(ctx, s.deps, sessionID, remove) {
+		if s.delivery.deleteConsumer(ctx, s.deps, sessionID, info) {
 			deleted++
 		}
 	}

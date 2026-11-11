@@ -432,48 +432,42 @@ func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *j
 	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id, AckFloor: startSeq - 1}, nil
 }
 
-// Delete removes sessionID's consumer, reading the consumer's info itself, so it holds a slot of
-// the stream's consumer cap (streamMaxConsumers) no longer: the listener deletes a session's
-// consumer when the session's registration ends, when its sweep finds a session the registry no
-// longer holds, and from the session reaper for each record that pass deleted
-// (session.ReapSessions). A caller that already holds the consumer's info, as a sweep over the
-// consumer list does, passes it to DeleteListed and saves the read. A session id that names no
-// consumer (SessionConsumerName) is no error and costs no call, and nor is a consumer the stream
-// does not hold.
+// Delete removes sessionID's consumer, so it holds a slot of the stream's consumer cap
+// (streamMaxConsumers) no longer: the listener deletes a session's consumer when the session's
+// registration ends, when its sweep finds a session the registry no longer holds, and from the
+// session reaper for each record that pass deleted (session.ReapSessions). listed is the
+// consumer's info when the caller holds it already, as a sweep over the consumer list does
+// (ListSessionConsumers), which saves this call the info read; nil leaves that read to this
+// call. A session id that names no consumer (SessionConsumerName) is no error and costs no
+// call, and nor is a consumer the stream does not hold.
 //
-// The consumer's resume floor is recorded on the stream first (SessionResumeSubject), so a
-// session that comes back with no resume point of its own is created again where its delivery
-// stopped rather than at the stream's end (Ensure). A record that could not be published returns
-// its error and deletes nothing: the sweep reaches that session again next pass, so no consumer
-// is deleted with its position unrecorded. A consumer the stream no longer holds has its
-// position recorded too, whenever a restart that deleted it left a pending start behind: that
-// start is then the one position anyone holds for the session, so the floor below it is
-// published before the start is dropped (recordDroppedStart).
+// The floor returned is the one this call recorded on the session's resume lane, and it is the
+// one floor anyone holds for the session from here on: the consumer it was read from is gone,
+// so nothing moves it again, and the caller that gives the consumer back to a session that
+// registered meanwhile creates it at the sequence after this floor
+// (cmd/listener repairRegistered). It is the consumer's ack floor (ackFloor) for a consumer
+// this call deleted, and the sequence before the pending start for a missing consumer whose
+// start this call dropped (recordDroppedStart).
+//
+// The floor is 0 where this call recorded nothing, which is each of: a session id that names no
+// consumer; a consumer the stream no longer holds with no pending start behind it; and a floor
+// of 0 recorded for a consumer that had acked nothing, which is the same 0 to the caller and
+// means the same thing to it, since a create at the sequence after 0 is a create at the first
+// sequence the stream holds. A caller reads 0 as "no floor to raise the record's own start
+// to", which is what registeredTarget does with it. A delete whose resume record could not be
+// published returns 0 with its error and deletes nothing: the sweep reaches that session again
+// next pass, so no consumer is deleted with its position unrecorded. A delete whose record
+// landed and whose own call then failed returns that recorded floor with its error.
 //
 // Dropping the consumer's pending start (RestartAtFloor) goes before the delete, and that order
 // is what makes the delete final: a pending start left standing would have the next registration
 // or relay retry undo the delete, since both Ensure and the next restart create a consumer they
 // find missing at that pending start, whatever the caller asked for, and nothing would delete
 // that consumer again, the session's entry being gone already.
-func (s *SessionConsumers) Delete(ctx context.Context, sessionID string) error {
-	return s.deleteConsumer(ctx, sessionID, nil)
-}
-
-// DeleteListed is Delete of sessionID's consumer as info listed it (ListSessionConsumers), which
-// costs no info call of its own: the sweep reads every session consumer in a few paged requests
-// and then deletes from what it read, as KeepListed restarts from it. Everything Delete does
-// with the info it read itself - the resume record before the delete, the pending start dropped
-// before it, a session that names no consumer - this does with info.
-func (s *SessionConsumers) DeleteListed(ctx context.Context, sessionID string, info *jetstream.ConsumerInfo) error {
-	return s.deleteConsumer(ctx, sessionID, info)
-}
-
-// deleteConsumer is the body of Delete and DeleteListed: listed is the consumer's info when the
-// caller holds it already, and nil when reading it is this call's to do.
-func (s *SessionConsumers) deleteConsumer(ctx context.Context, sessionID string, listed *jetstream.ConsumerInfo) error {
+func (s *SessionConsumers) Delete(ctx context.Context, sessionID string, listed *jetstream.ConsumerInfo) (uint64, error) {
 	name, ok := SessionConsumerName(sessionID)
 	if !ok {
-		return nil
+		return 0, nil
 	}
 	info := listed
 	if info == nil {
@@ -482,36 +476,39 @@ func (s *SessionConsumers) deleteConsumer(ctx context.Context, sessionID string,
 			return s.recordDroppedStart(ctx, sessionID, name)
 		}
 		if err != nil {
-			return err
+			return 0, err
 		}
 		info = read
 	}
-	if err := s.recordResumeFloor(ctx, sessionID, info); err != nil {
-		return err
+	floor := ackFloor(info)
+	if err := s.recordResumeFloorAt(ctx, sessionID, floor); err != nil {
+		return 0, err
 	}
 	s.setPendingStart(name, 0)
-	return s.delete(ctx, name)
+	return floor, s.delete(ctx, name)
 }
 
 // recordDroppedStart records the position a delete that found no consumer is about to drop, and
-// then drops it. A consumer missing with a pending start behind it is one a restart
-// (RestartAtFloor) deleted and did not create again, so that pending start - the sequence the
-// restart would have created the consumer at - is the one position anyone holds for the session,
-// and the record this writes holds the sequence before it, the floor that restart read
-// (SessionResumeSubject). Clearing the start with nothing recorded would leave the session's
-// position nowhere, which is what the delete promises never to do, so a publish that failed
-// returns its error and clears nothing, as it does for a consumer that is there. A missing
-// consumer with no pending start has no position to record and is no error.
-func (s *SessionConsumers) recordDroppedStart(ctx context.Context, sessionID, name string) error {
+// then drops it, answering the floor it recorded (Delete). A consumer missing with a pending
+// start behind it is one a restart (RestartAtFloor) deleted and did not create again, so that
+// pending start - the sequence the restart would have created the consumer at - is the one
+// position anyone holds for the session, and the record this writes holds the sequence before
+// it, the floor that restart read (SessionResumeSubject). Clearing the start with nothing
+// recorded would leave the session's position nowhere, which is what the delete promises never
+// to do, so a publish that failed returns its error and clears nothing, as it does for a
+// consumer that is there. A missing consumer with no pending start has no position to record,
+// is no error, and answers the floor of a call that recorded nothing: 0.
+func (s *SessionConsumers) recordDroppedStart(ctx context.Context, sessionID, name string) (uint64, error) {
 	pending, ok := s.pendingStart(name)
 	if !ok {
-		return nil
+		return 0, nil
 	}
-	if err := s.recordResumeFloorAt(ctx, sessionID, pending-1); err != nil {
-		return err
+	floor := pending - 1
+	if err := s.recordResumeFloorAt(ctx, sessionID, floor); err != nil {
+		return 0, err
 	}
 	s.setPendingStart(name, 0)
-	return nil
+	return floor, nil
 }
 
 // pendingStart is consumer name's pending start (RestartAtFloor), and whether it has one.
@@ -563,22 +560,6 @@ func (s *SessionConsumers) Info(ctx context.Context, sessionID string) (*jetstre
 		return nil, err
 	}
 	return s.info(ctx, name)
-}
-
-// AckFloor is the stream sequence up to which sessionID's consumer has every message it delivered
-// acked (ackFloor), as the server reports the consumer now. It is ErrSessionConsumerNotFound when
-// the stream holds no consumer for the session: a consumer that is gone has no floor to read, and
-// the caller holds whatever position it recorded of its own.
-//
-// The caller reads it under the session's lock and before a delete, since the floor it reads
-// after the delete is no floor at all: it is the sequence a consumer the delete took away must
-// come back at, so that a session is not offered again what it has already acked.
-func (s *SessionConsumers) AckFloor(ctx context.Context, sessionID string) (uint64, error) {
-	info, err := s.Info(ctx, sessionID)
-	if err != nil {
-		return 0, err
-	}
-	return ackFloor(info), nil
 }
 
 // ListSessionConsumers reads every session consumer the stream holds, by session id, with the

@@ -491,26 +491,23 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
 
   /** This launch's transcript entries of `customType`. The file is appended to as the session
    * runs, so a case reads it while the pane is still running — and after it has ended itself.
-   * A read that lands mid-append sees the last line half written, so that one line is dropped
-   * rather than parsed; every earlier line is whole, because each entry the session writes ends
-   * in a newline, and one of those that does not parse is a real fault and is thrown as before. */
+   * A read that lands mid-append sees the last line half written, so this reads only the text up
+   * to the last newline the file holds: every entry the session writes ends in a newline, so each
+   * line that read holds is whole and is parsed strictly, and a line that does not parse is a real
+   * fault and throws. Only a segment with no newline after it can be torn, and that segment is
+   * what this leaves out — a malformed line that ends in its newline is read and throws, where
+   * dropping the last element of a split would have passed over it (review round 32). */
   const entries = async (customType: string): Promise<Record<string, unknown>[]> => {
     const files = (await readdir(sessions, { recursive: true })).filter((file) =>
       file.endsWith(".jsonl")
     );
     if (files.length !== 1) return [];
-    const lines = (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
+    const text = await readFile(path.join(sessions, files[0] ?? ""), "utf8");
+    return text
+      .slice(0, text.lastIndexOf("\n") + 1)
       .split("\n")
-      .filter(Boolean);
-    return lines
-      .flatMap((line, index): unknown[] => {
-        try {
-          return [JSON.parse(line)];
-        } catch (error) {
-          if (index === lines.length - 1) return [];
-          throw error;
-        }
-      })
+      .filter(Boolean)
+      .map((line): unknown => JSON.parse(line))
       .flatMap((entry) =>
         typeof entry === "object" &&
         entry !== null &&

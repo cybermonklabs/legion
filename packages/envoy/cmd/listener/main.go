@@ -1420,14 +1420,12 @@ func main() {
 			// the consumer that registration was answered with; one that registered on
 			// another listener between that read and the delete is given its consumer back,
 			// at the floor the delete recorded, from the record and the interest row the
-			// bucket then holds (sessionDelivery.deleteConsumer, repairRegistered). A
-			// failure writes its own line there, so the pass is handed none: it deletes the
-			// records behind this one whatever became of this consumer.
-			DeleteConsumer: func(ctx context.Context, sessionID string) error {
-				delivery.deleteConsumer(ctx, ready, sessionID, func(ctx context.Context) error {
-					return delivery.consumers.Delete(ctx, sessionID)
-				})
-				return nil
+			// bucket then holds (sessionDelivery.deleteConsumer, repairRegistered). That
+			// body logs whatever became of the consumer and answers no error, which is why
+			// the field carries none: the pass deletes the records behind this one either
+			// way, and the reaper's own log line would say no more than the delete's.
+			DeleteConsumer: func(ctx context.Context, sessionID string) {
+				delivery.deleteConsumer(ctx, ready, sessionID, nil)
 			},
 		}),
 	}

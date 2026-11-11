@@ -246,7 +246,9 @@ type sessionDelivery struct {
 	// deleteMu guards the two fields below. deletes counts the consumer deletes running off a
 	// deregistration's goroutine (deleteAfterAnswer), and deletesOff is set once the shutdown
 	// has stopped starting them (awaitDeletes): the deletes run on the connection the shutdown
-	// drains, so one started after that drain would reach a closed connection.
+	// drains, so one started after that drain would reach a closed connection. The three are
+	// read and written in session_consumer_delete.go alone, where the delete lifecycle is; a
+	// field of this type is declared with the type.
 	deleteMu   sync.Mutex
 	deletes    sync.WaitGroup
 	deletesOff bool
@@ -285,32 +287,6 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, logg
 func (m *sessionDelivery) close() {
 	if m != nil && m.consumers != nil {
 		m.consumers.Close()
-	}
-}
-
-// ackFloorBeforeDelete is the sequence sessionID's consumer has everything acked through, as the
-// server reports it now (bus.SessionConsumers.AckFloor), read under the session's lock and
-// before the delete that takes that consumer away.
-//
-// It is 0 when there is no floor to read: the stream holds no such consumer, the session id
-// names none, or the call failed. A restore then starts at the start the record names alone,
-// which is the session's own answer and never above its floor, so it may offer the session
-// messages it has acked. Every one of the three is logged, the call's failure as a warning and
-// a consumer the stream no longer holds below it, since that line is the only sign of why a
-// restore started where it did.
-func (m *sessionDelivery) ackFloorBeforeDelete(ctx context.Context, sessionID string) uint64 {
-	floor, err := m.consumers.AckFloor(ctx, sessionID)
-	switch {
-	case err == nil:
-		return floor
-	case errors.Is(err, bus.ErrSessionConsumerNotFound) || errors.Is(err, bus.ErrNoSessionConsumerName):
-		m.logger.Info("listener found no consumer to read an ack floor from for the session it is deleting; a restore of it starts at the record's own consumer start",
-			slog.String("session_id", sessionID))
-		return 0
-	default:
-		m.logger.Warn("listener could not read the ack floor of the consumer it is deleting; a restore of it starts at the record's own consumer start",
-			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return 0
 	}
 }
 
@@ -583,31 +559,6 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 	if err := m.consumers.Drain(timeout); err != nil {
 		m.logger.Warn("session consumer connection drain error", slog.String("error", err.Error()))
-	}
-}
-
-// awaitDeletes stops starting consumer deletes off a handler's goroutine and waits, within ctx,
-// for those already running (deleteAfterAnswer). The shutdown calls it once the HTTP server has
-// stopped and before it drains the session-consumer connection those deletes run on, so a
-// deregistration that answered a moment before the stop still frees its session's slot of the
-// stream's consumer cap. A delete still running when ctx ends is left where it is and said so:
-// the connection's drain ends it, and the sweep deletes the consumer it did not.
-func (m *sessionDelivery) awaitDeletes(ctx context.Context) {
-	if m == nil {
-		return
-	}
-	m.deleteMu.Lock()
-	m.deletesOff = true
-	m.deleteMu.Unlock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		m.deletes.Wait()
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		m.logger.Warn("a session consumer delete was still running at shutdown; the sweep deletes that consumer")
 	}
 }
 
@@ -933,156 +884,6 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 		return
 	}
 	m.storedFilterWrite(ctx, d.registry, sessionID, filterAfterUnsubscribe)
-}
-
-// consumerDelete is the call that removes one session's consumer, which a caller of
-// deleteConsumer gives it ready to make: a caller holding the consumer's info as the list
-// answered it deletes through that info and the other two read it for themselves, so the shared
-// body makes the call rather than choosing between them. It is made under the
-// session's lock, within the budget that lock's holder started.
-type consumerDelete func(ctx context.Context) error
-
-// deleteAfterAnswer deletes sessionID's consumer (deleteConsumer) off the goroutine that asked
-// for it, so a deregistration answers its caller first: a handler holds its written response
-// until it returns, and this work waits on the session's lock with no bound of its own and then
-// makes the bucket read that confirms the session is gone, the consumer's floor read, the delete
-// and the repair's own calls, which together can outlast the attempt the client gave the
-// request (LISTENER_CALL_TIMEOUT_MS, 5 s) after a KV delete that may already have spent
-// sendRequestBudget. ctx is the caller's context with its cancellation dropped
-// (context.WithoutCancel), since the registration is gone whatever the caller does next.
-//
-// The shutdown waits for every delete started here before it drains the connection they run on
-// (awaitDeletes). One that is not started because the listener is stopping is logged rather
-// than lost silently: the sweep deletes the consumer of every session the registry judges gone,
-// and it is the backstop for this one.
-func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps, sessionID string) {
-	if m == nil || m.consumers == nil {
-		return
-	}
-	m.deleteMu.Lock()
-	if m.deletesOff {
-		m.deleteMu.Unlock()
-		m.logger.Warn("session consumer delete not started: the listener is stopping; the sweep deletes that consumer",
-			slog.String("session_id", sessionID))
-		return
-	}
-	m.deletes.Add(1)
-	m.deleteMu.Unlock()
-	go func() {
-		defer m.deletes.Done()
-		// The deregistration holds no consumer info, so this delete reads it for itself: the
-		// resume floor it records comes from that read (bus.SessionConsumers.Delete).
-		m.deleteConsumer(ctx, d, sessionID, func(ctx context.Context) error {
-			return m.consumers.Delete(ctx, sessionID)
-		})
-	}()
-}
-
-// deleteConsumer makes remove, the caller's own delete of sessionID's consumer (consumerDelete),
-// once the session's registration is gone, so the consumer holds a slot of the stream's consumer
-// cap no longer rather than waiting out the server's inactivity threshold (inactiveThresholdFor,
-// main.go). It reports whether the consumer is gone, which is what the sweep counts; a failure
-// is logged, not returned, since the deregistration that asked for it answers the same either
-// way, and the listener's sweep and that threshold each reach the consumer again.
-//
-// Under the session's lock the bucket is read again (listenerDeps.sessions), and only
-// nats.ErrKeyNotFound - no record for the session at all - lets the delete through. A record
-// that stands keeps the consumer: the registration behind it is live and that consumer is what
-// delivers to it. A read that did not answer keeps it too, for the sweep's next pass.
-//
-// That read and the lock together are what order this delete against a registration of this
-// listener's, and neither half carries it alone. The lock: the subscribe path holds it from its
-// consumer call through the write of its entry (register, api.go), so a registration in flight
-// is either not started here, or finished by the time this reads. The read: it is the leader
-// of the session bucket's stream that answers it (session.SessionRegistry.RefreshFromLeader),
-// not the direct get every other read of that bucket makes, because on a replicated bucket a
-// direct get is answered by whichever copy is near enough to current, and a copy that has not
-// applied the registration's own write answers not found for a session that is live. Without
-// both halves a clean stop answered session.EntryDeleted on the entry a relaunch replaced
-// would take the live relaunch's consumer, and its relay would pause on
-// bus.ErrSessionConsumerNotFound until the session registered again.
-//
-// Against anything outside this process the lock settles nothing, and the bucket read is what
-// narrows the rest: a second listener task - a rolling deploy's other task, or the one a
-// heartbeat races to - can register the session and create the consumer again between this read
-// and this delete, and the repair below, not this lock, is what gives that session its consumer
-// back. Inside the process the lock orders the delete against this listener's own consumer
-// calls for the session: a registration's create or filter update, an unsubscribe's update, and
-// a relay restart, which the lock keeps whole (locks). A restart already past its wanted check
-// on another goroutine finds the consumer missing with no pending start, the delete having
-// dropped it, and ends in bus.ErrSessionConsumerNotFound, which pauses its relay rather than
-// creating anything.
-//
-// The consumer's ack floor is read after that confirmation and before the delete, under the
-// same lock: a consumer the stream no longer holds has no floor to read, and the floor is where
-// the consumer must come back, so that a session that races this delete is not offered again
-// what it has acked (ackFloorBeforeDelete, registeredTarget).
-//
-// A delete that went through reads the session's record again from the bucket and gives the
-// consumer back to a session whose record is there (repairRegistered), at that floor. Every
-// delete of a consumer follows the delete of that session's record, so a record that is there
-// again was written by a registration that landed between the read above and this delete - on
-// another listener, whose registration this process's lock does not order - and that
-// registration was answered 200 with consumer delivery. Without that repair such a session
-// holds no consumer until its next heartbeat, and a consumer is the one thing a session is
-// delivered through. d is the listener's stores that read and the create after it go through,
-// which the caller holds, as refollow's caller holds them.
-//
-// The repair is this side of the invariant a session answered 200 with consumer delivery holds
-// a consumer, whatever delete raced it, on whatever listener. The other side is the
-// registration's own read of the consumer, made once it has written that entry
-// (confirmRegistered). The two meet in the bucket and not in the lock, which orders only the
-// calls of this process: whichever of the two acts last reads what the other wrote and repairs.
-// A delete whose record read comes after the registration's entry write finds that entry, keeps
-// the consumer and deletes nothing; one whose read comes before it deletes and restores
-// nothing, and the registration's own read, which is after that entry write and so after this
-// delete took the consumer, finds the consumer gone and creates it again itself.
-//
-// One budget covers the record read, the floor read, the delete, and the record read and create
-// that may follow it, as one budget covers a registration's whole pass.
-//
-// A listener whose NATS user may not manage session consumers deletes nothing while its refusal
-// episode stands (grantRefused): the delete would be refused, and the episode's one warning has
-// been logged already.
-func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, sessionID string, remove consumerDelete) bool {
-	if m == nil || m.consumers == nil || m.grantRefused() {
-		return false
-	}
-	// The wait for the session's lock has no bound of its own - a registration's write of its
-	// entry or a relay restart holds it - so the budget for this delete's own calls starts once
-	// the lock is held, as a relay restart times its calls from its turn and its lock
-	// (sessionRelays.restart). A budget taken before the wait could be spent in it, and the
-	// read below would then fail for a delay that cost the server nothing, leaving the consumer
-	// to the sweep.
-	unlock := m.locks.lock(sessionID)
-	defer unlock()
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	defer cancel()
-	switch _, err := d.sessions.RefreshFromLeader(ctx, sessionID); {
-	case errors.Is(err, nats.ErrKeyNotFound):
-	case err != nil:
-		m.logger.LogEvent(slog.LevelDebug, "session consumer kept: the session's record could not be read",
-			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return false
-	default:
-		m.logger.LogEvent(slog.LevelDebug, "session consumer kept: the session bucket holds a registration for it",
-			slog.String("session_id", sessionID))
-		return false
-	}
-	floor := m.ackFloorBeforeDelete(ctx, sessionID)
-	if err := remove(ctx); err != nil {
-		if !m.grantRefusal("delete a session consumer", sessionID, err) {
-			m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		}
-		return false
-	}
-	m.granted()
-	// The repair. A record the bucket holds now that this session's consumer is gone was
-	// written by a registration that landed between the read above and this delete, and that
-	// registration was answered 200 with consumer delivery, so the consumer comes back on the
-	// filter and the start the record and the bucket's newest row ask for (registeredTarget).
-	m.repairRegistered(ctx, d, sessionID, floor, repairAfterDelete)
-	return true
 }
 
 // sessionLocks holds one lock per session id, kept only while somebody holds or waits for it.

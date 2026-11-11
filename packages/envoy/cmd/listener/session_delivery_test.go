@@ -1178,10 +1178,7 @@ func TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing(t *testing.T) {
 	// the deregistration's and the sweep's, writes no line of its own while the backoff stands
 	// (sessionDelivery.deleteConsumer), where one per delete is what a hub whose user may not
 	// manage session consumers at all would otherwise carry.
-	deleteUngranted := func(ctx context.Context) error {
-		return rig.deps.consumers.consumers.Delete(ctx, "ses_ungranted_gone")
-	}
-	if rig.deps.consumers.deleteConsumer(context.Background(), rig.deps, "ses_ungranted_gone", deleteUngranted) {
+	if rig.deps.consumers.deleteConsumer(context.Background(), rig.deps, "ses_ungranted_gone", nil) {
 		t.Fatal("the delete of ses_ungranted_gone's consumer reported the consumer gone; this user may make no session consumer call at all")
 	}
 	if lines := strings.Count(rig.harness.logs.String(), "every registration is refused until the grant carries them"); lines != 1 {

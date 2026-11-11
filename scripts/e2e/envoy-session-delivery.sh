@@ -61,7 +61,7 @@
 #          the stream stores notifications.team.>, so each session's own consumer holds it until
 #          the session is back (window a kills both sessions, and both must still count it once)
 # The listener sends go to listener `dispatch`, and to `shared` in window d.
-# Window g publishes none of those. Its one event is a core NATS publish of an Envoy envelope on
+# Window h publishes none of those. Its one event is a core NATS publish of an Envoy envelope on
 # notifications.agent.<the new Claude Code session id>, counted in that session alone.
 #
 # Window g is the deletion INFRA-2365 added, proved live. Oh My Pi's rpc host ends its session
@@ -92,7 +92,7 @@
 # SESSION_DELIVERY_HOLD_S more for a repeat. At the end every marker is counted in every
 # transcript the session it was meant for has had (the Oh My Pi session file's envoy-message
 # cards and user messages; the Claude Code transcript
-# <CLAUDE_CONFIG_DIR>/projects/*/<id>.jsonl's user messages and queued prompts) — window g
+# <CLAUDE_CONFIG_DIR>/projects/*/<id>.jsonl's user messages and queued prompts) — window h
 # replaces the Claude Code session, so the windows before it are counted in the transcript it had
 # then — the issue's comments are checked to appear in their publish order (the order the
 # stream stored them in, read back from it; a note says when Dispatch's outbox published them in
@@ -839,7 +839,7 @@ fi
 declare -A sid=() transcript=() transcripts=() launches=() role=() home=()
 # transcript[LABEL] is the transcript the session writes now, which a resume and cc_transcript
 # name; transcripts[LABEL] is every transcript that label has had, oldest first, one per line.
-# A session the run replaces writes a new one (window g replaces the Claude Code session), and the
+# A session the run replaces writes a new one (window h replaces the Claude Code session), and the
 # counting reads them all, so the windows before the replacement are still counted and the run is
 # judged as a whole.
 add_transcript() {
@@ -947,7 +947,7 @@ start_pi() {
 
 # start_cc fresh|chosen|resume: the bridge around Claude Code, in a process group of its own, with
 # the argv claude.go builds; Claude Code is told its session id, so sid[cc] is ours. `fresh` picks
-# a new id, `chosen` starts a new session under the id sid[cc] already holds (window g chooses it
+# a new id, `chosen` starts a new session under the id sid[cc] already holds (window h chooses it
 # before the session exists), and `resume` resumes the session of that id.
 start_cc() {
   local how=$1 flag=--session-id
@@ -1001,7 +1001,7 @@ session_view() {
 # stream_consumers WHEN VAR: assigns VAR the names of every consumer the ENVOY_NOTIFICATIONS
 # stream carries, sorted and separated by one space, as natsd's monitor reports them, and fails
 # the run under WHEN when that monitor cannot be read. Every reading of the stream's consumers is
-# taken here: window h's, the probes its clean stop waits on, and the one the run ends with.
+# taken here: window g's, the probes its clean stop waits on, and the one the run ends with.
 stream_consumers() {
   local _consumers
   _consumers=$(curl -fsS --max-time 5 "${nats_monitor}/jsz?consumers=true" |
@@ -1187,7 +1187,7 @@ publish_rest() {
   # the listener holds no live registration for: its direct send is refused 404 (no live session),
   # and its role's holder reads lapsed, so neither the role publish nor the core publish on its
   # role topic is forwarded to it. Each is then published to nobody and expected 0 times, as a
-  # Dispatch message Dispatch could not send is. Only window h's cleanly stopped session reads 0
+  # Dispatch message Dispatch could not send is. Only window g's cleanly stopped session reads 0
   # here: a session SIGKILLed or cut off its NATS connection stays registered until its entry
   # lapses, five minutes on (contracts.SessionLiveWindow).
   local -A live=()
@@ -1561,7 +1561,7 @@ cat "$table"
 #
 # Of the empty side the run's event record says which case it is, and only a run has one. A
 # record that was read and holds no issue event is the run whose windows publish no comment at
-# all (--disruptions g alone, whose one event is neither a comment nor Dispatch's): there is
+# all (--disruptions h alone, whose one event is neither a comment nor Dispatch's): there is
 # nothing to compare, and the run says so and passes. Everything else fails the run: no record
 # (the function's own unit harness sets neither events nor disruptions, so both are read with a
 # default), a record holding a comment no marker of which reached written_order, and a record jq

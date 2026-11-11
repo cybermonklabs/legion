@@ -653,7 +653,7 @@ func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T
 			// call it makes from it.
 			ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
 			defer cancel()
-			if err := rig.consumers.Delete(ctx, sessionID); err != nil {
+			if _, err := rig.consumers.Delete(ctx, sessionID, nil); err != nil {
 				t.Errorf("delete the consumer of %s under its own refollow: %v", sessionID, err)
 			}
 		}

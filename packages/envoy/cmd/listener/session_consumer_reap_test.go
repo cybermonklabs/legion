@@ -141,11 +141,8 @@ func (rig *sessionConsumerReapRig) reap(t *testing.T) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return rig.sessions.ReapSessions(ctx, session.SessionReaper{
-		DeleteConsumer: func(ctx context.Context, sessionID string) error {
-			rig.delivery.deleteConsumer(ctx, rig.deps, sessionID, func(ctx context.Context) error {
-				return rig.delivery.consumers.Delete(ctx, sessionID)
-			})
-			return nil
+		DeleteConsumer: func(ctx context.Context, sessionID string) {
+			rig.delivery.deleteConsumer(ctx, rig.deps, sessionID, nil)
 		},
 	})
 }

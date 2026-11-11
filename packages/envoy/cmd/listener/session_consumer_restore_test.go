@@ -599,9 +599,7 @@ func TestARegistrationsOwnRepairGivesBackTheTopicAnotherListenersRestoreLeftOut(
 // the consumer back to a session whose record it finds when it reads the bucket again. It
 // answers what that body answers: whether the consumer is gone.
 func deleteSessionConsumer(ctx context.Context, m *sessionDelivery, d *listenerDeps, sessionID string) bool {
-	return m.deleteConsumer(ctx, d, sessionID, func(ctx context.Context) error {
-		return m.consumers.Delete(ctx, sessionID)
-	})
+	return m.deleteConsumer(ctx, d, sessionID, nil)
 }
 
 // raceTheDeleteWithARegistration holds open, for the next delete m makes, the window that delete

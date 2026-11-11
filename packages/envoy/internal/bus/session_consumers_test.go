@@ -1031,8 +1031,9 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 }
 
 // Delete removes the session's consumer, so it holds a slot of the stream's consumer cap no
-// longer. A Delete of a consumer the stream no longer holds is no error, and nor is one of a
-// session id that names no consumer, which costs no call at all.
+// longer, and answers the floor it recorded for it. A Delete of a consumer the stream no longer
+// holds is no error, and nor is one of a session id that names no consumer, which costs no call
+// at all; neither records a floor, so both answer 0.
 func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
 	_, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
@@ -1040,17 +1041,17 @@ func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if err := consumers.Delete(ctx, session); err != nil {
+	if _, err := consumers.Delete(ctx, session, nil); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("the consumer's info after the delete = %v, want ErrSessionConsumerNotFound", err)
 	}
-	if err := consumers.Delete(ctx, session); err != nil {
-		t.Fatalf("a second Delete of a consumer the stream no longer holds = %v, want no error", err)
+	if floor, err := consumers.Delete(ctx, session, nil); err != nil || floor != 0 {
+		t.Fatalf("a second Delete of a consumer the stream no longer holds = %d, %v; want the floor 0 and no error", floor, err)
 	}
-	if err := consumers.Delete(ctx, "ses.dotted"); err != nil {
-		t.Fatalf("Delete of a session id that names no consumer = %v, want no error", err)
+	if floor, err := consumers.Delete(ctx, "ses.dotted", nil); err != nil || floor != 0 {
+		t.Fatalf("Delete of a session id that names no consumer = %d, %v; want the floor 0 and no error", floor, err)
 	}
 }
 
@@ -1083,7 +1084,7 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 		t.Fatalf("the pending start after the faulted create = %d, %t; want %d", start, ok, held)
 	}
 
-	if err := consumers.Delete(ctx, session); err != nil {
+	if _, err := consumers.Delete(ctx, session, nil); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if start, ok := consumers.pendingStart("s-" + session); ok {
@@ -1153,8 +1154,9 @@ func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, acked)
 
-	if err := consumers.Delete(ctx, session); err != nil {
-		t.Fatalf("delete: %v", err)
+	floor, err := consumers.Delete(ctx, session, nil)
+	if err != nil || floor != acked {
+		t.Fatalf("delete = %d, %v; want the floor %d it recorded", floor, err, acked)
 	}
 	away := publishStored(t, owner, agent, "stored while the session was away")
 	start, err := consumers.Ensure(ctx, session, []string{agent}, 0)
@@ -1251,11 +1253,12 @@ func TestTheResumeLaneIsTheListenersOwn(t *testing.T) {
 	}
 }
 
-// DeleteListed deletes a session's consumer from the info its caller already holds, as the
-// sweep does: it reads every session consumer in a few paged requests (ListSessionConsumers) and
-// then deletes from what it read, where Delete reads the info itself. The floor it records is
-// the listed info's, so the session comes back where its delivery stopped either way.
-func TestDeleteListedDeletesFromTheListedInfoAndRecordsItsFloor(t *testing.T) {
+// A delete that is handed the consumer's info deletes from it, as the sweep does: it reads
+// every session consumer in a few paged requests (ListSessionConsumers) and then deletes from
+// what it read, where a delete handed nil reads the info itself. The floor it records, and the
+// floor it answers, is the listed info's, so the session comes back where its delivery stopped
+// either way.
+func TestADeleteFromListedInfoRecordsAndAnswersThatInfosFloor(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_delete_listed"
@@ -1282,15 +1285,16 @@ func TestDeleteListedDeletesFromTheListedInfoAndRecordsItsFloor(t *testing.T) {
 	if listed[session] == nil {
 		t.Fatalf("the list holds no consumer for %s (%d listed)", session, len(listed))
 	}
-	if err := consumers.DeleteListed(ctx, session, listed[session]); err != nil {
-		t.Fatalf("DeleteListed: %v", err)
+	floor, err := consumers.Delete(ctx, session, listed[session])
+	if err != nil || floor != acked {
+		t.Fatalf("Delete from the listed info = %d, %v; want the floor %d it recorded", floor, err, acked)
 	}
 	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
-		t.Fatalf("the consumer's info after DeleteListed = %v, want ErrSessionConsumerNotFound", err)
+		t.Fatalf("the consumer's info after the delete = %v, want ErrSessionConsumerNotFound", err)
 	}
-	floor, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers))
-	if err != nil || !recorded || floor != acked {
-		t.Fatalf("the resume record after DeleteListed = %d, %t, %v; want the floor %d recorded", floor, recorded, err, acked)
+	recordedFloor, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers))
+	if err != nil || !recorded || recordedFloor != floor {
+		t.Fatalf("the resume record after the delete = %d, %t, %v; want the floor %d the delete answered", recordedFloor, recorded, err, floor)
 	}
 }
 
@@ -1299,8 +1303,9 @@ func TestDeleteListedDeletesFromTheListedInfoAndRecordsItsFloor(t *testing.T) {
 // for the session. So the delete records the sequence before it on the resume lane before it
 // drops that start: dropping it with nothing recorded would leave the session's position
 // nowhere, and the next registration would create its consumer at the stream's end, past every
-// message stored since the floor. A session that never had a consumer has no position to
-// record, and that delete is still no error and writes nothing.
+// message stored since the floor. The floor it answers is that same sequence, so the caller
+// that gives the consumer back gives it back there. A session that never had a consumer has no
+// position to record, and that delete is still no error, writes nothing and answers 0.
 func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
@@ -1340,12 +1345,13 @@ func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
 		t.Fatalf("the consumer's info after the faulted restart = %v, want it deleted", err)
 	}
 
-	if err := consumers.Delete(ctx, session); err != nil {
-		t.Fatalf("delete: %v", err)
+	deleted, err := consumers.Delete(ctx, session, nil)
+	if err != nil || deleted != held-1 {
+		t.Fatalf("a delete that found no consumer = %d, %v; want the floor %d it recorded, the sequence before the pending start it dropped", deleted, err, held-1)
 	}
 	floor, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers))
-	if err != nil || !recorded || floor != held-1 {
-		t.Fatalf("the resume record after a delete that found no consumer = %d, %t, %v; want the floor %d, the sequence before the pending start it dropped", floor, recorded, err, held-1)
+	if err != nil || !recorded || floor != deleted {
+		t.Fatalf("the resume record after a delete that found no consumer = %d, %t, %v; want the floor %d it answered", floor, recorded, err, deleted)
 	}
 	if start, ok := consumers.pendingStart("s-" + session); ok {
 		t.Fatalf("the pending start after the delete = %d, want none: the next registration would undo the delete", start)
@@ -1368,8 +1374,8 @@ func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
 	requireNoMessage(t, again, 300*time.Millisecond)
 
 	const never = "ses_never_had_a_consumer"
-	if err := consumers.Delete(ctx, never); err != nil {
-		t.Fatalf("Delete of a session that never had a consumer = %v, want no error", err)
+	if floor, err := consumers.Delete(ctx, never, nil); err != nil || floor != 0 {
+		t.Fatalf("Delete of a session that never had a consumer = %d, %v; want the floor 0 and no error", floor, err)
 	}
 	if _, recorded, err := consumers.resumeFloor(ctx, never, streamIDOf(t, consumers)); err != nil || recorded {
 		t.Fatalf("the resume lane of a session that never had a consumer holds a record = %t, %v; want none written", recorded, err)

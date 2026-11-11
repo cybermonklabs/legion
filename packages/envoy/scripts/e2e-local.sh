@@ -18,23 +18,28 @@
 # (natsd's "Listening for client connections on" line, the listener's "envoy-listener listening"
 # addr). E2E_NATS_PORT and E2E_PORT set a port explicitly; it is used as given, and one already in
 # use fails with "address already in use". The session opens no port of its own: it takes its
-# messages from its session consumer over NATS, as every shipped plugin does. It keeps the
-# sequence half of what a real session keeps, writing a frame only when its stream sequence is
-# above the highest it has written of that stream. A real client drops more than that - it keys
-# its ledger by the message's own identity as well (`alreadyWritten` over `ledger.delivered`,
-# packages/envoy-client/src/consumer-delivery.ts) - so the stand-in is the stricter witness: it
-# still counts a second, distinct store of one event, which a real session would drop, and the
-# tallies below are read against that strictness.
+# messages from its session consumer over NATS, as every shipped plugin does. It keeps two records
+# of its own. The offers file takes every frame as the transport offers it, so a frame offered
+# twice is two lines there and the absence of a second offer can be read at all. The frames file
+# is the session's own, deduped by the sequence half of what a real session keeps: a frame is
+# written only when its stream sequence is above the highest it has written of that stream. A real
+# client drops more than that - it keys its ledger by the message's own identity as well
+# (`alreadyWritten` over `ledger.delivered`, packages/envoy-client/src/consumer-delivery.ts) - so
+# the stand-in is the stricter witness: it still counts a second, distinct store of one event,
+# which a real session would drop. Each assertion below reads the record its own words mean: a
+# tally of what the session took reads the frames, and anything about a re-offer reads the offers.
 #
 # E2E_SESSION_ACK_DELAY_MS (0 by default) holds each session's `done` answer back by that many
 # milliseconds, which moves the consumer ack floor behind what the session has already written.
 # The clean stop below records that floor, and the registration that follows with no resume point
 # starts there, so the frames the session took and had not acked are offered again - at-least-once
-# above the floor, which is what keeps a session that comes back from losing anything. It is the
-# control over the stand-in's position rule above: `E2E_SESSION_ACK_DELAY_MS=1500 bash
-# scripts/e2e-local.sh` passes with that rule and fails without it, the role lane tallying 5
-# frames and the agent lane 6 where 2 and 3
-# are wanted (dispatch://INFRA-771, the red at b76508ae).
+# above the floor, which is what keeps a session that comes back from losing anything. Each of the
+# two runs asserts its own case, so each is a control over the other: with no delay every sequence
+# is offered exactly once, and a floor that ignored the acks would show a second offer and fail;
+# with the delay the no-cursor window's frame is offered again exactly once and the ledger drops
+# it, and a dedupe that dropped nothing would show two frames written. Without the ledger the
+# delayed run fails on the tallies the frames file pins, both lanes counting above the 2 and 3
+# that are wanted (dispatch://INFRA-771, the red at b76508ae).
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
@@ -107,6 +112,15 @@ readonly envelopes_file="${out_dir}/envelopes.jsonl"
 # reads it to show the deregistration below recorded the session's floor.
 readonly resume_records_file="${out_dir}/resume-records.txt"
 readonly session_frames_file="${out_dir}/session-frames.jsonl"
+# What the transport offered the session, one line per frame as it arrives, before the ledger
+# below decides whether the session writes it: the stream's identity and the frame's sequence.
+# The two records answer two different questions, and each assertion of this run reads the one its
+# own words mean. A tally of what the session took, each exactly once, reads the frames file,
+# which is a session's own ledger and holds one line per message. Anything about a re-offer or its
+# absence reads this file, which is the transport's own record: a frame offered twice is two lines
+# here and one line there, and an assertion that read only the frames file could not tell a
+# transport that offered once from one that offered twice (review round 32).
+readonly session_offers_file="${out_dir}/session-offers.jsonl"
 # The session's resume ledger: the stream the frames came from and the sequence of the last frame
 # the stand-in answered done, rewritten after each one. A shipped plugin persists exactly this and
 # sends it with every registration (packages/envoy-client/src/consumer-delivery.ts, the resume of
@@ -156,6 +170,7 @@ readonly bus_down_client_file="${out_dir}/bus-down-client-error.json"
 # keeps and the window never sends, and the answers to its registration, its send, its clean stop
 # and the relaunch that carries no resume.
 readonly nocursor_frames_file="${out_dir}/nocursor-session-frames.jsonl"
+readonly nocursor_offers_file="${out_dir}/nocursor-session-offers.jsonl"
 readonly nocursor_cursor_file="${out_dir}/nocursor-session-cursor.json"
 readonly nocursor_subscribe_response_file="${out_dir}/nocursor-subscribe-response.json"
 readonly nocursor_send_response_file="${out_dir}/nocursor-send-response.json"
@@ -222,14 +237,14 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-rm -f "$envelopes_file" "$session_frames_file" "$session_cursor_file" "${session_cursor_file}.tmp" "$rendered_ts_file" \
+rm -f "$envelopes_file" "$session_frames_file" "$session_offers_file" "$session_cursor_file" "${session_cursor_file}.tmp" "$rendered_ts_file" \
   "$direct_response_file" "$subscribe_response_file" "$subscribe_relaunch_response_file" "$unwired_response_file" "$port_registration_response_file" "$unheld_role_response_file" "$role_claim_response_file" "$held_role_response_file" \
   "$no_reply_false_response_file" "$no_reply_none_response_file" \
   "$lapsed_role_claim_response_file" "$lapsed_registry_response_file" "$lapsed_role_response_file" "$lapsed_role_reclaim_response_file" \
   "$keep_false_role_response_file" \
   "$absent_session_response_file" "$bus_down_response_file" "$bus_down_headers_file" "$bus_down_result_file" "$bus_down_client_file" \
   "$registry_session_response_file" "$registry_missing_response_file" \
-  "$nocursor_frames_file" "$nocursor_cursor_file" "${nocursor_cursor_file}.tmp" \
+  "$nocursor_frames_file" "$nocursor_offers_file" "$nocursor_cursor_file" "${nocursor_cursor_file}.tmp" \
   "$nocursor_subscribe_response_file" "$nocursor_send_response_file" "$nocursor_registry_response_file" \
   "$nocursor_relaunch_response_file" "$nocursor_session_log_file" "$nocursor_ready_fifo" \
   "$listener_log_file" "$session_log_file" "$subscriber_log_file" "$nats_log_file" \
@@ -238,7 +253,9 @@ rm -rf "$nats_store_dir"
 : >"$envelopes_file"
 : >"$resume_records_file"
 : >"$session_frames_file"
+: >"$session_offers_file"
 : >"$nocursor_frames_file"
+: >"$nocursor_offers_file"
 # Every log file is created before the process that writes it, so a wait that reads one cannot
 # race the redirect that creates it: wait_for_listener's jq and wait_for_nats's grep would
 # otherwise read a file that is not there yet — jq exits non-zero on it, which under set -e ends
@@ -391,28 +408,30 @@ wait_for_health
 #
 # start_session_standin starts one stand-in for standin_session_id, waits until it holds that
 # subscription, and sets standin_pid to the process it started. The run starts two of them: its
-# own session, and the no-cursor window's below, each with a frames file and a cursor file of its
-# own, so neither session's frames are ever counted as the other's.
+# own session, and the no-cursor window's below, each with an offers file, a frames file and a
+# cursor file of its own, so neither session's offers or frames are ever counted as the other's.
 start_session_standin() {
   local standin_session_id=$1
   local frames_file=$2
   local cursor_file=$3
   local ready_fifo=$4
   local log_file=$5
+  local offers_file=$6
   local ready
   (
     cd "$repo_root"
     exec env E2E_NATS_URL="$nats_url" E2E_SESSION_FRAMES_FILE="$frames_file" \
-      E2E_SESSION_CURSOR_FILE="$cursor_file" \
+      E2E_SESSION_CURSOR_FILE="$cursor_file" E2E_SESSION_OFFERS_FILE="$offers_file" \
       E2E_SESSION_ID="$standin_session_id" bun -e '
       import { appendFileSync, renameSync, writeFileSync } from "node:fs";
       import { connect, StringCodec } from "nats";
 
       const url = process.env.E2E_NATS_URL;
       const output = process.env.E2E_SESSION_FRAMES_FILE;
+      const offers = process.env.E2E_SESSION_OFFERS_FILE;
       const cursorFile = process.env.E2E_SESSION_CURSOR_FILE;
       const sessionID = process.env.E2E_SESSION_ID;
-      if ([url, output, cursorFile, sessionID].some((value) => value === undefined)) {
+      if ([url, output, offers, cursorFile, sessionID].some((value) => value === undefined)) {
         throw new Error("session stand-in configuration is invalid");
       }
       const codec = StringCodec();
@@ -421,18 +440,25 @@ start_session_standin() {
       // Every relay frame carries these; Envoy-Gap is left out because it marks only the first
       // frame after a retention gap, which a run that creates its own stream never has.
       const headers = ["Envoy-Subject", "Envoy-Stream-Seq", "Envoy-Stream-Id", "Envoy-Delivered", "Envoy-Stored-At"];
-      // The sequence half of the ledger a real session keeps: the highest stream sequence this
-      // session has written, per stream. A frame at or below it has been written once already
-      // and is answered without being written again, which is what makes "each exactly once" a
-      // statement about the session rather than about the transport: above the floor a delete
-      // recorded, the stream offers a frame the session took but had not acked a second time,
-      // deliberately, so that a session that comes back loses nothing (bus.SessionConsumers
-      // .Delete, create). A stand-in that kept no position at all counts those repeats and reads
-      // a correct delivery as a duplicate. A real client drops more: it keys its ledger by the
-      // message identity too (alreadyWritten over ledger.delivered, event id and dedupe key,
-      // packages/envoy-client/src/consumer-delivery.ts), so this stand-in is the stricter
-      // witness - two distinct stores of one event carry two sequences and still count twice,
-      // which is the duplicate these tallies exist to catch.
+      // The two records this keeps, and which question each answers.
+      //
+      // The offers file takes every frame as it arrives, before the rule below: the record the
+      // transport itself writes, where a frame offered twice is two lines. Nothing about a
+      // re-offer, or the absence of one, can be read anywhere else, because the rule below
+      // writes one line for either case.
+      //
+      // The frames file is what this session took, deduped by the sequence half of the ledger a
+      // real session keeps: the highest stream sequence it has written, per stream. A frame
+      // at or below it has been written once already and is answered without being written again,
+      // which is what makes "each exactly once" a statement about the session rather than about
+      // the transport: above the floor a delete recorded, the stream offers a frame the session
+      // took but had not acked a second time, deliberately, so that a session that comes back
+      // loses nothing (bus.SessionConsumers.Delete, create). A stand-in that kept no position at
+      // all counts those repeats and reads a correct delivery as a duplicate. A real client drops
+      // more: it keys its ledger by the message identity too (alreadyWritten over
+      // ledger.delivered, event id and dedupe key, packages/envoy-client/src/consumer-delivery
+      // .ts), so this stand-in is the stricter witness - two distinct stores of one event carry
+      // two sequences and still count twice, which is the duplicate these tallies exist to catch.
       const written = new Map();
       const ackDelayMs = Number(process.env.E2E_SESSION_ACK_DELAY_MS ?? "0");
       await connection.flush();
@@ -447,6 +473,7 @@ start_session_standin() {
           stream_id: message.headers.get("Envoy-Stream-Id"),
           seq: Number(message.headers.get("Envoy-Stream-Seq")),
         };
+        appendFileSync(offers, `${JSON.stringify(point)}\n`);
         const highest = written.get(point.stream_id);
         if (highest === undefined || point.seq > highest) {
           appendFileSync(output, `${codec.decode(message.data)}\n`);
@@ -476,7 +503,7 @@ start_session_standin() {
 }
 
 start_session_standin "$session_id" "$session_frames_file" "$session_cursor_file" \
-  "$session_ready_fifo" "$session_log_file"
+  "$session_ready_fifo" "$session_log_file" "$session_offers_file"
 session_pid=$standin_pid
 
 (
@@ -1156,6 +1183,37 @@ jq -es --arg session_id "$session_id" --arg role_topic "notifications.role.${rol
   exit 1
 }
 
+# What the transport offered this session, beside what the session wrote. The tally above is the
+# session's own record, deduped by its ledger; this one is the transport's, so the two together
+# say whether anything was offered twice and not only whether anything was written twice. The
+# session's consumer was deleted and created again twice in this run - the deregistration above,
+# then the registration carrying no resume and the one carrying its cursor - so every repeat the
+# recorded floor and that cursor are meant to prevent would show here.
+#
+# With no ack delay the session had acked every frame before each of those deletes, so no
+# sequence is offered twice and the two records hold the same number of lines. Under
+# E2E_SESSION_ACK_DELAY_MS a delete can land between a frame and its ack, and that frame is then
+# offered again on purpose: this reads the repeat as a repeat and requires the ledger to have
+# dropped it, which is the one case where the two counts differ.
+session_offer_repeats="$(jq -s 'group_by([.stream_id, .seq]) | map(select(length > 1)) | length' \
+  "$session_offers_file")"
+if [[ "${E2E_SESSION_ACK_DELAY_MS:-0}" -eq 0 && "$session_offer_repeats" != "0" ]]; then
+  printf 'ERR: the transport offered %s of the sequences it delivered to %s more than once in a run whose session acked every frame at once; the recorded floor and the cursor the relaunch sent are what rule that out.\n' \
+    "$session_offer_repeats" "$session_id" >&2
+  jq -s 'group_by([.stream_id, .seq]) | map(select(length > 1)) | .[]' "$session_offers_file" >&2
+  exit 1
+fi
+session_offer_lines="$(wc -l <"$session_offers_file")"
+session_offer_distinct="$(jq -s 'group_by([.stream_id, .seq]) | length' "$session_offers_file")"
+session_frame_lines="$(wc -l <"$session_frames_file")"
+if [[ "$session_offer_distinct" != "$session_frame_lines" ]]; then
+  printf 'ERR: %s was offered %s frames carrying %s distinct sequences, and wrote %s: a session writes each message it is offered once, and nothing it was not offered.\n' \
+    "$session_id" "$session_offer_lines" "$session_offer_distinct" "$session_frame_lines" >&2
+  exit 1
+fi
+printf 'consumer offers: the transport offered %s frames to %s, %s of them a second time, and the session wrote %s\n' \
+  "$session_offer_lines" "$session_id" "$session_offer_repeats" "$session_frame_lines"
+
 (
   cd "$repo_root/packages/envoy-client"
   E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
@@ -1346,14 +1404,18 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
 # its own, which follows no topic of its own, so nothing it registers, is sent or takes is part
 # of a count this run pins for ses_e2e_local.
 #
-# A clean stop deletes the session's consumer with the record it belongs to (deleteSessionConsumer,
-# on the DELETE /v1/sessions route), and records that consumer's ack floor on the session's own
-# resume lane before the delete takes it (sessionDelivery.deleteConsumer, ackFloorBeforeDelete,
-# bus.SessionResumeSubject). So the registration that follows, which sends no resume of its own,
-# is given a new consumer starting at the sequence after that floor, and the session is handed
-# nothing it had already taken: the assertions below read the recorded floor, require the new
-# consumer's start to be floor+1, and read an absence - the one frame this window pins, and no
-# second offer of it.
+# A clean stop deletes the session's consumer with the record it belongs to (sessionDelivery
+# .deleteConsumer, on the DELETE /v1/sessions route), and that one call records the consumer's ack
+# floor on the session's own resume lane before the delete takes it and answers the floor it wrote
+# (bus.SessionConsumers.Delete, recordResumeFloor, bus.SessionResumeSubject). So the registration
+# that follows, which sends no resume of its own, is given a new consumer starting at the sequence
+# after that floor: the session is handed nothing it had acked, and everything it had not.
+#
+# The assertions below read the recorded floor, require the new consumer's start to be floor+1,
+# require the floor itself to stand where this run's own acks put it, and read what the transport
+# offered: with no ack delay, the frame the session took and acked is not offered a second time,
+# and under E2E_SESSION_ACK_DELAY_MS, where the stop lands before the ack, it is offered again
+# exactly once and the stand-in's ledger drops it.
 #
 # What the session had NOT taken is not lost by that start: the floor is the old consumer's ack
 # floor, so everything stored above it is still delivered when the session comes back. The live
@@ -1368,7 +1430,7 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
 # the one field a ledger fills: delivery.resume.
 printf 'opening the no-cursor window on %s\n' "$nocursor_session_id"
 start_session_standin "$nocursor_session_id" "$nocursor_frames_file" "$nocursor_cursor_file" \
-  "$nocursor_ready_fifo" "$nocursor_session_log_file"
+  "$nocursor_ready_fifo" "$nocursor_session_log_file" "$nocursor_offers_file"
 nocursor_session_pid=$standin_pid
 
 # The window's own epoch: a plugin mints one per NATS connection, and the stand-in above holds a
@@ -1417,8 +1479,10 @@ printf 'no-cursor window: the clean stop removed the registration of %s\n' "$noc
 
 # The relaunch sends that same body again, which carries no delivery.resume: this session kept no
 # ledger to take one from. The consumer it is given starts at the sequence after the floor the
-# delete recorded, so the message it had already taken is not offered a second time - which is
-# what the recorded floor buys a session whose client keeps no ledger of its own.
+# delete recorded, so the message the session had taken AND ACKED is not offered a second time -
+# which is what the recorded floor buys a session whose client keeps no ledger of its own. A
+# message it had not acked is offered again on purpose, which is what this run drives under
+# E2E_SESSION_ACK_DELAY_MS.
 curl -fsS -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/interests/subscribe" -d "$nocursor_subscribe_body" >"$nocursor_relaunch_response_file"
 jq -e '.delivery.mode == "consumer"' "$nocursor_relaunch_response_file" >/dev/null || {
@@ -1441,12 +1505,55 @@ if [[ -z "$nocursor_floor" || "$nocursor_start" != "$((nocursor_floor + 1))" ]];
   exit 1
 fi
 # 5 seconds of the window's own: a frame offered again would arrive well inside it, since the
-# first took milliseconds, and this is the one assertion that reads an absence.
+# first took milliseconds, and this window's assertions are the ones that read an absence. Under
+# E2E_SESSION_ACK_DELAY_MS it also covers the delay itself, so the session's own cursor below is
+# the one its ack wrote.
 sleep 5
 if [[ "$(wc -l <"$nocursor_frames_file")" != "1" ]]; then
-  printf 'ERR: %s holds %s frames after a registration carrying no resume, not the one this window pins: the message it had already taken was offered again. A clean stop deletes the session consumer with the record and writes its ack floor on the session resume lane first, so the registration that follows is given a consumer starting after that floor and is handed nothing it had taken.\n' \
+  printf 'ERR: %s wrote %s frames after a registration carrying no resume, not the one this window pins: it took a message twice. A session writes a frame once, whatever the transport offers it.\n' \
     "$nocursor_session_id" "$(wc -l <"$nocursor_frames_file")" >&2
   cat "$nocursor_frames_file" >&2
+  exit 1
+fi
+# The absence itself, read on the record that can hold it: what the transport offered. The frames
+# file above is deduped by the stand-in's ledger, as a real client's is, so it says one line for a
+# message offered once and one line for a message offered twice; only the offers file tells those
+# two apart, and this is the assertion review round 32 found blinded.
+#
+# Which of the two is right here is decided by this run's own input and not by the floor it reads,
+# which is the point: with no ack delay the session acked its one frame before the clean stop, so
+# the floor stands at that frame and nothing is offered again - a floor that ignored acks would
+# stand below it, the relaunched consumer would start at or below the frame, and this run would
+# see the second offer and fail. Under E2E_SESSION_ACK_DELAY_MS the clean stop lands before the
+# ack, so the floor stands one below the frame and the frame IS offered again, exactly once, which
+# is what keeps a session that comes back from losing what it had not acked
+# (dispatch://INFRA-2365); the ledger drops that repeat, which is why the frames file still holds
+# one line.
+nocursor_taken_stream="$(jq -r '.stream_id' "$nocursor_cursor_file")"
+nocursor_taken_seq="$(jq -r '.seq' "$nocursor_cursor_file")"
+nocursor_offers="$(jq -s --arg stream "$nocursor_taken_stream" --argjson seq "$nocursor_taken_seq" \
+  'map(select(.stream_id == $stream and .seq == $seq)) | length' "$nocursor_offers_file")"
+if (( "${E2E_SESSION_ACK_DELAY_MS:-0}" > 0 )); then
+  nocursor_want_offers=2
+  nocursor_want_floor=$((nocursor_taken_seq - 1))
+  nocursor_offer_rule="the clean stop landed before the ack this run delays, so the floor stands one below the frame and the frame is offered again once"
+else
+  nocursor_want_offers=1
+  nocursor_want_floor=$nocursor_taken_seq
+  nocursor_offer_rule="the session acked its one frame before the clean stop, so the floor stands at that frame and nothing is offered again"
+fi
+if [[ "$nocursor_floor" != "$nocursor_want_floor" ]]; then
+  printf 'ERR: the clean stop of %s recorded floor %s for a session whose own cursor says it took sequence %s of %s; %s, so the floor wanted is %s. A floor that does not follow the acks is the fault this reads.\n' \
+    "$nocursor_session_id" "$nocursor_floor" "$nocursor_taken_seq" "$nocursor_taken_stream" \
+    "$nocursor_offer_rule" "$nocursor_want_floor" >&2
+  cat "$nocursor_cursor_file" "$nocursor_offers_file" >&2
+  exit 1
+fi
+if [[ "$nocursor_offers" != "$nocursor_want_offers" ]]; then
+  printf 'ERR: the transport offered sequence %s of %s to %s %s times, want %s: %s.\n' \
+    "$nocursor_taken_seq" "$nocursor_taken_stream" "$nocursor_session_id" "$nocursor_offers" \
+    "$nocursor_want_offers" "$nocursor_offer_rule" >&2
+  cat "$nocursor_offers_file" >&2
   exit 1
 fi
 jq -es --arg session_id "$nocursor_session_id" --arg message "$nocursor_message" '
@@ -1459,8 +1566,9 @@ jq -es --arg session_id "$nocursor_session_id" --arg message "$nocursor_message"
 }
 printf 'no-cursor window frames by topic:\n'
 jq -r '.topic' "$nocursor_frames_file" | sort | uniq -c
-printf 'no-cursor window: the clean stop of %s recorded floor %s, its registration carrying no resume was given a consumer starting at %s, and event %s was not offered a second time\n' \
-  "$nocursor_session_id" "$nocursor_floor" "$nocursor_start" "$(jq -rs '.[0].event_id' "$nocursor_frames_file")"
+printf 'no-cursor window: the clean stop of %s recorded floor %s, its registration carrying no resume was given a consumer starting at %s, and the transport offered event %s (sequence %s) %s times - %s\n' \
+  "$nocursor_session_id" "$nocursor_floor" "$nocursor_start" "$(jq -rs '.[0].event_id' "$nocursor_frames_file")" \
+  "$nocursor_taken_seq" "$nocursor_offers" "$nocursor_offer_rule"
 
 # Last of all, because it ends this rig's NATS and every step above needs the bus. A send the bus
 # cannot serve has to be refused by name inside the sender's own attempt, rather than left to the
