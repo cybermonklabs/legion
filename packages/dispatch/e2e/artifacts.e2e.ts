@@ -1,6 +1,5 @@
 import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { expect, type Locator, type Page, type TestInfo, test } from "@playwright/test";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
@@ -16,9 +15,8 @@ import {
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
-import { signIn } from "./users";
+import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -37,11 +35,6 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   await writeFile(path, "# Review notes\n\nThese notes replace the initial spec.\n");
   return path;
 }
-
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
 
 async function openArtifacts(page: Page, isPhone: boolean) {
   if (isPhone) {
@@ -67,7 +60,8 @@ function postAsPage(page: Page, path: string, data?: object) {
 
 // SLOW(>=2s): three real uploads with the versions they build, the artifact page's version list
 // and comparison, and the references and phone layout read after them.
-test("artifacts upload, version, references, and phone layout @phone", async ({
+// @pr: Upload and download: three real uploads, the versions they build, the Download link on a version, and the references that cite them.
+test("artifacts upload, version, references, and phone layout @phone @pr", async ({
   page,
 }, testInfo) => {
   const sockets = countDocumentSockets(page);

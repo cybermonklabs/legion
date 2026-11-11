@@ -601,6 +601,9 @@ type openAsk struct {
 	HumanReplied bool                `json:"human_replied"`
 	LastReply    *model.AskLastReply `json:"last_reply"`
 	WaitingOn    string              `json:"waiting_on"`
+	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression), empty when
+	// nobody does: an ask on a project document or an unassigned issue that nobody was handed.
+	WaitingOnPerson string `json:"waiting_on_person"`
 }
 
 type openAsksResponse struct {
@@ -680,7 +683,8 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 					'author', lr.author,
 					'created_at', lr.created_at
 				) end as last_reply,
-				`+waitingOnExpression+` as waiting_on
+				`+waitingOnExpression+` as waiting_on,
+				`+askedOfPersonExpression+` as waiting_on_person
 			from mine a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id`+lastReplyJoin+`

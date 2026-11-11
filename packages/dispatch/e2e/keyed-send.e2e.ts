@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   agentRow,
   getSentMessages,
@@ -19,7 +17,7 @@ import {
   watchAnswers,
   watchWrites,
 } from "./keyed-writes";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A message to one session goes under an `Idempotency-Key`, and the page tries it again under
@@ -65,11 +63,8 @@ async function plannerAttempts(
     .map(({ attempt, comment_id, state }) => ({ attempt, comment: comment_id, state }));
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a send whose answer is lost is tried again under its key, and delivered once", async ({
+// @pr: A keyed write: a send whose answer is lost is tried again under its key and delivered once.
+test("a send whose answer is lost is tried again under its key, and delivered once @pr", async ({
   browser,
 }) => {
   await seedAgents();
@@ -214,7 +209,8 @@ test("a send held through a reload is resumed under its key, and delivered once 
 // A broadcast is keyed too, and the same loss of an answer is the same outcome: Dispatch made the
 // broadcast and sent every recipient their copy, and the repeat under that key is answered with it
 // rather than making a second one.
-test("a broadcast whose answer is lost is tried again under its key, and each agent hears it once", async ({
+// @pr: An idempotent repeat: a broadcast whose answer is lost is answered the original, so each agent hears it once.
+test("a broadcast whose answer is lost is tried again under its key, and each agent hears it once @pr", async ({
   browser,
 }) => {
   await seedAgents();

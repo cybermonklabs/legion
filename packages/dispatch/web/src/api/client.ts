@@ -2,6 +2,7 @@ import {
   AUTH_NO_IDENTITY,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -38,6 +39,7 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  NewIssueSettings,
   TargetCandidate,
   UserIssueState,
 } from "./types";
@@ -1025,9 +1027,32 @@ export class DispatchApiClient {
     const answer = await this.read("/api/v1/issues", {}, query);
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
-
-  search(query: string, options: Omit<Query<"/api/v1/search", "get">, "q"> = {}) {
-    return this.read("/api/v1/search", {}, { q: query, ...options });
+  /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
+   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
+   *  each narrow every leg of the search rather than striking rows out of the page it answers.
+   *  `number_project` narrows nothing: it is the project of the page the search was made from,
+   *  which a query that is a bare issue number is read in, and a request naming `project` too
+   *  reads the number in that project instead. `keywords_only` runs the keyword leg alone and
+   *  makes no embedding call, whatever embedder the deployment configured, which is what the
+   *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
+   *  embedder is configured. The route refuses a value it cannot read under its own code
+   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
+   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  so it passes the `signal` of the search it is still interested in: an aborted request ends
+   *  the route's own work with it, the embedding a search by meaning had asked for included.
+   *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
+   *  results route refuses that path outright rather than answering `GET /api/v1/search` with
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
+  search(
+    query: string,
+    options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
+    init: { signal?: AbortSignal } = {}
+  ) {
+    const request = { q: query, ...options };
+    return everyBuildReadsSearch(request)
+      ? this.read("/api/v1/search", {}, request, init)
+      : this.read("/api/v1/search/results", {}, request, init);
   }
 
   /**
@@ -1107,6 +1132,15 @@ export class DispatchApiClient {
    *  answers the same 204. */
   async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v1/me/asks/{id}/snooze", { id }, bounds);
+  }
+
+  /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
+   *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
+   *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
+   *  back to whoever holds that issue. Needs the `person` scope: handing a question on is one
+   *  person asking another. */
+  handAskTo(id: string, askedOf: string, bounds: WriteBounds) {
+    return this.put("/api/v1/asks/{id}/asked-of", { id }, { asked_of: askedOf }, bounds);
   }
 
   listAgents() {
@@ -1678,6 +1712,13 @@ export class DispatchApiClient {
    *  because a browser reaches no broker. */
   getCredentialCapabilities() {
     return this.read("/api/v1/credentials/capabilities", {});
+  }
+
+  /** `GET /api/v1/settings/new-issue`: the label an issue the bar files from a person's typed
+   *  words carries and the session it is routed to, as the deployment configured them; each
+   *  `""` where it configured none. */
+  getNewIssueSettings(): Promise<NewIssueSettings> {
+    return this.json<NewIssueSettings>("/api/v1/settings/new-issue");
   }
 }
 

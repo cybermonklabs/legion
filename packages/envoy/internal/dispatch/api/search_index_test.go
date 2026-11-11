@@ -3,13 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan proves each meaning candidate CTE's own
@@ -51,9 +48,8 @@ func TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan(t *testing.T) {
 
 	const q = "index test"
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+searchQueryMeaning, q, "", searchDefaultLimit, firstTerm(q), headlineOptions,
-		0, contracts.SearchKindDepth, searchFusionK, embed.Literal(queryVector()), searchMeaningFloor, embedder.Identity(),
-		refs.VisibilityArg(model.Actor{})).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+searchQueryMeaning, searchMeaningQueryArguments(
+		searchParameters{text: q, limit: searchDefaultLimit}, queryVector(), embedder.Identity())...).Scan(&planJSON); err != nil {
 		t.Fatalf("explain: %v", err)
 	}
 	var plan []struct {
@@ -88,14 +84,24 @@ func TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan(t *testing.T) {
 	}
 }
 
-// planNode is the part of one EXPLAIN (FORMAT JSON) plan node these tests read.
+// planNode is the part of one EXPLAIN (FORMAT JSON) plan node these tests read. A keyword arm's
+// match can be written on any of the three condition fields - an index condition, the recheck a
+// bitmap heap scan makes, or a filter - and the issue arm's test below asks which, so all three
+// are read, with the join filter a node that names no relation of its own carries.
 type planNode struct {
-	NodeType  string     `json:"Node Type"`
-	Alias     string     `json:"Alias,omitempty"`
-	IndexName string     `json:"Index Name,omitempty"`
-	IndexCond string     `json:"Index Cond,omitempty"`
-	Filter    string     `json:"Filter,omitempty"`
-	Plans     []planNode `json:"Plans,omitempty"`
+	NodeType    string     `json:"Node Type"`
+	Alias       string     `json:"Alias,omitempty"`
+	IndexName   string     `json:"Index Name,omitempty"`
+	IndexCond   string     `json:"Index Cond,omitempty"`
+	RecheckCond string     `json:"Recheck Cond,omitempty"`
+	Filter      string     `json:"Filter,omitempty"`
+	JoinFilter  string     `json:"Join Filter,omitempty"`
+	Plans       []planNode `json:"Plans,omitempty"`
+}
+
+// conditions are every condition the node carries, in no particular order.
+func (node planNode) conditions() []string {
+	return []string{node.IndexCond, node.RecheckCond, node.Filter, node.JoinFilter}
 }
 
 // find answers the first node of the subtree rooted at node, depth first, that match accepts.
@@ -122,4 +128,64 @@ func planString(t *testing.T, planJSON []byte) string {
 		t.Fatalf("re-encode explain output: %v", err)
 	}
 	return string(pretty)
+}
+
+// issuesSearchIndex is the GIN index over issues.search that the keyword search's issue arm
+// reads (0010, and 20261108015800 takes its pending list off).
+const issuesSearchIndex = "issues_search"
+
+// The issue arm's vector match is an index condition of its own, which is what lets the planner
+// read issues_search for it. Before INFRA-1042 the arm made one predicate do two jobs -
+// `(i.search @@ q.tsq or i.key = any(q.own_keys))` - and the plan carried that OR whole, as a
+// join filter over a sequential scan of issues or at best as the recheck of a BitmapOr, which
+// re-tested every candidate row's vector on the heap. Split, the match stands alone and the
+// index answers it; the issues the query names by key are a second arm, read through the
+// primary key.
+//
+// Two things are held. The vector match is read from issues_search under a condition naming
+// nothing but the match, and no condition anywhere in the plan tests the vector and the key
+// together, which is the shape that cost the arm its index.
+//
+// Sequential scans are off for the plan, as every plan test in this package runs: a fixture of a
+// handful of rows is read fastest whole whatever indexes exist, so this says the arm's shape
+// permits the index scan, which is the claim under test. What a corpus of production's size
+// makes the planner choose is scripts/search-measure's to measure.
+func TestTheIssueKeywordArmMatchesItsVectorThroughIssuesSearch(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "The astrolabe measures altitude.\n")
+
+	parameters := searchParameters{text: "astrolabe", limit: searchDefaultLimit}
+	plan := planWithoutSeqScans(t, database, searchQuery, searchQueryArguments(parameters)...)
+
+	matched := false
+	for _, scan := range explaintest.IndexScans(t, plan) {
+		if scan.Index != issuesSearchIndex {
+			continue
+		}
+		matched = true
+		if !strings.Contains(scan.Cond, "@@") {
+			t.Errorf("%s is read under %q, want the tsquery match as its condition:\n%s", issuesSearchIndex, scan.Cond, plan)
+		}
+	}
+	if !matched {
+		t.Fatalf("no scan of the plan reads %s, so the issue arm's vector match is no index condition:\n%s",
+			issuesSearchIndex, plan)
+	}
+
+	var root planNode
+	if err := json.Unmarshal(plan, &root); err != nil {
+		t.Fatalf("decode the plan tree: %v", err)
+	}
+	both := root.find(func(node planNode) bool {
+		for _, condition := range node.conditions() {
+			if strings.Contains(condition, "@@") && strings.Contains(condition, "own_keys") {
+				return true
+			}
+		}
+		return false
+	})
+	if both != nil {
+		t.Fatalf("the plan still tests the vector and the issue's key in one condition at %s, which no index serves:\n%s",
+			both.NodeType, plan)
+	}
 }

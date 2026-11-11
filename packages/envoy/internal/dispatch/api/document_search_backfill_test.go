@@ -131,13 +131,14 @@ func TestTheBackfillLeavesSearchAnsweringWhatMainsStatementDoes(t *testing.T) {
 
 	for _, word := range []string{"zebra", "plateau", "quagga"} {
 		t.Run(word, func(t *testing.T) {
+			// main's text takes the eight parameters it knew; search's own binds the bar's
+			// filters and the issues a query names by key beside them (searchQueryArguments),
+			// which this subject leaves empty.
 			arguments := []any{word, "FILL", searchDefaultLimit, firstTerm(word), headlineOptions,
 				0, contracts.SearchKindDepth, searchFusionK}
 			want := documentSearchRows(t, ctx, database, mainSearchQuery, arguments, nil)
-			// This build's statement binds the acting credential last; main's has no such
-			// parameter, so the two lists differ by it and in nothing else.
-			got := documentSearchRows(t, ctx, database, searchQuery,
-				slices.Concat(arguments, documentSearchSeen()), nil)
+			got := documentSearchRows(t, ctx, database, searchQuery, searchQueryArguments(
+				searchParameters{text: word, project: "FILL", limit: searchDefaultLimit}), nil)
 			if !slices.Equal(got, want) {
 				t.Fatalf("search for %q over the filled table answered\n%v\nwant main's rows\n%v", word, got, want)
 			}

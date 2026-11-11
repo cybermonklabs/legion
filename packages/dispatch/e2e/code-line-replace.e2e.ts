@@ -1,8 +1,6 @@
-import { expect, test } from "@playwright/test";
-
 import { createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // Both rows carry `@firefox`, the tag the `firefox` project selects by (`playwright.config.ts`):
@@ -11,12 +9,9 @@ import { asUser } from "./users";
 // round trip of the keystroke; the default ladder would not look again until 350 ms.
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // @firefox: native editing over what follows a block's last line break.
-test("typing over the whole last line of a code block replaces that line @firefox", async ({
+// @pr: The code-block editing family's one row on the lane: typing over a block's last line must replace that line and nothing else.
+test("typing over the whole last line of a code block replaces that line @firefox @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

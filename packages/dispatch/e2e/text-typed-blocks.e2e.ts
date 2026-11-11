@@ -1,11 +1,3 @@
-import {
-  type Browser,
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  test,
-} from "@playwright/test";
 import type { IssueDetails } from "../web/src/api/types";
 
 import {
@@ -18,7 +10,7 @@ import {
   getIssue,
 } from "./api";
 import { documentEditor, openWithCaret } from "./editor";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A typed block written in a text body (a comment, an ask, a message) is drawn as a document
@@ -30,10 +22,6 @@ const agent = {
   actor: { id: "e2e-text-blocks-agent", kind: "session" as const },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Opens the comment's thread, where its body is drawn whole (a collapsed turn shows a two-line
  * preview), and returns the turn that holds it. */
@@ -91,7 +79,8 @@ test("a comment's callout shows the document's header with its kind and title", 
   }
 });
 
-test("a comment's ask block shows the decision card", async ({ browser }) => {
+// @pr: The typed-block family's one row on the lane: a comment's ask block has to draw as the decision card.
+test("a comment's ask block shows the decision card @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Decision in a comment" });
   const comment = await createComment(

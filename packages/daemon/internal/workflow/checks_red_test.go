@@ -1013,11 +1013,11 @@ func pushedFromTo(from, to, pusher string) intake.Fact {
 // a role to wait for before it acts, say — fails here.
 const phaseStartKeys = "assignment,generation,needsSlot,op,phase,role,task,tree"
 
-// implementerStart is the task of the implementer's start the outbox holds, the row that carries
-// the task: a start is two rows (workflow.StartOrOwe), and the relaunch row, which carries no
-// task, is the other. The task row carries phaseStartKeys and nothing else; needsSlot is among
-// them, because the delivery of a worker's task is the one part of a transition that waits, for
-// the issue's admission slot.
+// implementerStart is the task of the implementer's start the outbox holds, the one row a phase
+// worker's start is (workflow.StartOrOwe); the task tells it from a start admission writes for a
+// role it brings back beside a worker, which carries none. That row carries phaseStartKeys and
+// nothing else; needsSlot is among them, because the delivery of a worker's task is the one part
+// of a transition that waits, for the issue's admission slot.
 func implementerStart(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var task, keys string

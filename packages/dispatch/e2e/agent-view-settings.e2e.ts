@@ -1,5 +1,3 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import {
   baseUrl,
@@ -10,7 +8,7 @@ import {
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -248,10 +246,6 @@ function answer(
   );
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // A1: a session on this change's pi-envoy reports its settings in its replay, before any turn has
 // run, and every later report replaces them, with no turn run.
 test("the header shows the session's reported model and thinking level before any turn, and follows its next settings frame @phone", async ({
@@ -405,7 +399,8 @@ test("the header says why a session shows less: an Oh My Pi that does not report
 // the thread shows as theirs; Send waits for the session's answer, and the header moves only when
 // the session reports the switch. A pick is a steer whatever the composer's mode, since a BTW is a
 // side question the session answers rather than input it runs.
-test("a model picked in the header is the viewer's own Send of /model, holds Send until the session answers, and goes as a steer whatever Send as says", async ({
+// @pr: A write the server settles: the header's model pick goes out as the viewer's own Send and holds until the session answers.
+test("a model picked in the header is the viewer's own Send of /model, holds Send until the session answers, and goes as a steer whatever Send as says @pr", async ({
   browser,
 }) => {
   const session = liveSession(4);

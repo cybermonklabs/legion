@@ -29,16 +29,26 @@ func RankLess(a, b Issue) bool {
 // the same question are here too (cycleAncestor).
 const DoneStatus = "done"
 
+// OutOfWorkflowStatuses are the four Dispatch statuses that take an issue out of the workflow,
+// and the one list of them: OutOfWorkflow is this list read as a predicate, so a status added
+// here moves every reader of the rule with it.
+//
+// The list is exported because one reader cannot call the predicate at all. The pod gate is
+// deliberately one statement of "still the workflow's to run" (pods.InWorkflowNotLingering),
+// and it takes the status rule as a parameter rather than restating it; a `select` cannot call
+// a Go predicate, so the store answer that must read that same rule over every issue of a
+// project at once — the candidate list of the release of a pod no claim owns
+// (store.Store.UnownedPods) — is handed this list and writes it into its filter. Handing the
+// list rather than spelling the four statuses into the SQL is what keeps the rule in one place.
+var OutOfWorkflowStatuses = []string{"triage", "icebox", "backlog", "done"}
+
 // OutOfWorkflow says whether a Dispatch status takes an issue out of the workflow: every status
 // but todo that no phase writes. Admission holds no slot for such an issue, and the engine leaves
-// it; todo admits, and in_progress, testing, needs_review and retro are the workflow's own.
+// it; todo admits, and in_progress, testing, needs_review and retro are the workflow's own. It
+// reads OutOfWorkflowStatuses rather than restating them, so a status and the SQL filter the
+// store is handed can never disagree about one issue.
 func OutOfWorkflow(status string) bool {
-	switch status {
-	case "triage", "icebox", "backlog", "done":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(OutOfWorkflowStatuses, status)
 }
 
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
@@ -510,10 +520,10 @@ func later(a, b time.Time) time.Time {
 // works (KeepsSlot), so this answers a narrower question than the cap asks. gate is the design
 // gate of the issue's tree root, the zero value for a root with no step of it registered.
 //
-// Two readers are left, and each asks about a worker rather than about the cap: CanWaitOnPerson,
-// which lets a root hand work to a person only while its architect has work to hand over, and
-// admit's resumeSlottedWorkers, which starts the phase worker of a slot holder that has lost its
-// task and must pass over a holder whose phase has no worker at all.
+// Two readers are left, and each asks about a worker rather than about the cap:
+// CanWaitOnPerson, which lets a root hand work to a person only while its architect has work to
+// hand over; and admit's resumeSlottedWorkers, which starts the phase worker of a slot holder
+// that has lost its task and must pass over a holder whose phase has no worker at all.
 //
 // Planning, implementing, testing, reviewing and retro each have a phase worker with work.
 // Merging has one too, unless a closed design gate is holding the READY its merger already built

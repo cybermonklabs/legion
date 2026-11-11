@@ -465,6 +465,10 @@ export const referenceDecorationsPlugin = $prose(
 /** Draws the references `references` resolves over the document, in place of whatever was drawn
  *  before; `null` draws none. A value saying what the current one says changes nothing. */
 export function setReferences(view: EditorView, references: EditorReferences | null): void {
+  // A host writes its references from an effect, and an effect of a child runs after the effect
+  // of the parent that tore this editor down (INFRA-2409), so the write can arrive here after
+  // the view is gone; `dispatchReferenceChange` reads the same flag.
+  if (view.isDestroyed) return;
   const current = referencesKey.getState(view.state);
   if (current === undefined || current.references === references) return;
   if (

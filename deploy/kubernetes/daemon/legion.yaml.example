@@ -141,6 +141,43 @@ projects:
 #                                      # refuses acme/a -> acme/b beside acme/c -> d/c.
 #                                      # --check-config prints one line
 #                                      # per pair, to read the equivalence back before a transfer.
+# hooks:                               # optional: the words the daemon puts in front of an
+#   - name: work-back                  # issue's workers when its work keeps going back to an
+#     on: work_back                    # earlier phase. A file that names no hooks key runs this
+#     moves: any                       # one hook, hooks: [] runs none, and a file that names the
+#     every: 5                         # key runs what it names and no default. name is the
+#     roles: [implementer, tester, reviewer] # hook's own and is named once in the file. on is
+#                                      # the event: work_back, a move to an earlier phase, is the
+#                                      # one event the daemon has. moves are the moves back the
+#                                      # hook counts, each written <from>-<to> of two workflow
+#                                      # phases (testing-implementing, reviewing-implementing,
+#                                      # awaiting_merge-implementing and the 19 other pairs), or
+#                                      # the word any, which a hook that leaves the key out takes
+#                                      # as well. every is a positive whole number: the hook
+#                                      # fires when the counts of the moves it counts, added up,
+#                                      # are a whole multiple of it. roles are the roles it
+#                                      # writes to, at least one of implementer, tester,
+#                                      # reviewer, planner and merger; the architect is refused,
+#                                      # since the daemon's own wake to an architect is a notice.
+#                                      # The words are prompt here or prompt_file below, never
+#                                      # both and never neither. Each refusal at load names the
+#                                      # hook by its place in the list and the key at fault, as
+#                                      # hooks[0].every.
+#     prompt: >-
+#       We read no progress on this issue: its work has gone back the number of times recorded
+#       below. Report to the architect what is in your way, in your own words. The architect
+#       takes a step back, reads what each of you says, and decides the path. Carry on with the
+#       work while you wait, and say so if you read it as on track.
+#   - name: back-to-implementing       # a second hook on the same event, counting one kind of
+#     on: work_back                    # move back alone and writing to two roles: each hook
+#     moves: [reviewing-implementing]  # counts its own moves and fires on its own multiple.
+#     every: 3
+#     roles: [implementer, reviewer]
+#     prompt_file: ./hooks/back-to-implementing.md # the words, read at boot and resolved against
+#                                      # this file's directory, as instructions is: an edited
+#                                      # file reaches the workers at the next start of the
+#                                      # daemon, and a missing, unreadable or empty one refuses
+#                                      # the boot and --check-config with it.
 gates:
   design: [spec]                       # the design gate steps, in the order a person approves
                                        # them: decisions (the root issue's decisions document),
@@ -249,7 +286,7 @@ runtime:
     session_dsn_secret: SESSION_DSN    # required with postgres: the key of the providers Secret holding that
                                        # database's postgres:// URL, which every pod mounts
     # resources:                       # two keys, each a pod's reservation: issue, every issue pod's (its one
-    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers), and
+    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers, three with a skills_repository), and
     #   controller: { cpu: 2, memory: 8Gi }  # controller, the daemon-launched controller's pod's (controller:
     #                                  # daemon only, else refused). cpu and memory are the limits, each
     #                                  # requested in full unless cpu_request or memory_request sets less (at most
@@ -304,6 +341,17 @@ runtime:
       env:
         PI_CONFIG_FILES: /etc/legion-operator/overlay.yml
         CLAUDE_CODE_USE_FOUNDRY: "0"
+        # Your own OpenTelemetry resource attributes, the ones this deployment's spend is
+        # billed under: Legion keeps them and appends the launch's legion.issue and
+        # legion.role, so a pod's attributes name the issue it serves (the controller's pod,
+        # which serves no issue, carries the role alone). Both keys reach the spend collector
+        # today, and its keep-list of six theorem.* attributes drops every other key, so no
+        # spend row names an issue yet. A row grouped by issue follows when the collector keeps
+        # them (dispatch://INFRA-1835). The loader refuses a member the agent's parser would
+        # throw on — one that is no single key=value, an empty key, a side that does not
+        # percent-decode or runs past 255 characters, or one naming legion.issue or legion.role
+        # — since one such member costs the pod every attribute of the variable:
+        # OTEL_RESOURCE_ATTRIBUTES: theorem.project=widgets,theorem.lane=widgets-platform
       service_account: legion-worker
       volumes:
         - name: operator-route

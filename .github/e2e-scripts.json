@@ -124,7 +124,11 @@
     },
     {
       "script": "dispatch-two-builds.sh",
-      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+    },
+    {
+      "script": "dispatch-search-two-builds.sh",
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and the commit this proof needs is the release before the five narrowing members, legion-envoy-v29.47.1, which no job can pick for it. It is the live proof that a search carrying one of those members reaches an older build as 404 no route rather than as unnarrowed rows, through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
     },
     {
       "script": "dispatch-session-settings.sh",
@@ -143,12 +147,24 @@
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
     },
     {
+      "script": "leak-guard-image-job.sh",
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with the base branch's digest as the negative control (--control); it starts one Job of that image and nothing of its own"
+    },
+    {
+      "script": "leak-guard-image-probe.sh",
+      "needs": "the worker image and the Job leak-guard-image-job.sh creates: it is that proof's probe, not a proof of its own, and the harness writes it into the Job's command because a Job holds no checkout to read it from; it runs inside the image against a scratch repository on the Job's emptyDir and judges nothing a runner could give it"
+    },
+    {
       "script": "multi-repo-acceptance.sh",
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
     },
     {
       "script": "parked-decision-devbox.sh",
       "needs": "a devbox, run from the operator's own Oh My Pi session: a model route (LEGION_E2E_MODEL_ROUTE), docker for its Postgres and NATS containers, Legion's two role Apps, and the proof human's gh, as Stage 3's rig"
+    },
+    {
+      "script": "plan-pointer-drive.sh",
+      "needs": "a host that reaches a model: a real Oh My Pi on a model route (LEGION_OMP_PATH) for one headless session per arm, a loopback PostgreSQL it creates a database of its own on (LEGION_TEST_PG_DSN), and jj, git, go, bun, psql, curl, the dispatch CLI, gh, python3 and openssl, each of which it refuses to start without: jj and git read the control's commit and extract its daemon module, go and bun run the daemon's prompt composer, gh is the one the composer is told, and psql, curl, python3 and openssl make and reach the e2e Dispatch server it starts"
     },
     {
       "script": "provider-error-retry.sh",

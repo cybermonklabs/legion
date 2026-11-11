@@ -75,11 +75,16 @@ const summary: IssueSummary = {
   status: issue.status,
   title: issue.title,
   updated_at: issue.updated_at,
+  created_by: issue.created_by,
+  created_at: issue.created_at,
 };
 const inboxRow: InboxRow = {
   anchor: null,
   answer: null,
   artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "session-1", kind: "session" },
   block_id: null,
   last_reply: null,

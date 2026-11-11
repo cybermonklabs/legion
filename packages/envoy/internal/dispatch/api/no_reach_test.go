@@ -274,9 +274,11 @@ func declaredShapesUnchanged(t *testing.T) {
 	}
 }
 
-// committedOpenAPI is the committed document as this test reads it: what each path serves, and
-// the fields of each schema with the ones an answer always carries.
-type committedOpenAPI struct {
+// committedOpenAPIShapes is the committed document as this test reads it: what each path serves,
+// and the fields of each schema with the ones an answer always carries. The name is the shapes
+// and not the document because committedOpenAPI is already this package's reader of the
+// document's own bytes (openapi_test.go).
+type committedOpenAPIShapes struct {
 	Paths      map[string]map[string]json.RawMessage `json:"paths"`
 	Components struct {
 		Schemas map[string]struct {
@@ -290,7 +292,7 @@ type committedOpenAPI struct {
 // fresh render of the route table first: a committed document that differs from the render is a
 // table whose shapes nobody published, and every comparison below would be against the wrong
 // thing.
-func committedDocument(t *testing.T, root string) committedOpenAPI {
+func committedDocument(t *testing.T, root string) committedOpenAPIShapes {
 	t.Helper()
 	var rendered bytes.Buffer
 	if err := WriteOpenAPI(&rendered); err != nil {
@@ -305,7 +307,7 @@ func committedDocument(t *testing.T, root string) committedOpenAPI {
 		t.Fatalf("%s is not what the table renders: run `envoy-dispatch openapi --out %s`",
 			OpenAPIDocumentPath, OpenAPIDocumentPath)
 	}
-	var document committedOpenAPI
+	var document committedOpenAPIShapes
 	if err := json.Unmarshal(committed, &document); err != nil {
 		t.Fatalf("decode the committed OpenAPI document: %v", err)
 	}

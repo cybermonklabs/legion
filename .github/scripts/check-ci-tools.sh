@@ -18,15 +18,47 @@
 # THE RULES. Each fails naming the file, the line and the remedy.
 #
 #   1. Shape.
-#      Every row carries `name`, `version`, `digest`, `digest_of`, `primary`, `second_source` and
-#      `max_time`, a `ghcr-mirror` row carries `mirror_from` and `mirror_member` as well, and an
-#      `npm` row carries `npm_package` and `npm_member`.
+#      Every row carries `name`, `version`, `digest`, `digest_of`, `primary_source`, `primary`,
+#      `primary_digest`, `primary_digest_of`, `primary_member`, `second_source` and `max_time`,
+#      and two more the word in its `second_source` decides: `mirror_from` and `mirror_member`
+#      for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, and `second_url` and
+#      `second_member` for `github-release`, `pypi` and `pulumi-releases`, which are the words
+#      whose source serves this row's bytes at an address of its own.
 #      `digest` is 64 lower-case hex characters, written bare, because that one literal goes into
 #      a `sha256sum` line and into a ghcr blob URL alike.
-#      Two rows never share a name, and `second_source` is `ghcr-mirror` or `npm`, the words
-#      .github/scripts/ci-tools.sh names those sources by in every line and every refusal.
-#      A row's `primary`, where it is not empty, holds the row's `version`, and so does its
-#      `mirror_from`: a row whose version and URL disagree installs one version and pins another.
+#      Two rows never share a name, and `second_source` is one of the five words
+#      .github/scripts/ci-tools.sh names a source by in every line and every refusal:
+#      `github-release`, `ghcr-mirror`, `npm`, `pypi` or `pulumi-releases`. `primary_source` is
+#      one of the three a primary may be written in — `github-release`, `pypi` or
+#      `pulumi-releases` — because a copy this repository fills and the npm package Bun
+#      publishes beside its own release are no origin of the bytes, and that refusal names the
+#      side the word was written on, as the helper's does.
+#      A row's `primary`, where it is not empty, holds the row's `version`, and so do its
+#      `mirror_from` and its `second_url`: a row whose version and URL disagree installs one
+#      version and pins another, and no URL of this manifest escapes that rule.
+#      A member field that holds a version-shaped token holds the row's own version and no
+#      other, in all four of the fields a row can write one in: `primary_member`,
+#      `mirror_member`, `npm_member` and `second_member`. A member left behind at the old
+#      version while the row and its URLs move names a path the new archive does not hold, so
+#      that install fetches the right bytes and then fails to find the tool inside them. Where
+#      that is found depends on the side the member is written on. A stale `primary_member`
+#      breaks the install that reads the primary, which for the one row that names one, uv, is
+#      .github/actions/install-uv in ci.yaml's `test` job, on every pull request that selects
+#      it; a stale member on the second side is read only where that source is, which is
+#      ci.yaml's `tool-fallback` job, a job of about five minutes (129885098900 ran 14:15:38Z
+#      to 14:20:22Z, 284 s). This gate says it in lint, in a second.
+#      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
+#      that holds none is left alone, which is what keeps `./jj`, `package/bin/bun` and
+#      `uv-x86_64-unknown-linux-gnu/uv` right, and an empty member is left alone too.
+#      This rule compares text, as every rule of this gate does, and that cuts both ways. A
+#      member that writes its version in some other shape — a date as 20260812, a tag with no
+#      dots — holds no token this rule can see, and it is the one rule here that can refuse a
+#      member that is right: a dotted run of digits that is not a version at all, as in a path
+#      like lib/python3.11/site-packages/x. No row writes such a member today.
+#      `primary_digest`, where it is set, is 64 lower-case bare hex too. A row that sets
+#      `primary_member` sets `primary_digest`, and a row that sets `primary_digest` sets
+#      `primary_digest_of`: a digest that does not say what it is of is how an archive comes to
+#      be checked against a binary and called equal.
 #
 #   2. Each row agrees with the pin that decides which version a job installs.
 #      Every `bun-*` row's `version` is the content of .bun-version.
@@ -35,7 +67,17 @@
 #      file's `ARG MISE_SHA256`, so the copy this repository fills and the mise the worker image
 #      builds with are one set of bytes.
 #      The `jj` row's `version` is the part of that file's `ARG JJ_TOOL` after the `@`.
-#      Each refusal names both values and both files.
+#      The `uv` row's `version` is that file's `ARG UV_VERSION` and its `primary_digest` is that
+#      file's `ARG UV_SHA256`, the same pair the mise row answers to and for the same reason:
+#      the image's own toolchain stage builds uv from those two ARGs, so the row and the image
+#      install one tool and check one archive.
+#      The `pulumi-docker` row's `version` is `const DockerPluginVersion` of
+#      packages/envoy/infra/internal/pulumitest/pulumitest.go, the constant the live programs
+#      pin the plugin at.
+#      The `crane`, `changie`, `elan` and `pulumi-cli` rows are their own pins: their installs
+#      hold no version of their own and install the version the row names.
+#      Each refusal names both values and both files, and the uv and pulumi-docker ones name
+#      which of the two to move.
 #
 #   3. No file under .github/ fetches a tool asset no row of this manifest names and no
 #      no_second_source entry of it declines.
@@ -52,8 +94,8 @@
 #           and the gate that reads them is the code under test. A real install could hide
 #           there, and the alternative is the hand-kept exemption list this rule exists to
 #           remove.
-#        c. the URL text is exactly a row's `primary`, a row's `mirror_from`, or the npm tarball
-#           URL a row derives.
+#        c. the URL text is exactly a row's `primary`, a row's `mirror_from`, a row's
+#           `second_url`, or the npm tarball URL a row derives.
 #        d. the URL text is exactly the `url` of a `no_second_source` entry.
 #      A URL none of those allows and whose text holds a `$` is refused as a built address
 #      rather than as an unnamed one: a row's URL is the one place a tool asset's address is
@@ -68,6 +110,35 @@
 #      and this repository writes the npm registry's address outside those two directories for
 #      reasons that fetch nothing (.github/scripts/check-bun-version.sh:137 lists
 #      `registry.npmjs.org/@oven/bun` as a string to detect).
+#
+#      A URL ON A DOWNLOAD HOST A ROW NAMES is refused unless its text is exactly a row's
+#      `primary`, `mirror_from` or `second_url`, in the release-asset half's reach and not the
+#      npm half's: every file under .github/ but this manifest and the files whose name holds
+#      `.test.`, which is the same pass rule 4 makes.
+#      THE TWO HALVES DIFFER IN REACH ON PURPOSE, so a reader does not read one as a slip of
+#      the other. The npm half is narrow for the measured reason stated just above, that this
+#      repository writes the registry's address outside those two directories for reasons that
+#      fetch nothing. No such reason holds here, and a fetch under .github/scripts/ is exactly
+#      what this half is for: the install the Pulumi CLI went in by was a `curl` in an action,
+#      and the same `curl` in a shell script would have been as easy to write and as invisible.
+#      Those hosts are derived from the rows themselves — the hosts of the addresses whose side
+#      is written in a URL word that is not `github-release`, which today is get.pulumi.com,
+#      from the pulumi rows, and files.pythonhosted.org, from the uv row — so a service this
+#      manifest reads a tool from is a service no file may fetch from behind the manifest's
+#      back. That is the hole the Pulumi CLI went through: one source, no row, and no rule here
+#      that could see a get.pulumi.com address at all.
+#      github.com and the package `registry:` names are left out of that set and to the rules
+#      that already own them: a blanket host rule over ghcr.io would refuse every image
+#      reference in the tree.
+#      This half compares text, with the honesty the release-asset half is read with: a URL a
+#      job assembles at run time is refused as a built address rather than matched, and an
+#      address written at another host — a vendor's second domain, a redirect's destination —
+#      is invisible to it. What it closes is the install that writes a row's service and no
+#      row.
+#      Prose is text like any other, so a sentence that writes one of these hosts WITH a path
+#      is refused as a fetch. That is why this header and .github/scripts/ci-tools.sh name
+#      those hosts with no path after them: the one place a whole address of such a service is
+#      written is a row.
 #
 #      A `no_second_source` entry records a URL that has no second source anywhere, and allows
 #      that one URL. It carries `url`, `digest`, `pinned_in` and `why`, and the gate holds it to
@@ -113,7 +184,9 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -155,24 +228,80 @@ CI_TOOLS = Path(".github/ci-tools.yaml")
 CI_IMAGES = Path(".github/ci-images.yaml")
 BUN_PIN = Path(".bun-version")
 WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
+# The file the docker provider plugin's version is pinned in: the live programs read this
+# constant, so the row that fetches the plugin carries what it holds.
+PULUMITEST = Path("packages/envoy/infra/internal/pulumitest/pulumitest.go")
 GITHUB = Path(".github")
-# Rule 3's npm half reads these two directories; its release-asset half reads every file under
-# .github/, and so does rule 4.
-NPM_DIRECTORIES = (Path(".github/actions"), Path(".github/workflows"))
+# Rule 3's npm half reads these two directories and nothing else; its release-asset half and
+# its download-host half read every file under .github/, and so does rule 4.
+REACHED_DIRECTORIES = (Path(".github/actions"), Path(".github/workflows"))
 HELPER = ".github/scripts/ci-tools.sh"
 REPO_PATHS = Path(".github/scripts/repo-paths.sh")
 
-# Every row carries these, and each kind of second source carries its own two more.
-COMMON_FIELDS = ("name", "version", "digest", "digest_of", "primary", "second_source", "max_time")
-GHCR_FIELDS = ("mirror_from", "mirror_member")
-NPM_FIELDS = ("npm_package", "npm_member")
-# A field whose value may be empty: `primary` on a row whose bytes a third party fetches, and
-# `mirror_member` on a row that pushes an archive whole.
-MAY_BE_EMPTY = {"primary", "mirror_member"}
-# The words a row writes its second source as, which are the words the helper's own lines and
-# refusals say.
-SECOND_SOURCES = ("ghcr-mirror", "npm")
+# Every row carries these, whichever words its two sides are written in.
+COMMON_FIELDS = (
+    "name",
+    "version",
+    "digest",
+    "digest_of",
+    "primary_source",
+    "primary",
+    "primary_digest",
+    "primary_digest_of",
+    "primary_member",
+    "second_source",
+    "max_time",
+)
+# The two more fields each word of a second source carries, which is the one table of those
+# fields: the helper reads a `github-release`, `pypi` or `pulumi-releases` second source at
+# the row's own `second_url`, a `ghcr-mirror` one in the package `registry:` names, and an
+# `npm` one in the package the row names. Its order is the helper's, so the words a refusal
+# lists here and the words it lists there are one list in one order. The places of this tree
+# that decide a source word are listed at ci_tools__source_fetch in .github/scripts/ci-tools.sh,
+# this table among them, and this gate keeps no count of its own.
+SECOND_FIELDS = {
+    "github-release": ("second_url", "second_member"),
+    "ghcr-mirror": ("mirror_from", "mirror_member"),
+    "npm": ("npm_package", "npm_member"),
+    "pypi": ("second_url", "second_member"),
+    "pulumi-releases": ("second_url", "second_member"),
+}
+# A field whose value may be empty: `primary` on a row whose bytes a third party fetches,
+# `mirror_member` on a row that pushes an archive whole, `second_member` on a row whose second
+# source serves the pinned bytes themselves, and the three `primary_*` fields on a row whose
+# primary serves exactly what the row pins, which is every row but uv.
+MAY_BE_EMPTY = {
+    "primary",
+    "mirror_member",
+    "second_member",
+    "primary_digest",
+    "primary_digest_of",
+    "primary_member",
+}
+# The words a row writes a source as, which are the words the helper's own lines and refusals
+# say. A primary is written in the three of them that are an origin of the bytes: a copy this
+# repository fills and the npm package Bun publishes beside its own release are neither, so the
+# helper reads them on the second side alone and refuses either as a primary.
+SECOND_SOURCES = tuple(SECOND_FIELDS)
+PRIMARY_SOURCES = ("github-release", "pypi", "pulumi-releases")
+# The words whose source is read at an address the row writes out, minus the one that is a
+# GitHub release: the hosts of those addresses are the download hosts rule 3 keeps, and
+# `github-release` is left to the release-asset half that already owns github.com.
+URL_SOURCES = ("pypi", "pulumi-releases")
 DIGEST = re.compile(r"[0-9a-f]{64}")
+# The four fields a row writes a member in, one per side of each shape: the member taken out of
+# the primary's archive, and the one taken out of the second source's, whichever word that
+# source is written in.
+MEMBER_FIELDS = ("primary_member", "mirror_member", "npm_member", "second_member")
+# A version as this gate reads one inside a member: a dotted run of digits, 1.2, 0.13.5 or
+# 2026.8.12. What that shape can and cannot see is stated with rule 1 in the header.
+VERSION_TOKEN = re.compile(r"\d+(?:\.\d+)+")
+
+
+def one_of(words: tuple[str, ...]) -> str:
+    """`a, b and c`: a list of words a refusal ends on, in the order the helper reads them."""
+    return " and ".join(filter(None, (", ".join(words[:-1]), words[-1])))
+
 
 # The npm registry, which is CI_TOOLS_NPM_BASE's default in the helper: this gate compares a URL
 # in the tree with the URL a job reads when no seam is set.
@@ -205,6 +334,25 @@ NPM_BUILT_REMEDY = (
     f"Read the address from the row with {HELPER} instead. No {NO_SECOND_SOURCE} entry can "
     f"decline this address: an entry takes a GitHub release-asset URL and nothing else."
 )
+DOWNLOAD_REMEDY = (
+    f"Read the address from the row with {HELPER}, or add a row naming this address and its "
+    f"second source."
+)
+# A built address on a download host stands where a built npm one does: an entry declines a
+# GitHub release-asset URL and nothing else, so it can decline neither.
+DOWNLOAD_BUILT_REMEDY = NPM_BUILT_REMEDY
+# The middle clause of an unnamed-address refusal, per kind: what the rule is for, said before
+# the remedy. A release asset and an npm package read the same one, because the class is the
+# same; a download host is a service a row already reads a tool from, and its clause names the
+# row's address that put that host in the set, which is the one part of it the match decides.
+ASSET_REASON = (
+    "A tool CI installs from a release asset has a second source, and a fetch nothing names "
+    "has none."
+)
+DOWNLOAD_REASON = (
+    "That host is named by {named_by}, and a tool CI installs from a service a row names is "
+    "fetched at the row's own address, so a fetch nothing names has no second source."
+)
 # A reason that is one of these, or shorter than this, says nothing a reader could act on. The
 # bound is stated in the refusal, so the writer is told what the gate wants rather than guessing.
 REASON_PLACEHOLDERS = {"todo", "tbd", "n/a", "na", "none", "-", "--", "unknown", "?", "fixme"}
@@ -212,9 +360,31 @@ REASON_MINIMUM = 40
 # A file whose name holds this feeds URLs to a gate as fixtures; rule 3 reads none of them.
 TEST_FILE = ".test."
 
+
+class Found(NamedTuple):
+    """One address rule 3 read in a file: where it starts, the URL as written, what it names,
+    the repository it names where it names one, and the three fragments its refusal is built
+    from — the reason the rule gives, the remedy where no row names the address, and the remedy
+    where the job builds it. The offset comes first because the refusals are sorted back into
+    the order a reader meets them in the file."""
+
+    offset: int
+    url: str
+    what: str
+    repository: str | None
+    reason: str
+    remedy: str
+    built_remedy: str
+
+
 ARG_MISE_VERSION = re.compile(r"^ARG\s+MISE_VERSION=(\S+)\s*$")
 ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
 ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
+ARG_UV_VERSION = re.compile(r"^ARG\s+UV_VERSION=(\S+)\s*$")
+ARG_UV_SHA256 = re.compile(r"^ARG\s+UV_SHA256=(\S+)\s*$")
+# The Go constant the live programs pin the docker provider plugin at, read as the Dockerfile's
+# ARGs are: one line, one value, and the last one the file declares.
+DOCKER_PLUGIN_VERSION = re.compile(r'^const\s+DockerPluginVersion\s*=\s*"([^"]*)"\s*$')
 # A URL ends at whitespace or at a quote of any of the three kinds a YAML or a shell line uses.
 # GitHub serves one release asset at many addresses, and a rule that compares text reaches only
 # the ones it spells out. Every form below was measured against github.com on 2026-11-09 with
@@ -467,10 +637,20 @@ for row in rows:
     if second not in SECOND_SOURCES:
         problems.append(
             f"{CI_TOOLS}:{key_line(row, 'second_source')}: the {name} row's second_source is "
-            f"{one_line(second)}, and {HELPER} serves {' and '.join(SECOND_SOURCES)}."
+            f"{one_line(second)}, and {HELPER} serves {one_of(SECOND_SOURCES)}."
         )
         continue
-    wanted = COMMON_FIELDS + (GHCR_FIELDS if second == "ghcr-mirror" else NPM_FIELDS)
+    primary_source = row.get("primary_source")
+    if primary_source not in PRIMARY_SOURCES:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'primary_source')}: the {name} row's primary_source is "
+            f"{one_line(primary_source)}, and {HELPER} reads {one_of(PRIMARY_SOURCES)} as a "
+            f"primary. A copy this repository fills and a package upstream publishes beside its "
+            f"own release are no origin of the bytes, so ghcr-mirror and npm are written on the "
+            f"second side alone."
+        )
+        continue
+    wanted = COMMON_FIELDS + SECOND_FIELDS[second]
     missing = [field for field in wanted if field not in row]
     if missing:
         problems.append(
@@ -500,8 +680,36 @@ for row in rows:
         )
         continue
 
+    primary_digest = str(row.get("primary_digest") or "").strip()
+    primary_digest_of = str(row.get("primary_digest_of") or "").strip()
+    primary_member = str(row.get("primary_member") or "").strip()
+    if primary_digest and not DIGEST.fullmatch(primary_digest):
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'primary_digest')}: the {name} row's primary_digest is "
+            f"{one_line(primary_digest)}, which is not 64 lower-case hex characters. Write it "
+            f"bare, with no sha256: prefix, as this row's digest is written: the one literal is "
+            f"what the bytes the primary serves are held to."
+        )
+        continue
+    if primary_member and not primary_digest:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'primary_member')}: the {name} row takes "
+            f"{one_line(primary_member)} out of the primary's archive and carries no "
+            f"primary_digest, so nothing holds the archive that member came out of. A row whose "
+            f"digest is of a member carries the digest of the bytes the primary serves beside it."
+        )
+        continue
+    if primary_digest and not primary_digest_of:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'primary_digest')}: the {name} row carries a "
+            f"primary_digest and no primary_digest_of, so nothing says which bytes that digest "
+            f"is of. A digest that does not say what it is of is how an archive comes to be "
+            f"checked against a binary and called equal."
+        )
+        continue
+
     version = str(row["version"]).strip()
-    for field in ("primary", "mirror_from"):
+    for field in ("primary", "mirror_from", "second_url"):
         url = str(row.get(field) or "").strip()
         if url and version not in url:
             problems.append(
@@ -509,6 +717,25 @@ for row in rows:
                 f"and this row's version is {version}, which that URL does not hold. A row whose "
                 f"version and URL disagree installs one version and pins another."
             )
+    # And a member that holds a version holds this row's. The rule above moves every URL of a
+    # row with its version; a member is the path inside what one of those URLs served, so a
+    # member left behind names a path the new archive does not hold.
+    # A version the row's own version holds is this row's: the jj row's version carries a
+    # suffix its member would not, so the tokens of the version are what a member is read
+    # against.
+    own = {version, *VERSION_TOKEN.findall(version)}
+    for field in MEMBER_FIELDS:
+        member = str(row.get(field) or "").strip()
+        other = next((held for held in VERSION_TOKEN.findall(member) if held not in own), None)
+        if other is None:
+            continue
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, field)}: the {name} row's {field} is {one_line(member)}, "
+            f"which holds the version {other}, and this row's version is {version}. A member is "
+            f"the path inside what this row's address served, so a member at another version is "
+            f"a path that archive does not hold: move this member to {version}, or the row to "
+            f"the version its member holds."
+        )
     readable.append(row)
 
 # ---------------------------------------------------------------- rule 2: the pins
@@ -523,15 +750,23 @@ else:
 worker_text = read_text(WORKER_DOCKERFILE)
 if worker_text is None:
     problems.append(
-        f"{WORKER_DOCKERFILE}:1: this file is missing or is not readable as text, and the mise "
-        f"and jj rows of {CI_TOOLS} carry the versions its ARG MISE_VERSION and ARG JJ_TOOL pin"
+        f"{WORKER_DOCKERFILE}:1: this file is missing or is not readable as text, and the mise, "
+        f"jj and uv rows of {CI_TOOLS} carry the versions its ARG MISE_VERSION, ARG JJ_TOOL and "
+        f"ARG UV_VERSION pin"
+    )
+pulumitest_text = read_text(PULUMITEST)
+if pulumitest_text is None:
+    problems.append(
+        f"{PULUMITEST}:1: this file is missing or is not readable as text, and the "
+        f"pulumi-docker row of {CI_TOOLS} carries the version its const DockerPluginVersion pins"
     )
 
 
 def last_arg(pattern: re.Pattern[str], text: str) -> str:
-    """The value of the last `ARG <name>=<value>` the Dockerfile declares. A later bare `ARG
-    <name>` re-declares the build argument in another stage and carries no value, so it is no
-    match of these patterns."""
+    """The value the last line of <text> matching <pattern> captures: the last
+    `ARG <name>=<value>` the Dockerfile declares, or the last `const DockerPluginVersion` the Go
+    file does. A later bare `ARG <name>` re-declares the build argument in another stage and
+    carries no value, so it is no match of these patterns."""
     found = ""
     for line in text.splitlines():
         match = pattern.match(line)
@@ -540,21 +775,35 @@ def last_arg(pattern: re.Pattern[str], text: str) -> str:
     return found
 
 
-mise_version = mise_sha256 = jj_tool = ""
+mise_version = mise_sha256 = jj_tool = uv_version = uv_sha256 = ""
 if worker_text is not None:
     mise_version = last_arg(ARG_MISE_VERSION, worker_text)
     mise_sha256 = last_arg(ARG_MISE_SHA256, worker_text)
     jj_tool = last_arg(ARG_JJ_TOOL, worker_text)
+    uv_version = last_arg(ARG_UV_VERSION, worker_text)
+    uv_sha256 = last_arg(ARG_UV_SHA256, worker_text)
     for declared, name in (
         (mise_version, "ARG MISE_VERSION"),
         (mise_sha256, "ARG MISE_SHA256"),
         (jj_tool, "ARG JJ_TOOL"),
+        (uv_version, "ARG UV_VERSION"),
+        (uv_sha256, "ARG UV_SHA256"),
     ):
         if not declared:
             problems.append(
                 f"{WORKER_DOCKERFILE}:1: this file declares no {name}=<value>, and a row of "
                 f"{CI_TOOLS} carries what it pins"
             )
+
+# The Go constant is read the way those ARGs are: the last line of the file that declares it.
+docker_plugin_version = ""
+if pulumitest_text is not None:
+    docker_plugin_version = last_arg(DOCKER_PLUGIN_VERSION, pulumitest_text)
+    if not docker_plugin_version:
+        problems.append(
+            f'{PULUMITEST}:1: this file declares no const DockerPluginVersion = "<version>", '
+            f"and the pulumi-docker row of {CI_TOOLS} carries what it pins"
+        )
 
 for row in readable:
     name = str(row["name"]).strip()
@@ -596,6 +845,32 @@ for row in readable:
                 f".github/actions/install-jj installs the tool spec that ARG names and checks it "
                 f"against this row."
             )
+    if name == "uv" and uv_version and version != uv_version:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'version')}: the uv row's version is {version} and "
+            f"{WORKER_DOCKERFILE} pins ARG UV_VERSION={uv_version}. The image's own toolchain "
+            f"stage builds uv from that ARG and .github/actions/install-uv installs this row, "
+            f"and they are one tool: move this row to the ARG's version, or the ARG to the "
+            f"row's."
+        )
+    if name == "uv" and uv_sha256:
+        primary_digest = str(row.get("primary_digest") or "").strip()
+        if primary_digest != uv_sha256:
+            problems.append(
+                f"{CI_TOOLS}:{key_line(row, 'primary_digest')}: the uv row's primary_digest is "
+                f"{one_line(primary_digest) or 'empty'} and {WORKER_DOCKERFILE} pins "
+                f"ARG UV_SHA256={uv_sha256}. Both are the digest of the tarball that release "
+                f"serves, so one of the two admits bytes the other refuses: move this row's "
+                f"primary_digest to the ARG's value, or the ARG to the row's."
+            )
+    if name == "pulumi-docker" and docker_plugin_version and version != docker_plugin_version:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'version')}: the pulumi-docker row's version is "
+            f"{version} and {PULUMITEST} pins "
+            f'const DockerPluginVersion = "{docker_plugin_version}". The envoy-infra live tests '
+            f"install the plugin this row names at the version that constant holds: move this "
+            f"row to the constant's version, or the constant to the row's."
+        )
 
 # ---------------------------------------------------------------- rule 3: the addresses
 # This repository's own release assets are bytes it publishes and installs nowhere, and
@@ -629,7 +904,7 @@ if not own_match:
 OWN_REPOSITORY = own_match.group("repository").casefold()
 
 # The one address of each row a file under .github/ may name, the repositories the rows cover,
-# and the npm scopes they cover.
+# the npm scopes they cover, and the download hosts they name.
 # A REPOSITORY IS KEYED CASEFOLDED, and so is the comparison against this repository's own
 # name, because github.com reads an owner and a repository without regard to case: measured on
 # 2026-11-09, the owner in another case, the repository in another case and both at once each
@@ -640,10 +915,19 @@ OWN_REPOSITORY = own_match.group("repository").casefold()
 row_repositories: dict[str, str] = {}
 covered_scopes: set[str] = set()
 allowed: set[str] = set()
+# A download host, keyed lower-case as a host is read, and the row's address that put it in
+# this set, which the refusal names. A side written in a URL word that is not `github-release`
+# is read for its host: github.com and the package `registry:` names are left to the rules that
+# already own them.
+download_hosts: dict[str, str] = {}
 for row in readable:
     name = str(row["name"]).strip()
     version = str(row["version"]).strip()
-    for field in ("primary", "mirror_from"):
+    for field, side in (
+        ("primary", "primary_source"),
+        ("mirror_from", ""),
+        ("second_url", "second_source"),
+    ):
         url = str(row.get(field) or "").strip()
         if not url:
             continue
@@ -653,6 +937,10 @@ for row in readable:
             row_repositories.setdefault(
                 match.group("repository").casefold(), f"the {name} row's {field}"
             )
+        if side and str(row.get(side) or "").strip() in URL_SOURCES:
+            host = urllib.parse.urlsplit(url).hostname
+            if host:
+                download_hosts.setdefault(host.lower(), f"the {name} row's {field}")
     if name.startswith("bun-"):
         row_repositories.setdefault(BUN_REPOSITORY.casefold(), f"the {name} row")
     package = str(row.get("npm_package") or "").strip()
@@ -664,6 +952,21 @@ for row in readable:
         # is the URL .github/scripts/ci-tools.sh builds for this row.
         derived = f"{NPM_BASE}/{package}/-/{package.rpartition('/')[2]}-{version}.tgz"
         allowed.add(derived)
+# One pattern over every download host a row names, built here because the set is the rows'.
+# It is read under the same start guard the release-asset patterns are, so a host whose text
+# merely ends in one of these, and one of these laid under another host's path, are no match.
+# The host is a group of its own, the trailing dot a URL may write inside it, so the match
+# names the host and no reader of it parses the address a second time to find out which.
+DOWNLOAD_URL = (
+    re.compile(
+        URL_START
+        + r"(?P<host>(?i:"
+        + "|".join(re.escape(host) for host in sorted(download_hosts))
+        + r")\.?)(?::(?:80|443))?/[^\s\"'`]*"
+    )
+    if download_hosts
+    else None
+)
 for entry, _ in declines:
     allowed.add(str(entry["url"]).strip())
 
@@ -724,45 +1027,64 @@ for file in sorted(GITHUB.rglob("*")):
     if file in pinned_paths:
         pin_texts[file] = text
 
-    # offset, the URL as written, what it names, the repository it names, the remedy where
-    # nothing names it, the remedy where the job builds it
-    found: list[tuple[int, str, str, str | None, str, str]] = []
+    found: list[Found] = []
     for pattern in ASSET_PATTERNS:
         for match in pattern.finditer(text):
             repository = match.group("repository")
             found.append(
-                (
-                    match.start(),
-                    match.group(0).rstrip(",);"),
-                    f"a release asset of {repository}",
-                    repository,
-                    ASSET_REMEDY,
-                    ASSET_BUILT_REMEDY,
+                Found(
+                    offset=match.start(),
+                    url=match.group(0).rstrip(",);"),
+                    what=f"a release asset of {repository}",
+                    repository=repository,
+                    reason=ASSET_REASON,
+                    remedy=ASSET_REMEDY,
+                    built_remedy=ASSET_BUILT_REMEDY,
                 )
             )
-    # Rule 3's npm half claims every *.yml and *.yaml under NPM_DIRECTORIES and nothing else.
+    # Rule 3's npm half claims every *.yml and *.yaml under REACHED_DIRECTORIES and nothing
+    # else, for the measured reason the header gives.
     if file.name.endswith((".yml", ".yaml")) and any(
-        directory in file.parents for directory in NPM_DIRECTORIES
+        directory in file.parents for directory in REACHED_DIRECTORIES
     ):
         for match in NPM_URL.finditer(text):
             scope = match.group("rest").partition("/")[0]
             if scope not in covered_scopes:
                 continue
             found.append(
-                (
-                    match.start(),
-                    match.group(0).rstrip(",);"),
-                    f"an npm package under {scope}",
-                    None,
-                    NPM_REMEDY,
-                    NPM_BUILT_REMEDY,
+                Found(
+                    offset=match.start(),
+                    url=match.group(0).rstrip(",);"),
+                    what=f"an npm package under {scope}",
+                    repository=None,
+                    reason=ASSET_REASON,
+                    remedy=NPM_REMEDY,
+                    built_remedy=NPM_BUILT_REMEDY,
                 )
             )
+    # The download-host half reads this whole pass, as the release-asset half does: a fetch
+    # under .github/scripts/ is the install this half exists to close.
+    for match in DOWNLOAD_URL.finditer(text) if DOWNLOAD_URL else ():
+        # The pattern is built from the keys of download_hosts, so what it matched is one
+        # of them, read lower-case as a host is and without the trailing dot a URL may
+        # write.
+        host = match.group("host").lower()
+        found.append(
+            Found(
+                offset=match.start(),
+                url=match.group(0).rstrip(",);"),
+                what=f"a download from {host}",
+                repository=None,
+                reason=DOWNLOAD_REASON.format(named_by=download_hosts[host.rstrip(".")]),
+                remedy=DOWNLOAD_REMEDY,
+                built_remedy=DOWNLOAD_BUILT_REMEDY,
+            )
+        )
 
-    # Two address patterns and the npm one each sweep the file, so the refusals are put back
-    # into the order a reader meets them in that file.
+    # Two address patterns, the npm one and the download-host one each sweep the file, so the
+    # refusals are put back into the order a reader meets them in that file.
     found.sort()
-    for offset, url, what, repository, remedy, built_remedy in found:
+    for offset, url, what, repository, reason, remedy, built_remedy in found:
         line = line_at(text, offset)
         if repository is not None and repository.casefold() == OWN_REPOSITORY:
             # This repository publishes those bytes; nothing here fetches them.
@@ -779,8 +1101,7 @@ for file in sorted(GITHUB.rglob("*")):
             continue
         problems.append(
             f"{file}:{line}: this file fetches {what} at {one_line(url)}, and no row of "
-            f"{CI_TOOLS} names that URL. A tool CI installs from a release asset has a second "
-            f"source, and a fetch nothing names has none. {remedy}"
+            f"{CI_TOOLS} names that URL. {reason} {remedy}"
         )
 
 # ------------------------------------------- the rules a no_second_source entry is held to
@@ -864,7 +1185,7 @@ if unreadable:
 verdict(
     f"{CI_TOOLS} holds {len(readable)} row(s), each agreeing with the pin that installs it, and "
     f"{len(declines)} {NO_SECOND_SOURCE} entr{'y' if len(declines) == 1 else 'ies'}; "
-    f"{named} tool asset URL(s) fetched by the {read_files} file(s) under {GITHUB} that rule 3 "
+    f"{named} tool URL(s) fetched by the {read_files} file(s) under {GITHUB} that rule 3 "
     f"reads, this manifest not among them, name one of those; "
     f"of {swept} file(s) under {GITHUB} swept, none names a tool blob by a registry reference"
     f"{unread}"

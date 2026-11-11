@@ -9,9 +9,9 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { normalizeEnvoyUrl } from "./envoy-settings";
 import { messageFor } from "./errors";
 import { machineID } from "./machine";
 import type { TmuxPlace } from "./tmux-place";
@@ -82,6 +82,10 @@ const DeliveryAnswerWireSchema = z.discriminatedUnion("mode", [
     subject: z.string().min(1),
     stream_id: z.string(),
     gap: z.boolean(),
+    // The stream sequence the session's consumer starts at, which the session keeps as the floor
+    // of its resume point (`consumer-delivery`'s `answered`). Optional: a listener of an earlier
+    // release answers none, and such an answer must still parse.
+    consumer_start: z.number().int().nonnegative().optional(),
   }),
   z.object({ mode: z.literal("core"), reason: z.string() }),
 ]);
@@ -855,7 +859,7 @@ export function resolveCallTiming(config: Pick<EnvoyClientConfig, "timeoutMs" | 
 }
 
 export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
-  const baseUrl = normalizeEnvoyUrl(config.baseUrl);
+  const baseUrl = withoutTrailingSlashes(config.baseUrl);
   const { timeoutMs, attempts, retryDelayMs } = resolveCallTiming(config);
 
   const credential = config.credential;

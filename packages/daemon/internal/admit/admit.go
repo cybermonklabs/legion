@@ -1867,9 +1867,9 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 	return own
 }
 
-// startMidPhaseMembers brings back every role of every member of the tree promotion has just
-// opened, and gives the one role whose phase the member stands in the task that carries that
-// phase on. A hand-over turns a child into that root while preserving its phase, so its phase
+// startMidPhaseMembers brings back the roles that have run of every member of the tree promotion
+// has just opened, and gives the one role whose phase the member stands in the task that carries
+// that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
 // role needs the same resume start ordinary mid-phase children receive (workflow.ResumeTask,
 // which tells a carried merger its carried approved head). A root promoted held, which only a
 // hand-over leaves (every other re-admission starts its root at admitted), starts no worker, and
@@ -1881,12 +1881,29 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // since the old tree's linger disarmed the pull request (beginLinger) and only a new READY,
 // whose merge the daemon submits, arms it again.
 //
-// It relaunches every role a member can hold rather than the phase's owner alone, because the
-// admission cap counts the issues the daemon has started now: the phase task is the only thing
-// that waits for a slot (workflow.StartOrOwe), and the live sessions of a member's other roles
-// are exactly what the design keeps so that a person can still talk to any of them. A relaunch
-// row carries no task, so a role with nothing to do comes back and is told nothing. The roles
-// are enumerated as every other sweep of them does, over claim.Roles (the engine's everyClaim).
+// It brings back a member's other roles beside the phase's own, because the admission cap counts
+// the issues the daemon has started now: the one start that waits for a slot is the phase
+// worker's, which carries that phase's task (workflow.StartOrOwe), and the live sessions of a
+// member's other roles are exactly what the design keeps so that a person can still talk to any of
+// them. Those rows carry no task and wait for no slot, so each is claimable at once and a role
+// with nothing to do comes back and is told nothing.
+//
+// Such a role comes back only where it holds a claim row, which is the durable record that the
+// role has run: a re-admission clears the generation's facts — clearGeneration touches
+// pull_requests, design_gates, phases and issues, never claims — and a claim's token carries no
+// generation (claim.NewToken), so the row outlives the generation that wrote it. A role that has
+// never run holds none and is started by nothing here: its session would come up with no
+// transcript and nothing asked of it, and only a message could ever wake it. The rows of every
+// role of every member are read in one batched record.RoleRuns call, the read resumeSlottedWorkers
+// makes of its own slots, rather than one read per role.
+//
+// The phase's own role is the exception, gated by workflow.StartFor alone: a member whose phase
+// worker never started before the tree left the workflow holds no claim row for it, which is the
+// ordinary case of a phase still to be worked, so gating that start on a claim row would mean the
+// phase never runs again.
+//
+// The roles are enumerated as every other sweep of them does, over claim.Roles (the engine's
+// everyClaim).
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
@@ -1901,6 +1918,22 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			return err
 		}
 	}
+	type roleToken struct {
+		role  claim.Role
+		token claim.Token
+	}
+	type midPhaseMember struct {
+		issue record.Issue
+		// owner is the role whose phase the member stands in, empty where that phase is the
+		// tree architect's.
+		owner claim.Role
+		roles []roleToken
+	}
+	// The first pass resumes each member's phase and names every role run the second pass judges;
+	// the one read of them stands between the two, so no row is written on a reading of the claims
+	// half of it made.
+	var members []midPhaseMember
+	var keys []record.RoleRunKey
 	for _, member := range issues {
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			continue
@@ -1925,41 +1958,71 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		if owner == claim.RoleArchitect {
 			owner = ""
 		}
-		if member.Key != root.Key {
-			if err := a.enqueue(ctx, tx, member.Key, record.IssueBranch{Generation: member.Generation}, now); err != nil {
-				return err
-			}
-		}
+		standing := midPhaseMember{issue: member, owner: owner}
 		for _, role := range claim.Roles {
 			// The tree's architect is promotion's own start, with the task that hands it its
 			// tree; a member's own sub-architect is no phase worker and comes back with the rest.
 			if claim.IsTreeArchitect(role, member.Key, member.Tree) {
 				continue
 			}
-			if role != owner {
-				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: role,
+			token, err := claim.NewToken(project, member.Key, role)
+			if err != nil {
+				// An issue whose key yields no claim token holds no claim row at all, so no role
+				// of it has ever run and none of the roles this brings back is started, as the
+				// slot repair passes over such an issue rather than failing the whole fact
+				// (resumeSlottedWorkers). The phase's own role is the member's work rather than
+				// a session brought back, and its token's refusal stays the fact's, as it was.
+				if role != owner {
+					continue
+				}
+				return err
+			}
+			standing.roles = append(standing.roles, roleToken{role: role, token: token})
+			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: role, Generation: member.Generation})
+		}
+		members = append(members, standing)
+	}
+	// A member whose key yields no claim token names no role run, and its branch row is still
+	// the promotion's to queue, so the read is skipped rather than the pass.
+	var runs map[claim.Token]record.RoleRun
+	if len(keys) > 0 {
+		read, err := a.store.RoleRuns(ctx, tx, keys)
+		if err != nil {
+			return err
+		}
+		runs = read
+	}
+	for _, standing := range members {
+		member := standing.issue
+		if member.Key != root.Key {
+			if err := a.enqueue(ctx, tx, member.Key, record.IssueBranch{Generation: member.Generation}, now); err != nil {
+				return err
+			}
+		}
+		for _, held := range standing.roles {
+			run := runs[held.token]
+			if held.role != standing.owner {
+				// No claim row, so the role has never run: there is no session to bring back and
+				// no task this start could carry, and the one it would make could only ever be
+				// woken by a message.
+				if run.Claim == nil {
+					continue
+				}
+				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: held.role,
 					Generation: member.Generation, Phase: member.Phase}, now); err != nil {
 					return err
 				}
 				continue
 			}
-			token, err := claim.NewToken(project, member.Key, role)
-			if err != nil {
-				return err
-			}
-			run, err := a.store.RoleRun(ctx, tx, token, member.Key, role, member.Generation)
-			if err != nil {
-				return err
-			}
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			task, err := workflow.ResumeTask(ctx, a.store, tx, member, role)
+			task, err := workflow.ResumeTask(ctx, a.store, tx, member, held.role)
 			if err != nil {
 				return err
 			}
 			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
+				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
 				return err
 			}
 		}
@@ -2107,10 +2170,11 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // issue stood in the line's first part with the old row's place and took a slot ahead of its
 // own root.
 //
-// A row the fences keep is weighed once more, against the claim it would start: a stop of that
-// worker ends the row too, since the row would otherwise start the stopped worker
-// again the moment a slot came (stopOutlivedStart). That second read is one batched RoleRuns
-// call over the rows the fences kept, and no read at all when they kept none.
+// A row the fences keep is weighed once more, against the claim it would start: a stop that
+// outlived the row's own start ends the row too, since the row's retry would otherwise start
+// the stopped worker again the moment a slot came (stopOutlivedStart). That second read is one
+// batched RoleClaims call over the rows the fences kept, and no read at all when they kept none:
+// the rule reads nothing of the queued rows beside those claims.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -2134,7 +2198,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	}
 	finished := false
 	kept := make([]owedRow, 0, len(facts.OwedRows))
-	keys := make([]record.RoleRunKey, 0, len(facts.OwedRows))
+	tokens := make([]claim.Token, 0, len(facts.OwedRows))
 	for _, owed := range facts.OwedRows {
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
@@ -2149,7 +2213,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 				continue
 			}
 			kept = append(kept, owedRow{owed: owed, token: token})
-			keys = append(keys, record.RoleRunKey{Token: token, Issue: owed.Issue, Role: owed.Role, Generation: owed.Generation})
+			tokens = append(tokens, token)
 			continue
 		}
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
@@ -2165,16 +2229,16 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
 	}
-	if len(keys) == 0 {
+	if len(tokens) == 0 {
 		return finished, nil
 	}
-	runs, err := a.store.RoleRuns(ctx, tx, keys)
+	held, err := a.store.RoleClaims(ctx, tx, tokens)
 	if err != nil {
 		return finished, err
 	}
 	for _, keptRow := range kept {
-		owed, run := keptRow.owed, runs[keptRow.token]
-		if !stopOutlivedStart(run, owed) {
+		owed := keptRow.owed
+		if !stopOutlivedStart(held[keptRow.token], owed) {
 			continue
 		}
 		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
@@ -2191,29 +2255,46 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 
 // stopOutlivedStart says whether owed is a start the stop of its worker outlived, and so a row
 // that would only ever start a stopped worker. Its three terms together say the stop is the whole
-// of this row's story, and run carries all three: it is one record.Store.RoleRuns read, which
-// reads the queued rows before the claim exactly so that none of the three is read across a
-// relaunch of that claim (record's RoleRuns).
-func stopOutlivedStart(run record.RoleRun, owed record.OwedStart) bool {
+// of this row's story, and held, the claim as record.Store.RoleClaims reads it (nil for a role
+// the store holds no claim of), carries all three: its state, the write mark its retirement took,
+// and the task it holds. That read runs after the owed rows the fences kept, so a stop made
+// between the two reads is in the claim read here.
+//
+// That second term compares write marks and not row ids, and both sides take their numbers from
+// one sequence (store's putClaim, whose doc holds what that sequence orders and what it does
+// not): a row's write mark is the write that last set its payload, and the claim's is the write
+// that recorded its retirement. An id cannot stand in for it, because record.Store.ReplaceOwedStart
+// rewrites the start an issue already owes in place and keeps its id — so a start written after a
+// stop can carry an id from before it, which is exactly what `legion claims stop` and then
+// `legion claims retry`, with no admission pass between them, writes.
+func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
-	if run.Claim == nil || run.Claim.State != supervise.StateRetired {
+	if held == nil || held.State != supervise.StateRetired {
 		return false
 	}
-	// A second queued start would say a later start of the workflow is already on its way —
-	// a re-admitted tree's promotion and the held phase's retry both write one — and the stop
-	// is over for a worker the workflow is starting again. The rule therefore does not reach
-	// a relaunch row outstanding at the stop, which is that second queued start, nor an owed
-	// row a lane has already leased, which is not in this read at all
+	// A row at or below the mark took its number before the retirement took its own (store's
+	// putClaim says what that order does and does not show of two writes in flight together),
+	// so the stop is the whole of its story: whatever it was written for, the worker it would
+	// reach is gone, and its only effect when a slot came would be to start a stopped worker.
+	//
+	// A row above the mark took its number after it, so it is the workflow's own next start of
+	// this worker — a re-admitted tree's promotion, the held phase's retry — and the row is the
+	// whole of that start. Ending it would end the way back: the issue would leave the waiting
+	// line, since the line's first part is the issues that owe a start (record.Waiting), and
+	// nothing would start that phase again, the slot repair being no backstop, as it skips a
+	// retired claim on purpose (resumeSlottedWorkers).
+	//
+	// A claim an earlier release retired carries 0, below every write mark, so none of its owed
+	// rows is ended and its stop reads as that release read it. What the rule still does not
+	// reach is an owed row a lane has already leased, which is not in this read at all
 	// (record.Store.OwedStarts).
-	if slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
-		return queued.ID != owed.ID && queued.Request.Op == "start"
-	}) {
+	if owed.WriteMark > held.RetiredAtWriteMark {
 		return false
 	}
-	// A task the claim still works would say the claim kept the work of this very row, which
-	// the outbox's relaunch leaves for the row behind it, so the row is not simply a start
-	// the stop outlived.
-	if p := run.Claim.Pending; p != nil && p.StillWorked(owed.Generation, owed.Phase, run.Claim.State) {
+	// A task the claim still works would say the claim kept the work of this very row — the row
+	// gave it that task on the run above and the stop came before the claim was done with it — so
+	// the row is not simply a start the stop outlived.
+	if p := held.Pending; p != nil && p.StillWorked(owed.Generation, owed.Phase, held.State) {
 		return false
 	}
 	return true

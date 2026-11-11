@@ -48,17 +48,17 @@ type documentSearchStatement struct {
 	statement string
 	oracle    string
 	arguments []any
-	// oracleArguments is what the oracle is run with where it declares fewer parameters than
-	// the statement under test: the acting credential every statement of this build binds
-	// (refs.VisibilityArg) is a parameter main's own statement does not have.
+	// oracleArguments is what the oracle takes where the statement under test now binds more than
+	// it did: search's two take the search bar's filters and the issues a query names by key
+	// beside the parameters main's text knows (searchQueryArguments), all empty here, so both
+	// sides answer over the same subject. Empty for a statement whose oracle takes its own.
 	oracleArguments []any
 	sorted          bool
 	holds           []string
 	lacks           []string
 }
 
-// oracleArgs is what the oracle is run with: its own list where it has one, else the
-// statement's.
+// oracleArgs is the arguments this statement's oracle is run with.
 func (s documentSearchStatement) oracleArgs() []any {
 	if s.oracleArguments != nil {
 		return s.oracleArguments
@@ -67,8 +67,10 @@ func (s documentSearchStatement) oracleArgs() []any {
 }
 
 // documentSearchSeen is the acting credential every statement of this build binds last
-// (refs.VisibilityArg): these reads act for a credential that proves no author, which is what
-// a read of a corpus holding no author-private node answers for anyone.
+// (refs.VisibilityArg): these reads act for a credential that proves no author, which is what a
+// read of a corpus holding no author-private node answers for anyone. Search's own two
+// statements take it from searchQueryArguments; the related-item check's four are bound by
+// hand here, as the check binds them.
 func documentSearchSeen() []any {
 	return []any{refs.VisibilityArg(model.Actor{})}
 }
@@ -182,25 +184,35 @@ func newDocumentSearchFixture(t *testing.T) documentSearchFixture {
 func (f documentSearchFixture) statements() []documentSearchStatement {
 	word := documentSearchWord
 	probeLexemes := []string{word, documentSearchDocumentWord, documentSearchOldWord}
-	searchArguments := []any{word, f.project, searchDefaultLimit, firstTerm(word), headlineOptions,
+	mainSearchArguments := []any{word, f.project, searchDefaultLimit, firstTerm(word), headlineOptions,
 		0, contracts.SearchKindDepth, searchFusionK}
-	meaning := f.meaningArguments()
+	// Search's own two statements bind the search bar's filters and the issues a query names by
+	// key beside the parameters main's text knows; this subject names no issue and no filter, so
+	// both sides of each comparison read the same rows.
+	subject := searchParameters{text: word, project: f.project, limit: searchDefaultLimit}
+	searchArguments := searchQueryArguments(subject)
+	searchMeaningArguments := searchMeaningQueryArguments(subject, queryVector(), f.embedder.Identity())
 	relatedKeyword, relatedMeaning := f.relatedArguments()
 	documents := []string{f.notes, f.atlas}
 	return []documentSearchStatement{
 		{
-			name:            "search, keywords only",
-			statement:       searchQuery,
-			oracle:          mainSearchQuery,
-			arguments:       slices.Concat(searchArguments, documentSearchSeen()),
-			oracleArguments: searchArguments,
+			name:      "search, keywords only",
+			statement: searchQuery,
+			oracle:    mainSearchQuery,
+			arguments: searchArguments,
+			// main's text takes the eight parameters it knew.
+			oracleArguments: mainSearchArguments,
 			holds:           documents,
 		},
 		{
 			name:      "search, meaning and keywords",
 			statement: searchQueryMeaning,
+			// This release's own meaning body over main's keyword legs, for the reason
+			// document_search_oracle_test.go gives: main's own meaning arms read the whole-text
+			// rows this release deletes. It opens with the package's own q, so it takes the
+			// statement's own arguments rather than main's eight.
 			oracle:    searchQueryMeaningOverMainsDocumentArm,
-			arguments: slices.Concat(searchArguments, meaning, documentSearchSeen()),
+			arguments: searchMeaningArguments,
 			holds:     documents,
 		},
 		{

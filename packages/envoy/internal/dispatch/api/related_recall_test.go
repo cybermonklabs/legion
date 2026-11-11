@@ -305,7 +305,7 @@ func recallOldSearch(ctx context.Context, srv *server, project, text string) ([]
 	if nodes == 0 {
 		return nil, nil
 	}
-	response, err := srv.runFusedSearchQuery(ctx, model.Actor{}, query, project, suggestionSearchDepth, 0)
+	response, err := srv.runFusedSearchQuery(ctx, searchParameters{text: query, project: project, limit: suggestionSearchDepth})
 	return response.Results, err
 }
 

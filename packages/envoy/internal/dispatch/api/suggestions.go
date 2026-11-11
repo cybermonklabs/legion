@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -66,65 +65,6 @@ const (
 	// it answers that its check was not made (decisionBlockChecks).
 	decisionBlockCheckLimit = 5
 )
-
-var (
-	// relatedKeywordLegs is search's keyword legs (searchKeywordLegs) ranked by the chosen
-	// lexemes' weights (relatedCoordinationRank).
-	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank)
-	// relatedKeywordQuery is the check's stage 1: search's keyword query (searchQueryBody) over the
-	// chosen lexemes, with relatedKeywordLegs. Parameters: searchQueryBody's $1-$8, then $9 the
-	// lexemes, $10 their idf and $11 the acting credential (refs.VisibilityArg).
-	relatedKeywordQuery = relatedQOpener + relatedTermWeights(9) + searchQueryBody(relatedKeywordLegs, "", 11)
-	// relatedKeywordExcludingQuery is relatedKeywordQuery with the exclusion filter over one more
-	// parameter, $11 the owners the check leaves out (relatedExcludedOwners), which moves the
-	// acting credential to $12.
-	relatedKeywordExcludingQuery = relatedQOpener + relatedTermWeights(9) +
-		searchQueryBody(relatedKeywordLegs, relatedExcludedOwners(11), 12)
-	// relatedMeaningQuery is the check's stage 2: search's meaning query, which fuses the same
-	// keyword legs with the meaning arms, over the same lexemes and the text's embedding.
-	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes, $13 their idf and $14
-	// the acting credential.
-	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(relatedKeywordLegs, "", 14)
-	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14,
-	// which moves the acting credential to $15.
-	relatedMeaningExcludingQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedExcludedOwners(14), 15)
-	// relatedKeywordStatement and relatedMeaningStatement are what relatedSearch runs.
-	relatedKeywordStatement = relatedStatement{plain: relatedKeywordQuery, excluding: relatedKeywordExcludingQuery}
-	relatedMeaningStatement = relatedStatement{plain: relatedMeaningQuery, excluding: relatedMeaningExcludingQuery}
-)
-
-// relatedStatement is one of the check's two searches in both its shapes: the statement itself,
-// and the same statement with the exclusion filter over one further parameter. A check that
-// leaves nothing out runs the plain one, so a read with nothing to exclude never tests every
-// candidate row the arms match against an empty list.
-type relatedStatement struct {
-	plain     string
-	excluding string
-}
-
-// relatedCoordinationRank ranks a keyword arm's item, searchColumn its search vector, by
-// idf-weighted coordination in place of search's ts_rank_cd: the sum of the idf of every chosen
-// lexeme the item holds, so an item holding three of the text's rare words outranks one
-// repeating one of them, which cover density favours. On a project's closed duplicates it listed
-// more of the issues they were closed into than ts_rank_cd over the same terms or the old
-// 40-word OR query (TestRelatedRecallOnDuplicates). ts_rank_cd, normalised into [0, 1) and scaled
-// by a thousandth, only orders items holding the same lexemes. Each lexeme is tested with @@
-// against a tsquery of its own (relatedTermWeights), a binary search of the item's sorted vector,
-// not by unnesting the vector, which costs a document's whole length.
-func relatedCoordinationRank(searchColumn string) string {
-	return "((select sum(w.idf) from term_weights w where " + searchColumn + " @@ w.tq) + 0.001 * ts_rank_cd(" + searchColumn + ", q.tsq, 32))"
-}
-
-// relatedTermWeights is the term_weights CTE relatedCoordinationRank reads: each chosen lexeme
-// as a tsquery of its own and its idf, from $lexemes the chosen lexemes and $lexemes+1 their idf,
-// in one order.
-func relatedTermWeights(lexemes int) string {
-	return fmt.Sprintf(`term_weights as (
-  select quote_literal(w.lexeme)::tsquery as tq, w.idf from unnest($%d::text[], $%d::float8[]) w(lexeme, idf)
-),
-`, lexemes, lexemes+1)
-}
 
 // The check's outcomes and search modes, as Suggestions and related_checks hold them.
 const (
@@ -693,9 +633,9 @@ func milliseconds(d time.Duration) *int {
 // check must not offer cannot reach a reader through a statement that answered anything else.
 // The rest carry their ask state (attachAskStates). A failure to read those states leaves every
 // item's nil, and so no Decision, rather than failing the check or keeping the states read
-// before it. Each owner (an issue, or a project document)
-// keeps only its best-ranked item, so an issue matched through its title, its spec and a comment
-// fills one place, not three. Related then takes the best suggestionRelatedCount in
+// before it. Each owner (an issue, or a project document) keeps one item, which the loop below
+// picks, so an issue matched through its title, its spec and a comment fills one place, not
+// three. Related then takes the best suggestionRelatedCount in
 // relatedItemRank's order, keeping the search's order within each rank;
 // Decision is the first answered ask in the search's own order, deliberately not reordered by
 // owner status: an answered question stays the best match for the question asked whether or not
@@ -718,13 +658,39 @@ func (s *server) fillRelatedItems(
 		}
 	}
 
-	seen := map[string]bool{}
+	// One item per owner: the owner's best-ranked row that is not a document, and the document
+	// only when no other row of that owner reached the page. An issue and its spec share an
+	// owner, and a row's label reads the issue's key and title either way, so listing the
+	// document sends a reader who clicks it to /issues/KEY/spec?q=… rather than to the issue,
+	// with nothing on screen to say so. Every other row an issue owns - an ask, a comment, a
+	// message - carries what the document row does not, an ask's state most of all, which is how
+	// a filer is told the question is already open or how it was settled (suggestionFromResult
+	// copies Ask from the row it is given, so a row standing in for an ask row says nothing of
+	// either). Which is why the held document gives way to any later row that is not itself a
+	// document, and not to an issue row alone: an owner's rows arrive in the fused order, so an
+	// owner whose document arrives ahead of its ask would keep that document until the issue row
+	// replaced it, and the ask - the one row that tells a filer the question is already open -
+	// would be passed over. A later document is the one row that does not take the held one's
+	// place: an issue owns a row per doc artifact and not its spec alone, and the fusion has
+	// already ranked those rows against each other, so the first of them to arrive is the better
+	// match and letting a second replace it would list the weaker document of the two.
+	//
+	// The owner key carries the owner's kind, so this reaches a project document's own owner too:
+	// there the held row is the document itself, and a later ask or comment on it takes its
+	// place. Same trade - an ask row carries a state a document row has none of - on an owner
+	// that has no issue row to fall back on.
+	seen := map[string]int{}
 	related := make([]model.SearchResult, 0, len(candidates))
 	for _, result := range candidates {
 		owner := result.Owner.Kind + ":" + cmp.Or(result.Owner.Key, result.Owner.ArtifactID)
-		if !seen[owner] {
-			seen[owner] = true
+		at, held := seen[owner]
+		if !held {
+			seen[owner] = len(related)
 			related = append(related, result)
+			continue
+		}
+		if related[at].Kind == "document" && result.Kind != "document" {
+			related[at] = result
 		}
 	}
 	slices.SortStableFunc(related, func(a, b model.SearchResult) int {

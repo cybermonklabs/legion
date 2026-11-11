@@ -1,5 +1,3 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { baseUrl, createIssue, createProject } from "./api";
 import {
   connectedDot,
@@ -11,7 +9,7 @@ import {
 } from "./editor";
 import { type DispatchProcess, processPinCookie } from "./harness-processes";
 import type { ProxiedSocket } from "./round-robin-proxy";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { signIn } from "./users";
 
 /**
@@ -36,8 +34,9 @@ const samplingInterval = 100;
 // that would land on one process while the other loads the room.
 const spec = "Use SQLite for the cache.\n\nEnd of spec.\n";
 
+// The database reset is the `test` this file imports (e2e/test.ts); the round-robin proxy's log
+// is not in the database, so it is cleared here.
 test.beforeEach(async () => {
-  await resetDatabase();
   const reset = await fetch(new URL("/_proxy/reset", baseUrl), { method: "POST" });
   expect(reset.status, "POST /_proxy/reset").toBe(204);
 });
