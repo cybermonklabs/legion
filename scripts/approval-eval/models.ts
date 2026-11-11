@@ -19,8 +19,14 @@ import { listOf, numberOf, recordOf, stringOf } from "./corpus-io";
  *
  * The credential never leaves this module. It is read at call time, put in one header, and never
  * printed, logged, sliced, put in an error message or written to a row; every fault detail is
- * passed through `withoutSecret`, so even an endpoint that echoed a key back could not write one
- * into the round's output. Neither function prints anything.
+ * passed through `scrubSecrets`, which the runner calls over the same details again on every
+ * path out of the process, so even an endpoint that echoed a key back could not write one into
+ * the round's output. Neither function prints anything.
+ *
+ * A fault carries the answering body of the attempt that ended the ladder, bounded at
+ * `DETAIL_CHARS`, and never its length or a count of it: a fault whose reason is thrown away
+ * costs the next reader an hour, and a provider's JSON error carries its `message` well past the
+ * first 200 characters.
  *
  * One retry ladder covers both: a transport error, a 429 and a 5xx are tried again, four times,
  * with growing waits and jitter, and a `retry-after` header on the answer sets the wait where it
@@ -58,11 +64,21 @@ const LONGEST_WAIT_MS = 60_000;
 /** How long one call has before it is given up on, where the caller bounds none. */
 const DEFAULT_TIME_MS = 180_000;
 
-/** How many tokens an answer is given, which is a label and never a paragraph. */
-const DEFAULT_MAX_TOKENS = 256;
+/**
+ * How many tokens an answer is given. The label itself is one line, but this gateway answers a
+ * large case with a thinking block before it, and a budget that runs out inside that block
+ * leaves a body with no text block at all, which is the `unreadable` fault. Measured on
+ * 2026-11-11 over three 84,000-byte cases: an answer that chose a label spent 170 to 223 output
+ * tokens, and 6 of 15 answers at a budget of 256 carried a thinking block and no text. The
+ * budget is what an answer may take and not what it costs, so it is set well past that.
+ */
+const DEFAULT_MAX_TOKENS = 2_048;
 
-/** How much of a refusal or an unreadable answer is kept: enough to count it, never a page. */
-const DETAIL_CHARS = 200;
+/**
+ * How much of a refusal or an unreadable answer is kept: the body, far enough in to reach the
+ * `message` a provider's JSON error puts after its code, and never a whole page.
+ */
+const DETAIL_CHARS = 2_000;
 
 /** How many times a Jev state is halved when the endpoint refuses it for its size. */
 const JEV_STATE_CUTS = 3;
@@ -174,7 +190,9 @@ export function assertJevKeyPresent(): void {
 function jevKey(): string {
   const value = process.env[JEV_KEY_VARIABLE];
   if (value === undefined || value.replace(/[\r\n]+$/, "") === "") throw new JevKeyError();
-  return value.replace(/[\r\n]+$/, "");
+  const key = value.replace(/[\r\n]+$/, "");
+  remember(key);
+  return key;
 }
 
 /** The gateway's base URL and its key, both read now. */
@@ -190,12 +208,37 @@ async function claudeEndpoint(): Promise<{ url: string; key: string }> {
     throw new GatewayError(`${CLAUDE_KEY_FILE} could not be read, so no gateway call can be made`);
   }
   if (key === "") throw new GatewayError(`${CLAUDE_KEY_FILE} holds no key`);
+  remember(key);
   return { url: `${base.replace(/\/+$/, "")}${CLAUDE_PATH}`, key };
 }
 
-/** `text` with any copy of the credential taken out of it, before anything keeps it. */
-function withoutSecret(text: string, secret: string): string {
-  return secret === "" ? text : text.split(secret).join("<redacted>");
+/** What a credential is written as once it is taken out of a text. */
+const REDACTED = "<redacted>";
+
+/**
+ * Every credential this module has read in this process, held so that a detail can be scrubbed
+ * of all of them at once. A value in here is one the process already holds in order to make its
+ * calls; it is never printed, written or compared with anything but a text being scrubbed.
+ */
+const secretsRead = new Set<string>();
+
+/** Keeps one credential for the scrub, which a key read or rolled at call time adds to. */
+function remember(secret: string): void {
+  if (secret !== "") secretsRead.add(secret);
+}
+
+/**
+ * `text` with every credential this process has read taken out of it. The runner calls it over
+ * every fault detail on each path out of the process - the row appended to `rows.jsonl`, the
+ * example written into `round.json`, and the line printed on stderr - because a file has more
+ * readers than a terminal.
+ */
+export function scrubSecrets(text: string): string {
+  let kept = text;
+  const jev = process.env[JEV_KEY_VARIABLE]?.replace(/[\r\n]+$/, "") ?? "";
+  if (jev !== "") kept = kept.split(jev).join(REDACTED);
+  for (const secret of secretsRead) kept = kept.split(secret).join(REDACTED);
+  return kept;
 }
 
 /** What one try of one call came back with. */
@@ -254,12 +297,7 @@ interface Sent {
  * than 429 ends the ladder at once: another try of the same request would be refused the same
  * way.
  */
-async function send(
-  url: string,
-  init: RequestInit,
-  bounds: CallBounds | undefined,
-  secret: string
-): Promise<Sent> {
+async function send(url: string, init: RequestInit, bounds: CallBounds | undefined): Promise<Sent> {
   const timeMs = bounds?.timeMs ?? DEFAULT_TIME_MS;
   for (let attempt = 0; ; attempt += 1) {
     const tried = await tryOnce(url, init, timeMs);
@@ -272,7 +310,7 @@ async function send(
         body: null,
         attempts: attempt + 1,
         fault: tried.status === 0 ? "transport" : "status",
-        faultDetail: withoutSecret(tried.failure, secret),
+        faultDetail: scrubSecrets(tried.failure),
       };
     }
     const jittered = Math.round(wait * (1 + Math.random() * JITTER));
@@ -280,7 +318,7 @@ async function send(
   }
 }
 
-/** An answer that came back in no shape this can read, as a result. */
+/** An answer that came back in no shape this can read, as a result, with its body kept. */
 function unreadable(detail: string, latencyMs: number, attempts: number): ModelAnswer {
   return {
     chosen: [],
@@ -292,7 +330,7 @@ function unreadable(detail: string, latencyMs: number, attempts: number): ModelA
     attempts,
     stateCut: false,
     fault: "unreadable",
-    faultDetail: detail.slice(0, DETAIL_CHARS),
+    faultDetail: scrubSecrets(detail).slice(0, DETAIL_CHARS),
   };
 }
 
@@ -360,8 +398,7 @@ export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
         messages: [{ role: "user", content: ask.prompt.user }],
       }),
     },
-    ask.bounds,
-    endpoint.key
+    ask.bounds
   );
   const latencyMs = Date.now() - started;
   if (sent.body === null) {
@@ -382,16 +419,16 @@ export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   try {
     parsed = JSON.parse(sent.body);
   } catch {
-    return unreadable(withoutSecret(sent.body, endpoint.key), latencyMs, sent.attempts);
+    return unreadable(sent.body, latencyMs, sent.attempts);
   }
   const text = claudeText(parsed);
   if (text === null) {
-    return unreadable(withoutSecret(sent.body, endpoint.key), latencyMs, sent.attempts);
+    return unreadable(sent.body, latencyMs, sent.attempts);
   }
   const chosen = labelsOf(text, ask.prompt.labels);
   const usage = usageOf(parsed);
   if (chosen.length === 0) {
-    const answer = unreadable(withoutSecret(text, endpoint.key), latencyMs, sent.attempts);
+    const answer = unreadable(text, latencyMs, sent.attempts);
     return { ...answer, ...usage };
   }
   return {
@@ -456,8 +493,7 @@ export async function askJev(ask: JevAsk): Promise<ModelAnswer> {
           },
         }),
       },
-      ask.options.bounds,
-      key
+      ask.options.bounds
     );
     attempts += sent.attempts;
     if (sent.body !== null || !refusedForSize(sent.faultDetail) || state.length <= 1) break;
@@ -483,7 +519,7 @@ export async function askJev(ask: JevAsk): Promise<ModelAnswer> {
   try {
     parsed = JSON.parse(sent.body);
   } catch {
-    return { ...unreadable(withoutSecret(sent.body, key), latencyMs, attempts), stateCut };
+    return { ...unreadable(sent.body, latencyMs, attempts), stateCut };
   }
   // The answer's shape is the System One protocol's own, as `packages/envoy/agentloop/decide.go`
   // reads it: the answers keyed by the names the questions were asked under, each a decision
@@ -492,7 +528,7 @@ export async function askJev(ask: JevAsk): Promise<ModelAnswer> {
   const choice = stringOf(decision?.choice);
   const label = choice === null ? undefined : byName.get(choice);
   if (label === undefined) {
-    return { ...unreadable(withoutSecret(sent.body, key), latencyMs, attempts), stateCut };
+    return { ...unreadable(sent.body, latencyMs, attempts), stateCut };
   }
   const probabilities: Record<string, number> = {};
   for (const [name, value] of Object.entries(recordOf(decision?.probabilities) ?? {})) {
