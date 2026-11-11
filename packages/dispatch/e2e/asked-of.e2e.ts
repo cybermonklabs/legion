@@ -19,6 +19,7 @@ import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
 import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { gotoIssue } from "./issue-page";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -85,12 +86,12 @@ async function handsOff(page: Page): Promise<void> {
   await page.mouse.move(2, 2);
 }
 
-/** The issue page's own ask card for an unanchored question, which the page draws on its
- *  Conversation turn; the page is opened on the issue here, so every reader of it starts the
- *  same way. */
+/** The issue page's own ask card for an unanchored question, which the page draws in the
+ *  conversation beside its body; the page is opened on the issue here, so every reader of it
+ *  starts the same way. The address is the one the Conversation tab answered and still
+ *  resolves (dispatch://INFRA-1196 R19), since the redesigned page draws no such tab. */
 async function conversationCard(page: Page, issueKey: string, askId: string): Promise<Locator> {
-  await page.goto(`/issues/${issueKey}`);
-  await page.getByRole("tab", { name: "Conversation" }).click();
+  await gotoIssue(page, `/issues/${issueKey}/conversation`);
   return page.locator("#issue-conversation-panel").getByTestId(`ask-${askId}`);
 }
 
