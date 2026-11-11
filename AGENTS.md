@@ -1157,8 +1157,12 @@ while the record still awaits it, a pull request GitHub shows closed or at anoth
 Two bounds hold the wait.
 The first is GitHub's own clock: once GitHub's last change to the pull request (its `updatedAt`) is more than 10 minutes old, a webhook never arrived, so the row ends and tells the architect once (`merge-stalled`);
 routine waits and rate-limit deferrals never count toward it.
-The second ends nothing: a merge the daemon submitted that GitHub has not completed within an hour of the workflow queueing the row at READY's acceptance tells the issue's architect once (`merge-waiting`) and goes on waiting - nothing is withdrawn, the issue stays in `awaiting_merge`, and the row keeps submitting - so what is left to find is on GitHub:
+The second ends nothing: a merge the daemon submitted that GitHub has not completed within an hour of the workflow queueing the row at READY's acceptance, less the time one of the project's merge holds held that submission back, tells the issue's architect once (`merge-waiting`) and goes on waiting - nothing is withdrawn, the issue stays in `awaiting_merge`, and the row keeps submitting - so what is left to find is on GitHub:
 a required check that never ran or failed, a review only a person can give, a merge queue that has not landed it.
+A hold is Legion's own decision not to submit, so none of the time it held the submission is GitHub taking long over the merge.
+A merge hold of the project, which the controller sets, stops a submission whose pull request changes a file one of that hold's paths matches.
+The daemon tells the issue's architect once (`merge-held`), naming the pull request, READY's head, the hold's paths, when the hold ends, the session that set it and its reason, and posts the same on the Dispatch issue.
+Nothing is anyone's to do: the issue stays in `awaiting_merge`, and the daemon submits the merge when the hold ends.
 A reopen at READY's head reuses that row, starts it over as though nothing had been armed, and takes it from any worker still holding it, so the merge is never lost.
 A refusal GitHub would repeat on a retry ends the row and is told to the architect once (`merge-refused`).
 GitHub checks the expected head only when auto-merge is enabled, and arming is right only for an awaiting issue's READY head, so the daemon queues an `auto_merge_disable` outbox row on every other push or reopen, when a child is set back to `todo`, and when an issue leaves the workflow.

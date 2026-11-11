@@ -247,11 +247,16 @@ reviewing until you finish.
   closed or at another head is a webhook not yet applied, so the row waits for the two to agree.
   Only once GitHub's last change to the pull request is more than 10 minutes old, however long the
   row waited before, does the row end and tell the architect once (`merge-stalled`). A merge the
-  daemon submitted that GitHub has not completed within an hour of READY's acceptance tells the
-  issue's architect once (`merge-waiting`) and goes on waiting: nothing is withdrawn, the merge
+  daemon submitted that GitHub has not completed within an hour of READY's acceptance, the time
+  one of the project's merge holds held that submission back not counted, tells the issue's
+  architect once (`merge-waiting`) and goes on waiting: nothing is withdrawn, the merge
   stands, the issue stays in `awaiting_merge`, and the architect reads the pull request for what
   GitHub waits on — a required check that never ran or failed, a review only a person can give, a
-  queue that has not landed it — and asks a person for what no worker can do. A reopen at
+  queue that has not landed it — and asks a person for what no worker can do. A merge hold of the
+  project that matches a file the pull request changes keeps the daemon from submitting that merge
+  at all: the issue waits in `awaiting_merge`, the daemon says so on the issue and tells the
+  issue's architect once (`merge-held`), naming the hold's paths, when the hold ends, the session
+  that set it and its reason, and the daemon submits the merge when the hold ends. A reopen at
   READY's head reuses the row, starts it over as though nothing had been armed, and takes it from a
   run that read the record before the reopen. Any other failure retries.
   No role runs `gh pr merge`. When the answer's `note` begins `MANUAL_MERGE_REQUIRED:` (the pull

@@ -1,14 +1,14 @@
 # The notices the daemon writes when a write of its own did not go through
 
 Part of `skill://legion-architect`. Read the section for the notice that woke you. Each of
-`merge-refused`, `merge-stalled`, `merge-removed` and `merge-waiting` is the daemon reporting on
-the merge it submitted for an accepted READY, and `message-refused` on a message it was posting
-on an issue; each reaches the architect that owns the issue. The wake-routing table, in
+`merge-refused`, `merge-stalled`, `merge-removed`, `merge-waiting` and `merge-held` is the daemon
+reporting on the merge of an accepted READY, and `message-refused` on a message it was posting on
+an issue; each reaches the architect that owns the issue. The wake-routing table, in
 `skill://legion-architect/references/wake-routing.md`, gives each notice its move in one
 sentence; the section here is what that sentence stands on — what the notice's `reason` names,
 what the daemon has and has not stopped doing, and what you read before you ask a person.
 
-In every one of the four merge notices the issue stays in `awaiting_merge`, where no worker holds
+In every one of the five merge notices the issue stays in `awaiting_merge`, where no worker holds
 a phase and a backward move is refused, so what a repository rule needs is a person's to give.
 
 ## `merge-refused`
@@ -59,7 +59,9 @@ Never bypass a rule.
 
 Its `reason` names the pull request, READY's head, how long the row has waited and what GitHub
 last answered. GitHub has not completed the merge the daemon submitted within an hour of the
-workflow queueing it at READY's acceptance. Nothing has been withdrawn: the merge stands, the
+workflow queueing it at READY's acceptance, less the time one of the project's merge holds held
+that submission back, which is Legion's own decision not to submit and no part of GitHub taking
+long. Nothing has been withdrawn: the merge stands, the
 issue stays in `awaiting_merge`, and the daemon goes on submitting it, so there is nothing to undo
 and you are told once, however much longer it waits. Read the pull request on GitHub and find what
 GitHub is waiting for: a required check that never ran, a required check that failed, a review
@@ -68,6 +70,19 @@ only a person can give, or a merge queue that has not landed it. Act on what you
 or a repository rule needs is a person's: ask one with `dispatch ask`, naming the pull request at
 READY's head and what GitHub waits on; the merge closes the issue when GitHub completes it,
 whoever unblocks it. Never bypass a rule.
+
+## `merge-held`
+
+Its `reason` names the pull request, READY's head, the hold's paths, when the hold ends, the
+session that set it and the reason it was set for. One of the project's merge holds matches a file
+the pull request changes, so the daemon has not submitted that merge at all. Nothing has been
+withdrawn and nothing has failed: the issue stays in `awaiting_merge`, and the daemon submits the
+merge when the hold ends. The time a hold holds a submission back counts toward no `merge-waiting`
+hour, because a hold is Legion's own decision not to submit. You are told once for that
+submission, however many times the daemon reads it under the hold, and the daemon posts the same
+on the Dispatch issue. There is nothing for you to do and nothing to ask a person for: the hold
+ends by itself at the time the reason names, and only the controller, which set it, takes it off
+earlier.
 
 ## `message-refused`
 

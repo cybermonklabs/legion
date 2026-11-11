@@ -408,10 +408,17 @@ not caught up: the submission waits. It ends and tells the architect only once G
 to the pull request is more than 10 minutes old, far longer than a webhook takes to arrive, however
 long the submission waited before. A merge that simply waits ends nothing: when GitHub has not
 completed one the daemon submitted within an hour of the workflow queueing it at `READY`'s
-acceptance, the issue's architect is told once (`merge-waiting`) and the submission goes on.
+acceptance, the issue's architect is told once (`merge-waiting`) and the submission goes on. That
+hour counts no time one of the project's merge holds held the submission back, because a hold is
+Legion's own decision not to submit and none of it is GitHub taking long.
 Nothing is withdrawn and the issue stays in `awaiting_merge`, so what is left to find is on
 GitHub: a required check that never ran or failed, a review only a person can give, a merge queue
 that has not landed it.
+A merge hold of the project, which the controller sets, stops the submission of a merge whose
+pull request changes a file one of that hold's paths matches: the daemon posts that on the
+Dispatch issue and tells the issue's architect once (`merge-held`), naming the hold's paths, when
+the hold ends, the session that set it and its reason, and it submits the merge when the hold
+ends.
 A reopen at the `READY` head takes the submission back from a
 run that read the record before the reopen, so it is never lost. A refusal GitHub would repeat on a
 retry ends the submission and is told to the architect too. GitHub checks the expected head only when
