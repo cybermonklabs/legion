@@ -282,8 +282,8 @@ export const GAP_LINES = freeze({
   no_check: "No check serves this requirement.",
   no_origin: "This node does not say which node it came from.",
   no_plan_task: "No plan task serves this requirement.",
-  no_read_back: "Nobody is recorded as having read these sentences back.",
-  no_summary_author: "Nobody is recorded as having written these sentences.",
+  no_read_back: "Dispatch does not record who read these sentences back.",
+  no_summary_author: "Dispatch does not record who wrote these sentences.",
   shaped_disagreement: "A decision says it shaped this node, which came from another one.",
 } as const);
 
@@ -300,11 +300,12 @@ export const GAP_WORDS = freeze({
   /** The node names nothing it came from, so a reader cannot follow it back. */
   no_origin: "Origin not named",
   no_plan_task: "No plan task",
-  /** Nobody is recorded as having read these sentences back. Dispatch records that of nobody
-   *  yet (dispatch://INFRA-1278), which is why the head says it of every issue. */
-  no_read_back: "Nobody read it back",
-  /** Nobody is recorded as having written them, which the head says the same way. */
-  no_summary_author: "Author not recorded",
+  /** The head of every issue draws this one, because Dispatch holds no read-back of a summary
+   *  at all yet (dispatch://INFRA-1278). It says that of Dispatch rather than of the issue, so
+   *  a reader does not take it for something their own issue is missing. */
+  no_read_back: "Dispatch records no read-back",
+  /** The same for who wrote the sentences, which Dispatch holds of no issue either. */
+  no_summary_author: "Dispatch records no author",
   /** A decision says it shaped the node, and the node came from another one. */
   shaped_disagreement: "Origins disagree",
 } as const satisfies Record<GapKind, string>);
@@ -547,7 +548,8 @@ export const CONTROL_LABELS = freeze({
   subtree_done: "Whole tree done",
   /** What the claim says of the moment another agent may take an unresponsive holder's issue,
    *  which is its last heartbeat plus the grace the server refuses a take until (R11, row
-   *  four). The time it stands before follows this word. */
+   *  four). The moment itself follows this word, drawn as a date and a time and never as an
+   *  age, so the chip reads "free for another agent from 11/11/26, 12:05" (`ClaimChip.tsx`). */
   takeable: "free for another agent from",
   /** The same once that moment has passed and the server would grant the take now. */
   takeable_now: "free for another agent to take now",

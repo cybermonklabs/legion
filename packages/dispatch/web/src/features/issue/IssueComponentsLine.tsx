@@ -21,6 +21,16 @@ import { CONTROL_LABELS } from "./page-words";
 import { useIssueComponents } from "./useIssueComponents";
 
 /**
+ * The name the components picker's trigger answers to: what it opens and the issue it is on, so
+ * a voice user saying what they read presses it (WCAG 2.5.3). The add menu reaches this trigger
+ * by this name rather than drawing a second picker, and calls this function for it
+ * (`IssueAddMenu.tsx`), so a word changed here changes both sides at once.
+ */
+export function componentsControlName(issueKey: string): string {
+  return `${CONTROL_LABELS.edit} ${PROPERTY_LABELS.components.toLowerCase()} of ${issueKey}`;
+}
+
+/**
  * The `Components:` line of the issue header's metadata rail: the issue's effective
  * attachment as chips. An explicit set lists its live component ids and marks each id a
  * re-import retired; `none` shows the reason; an issue no ancestor chain attached reads
@@ -122,7 +132,7 @@ export function IssueComponentsLine({
               ? (components.ids ?? [])
               : []
           }
-          triggerAriaLabel={`Edit components of ${issue.key}`}
+          triggerAriaLabel={componentsControlName(issue.key)}
         >
           <span {...pageChrome}>
             {components.mode === "explicit" && components.inherited_from === null

@@ -362,6 +362,39 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   }
 });
 
+// The chip has to read as a sentence. It drew the relative age after "free for another agent
+// from", which made ", free for another agent from in 3 minutes (11/11/26, 12:05)", and inside
+// the last minute of the wait ", free for another agent from just now" - free, said of an issue
+// the server still refuses to hand over.
+test("the moment the issue comes free is drawn as a date and a time, so the chip reads as a sentence", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  // Half a minute of the grace left: the relative form of that moment is "just now", and the
+  // server still refuses the take.
+  const lastSeen = Date.now() - ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS + 30_000;
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    unresponsive("session-one", "Implementer", lastSeen),
+  ]);
+  const view = header({ ...base, claim });
+  try {
+    const stalled = await screen.findByTestId("issue-claim-unresponsive");
+    const free = within(stalled).getByTestId("issue-claim-takeable");
+    const takeableAt = lastSeen + ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS;
+    expect(free.textContent).toBe(
+      `, ${CONTROL_LABELS.takeable} ${new Date(takeableAt).toLocaleString(undefined, {
+        dateStyle: "short",
+        timeStyle: "short",
+      })}`
+    );
+    expect(free.querySelector("time")?.getAttribute("datetime")).toBe(
+      new Date(takeableAt).toISOString()
+    );
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
 // The issue read judged the holder against its own record, by id; the agent list is a cache
 // that can be missing a session it still holds. When the two disagree the read wins, or the
 // page would call a stalled holder gone the moment the list dropped it.

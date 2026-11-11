@@ -7,7 +7,7 @@ import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/t
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
 import { PROPERTY_LABELS } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { CONTROL_LABELS, issueStatusWord } from "./page-words";
 import { stateForIssue } from "./pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 
@@ -31,11 +31,18 @@ const WRITTEN_FIELD_NAMES: Readonly<Record<keyof IssueUpdateInput, string>> = {
   title: PROPERTY_LABELS.title,
 };
 
-/** What the shell's indicator names one header write of `key`. */
-function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
-  if (input.status !== undefined) return `${key} set to ${input.status}`;
-  const field = (Object.keys(input) as (keyof IssueUpdateInput)[])[0];
-  return field === undefined ? `${key} saved` : `${WRITTEN_FIELD_NAMES[field]} of ${key} saved`;
+/**
+ * What the shell's indicator names one header write of `key`: the page's own name for every
+ * field the write carries, and the page's own word for a status it sets, never the schema's
+ * token for either (dispatch://INFRA-1196 R21). A write of two fields names both, because the
+ * first key of the input is no more the write than the second.
+ */
+export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
+  if (input.status !== undefined) return `${key} set to ${issueStatusWord(input.status)}`;
+  const fields = (Object.keys(input) as (keyof IssueUpdateInput)[]).map(
+    (field) => WRITTEN_FIELD_NAMES[field]
+  );
+  return fields.length === 0 ? `${key} saved` : `${fields.join(" and ")} of ${key} saved`;
 }
 
 /**

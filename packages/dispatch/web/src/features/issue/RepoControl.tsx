@@ -10,12 +10,22 @@ import { CONTROL_LABELS } from "./page-words";
 import { useIssueRepo } from "./useIssueRepo";
 
 /**
+ * The name the repository picker answers to: the property it sets and the issue it is on, so a
+ * voice user saying what they read presses it (WCAG 2.5.3). The add menu reaches this picker by
+ * this name rather than drawing a second one, and calls this function for it
+ * (`IssueAddMenu.tsx`), so a word changed here changes both sides at once.
+ */
+export function repoControlName(issueKey: string): string {
+  return `${PROPERTY_LABELS.repository} of ${issueKey}`;
+}
+
+/**
  * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
  * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
  * not its own; "No repository" when none resolves) with a native `<select>` laid over it, as
  * `AssigneeControl` does. The select lists Inherit first, then the repositories mapped to the
- * issue's project in Settings; Inherit clears the issue's own repository. Labelled
- * `Repository of <KEY>`. While the issue resolves to a repository the mappings are read only once
+ * issue's project in Settings; Inherit clears the issue's own repository. Named by
+ * `repoControlName`. While the issue resolves to a repository the mappings are read only once
  * the reader reaches for the control (pointer over it, a touch on it, or focus). While it resolves
  * to none, they are read at once, because the item shows only when the project maps a repository:
  * until the read answers nothing shows, a project that maps none has nothing to pick and gets no
@@ -96,7 +106,7 @@ export function RepoControl({
         </span>
         <select
           aria-describedby={descriptionId}
-          aria-label={`Repository of ${issueKey}`}
+          aria-label={repoControlName(issueKey)}
           className={badgeSelectOverlay}
           disabled={disabled}
           onFocus={want}

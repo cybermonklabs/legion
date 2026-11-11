@@ -6,8 +6,11 @@ import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 export interface BlockedByWrite {
-  /** Why Dispatch refused the last save, in its own words, until the next save starts. */
+  /** Why Dispatch refused the last save, in its own words, until the next save starts or the
+   *  control forgets it (`forgetRefusal`). */
   readonly error: string | undefined;
+  /** Drops that refusal, so an editor opened again never draws the one before it. */
+  readonly forgetRefusal: () => void;
   readonly pending: boolean;
   /** Saves the issues this one waits on. `onSaved` runs on a landing and on nothing else, so
    *  the editor stays open over a refusal with the reader's list still in it. */
@@ -50,6 +53,9 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     error: write.isError
       ? apiErrorMessage(write.error, `Could not save what ${issueKey} waits on.`)
       : undefined,
+    forgetRefusal: () => {
+      if (write.isError) write.reset();
+    },
     pending: write.isPending,
     save: (keys) => {
       guard.guard(() => write.mutate(keys));

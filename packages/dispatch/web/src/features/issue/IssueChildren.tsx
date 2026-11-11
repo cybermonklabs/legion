@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { IssueChild, IssueDetails } from "../../api/types";
@@ -173,17 +173,23 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
       </Link>
       <span {...pageChrome}>{issueStatusWord(child.status)}</span>
       {(child.blocked_by ?? []).length === 0 ? null : (
-        <span {...pageChrome}>
+        // Two keys run together read as one key ("CORE-2CORE-3"), so each follows the last
+        // after a comma and a space, which is how a reader reads a list of keys in a line of
+        // text. The panel's own control has the room to space them out instead
+        // (`BlockedByControl.tsx`).
+        <span data-testid="issue-child-blocked-by" {...pageChrome}>
           {PROPERTY_LABELS.blocked_by}{" "}
-          {(child.blocked_by ?? []).map((key) => (
-            <Link
-              className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
-              key={key}
-              to={buildIssuePath({ key, kind: "issue" })}
-              {...authorText}
-            >
-              {key}
-            </Link>
+          {(child.blocked_by ?? []).map((key, index) => (
+            <Fragment key={key}>
+              {index === 0 ? null : ", "}
+              <Link
+                className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+                to={buildIssuePath({ key, kind: "issue" })}
+                {...authorText}
+              >
+                {key}
+              </Link>
+            </Fragment>
           ))}
         </span>
       )}

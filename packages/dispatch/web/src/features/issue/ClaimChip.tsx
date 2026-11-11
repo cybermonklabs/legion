@@ -14,7 +14,7 @@ import { useTooltips } from "../../components/tooltips";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { Timestamp } from "../refs/Timestamp";
-import { PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
 /**
@@ -117,15 +117,16 @@ export function claimIsTakeable(
  * held would hide pickable work — the same judgement the Unclaimed filter makes through
  * `claimIsTakeable`. A holder that has only missed its heartbeats reads "· unresponsive since
  * <heartbeat>", the state and the moment R5 asks the chip for, and keeps the held tone while
- * the server would still refuse a take: the chip also names the moment the issue comes free
+ * the server would still refuse a take: the chip also says when the issue comes free, as
+ * ", free for another agent from <moment>", with the moment itself and no relative age
  * (`liveness`, the issue read's own `takeable_at`), so a reader waiting on it knows how long.
- * Past that moment the chip reads "· takeable now" and wears the free tone, because the server
- * now grants that take and a held-looking chip would hide the issue again — the holder is still
- * drawn as unresponsive, since it has not ended and may yet come back. Without a `liveness` - a
- * List row, a Board card, whose rows carry no such read - the state and the heartbeat are the
- * registry's and the takeable moment is that heartbeat plus the shared grace, the same sum the
- * server uses. The judgement is remade on each render, so it follows the registry poll and the
- * issue read rather than a timer of the chip's own.
+ * Past that moment the chip reads "· free for another agent to take now" and wears the free
+ * tone, because the server now grants that take and a held-looking chip would hide the issue
+ * again — the holder is still drawn as unresponsive, since it has not ended and may yet come
+ * back. Without a `liveness` - a List row, a Board card, whose rows carry no such read - the
+ * state and the heartbeat are the registry's and the takeable moment is that heartbeat plus
+ * the shared grace, the same sum the server uses. The judgement is remade on each render, so
+ * it follows the registry poll and the issue read rather than a timer of the chip's own.
  *
  * The `title` says what no word of the chip does - what a claim is for and each instant to the
  * second - and the chip carries it only where its host raises a tooltip. The issue page raises
@@ -253,7 +254,16 @@ export function ClaimChip({
                 ) : (
                   <>
                     {`, ${CONTROL_LABELS.takeable} `}
-                    <Timestamp at={takeableAt} exact />
+                    {/* The moment itself, and no relative age: the words before it end in
+                        "from", and a `Timestamp` would finish the sentence with "in 3 minutes"
+                        or, inside the last minute of the wait, with "just now" - which reads as
+                        free while the server still refuses the take. */}
+                    <time dateTime={takeableAt} {...authorText}>
+                      {new Date(takeableAt).toLocaleString(undefined, {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </time>
                   </>
                 )}
               </span>

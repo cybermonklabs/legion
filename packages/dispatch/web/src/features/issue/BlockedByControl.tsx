@@ -31,6 +31,18 @@ export function issueKeysIn(value: string): readonly string[] {
 }
 
 /**
+ * The name the blocked-by control answers to: the word it shows, the property it opens and the
+ * issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The add menu
+ * reaches the control by this name rather than drawing a second copy of it, and calls this
+ * function for it (`IssueAddMenu.tsx`), so the two sides cannot drift apart: a word changed
+ * here changes both.
+ */
+export function blockedByControlName(issueKey: string, blockerCount: number): string {
+  const verb = blockerCount === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit;
+  return `${verb} ${PROPERTY_LABELS.blocked_by.toLowerCase()} of ${issueKey}`;
+}
+
+/**
  * The issues this one waits on, in the panel's Development section beside the repository and
  * the components (dispatch://INFRA-1196 R11): every blocker as a link to it, and one control
  * that opens the editor for them - the same control whether the issue waits on nothing or on
@@ -41,6 +53,11 @@ export function issueKeysIn(value: string): readonly string[] {
  * not found", "CORE-1 cannot be blocked by itself", a blocker in another project - with the
  * keys the reader typed still in the box, so a refused list is mended rather than retyped
  * (`useIssueBlockedBy.ts`).
+ *
+ * While that save is out nothing closes the editor: Cancel is refused and so is Escape, because
+ * a reader who closed it a moment before the refusal landed would be shown no refusal at all.
+ * Opening the editor forgets the last refusal, so the one drawn is always the one the reader
+ * is looking at.
  */
 export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode {
   const blockers = issue.blocked_by ?? [];
@@ -56,8 +73,14 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
     if (editing) input.current?.focus();
   }, [editing]);
   const open = () => {
+    write.forgetRefusal();
     setDraft(blockers.join(" "));
     setEditing(true);
+  };
+  // The save holds the editor open: the refusal it may bring is drawn in this form and nowhere
+  // else, so a close taken meanwhile would throw it away.
+  const close = () => {
+    if (!write.pending) setEditing(false);
   };
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -87,11 +110,9 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
         )}
         {isClosed || editing ? null : (
           <button
-            // The name is the word the control shows with the property it opens and the issue
-            // it is on, so a voice user saying what they read presses it (WCAG 2.5.3), and the
-            // add menu reaches this control by that name rather than drawing a second copy of
-            // it (`IssueAddMenu.tsx`).
-            aria-label={`${blockers.length === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit} ${PROPERTY_LABELS.blocked_by.toLowerCase()} of ${issue.key}`}
+            // The name is `blockedByControlName`'s, which the add menu reaches this control by
+            // rather than drawing a second copy of it (`IssueAddMenu.tsx`).
+            aria-label={blockedByControlName(issue.key, blockers.length)}
             className={`min-h-11 rounded border px-2 text-sm font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText}`}
             onClick={open}
             type="button"
@@ -110,7 +131,7 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
             id="issue-blocked-by"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") setEditing(false);
+              if (event.key === "Escape") close();
             }}
             placeholder={`${issue.project}-12 ${issue.project}-13`}
             ref={input}
@@ -125,8 +146,9 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
             {write.pending ? CONTROL_LABELS.saving_field : CONTROL_LABELS.save_blocked_by}
           </button>
           <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => setEditing(false)}
+            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary} ${secondaryButtonDisabledText}`}
+            disabled={write.pending}
+            onClick={close}
             type="button"
             {...pageChrome}
           >

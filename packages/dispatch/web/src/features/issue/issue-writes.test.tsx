@@ -13,7 +13,11 @@ import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
 import { writesOf } from "../writes/write-store";
+import { blockedByControlName } from "./BlockedByControl";
 import { IssuePage } from "./IssuePage";
+import { PROPERTY_LABELS } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
+import { issueUpdateLabel } from "./useIssueHeaderWrites";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -1290,4 +1294,124 @@ test("the shell's indicator names the field a header write is saving", async () 
     unmount();
     restore();
   }
+});
+
+// The refusal is drawn in the editor and nowhere else, so a reader who closed the editor while
+// the save was out was shown no refusal at all. Cancel and Escape wait for the answer.
+test("the blocked-by editor refuses Cancel and Escape while the save is out", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const saving = deferred<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const { unmount } = renderIssuePage();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
+    await user.click(keys);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(
+      screen.getByLabelText("Issues CORE-1 waits on"),
+      "Cancel closed the editor over a save whose refusal it would have drawn"
+    ).toBeInTheDocument();
+    await user.click(keys);
+    await user.keyboard("{Escape}");
+    expect(
+      screen.getByLabelText("Issues CORE-1 waits on"),
+      "Escape closed the editor over a save whose refusal it would have drawn"
+    ).toBeInTheDocument();
+
+    // The answer closes it, which is the one thing that may.
+    saving.resolve(narrowIssue({ ...issue, blocked_by: ["CORE-9"] }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A refusal belongs to the attempt that earned it. The editor held the last one until the next
+// save started, so opening it again drew a refusal of a list the reader had already dropped.
+test("the blocked-by editor opened again draws no refusal from the attempt before", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(
+      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+    )
+  );
+  const { unmount } = renderIssuePage();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("blocked_by issue CORE-9 not found");
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }));
+    expect(await screen.findByLabelText("Issues CORE-1 waits on")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("alert"),
+      "the editor draws the refusal of a save this reader never made"
+    ).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R11: the menu lists the properties with no value and presses the control that sets each one,
+// rather than drawing a second copy of it. It finds that control by the name the control
+// exports (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
+// its own, a word changed in one made the entry disappear with no error anywhere.
+test("the add menu opens the control the panel draws, under the name that control exports", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderIssuePage();
+
+  try {
+    expect(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) }),
+      "the panel draws no blocked-by control under the name it exports"
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.blocked_by }));
+    expect(
+      await screen.findByLabelText("Issues CORE-1 waits on"),
+      "the menu entry reached no control, so picking it opened nothing"
+    ).toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R21: the indicator says what the page calls the field and what it calls the status, never the
+// schema's token for either. It read the first key of the write ("CORE-1: blocked_by saved") and
+// the status as the wire spells it ("CORE-1 set to in_progress").
+test("the indicator names every field a header write carries, and a status by the page's word", () => {
+  expect(issueUpdateLabel("CORE-1", { parent: "CORE-9" })).toBe("Parent of CORE-1 saved");
+  expect(issueUpdateLabel("CORE-1", { route: "role:legion-controller-core" })).toBe(
+    "Message route of CORE-1 saved"
+  );
+  expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to In progress");
+  expect(issueUpdateLabel("CORE-1", { parent: "CORE-9", title: "A title" })).toBe(
+    "Parent and Title of CORE-1 saved"
+  );
+  expect(issueUpdateLabel("CORE-1", {})).toBe("CORE-1 saved");
 });

@@ -10,9 +10,13 @@ import {
   secondaryButtonText,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { assigneeControlName } from "./AssigneeControl";
+import { blockedByControlName } from "./BlockedByControl";
+import { componentsControlName } from "./IssueComponentsLine";
 import type { IssueField } from "./IssueFieldForms";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
+import { repoControlName } from "./RepoControl";
 
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
@@ -20,10 +24,12 @@ import { CONTROL_LABELS } from "./page-words";
  * the panel's sections - so nothing is hidden behind this; what it lists is exactly what is not
  * there yet, and picking one opens the control that sets it.
  *
- * Two of the fields it lists are edited by a control the panel draws (the repository and the
- * components), so the menu reaches those by their own accessible names rather than holding a
- * second copy of them, and lists one only while the page draws it: a project that maps no
- * repository offers no repository to set.
+ * Four of the fields it lists are edited by a control drawn elsewhere on the page (the
+ * assignee, the issues this one waits on, the repository and the components), so the menu
+ * presses those rather than holding a second copy of them. It finds each by the name that
+ * control exports - `assigneeControlName`, `blockedByControlName`, `repoControlName`,
+ * `componentsControlName` - so the two sides cannot drift apart, and lists one only while the
+ * page draws it: a project that maps no repository offers no repository to set.
  */
 export function IssueAddMenu({
   isClosed,
@@ -97,12 +103,17 @@ export function IssueAddMenu({
 
   /** Every property of `issue` with no value, each with the control that sets it. */
   function emptyFields(details: IssueDetails): readonly AddableField[] {
-    const byName = (name: string) => () => pageControl(name) !== null;
-    const press = (name: string) => () => {
-      const control = pageControl(name);
-      if (control instanceof HTMLSelectElement) control.focus();
-      else control?.click();
-    };
+    // The name of a control the panel draws is that control's own, built by the function it
+    // exports: neither side spells it, so renaming one renames both and the entry cannot go
+    // missing on a word nobody meant to change.
+    const atControl = (name: string) => ({
+      open: () => {
+        const control = pageControl(name);
+        if (control instanceof HTMLSelectElement) control.focus();
+        else control?.click();
+      },
+      reachable: () => pageControl(name) !== null,
+    });
     const fields: AddableField[] = [];
     if (details.parent === null) {
       fields.push({
@@ -114,16 +125,13 @@ export function IssueAddMenu({
     if (details.assignee === null) {
       fields.push({
         label: PROPERTY_LABELS.assignee,
-        open: press(`Assignee of ${details.key}`),
-        reachable: byName(`Assignee of ${details.key}`),
+        ...atControl(assigneeControlName(details.key)),
       });
     }
     if ((details.labels ?? []).length === 0) {
-      fields.push({
-        label: PROPERTY_LABELS.labels,
-        open: press("Edit labels"),
-        reachable: byName("Edit labels"),
-      });
+      // The labels popover spells its own name inline (`IssueLabels.tsx`), so this one is typed
+      // here until that control exports it too.
+      fields.push({ label: PROPERTY_LABELS.labels, ...atControl("Edit labels") });
     }
     if (details.route === null || details.route === "") {
       fields.push({
@@ -135,22 +143,19 @@ export function IssueAddMenu({
     if ((details.blocked_by ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.blocked_by,
-        open: press(`Add blocked by of ${details.key}`),
-        reachable: byName(`Add blocked by of ${details.key}`),
+        ...atControl(blockedByControlName(details.key, 0)),
       });
     }
     if (details.repo === null) {
       fields.push({
         label: PROPERTY_LABELS.repository,
-        open: press(`Repository of ${details.key}`),
-        reachable: byName(`Repository of ${details.key}`),
+        ...atControl(repoControlName(details.key)),
       });
     }
     if ((details.components.ids ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.components,
-        open: press(`Edit components of ${details.key}`),
-        reachable: byName(`Edit components of ${details.key}`),
+        ...atControl(componentsControlName(details.key)),
       });
     }
     return fields;

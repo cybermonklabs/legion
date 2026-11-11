@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import type { IssueChild, IssueDetails } from "../../api/types";
@@ -95,4 +95,17 @@ test("a child holding a claim names who holds it", () => {
     { ...child, claim: { actor: { id: "alice", kind: "user" }, at: "2026-11-05T01:00:00Z" } },
   ]);
   expect(screen.getByText("Claimed by")).toBeTruthy();
+});
+
+// Two keys drawn with nothing between them read as one key: "Blocked by CORE-7CORE-8" names no
+// issue a reader can look up.
+test("a child waiting on two issues reads them as two keys", () => {
+  drawChildren([{ ...child, blocked_by: ["CORE-7", "CORE-8"] }]);
+  const line = screen.getByTestId("issue-child-blocked-by");
+  expect(line.textContent).toBe("Blocked by CORE-7, CORE-8");
+  expect(
+    within(line)
+      .getAllByRole("link")
+      .map((link) => link.textContent)
+  ).toEqual(["CORE-7", "CORE-8"]);
 });
