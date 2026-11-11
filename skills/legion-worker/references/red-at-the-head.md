@@ -17,13 +17,19 @@ jobs once.
 
 ## The record comes first, never after
 
-Before it presses the re-run, the role records on the Dispatch issue:
+Before it presses the re-run, the role records on the Dispatch issue all eight of these:
 
-- the repository and the pull request
-- the head commit
-- the check and the run id
-- the attempt and the failed job
-- the failing test or step, with the first line that states the failure
+1. the repository
+2. the pull request
+3. the head commit
+4. the check
+5. the run id
+6. the attempt
+7. the failed job
+8. the failing test or step, with the first line that states the failure
+
+A record short of one of the eight is a record the next reader cannot act on, and the eight are
+counted as such.
 
 The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
 recorded as failed, with the error, and the role makes the re-run all the same.
@@ -91,15 +97,23 @@ counts for no pull request. Measured in this repository on 2026-11-11: at `9b728
 it answers 113 check runs where the pull request's rollup holds 57, the 56 left out belonging to
 two by-hand runs at that commit (dispatch://INFRA-3035).
 
-**The spend.** The head's one re-run is spent when a check of the counted set carries a run whose
-conclusion was `failure` **and a later run of that same check**: the earlier failure was
-superseded by a run somebody already pressed. The red the role is judging is not itself that
-case, since it has one run at the head and no later one. A failure outside the counted set spends
-nothing, because nobody counted it. The reviewer's existing re-run of a cancelled or absent
-required check (`skill://legion-worker/references/merge-gate.md`) neither spends the head's
-re-run nor is spent by it, because it leaves no such superseded failure. A
-`gh run rerun <run-id> --failed` call pressed while a check of the counted set is `failure`
-spends the head's re-run, whatever else that call clears.
+**The spend is a different question, and a different read.** Whether the red is the change's is
+judged on the counted set, above. Whether the head's one re-run is already spent is judged on
+the head's own `pull_request` workflow runs and their attempts, because GitHub's rollup carries
+the latest run of each check name, so a superseded failure cannot appear there at all:
+
+```bash
+gh api "repos/<o>/<r>/actions/runs?head_sha=<head>&event=pull_request&per_page=100" \
+  --jq '.workflow_runs[] | [.id,.name,.run_attempt,.conclusion] | @tsv'
+```
+
+A run of that head whose `run_attempt` is above 1 is a re-run somebody already pressed, and the
+head's one re-run is spent. `event=pull_request` keeps the by-hand `workflow_dispatch` runs out,
+as the counted set does. The reviewer's existing re-run of a cancelled or absent required check
+(`skill://legion-worker/references/merge-gate.md`) neither spends the head's re-run nor is spent
+by it, since it presses no run of a check that was `failure`. A `gh run rerun <run-id> --failed`
+call pressed while a check of the counted set is `failure` spends the head's re-run, whatever
+else that call clears.
 
 When the re-run is spent, the role re-runs nothing. It fails the round, or it requests changes,
 and it names the check.
@@ -135,14 +149,20 @@ The settlement wakes the role in that same session. One read of the head's check
 result of the wait and no poll at all:
 
 - Green: the round goes on, and the role records that it re-ran, with the run and the attempt.
-- Red again: the round fails, or the reviewer requests changes, and the check is named.
+- Red again: the round fails, or the reviewer requests changes, and the check is named. A test
+  that fails twice is this case, never the external cause below.
 - Where no run at the head holds the failing check, the role re-runs nothing and tells the
   architect.
 
-## When the re-run does not clear it, and the cause is another tree's
+## When the cause is another tree's, so no re-run clears it
 
-A red the change did not make is sometimes not the re-run's to clear: the failing step shows a
-defect another tree owns, and a second run of the same lane meets the same defect. The role then
+**A test that fails and fails again is the round's failure, never an external cause.** The role
+records it and the round fails, as *Red again* above says. This section is the other case, and
+the difference is where the lane broke: a step that failed **before any test of the change ran**
+— a setup or install step, a toolchain, a runner, a registry, or a file another tree owns — or
+one whose own output shows the defect belongs to another tree.
+
+There a second run of the lane meets the same defect, so the re-run does not end it. The role
 records the external cause in the same record this page already asks for — the lane, the error,
 the head, and the change it waits on — tells the architect, and completes nothing.
 
@@ -154,7 +174,7 @@ fix, and the forward merge of that branch is both the push and the next attempt
 The case is live: on theorem-labs/agent-infra#3160 at head `8fc15cf3`, the `route-tests` lane
 failed on the runner with `unable to write file spend/README.md`, exit 128, before a test of the
 change had run, and the required aggregate was red only because of it. The implementer had
-nothing of its own to change.
+nothing of its own to change. A red again of the same test is not that case.
 
 ## The daemon's half, while cybermonklabs/legion#2539 is open
 

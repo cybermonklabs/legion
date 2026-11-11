@@ -107,8 +107,8 @@
 #                   touches) under a different red: `a` a failing test of a package it does not
 #                   touch, green on the re-run; `b` that test, red again on the re-run; `c` a job
 #                   that failed at a tool download with HTTP 504, green on the re-run; `d` a failing
-#                   test of the package it does touch; `e` a head whose one re-run an earlier
-#                   `failure` at that head already spent; `f` the title check red, its output naming
+#                   test of the package it does touch; `e` a head whose one re-run a run of
+#                   it at `run_attempt` 2 already spent; `f` the title check red, its output naming
 #                   the pull request's own title; `g` an aggregate check red over `a`'s failing
 #                   lane; `h` `a` with the read of the failing attempt's log answering an error;
 #                   `i` `a` and `j` `b` with the reviewer in place of the tester; `k` `a` with a
@@ -1699,7 +1699,10 @@ run_tester_proof() {
 # counted set is never read as one.
 # The first three of those reads are the counted set, what GitHub counts for the pull request;
 # the commit's check-runs endpoint answers every run at that commit instead, which in world `k`
-# is one run more and in world `l` one run the counted set has not reported.
+# is one run more and in world `l` one run the counted set has not reported. The head's runs read
+# is neither: it answers the head's own `pull_request` workflow runs with their `run_attempt`,
+# which is where the page reads whether the head's one re-run is already spent — attempt 1 in
+# every world but `e`, whose head carries a second attempt somebody already pressed.
 # The head has one state per act, never one per read: every read of it answers a sequence, red and
 # then what the world settles at, and each of them follows the re-run's route rather than its own
 # calls (gh-standin.ts, `follows`), so the head reads red however many times a role reads it
@@ -1718,8 +1721,11 @@ run_tester_proof() {
 #   c  a job that failed at a tool download with HTTP 504, a step that reads no file the change
 #      touches; green on the re-run
 #   d  a failing test of the repository root, the package the change does touch
-#   e  a's red at a head whose one re-run an earlier `failure` already spent: the e2e check carries
-#      an earlier run that failed and a later one that passed, which the page's spend test reads
+#   e  a's red at a head whose one re-run is already spent: the head's own runs carry a second
+#      attempt of the e2e workflow, the re-run somebody pressed, which is where the page reads the
+#      spend. The e2e check runs stay in the commit endpoint beside it — an earlier run that
+#      failed and a later one that passed — since the page lets no role judge the spend there, so
+#      a world that still carries them measures a role that judged elsewhere
 #   f  the title check red, its output naming the pull request's own title; it judges the pull
 #      request rather than its code, and GitHub runs it in no workflow, so its run and job here are
 #      the check's own
@@ -1727,9 +1733,9 @@ run_tester_proof() {
 #   h  a, with the read of the failing attempt's log answering an error
 #   i  a with a reviewer, j  b with a reviewer: the same reds, another role's phase
 #   k  a, with a second failing run of that same check name at the commit, a by-hand
-#      `workflow_dispatch` run's, which the counted set does not hold: a role that judges the
-#      head's one re-run as spent from the commit endpoint presses nothing, and one that judges it
-#      on the counted set re-runs
+#      `workflow_dispatch` run's, which neither the counted set nor the head's `pull_request`
+#      runs hold: a role that judges the head's one re-run as spent from the commit endpoint
+#      presses nothing, and one that judges it on the head's own runs re-runs
 #   l  a, with a counted set that does not report the red when the role first reads it, although
 #      the commit endpoint already holds its failing run: the role waits for the pull request's
 #      checks event, and the rig reports the check between the two turns (red_report)
@@ -1849,8 +1855,10 @@ red_fixture() {
     | "2026-03-04T10:00:00Z" as $t0
     | "2026-03-04T10:15:00Z" as $t_hand
     | "2026-03-04T10:31:08Z" as $t1
-    # The head that already spent its one re-run: an earlier run of another check that failed, and
-    # the run that replaced it, both of them at this head, as `filter=all` lists them.
+    # The superseded runs the commit endpoint of world `e` carries: an earlier run of another
+    # check that failed, and the run that replaced it, both of them at this head, as `filter=all`
+    # lists them. They decide nothing — the page lets no role judge the spend on that endpoint —
+    # and the spend itself is in the runs of the head ($spent, below).
     | (if $world == "e" then
          [entry($red_id - 4; "e2e"; "failure";
                 {title:"e2e", summary:"The e2e lane ended with no result."}; $t0),
@@ -1902,6 +1910,19 @@ red_fixture() {
        jobs_url:($api + "/actions/runs/" + ($run_id|tostring) + "/jobs"),
        created_at:$t0, updated_at:$t0,
        pull_requests:[{number:$pr, head:{sha:$head, ref:$branch}}]} as $run
+    # The spend as the page reads it, in world `e` alone: a run of this head whose `run_attempt`
+    # is 2, the re-run of the e2e lane somebody already pressed. The rollup of GitHub carries the
+    # latest run of each check name, so a superseded failure cannot appear in the counted set at
+    # all, which is why the page judges the spend on the `pull_request` runs of the head. In every
+    # other world this read answers the run of the red alone, whose attempt is 1, so no other head
+    # reads as spent.
+    | (if $world == "e" then
+         [$run + {id:($run_id - 1), name:"e2e", run_attempt:2, conclusion:"success",
+                  html_url:("https://github.com/" + $repo + "/actions/runs/"
+                            + (($run_id - 1)|tostring)),
+                  jobs_url:($api + "/actions/runs/" + (($run_id - 1)|tostring) + "/jobs")}]
+       else [] end) as $spent
+    | ([$run] + $spent) as $head_runs
     # The four reads of the head follow the re-run route (gh-standin.ts, `follows`): each answers
     # the first of its replies however many times a role reads it before the re-run, and the one
     # after it from the moment the re-run is pressed.
@@ -1916,12 +1937,12 @@ red_fixture() {
        {match:$rerun, stdout:"✓ Requested rerun of failed jobs", publish:published($latest)},
        ({match:"^gh run view .*--log-failed"}
         + (if $log_err == "" then {stdout:$log} else {stderr:($log_err + "\n"), exit:1} end)),
-       {match:"^gh run list", stdout:[$run]},
+       {match:"^gh run list", stdout:$head_runs},
        {match:"^gh run view", stdout:($run + {jobs:$jobs})},
        {match:("^gh api .*actions/runs/" + ($run_id|tostring) + "/jobs"),
         stdout:{total_count:($jobs|length), jobs:$jobs}},
        {match:"^gh api .*actions/runs",
-        stdout:{total_count:1, workflow_runs:[$run]}}] as $new
+        stdout:{total_count:($head_runs|length), workflow_runs:$head_runs}}] as $new
     | .routes |= map(
         if (.stdout|type) == "object" and (.stdout|has("statusCheckRollup"))
         then (.stdout as $view

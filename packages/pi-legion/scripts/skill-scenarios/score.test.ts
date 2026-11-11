@@ -4629,7 +4629,7 @@ redWorldRun(
   "e",
   { after: "red" },
   { "calls.jsonl": calls([redLogCall]) },
-  redSpent("test (notify) is red, and the head's one re-run is already spent by the e2e failure.")
+  redSpent("test (notify) is red, and the head's one re-run is already spent by the e2e re-run.")
 );
 // Declined the re-run without saying the head's re-run is spent.
 redWorldRun(
@@ -4751,8 +4751,8 @@ redWorldRun(
 );
 
 /** World `k`: `a`'s red with a second failing run of that check name at the commit, a by-hand
- * `workflow_dispatch` run's the counted set does not hold. The counted set is where the spend is
- * read, so the role re-runs as it does in `a`. */
+ * `workflow_dispatch` run's the counted set does not hold. The spend is read on the head's own
+ * `pull_request` runs, which carry one attempt, so the role re-runs as it does in `a`. */
 redWorldRun("red-at-the-head-k-head-1", "k", {});
 // The role read the spend at the commit, declined the round in those words, and pressed the
 // re-run after it all the same: the round had ended before the act, which is what world `k`
@@ -4809,6 +4809,24 @@ redWorldRun(
   "l",
   {},
   redReportedRun("2026-09-30T17:28:30.000Z", "1 assignment 2026-09-30T17:29:00Z exit=0\n")
+);
+// The turn the role first read the counted set in ended in the same second the rig reported the
+// check, which the stamp's second resolution makes the ordinary case (rig.sh's red_report writes
+// it at second resolution, in the second the turn it follows ends): the turn ended before the
+// report, and the run passes.
+const redSameSecondTurns = `1 assignment ${redReported} exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n`;
+redWorldRun(
+  "red-at-the-head-l-head-4",
+  "l",
+  {},
+  redReportedRun("2026-09-30T17:28:30.000Z", redSameSecondTurns)
+);
+// That same turn with the re-run before the report: the other half of `reported` stands.
+redWorldRun(
+  "red-at-the-head-l-head-5",
+  "l",
+  {},
+  redReportedRun("2026-09-30T17:28:05.000Z", redSameSecondTurns, "2026-09-30T17:28:00.000000Z")
 );
 
 // A directory that names no world of the ten, and one whose world is not the world it ran.
@@ -5052,6 +5070,22 @@ test("a run that re-ran before the counted set reported the check fails world l"
 
 test("a run that never ended the turn it first read the counted set in fails world l", () => {
   redFails("red-at-the-head-l-head-3", "reported=false", "readTurn=1 readTurnEnded=false");
+});
+
+test("a first turn that ended in the second the rig reported the check passes world l", () => {
+  expect(rowOf("red-at-the-head-l-head-4")).toMatch(
+    /^red-at-the-head-l-head-4\tpass=true\tref=true\tworld=l .* declined=false reported=true /
+  );
+  expect(rowOf("red-at-the-head-l-head-4")).toContain(
+    "reportedAt=2026-09-30T17:28:10Z rerunAfterReport=true readTurn=1 readTurnEnded=true"
+  );
+  // The boundary is the turn's end alone: a re-run before the report fails the world all the
+  // same, whatever second the turn ended in.
+  redFails(
+    "red-at-the-head-l-head-5",
+    "reported=false",
+    "rerunAfterReport=false readTurn=1 readTurnEnded=true"
+  );
 });
 
 test("a red-at-the-head directory that names no world, or another world, is a rig error", () => {

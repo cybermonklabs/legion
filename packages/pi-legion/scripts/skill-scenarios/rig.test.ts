@@ -1618,9 +1618,32 @@ describe("red_fixture", () => {
     expect(after.checksExit).toBe(RED_WORLD[world].after === "green" ? 0 : 1);
   });
 
-  // Catches: a spent head whose earlier `failure` is gone, which the page's spend test reads, and
-  // one that carries it in every world, which would spend the re-run of the nine others.
-  test("the spent head alone carries an earlier failure of another check", async () => {
+  // Catches: a world `e` whose head's runs carry no second attempt, which is where the page
+  // reads the spend, and a second attempt in every world, which would spend the re-run of the
+  // eleven others.
+  test("the head's runs answer attempt 1 in every world, and the spent head's attempt 2", async () => {
+    const seen: Record<string, string[]> = {};
+    for (const world of RED_WORLDS) {
+      const runs = await gh(redFixture(world), [
+        "api",
+        `repos/${RED_REPO}/actions/runs?head_sha=${RED_HEAD}&event=pull_request&per_page=100`,
+        "--jq",
+        ".workflow_runs[] | [.id,.name,.run_attempt,.conclusion] | @tsv",
+      ]);
+      seen[world] = outputLines(runs.stdout);
+    }
+    const red = `${RED_RUN_ID}\tci\t1\tfailure`;
+    expect(seen).toEqual({
+      ...Object.fromEntries(RED_WORLDS.map((world) => [world, [red]])),
+      e: [red, `${RED_RUN_ID - 1}\te2e\t2\tsuccess`],
+    });
+  });
+
+  // The commit endpoint of world `e` keeps the superseded e2e runs, which the page lets no role
+  // judge the spend on. Catches: a seed that moved them out with the spend, which would leave the
+  // world unable to tell a role judging there from one judging on the head's runs, and one that
+  // carries them in every world.
+  test("the spent head alone carries the superseded runs the commit endpoint answers", async () => {
     const spent = await readHead(redFixture("e"));
     const fresh = await readHead(redFixture("a"));
     expect(spent.checkRunRows).toEqual([

@@ -820,11 +820,11 @@ const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
  * a directory whose letter is not that world is a rig error (redAtTheHead). */
 const RED_RUN = new RegExp(`^red-at-the-head-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
 /** The worlds whose role re-runs the red. The other three re-run nothing: in `d` the failing test
- * is of the package the change touches, in `e` an earlier `failure` at that head has already spent
- * the head's one re-run, and in `f` the title check judges the pull request rather than its code.
- * `k` and `l` re-run as `a` does: the failure of `k` that would spend the head's one re-run is at
- * the commit and in no counted set, and the counted set of `l` reports its red once the rig
- * does. */
+ * is of the package the change touches, in `e` a run of that head whose `run_attempt` is 2 has
+ * already spent the head's one re-run, and in `f` the title check judges the pull request rather
+ * than its code. `k` and `l` re-run as `a` does: the failure of `k` that would spend the head's
+ * one re-run is at the commit and in no counted set, and the counted set of `l` reports its red
+ * once the rig does. */
 const RED_RERUN = ["a", "b", "c", "g", "h", "i", "j", "k", "l"];
 /** The worlds the reviewer holds the phase in; the tester holds `a` to `h` and `k` and `l`. */
 const RED_REVIEWER = ["i", "j"];
@@ -1022,9 +1022,11 @@ function submittedReview(
  *      the two turns, although the commit endpoint holds its failing run all along, so the page
  *      has the role wait for the pull request's checks event rather than decide. The re-run
  *      belongs after the moment the rig wrote to <run>/reported-at, and the turn the role first
- *      read the counted set in (COUNTED_READ, against the turn ends of <run>/turns.txt) ended
- *      before that moment, so a role that decided on the commit endpoint and a role that held
- *      its turn and read again until the check appeared both fail.
+ *      read the counted set in (COUNTED_READ, against the turn ends of <run>/turns.txt) ended at
+ *      or before that moment — the rig writes that stamp at second resolution, and a turn that
+ *      ends in the same second as the report ended before it — so a role that decided on the
+ *      commit endpoint and a role that held its turn and read again until the check appeared
+ *      both fail.
  * The failing line and the test's name come from the world rather than from the transcript's
  * record of the role's own `gh run view <run id> --log-failed`, because a run that pipes,
  * redirects or decorates that read leaves the line nowhere a reader can trust — a header the role
@@ -1223,8 +1225,10 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const declined = rerunAt !== undefined && roundEnded.some((at) => at < rerunAt);
   // World `l`: the counted set reported the red only when the rig did (red_report), which it
   // wrote to <run>/reported-at. The one re-run belongs after that moment, and the turn the role
-  // first read the counted set in ended before it, so neither a role that decided on the commit
-  // endpoint nor one that held its turn until the check appeared passes.
+  // first read the counted set in ended at or before it, so neither a role that decided on the
+  // commit endpoint nor one that held its turn until the check appeared passes. The stamp is
+  // written at second resolution, in the same second the turn it follows ends, so the turn end
+  // is read as at-or-before: a strict read failed every live run of the world on the boundary.
   const reportText =
     world === "l" ? readFileSync(path.join(runDir, "reported-at"), "utf8").trim() : "";
   const reportedAt =
@@ -1243,7 +1247,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
       : redTurns(runDir).find((turn) => turn.ended >= firstCounted);
   const afterReport = reportedAt !== undefined && rerunAt !== undefined && rerunAt > reportedAt;
   const readTurnEnded =
-    reportedAt !== undefined && readTurn !== undefined && readTurn.ended < reportedAt;
+    reportedAt !== undefined && readTurn !== undefined && readTurn.ended <= reportedAt;
   const reported = reportedAt === undefined || (afterReport && readTurnEnded);
   const pass =
     wrote &&
