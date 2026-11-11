@@ -38,6 +38,7 @@ const issue: IssueDetails = {
   components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
+  design_gates: [],
   external_links: [],
   holder_state: null,
   key: "CORE-77",

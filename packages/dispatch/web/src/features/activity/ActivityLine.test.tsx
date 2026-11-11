@@ -55,6 +55,7 @@ const issue: IssueDetails = {
   closed_at: null,
   created_at: "2026-09-15T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
+  design_gates: [],
   external_links: [],
   key: "OPS-52",
   labels: [],

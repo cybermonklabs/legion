@@ -335,21 +335,25 @@ jobs:
     # 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
-    # The rows behind those seconds were the suite of the head those runs measured. Listed again
-    # at this branch's head (`bunx playwright test --config e2e/playwright.config.ts --list`),
-    # the shard and alone jobs hold 1,466 rows: 1,408 in the ten projects the full lane's five
-    # shards run - the eight parallel ones and the two stubbed - of which 290 are what the
-    # pull-request lane's four projects run under `@pr`, 147 of them on the real stack. The
-    # remaining 58 are the four `-alone` projects', which the alone job runs (`--no-deps`) - 20,
-    # 17, 17 and 4. The 20 is `chromium-alone`'s 17 heavy-bodies rows, its two nested-directive
-    # rows and the one desktop row of large-documents-measured.e2e.ts; the 17s are
-    # heavy-bodies.e2e.ts alone on `firefox-alone` and on `webkit-alone`; the 4 are
-    # `iphone-alone`'s phone rows of large-documents-measured.e2e.ts. The visual job's 20 rows
-    # are in neither figure: it writes no blob report at all.
+    # The rows behind those seconds were the suite of the head those runs measured. Listed
+    # again at this branch's head, the suite holds 1,471 rows in 191 files, which is two
+    # listings rather than one: the four `-alone` projects are out of the default selection
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,416 rows in 189
+    # files and one that names those four lists 55 more, in 3 files - two of which are theirs
+    # alone, while large-documents-measured.e2e.ts is in both listings, since the parallel
+    # projects run the rows of it that are not read from the clock. The ten projects this job's
+    # shard command names below hold 1,396 rows in 188 files; the four of those the
+    # pull-request lane names hold 1,295, of which that lane's `@pr` grep selects 282, 147 of
+    # them on the real stack. The two `visual` projects hold 20, which the visual job runs one
+    # row at a time, and the 55 wall-clock rows are the alone job's - 20, 14, 17 and 4. The 20
+    # is `chromium-alone`'s 17 heavy-bodies rows, its two nested-directive rows and the one
+    # desktop row of large-documents-measured.e2e.ts; the 14 and the 17 are heavy-bodies.e2e.ts
+    # on `firefox-alone`, which inverts the three rows that read a reader's place, and whole on
+    # `webkit-alone`; the 4 are `iphone-alone`'s phone rows of large-documents-measured.e2e.ts.
     #
-    # Those 1,408 cut five ways, each leg listed at this head with the ten projects named below
-    # and this job's own denominator (`--shard=<i>/5 --list`): 282, 282, 282, 281 and 281 rows,
-    # which sum to the 1,408. Equal row counts are all Playwright's cut promises, and the
+    # Those 1,396 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 280, 279, 279, 279 and 279 rows,
+    # which sum to the 1,396. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
     timeout-minutes: 13
     strategy:
@@ -592,12 +596,20 @@ jobs:
               exit 1
               ;;
           esac
-          # Why the projects are named at all: Playwright shards top-level projects only, and the
-          # four `-alone` projects name every other project in their `dependencies`
-          # (e2e/playwright.config.ts), so a shard over the whole list would shard `webkit-alone`
-          # alone and run every other project whole in all five shards. Naming the eight parallel
-          # projects with `--project` leaves the `-alone` ones out of the run, so every project
-          # left is top-level and every one of them shards. The alone job runs those four.
+          # Why the projects are named at all: a shard splits the rows of every project the run
+          # selects, so a project this leg does not name is a project it would spread over these
+          # five machines. `visual` and `visual-phone` are in the default selection, and their
+          # image comparisons belong to the `visual` job, which runs them one row at a time, so
+          # naming the projects above is what keeps them off these machines. The four `-alone`
+          # projects stay out because this list does not name them, and for no other reason:
+          # `filterProjects` reads `default` only where the command line named no project
+          # (`projects.filter((project) => includeNonDefault || project.default)` at
+          # node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
+          # under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
+          # the pull-request lane and ten in the full one. The `default: false` each `-alone`
+          # project carries (the four entries of `aloneProjects` in e2e/playwright.config.ts) is
+          # what keeps them out of a run that names no project, which this is not. The alone job
+          # names them, one machine each.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -720,10 +732,11 @@ jobs:
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The four projects whose rows are read from the wall clock, one machine each. Each runs with
-    # one worker and `--no-deps`, so nothing else is on the machine while it measures. The full
-    # lane alone: a pull request runs no clock row, since a shard job's machine cannot hold one
-    # still enough to measure.
+    # The four projects whose rows are read from the wall clock, one machine each. Each leg runs
+    # one worker and names one project, and a wall-clock project takes nothing else with it - it
+    # names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
+    # while it measures. The full lane alone: a pull request runs no clock row, since a shard
+    # job's machine cannot hold one still enough to measure.
     #
     # Its steps are the shard job's, with three differences - one worker rather than four, the
     # Playwright command below, and no file store on the machine - and their commands are kept
@@ -752,10 +765,12 @@ jobs:
     # The `chromium-alone` figure is now short of a row: the desktop clock row of
     # large-documents-measured.e2e.ts reached that leg after that run.
     #
-    # `iphone-alone` has no reading of this job yet, because its three rows reached it from the
-    # shard legs. What they cost there, contended four lanes wide, is run 42485503469: the
-    # 28-section measurement 34.3 s, the 140-section one 1.2 min and the timer row 1.3 min, 184 s
-    # summed. `chromium-alone` took the desktop clock row of that same file the same way, and
+    # `iphone-alone` has no reading of this job yet, because its four rows reached it from the
+    # shard legs. What three of them cost there, contended four lanes wide, is run 42485503469:
+    # the 28-section measurement 34.3 s, the 140-section one 1.2 min and the timer row 1.3 min,
+    # 184 s summed; the fourth, the decision row, has no reading of its own in that run, and it
+    # asserts half a second of the page's own clock rather than a cost.
+    # `chromium-alone` took the desktop clock row of that same file the same way, and
     # what it cost in a `chromium` shard leg, contended four lanes wide, is 38.0 s in run
     # 42628596511, 1.1 min in run 42682941869 and 1.3 min in run 42686241170 (job 129395267274,
     # where it failed its guard): 78 s at worst, which over the 116 s above puts that leg at
@@ -873,9 +888,10 @@ jobs:
         # (e2e/global-setup.ts, e2e/harness-pool.ts). The contracts step above is what
         # Playwright's own Node runner needs, for the reason that step gives.
         #
-        # One stack here, not four: it is one per Playwright worker, and one worker is the
-        # configuration's own default (`workers: 1`, e2e/playwright.config.ts), so this step
-        # passes no `--workers` at all. These projects' rows are read from the wall clock, and
+        # One stack here, not four: it is one per Playwright worker, and this leg runs one
+        # worker, which the command below says in `--workers=1` rather than leaning on the
+        # configuration's own default of the same number (`workers: 1`,
+        # e2e/playwright.config.ts). These projects' rows are read from the wall clock, and
         # three other stacks on the machine would be in the reading. That stack is a harness and
         # a Postgres of its own, that last one an initdb and a pg_ctl out of
         # DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18 with
@@ -883,18 +899,19 @@ jobs:
         # `env:`, for the reason the job's head gives.
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
-        # legs run uploads or downloads anything. chromium-alone runs both clock specs
-        # (`clockSpecs`: heavy-bodies and nested-directive, named at
-        # e2e/playwright.config.ts:243) and the one row of large-documents-measured.e2e.ts read
-        # at a desktop width (`desktopClockRow`, :277), which that project takes with the
-        # `testMatch` and `grep` at :526-527; firefox-alone and webkit-alone run heavy-bodies
-        # alone (:535, :548); and iphone-alone runs the four rows of
-        # large-documents-measured.e2e.ts that `phoneClockRows` names (:266) - the two
-        # measurements, the timer row and the decision row. Each large-documents row seeds its
-        # document through the API and reads it. And e2e/harness-pool.ts's `stackBucket` makes
-        # no bucket at one stack (:190). A store serving nothing would be charged to the very
-        # reading these rows exist for, which is why the `weed` the image carries is started on
-        # the shard job's machines and not on these. A row that later uploads fails here by name
+        # legs run uploads or downloads anything. chromium-alone runs both wall-clock specs
+        # (`clockSpecNames` in e2e/configurations.ts: heavy-bodies and nested-directive, the
+        # list `clockSpecPattern` is built from, which is in that project's `testMatch`) and the
+        # one row of large-documents-measured.e2e.ts read at a desktop width, which the same
+        # project takes with `clockRowSpecPattern` in that `testMatch` and `desktopClockRow` in
+        # its `grep`; firefox-alone and webkit-alone run heavy-bodies alone; and iphone-alone
+        # runs the four rows of large-documents-measured.e2e.ts that `phoneClockRows` names -
+        # the two measurements, the timer row and the decision row. Each large-documents row
+        # seeds its document through the API and reads it. And e2e/harness-pool.ts's
+        # `stackBucket` (:183) makes no bucket at one stack: it answers `undefined` on
+        # `count === 1` (:190). A store serving nothing would be charged to the very reading
+        # these rows exist for, which is why the `weed` the image carries is started on the
+        # shard job's machines and not on these. A row that later uploads fails here by name
         # rather than quietly.
         #
         # The memory and CPU sampler both this job and the shard job run is
@@ -911,7 +928,7 @@ jobs:
         # measured leg plus the desktop clock row as a shard leg ran it, and the containerised
         # reading taken on sha256:ba003193 does not move it: the most this step took over the
         # nine legs the job's head lists is 69 s, well under that 194 s, and no leg of those
-        # nine ran the desktop clock row or `iphone-alone`'s three.
+        # nine ran the desktop clock row or any of `iphone-alone`'s four.
         timeout-minutes: 4
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
@@ -943,10 +960,22 @@ jobs:
           # reports keep their own names when the merge job downloads them into one directory.
           export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
           export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-${{ matrix.project }}.zip"
-          # `--no-deps` is required, not tidiness: each `-alone` project names every parallel
-          # project in its `dependencies` (e2e/playwright.config.ts), so without it Playwright
-          # would run the whole suite here before this leg's own rows, and the shard jobs would
-          # have run it already. With it this machine runs one project, one row at a time.
+          # `--project` and `--workers=1` are the whole selection, and the first of them selects
+          # this leg's rows and nothing else. Until dispatch://INFRA-1280 it did not: each
+          # `-alone` project named every parallel project in its `dependencies`, so this command
+          # carried `--no-deps`, without which Playwright would have run the whole suite here
+          # before this leg's own rows, and the shard jobs had run it already. Those
+          # `dependencies` are gone, and that flag with them.
+          #
+          # `--workers=1` says the thing the measurement rests on instead of leaning on a
+          # default. The configuration's own default is the same one worker (the top-level
+          # `workers: 1` of e2e/playwright.config.ts), so this leg is green with or without the
+          # flag today; what the flag adds is that the leg stays one worker wide if that default
+          # ever moves. A wider count is refused rather than measured: `refuseASharedRun` in
+          # e2e/main-thread-hold.ts fails every row that calls `measureDraw` when
+          # `config.workers` is above one, printing the one-worker command that fixes it. So the
+          # guard is what makes the reading honest, and this line is what says what the run is:
+          # one project, one row at a time, on a machine with nothing else on it.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -961,7 +990,7 @@ jobs:
           # The suite's own status is carried in a file rather than in `$?` or in PIPESTATUS,
           # for the reason the shard job's own browser step gives at length.
           rm -f "$RUNNER_TEMP/suite-status"
-          { bunx playwright test --config e2e/playwright.config.ts --no-deps --project="${{ matrix.project }}" --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+          { bunx playwright test --config e2e/playwright.config.ts --project="${{ matrix.project }}" --workers=1 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
           [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
@@ -1123,11 +1152,11 @@ jobs:
         # `apt-get update`.
         #
         # The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
-        # coedit, signin and two-builds today (e2e/playwright.config.ts:50 matches them by that
-        # suffix, so a new one joins without an edit here) -- and they run headless Chromium and
-        # compare no screenshot (none holds `toHaveScreenshot` or `toMatchSnapshot`), and
-        # fonts-liberation and fonts-noto-color-emoji are on the image already. A row that later
-        # needs CJK or Thai glyphs would fail visibly.
+        # coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
+        # matches them by that suffix, so a new one joins without an edit here) -- and they run
+        # headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
+        # `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
+        # already. A row that later needs CJK or Thai glyphs would fail visibly.
         #
         # The 4-minute budget: this step downloads browsers only, and Playwright makes up to
         # five attempts, across its download hosts, inside it. Of the 339 s maximum above,

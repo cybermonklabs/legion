@@ -76,26 +76,41 @@ export interface EnvoyStackOptions {
   readonly listenerGrant?: ListenerGrant;
 }
 
-const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
+/** The Go module both rigs build their binaries from. */
+export const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
 const READY_TIMEOUT_MS = 60_000;
+const TAIL_LINES = 10;
 const STOP_GRACE_MS = 10_000;
 
-/** Builds natsd and the listener from this checkout into `bin`, as `bin/natsd` and `bin/listener`. */
-async function buildBinaries(bin: string): Promise<void> {
+/** What a rig builds, and how it names itself when the build cannot run. */
+export interface GoBuild {
+  /** The directory the binaries go in, one named after each package's own directory. */
+  readonly bin: string;
+  /** The main packages of {@link ENVOY_MODULE} to build. */
+  readonly packages: readonly string[];
+  /** The rig, as "the <stack> stack" in the error a missing `go` raises. */
+  readonly stack: string;
+  /** What that same error says the rig would have built ("natsd and the listener"). */
+  readonly binaries: string;
+}
+
+/** Builds `build.packages` from this checkout into `build.bin`, a binary each. */
+export async function buildGoBinaries(build: GoBuild): Promise<void> {
   if (Bun.which("go") === null) {
-    throw new Error("the Envoy stack needs go on PATH to build natsd and the listener");
+    throw new Error(`the ${build.stack} stack needs go on PATH to build ${build.binaries}`);
   }
-  const packages = ["./internal/testnats/cmd/natsd", "./cmd/listener"];
   // An -o ending in a separator names a directory: each main package's binary goes in it, named
   // after the package's directory.
-  const build = Bun.spawn(["go", "build", "-o", `${bin}${path.sep}`, ...packages], {
+  const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {
     cwd: ENVOY_MODULE,
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stderr, code] = await Promise.all([new Response(build.stderr).text(), build.exited]);
+  const [stderr, code] = await Promise.all([new Response(spawned.stderr).text(), spawned.exited]);
   if (code !== 0) {
-    throw new Error(`go build ${packages.join(" ")} in ${ENVOY_MODULE} exited ${code}: ${stderr}`);
+    throw new Error(
+      `go build ${build.packages.join(" ")} in ${ENVOY_MODULE} exited ${code}: ${stderr}`
+    );
   }
 }
 
@@ -131,30 +146,43 @@ export async function freePorts(count: number): Promise<number[]> {
   }
 }
 
-/** The last lines of a log file, for an error that names why a process failed. */
-function tail(file: string): string {
+/** The last `lines` lines of a log file, for an error that names why a process failed. */
+export function tail(file: string, lines: number): string {
   try {
-    return readFileSync(file, "utf8").trimEnd().split("\n").slice(-10).join("\n");
+    return readFileSync(file, "utf8").trimEnd().split("\n").slice(-lines).join("\n");
   } catch {
     return "(no log)";
   }
 }
 
-/** Polls `ready` until it holds, throwing when `child` exits first or the timeout passes. */
-async function awaitReady(
+/** How long a rig gives a process to come up, and how much of its log an error quotes. */
+export interface ReadyBudget {
+  readonly timeoutMs: number;
+  readonly tailLines: number;
+}
+
+const ENVOY_READY: ReadyBudget = { timeoutMs: READY_TIMEOUT_MS, tailLines: TAIL_LINES };
+
+/** Polls `ready` until it holds, throwing when `child` exits first or the budget passes. */
+export async function awaitReady(
   what: string,
   child: Subprocess,
   log: string,
+  budget: ReadyBudget,
   ready: () => Promise<boolean>
 ): Promise<void> {
-  const deadline = Date.now() + READY_TIMEOUT_MS;
+  const deadline = Date.now() + budget.timeoutMs;
   for (;;) {
     if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(`${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log)}`);
+      throw new Error(
+        `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, budget.tailLines)}`
+      );
     }
     if (await ready().catch(() => false)) return;
     if (Date.now() > deadline) {
-      throw new Error(`${what} was not ready within ${READY_TIMEOUT_MS} ms: ${tail(log)}`);
+      throw new Error(
+        `${what} was not ready within ${budget.timeoutMs} ms: ${tail(log, budget.tailLines)}`
+      );
     }
     await Bun.sleep(100);
   }
@@ -193,8 +221,12 @@ async function getJson<T>(url: string, schema: z.ZodType<T>): Promise<T | undefi
   return parsed.success ? parsed.data : undefined;
 }
 
-async function stopProcess(child: Subprocess): Promise<void> {
-  child.kill("SIGTERM");
+/**
+ * Asks `child` to stop with `signal` — the one that process takes as a stop request — and kills
+ * it once the grace has passed.
+ */
+export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT"): Promise<void> {
+  child.kill(signal);
   const timer = setTimeout(() => child.kill("SIGKILL"), STOP_GRACE_MS);
   await child.exited;
   clearTimeout(timer);
@@ -229,11 +261,16 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
   const work = options.work;
   const processes: Subprocess[] = [];
   const stop = async () => {
-    for (const child of processes.reverse()) await stopProcess(child);
+    for (const child of processes.reverse()) await stopProcess(child, "SIGTERM");
   };
   try {
     const bin = path.join(work, "bin");
-    await buildBinaries(bin);
+    await buildGoBinaries({
+      bin,
+      packages: ["./internal/testnats/cmd/natsd", "./cmd/listener"],
+      stack: "Envoy",
+      binaries: "natsd and the listener",
+    });
     const [natsPort, monitorPort, listenerPort] = await freePorts(3);
     const natsHome = path.join(work, "nats-home");
     const listenerHome = path.join(work, "listener-home");
@@ -278,6 +315,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       "natsd",
       natsd,
       natsLog,
+      ENVOY_READY,
       async () => (await getJson(`${monitor}/healthz`, StatusSchema))?.status === "ok"
     );
 
@@ -298,14 +336,21 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       "the listener",
       listener,
       listenerLog,
+      ENVOY_READY,
       async () => (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy"
     );
-    await awaitReady("natsd's ENVOY_NOTIFICATIONS stream", natsd, natsLog, async () => {
-      const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
-      return (jsz?.account_details ?? []).some((account) =>
-        (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
-      );
-    });
+    await awaitReady(
+      "natsd's ENVOY_NOTIFICATIONS stream",
+      natsd,
+      natsLog,
+      ENVOY_READY,
+      async () => {
+        const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
+        return (jsz?.account_details ?? []).some((account) =>
+          (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
+        );
+      }
+    );
     return { envoyUrl, natsUrl, natsHostPort, monitorUrl: monitor, listenerGrant, stop };
   } catch (error) {
     await stop();

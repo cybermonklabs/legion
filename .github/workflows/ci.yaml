@@ -1560,6 +1560,18 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *listener_command
+              # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
+              # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
+              - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
+              - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
+              # The documents cmd/listener/grace_margin_doc_test.go:18-20 read: each states the
+              # margin a listener pod grants, held to listenerGraceMargin.
+              - 'packages/envoy/AGENTS.md'
+              - 'packages/envoy/infra/README.md'
+              - 'packages/envoy/infra/docs/nats-hub.md'
+              # The infra module's copy of the stop budget, which
+              # cmd/listener/infra_stop_budget_test.go:18 reads and holds to stopBudget.
+              - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
               - 'packages/envoy/internal/broker/helper/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
@@ -2364,8 +2376,8 @@ jobs:
   # Dockerfile, the manifest and the helper beside it, and the eight actions, so
   # a step of it that waited on a release host would turn every pull request touching one of
   # those files red on exactly the day the fallback is doing its work.
-  # .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its
-  # only callers.
+  # .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
+  # the test job runs its ladder-report verb as well, over logs of its own.
   # It needs ci-images, which fills the copy this proof reads; the comment on the ci_images
   # filter says why that filter is a superset of this job's.
   #
@@ -3420,11 +3432,14 @@ jobs:
       # The reading of what the stand-in curl measured, before the fault stops, so that its own
       # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
       # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
-      # one did; for a kept measurement outside the window the rig holds it to; for a fetch
-      # that stayed on the ladder, spent one and then failed, which is a fault shape the
-      # stand-in's rule did not recognise; and for a fetch the stand-in shortened that then
-      # served the bytes, which is the reading that holds the shorten-ladder step at its
-      # position.
+      # one did; for a kept measurement outside the window the rig holds it to; for more
+      # fetches carrying CI_TOOLS_PROOF_FULL_LADDER than the bound the rig holds that count to,
+      # which is a second step's `env:` carrying that variable, or a kept case that makes more
+      # requests than it did; for a fetch that stayed on the ladder, spent one and then
+      # failed, which is a fault shape the stand-in's rule did not recognise; and for a fetch
+      # the stand-in shortened that then served the bytes, which is the reading that holds the
+      # shorten-ladder step at its position. Every run of it that reads the log through prints
+      # that count beside the bound, whether the reading passes or refuses.
       - name: Read what the stand-in curl measured of every fetch
         run: .github/scripts/ci-tools-proof.sh ladder-report
 
@@ -3770,9 +3785,10 @@ jobs:
       - name: Test the CI image mirror
         run: .github/scripts/mirror-ci-images.test.sh
 
-      # The three tool scripts, in the order they depend on each other: the fetch helper every
-      # install goes through, the filler that puts the bytes in the copy that helper reads, and
-      # the gate that holds every row to its pin.
+      # The tool scripts, in the order they depend on each other: the fetch helper every
+      # install goes through, the filler that puts the bytes in the copy that helper reads, the
+      # gate that holds every row to its pin, and the rig that drives that helper against a
+      # fault in the tool-fallback job.
       - name: Test the tool fetch helper
         run: .github/scripts/ci-tools.test.sh
 
@@ -3781,6 +3797,9 @@ jobs:
 
       - name: Test the tool manifest check
         run: .github/scripts/check-ci-tools.test.sh
+
+      - name: Test the tool fallback rig
+        run: .github/scripts/ci-tools-proof.test.sh
 
       - name: Test the action pin check
         run: .github/scripts/check-action-pins.test.sh
@@ -3850,7 +3869,7 @@ jobs:
       - name: Test the race memory sampler
         run: .github/scripts/race_memory.test.sh
 
-      - name: Test the disk watch
+      - name: Test the machine watch
         run: .github/scripts/disk_watch.test.sh
 
       - name: Test the session import pods script (a stand-in kubectl)
@@ -4704,6 +4723,12 @@ jobs:
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         run: bash loadtest/cluster/cluster.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: bash loadtest/vm/vm.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
+        run: bash loadtest/vm/sample.test.sh
         working-directory: packages/envoy
       # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
       # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
@@ -5680,22 +5705,25 @@ jobs:
         id: docker-plugin
         uses: ./.github/actions/install-docker-plugin
       # The live tests build container images on this runner's disk, and a job that runs out of
-      # space says only that it did. The pair around the step measures it: `start` prints what
-      # each file system the job writes to has free and leaves a sampler watching the one that
-      # holds /tmp, `report` stops the sampler and prints the free space the step began with,
-      # the least it ever had and the difference, with `margin short` when the step used more
-      # than half of what it started with (dispatch://INFRA-1085). The report prints and never
-      # fails the job: this is the measurement, not a new gate. The two steps share their state
-      # through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every later step of the
-      # job would inherit and check-ci-filters.sh treats as reaching the job's go commands.
-      - name: Start the disk watch over the live tests
+      # space says only that it did. The pair around the step measures it, and measures the two
+      # readings beside it: `start` prints what each file system the job writes to has free and
+      # leaves a sampler watching the one that holds /tmp, the memory the kernel reports
+      # available and the one-minute load, one line per second; `report` stops the sampler and
+      # prints the worst each of them reached, with the free space the step began with, the
+      # least it ever had and the difference, and `margin short` when the step used more than
+      # half of what it started with (dispatch://INFRA-1085, dispatch://INFRA-2605). The report
+      # prints and never fails the job: this is the measurement, not a new gate. The two steps
+      # share their state through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every
+      # later step of the job would inherit and check-ci-filters.sh treats as reaching the job's
+      # go commands.
+      - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
       - name: Live tests of envoy-infra's host:Listener
         run: go test -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra
         env:
           ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}
-      - name: Report the disk the live tests used
+      - name: Report what the live tests ran on
         if: always()
         run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
       # The schema carries both of the things the release build stamps into the plugin: the
@@ -5789,13 +5817,34 @@ jobs:
   # Its longest property waits out that horizon and one reaper pass: the role claim reaper runs
   # at ENVOY_ROLE_CLAIM_REAP_INTERVAL, which the rig sets to two seconds, so the suite costs the
   # horizon rather than the five minutes that reaper's own default would cost it.
+  # The live Dispatch-stack suite rides this job too (dispatch://INFRA-1727). It builds
+  # packages/envoy's ./cmd/dispatch, makes a database of its own on DISPATCH_TEST_DATABASE_URL and
+  # runs the real `dispatch` CLI against that server (packages/envoy-client/test/dispatch-stack.ts),
+  # so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane to have: the
+  # envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
+  # there for ever. The filter envoy_session_stall already selects packages/envoy/** and
+  # packages/envoy-client/**, so the suite brings no new path into this job's closure.
   envoy-session-stall:
     needs: changes
     if: needs.changes.outputs.envoy_session_stall == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       LEGION_E2E_ENVOY_STACK: "1"
+      LEGION_E2E_DISPATCH_STACK: "1"
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5839,6 +5888,12 @@ jobs:
       # packages/pi-envoy/scripts it runs here.
       - name: Role takeover smoke
         run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh
+      # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
+      # the server this suite starts is built from this tree, so what it asserts is the sentence a
+      # person reads in a terminal rather than one rendered from a stub.
+      - name: Design-gate advice of the real CLI against a real Dispatch
+        run: bun test src/__tests__/design-gate-advice.live.test.ts
+        working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
