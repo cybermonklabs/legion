@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -212,6 +213,47 @@ func resultIsRetracted(ctx context.Context, q queryer, id string) (bool, error) 
 		return false, fmt.Errorf("read the retraction of result %s: %w", id, err)
 	}
 	return true, nil
+}
+
+// loadCheckResultRetractions is the retraction standing against each result of one
+// Verification document's checks, by result id. One query serves the whole document, as
+// loadCheckResults does for the results themselves: a document holding twenty checks is one
+// round trip, and a retraction is read once per read of the results rather than once per
+// result.
+//
+// A reader of the results sees a retracted result with the reason it is wrong and the actor
+// who said so, and counts it as no evidence: no pass of a retracted result stands
+// (results_currency.go, passStandsOf).
+func loadCheckResultRetractions(
+	ctx context.Context, q queryer, artifactID string,
+) (map[string]model.CheckResultRetracted, error) {
+	rows, err := q.Query(ctx, `
+		select retraction.result_id, retraction.reason, retraction.actor, retraction.created_at
+		from check_result_retractions retraction
+		join check_results result on result.id = retraction.result_id
+		where result.check_artifact_id = $1::uuid
+	`, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the retractions of document %s: %w", artifactID, err)
+	}
+	defer rows.Close()
+	retractions := map[string]model.CheckResultRetracted{}
+	for rows.Next() {
+		var id string
+		var retraction model.CheckResultRetracted
+		var actorJSON []byte
+		if err := rows.Scan(&id, &retraction.Reason, &actorJSON, &retraction.CreatedAt); err != nil {
+			return nil, fmt.Errorf("read the retractions of document %s: %w", artifactID, err)
+		}
+		if err := json.Unmarshal(actorJSON, &retraction.Actor); err != nil {
+			return nil, fmt.Errorf("decode a retraction's actor: %w", err)
+		}
+		retractions[id] = retraction
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the retractions of document %s: %w", artifactID, err)
+	}
+	return retractions, nil
 }
 
 // insertCheckResultRetraction writes the retraction's row and fills in the created_at the row

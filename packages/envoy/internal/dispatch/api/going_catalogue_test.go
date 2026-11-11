@@ -64,6 +64,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions",
 	"POST /api/v1/projects/{key}/related",
+	"POST /api/v1/results/{id}/retract",
 	"POST /api/v1/signins/{id}/revoke",
 	"PUT /api/v1/me/agents/{session_id}/state",
 	"PUT /api/v1/me/asks/{id}/snooze",

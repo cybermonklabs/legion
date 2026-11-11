@@ -141,6 +141,14 @@ type deliveryWindowQuery struct {
 	Deployed []string `query:"deployed"`
 }
 
+// issueResultsQuery is GET /api/v1/issues/{key}/results's query.
+type issueResultsQuery struct {
+	// At replaces what every check of the issue is compared with by this one commit, 40
+	// lowercase hex characters, and makes no read of GitHub. Any other value is 400
+	// INVALID_QUERY.
+	At string `query:"at"`
+}
+
 // deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query.
 type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
@@ -575,7 +583,9 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		Request: jsonArtifactUpload{}, Multipart: true, Advice: writeAdvice{},
 	},
-	"GET /api/v1/issues/{key}/results": {Status: http.StatusOK, Response: issueCheckResults{}},
+	"GET /api/v1/issues/{key}/results": {
+		Status: http.StatusOK, Response: issueCheckResults{}, Params: issueResultsQuery{},
+	},
 	"POST /api/v1/issues/{key}/results": {
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
 	},

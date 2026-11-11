@@ -22,15 +22,14 @@ import (
 )
 
 // results.go records and reads the results of an issue's checks. A check is a `check` block of
-// a Verification document; a result says one run of it passed or failed, at one commit. The
-// record route takes a result for a check of the recording issue or of any issue above it
+// a Verification document, and a result says one run of it passed or failed, at one commit.
+// The record route takes a result for a check of the recording issue or of any issue above it
 // (refs.IssueAncestors) and appends `result.recorded` on the check's own issue. The read route
-// lists the checks of one issue's Verification
-// document with every result recorded against each, from any issue, newest first, and says
-// whether each still speaks for the work as it stands: a `before_merge` result is current at
-// the head of a pull request attributed to the check's own issue, so a child's pull request
-// never makes a result against its parent's check current. Currency itself is answered in
-// results_currency.go.
+// lists the checks of one issue's Verification document with every result recorded against
+// each, from any issue, newest first, and says what each check compared those results with: a
+// `before_merge` check is compared with the pull request heads of the check's own issue, so a
+// child's pull request answers for nothing against its parent's check. The comparison itself
+// is answered in results_currency.go.
 
 // checkResultRole bounds the role a result names: the word the pull-request body line prints.
 var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
@@ -95,9 +94,9 @@ type checkResultRecorded struct {
 //
 // Records one result against one check. {key} is the recording issue, which need not be the
 // check's: a result against a check of an issue above it is taken, and the event goes on that
-// issue. Such a result is no proof of the check, since it reads current only at a head of a
-// pull request of the check's own issue (currencyReader). The answer carries the stored row and
-// the pull-request body line it implies, so every writer writes one grammar.
+// issue. Such a result is no proof of the check, since it stands at a basis only at a head of
+// a pull request of the check's own issue (comparisonReader). The answer carries the stored
+// row and the pull-request body line it implies, so every writer writes one grammar.
 func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -140,17 +139,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// every answer but the proof of absence does.
 	//
 	// It is the check's issue's repository, not the recording issue's: readThroughPullRequests
-	// and the currency reader both resolve check_issue_key, and a refusal keyed on the
-	// recording issue would disagree with the currency mark about which repository the commit
-	// belongs to. It is resolved through the one helper the currency reader resolves through
-	// (results_currency.go, server.checkIssueRepository), under the canonical name the
-	// repository is called today: a refusal asking under a name the repository was renamed
-	// away from reads the 404 GitHub answers for that name's installation, where the mark
-	// reads the commit — so it would store every result of such an issue.
+	// and the results read both resolve check_issue_key, and a refusal keyed on the recording
+	// issue would disagree with the read about which repository the commit belongs to. It is
+	// resolved through the one helper the results read resolves through (results_currency.go,
+	// server.checkIssueRepository), under the canonical name the repository is called today: a
+	// refusal asking under a name the repository was renamed away from reads the 404 GitHub
+	// answers for that name's installation, where the read reads the commit — so it would
+	// store every result of such an issue.
 	//
 	// The App key is checked here and not in the helper: every use of the answer below is a
-	// GitHub round trip, while the currency reader needs the repository even with no App key,
-	// for the default-branch answers it reads from Dispatch's own stored rows.
+	// GitHub round trip, while the results read needs the repository even with no App key, for
+	// the default-branch answers it reads from Dispatch's own stored rows.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
 		checkRepo = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
@@ -260,11 +259,22 @@ type issueCheckResults struct {
 
 // GET /api/v1/issues/{key}/results  (any authenticated caller)
 //
-// The checks of the issue's Verification document in document order, each with every result
-// recorded against it from any issue, newest first, and each result's currency. An issue with
-// no Verification document has no checks and no error.
+// The checks of the issue's Verification document in document order, each with what its
+// results are compared with and whether a pass of it stands, and every result recorded
+// against it from any issue, newest first, each with where its commit stands and whether the
+// check's words moved since. An issue with no Verification document has no checks and no
+// error.
+//
+// ?at=<commit> replaces what every check is compared with by the one commit the reader names,
+// and makes no read of GitHub at all.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	at := r.URL.Query().Get("at")
+	if at != noCommitNamed && !resultCommitSHA.MatchString(at) {
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+			"at must be a commit of 40 lowercase hex characters")
 		return
 	}
 	issueKey := r.PathValue("key")
@@ -292,16 +302,30 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	currency := newCurrencyReader(s)
+	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	for index := range checks {
 		results := recorded[checks[index].BlockID]
 		if results == nil {
 			results = []model.CheckResult{}
 		}
 		for result := range results {
-			results[result].Currency = currency.of(r.Context(), checks[index], results[result])
+			if retraction, held := retracted[results[result].ID]; held {
+				results[result].Retracted = &retraction
+			}
 		}
 		checks[index].Results = results
+	}
+	// Every head GitHub has to be asked for is learned before the first check is answered, so
+	// two `before_merge` checks of one issue name one list of bases and not two
+	// (comparisonReader.learn).
+	reader := newComparisonReader(s, at)
+	reader.learn(r.Context(), checks)
+	for index := range checks {
+		reader.answer(r.Context(), &checks[index])
 	}
 	body.Checks = checks
 	WriteJSON(w, http.StatusOK, body)
@@ -830,17 +854,18 @@ func (s *server) refuseUnknownCommit(ctx context.Context, repo *string, sha stri
 		"%s holds no commit %s: record the result once the commit is pushed", *repo, sha)
 }
 
-// readThroughPullRequests teaches Dispatch the pull requests GitHub names for a result's commit
-// when that commit is the head of none it already knows for the check's issue, so a result
-// recorded at the head of a pull request no event has reached Dispatch for is current at once.
-// It asks about the check's own issue and reads through repo, the one repository that issue
-// resolves to, which recordCheckResult resolved before the write: the pair
-// currencyReader.headOf answers from. A nil repo — a deployment with no App key, an issue
-// resolving to no repository, or a resolve that failed — leaves nothing to read through, and
-// it is answered before the database is read, since no head this read found could be used.
+// readThroughPullRequests teaches Dispatch the pull requests GitHub names for a result's
+// commit when that commit is the head of none it already knows for the check's issue, so a
+// result recorded at the head of a pull request no event has reached Dispatch for stands at
+// that head at once. It asks about the check's own issue and reads through repo, the one
+// repository that issue resolves to, which recordCheckResult resolved before the write: the
+// issue comparisonReader.headBases names the heads of. A nil repo — a deployment with no App
+// key, an issue resolving to no repository, or a resolve that failed — leaves nothing to read
+// through, and it is answered before the database is read, since no head this read found
+// could be used.
 //
-// It never fails the record: the row is written, and a currency Dispatch could not establish
-// reads as it would have without the call.
+// It never fails the record: the row is written, and a head Dispatch could not learn leaves
+// the result read exactly as it would have been without the call.
 func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha string, repo *string) {
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return

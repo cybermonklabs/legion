@@ -657,13 +657,13 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 	}
 }
 
-// The head pass keeps a `before_merge` result's currency honest, and it reads no delivery
-// setting: the stored heads, the issues and the App are all it needs. A Dispatch whose delivery
-// is not configured still has pull requests, checks and results, so a pass there must still move
-// a head a push moved — otherwise every result recorded at the head before it reads `older` for
-// good. Driven through runOnce, the entry point that reads the settings; reconcilePullRequestHeads
-// never sees them, so calling it would prove nothing. The population steps, which are the
-// settings' own, must stay idle in the same pass.
+// The head pass keeps a `before_merge` result's answer honest, and it reads no delivery
+// setting: the stored heads, the issues and the App are all it needs. A Dispatch whose
+// delivery is not configured still has pull requests, checks and results, so a pass there
+// must still move a head a push moved — otherwise every result recorded at the head before it
+// stands at no basis for good. Driven through runOnce, the entry point that reads the
+// settings. reconcilePullRequestHeads never sees them, so calling it would prove nothing. The
+// population steps, which are the settings' own, must stay idle in the same pass.
 func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)

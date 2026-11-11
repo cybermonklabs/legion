@@ -937,12 +937,6 @@ export interface ArtifactReviewEventPayload {
   readonly content_sha256_source?: "insert" | "backfill";
 }
 
-/** Whether a recorded result still speaks for the work as it stands: `current` at the commit the
- *  work stands at and the words the result proved, `older` at an earlier commit or against words
- *  that have changed since, and `unknown` when the check's issue resolves to no repository or
- *  Dispatch's GitHub App cannot read it. */
-export type CheckResultCurrency = "current" | "older" | "unknown";
-
 /** When a check runs: before the merge, after it, or against the default branch. The closed
  *  enum `pmdoc/schema/blocks.json` declares under the `when` attribute's `choices`. */
 export type CheckWhen = "before_merge" | "after_merge" | "default_branch";

@@ -6590,13 +6590,20 @@
     },
     "/api/v1/issues/{key}/results": {
       "get": {
-        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first; two results recorded in transactions that overlapped can come back in either order. Each result carries currency: current (its commit is the head of an open pull request attributed to the check's issue or the final head of a merged one, or, for an after_merge check, a commit on the branch that issue's pull request merged into - the base branch of the newest merged pull request attributed to it - or on the repository's default branch, which answers alone where Dispatch holds no merge of that issue, or, for a default_branch check, a commit on the repository's default branch, whatever branch the pull request merged into, and the check's words have not changed since), older, or unknown (the check's issue resolves to no repository, Dispatch's GitHub App cannot read it, or a read of a branch failed and no branch carried the commit; a read GitHub refused on an after_merge check's base branch is the one exception - a 403 or 404, which a branch it no longer holds answers with - and says the commit is not on that branch, leaving the default branch to decide). An issue with no Verification document answers no checks.",
+        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read. A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}, and makes no read of GitHub at all. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
         "operationId": "getApiV1IssuesByKeyResults",
         "parameters": [
           {
             "name": "key",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "at",
+            "in": "query",
             "schema": {
               "type": "string"
             }
@@ -13045,6 +13052,22 @@
         ],
         "type": "object"
       },
+      "BasisLearnedAt": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "kind"
+        ],
+        "type": "object"
+      },
       "BlockAttributeValue": {
         "properties": {
           "kind": {
@@ -13469,6 +13492,29 @@
         ],
         "type": "object"
       },
+      "CheckBasis": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "learned_at": {
+            "$ref": "#/components/schemas/BasisLearnedAt"
+          },
+          "pull_request": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
       "CheckBlock": {
         "properties": {
           "artifact_id": {
@@ -13477,11 +13523,26 @@
           "block_id": {
             "type": "string"
           },
+          "compared_nothing": {
+            "type": "string"
+          },
+          "compared_with": {
+            "items": {
+              "$ref": "#/components/schemas/CheckBasis"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "issue_key": {
             "type": "string"
           },
           "negative_control": {
             "type": "string"
+          },
+          "pass_stands": {
+            "$ref": "#/components/schemas/CheckPassStands"
           },
           "ref": {
             "type": "string"
@@ -13526,7 +13587,26 @@
           "negative_control",
           "version",
           "sha256",
-          "results"
+          "results",
+          "compared_with",
+          "pass_stands"
+        ],
+        "type": "object"
+      },
+      "CheckPassStands": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer"
         ],
         "type": "object"
       },
@@ -13550,14 +13630,17 @@
           "check_version": {
             "type": "integer"
           },
+          "check_words_moved": {
+            "type": "boolean"
+          },
           "commit_sha": {
             "type": "string"
           },
+          "commit_stands": {
+            "$ref": "#/components/schemas/ResultCommitStands"
+          },
           "created_at": {
             "format": "date-time",
-            "type": "string"
-          },
-          "currency": {
             "type": "string"
           },
           "event_seq": {
@@ -13580,6 +13663,9 @@
           },
           "observed": {
             "type": "string"
+          },
+          "retracted": {
+            "$ref": "#/components/schemas/CheckResultRetracted"
           },
           "role": {
             "type": "string"
@@ -13646,6 +13732,26 @@
         "required": [
           "line",
           "result"
+        ],
+        "type": "object"
+      },
+      "CheckResultRetracted": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "actor",
+          "created_at"
         ],
         "type": "object"
       },
@@ -21562,6 +21668,23 @@
         "required": [
           "kind",
           "reason"
+        ],
+        "type": "object"
+      },
+      "ResultCommitStands": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "basis": {
+            "$ref": "#/components/schemas/CheckBasis"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
         ],
         "type": "object"
       },

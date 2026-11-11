@@ -33,12 +33,12 @@ import (
 const DefaultBranch = ""
 
 // BranchAnswer is what Dispatch could say about one commit of one branch: the whole of what
-// CommitOnBranch returns, and the whole of what a caller measuring a result's currency has to
-// go on. The four cases are kept apart because each is a different thing to do: two say
+// CommitOnBranch returns, and the whole of what a caller placing a result's commit has to go
+// on. The four cases are kept apart because each is a different thing to do: two say
 // something about the commit, one says something about the branch and nothing about the
 // commit, and one says nothing at all. A reader that folded the last two into "not on it"
 // would turn a GitHub hiccup into a verdict about the work, which is the one thing the
-// currency rule may not do (api/results_currency.go, of).
+// results read may not do (api/results_currency.go, onNamedBranch).
 type BranchAnswer int
 
 const (
@@ -47,9 +47,9 @@ const (
 	// for any of those reasons or because the App cannot see it, where the caller named no
 	// branch and the stored rows answered nothing; and a repository whose default branch no
 	// read of this process ever named, which a deployment holding no App key makes of every
-	// repository. Wherever this is the last word the currency is unknown, and wherever it is
-	// any word at all no later branch's "not on it" may make a result older: a fault of
-	// Dispatch's or a hiccup of GitHub's must not make a reviewer refuse an approval.
+	// repository. Wherever this is the last word the result's commit is unknown, and wherever
+	// it is any word at all no later branch's "not on it" may place that commit elsewhere: a
+	// fault of Dispatch's or a hiccup of GitHub's must not make a reviewer refuse an approval.
 	BranchUnknown BranchAnswer = iota
 	// BranchCarries is the branch's history holding the commit: the commit is that branch's
 	// head, or an ancestor of it. It is the whole answer wherever it is given, and no branch
@@ -176,14 +176,26 @@ type cachedBranch struct {
 // caller goes on to ask about (branchOf), which is why this question is asked of that read and
 // of no other. It is false for a repository the App is not installed on, one its token is
 // refused, a deployment holding no App key, and a read that failed; all of them mean Dispatch
-// cannot see the repository, which is the unknown currency rather than a verdict about the work.
+// cannot see the repository, which is no answer about the work rather than a verdict about it.
 func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) bool {
 	_, readable := c.branchOf(ctx, client, repoFull, now)
 	return readable
 }
 
+// DefaultBranchOf is RepositoryReadable's answer with the branch's own name beside it: the
+// default branch this process last resolved for repoFull, and whether the newest read of it
+// could say. The results read names that branch among the branches a check compares its
+// results with, so it needs the name and not only the yes (api/results_currency.go). The name
+// is "" where no read of this process ever named one, which a deployment holding no App key
+// makes of every repository; such a read answers false as well.
+func (c *Branches) DefaultBranchOf(
+	ctx context.Context, client *githubapp.Client, repoFull string, now time.Time,
+) (string, bool) {
+	return c.branchOf(ctx, client, repoFull, now)
+}
+
 // CommitOnBranch answers what Dispatch can say about branch of repoFull carrying sha: one of
-// the four BranchAnswer cases, which is the whole of what the currency read has to go on.
+// the four BranchAnswer cases, which is the whole of what the results read has to go on.
 // DefaultBranch — the empty branch — means the repository's own default branch, resolved
 // through branchOf: a `default_branch` check names no branch of its own and so is measured
 // against that branch whatever the work merged into, while an `after_merge` check asks about
@@ -522,9 +534,9 @@ func cannotSeeRepository(err error) bool {
 // A merge's seed carries GitHub's own (`Acme/Widgets`), since refs.CanonicalRepo gives a
 // caller's spelling back unchanged where no rename is recorded, while the results read asks
 // under the lowercased name repo_projects stores (api's canonicalRepo, through
-// currencyReader.repositoryOf), so a table holding both spellings would answer `older` for
-// good for every `after_merge` result of a repository whose owner writes their name with
-// capitals — the squash-merged, branch-deleted case the seed exists for above all
+// comparisonReader.repositoryOf), so a table holding both spellings would place every
+// `after_merge` result of a repository whose owner writes their name with capitals at another
+// commit for good — the squash-merged, branch-deleted case the seed exists for above all
 // (UpsertPullRequestHead).
 //
 // It is lowercased on the way in rather than compared with `lower(repo)`, which is how

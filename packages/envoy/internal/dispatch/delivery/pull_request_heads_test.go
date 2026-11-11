@@ -274,7 +274,7 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 // HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
 // intake writes carries GitHub's own spelling of the repository, from the envelope's
 // `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling the
-// repository-to-project mapping stores (api/results_currency.go, currencyReader.repositoryOf).
+// repository-to-project mapping stores (api/results_currency.go, comparisonReader.repositoryOf).
 // An exact comparison would answer "no row" for every repository whose owner writes their name
 // with capitals, and the read would spend a GitHub call on each commit Dispatch already holds
 // the pull request for. Another repository's row is still another repository's: the case is all
@@ -414,11 +414,11 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 	}
 }
 
-// The three reads a result's currency turns on, against this package's REST fake: the pull
-// requests GitHub names for a commit (delivery's own, through readGitHubPage's bounded retry),
-// whether a commit is on a branch, and the default branch. A repository the installation cannot
-// read is ErrRepositoryUnreadable whichever read asks, which the currency read takes as unknown
-// rather than as older.
+// The three reads a result's answer turns on, against this package's REST fake: the pull
+// requests GitHub names for a commit (delivery's own, through readGitHubPage's bounded
+// retry), whether a commit is on a branch, and the default branch. A repository the
+// installation cannot read is ErrRepositoryUnreadable whichever read asks, which the results
+// read takes as unknown rather than as a commit it placed elsewhere.
 func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 	fastPageRetries(t)
 	fake := newFakeGitHub(t)
@@ -717,9 +717,9 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 // the next reconcile pass, and by that pass alone. The envelope attributes nobody, since a head
 // it cannot show to be this repository's is a fork's as far as Dispatch knows, and nothing but
 // the reconcile ever looks at a merged row again: without the merged arm of
-// ListStalePullRequestHeads the issue's results at its own merged head would read `older` for
-// good. HeadAttributedTo is the currency read api/results.go's currencyReader makes of this
-// package, so the test asserts currency through it rather than standing an API up.
+// ListStalePullRequestHeads the issue's results at its own merged head would stand at no
+// basis for good. HeadAttributedTo is the read api/results.go's comparisonReader makes of
+// this package, so the test asserts through it rather than standing an API up.
 //
 // The rows beside it are the arm's bound: a merged row that carries an issue, one this rule has
 // judged already, a fork's head the read credits to nobody, and a row whose pull request GitHub

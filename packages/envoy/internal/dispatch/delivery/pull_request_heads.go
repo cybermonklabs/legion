@@ -288,11 +288,11 @@ func upsertHeadUnderCanonicalName(ctx context.Context, pool *store.Pool, head Pu
 }
 
 // HeadAttributedTo reports whether sha is the head of a pull request attributed to issueKey that
-// is open or merged: the currency test a `before_merge` result's commit passes. A closed-unmerged
-// pull request's head proves nothing. A pull request attributed to another issue never answers
-// for this one; the results read asks this about the check's own issue, so a child's pull
-// request never makes a result against a check above it current (api/results.go's
-// currencyReader).
+// is open or merged: the test a `before_merge` result's commit passes to stand at one of the
+// heads its check is compared with. A closed-unmerged pull request's head proves nothing. A
+// pull request attributed to another issue never answers for this one; the results read asks
+// this about the check's own issue, so a child's pull request never answers for a check above
+// it (api/results_currency.go's comparisonReader).
 func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
 	var found bool
 	if err := pool.QueryRow(ctx, `
@@ -306,15 +306,64 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 	return found, nil
 }
 
+// AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
+// among the heads a `before_merge` check compares its results with: the pull request's number,
+// the commit its head is, and the two times Dispatch may have learned that head by. CheckedAt
+// is when Dispatch last read the pull request from GitHub and EventAt is the pull request's
+// own update time as its newest webhook event carried it; each is nil where no writer has
+// carried it. The reader shows the later of the two and names which it is
+// (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt).
+type AttributedHead struct {
+	Number    int
+	HeadSHA   string
+	CheckedAt *time.Time
+	EventAt   *time.Time
+}
+
+// HeadsAttributedTo is every open or merged pull request attributed to issueKey, newest learned
+// first: the whole list HeadAttributedTo answers one commit of, which the results read names as
+// what a `before_merge` check's results are compared with (R3). The two reads keep one rule, so
+// a commit HeadAttributedTo answers yes for is a commit this list holds.
+//
+// The order is by the later of the two times either way, with a row carrying neither last and
+// the pull request's own number breaking a tie, so the list does not turn on whichever row the
+// planner returned first. A reader taking the first head takes the one Dispatch learned last.
+//
+// The read uses pull_request_heads_issue_head's leading column, as BaseBranchMergedFor's does:
+// the rows one issue's key holds are the handful of pull requests attributed to that issue.
+func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
+	rows, err := pool.Query(ctx, `
+		select number, head_sha, checked_at, event_at from pull_request_heads
+		where issue_key = $1 and state in ('open', 'merged')
+		order by greatest(checked_at, event_at) desc nulls last, number desc
+	`, issueKey)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
+	}
+	defer rows.Close()
+	var heads []AttributedHead
+	for rows.Next() {
+		var head AttributedHead
+		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.CheckedAt, &head.EventAt); err != nil {
+			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
+		}
+		heads = append(heads, head)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
+	}
+	return heads, nil
+}
+
 // HeadStoredAt reports whether sha is the head of an open or merged pull request stored for
 // repoFull, whatever issue it is attributed to: whether Dispatch holds a pull request at that
 // commit that its own passes keep reading. It is a weaker question than HeadAttributedTo's and
 // it is asked for another purpose — the results read asks it before it reads GitHub for a commit,
 // since a commit such a row already heads is one the reconcile re-reads and a read from there
-// repairs nothing (api/results_currency.go, currencyReader.readThroughHead).
+// repairs nothing (api/results_currency.go, comparisonReader.readThroughHead).
 //
 // A closed-unmerged row is counted for nothing, as HeadAttributedTo counts it for nothing: it
-// makes no result current, the reconcile keeps no such row in its passes
+// is no basis a result stands at, the reconcile keeps no such row in its passes
 // (ListStalePullRequestHeads takes the open and the merged), and a pull request closed at a
 // commit does not stop another being opened from the same head. Counting one would leave every
 // result at that commit `older` for good.
@@ -499,10 +548,10 @@ type headAttributionResult struct {
 // (resolveAttributionCandidates): the first of them whose issue resolves to the repository the
 // pull request is in. It holds the head to that repository too.
 //
-// Both holdings are what keep the currency mark honest. A pull request's title, body and branch
+// Both holdings are what keep the results read honest. A pull request's title, body and branch
 // are text any account that can open one writes, this row is written for any author and any
-// repository the App watches, and an attributed row is exactly what makes a `before_merge`
-// result read current (HeadAttributedTo), which is the reviewer's approval condition. So a
+// repository the App watches, and an attributed row is exactly what a `before_merge` result's
+// commit stands at (HeadAttributedTo), which is the reviewer's approval condition. So a
 // candidate whose issue resolves to another repository, or to none, is passed over for the next
 // one and a pull request no candidate of which resolves here attributes nobody; and neither
 // does a pull request whose head is not in this repository, since on a public repository anyone
@@ -707,7 +756,7 @@ func repositoryUnreadable(err error) bool {
 // It answers how many rows it wrote and whether any pull request it saw has sha as its head
 // (atHead). A repository the App cannot read writes nothing and comes back as the App's own
 // error, which each caller logs at Info and carries on from (api/results.go's
-// readThroughPullRequests, api/results_currency.go's readThroughHead): the currency of that
+// readThroughPullRequests, api/results_currency.go's readThroughHead): the answer about that
 // result stands as its stored rows leave it.
 //
 // atHead is the difference between the two answers GitHub gives about a commit no pull request
@@ -791,8 +840,8 @@ func ReadThroughCommitPulls(
 // refresh returns it, so the caller does not persist a weaker attribution and then stamp the
 // row read.
 //
-// The envelope also carries the head's own repository (`head_repo`), which the attribution holds
-// the currency to. An envelope that does not name it — one a publisher older than this field
+// The envelope also carries the head's own repository (`head_repo`), which the attribution
+// holds the head to. An envelope that does not name it — one a publisher older than this field
 // made — attributes nobody, since a head that cannot be shown to be this repository's is a
 // fork's as far as Dispatch knows. That write is incomplete too: it leaves the row unstamped, so
 // the reconcile's own read of GitHub, which always names the head repository, attributes the row

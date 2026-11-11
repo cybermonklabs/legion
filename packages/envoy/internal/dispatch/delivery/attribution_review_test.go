@@ -93,8 +93,8 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 // which holds the same title to pull_request_heads. One rule answers both — every candidate the
 // five sources name (attributionCandidates), the first of them held to the pull request's own
 // repository (attributionHeld) — and the two tables must never disagree about which issue one
-// pull request belongs to: pull_request_heads is what a check result's currency is measured
-// against, delivery_pull_requests what the Delivery timeline credits.
+// pull request belongs to: pull_request_heads is what a check result's commit is compared
+// with, delivery_pull_requests what the Delivery timeline credits.
 func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 9)
