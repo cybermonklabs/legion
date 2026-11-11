@@ -194,7 +194,7 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 	if value.Kind != yaml.MappingNode {
 		return Experiment{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "mode", "on_variant", "unit", "variants")
+	fields, err := describedMembers(value, key, "projects.<KEY>.experiments.<NAME>")
 	if err != nil {
 		return Experiment{}, err
 	}
@@ -258,7 +258,7 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, "config_files", "instructions", "name", "weight")
+		fields, err := describedMembers(entry, field, "projects.<KEY>.experiments.<NAME>.variants[]")
 		if err != nil {
 			return nil, err
 		}

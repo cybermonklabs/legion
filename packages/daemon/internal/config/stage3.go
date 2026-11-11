@@ -228,7 +228,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if value.Kind != yaml.MappingNode {
 		return Project{}, nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "commit_issue_trailer_repos", "deploys", "experiments", "memory", "merge", "merge_queue_role", "mergeQueueRole", "production_check", "slack_channels")
+	fields, err := describedMembers(value, key, "projects.<KEY>")
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
@@ -361,7 +361,7 @@ func readMergeRules(value *yaml.Node, key string) (MergeRules, error) {
 	if value.Kind != yaml.MappingNode {
 		return MergeRules{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "by_hand")
+	fields, err := describedMembers(value, key, "projects.<KEY>.merge")
 	if err != nil {
 		return MergeRules{}, err
 	}
@@ -465,7 +465,7 @@ func readGitHubApps(value *yaml.Node, key string) (*GitHubApps, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	roles, err := members(value, key, "implement", "review")
+	roles, err := describedMembers(value, key, "github_apps")
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +489,7 @@ func readGitHubApp(value *yaml.Node, key string) (GitHubApp, error) {
 	if value.Kind != yaml.MappingNode {
 		return GitHubApp{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "app_id", "private_key", "private_key_command", "private_key_secret", "token_command", "installations")
+	fields, err := describedMembers(value, key, "github_apps.<APP>")
 	if err != nil {
 		return GitHubApp{}, err
 	}

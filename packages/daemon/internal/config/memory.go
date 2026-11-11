@@ -62,7 +62,7 @@ func readMemory(value *yaml.Node, key string) (Memory, error) {
 	if value.Kind != yaml.MappingNode {
 		return Memory{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "config_files", "instructions", "mode")
+	fields, err := describedMembers(value, key, "projects.<KEY>.memory")
 	if err != nil {
 		return Memory{}, err
 	}

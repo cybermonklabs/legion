@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -433,7 +434,7 @@ func TestNoKeyBypassesTheKeyTable(t *testing.T) {
 // checkDescriptor holds one row, top-level or nested, to the vocabulary and to one line of prose.
 // label is the key as an operator writes it, which a failure names; name is the key's own last
 // part, which carries the shape.
-func checkDescriptor(t *testing.T, label, name, required, description string) {
+func checkDescriptor(t failer, label, name, required, description string) {
 	t.Helper()
 	if !keyName.MatchString(name) {
 		t.Errorf("%q is no configuration key name", label)
@@ -450,7 +451,7 @@ func checkDescriptor(t *testing.T, label, name, required, description string) {
 // is used, every member carries a line, and every name a plain members(...) site passes is on the
 // undescribed list, named once. A describedMembers site's names carry their own lines, so a name
 // described under one mapping never stands in for the same name under another.
-func checkNestedKeys(t *testing.T, keys loaderKeys, described map[string]bool) {
+func checkNestedKeys(t failer, keys loaderKeys, described map[string]bool) {
 	t.Helper()
 	nested := map[string]bool{}
 	for _, group := range nestedKeys {
@@ -546,13 +547,85 @@ func TestConfigReferenceNestsEveryKeyUnderItsOwn(t *testing.T) {
 	}
 }
 
-// The guard follows a list a members(...) site builds, rather than passing over it: the two sites
-// that pass one are read to the same names the loader accepts there.
+// failer is what a check reports a failure to: the test's own *testing.T, or the recorder below,
+// which the guard's own test reads the failures back from.
+type failer interface {
+	Helper()
+	Errorf(format string, args ...any)
+}
+
+// recorder is a failer that keeps what was reported, so a test can hold a check to reporting a
+// failure rather than to passing.
+type recorder struct{ failures []string }
+
+func (r *recorder) Helper() {}
+
+func (r *recorder) Errorf(format string, args ...any) {
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+// reported reports whether one failure holds every one of parts.
+func (r *recorder) reported(parts ...string) bool {
+	return slices.ContainsFunc(r.failures, func(failure string) bool {
+		for _, part := range parts {
+			if !strings.Contains(failure, part) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// The guard follows a list a members(...) site builds to its declaration, rather than passing over
+// it, and reports every name such a site passes that nothing describes. Its fixture is a source of
+// its own because the loader no longer holds one: the two sites that built their names — a
+// `pod.volumes` entry's, from volumeSources, and a Secret or ConfigMap source's — were carried
+// onto describedMembers with a line for every name they pass, so the follower is there for the
+// next site rather than for a site that exists, and the same is true of the undescribed list the
+// second half reads. The fixture passes names four ways (a literal, a package constant, a
+// package-level []string, and a local built from both with append) and names nothing the key
+// table or the undescribed list holds, so the guard must read all four and report each of them.
 func TestTheGuardFollowsABuiltListOfNames(t *testing.T) {
-	keys := readLoaderKeys(t)
-	for _, name := range append(append([]string{}, volumeSources...), "items", "default_mode") {
-		if _, passed := keys.nested[name]; !passed {
-			t.Errorf("the guard did not read %s, which a built list of names passes to members(...)", name)
+	const fixture = `package config
+
+const quinceKey = "quince"
+
+var fruitNames = []string{"apple"}
+
+func readFruit(value *yaml.Node) {
+	basket := append([]string{"pear"}, fruitNames...)
+	basket = append(basket, "plum")
+	members(value, "fruit", basket...)
+	members(value, "fruit", "damson", quinceKey)
+}
+`
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "fruit.go", fixture, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse the guard's own fixture: %v", err)
+	}
+	source := &loaderSource{fileSet: fileSet, files: []*ast.File{file}, constants: map[string]string{}, lists: map[string][]string{}}
+	source.readDeclarations()
+	keys := loaderKeys{positive: map[string]int{}, cases: map[string]string{}, nested: map[string]string{}, groups: map[string]string{}}
+	source.readFile(t, file, "fruit.go", &keys)
+
+	described := map[string]bool{}
+	for _, row := range topLevelKeys {
+		described[row.Name] = true
+	}
+	// The fixture names no describedMembers group, so this also reports every group of the table
+	// as unused; the names below are what it is read for.
+	reported := &recorder{}
+	checkNestedKeys(reported, keys, described)
+	for _, name := range []string{"apple", "pear", "plum", "damson", "quince"} {
+		where, read := keys.nested[name]
+		switch {
+		case !read:
+			t.Errorf("the guard did not read %s, which the fixture's members(...) site passes", name)
+		case !strings.HasPrefix(where, "fruit.go:"):
+			t.Errorf("the guard read %s at %q, want the fixture's own site", name, where)
+		case !reported.reported(name, "whose line is not written"):
+			t.Errorf("the guard passed over %s, which neither the key table nor the undescribed list names; it reported %v", name, reported.failures)
 		}
 	}
 }

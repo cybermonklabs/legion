@@ -607,9 +607,10 @@ type unknownKeyError struct{ key, name string }
 func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
 
 // members returns a mapping's members by name, refusing a name it does not know or names twice. A
-// member whose value is null is left out, as an unset key. describedMembers is the form whose
-// names carry a line each for the configuration reference; a call site still here passes names
-// whose lines the key table's `undescribed` list holds instead.
+// member whose value is null is left out, as an unset key. Every call site of the loader passes
+// its names through describedMembers, the form whose names carry a line each for the
+// configuration reference; this is the reader beneath it, and a site that called it directly
+// would have to name each of its keys in the key table's `undescribed` list, which is empty.
 func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.Node, error) {
 	found := map[string]*yaml.Node{}
 	seen := map[string]bool{}
