@@ -889,7 +889,42 @@ package api
 // says. Read main's own number, and every open branch's, again at the next forward merge rather
 // than from this line.)
 //
-// 63: INFRA-1077 -- three fields of `GET /legion/v1/state`, each required by the reader this
+// 64: INFRA-312 -- every Legion launch says which issue its dollars were spent on: the pane
+// environment and a pod's worker container now carry `legion.issue`, the issue the launch serves,
+// and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`, written after the attributes
+// the operator's own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets (the one
+// composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
+// `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
+// panePairs), so every launch's resource attributes name the issue it serves rather than the
+// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
+// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
+// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
+// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// written after the operator's; a pair the launch holds no fact for is left out rather than
+// written empty, so the project controller's launch, which serves no issue, carries `legion.role`
+// alone. The name stays the operator's to set — the runtime composes the value, it does not own
+// the name — but a launch spec may not set it (`composed`, beside `runtimeOwned`), since a spec's
+// second pair of that name is the one the C library's lookup answers with, and both configuration
+// loaders refuse an operator value the agent's OpenTelemetry detector would throw on
+// (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
+// member costs the launch every attribute of the variable, the operator's own theorem.project
+// among them. The pane environment and the worker container's environment are surfaces of this
+// contract, which is why an environment change takes a number at all: the boot gate refuses to
+// start against an installed plugin declaring another number, and `legion probe-image` refuses an
+// image whose pi-legion declares another, so no pane and no pod runs an agent of one contract
+// under a daemon of the other. (Read again at the forward merge of 2026-11-11 that brought main
+// in, 6c288b5434a86dad0d78930118888cddb9661949: main declares 62, which is INFRA-2551's entry
+// above and which cybermonklabs/legion#3522 declared before it merged, and the open pull requests
+// of this repository declare 60 (#2539, #2731, #3511 and #3519), 61 (#2230), 62 (#2733 and
+// #3573) and 63 (#3534), none of them carrying these attributes, so this change keeps 64, the
+// number above them all. That reading is of this file at refs/pull/<n>/head for every open pull
+// request, not of a file list: GitHub cuts a pull request's file list short, so one that changes
+// more files than the page holds answers without this path, which is how #2539 was missed when
+// this entry was first written. As
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 65: INFRA-1077 -- three fields of `GET /legion/v1/state`, each required by the reader this
 // commit ships (`packages/contracts/src/legion-api.ts` mirrors all three), so a plugin built
 // from here refuses a state an older daemon sends. The `daemon` block names the commit the
 // daemon was built from (`commit`, the release build's own revision, empty in a build that is
@@ -902,7 +937,7 @@ package api
 // ones `settings` withholds among them, so a rotated credential is visible without the
 // credential. `settings` itself is untouched, and stays the loose object it was. `GET
 // /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a contract
-// below 63 is served the state without all three (api's stateFor, withoutSettingSources), as a
+// below 65 is served the state without all three (api's stateFor, withoutSettingSources), as a
 // caller below 62 is served the workers without their counts of the moves back, one below 58 is
 // served the issues with no place in the admission line, one below 57 the claim views with no
 // `step`, one below 56 is served the report of claims nothing will wake without its retired
@@ -924,6 +959,9 @@ package api
 // INFRA-956's end of fix-attempt counting and its provider-error retry at 59, again without these
 // shapes, so this branch took 60; main then landed INFRA-2551's counts of the moves back at 62,
 // again without these shapes, so this branch takes the number above it, as the collision note
-// says. main held 62 at the forward merge that renumbered this entry, 6c288b54; read main's own
-// number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 63
+// says. main then landed INFRA-312's launch spend attributes at 64, again without these shapes, so this
+// branch takes 65. main held 64 at the forward merge that renumbered this entry, 5f5b18f8; read
+// main's own number again at the next merge rather than from this line, and note that main's own
+// 64 entry reads this pull request at 60, which was true when it was written and is two
+// renumbers old.)
+const DaemonAPIVersion = 65

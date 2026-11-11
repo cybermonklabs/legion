@@ -755,12 +755,13 @@ const retiredStrandedContract = 56
 // It is 57 because that is the number DaemonAPIVersion took at the bump this record forced: main
 // held 56, INFRA-1480's retired stranded state, which carries no step record, so that branch took
 // the first number above it, and the release that carries the record declares that number. This
-// daemon's own contract is never below it — it declares 63 (version.go) — so a pod at either is
-// served the record and only a pod still running an older plugin is not. INFRA-1100's waiting
-// line took 58 above it, INFRA-956's end of fix-attempt counting took 59, INFRA-2551's counts of
-// the moves back took 62, and the forward merge that brought INFRA-1077's setting provenance in
-// took 63, so a pod at 57 is served the step record and is served the state without the field 58
-// added, the field 62 added and the three fields 63 added.
+// daemon's own contract is never below it — DaemonAPIVersion (version.go) declares what this
+// binary serves, and that number only rises — so a pod at either is served the record and only a
+// pod still running an older plugin is not. INFRA-1100's waiting line took 58 above it,
+// INFRA-956's end of fix-attempt counting took 59, INFRA-2551's counts of the moves back took 62,
+// and the forward merge that brought INFRA-1077's setting provenance in took 65, so a pod at 57
+// is served the step record and is served the state without the field 58 added, the field 62
+// added and the three fields 65 added.
 const stallRecordContract = 57
 
 // waitingLineContract is the daemon contract that added each waiting issue's place in the line
