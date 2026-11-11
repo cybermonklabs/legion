@@ -6,7 +6,7 @@ import {
   type WriteAdvice,
   type WriteSuggestion,
 } from "@legion/contracts";
-import { textHead } from "./ask-answer";
+import { QUESTION_HEAD, textHead } from "./ask-answer";
 import { messageFor } from "./errors";
 import { askStateLines } from "./search-answer";
 
@@ -126,8 +126,9 @@ export function decisionBlockLines(
 
 /**
  * What a write that opens a question is told about the asks of its issue a person declined to
- * answer (`declined_asks`): a line saying how many there are, and for each, oldest first, its
- * question, that it was declined, the person's note where they wrote one, and a link to the ask
+ * answer (`declined_asks`): a line saying how many there are, and for each, oldest first, the
+ * head of its question, that it was declined, the head of the person's note where they wrote
+ * one, and a link to the ask
  * — its `/issues/<key>/asks/<id>` page, which is the ask's own `dispatch://KEY/ask/<id>` address
  * (`dispatch-href.ts`), made absolute as every other link here is. A write whose context names
  * no issue prints the ask's id in the link's place.
@@ -155,19 +156,19 @@ export function declinedAskLines(
     ];
     for (const ask of declined) {
       lines.push(
-        `- Declined: ${textHead(ask.question, DECLINED_QUESTION_MAX)} ${declinedAskWhere(ask.id, context)}`
+        `- Declined: ${textHead(ask.question, QUESTION_HEAD)} ${declinedAskWhere(ask.id, context)}`
       );
-      if (ask.note !== "") lines.push(`  Their note: ${ask.note}`);
+      // The note is cut as the question is: a note runs to 32,000 units and the field names
+      // every declined ask of the issue, so one issue would otherwise put tens of thousands of
+      // characters into every later write that opens a question. The whole note is at the ask's
+      // link, which the line above prints.
+      if (ask.note !== "") lines.push(`  Their note: ${textHead(ask.note, QUESTION_HEAD)}`);
     }
     return lines;
   } catch (error) {
     return [`The issue's declined asks could not be shown: ${messageFor(error)}`];
   }
 }
-
-/** How much of a declined ask's question the line quotes, as the answers list quotes an ask's
- *  question: enough to tell it from the one about to be asked. */
-const DECLINED_QUESTION_MAX = 200;
 
 /** Where a declined ask is read: its page where the context names the issue, else its id, which
  *  is what `dispatch_ask_read` and the ask commands take. */

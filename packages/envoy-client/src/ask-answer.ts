@@ -9,6 +9,11 @@ export function textHead(text: string, length: number = HEAD_LENGTH): string {
   return flat.length > length ? `${flat.slice(0, length)}…` : flat;
 }
 
+/** Head length, in UTF-16 units, for an ask's question where a surface quotes it: enough to tell
+ *  one question from another. The answers list and the declined-ask reminder read it, so a
+ *  question is cut to the same length wherever a reader meets it. */
+export const QUESTION_HEAD = 200;
+
 /**
  * How an answer reads as one line: the text alone when nothing was selected, the selected
  * options alone when nothing was typed, and `<options> - <text>` when a human did both.

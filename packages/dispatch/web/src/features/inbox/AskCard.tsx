@@ -1,5 +1,5 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -17,7 +17,7 @@ import {
   type DeclineAskInput,
   type WriteBounds,
 } from "../../api/client";
-import { inboxQuery, projectsQuery } from "../../api/queries";
+import { inboxQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
   Ask,
@@ -93,7 +93,7 @@ import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { EarlierApproval } from "./EarlierApproval";
 import { markAnswerOutstanding } from "./outstanding-answers";
 import { clearReplyDraft } from "./reply-drafts";
-import { useAskAnswerForm } from "./useAskAnswerForm";
+import { invalidateAskReads, useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
@@ -199,23 +199,6 @@ function useFormRef(): [
     };
   }, []);
   return [formRef, track];
-}
-
-/** The reads that carry an ask besides its own thread: the Inbox and its owner's lists. A
- *  decline closes the question, so it refreshes what an answer refreshes (the same list in
- *  `useAskAnswerForm`'s `invalidateOwnerReads`). */
-function invalidateAskReads(queryClient: QueryClient, ask: Ask): void {
-  void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-  if (ask.issue_key === null) {
-    if (ask.artifact_id !== null && ask.artifact_id !== undefined) {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", ask.artifact_id] });
-    }
-    void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
-    return;
-  }
-  void queryClient.invalidateQueries({ queryKey: ["asks", ask.issue_key] });
-  void queryClient.invalidateQueries({ queryKey: ["issue", ask.issue_key] });
-  void queryClient.invalidateQueries({ queryKey: ["issues"] });
 }
 
 /**

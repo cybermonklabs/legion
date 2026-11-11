@@ -2978,7 +2978,7 @@ Each item below names a path with its method and identity, then its purpose.
   A decline is the kind `declined` under the relation `declined_your_ask`, and it carries both parts apart:
   `text` is the person's own note, empty where they wrote none, and `dispatch_words` the sentences Dispatch wrote beside it for the asking agent.
   `since` defaults to 72 hours ago (older than 7 days or in the future is `400 INVALID_QUERY`);
-  `max_chars` (1–100,000) stops the list after the item whose text takes the running sum past it, `total` still counting every item;
+  `max_chars` (1–100,000) stops the list after the item whose words take the running sum past it, counting an item's `text` and the `dispatch_words` a decline carries beside it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
   Not an authorization boundary: direct-message text already reaches every caller through `GET /api/v1/events`, and a person may read any session's list.
 

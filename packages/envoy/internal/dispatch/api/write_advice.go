@@ -37,22 +37,14 @@ type adviceDeclinedAsk struct {
 	Note     string `json:"note"`
 }
 
-// The two writes whose author is about to put a question to a person. They are named here, and
-// passed by the two calls themselves, so the route string every writeAdvice call already carries
-// decides which write hears about the issue's declined asks: the shared path needs no new
-// argument, and no caller outside these two changes.
+// The routes of the two writes whose author may be about to put a question to a person: the ask
+// route, and a document edit, whose ops can add the ask blocks that settle into asks. Each names
+// itself in its own writeAdvice call, which is where the log line of an omitted advice query
+// gets its route, and routeEditDocument names the same write to supersededApprovalAdvice.
 const (
 	routeOpenAsk      = "POST /api/v1/issues/{key}/asks"
 	routeEditDocument = "POST /api/v1/artifacts/{id}/edits"
 )
-
-// routeOpensAQuestion answers whether route is one of those two: the ask route, and a document
-// edit, whose ops can add the ask blocks that settle into asks. A comment, an issue patch, a
-// message and a document create put no question to anyone, so they carry no declined_asks and
-// the reminder reaches the agent that is about to ask and nobody else.
-func routeOpensAQuestion(route string) bool {
-	return route == routeOpenAsk || route == routeEditDocument
-}
 
 type writeAdvice struct {
 	IssueStatus             string      `json:"issue_status"`
@@ -74,10 +66,10 @@ type writeAdvice struct {
 	// person had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
 	// DeclinedAsks is each ask of this issue a person declined to answer, so a session about to
-	// ask does not ask one of them again. Set only on the two writes that open a question
-	// (routeOpensAQuestion) and omitted when empty, so a write with nothing to report and a
-	// write that was never asked the question look the same to a reader: both have no declined
-	// ask to name.
+	// ask does not ask one of them again. Set only on a write that opens a question (the
+	// opensAQuestion its caller passes writeAdvice) and omitted when empty, so a write with
+	// nothing to report and a write that was never asked the question look the same to a
+	// reader: both have no declined ask to name.
 	DeclinedAsks []adviceDeclinedAsk `json:"declined_asks,omitempty"`
 	// Suggestions is the related-item check's result, set only on an issue or ask
 	// creation; nil (omitted) everywhere else.
@@ -107,12 +99,14 @@ func (e *adviceQueryError) Unwrap() error {
 
 // computeWriteAdvice runs the issue-scoped advice queries for a session's write. Two of them are
 // about the calling session itself - its own writes since the last human event, its own open
-// asks - so writeAdvice calls this only for a session actor. The third, whether Legion owns the
-// issue's status, runs only on an issue whose status is triage: that is the only line the answer
-// decides, so an ordinary write on an ordinary issue gains no query at all. status is the
-// issue's status as the write committed it, the same value writeAdvice reports. route names the
-// caller for the one query whose failure is logged rather than returned
-// (legionManagedStatusAdvice).
+// asks - so writeAdvice calls this only for a session actor. The third, the asks of the issue a
+// person declined to answer, runs only where opensAQuestion says this write is about to put
+// another question to a person: the ask route, and an edit of one of the issue's documents that
+// adds an ask block. The fourth, whether Legion owns the issue's status, runs only on an issue
+// whose status is triage: that is the only line the answer decides, so an ordinary write on an
+// ordinary issue gains no query at all. status is the issue's status as the write committed it,
+// the same value writeAdvice reports. route names the caller for the two queries whose failure
+// is logged rather than returned (declinedAsksAdvice, legionManagedStatusAdvice).
 func (s *server) computeWriteAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -121,6 +115,7 @@ func (s *server) computeWriteAdvice(
 	actor model.Actor,
 	excludeAskID string,
 	status string,
+	opensAQuestion bool,
 ) (*writeAdvice, error) {
 	advice := &writeAdvice{YourOpenAsks: []adviceAsk{}, IssueStatus: status}
 	if err := s.runAdviceQueryHook(ctx, tx, "session_writes_since_human"); err != nil {
@@ -163,9 +158,9 @@ func (s *server) computeWriteAdvice(
 	if err := rows.Err(); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
-	// The issue's declined asks, for the two writes that open a question. Its failure is not
-	// fatal to the advice either (declinedAsksAdvice).
-	if routeOpensAQuestion(route) {
+	// The issue's declined asks, for a write that opens a question. Its failure is not fatal to
+	// the advice either (declinedAsksAdvice).
+	if opensAQuestion {
 		advice.DeclinedAsks = s.declinedAsksAdvice(ctx, tx, route, issueKey)
 	}
 	if status == model.IssueStatusTriage {
@@ -222,20 +217,11 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 // this field exists to prevent. What bounds the read is the 500 ms statement_timeout the advice
 // holds every query of a write to, not a count of rows.
 //
-// Its failure is not fatal to the advice, for the reason legionManagedStatusAdvice gives for
-// its own. The two reads before it are what the calling session asked about - the write it just
-// made, and its own open asks - while this one only keeps it from asking again what a person has
-// already refused to answer. Returning an adviceQueryError would cost the write its issue
-// status, its writes-since-human count, its open asks and the triage line, and on an ask
-// creation every suggestion too (the related-item check rides a suggestions-only advice when
-// the write advice failed), all for a reminder. So a failure here leaves the field unset and
-// the rest of the advice stands.
-//
-// Like the walk it takes a savepoint of its own inside the advice savepoint, because a failed
-// statement aborts the transaction it ran in: run directly on the advice savepoint, its failure
-// would also take the statement_timeout reset and the release that follow it (writeAdvice), and
-// the advice would be dropped anyway. The 500 ms bound writeAdvice set covers it, and the
-// failure is logged once in the shape every omitted advice query takes.
+// Its failure is not fatal to the advice, and it takes a savepoint of its own inside the advice
+// savepoint, both for the reasons legionManagedStatusAdvice gives for its own. What a failure
+// costs here is the reminder alone: the two reads before it are what the calling session asked
+// about - the write it just made, and its own open asks - while this one only keeps it from
+// asking again what a person has already refused to answer.
 func (s *server) declinedAsksAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string) []adviceDeclinedAsk {
 	read, err := tx.Begin(ctx)
 	if err != nil {
@@ -293,6 +279,11 @@ func (s *server) runAdviceQueryHook(ctx context.Context, tx pgx.Tx, query string
 	return s.adviceQueryHook(ctx, tx, query)
 }
 
+// writeAdvice is the advice of one write, run on a savepoint of the write's own transaction.
+// opensAQuestion says the write is about to put a question to a person, which is what the
+// issue's declined asks are read for (computeWriteAdvice): the ask route passes true, a
+// document edit passes whether its ops added an ask block, and every other write passes false
+// and runs no such read.
 func (s *server) writeAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -301,6 +292,7 @@ func (s *server) writeAdvice(
 	actor model.Actor,
 	excludeAskID string,
 	status string,
+	opensAQuestion bool,
 ) *writeAdvice {
 	// A person's write has no advice query to run - every one of them is about the calling
 	// session, and the triage line this answers is about what a session is told - so it is
@@ -329,7 +321,7 @@ func (s *server) writeAdvice(
 		s.logAdviceError(route, issueKey, "statement_timeout", err)
 		return nil
 	}
-	advice, err := s.computeWriteAdvice(ctx, adviceTx, route, issueKey, actor, excludeAskID, status)
+	advice, err := s.computeWriteAdvice(ctx, adviceTx, route, issueKey, actor, excludeAskID, status, opensAQuestion)
 	if err != nil {
 		_ = adviceTx.Rollback(ctx)
 		query := "unknown"

@@ -255,9 +255,9 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 // a close the resume names.
 //
 // A decline is a resolution by a person, so personAct already counts it among the acts that
-// answer a wait, and the row it leaves is what both resume paths read to say so: personAnswered
-// here, and admission's answeredSince for a decline that falls before the pass that would put the
-// root in the wait.
+// answer a wait, and the close in hand is what says the answer was a decline (personAnswered).
+// Admission's answeredSince reads the row instead, for a decline that falls before the pass that
+// would put the root in the wait.
 func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) error {
 	root, err := e.recordedRoot(ctx, tx, fact.Key)
 	if err != nil || root == nil {
@@ -280,7 +280,7 @@ func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAs
 	case err != nil:
 		return err
 	case answers:
-		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark)
+		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark, declined)
 	case closer == record.ClosedByPerson:
 		return nil
 	case closer == record.ClosedBySettlement:
@@ -335,7 +335,9 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 // turn, which is the turn the ask reopens on if Dispatch's settlement restores it. (Only a question
 // is ever restored; a closed approval request never reopens, so the moved-request rule that could
 // give it the agent's turn never applies here.) A person's act personAct names is recorded, and
-// answers the root's wait (personAnswered). A session of the root's own tree leaving a question that
+// answers the root's wait (personAnswered) — as the reply it is, never as a decline, which only a
+// close can be, so a person's reply in the thread of an ask they declined earlier resumes the
+// architect on that reply. A session of the root's own tree leaving a question that
 // tree opened, or an approval request of the root's closed, armed design gate's document, with the
 // person hands it back (declare), unless a newer turn of the ask is already recorded (handsTurn). Any other reply that takes an ask of the root's wait away from the person —
 // a session's progress note handing it to the agent's turn — moves the wait (itemLeft).
@@ -364,7 +366,7 @@ func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 	case err != nil:
 		return err
 	case answers:
-		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark)
+		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark, false)
 	case fact.Actor.Person():
 		return nil
 	case inTree && fact.WaitingOn == "human" && after.ByTree && after.Question():

@@ -454,30 +454,34 @@ func owed(run record.RoleRun) (string, bool) {
 // documents is not read here: the architect is already live, and the daemon's own
 // design-changes-requested notice is the work that reaches it (a handout of its own).
 //
-// An act on an ask the mirror records as declined is named a decline, whichever ask it is, as the
-// live path names it from that same row (personAnswered): the person closed the question with no
-// answer, and the resume says so in Dispatch's own words. This is the path a decline takes when
-// it falls between the architect's hand-back and the pass that would put the root in the wait, so
-// the row is all there is to read — there is no event in hand here.
+// A decline is named only where the act that answered is the decline itself: a decline closes the
+// ask, so the row's ClosedSeq is that close's own sequence (askChange.apply writes ClosedBy and
+// ClosedSeq from it), while a later act of the person's — a reply in the thread of the ask they
+// declined — raises PersonSeq above it and answers as the reply it is. The row is all this path
+// has to read, because a decline reaches it when it falls between the architect's hand-back and
+// the pass that would put the root in the wait, and there is no event in hand; the live path has
+// the close itself and reads the decline from that (personAnswered), since the row's decline
+// never comes off it.
 func answeredSince(waiting record.Awaiting, asks []record.RootAsk, gateArtifacts []string) (record.Answer, string, bool) {
 	since := waiting.Since.Seq
 	for _, ask := range asks {
-		if ask.Ask == waiting.Ask && ask.PersonActSeq(gateArtifacts...) > since {
-			return answerOfAct(ask, record.AnsweredByAsk), ask.Ask, true
+		if seq := ask.PersonActSeq(gateArtifacts...); ask.Ask == waiting.Ask && seq > since {
+			return answerOfAct(ask, seq, record.AnsweredByAsk), ask.Ask, true
 		}
 	}
 	for _, ask := range asks {
-		if ask.PersonActSeq(gateArtifacts...) > since {
-			return answerOfAct(ask, record.AnsweredByReply), ask.Ask, true
+		if seq := ask.PersonActSeq(gateArtifacts...); seq > since {
+			return answerOfAct(ask, seq, record.AnsweredByReply), ask.Ask, true
 		}
 	}
 	return "", "", false
 }
 
-// answerOfAct is how a person's act on ask answered the wait: their decline of it where the
-// mirror records one, else otherwise, which is whether the ask is the one the wait names.
-func answerOfAct(ask record.RootAsk, otherwise record.Answer) record.Answer {
-	if ask.Declined {
+// answerOfAct is how the person's act at seq on ask answered the wait: their decline of it where
+// that act is the ask's own close and the mirror records a decline, else otherwise, which is
+// whether the ask is the one the wait names.
+func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.Answer {
+	if ask.Declined && seq == ask.ClosedSeq {
 		return record.AnsweredByDecline
 	}
 	return otherwise

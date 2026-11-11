@@ -857,7 +857,11 @@ package api
 // `packages/contracts/src/legion-api.ts` lists the nine values in `LEGION_WAIT_ANSWERS`, and
 // that list is a `z.enum`, which refuses a value it does not name rather than stripping it like
 // an unknown key: a plugin at 59 reading a declined root's state would refuse the whole body, so
-// the bump is what keeps the two from ever meeting. The daemon ships store migration
+// the bump keeps the two apart from here on. It does not keep them apart on the way back: the
+// migration is forward-only and the answer stands on the root's own row, so an older daemon
+// binary put back on this schema serves `answeredBy: "declined"` from the rows this release
+// wrote, and the plugin at 59 it is gated to then refuses the whole `GET /legion/v1/state` body
+// and not the one root that declined. The daemon ships store migration
 // `20261111021610_ask_declined.up.sql` with it, which adds the three columns the decline is kept
 // on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
 // the ninth value; an older daemon binary reads that schema without them and resumes such a root

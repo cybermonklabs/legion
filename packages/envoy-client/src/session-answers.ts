@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
+import { QUESTION_HEAD } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
@@ -31,9 +32,6 @@ const READ_TIMEOUT_MS = 10_000;
 
 /** How long a Dispatch that has no answers route is not asked again, process-wide. */
 const NO_ROUTE_BACKOFF_MS = 5 * 60_000;
-
-/** How much of an ask's question an item quotes: the session's own words, not the person's. */
-const QUESTION_MAX = 200;
 
 /** The rendered list's first line, and the marker a host checks to find a list it already added.
  *  A list carried from the cache adds its read time on the line after, so this line never varies. */
@@ -109,9 +107,11 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
         : `${item.ref} · ${owner}`;
   const lines = [head.join(" · "), where];
   if (item.ask !== undefined) {
+    // The question is the session's own words, not the person's, so cutting it to the length
+    // every surface quotes a question at (QUESTION_HEAD) loses nothing a person wrote.
     const question = item.ask.question.replace(/\s+/g, " ").trim();
     lines.push(
-      `Question: ${question.length > QUESTION_MAX ? `${question.slice(0, QUESTION_MAX)}…` : question}`
+      `Question: ${question.length > QUESTION_HEAD ? `${question.slice(0, QUESTION_HEAD)}…` : question}`
     );
   }
   if (item.kind === "answer") {

@@ -785,11 +785,12 @@ function openAsk(overrides: Partial<Ask> = {}): Ask {
   return answeredAsk({ answer: null, state: "open", ...overrides });
 }
 
-/** The sentences Dispatch writes beside a decline. They are written for the agent that asked,
- *  so the browser never draws them. */
+/** The four sentences Dispatch writes beside a person's note when they decline to answer
+ *  (`model.DeclineDispatchWords`), written here as the server writes them. They are for the
+ *  agent that asked, so the browser never draws them. */
 const DISPATCH_WORDS =
   "The person chose not to answer this question. Decide the next step without an answer. " +
-  "Do not ask them again. Say what you decided in your next write.";
+  "Do not ask this question again unless the facts change. Write in your work what you assumed.";
 
 /** The ask as the server hands it back once the person has declined it, with `note` as the
  *  reason they wrote; an empty note leaves an empty reason. */

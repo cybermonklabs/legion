@@ -32,6 +32,12 @@ func declineOf(ask string, seq int64, note string) intake.DispatchAskClosed {
 		Resolution: intake.ResolutionDeclined, Reason: note, DispatchWords: declineWords, Actor: askPerson, Mark: askSeq(seq)}
 }
 
+// replyOf is a person's reply in the thread of ask at seq, carrying no turn for anyone, as
+// Dispatch's ask.replied carries a comment on a closed ask.
+func replyOf(ask string, seq int64) intake.DispatchAskReply {
+	return intake.DispatchAskReply{Key: "LEGION-208", Ask: ask, Kind: record.AskQuestion, Actor: askPerson, Mark: askSeq(seq)}
+}
+
 // declinedMirror fails unless the mirror row of ask records the decline with the person's note and
 // Dispatch's words as they arrived.
 func declinedMirror(t *testing.T, pool *pgxpool.Pool, ask, note string) {
@@ -100,6 +106,22 @@ func namesTheDecline(t *testing.T, task, key, ask, note string) {
 	}
 }
 
+// namesTheReply fails unless task points the architect at the thread of ask and says nothing of a
+// decline: the words and the note belong to the wait the decline itself answered, and a person's
+// later reply in that same thread is a reply, whose own thread the architect must read.
+func namesTheReply(t *testing.T, task, key, ask, note string) {
+	t.Helper()
+	want := "A person answered or replied in the thread of ask " + ask + " on " + key + "; read that thread."
+	if !strings.HasPrefix(task, want) {
+		t.Fatalf("the resume task is %q, want it to open with %q", task, want)
+	}
+	for _, ofTheDecline := range []string{"declined", declineWords, note} {
+		if strings.Contains(task, ofTheDecline) {
+			t.Fatalf("the resume task is %q, want nothing of the earlier decline in it (%q)", task, ofTheDecline)
+		}
+	}
+}
+
 // seedDeclaredRoot records LEGION-208 as a root the daemon started, holding its admission slot,
 // whose architect is working the task it took and has handed a question back at seq 5: the
 // standing an admission pass decides a wait from (decideAwait's rules 0, 1 and 5).
@@ -124,7 +146,9 @@ func seedDeclaredRoot(t *testing.T, pool *pgxpool.Pool) {
 // It holds for any ask of the root, the one the wait names and any other, and by either path that
 // resumes a root — the live one, and the admission pass that reads the daemon's own mirror of the
 // root's asks because the decline reached the record before the pass could put the root in the
-// wait. Each root below runs on a record of its own.
+// wait. It holds for that one wait alone: the person's later reply in the declined ask's thread
+// answers the next wait as the reply it is, by either path. Each root below runs on a record of
+// its own.
 func TestAPersonsDeclineStartsTheWaitingRootAndNamesTheDecline(t *testing.T) {
 	const note = "The vendor owns that date; I do not."
 
@@ -221,6 +245,60 @@ func TestAPersonsDeclineStartsTheWaitingRootAndNamesTheDecline(t *testing.T) {
 
 				declinedMirror(t, pool, "ask-other", "")
 				namesTheDecline(t, resumeTaskOf(t, pool, "LEGION-208"), "LEGION-208", "ask-other", "")
+			})
+		}
+	})
+
+	// The fourth root's person declines one question and later writes in that same thread. The
+	// decline is a fact the ask's row keeps for ever, but it answered the wait it arrived on: the
+	// reply answers the next wait as the reply it is, and the resume points the architect at the
+	// thread rather than at the note they declined with. Both paths run with the architect's
+	// second question standing as the wait's own subject.
+	t.Run("a person's reply after their own decline answers the next wait as a reply", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			drive func(*testing.T, *pgxpool.Pool, func(string, intake.Fact))
+		}{
+			{name: "with the event in hand", drive: func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) {
+				root := awaitingRoot(3)
+				root.HandedOver = true
+				seedIssue(t, pool, root)
+				seedArchitectWorking(t, pool, root)
+				apply("declined", declineOf("ask-q", 8, note))
+				// The decline answered that wait; the architect's second question is the
+				// hand-back that starts the next one, which the person's reply then answers.
+				next := awaitingRoot(9)
+				next.HandedOver = true
+				next.Awaiting.Ask = "ask-second"
+				seedIssue(t, pool, next)
+
+				apply("replied", replyOf("ask-q", 10))
+
+				awaiting := recordedRoot(t, pool).Awaiting
+				if awaiting == nil || awaiting.AnsweredAt == nil || awaiting.AnsweredBy != record.AnsweredByReply ||
+					awaiting.AnsweredDetail != "ask-q" {
+					t.Fatalf("awaiting = %+v, want the wait on ask-second answered by the person's reply in ask-q's thread", awaiting)
+				}
+				resumeAnsweredRoot(t, pool, recordedRoot(t, pool))
+			}},
+			{name: "through the mirror", drive: func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) {
+				seedDeclaredRoot(t, pool)
+				apply("declined", declineOf("ask-q", 8, note))
+				apply("replied", replyOf("ask-q", 10))
+				if entered := reconcileRoots(t, pool, "LEGION-208"); len(entered) != 0 {
+					t.Fatalf("the pass put %v into the wait, want the architect told where it stands instead", entered)
+				}
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pool, apply := askRig(t)
+				seedQuestion(t, pool, "ask-q", 4)
+				seedQuestion(t, pool, "ask-second", 5)
+
+				tc.drive(t, pool, apply)
+
+				declinedMirror(t, pool, "ask-q", note)
+				namesTheReply(t, resumeTaskOf(t, pool, "LEGION-208"), "LEGION-208", "ask-q", note)
 			})
 		}
 	})

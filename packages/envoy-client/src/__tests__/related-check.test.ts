@@ -64,6 +64,17 @@ describe("what a write about to ask is told of the issue's declined asks", () =>
       "This issue holds a question a person declined to answer. Ask it again only if the facts have changed:",
       "- Declined: Which region goes first? (ask ask-2)",
     ]);
+
+    // A person's note is bounded only by the event body cap, and the field names every declined
+    // ask of the issue, so the line cuts the note as it cuts the question; the whole of it is at
+    // the link the line above prints.
+    const wordy: AdviceDeclinedAsk = {
+      id: "ask-3",
+      question: "Which queue?",
+      note: `${"word ".repeat(80)}end`,
+    };
+    const cut = `${"word ".repeat(80).trim().slice(0, 200)}…`;
+    expect(declinedAskLines(advice([wordy]), context)[2]).toBe(`  Their note: ${cut}`);
   });
 
   test("a write the server sent no declined asks on prints nothing, and a broken one prints why", () => {

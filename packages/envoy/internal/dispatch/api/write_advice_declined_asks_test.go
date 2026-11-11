@@ -1,7 +1,8 @@
 // write_advice_declined_asks_test.go proves INFRA-1282's R6: a session that opens a question on
 // an issue holding a declined ask is told so by the write itself - which question a person
-// declined, and what they wrote - so the same question is not put to them again. Only the two
-// writes that open a question carry it, and it stands apart from the related-item check beside
+// declined, and what they wrote - so the same question is not put to them again. Only a write
+// that opens a question carries it - the ask route, and an edit that adds an ask block - and it
+// stands apart from the related-item check beside
 // it: no crowding of that check's three places drops it, a check that was not made does not take
 // it away, and its own read failing costs the rest of the advice nothing.
 package api
@@ -77,9 +78,10 @@ func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
 		return adviceDeclinedAsk{ID: id, Question: question, Note: note}
 	}
 
-	// The two writes that open a question name it, and a comment on the same issue by the same
-	// session does not: the reminder reaches the agent that is about to ask and nobody else.
-	t.Run("the ask route and a document edit, but not a comment", func(t *testing.T) {
+	// The two writes that open a question name it, and a write that opens none does not,
+	// whether it is a comment or an edit that added no ask block: the reminder reaches the agent
+	// that is about to ask and nobody else.
+	t.Run("the ask route and an edit that adds an ask block, but not a comment or a plain edit", func(t *testing.T) {
 		handler := newTestHandler(t)
 		createAdviceProject(t, handler, "NEXT")
 		spec := "# Billing exporter\n\nPick the transport.\n"
@@ -102,6 +104,25 @@ func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
 			t.Fatalf("the edit added %#v ask blocks, want one: %s", advice.DecisionBlocksAdded, edit)
 		}
 		requireNamesTheDeclinedAsk(t, "the edit that added an ask block", edit, declined)
+
+		// R6 asks for the reminder on "an edit of one of the issue's documents that adds an ask
+		// block", so an edit that adds none puts no question to anyone: it carries no reminder,
+		// and the rest of its advice is answered as ever.
+		plain := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+			"ops": []map[string]string{{
+				"op": "insert", "markdown": "The exporter runs nightly.", "after": "end",
+			}},
+			"actor": actor,
+		})
+		if plain.Code != http.StatusOK {
+			t.Fatalf("the edit that adds no ask block: status=%d body=%s", plain.Code, plain.Body.String())
+		}
+		if advice := adviceFromResponse(t, plain.Code, plain.Body.String()); advice.IssueStatus != "triage" {
+			t.Fatalf("the plain edit's advice = %#v, want the issue's state reported as ever", advice)
+		}
+		if items, carried := declinedAsksOf(t, "the edit that added no ask block", plain.Body.String()); carried {
+			t.Fatalf("an edit that added no ask block carried declined_asks %#v: %s", items, plain.Body.String())
+		}
 
 		commented := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 			"body": "Carrying on without an answer.", "actor": actor,

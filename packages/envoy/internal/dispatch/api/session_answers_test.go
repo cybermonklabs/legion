@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -731,6 +733,38 @@ func TestSessionAnswersMaxCharsStopsAfterTheCrossingItem(t *testing.T) {
 		if response.Code != http.StatusBadRequest || responseCode(t, response) != "INVALID_QUERY" {
 			t.Fatalf("%s: status=%d body=%s, want 400 INVALID_QUERY", query, response.Code, response.Body.String())
 		}
+	}
+}
+
+// max_chars bounds every word the list serves, and a decline serves two: the person's note and
+// the sentences Dispatch wrote beside it, which are about 200 units and the whole of a decline
+// written with no note. A window that holds less than those sentences stops after the decline,
+// so a caller asking for a few hundred characters of declines is answered with what it asked
+// for and not with thousands.
+func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
+	f := newAnswersFixture(t)
+	older := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages",
+		map[string]any{"body": "0123456789", "delivery": "btw"}, "alice") // 10 UTF-16 units
+	askID := f.ask(t, answersSession, "Which database backs the queue?")
+	note := "No."
+	f.decline(t, askID, &note)
+	f.publishOutbox(t)
+
+	words := itemblocks.Units16(model.DeclineDispatchWords)
+	// The decline's own note is three units, so counting it alone would leave room for the
+	// message under it; the sentences take the sum past this window on the decline itself.
+	stopped := f.list(t, answersSession, "?max_chars="+strconv.Itoa(words-1))
+	if stopped.Total != 2 || len(stopped.Items) != 1 || stopped.Items[0].ID != askID {
+		t.Fatalf("max_chars just under Dispatch's sentences = %+v, want the decline of %s alone out of 2", stopped, askID)
+	}
+	// A window that holds the decline whole is not past it, and takes the message under it too.
+	roomy := f.list(t, answersSession, "?max_chars="+strconv.Itoa(words+itemblocks.Units16(note)))
+	ids := []string{}
+	for _, item := range roomy.Items {
+		ids = append(ids, item.ID)
+	}
+	if !slices.Equal(ids, []string{askID, older}) {
+		t.Fatalf("max_chars at the decline's own length = %v, want the decline and the message under it", ids)
 	}
 }
 

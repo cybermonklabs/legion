@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Declares daemon API contract 60, which gives `waitingOn.answeredBy` on an `awaiting_person` root a ninth value, `declined`: a person closed an ask of the root rather than answer it, and the daemon starts the root''s architect again with the question they would not answer, the four sentences Dispatch wrote beside it and the person''s own note.'
+time: 2026-11-11T04:20:43.948872684Z
+custom:
+    Issue: pr3511
