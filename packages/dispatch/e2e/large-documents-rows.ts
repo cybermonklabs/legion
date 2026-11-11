@@ -61,14 +61,17 @@ export interface ServedLate {
 }
 
 /** The build's own window on the page's clock, as `whatTheBuildServes` sees it: the frame its
- *  first batch was found in, the frame the finished editor was named in, and the moment the
- *  page was free again after the swap that ends a build - the adoption, the reveal and the
- *  margin's first placement - which the page says by serving a task it was handed in that
- *  frame. A reader's build is over at the third of these, not the second. */
+ *  first batch was found in, the frame the finished editor was named in, the moment the page
+ *  was free again after the swap that ends a build - the adoption, the reveal and the margin's
+ *  first placement - which the page says by serving a task it was handed in that frame, and
+ *  the end of the turn it said that in, which the page says by serving a task it handed over
+ *  from inside that turn. A reader's build is over at the third of these, not the second, and
+ *  the fourth is the last moment that build can still be what served something. */
 export interface TheBuildRan {
   firstBatchMs?: number;
   openedMs?: number;
   swappedMs?: number;
+  freeTurnEndedMs?: number;
 }
 
 /** Where the editor was when another person's word first showed up in its first block: how
