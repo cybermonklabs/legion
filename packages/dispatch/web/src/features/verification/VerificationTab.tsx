@@ -26,20 +26,13 @@ import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
 import { Timestamp } from "../refs/Timestamp";
 
-/** `words[answer]`, or the word the server wrote where this build holds no sentence for it:
- *  the route table carries each of these answers as a plain string, so a word added after this
- *  build shows as itself rather than as a blank. */
-function wordsFor(words: Record<string, string>, answer: string): string {
-  return Object.hasOwn(words, answer) ? words[answer] : answer;
-}
-
 /**
  * The one line that answers the gate's question for a check: whether a pass of it stands at
  * what the check compared its results with. The server reads it over every result of the
  * check, so no word here comes from the newest result alone: a pass recorded before a fail
  * still stands, and a fail recorded after a pass takes nothing away from it.
  */
-const PASS_STANDS_LABELS: Record<string, string> = {
+const PASS_STANDS_LABELS: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: "No pass stands",
   unknown: "Dispatch cannot say whether a pass stands",
   yes: "A pass stands",
@@ -48,15 +41,16 @@ const PASS_STANDS_LABELS: Record<string, string> = {
 /** The pill sits on `surfaceMutedBg`, so its muted answer takes the token written for that
  *  background: `textMutedOnSurface` is slate-500, which is 4.34:1 on slate-100 and under
  *  WCAG AA's 4.5:1 for text this size (axe's `color-contrast`, serious). */
-const PASS_STANDS_TEXT: Record<string, string> = {
+const PASS_STANDS_TEXT: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: dangerText,
   unknown: textMutedOnSurfaceMuted,
   yes: successText,
 };
 
 /** Why a check compared its results with nothing at all, and why one result's commit could not
- *  be placed. The server writes the same three reasons for both. */
-const REASON_WORDS: Record<string, string> = {
+ *  be placed. A check takes all three and a result all but no_pull_request_or_branch, so the
+ *  check's set types this map and answers both. */
+const REASON_WORDS: Record<NonNullable<CheckBlock["compared_nothing"]>, string> = {
   no_pull_request_or_branch: "This issue holds no pull request and no branch.",
   read_failed: "A read Dispatch made did not answer.",
   repository_unreadable: "Dispatch cannot read the repository.",
@@ -64,7 +58,7 @@ const REASON_WORDS: Record<string, string> = {
 
 /** Which time a basis learned from a pull request carries: when Dispatch last read the pull
  *  request from GitHub, or the pull request's own update time as GitHub gave it. */
-const LEARNED_AT_WORDS: Record<string, string> = {
+const LEARNED_AT_WORDS: Record<NonNullable<CheckBasis["learned_at"]>["kind"], string> = {
   read_at: "Dispatch read it",
   updated_at: "GitHub updated it",
 };
@@ -107,10 +101,7 @@ function basisWords(basis: CheckBasis): string {
       ? "the head of the pull request"
       : `the head of pull request ${basis.pull_request}`;
   }
-  if (basis.kind === "named") {
-    return "the commit this read named";
-  }
-  return basis.kind;
+  return "the commit this read named";
 }
 
 /** One commit or branch a check's results are compared with: what it is, its whole commit
@@ -130,8 +121,7 @@ function Basis({ basis }: { basis: CheckBasis }): ReactNode {
       {basis.learned_at === undefined ? null : (
         <span className={textMutedOnSurface}>
           {" ("}
-          {wordsFor(LEARNED_AT_WORDS, basis.learned_at.kind)} <Timestamp at={basis.learned_at.at} />
-          )
+          {LEARNED_AT_WORDS[basis.learned_at.kind]} <Timestamp at={basis.learned_at.at} />)
         </span>
       )}
     </>
@@ -157,10 +147,9 @@ function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): R
   if (stands.answer === "other_commit") {
     return "At another commit";
   }
-  if (stands.answer === "unknown") {
-    return `Not known. ${wordsFor(REASON_WORDS, stands.reason ?? "")}`;
-  }
-  return stands.answer;
+  // The reason is the server's to give and may be absent, so an unknown answer stands on its
+  // own where there is none.
+  return stands.reason === undefined ? "Not known." : `Not known. ${REASON_WORDS[stands.reason]}`;
 }
 
 /** The second fact of each result: whether the check's words moved after the result was
@@ -259,7 +248,8 @@ function Result({
 function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   const bases = check.compared_with ?? [];
   if (bases.length === 0) {
-    return wordsFor(REASON_WORDS, check.compared_nothing ?? "");
+    // compared_nothing is the server's to give: where it holds none, the fact shows its dash.
+    return check.compared_nothing === undefined ? "" : REASON_WORDS[check.compared_nothing];
   }
   return bases.map((basis, index) => (
     <span key={`${basis.kind}-${basis.commit ?? basis.branch ?? index}`}>
@@ -282,12 +272,10 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="inline-flex flex-wrap items-baseline gap-x-2">
           <span
-            // The class map, never wordsFor: an answer this build holds no class for would
-            // otherwise put the server's own word into className and leave the pill unstyled.
-            className={`${pillShapeClassName} ${surfaceMutedBg} ${PASS_STANDS_TEXT[stands] ?? textMutedOnSurfaceMuted}`}
+            className={`${pillShapeClassName} ${surfaceMutedBg} ${PASS_STANDS_TEXT[stands]}`}
             data-testid="verification-check-pass-stands"
           >
-            {wordsFor(PASS_STANDS_LABELS, stands)}
+            {PASS_STANDS_LABELS[stands]}
           </span>
           {roles.length === 0 ? null : (
             <span

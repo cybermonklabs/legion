@@ -2389,25 +2389,20 @@ function progressText(progress: IssueProgress | undefined, sep: string): string 
  *  that stands at none of the compared commits, and the whole of every other one. */
 const BRIEF_READING_CHARACTERS = 200;
 
-/** The three reasons a check compared its results with nothing, and the three a result's commit
- *  cannot be placed, in words a reader acts on. A reason a newer Dispatch adds prints as the
- *  server sent it, since the word itself says more than nothing would. */
-const COMPARISON_REASONS: Readonly<Record<string, string>> = {
+/** The three reasons a check compared its results with nothing, and the two a result's commit
+ *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
+ *  no_pull_request_or_branch, so the check's set types this map and answers both. */
+const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
   no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
   repository_unreadable: "Dispatch cannot read the repository",
   read_failed: "a read Dispatch made did not answer",
 };
 
-function comparisonReason(reason: string): string {
-  return COMPARISON_REASONS[reason] ?? reason;
-}
-
 /** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
  *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
 function learnedText(learned: BasisLearnedAt): string {
   if (learned.kind === "read_at") return `Dispatch read it ${learned.at}`;
-  if (learned.kind === "updated_at") return `GitHub updated it ${learned.at}`;
-  return `learned ${learned.at}`;
+  return `GitHub updated it ${learned.at}`;
 }
 
 /** One thing a check compared its results with, as the head line names it. */
@@ -2418,8 +2413,7 @@ function basisText(basis: CheckBasis): string {
     return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
   }
   if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
-  if (basis.kind === "named") return `the commit you named, ${basis.commit ?? ""}${learned}`;
-  return `${basis.kind} ${basis.commit ?? basis.branch ?? ""}${learned}`.trim();
+  return `the commit you named, ${basis.commit ?? ""}${learned}`;
 }
 
 /** Where a result's commit stands, as the basis it matched names that place. The head line has
@@ -2431,8 +2425,7 @@ function basisPlace(basis: CheckBasis): string {
       : `the head of pull request #${basis.pull_request}`;
   }
   if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
-  if (basis.kind === "named") return "the commit you named";
-  return basis.kind;
+  return "the commit you named";
 }
 
 /** The first of R4's two facts: where one result's commit stands against what its check compared
@@ -2448,13 +2441,11 @@ function commitStandsText(stands: CheckResult["commit_stands"]): string {
       : `That commit is ${basisPlace(stands.basis)}`;
   }
   if (stands.answer === "other_commit") return "That commit is none of the compared commits";
-  if (stands.answer === "unknown") {
-    const reason = stands.reason ?? "";
-    return reason === ""
-      ? "Where that commit stands is not known"
-      : `Where that commit stands is not known: ${comparisonReason(reason)}`;
-  }
-  return `Where that commit stands: ${stands.answer}`;
+  // The reason is the server's to give and may be absent, so the answer stands on its own
+  // where there is none.
+  return stands.reason === undefined
+    ? "Where that commit stands is not known"
+    : `Where that commit stands is not known: ${COMPARISON_REASONS[stands.reason]}`;
 }
 
 /** R4's other fact: whether the check's words moved after the result was recorded. Both versions
@@ -2480,8 +2471,7 @@ function passStandsText(pass: CheckPassStands | undefined): string {
       : `A pass stands: yes, from ${roles.join(", ")}`;
   }
   if (pass.answer === "no") return "A pass stands: no";
-  if (pass.answer === "unknown") return "A pass stands: not known";
-  return `A pass stands: ${pass.answer}`;
+  return "A pass stands: not known";
 }
 
 /** The reading one role recorded. `brief` cuts a reading whose result stands at none of the
@@ -2516,13 +2506,13 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
  *  check's own words once, then every result recorded against it. */
 function checkLines(check: CheckBlock, brief: boolean): string[] {
   const bases = check.compared_with ?? [];
-  const reason = check.compared_nothing ?? "";
+  const reason = check.compared_nothing;
   const compared =
     bases.length > 0
       ? `Compared with ${bases.map(basisText).join(", ")}`
-      : reason === ""
+      : reason === undefined
         ? "Compared with nothing, and this Dispatch server does not say why"
-        : `Compared with nothing: ${comparisonReason(reason)}`;
+        : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
   const results = check.results ?? [];
   return [
     `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,

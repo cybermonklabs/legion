@@ -1069,7 +1069,7 @@ const (
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
 // of the pull request whose head the commit is.
 type CheckBasis struct {
-	Kind        string          `json:"kind"`
+	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
@@ -1081,7 +1081,7 @@ type CheckBasis struct {
 // none.
 type BasisLearnedAt struct {
 	At   time.Time `json:"at"`
-	Kind string    `json:"kind"`
+	Kind string    `json:"kind" enum:"read_at,updated_at"`
 }
 
 // CheckPassStands is the one line that answers the gate's question for a check: whether a pass
@@ -1089,7 +1089,7 @@ type BasisLearnedAt struct {
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
 // moved does not stand, and a retracted result counts for nothing.
 type CheckPassStands struct {
-	Answer string   `json:"answer"`
+	Answer string   `json:"answer" enum:"yes,no,unknown"`
 	Roles  []string `json:"roles,omitempty"`
 }
 
@@ -1098,9 +1098,9 @@ type CheckPassStands struct {
 // (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
 // which CheckResult.CheckWordsMoved answers on its own.
 type ResultCommitStands struct {
-	Answer string      `json:"answer"`
+	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
 	Basis  *CheckBasis `json:"basis,omitempty"`
-	Reason string      `json:"reason,omitempty"`
+	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
@@ -1184,7 +1184,7 @@ type CheckBlock struct {
 	// order they are asked about, and ComparedNothing is why there are none where it is empty
 	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
 	ComparedWith    []CheckBasis    `json:"compared_with"`
-	ComparedNothing string          `json:"compared_nothing,omitempty"`
+	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
 	PassStands      CheckPassStands `json:"pass_stands"`
 }
 

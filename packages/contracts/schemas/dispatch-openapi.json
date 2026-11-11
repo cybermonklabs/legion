@@ -13275,6 +13275,10 @@
             "type": "string"
           },
           "kind": {
+            "enum": [
+              "read_at",
+              "updated_at"
+            ],
             "type": "string"
           }
         },
@@ -13717,6 +13721,11 @@
             "type": "string"
           },
           "kind": {
+            "enum": [
+              "named",
+              "pull_request",
+              "branch"
+            ],
             "type": "string"
           },
           "learned_at": {
@@ -13740,6 +13749,11 @@
             "type": "string"
           },
           "compared_nothing": {
+            "enum": [
+              "no_pull_request_or_branch",
+              "repository_unreadable",
+              "read_failed"
+            ],
             "type": "string"
           },
           "compared_with": {
@@ -13812,6 +13826,11 @@
       "CheckPassStands": {
         "properties": {
           "answer": {
+            "enum": [
+              "yes",
+              "no",
+              "unknown"
+            ],
             "type": "string"
           },
           "roles": {
@@ -22114,12 +22133,21 @@
       "ResultCommitStands": {
         "properties": {
           "answer": {
+            "enum": [
+              "at_basis",
+              "other_commit",
+              "unknown"
+            ],
             "type": "string"
           },
           "basis": {
             "$ref": "#/components/schemas/CheckBasis"
           },
           "reason": {
+            "enum": [
+              "repository_unreadable",
+              "read_failed"
+            ],
             "type": "string"
           }
         },

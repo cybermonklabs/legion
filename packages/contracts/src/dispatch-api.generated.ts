@@ -3286,7 +3286,8 @@ export interface components {
     BasisLearnedAt: {
       /** Format: date-time */
       at: string;
-      kind: string;
+      /** @enum {string} */
+      kind: "read_at" | "updated_at";
     };
     BlockAttributeValue: {
       kind: string;
@@ -3393,14 +3394,16 @@ export interface components {
     CheckBasis: {
       branch?: string;
       commit?: string;
-      kind: string;
+      /** @enum {string} */
+      kind: "named" | "pull_request" | "branch";
       learned_at?: components["schemas"]["BasisLearnedAt"];
       pull_request?: number;
     };
     CheckBlock: {
       artifact_id: string;
       block_id: string;
-      compared_nothing?: string;
+      /** @enum {string} */
+      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
       compared_with: components["schemas"]["CheckBasis"][] | null;
       issue_key: string;
       negative_control: string;
@@ -3415,7 +3418,8 @@ export interface components {
       when: string;
     };
     CheckPassStands: {
-      answer: string;
+      /** @enum {string} */
+      answer: "yes" | "no" | "unknown";
       roles?: string[];
     };
     CheckResult: {
@@ -5202,9 +5206,11 @@ export interface components {
       reason: string;
     };
     ResultCommitStands: {
-      answer: string;
+      /** @enum {string} */
+      answer: "at_basis" | "other_commit" | "unknown";
       basis?: components["schemas"]["CheckBasis"];
-      reason?: string;
+      /** @enum {string} */
+      reason?: "repository_unreadable" | "read_failed";
     };
     RoomCounters: {
       awareness_clients: number;
