@@ -5008,13 +5008,13 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   the first move after an opening or a hand-back is not quiet.
 
 - A notifying comment-thread or message-reply event without an `ask_id` keeps the author routes:
-  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and every session the thread's document credits;
+  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;
   a message reply's direct parent author; for a resolve or reopen, the resolved comment's root author only, so the reopen a reply makes in the same transaction tells no new session twice;
-  and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
+  and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, where no session claims the issue, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
   That document is the anchor's (`anchor.artifact_id`) for a comment on a passage of an issue's document, and the event's own for a project document;
   for a reply, it is the thread root's, since a reply carries no anchor.
   A comment on an issue's conversation names no document.
-  A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under.
+  A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under, and each row says which of the two it came from (`from_thread`, the first element of the `min(rank)` the statement already orders by), so a session that is both a member and a credit counts as a member.
   A person's `comment.created` or `comment.edited` on an issue with no route and no session claimant (`routing`:
   unclaimed, or a person holds the claim) also reaches every session the issue's primary document (`artifacts.is_primary`) credits, as `documentCreditsSQL` reads credits (`addPrimaryDocumentAuthors`), so a session that wrote the spec without a claim still hears comments on any of the issue's threads, an ask's thread included.
   A batch reads those sessions for all such events in one statement (`loadPrimaryDocumentAuthors`, another lookup kind of `loadLookups`), keyed by issue.
@@ -5024,6 +5024,15 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   The primary-document and author routes are skipped for a human, who has no topic, for the event's own actor, so a session commenting on a document it wrote is never told of its own comment, and for a session whose own mention of the comment delivers it (`recipientFilter` keeps the first two, the mention rule below the third, asked where every copy bound for a session's own topic asks it).
   An unanswered `role:X` mention names no session in the payload, and the comment's attempt rows name the one its sender pinned there, so a thread session or document author that mention reached is left to it like any other; one the sender has not pinned yet hears the comment twice.
   An agent's comment notifies nobody (`notify` is false), so it takes no primary-document or author route at all.
+
+- On an issue a session claims, that session is the one a person's comment obliges, and the credits of a document are not a second reason to deliver:
+  a session the read gives only as a credit of a document is left out of the reply arm and of the document arm above when the event names an issue, its actor is a person and the issue's claimant is a session (`addAuthorRoutes`, the three conditions `addClaimantRoute` itself carries).
+  Six cases keep the delivery they have now: a comment on a project document, which names no issue and so has no claim to read;
+  an issue a person claims, whose claimant is empty;
+  an issue a route holds and no session claims, where the route's holder and the credits both hear it;
+  a session the comment names whose own mention of it failed, which has no other route on a claimed issue and whose copy carries the key of that failed mention (`mentionDeliveries.fallbackKeys`, read for the comment's edit as well as for the comment itself);
+  a member of the thread, so a session that wrote there still gets the person's later replies;
+  and a person's edit of a document (`artifact.human_edited`), which still reaches every session that document credits.
 
 - When a batch's recipient statement fails - its comment recipients, its primary document authors or its document credits (`loadDocumentSessionAuthors`) - unlike the other lookup kinds, whose failure fails the whole batch, only the events that asked an id the statement cannot answer fail.
   A statement Postgres refuses over the rows it read (`refusedStatement`:
