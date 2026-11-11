@@ -33,7 +33,7 @@ function renderAnswerWrite() {
   return { client, hook };
 }
 
-// Ruling 3: a write the reader stopped may have reached Dispatch, so its Retry - the surface making
+// Decision 3: a write the reader stopped may have reached Dispatch, so its Retry - the surface making
 // the very same press again - goes under its own key, and Dispatch answers it with what the first
 // did. After Dispatch's own refusal the Retry is a new press under a new key, since Dispatch would
 // answer the old one with that refusal for a day.
