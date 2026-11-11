@@ -989,8 +989,8 @@ const settingsOverlays = "PI_CONFIG_FILES"
 // operator's pod env names none. A role with none is told operatorEnv unchanged.
 //
 // runtime.SpendAttributesVariable carries the launch's issue and role after the operator's own
-// attributes (runtime.SpendResourceAttributes), so a pod's spend splits by the issue it was spent
-// on: the detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// attributes (runtime.SpendResourceAttributes), so a pod's resource attributes name the issue it
+// serves: the detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's rather than before. Every launch has a role, so this entry is in
 // every role's environment, inserted in name order where the operator sets no attributes at all.
 // It is the launch's own, not the pod's: it travels in the generation's start command
@@ -1295,7 +1295,7 @@ func (r *Runtime) LaunchBound() time.Duration {
 // (runtime.kubernetes.pod, with the two names this runtime composes carrying the launch's share
 // of the operator's own value: the role's overlays after the operator's in PI_CONFIG_FILES, and
 // the launch's issue and role after the operator's attributes in OTEL_RESOURCE_ATTRIBUTES, so
-// every pod's spend splits by the issue it was spent on — roleOperatorEnv), then the spec's own,
+// every pod's attributes name the issue it serves — roleOperatorEnv), then the spec's own,
 // then one `<NAME>_FILE` pointer per secret into the generation's private launcher directory,
 // then one per providers secret into the providers
 // mount, then OMP_SESSION_STORAGE=sql and OMP_SESSION_SQL_DSN_FILE naming the URL file of the

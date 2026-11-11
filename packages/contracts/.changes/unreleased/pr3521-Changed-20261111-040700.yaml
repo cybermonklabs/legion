@@ -1,5 +1,5 @@
 kind: Changed
-body: 'Daemon API contract 63: every Legion launch now carries the issue it serves as `legion.issue` and the role it runs as `legion.role` in `OTEL_RESOURCE_ATTRIBUTES`, after the attributes the deployment''s own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets, so a pod''s spend splits by the issue it was spent on. The project controller''s launch serves no issue and carries the role alone. The `daemonApiVersion` fixture this package pins the plugin and the daemon to declares 63.'
+body: 'Daemon API contract 63: every Legion launch now carries the issue it serves as `legion.issue` and the role it runs as `legion.role` in `OTEL_RESOURCE_ATTRIBUTES`, after the attributes the deployment''s own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets. The project controller''s launch serves no issue and carries the role alone. Both keys reach the spend collector today, and its keep-list of six `theorem.*` attributes drops every other key, so a spend row grouped by issue follows only when that collector keeps them. The `daemonApiVersion` fixture this package pins the plugin and the daemon to declares 63.'
 time: 2026-11-11T04:07:00.257123976Z
 custom:
     Issue: pr3521

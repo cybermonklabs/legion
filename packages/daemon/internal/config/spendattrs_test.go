@@ -8,15 +8,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// operatorSpendAttributesFor is the value the live deployment writes into the operator's
-// OTEL_RESOURCE_ATTRIBUTES for one lane: legion/Pulumi.prod.yaml of theorem-labs/agent-infra
-// writes one per project, differing in the lane alone.
-func operatorSpendAttributesFor(lane string) string {
-	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@theorem.dev"
+// liveSpendAttributes is what the live deployment writes into the operator's
+// OTEL_RESOURCE_ATTRIBUTES, one value per lane: legion/Pulumi.prod.yaml of theorem-labs/agent-infra
+// at main on 2026-11-11, lines 102, 276, 386, 1056 and 1270. The five values differ in the project
+// as well as the lane, so each is written out as the deployment writes it.
+var liveSpendAttributes = []struct{ lane, value string }{
+	{"legion-smoke", "theorem.project=legion,theorem.lane=legion-smoke,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
+	{"legion-linux", "theorem.project=verified-linux,theorem.lane=legion-linux,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
+	{"legion-bet", "theorem.project=task-making,theorem.lane=legion-bet,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
+	{"legion-infra", "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
+	{"legion-ossv", "theorem.project=oss-verify,theorem.lane=legion-ossv,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
 }
-
-// liveSpendLanes are the five lanes that deployment runs, each with a value of its own.
-var liveSpendLanes = []string{"legion-smoke", "legion-linux", "legion-bet", "legion-infra", "legion-ossv"}
 
 // spendAttributesReaders are the two readers of an operator's own OTEL_RESOURCE_ATTRIBUTES:
 // `runtime.kubernetes.pod.env` (readPodEnv) and `runtime.tmux.pane_env` (readPaneEnv). Both read
@@ -63,9 +65,9 @@ var spendAttributesReaders = []struct {
 // appends the launch's own pairs to exactly this text.
 func TestBothReadersAcceptTheLiveSpendAttributes(t *testing.T) {
 	for _, reader := range spendAttributesReaders {
-		for _, lane := range liveSpendLanes {
-			t.Run(reader.key+" "+lane, func(t *testing.T) {
-				value := operatorSpendAttributesFor(lane)
+		for _, live := range liveSpendAttributes {
+			t.Run(reader.key+" "+live.lane, func(t *testing.T) {
+				value := live.value
 				cfg, err := LoadForValidation(writeConfigFile(t, reader.file(value)), noEnv)
 				if err != nil {
 					t.Fatalf("LoadForValidation: %v", err)

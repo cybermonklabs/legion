@@ -304,13 +304,16 @@ runtime:
       env:
         PI_CONFIG_FILES: /etc/legion-operator/overlay.yml
         CLAUDE_CODE_USE_FOUNDRY: "0"
-        # Your own OpenTelemetry resource attributes, the ones this deployment's spend is billed
-        # under: Legion keeps them and appends the launch's legion.issue and legion.role, so a
-        # pod's spend splits by the issue it was spent on (the controller's pod, which serves no
-        # issue, carries the role alone). The loader refuses a member the agent's parser would
+        # Your own OpenTelemetry resource attributes, the ones this deployment's spend is
+        # billed under: Legion keeps them and appends the launch's legion.issue and
+        # legion.role, so a pod's attributes name the issue it serves (the controller's pod,
+        # which serves no issue, carries the role alone). Both keys reach the spend collector
+        # today, and its keep-list of six theorem.* attributes drops every other key, so no
+        # spend row names an issue yet. A row grouped by issue follows when the collector keeps
+        # them (dispatch://INFRA-1835). The loader refuses a member the agent's parser would
         # throw on — one that is no single key=value, an empty key, a side that does not
-        # percent-decode or runs past 255 characters, or one naming legion.issue or legion.role —
-        # since one such member costs the pod every attribute of the variable:
+        # percent-decode or runs past 255 characters, or one naming legion.issue or legion.role
+        # — since one such member costs the pod every attribute of the variable:
         # OTEL_RESOURCE_ATTRIBUTES: theorem.project=widgets,theorem.lane=widgets-platform
       service_account: legion-worker
       volumes:

@@ -19,9 +19,9 @@ import (
 const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
 
 // Every pane carries the operator's own spend attributes with its own issue and role written
-// after them (runtime.SpendResourceAttributes, panePairs), so a pane's spend splits by the issue
-// it was spent on. The controller serves no issue, so it carries the role alone: an empty
-// legion.issue on every controller pane would split a spend report by nothing.
+// after them (runtime.SpendResourceAttributes, panePairs), so a pane's attributes name the issue
+// it serves. The controller serves no issue, so it carries the role alone: an empty legion.issue
+// on every controller pane would split a spend report by nothing.
 //
 // The assertion reads every pair of the name and its whole value, so a pane told nothing is told
 // from a pane told the empty value, and a pane told the name twice is told from one told it once.

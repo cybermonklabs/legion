@@ -98,8 +98,10 @@ number is the one `DaemonAPIVersion` declares, last bumped by contract 63's laun
 attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
 issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
 after the attributes the deployment's own `runtime.kubernetes.pod.env` or
-`runtime.tmux.pane_env` sets, so a pod's spend splits by the issue it was spent on; the project
-controller's launch serves no issue and carries the role alone), after contract 59's end of
+`runtime.tmux.pane_env` sets, so every launch's attributes name the issue it serves, and a
+spend row grouped by issue follows once the spend collector keeps those two keys, which
+dispatch://INFRA-1835 adds to its `theorem.*` keep-list; the project controller's launch serves
+no issue and carries the role alone), after contract 59's end of
 fix-attempt counting and its two recovery operations
 (the settings block of `GET /legion/v1/state` no longer
 carries `max_fix_attempts` and each pull request in it loses `fixAttempts`, which the strict

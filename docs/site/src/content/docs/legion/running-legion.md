@@ -509,8 +509,11 @@ What each part is for:
   in `pane_env` — the overlays there are `runtime.tmux.pi_config_files` — so the attributes are
   the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
   billed under (`theorem.project=widgets`), and each launch carries them with its own
-  `legion.issue` and `legion.role` after them, so a pod's spend splits by the issue it was spent
-  on. The agent takes the last value a key is given, which is why Legion's two pairs come last.
+  `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
+  serves. The agent takes the last value a key is given, which is why Legion's two pairs come
+  last. Both keys reach the spend collector today, and its keep-list of six `theorem.*`
+  attributes drops every other key, so no spend row names an issue yet. A spend row grouped by
+  issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list.
   The project controller serves no issue and carries the role alone. The image probe's container
   and the tmux boot gate's probe run no role, so each keeps your value as you wrote it.
   Legion reads that value for its content as well as its name, and refuses a member the agent's
