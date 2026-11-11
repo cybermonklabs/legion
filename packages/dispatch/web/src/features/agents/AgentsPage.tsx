@@ -563,7 +563,7 @@ function AgentRow({
    *  with the path one hover away. One listener for two hundred rows, not two hundred. */
   mdViewport: boolean;
   /** This session's open questions that wait on the reader themselves: whose next move is a
-   *  person's, on an issue assigned to them, and not snoozed. */
+   *  person's, which wait on them, and not snoozed. */
   needsYou: number;
   /** Opens the row, or closes it: the page keeps the reader's answer. */
   onExpand: (expanded: boolean) => void;
@@ -1417,7 +1417,7 @@ export function AgentsPage(): ReactNode {
   // Needs you beside the asks that wait on them.
   const agentStates = useQuery(userAgentStateQuery()).data ?? {};
   // The first card number: the reader's own work with this session - a question whose next move
-  // is a person's, on an issue assigned to them. One meaning for every count of what waits on
+  // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.
   const needsYouBySession = useMemo(
     () => tallyBySession(waitingOnYou(inbox.data ?? [], viewer)),

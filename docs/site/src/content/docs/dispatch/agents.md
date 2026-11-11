@@ -21,7 +21,7 @@ Each row is one agent session. It shows:
 - the machine it runs on, which links to that machine's page, and its directory; from a laptop
   width the directory is shortened to its last segment, with the whole path shown when you point
   at it, and on a phone it takes a line of its own and is shown whole,
-- **Needs you N** when it has asks waiting on your answer — the ones on issues assigned to you —
+- **Needs you N** when it has open asks whose next move is yours — the ones that wait on you —
   which opens your Inbox filtered to them,
 - **Waiting on agent N** when it has asks whose next move is its own, on anybody's issue; it
   opens the Inbox with the assignee filter cleared — that session's whole open list, both

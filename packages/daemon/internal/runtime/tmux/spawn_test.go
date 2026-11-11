@@ -442,6 +442,12 @@ func TestNewRefusesAProviderDispatchTokenOnlyWhenDispatchIsConfigured(t *testing
 // the pairs and not to runtimeOwned is one a spec could override; a name left in runtimeOwned that
 // the pairs no longer set is one a spec is refused for nothing. A controller pane is told the same
 // gh pairs as any other, so the sets are equal.
+//
+// PUBLIC_LEAK_CHECK is the one pair the runtime sets that is deliberately not owned, so it is
+// left out of the inputs here and read on its own below: an operator's pane variable and a
+// spec's own Env must be able to point a pane at another copy of the check, and a name the
+// runtime owned could be set by neither
+// (TestAnOperatorsCheckAndASpecsOutrankTheResolvedOne).
 func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	spec := testSpec()
 	spec.Env, spec.Secrets = nil, nil
@@ -460,6 +466,22 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	}
 	if !reflect.DeepEqual(told, runtimeOwned) {
 		t.Errorf("a pane is told %v by the runtime, and runtimeOwned is %v", slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwned)))
+	}
+	// The resolved check is the one name beyond that set, and it joins neither owned set.
+	in.LeakCheck = "/opt/machine/public-leak-check.sh"
+	withCheck := map[string]bool{}
+	pairs = panePairs(spec, in, secretFiles("/state", spec))
+	for i := 1; i < len(pairs); i += 2 {
+		name, _, _ := strings.Cut(pairs[i], "=")
+		withCheck[name] = true
+	}
+	want := maps.Clone(runtimeOwned)
+	want["PUBLIC_LEAK_CHECK"] = true
+	if !reflect.DeepEqual(withCheck, want) {
+		t.Errorf("a pane told a resolved check is told %v, want the runtime's own names and PUBLIC_LEAK_CHECK", slices.Sorted(maps.Keys(withCheck)))
+	}
+	if ownedNames["PUBLIC_LEAK_CHECK"] {
+		t.Error("PUBLIC_LEAK_CHECK is in ownedNames, so a spec that points its pane at another copy of the check is refused")
 	}
 }
 
