@@ -81,7 +81,7 @@ const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
   "```\ndispatch://CORE-1":
     "an unclosed fence, which in a document opens a block that swallows every row written after it",
   "```a`b\ndispatch://CORE-1\n```":
-    "a backtick in a fence's info string, which CommonMark and both readers of a reference take for no fence at all and the document editor's own parser opens a block on, swallowing every row after it",
+    "a backtick in a fence's info string: the two readers of a reference follow CommonMark, which takes this for no fence at all, and the document editor's own parser does not - it opens a block here and swallows every row after it. So a party written on that line is delivered while a reader of the document sees code, which is the milder of the two directions and is left as it stands (dispatch://INFRA-1702/comment/07631016-18aa-4267-bc05-2a6a821c20cd): aligning the readers would make them wrong against the server's renderer and every other reader of the stored text, and aligning the editor means changing vendored parsing for every document",
   ':::callout{#d1 affects="dispatch://CORE-1/spec#b-a dispatch://CORE-1/spec#b-b"}':
     "an unclosed directive, which in a document opens a block that swallows the text after it",
   ":::ask{#q2}\nWhich region first?\n:::":
