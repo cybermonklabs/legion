@@ -492,7 +492,12 @@ The broker evaluates every name
   the proxy spends such a grant's values itself and mints them owner-wide for the life of the
   grant, so no narrowing of one release could hold for them. A github-app secret the rules do
   not name narrows as it always has: ask for it in a grant that holds no name behind the
-  airlock. A Google login
+  airlock. The exec form's `--github-token` narrows nothing: the release holds the same JSON
+  object of installations, and the flag decides what the exec form puts in the command's
+  environment. With it the name holds that one installation's token alone, which is what a
+  command sends to GitHub, and without it the name holds the whole object. `--github-token`
+  needs `--github-owner`, and nothing runs where the release holds other than one installation
+  or where no name of the grant released a github-app value. A Google login
   value holds an `authorized_user` refresh-token credential. Its release returns a bare access
   token. A Google service-account value names one account,
   `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`, and its release returns a bare

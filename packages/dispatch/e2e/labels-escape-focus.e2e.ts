@@ -1,11 +1,6 @@
-import { expect, test } from "@playwright/test";
 import { createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Closing a picker that saves what the close committed must leave the reader where Escape put
 // them. The save re-renders the header, and a trigger disabled while it runs cannot hold focus:

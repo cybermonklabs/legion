@@ -97,6 +97,10 @@ func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	// Only a head read over REST holds ETags, so every head in this file is one a query cannot
+	// answer: GitHub refuses its Checks fields, which sends the pass to the REST reads these
+	// tests are about.
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 		checkRun(2, "enormous", "completed", "success", otherApp, "2026-11-05T03:01:01Z"),
@@ -140,6 +144,7 @@ func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
@@ -193,6 +198,7 @@ func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
@@ -285,6 +291,7 @@ func TestAHeadWithNothingToRecordKeepsItsETags(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	// GitHub holds no check run and no check suite of this head: each listing answers empty.
 
 	h.pass()

@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -27,6 +29,43 @@ func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
 			t.Fatalf("deleting %s/%s -> %s left the table covered", Table[index].From, Table[index].Trigger, Table[index].To)
 		}
 	}
+}
+
+// The daemon counts a round for every row that moves an issue back (Engine.transition reads
+// phase.MovesBack), and the config loader refuses a hook written for a pair outside
+// phase.BackwardPairs. The two must name the same moves: a row added here and not there would be
+// a move the daemon counts and the loader refuses, and a pair added there and not here a hook
+// that never runs.
+func TestBackwardRowsMatchPhaseBackwardPairs(t *testing.T) {
+	fromTable := map[string]bool{}
+	fromTrigger := map[string]bool{}
+	for _, row := range Table {
+		if !phase.MovesBack(row.From, row.To) {
+			continue
+		}
+		fromTable[phase.Pair(row.From, row.To)] = true
+		if row.Trigger == TriggerBackward {
+			fromTrigger[phase.Pair(row.From, row.To)] = true
+		}
+	}
+	fromPhase := map[string]bool{}
+	for _, pair := range phase.BackwardPairs() {
+		fromPhase[pair] = true
+	}
+	if !maps.Equal(fromTable, fromPhase) {
+		t.Fatalf("table backward moves = %v, phase.BackwardPairs = %v", sortedPairs(fromTable), sortedPairs(fromPhase))
+	}
+	// The backward trigger carries every pair but one: awaiting_merge goes back to implementing on
+	// the explicit checks_red row, because a queued pull request whose checks turn red is sent back
+	// by the daemon, not by a worker asking for a move.
+	delete(fromPhase, phase.Pair(phase.AwaitingMerge, phase.Implementing))
+	if !maps.Equal(fromTrigger, fromPhase) {
+		t.Fatalf("%s rows = %v, want %v", TriggerBackward, sortedPairs(fromTrigger), sortedPairs(fromPhase))
+	}
+}
+
+func sortedPairs(pairs map[string]bool) []string {
+	return slices.Sorted(maps.Keys(pairs))
 }
 
 func validateTable(rows []Row) error {

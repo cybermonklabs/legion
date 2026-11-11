@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, getIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A project imports its component model from two repositories, each its own source, and the
@@ -53,10 +52,6 @@ async function addSource(page: Page, repo: string): Promise<void> {
   await page.getByRole("button", { name: "Add source" }).click();
   await saved;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the row crosses four surfaces - Settings, the Architecture page, the issue's
 // Components picker and a reload for persistence - over two source saves and two imports.

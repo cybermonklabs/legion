@@ -41,7 +41,7 @@ describe("which runs hold a stubbed row", () => {
 });
 
 describe("which runs are the stubbed layer alone", () => {
-  test("a run of the stub projects and nothing else, which meets no harness refusal", () => {
+  test("a run of the stub projects and nothing else, which starts no stack", () => {
     expect(selectionOf(["--project=stub", "--project=stub-phone"]).onlyStub).toBe(true);
     expect(selectionOf(["--project=stub", "--project=chromium"]).onlyStub).toBe(false);
     expect(selectionOf([]).onlyStub).toBe(false);
@@ -56,7 +56,7 @@ describe("which runs are the stubbed layer alone", () => {
 
   test("the answer is written to the environment, so every worker reads the one reading", () => {
     // A worker re-imports the config with Playwright's own argv, so it can read the command
-    // line of no one; without this it would meet a refusal the run was exempt from.
+    // line of no one; without this it would answer `false` for a run that is stub-only.
     const env: NodeJS.ProcessEnv = {};
     expect(selectionOf(["--project=stub"], env).onlyStub).toBe(true);
     expect(env[stubOnlyVariable]).toBe("1");
@@ -64,11 +64,11 @@ describe("which runs are the stubbed layer alone", () => {
   });
 });
 
-describe("how `--project` is read, which is what the refusals rest on", () => {
+describe("how `--project` is read, which is what the stub-only answer rests on", () => {
   test("one flag takes every value, as Playwright's variadic option does", () => {
     // `--project stub chromium` names two projects. Read as one, the run would answer
-    // stub-only and waive the harness refusals and the preflight for the `chromium` rows
-    // beside it, which is the whole of what those refusals are for.
+    // stub-only and `globalSetup` would start no stack for the `chromium` rows beside it,
+    // which is the whole of what that reading is for.
     const both = selectionOf(["--project", "stub", "chromium"]);
     expect(both.holdsStubRow).toBe(true);
     expect(both.onlyStub).toBe(false);
@@ -84,7 +84,7 @@ describe("how `--project` is read, which is what the refusals rest on", () => {
   test("a `*` pattern keeps everything, because this cannot say which projects it names", () => {
     // Playwright expands it against the config's own projects, which this module does not
     // see, so such a run may hold a stubbed row - it gets the server - and may hold a
-    // real-stack row - it keeps every refusal and the preflight.
+    // real-stack row - it gets this run's stacks.
     const everything = selectionOf(["--project", "*"]);
     expect(everything.holdsStubRow).toBe(true);
     expect(everything.onlyStub).toBe(false);
