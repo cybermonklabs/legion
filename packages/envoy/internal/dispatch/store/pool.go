@@ -383,7 +383,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // one at the same moment, and it is a caller and not a lease or a hold that needs one.
 //
 // Exclusive takes its connection before it learns whether the lease is held, so a pass that skips
-// because the other process holds the lease holds a connection for that round trip too. Sixteen
+// because the other process holds the lease holds a connection for that round trip too. These
 // names are leased - the document compaction, the keyed writes' maintenance sweep
 // (api.RunMaintenanceSweep, which keeps the lease name suggestion-outcomes the suggestion sweep
 // carried that work under), the reference-excerpt reconciliation, the block-index reconciliation,
@@ -393,8 +393,8 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // reopened issues' asks (api.RunIssueAskRepair), one per delivery durable for the intake's
 // take-over (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the
 // server process registry's prune (processes.RunPrune) and the embeddings project_key fill
-// (api.RunEmbeddingProjectKeyFill) - by sixteen callers, since each intake
-// takes its own durable's name from its own goroutine, so sixteen callers can be inside Exclusive
+// (api.RunEmbeddingProjectKeyFill) - one caller each, since each intake
+// takes its own durable's name from its own goroutine, so each of them can be inside Exclusive
 // at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
 // to two hours, holds its connection for the whole of it, tries for its lease again every five
 // minutes while another process makes that pass, and gives the connection back for good once
@@ -408,9 +408,9 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // the hold's renewal goroutine (duty.Hold's renew, every 5 s, each bounded by the renew interval),
 // and the intake's own goroutine (duty.HoldToken, duty.TryHold, SetToken, Release, one at a time),
 // whose SetToken runs inside the take-over and so needs a connection beside the one its lease is
-// held on. That is four more callers, twenty in all.
+// held on. That is four more callers.
 //
-// Twenty connections are exactly those twenty: the headroom is zero. A renewal that waited
+// LeasePoolSize is exactly those callers: the headroom is zero. A renewal that waited
 // for a connection behind a compaction pass, which holds its lease for minutes, would see its hold
 // reported lost at the loss deadline and the durable's delivery stop, so the next caller added
 // here - a leased loop, or another hold - takes a connection of its own in this count. They

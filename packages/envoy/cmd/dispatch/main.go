@@ -656,9 +656,9 @@ func main() {
 	// The registry's prune (processes.RunPrune), which the registration below starts: reserved
 	// here so that this process's count is the same whether or not the registry admits it.
 	registryPruneLeases := reserve("process registry prune")
-	// The embeddings project_key fill (api.RunEmbeddingProjectKeyFill), which main added beside
-	// this change: it is leased like any loop, and it holds its connection for the one pass of
-	// one to two hours it makes, so it reserves a caller of its own here as the loops do.
+	// The embeddings project_key fill (api.RunEmbeddingProjectKeyFill): it is leased like any
+	// loop, and it holds its connection for the one pass of one to two hours it makes, so it
+	// reserves a caller of its own here as the loops do.
 	embeddingProjectKeyFillLeases := reserve("embeddings project key fill")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).

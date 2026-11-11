@@ -1384,6 +1384,13 @@ jobs:
               # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
               # so an edit of it alone must start this job.
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              # The two documents outside this module that
+              # internal/dispatch/store/counts_in_documents_test.go reads (its RULES entry in
+              # .github/scripts/ci_job_reads.py), which every job compiling that file inherits:
+              # it holds the connection counts they state to store.LeasePoolSize and
+              # store.ConnectionsPerProcess, so an edit of either alone must start this job.
+              - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+              - '.dispatch/architecture/dispatch-store.md'
               # Fixtures its Go tests read: cmd/listener/api_test.go:191,
               # internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011,

@@ -363,6 +363,13 @@ RULES = {
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
+    f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
+         "states must equal store.LeasePoolSize and store.ConnectionsPerProcess"),
+        (".dispatch/architecture/dispatch-store.md",
+         "internal/dispatch/store/counts_in_documents_test.go reads it, for the same two counts, "
+         "which that document states in words")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
@@ -1285,14 +1292,7 @@ GATES = [
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"])],
-         reads=reads(
-             ("docs/site/src/content/docs/dispatch/running-dispatch.md",
-              "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
-              "states must equal store.LeasePoolSize and store.ConnectionsPerProcess"),
-             (".dispatch/architecture/dispatch-store.md",
-              "internal/dispatch/store/counts_in_documents_test.go reads it, for the same two counts, "
-              "which that document states in words"),
-         ) + setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
+         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[race_step(RACE_JOBS["envoy-go-race-api"])],
          reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + CI_SELF),

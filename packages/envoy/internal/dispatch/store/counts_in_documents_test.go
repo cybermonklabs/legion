@@ -51,6 +51,8 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			"the lease pool's connections, one per leased name and per hold caller"},
 		{readme, `= ` + number + ` connections to Postgres`, ConnectionsPerProcess,
 			"the sum of the counted pools and the permanent listeners"},
+		{readme, `opens at most 64 \+ ` + number + ` \+`, LeasePoolSize,
+			"the lease term of that sum, which states the pool's own size inside it"},
 		{readme, `\| Leases \(` + "`store.LeasePoolSize`" + `\) \| ` + number + ` \|`, LeasePoolSize,
 			"the lease pool's row of the pool table"},
 		{readme, `Two processes at their ceiling hold ` + number, twoProcesses,
@@ -80,19 +82,26 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 	}
 }
 
-// numberAsAWord gives the count as a sentence that spells it writes it. A count with no word here
-// is a count this row cannot read, which is a failure of the row rather than of the document.
+// numberAsAWord gives the count as a sentence that spells it writes it. A count these documents
+// would spell and this table has no word for is a count the row cannot read: it fails here, where
+// the fault is, rather than reporting a document that states its own number correctly. A count of
+// a hundred or more is never spelled in these three documents - they write 109 and 218 in digits -
+// so a word is neither wanted nor wanted-for there.
 func numberAsAWord(t *testing.T, number int) string {
 	t.Helper()
 	spelled := map[int]string{
 		13: "thirteen", 14: "fourteen", 15: "fifteen", 16: "sixteen", 17: "seventeen",
 		18: "eighteen", 19: "nineteen", 20: "twenty", 21: "twenty-one", 22: "twenty-two",
-		23: "twenty-three", 24: "twenty-four", 25: "twenty-five",
+		23: "twenty-three", 24: "twenty-four", 25: "twenty-five", 26: "twenty-six",
+		27: "twenty-seven", 28: "twenty-eight", 29: "twenty-nine", 30: "thirty",
+	}
+	if number >= 100 {
+		return strconv.Itoa(number)
 	}
 	word, ok := spelled[number]
 	if !ok {
-		// A three-digit count is never spelled in these documents, so no word is wanted for one.
-		return strconv.Itoa(number)
+		t.Fatalf("this row has no word for %d, which a sentence spelling its count would write: "+
+			"add it to the table rather than reading a document as wrong", number)
 	}
 	return word
 }

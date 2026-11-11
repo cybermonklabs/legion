@@ -11,7 +11,8 @@
  * nothing, so every process in `e2e/` may import it, and each refuses a bad value alike.
  */
 
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** One of the two processes of two-process mode. */
@@ -48,6 +49,30 @@ const envoyDirectory = fileURLToPath(new URL("../../envoy", import.meta.url));
 export const binaryB = process.env.DISPATCH_E2E_BINARY_B
   ? resolve(envoyDirectory, process.env.DISPATCH_E2E_BINARY_B)
   : undefined;
+
+/** The web dist each process's server serves, which is where a page of that process comes from.
+ *  A's is always this tree's `web/dist`. B's is the `web/` beside `binaryB` when a previous build
+ *  runs, which build-dispatch-build.sh wrote into that build's one directory; with no previous
+ *  build it is what the harness was told to serve (`DISPATCH_E2E_WEB_DIST_B`, a path from
+ *  packages/envoy, as e2e/harness-listeners.ts hands it to run-server.sh), and A's dist where that
+ *  is unset, which is the default run-server.sh itself takes. One place decides this, so a spec
+ *  reading a page's own build and the harness serving it never disagree. */
+export function webDistOf(target: DispatchProcess): string {
+  if (target === "a") return resolve(envoyDirectory, "../dispatch/web/dist");
+  if (binaryB !== undefined) return resolve(dirname(binaryB), "web");
+  return resolve(envoyDirectory, process.env.DISPATCH_E2E_WEB_DIST_B || "../dispatch/web/dist");
+}
+
+/** The entry chunk a dist's `index.html` names, `/assets/index-*.js`: the file a page of that
+ *  build loads itself from, and the one thing in the page that names the build it came from. */
+export function entryChunkOf(dist: string): string {
+  const page = join(dist, "index.html");
+  const entry = /<script type="module" crossorigin src="(\/assets\/[^"]+\.js)"><\/script>/.exec(
+    readFileSync(page, "utf8")
+  )?.[1];
+  if (entry === undefined) throw new Error(`${page} names no entry chunk`);
+  return entry;
+}
 
 /** Headers that send a fetch to `target`. */
 export function pinnedTo(target: DispatchProcess): Record<string, string> {
