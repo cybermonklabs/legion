@@ -288,7 +288,7 @@ func TestTheHoldListIsReplacedWholeAndOnlyMergeHoldsDeletesAnEndedHold(t *testin
 
 // The record keeps the newest jump of each repository: a later jump of one repository replaces
 // its record, and a second repository keeps a record of its own. The queue snapshot, the counts
-// and a refusal come back as they were written, and the jump's time in UTC.
+// and the outcome come back as they were written, and the jump's time in UTC.
 func TestAJumpRecordIsReplacedPerRepository(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -314,15 +314,16 @@ func TestAJumpRecordIsReplacedPerRepository(t *testing.T) {
 		must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", MergeJumpRecord{
 			Repository: "acme/widgets", Issue: "LEGION-208", Number: 42, Head: "c0de", At: at,
 			Reason: "the release waits on it", Entries: entries, EntriesTotal: len(entries),
+			Outcome: MergeJumpAsked,
 		}))
 		must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", MergeJumpRecord{
 			Repository: "acme/other", Issue: "LEGION-209", Number: 43, Head: "beef", At: at,
-			Reason: "another repository of the project", EntriesUnknown: true, Refused: true,
-			Refusal: "GitHub refused the jump",
+			Reason: "another repository of the project", EntriesUnknown: true,
+			Outcome: MergeJumpRefused, Answer: "GitHub refused the jump",
 		}))
 		must(t, records.PutMergeJumpRecord(ctx, tx, "INFRA", MergeJumpRecord{
 			Repository: "acme/widgets", Issue: "INFRA-7", Number: 44, Head: "f00d", At: at,
-			Reason: "another project's record",
+			Reason: "another project's record", Outcome: MergeJumpAsked,
 		}))
 	})
 
@@ -330,6 +331,7 @@ func TestAJumpRecordIsReplacedPerRepository(t *testing.T) {
 		must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", MergeJumpRecord{
 			Repository: "acme/widgets", Issue: "LEGION-210", Number: 45, Head: "cafe", At: at.Add(time.Hour),
 			Reason: "the later jump of the same repository", Entries: entries[:1], EntriesTotal: 1,
+			Outcome: MergeJumpAsked,
 		}))
 		kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
 		must(t, err)
@@ -350,84 +352,152 @@ func TestAJumpRecordIsReplacedPerRepository(t *testing.T) {
 		if !widgets.At.Equal(at.Add(time.Hour)) || widgets.At.Location() != time.UTC {
 			t.Fatalf("the record's time = %s in %s, want %s in UTC", widgets.At, widgets.At.Location(), at.Add(time.Hour))
 		}
-		if len(other.Entries) != 0 || !other.EntriesUnknown || !other.Refused || other.Refusal != "GitHub refused the jump" {
+		if len(other.Entries) != 0 || !other.EntriesUnknown || other.Outcome != MergeJumpRefused || other.Answer != "GitHub refused the jump" {
 			t.Fatalf("the record of acme/other = %+v, want an unread queue and GitHub's refusal", other)
 		}
 	})
 }
 
-// A refusal lands only on the record its own jump wrote. Two issues of one repository can jump
-// close together and the record keeps one row per repository, so an older jump whose refusal
-// comes back after the newer jump has written that row would, written unconditionally, show the
-// wrong newest jump and mark it refused. The older jump's refusal answers false and writes
-// nothing; the refusal of the row's own jump — by its issue and its head — is written, and
-// nothing else of the record moves.
-func TestAJumpRefusalWritesOnlyOnTheRecordItsOwnJumpWrote(t *testing.T) {
+// What became of a jump lands only on the record its own jump wrote. Two issues of one
+// repository can jump close together and the record keeps one row per repository, so an older
+// jump whose answer comes back after the newer jump has written that row would, written
+// unconditionally, show the wrong newest jump under the older one's outcome. The older jump's
+// write answers false and writes nothing; the write of the row's own jump — by its issue and
+// its head — lands, and nothing else of the record moves.
+func TestAJumpOutcomeWritesOnlyOnTheRecordItsOwnJumpWrote(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	at := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
 	older := MergeJumpRecord{Repository: "acme/widgets", Issue: "LEGION-299", Number: 41, Head: "beef", At: at,
-		Reason: "the older jump of this repository"}
+		Reason: "the older jump of this repository", Outcome: MergeJumpAsked}
 	newer := MergeJumpRecord{Repository: "acme/widgets", Issue: "LEGION-300", Number: 42, Head: "c0de",
-		At: at.Add(time.Minute), Reason: "the newer jump of this repository"}
+		At: at.Add(time.Minute), Reason: "the newer jump of this repository", Outcome: MergeJumpAsked}
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", older))
 		must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", newer))
 	})
 
 	inTx(t, st, func(tx pgx.Tx) {
-		refused := older
-		refused.Refused, refused.Refusal = true, "GitHub refused the older jump"
-		wrote, err := records.RefuseMergeJumpRecord(ctx, tx, "LEGION", refused)
+		ended := older
+		ended.Outcome, ended.Answer = MergeJumpRefused, "GitHub refused the older jump"
+		wrote, err := records.SetMergeJumpOutcome(ctx, tx, "LEGION", ended)
 		must(t, err)
 		if wrote {
-			t.Fatal("the older jump's refusal was written, want the newer jump's record left as it stands")
+			t.Fatal("the older jump's outcome was written, want the newer jump's record left as it stands")
 		}
 		kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
 		must(t, err)
-		if len(kept) != 1 || kept[0].Issue != "LEGION-300" || kept[0].Refused || kept[0].Refusal != "" {
-			t.Fatalf("the record of acme/widgets = %+v, want the newer jump of LEGION-300 with no refusal", kept)
+		if len(kept) != 1 || kept[0].Issue != "LEGION-300" || kept[0].Outcome != MergeJumpAsked || kept[0].Answer != "" {
+			t.Fatalf("the record of acme/widgets = %+v, want the newer jump of LEGION-300 still asked", kept)
 		}
 	})
 
-	// A refusal of the row's own jump is written, which is every refusal that comes back before
-	// another issue of the repository jumps, and it moves nothing but refused and refusal.
+	// The outcome of the row's own jump is written, which is every answer that comes back before
+	// another issue of the repository jumps, and it moves nothing but outcome and answer.
 	inTx(t, st, func(tx pgx.Tx) {
-		refused := newer
-		refused.Refused, refused.Refusal = true, "GitHub refused the newer jump"
-		wrote, err := records.RefuseMergeJumpRecord(ctx, tx, "LEGION", refused)
+		ended := newer
+		ended.Outcome, ended.Answer = MergeJumpRefused, "GitHub refused the newer jump"
+		wrote, err := records.SetMergeJumpOutcome(ctx, tx, "LEGION", ended)
 		must(t, err)
 		if !wrote {
-			t.Fatal("the refusal of the record's own jump was not written, want it on the row that jump wrote")
+			t.Fatal("the outcome of the record's own jump was not written, want it on the row that jump wrote")
 		}
 		kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
 		must(t, err)
-		if len(kept) != 1 || !kept[0].Refused || kept[0].Refusal != "GitHub refused the newer jump" {
-			t.Fatalf("the record of acme/widgets = %+v, want its own jump's refusal", kept)
+		if len(kept) != 1 || kept[0].Outcome != MergeJumpRefused || kept[0].Answer != "GitHub refused the newer jump" {
+			t.Fatalf("the record of acme/widgets = %+v, want its own jump's outcome", kept)
 		}
 		if kept[0].Issue != "LEGION-300" || kept[0].Number != 42 || kept[0].Head != "c0de" || kept[0].Reason != newer.Reason {
-			t.Fatalf("the refused record = %+v, want everything else as the jump itself wrote it", kept[0])
+			t.Fatalf("the ended record = %+v, want everything else as the jump itself wrote it", kept[0])
 		}
 	})
 
-	// The same issue at another head is another jump, and its refusal lands no more than another
+	// The same issue at another head is another jump, and its outcome lands no more than another
 	// issue's does: a head is half of what tells one jump of a repository from the next.
 	inTx(t, st, func(tx pgx.Tx) {
-		refused := newer
-		refused.Head = "cafe"
-		refused.Refused, refused.Refusal = true, "GitHub refused the jump at another head"
-		wrote, err := records.RefuseMergeJumpRecord(ctx, tx, "LEGION", refused)
+		ended := newer
+		ended.Head = "cafe"
+		ended.Outcome, ended.Answer = MergeJumpUnknown, "the jump at another head"
+		wrote, err := records.SetMergeJumpOutcome(ctx, tx, "LEGION", ended)
 		must(t, err)
 		if wrote {
-			t.Fatal("a refusal naming another head was written, want the record of the head it holds left alone")
+			t.Fatal("an outcome naming another head was written, want the record of the head it holds left alone")
 		}
 		kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
 		must(t, err)
-		if len(kept) != 1 || kept[0].Head != "c0de" || kept[0].Refusal != "GitHub refused the newer jump" {
-			t.Fatalf("the record of acme/widgets = %+v, want the record of c0de with its own refusal", kept)
+		if len(kept) != 1 || kept[0].Head != "c0de" || kept[0].Answer != "GitHub refused the newer jump" {
+			t.Fatalf("the record of acme/widgets = %+v, want the record of c0de with its own answer", kept)
 		}
 	})
+}
+
+// Each of the four outcomes is written and read back as itself, by the jump's own write and by
+// the write that follows GitHub's answer (MergeJumpOutcomes): the record carries what happened
+// outright, so a reader never has to tell one outcome from another by a field nobody wrote.
+// The answer travels with the outcome, and a record is read back exactly as the last write of
+// it left it.
+func TestEveryJumpOutcomeIsWrittenAndReadBack(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
+	// The answer of the two outcomes that carry one, and "" for the two that have nothing to
+	// quote, as the daemon writes them.
+	answers := map[MergeJumpOutcome]string{
+		MergeJumpRefused: "GitHub answered POST /graphql with 403: the token may not jump this queue",
+		MergeJumpUnknown: "Legion could not deliver the jump to GitHub: dial tcp: i/o timeout",
+	}
+	for _, outcome := range MergeJumpOutcomes {
+		t.Run(string(outcome), func(t *testing.T) {
+			repository := "acme/" + string(outcome)
+			jumped := MergeJumpRecord{Repository: repository, Issue: "LEGION-208", Number: 42, Head: "c0de",
+				At: at, Reason: "the release waits on it", Outcome: MergeJumpAsked}
+			inTx(t, st, func(tx pgx.Tx) {
+				must(t, records.PutMergeJumpRecord(ctx, tx, "LEGION", jumped))
+			})
+			// The jump's own write is read back asked, whatever this case then writes over it:
+			// that is the value every record carries between the mutation and its answer.
+			inTx(t, st, func(tx pgx.Tx) {
+				kept := jumpRecordOf(t, ctx, records, tx, repository)
+				if kept.Outcome != MergeJumpAsked || kept.Answer != "" {
+					t.Fatalf("the record the jump wrote = %+v, want asked with no answer", kept)
+				}
+			})
+			if outcome == MergeJumpAsked {
+				return
+			}
+			ended := jumped
+			ended.Outcome, ended.Answer = outcome, answers[outcome]
+			inTx(t, st, func(tx pgx.Tx) {
+				wrote, err := records.SetMergeJumpOutcome(ctx, tx, "LEGION", ended)
+				must(t, err)
+				if !wrote {
+					t.Fatalf("the %s outcome was not written on the record its own jump wrote", outcome)
+				}
+			})
+			inTx(t, st, func(tx pgx.Tx) {
+				kept := jumpRecordOf(t, ctx, records, tx, repository)
+				if kept.Outcome != outcome || kept.Answer != answers[outcome] {
+					t.Fatalf("the record read back = %+v, want outcome %s with %q", kept, outcome, answers[outcome])
+				}
+			})
+		})
+	}
+}
+
+// jumpRecordOf is LEGION's jump record of repository, and fails where the project holds none.
+func jumpRecordOf(t *testing.T, ctx context.Context, records Store, tx pgx.Tx, repository string) MergeJumpRecord {
+	t.Helper()
+	kept, err := records.MergeJumpRecords(ctx, tx, "LEGION")
+	must(t, err)
+	for _, jump := range kept {
+		if jump.Repository == repository {
+			return jump
+		}
+	}
+	t.Fatalf("the jump records of LEGION = %+v, want one of %s", kept, repository)
+	return MergeJumpRecord{}
 }
 
 // A merge a hold keeps back is a ready_merge row whose payload carries the moment the hold caught

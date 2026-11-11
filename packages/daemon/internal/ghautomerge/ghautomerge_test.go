@@ -985,21 +985,21 @@ func TestSubmitKeepsTheRateLimitOfItsConfirmationRead(t *testing.T) {
 }
 
 // marks is the Marks a test drives Submit with, and the record of what Submit asked of it: hold
-// is what Hold answers, jump and jumpErr what Jump answers, and refusalErr what JumpRefused
-// answers. holds and jumps count the times each was asked, branch is the base branch Jump was
-// told, and refusals counts the times JumpRefused was told of a jump that did not take, refusal
-// being the last failure it was told of, GitHub's answer and whether GitHub gave one
-// (JumpFailure).
+// is what Hold answers, jump and jumpErr what Jump answers, and endedErr what JumpEnded answers.
+// holds and jumps count the times each was asked, branch is the base branch Jump was told, and
+// ends counts the times JumpEnded was told what became of the jump, outcome and answer being the
+// last it was told (JumpOutcome).
 type marks struct {
-	hold       error
-	jump       bool
-	jumpErr    error
-	refusalErr error
-	holds      int
-	jumps      int
-	branch     string
-	refusals   int
-	refusal    JumpFailure
+	hold     error
+	jump     bool
+	jumpErr  error
+	endedErr error
+	holds    int
+	jumps    int
+	branch   string
+	ends     int
+	outcome  JumpOutcome
+	answer   string
 }
 
 func (m *marks) Hold(context.Context) error {
@@ -1013,10 +1013,10 @@ func (m *marks) Jump(_ context.Context, branch string) (bool, error) {
 	return m.jump, m.jumpErr
 }
 
-func (m *marks) JumpRefused(_ context.Context, failure JumpFailure) error {
-	m.refusals++
-	m.refusal = failure
-	return m.refusalErr
+func (m *marks) JumpEnded(_ context.Context, outcome JumpOutcome, answer string) error {
+	m.ends++
+	m.outcome, m.answer = outcome, answer
+	return m.endedErr
 }
 
 // A jump mark sends GitHub's enqueue in place of the enable on a merge-queue base, and nowhere
@@ -1025,7 +1025,8 @@ func (m *marks) JumpRefused(_ context.Context, failure JumpFailure) error {
 // has none: the merge queue's own rule decides how the entry merges. The caller is told the base
 // branch the pull request merges into, from the read Submit has just made, so it can read that
 // branch's queue without a further read of its own. An accepted enqueue is the same outcome an
-// accepted enable is there: an entry in the queue, which is a wait (Armed), not a merge.
+// accepted enable is there: an entry in the queue, which is a wait (Armed), not a merge, and the
+// caller is told the jump was accepted before Submit answers that wait.
 //
 // Everywhere else Jump is never asked: a merge of a pull request GitHub reports mergeable now
 // goes out as a merge, and an auto-merge arm as an arm, so a mark on a pull request whose base
@@ -1063,9 +1064,12 @@ func TestAJumpMarkSendsTheEnqueueOnlyWhereTheSubmissionIsAnEnqueue(t *testing.T)
 			case !errors.As(err, &armed) || !errors.Is(err, wait.ErrWaiting) || armed.Head != "ready-head":
 				t.Fatalf("Submit = %q, %v; want an Armed wait at READY's head", got, err)
 			}
-			if m.holds != 1 || m.jumps != tc.jumps || m.branch != tc.branch || m.refusals != 0 {
-				t.Fatalf("marks asked: %d holds, %d jumps of %q, %d refusals; want 1 hold, %d jumps of %q and no refusal",
-					m.holds, m.jumps, m.branch, m.refusals, tc.jumps, tc.branch)
+			if m.holds != 1 || m.jumps != tc.jumps || m.branch != tc.branch || m.ends != tc.jumps {
+				t.Fatalf("marks asked: %d holds, %d jumps of %q, %d ends; want 1 hold, %d jumps of %q and the end of each told",
+					m.holds, m.jumps, m.branch, m.ends, tc.jumps, tc.branch)
+			}
+			if tc.jumps > 0 && (m.outcome != JumpAccepted || m.answer != "") {
+				t.Fatalf("the jump ended %q carrying %q, want it accepted with nothing to quote: GitHub took the request", m.outcome, m.answer)
 			}
 			tc.g.mu.Lock()
 			defer tc.g.mu.Unlock()
@@ -1085,13 +1089,14 @@ func TestAJumpMarkSendsTheEnqueueOnlyWhereTheSubmissionIsAnEnqueue(t *testing.T)
 // carried. The mark is spent by the time the enqueue goes out, so a jump that did not fall back
 // would lose it and delay the merge for nothing.
 //
-// What the failure was travels with it (JumpFailure.Answered): an answer of GitHub's is GitHub's
-// word, whether GitHub wrote it into the GraphQL answer, decided the request itself with a
-// status of its own — a 403 the token is refused by as much as the 502 its edge sends for an API
-// that decided nothing — or answered 200 with no data in the document at all, which is GitHub
-// answering and saying nothing of the mutation; and a request the client got no answer to at
-// all, here a connection closed before any status arrived, is a jump nothing came back for. The
-// caller writes the two in different words, so the two must arrive apart.
+// What the failure was travels with it (JumpOutcome). An answer that decides the mutation is
+// JumpRefused: GitHub's GraphQL answer carrying errors, a rate limit among them, and the 4xx
+// GitHub decides the request itself with, a 403 the token is refused by. Everything else is
+// JumpUnknown: the 502 GitHub's own edge sends for an API that decided nothing, the 200 that
+// carried no data in the document at all, and a request the client got no answer to, here a
+// connection closed before any status arrived. Those last two are one outcome and the answer's
+// own words keep them apart, since only a request nothing came back for says Legion could not
+// deliver it.
 //
 // The jump's own failure never becomes a *Refused and never ends the row: the fallback decides
 // how the submission ends, as it does without a mark at all. A fallback GitHub accepts is the
@@ -1102,24 +1107,26 @@ func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
 		name      string
 		g         *github
 		refusedBy string
-		// answered says GitHub answered the jump's mutation, so the caller may quote it as
-		// GitHub's own word (JumpFailure.Answered).
-		answered bool
+		// outcome is what the caller is told became of the jump (JumpOutcome).
+		outcome JumpOutcome
+		// undelivered says nothing of GitHub's came back at all, which the answer's own words
+		// are what say, since the outcome does not.
+		undelivered bool
 		// ended says the fallback's own refusal ends the submission (*Refused).
 		ended bool
 	}{
-		{name: "a refusal no retry repairs", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseJump: refusal}, refusedBy: refusal, answered: true},
+		{name: "a refusal no retry repairs", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseJump: refusal}, refusedBy: refusal, outcome: JumpRefused},
 		{name: "a rate limit", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseJump: "API rate limit exceeded", refuseType: "RATE_LIMITED"},
-			refusedBy: "API rate limit exceeded", answered: true},
-		{name: "a refusal GitHub gives the fallback too", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseSubmit: refusal}, refusedBy: refusal, answered: true, ended: true},
+			refusedBy: "API rate limit exceeded", outcome: JumpRefused},
+		{name: "a refusal GitHub gives the fallback too", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseSubmit: refusal}, refusedBy: refusal, outcome: JumpRefused, ended: true},
 		{name: "a mutation nothing came back for", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpUnanswered: true},
-			refusedBy: "/graphql"},
-		{name: "GitHub's own 502, an answer like any other", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusBadGateway},
-			refusedBy: "502", answered: true},
+			refusedBy: "/graphql", outcome: JumpUnknown, undelivered: true},
+		{name: "GitHub's own 502, an answer that decides nothing", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusBadGateway},
+			refusedBy: "502", outcome: JumpUnknown},
 		{name: "an HTTP refusal GitHub answered the request with", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusForbidden},
-			refusedBy: "403", answered: true},
+			refusedBy: "403", outcome: JumpRefused},
 		{name: "a 2xx GitHub carried no data in", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpNoData: true},
-			refusedBy: "answered without data", answered: true},
+			refusedBy: "answered without data", outcome: JumpUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, _ := clients(t, tc.g)
@@ -1135,9 +1142,14 @@ func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
 			case !errors.As(err, &armed) || !errors.Is(err, wait.ErrWaiting):
 				t.Fatalf("Submit = %v, want the fallback's Armed wait", err)
 			}
-			if m.refusals != 1 || !strings.Contains(m.refusal.Answer, tc.refusedBy) || m.refusal.Answered != tc.answered {
-				t.Fatalf("JumpRefused told %d times, last %q answered by GitHub %t; want once, carrying %q answered %t",
-					m.refusals, m.refusal.Answer, m.refusal.Answered, tc.refusedBy, tc.answered)
+			if m.ends != 1 || m.outcome != tc.outcome || !strings.Contains(m.answer, tc.refusedBy) {
+				t.Fatalf("JumpEnded told %d times, last %s carrying %q; want once, %s carrying %q",
+					m.ends, m.outcome, m.answer, tc.outcome, tc.refusedBy)
+			}
+			const delivery = "could not deliver the jump to GitHub"
+			if strings.Contains(m.answer, delivery) != tc.undelivered {
+				t.Fatalf("the answer %q names a failure to deliver %t, want %t: that is what tells a request nothing came back for from an answer that decided nothing",
+					m.answer, !tc.undelivered, tc.undelivered)
 			}
 			tc.g.mu.Lock()
 			defer tc.g.mu.Unlock()
@@ -1180,10 +1192,11 @@ func TestNoMarksSendsTheSubmissionChooseChoseAndNothingElse(t *testing.T) {
 
 // An error any of the caller's marks answers is the submission's whole answer: Submit returns it
 // as it stands, for the caller to read whatever it put in it. A hold answers before anything is
-// sent, so a held submission sends no mutation at all; a jump and a refusal answer after the
-// mutations each has sent by then. A hold's own wait (Held) keeps its moment through Submit, so
-// the row runs again when the hold ends (wait.UntilAt), and it is routine, so a row a long hold
-// catches is logged as a wait and not as something an operator should look at.
+// sent, so a held submission sends no mutation at all; a jump answers after the mutations it has
+// sent by then, and so does the end of a jump that did not take. A hold's own wait (Held) keeps
+// its moment through Submit, so the row runs again when the hold ends (wait.UntilAt), and it is
+// routine, so a row a long hold catches is logged as a wait and not as something an operator
+// should look at.
 func TestAMarksErrorAnswersTheWholeSubmission(t *testing.T) {
 	held := &Held{Number: 42, Repo: ghrepo.MustParse("acme/widgets"), Head: "head", Reason: "the release window is open",
 		Ends: time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC)}
@@ -1197,7 +1210,7 @@ func TestAMarksErrorAnswersTheWholeSubmission(t *testing.T) {
 		{name: "a hold", m: &marks{hold: held}, want: held},
 		{name: "a hold that could not be decided", m: &marks{hold: failed}, want: failed},
 		{name: "a jump that could not be decided", m: &marks{jumpErr: failed}, want: failed},
-		{name: "a refusal the caller could not record", m: &marks{jump: true, refusalErr: failed},
+		{name: "the end of a jump the caller could not record", m: &marks{jump: true, endedErr: failed},
 			want: failed, mutations: []string{jumped("head")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

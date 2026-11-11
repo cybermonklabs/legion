@@ -203,15 +203,16 @@ one's were.
 
 ## `merge-jump-refused on <KEY>` (`{kind: "merge-jump-refused", reason}`)
 
-A marked merge was not sent to the head of its merge queue.
-`reason` names the issue, its pull request, `READY`'s head and what became of the jump: GitHub refused it and answered why, or Legion could not deliver the request at all, which GitHub never answered.
-The daemon submitted that merge without the jump in the same attempt and posted the same account on the Dispatch issue, so the merge is on its way, behind what was already in the queue.
+A marked merge's own jump request did not come back accepted.
+`reason` names the issue, its pull request, `READY`'s head and what became of the jump: GitHub answered and that answer decided it, or Legion does not know whether GitHub took the request, which is an answer that decided nothing as much as a request nothing came back for.
+The daemon submitted that merge without the jump in the same attempt and posted the same account on the Dispatch issue, so the merge is on its way.
 Nothing is held, nothing failed, and no status moved.
 
 What is left to you is a decision: whether the issue still needs a jump.
 The mark is spent, and the merge it governed is submitted, so `set_merge_jump` on that issue marks the next merge the daemon submits for it.
-Read in the `reason` which of the two happened, because a jump GitHub refused says something about the repository's merge-queue rules and a jump that never reached GitHub says nothing at all.
-Read `mergeJumpRecords` in `read_state` too, which holds the newest jump of each repository with the queue that jump would have gone ahead of and, in `refusal`, the same words.
+Read in the `reason` which of the two happened, because a jump GitHub refused says something about the repository's merge-queue rules and a jump whose end nobody knows says nothing at all.
+Read `mergeJumpRecords` in `read_state` too, which holds the newest jump of each repository with the queue that jump was asked of, its `outcome` — `asked`, `accepted`, `refused` or `unknown` — and, in `answer`, the same words.
+No outcome says where that merge stands in the queue, `accepted` included: it is GitHub taking the request, and the queue after it is GitHub's to read.
 `clear_merge_jump` takes a mark off again while the merge it is about is still unsubmitted.
 
 ## GitHub mentions

@@ -55,6 +55,48 @@ type MergeHold struct {
 	SetAt      time.Time
 }
 
+// MergeJumpOutcome is what became of one jump's own request to GitHub, kept in
+// MergeJumpRecord.Outcome. Every record carries one of the four from the moment it exists:
+// the transaction that spends the mark writes MergeJumpAsked before the mutation is sent, and
+// the write that follows GitHub's answer replaces it. There is no value for "nothing recorded",
+// because a reader that had to tell an outcome from a field nobody wrote would read the most
+// hopeful of the states that field covered.
+//
+//   - MergeJumpAsked: Legion asked GitHub and has not learned what came of it. It is a state
+//     and not a default: a daemon stopped between the mutation and the write after it, and a
+//     worker whose lease moved on before that write, both leave it, and it says what is true of
+//     them — Legion asked and never learned.
+//   - MergeJumpAccepted: the enqueue mutation came back with no error at all, which is GitHub
+//     taking the request.
+//   - MergeJumpRefused: an answer came back that decides it — GitHub's own GraphQL error, or
+//     the 4xx GitHub decided the request itself with.
+//   - MergeJumpUnknown: anything that came back and decides nothing — a 5xx of GitHub's own
+//     edge, a 2xx carrying no data — and anything that did not come back at all — a dial that
+//     failed, a timeout, a connection closed before any status arrived. MergeJumpRecord.Answer
+//     tells those apart in its own words, and no reader branches on the difference, because
+//     what may be said of either is the one thing: Legion asked, and what GitHub did with the
+//     request is not known here.
+//
+// Acceptance is no queue position. MergeJumpAccepted is the mutation answering and nothing
+// more, and where the merge then stands in GitHub's queue is read on GitHub: no reader of this
+// record may say where a jump's merge stands, for this value as much as for the other three.
+// MergeJumpRecord.Entries is the queue as the daemon read it just before the request and never
+// a line of what followed, so it names what the jump was asked to go ahead of and when, which
+// is the one thing about the queue the record knows.
+type MergeJumpOutcome string
+
+const (
+	MergeJumpAsked    MergeJumpOutcome = "asked"
+	MergeJumpAccepted MergeJumpOutcome = "accepted"
+	MergeJumpRefused  MergeJumpOutcome = "refused"
+	MergeJumpUnknown  MergeJumpOutcome = "unknown"
+)
+
+// MergeJumpOutcomes is the four outcomes, in the order a jump moves through them. The column's
+// check constraint, every reader that renders all four and the tests that write each one read
+// this list, so a fifth value is added in one place.
+var MergeJumpOutcomes = []MergeJumpOutcome{MergeJumpAsked, MergeJumpAccepted, MergeJumpRefused, MergeJumpUnknown}
+
 // MergeJumpRecord is the account of the newest jump of one repository: the jump the daemon asked
 // GitHub for when it spent a jump mark, and what the queue looked like at that moment. The record
 // keeps one per (project, repository), because the question it answers is "what did Legion last
@@ -74,17 +116,15 @@ type MergeHold struct {
 // may hold only as much of it as the daemon read, and EntriesUnknown says GitHub answered no queue
 // at all, so an empty Entries is not mistaken for an empty queue.
 //
-// Refused and Refusal carry a jump that did not go through, written by the daemon after GitHub's
-// answer to that one mutation (Store.RefuseMergeJumpRecord): the mark is spent either way, and
-// without them such a jump would stand as the request alone left it. Refusal is empty where
-// nothing was refused, and otherwise says which of the two happened: GitHub's own words where
-// GitHub answered the mutation, and a sentence naming the failure where no answer of GitHub's
-// reached Legion (daemon's jumpRefusalRecorded). The record keeps no third column for that,
-// because the words are what a reader of the record reads.
+// Outcome is what became of that request and Answer the words that came back with it
+// (MergeJumpOutcome): the transaction that spends the mark writes MergeJumpAsked, and the one
+// write that follows GitHub's answer to that mutation (Store.SetMergeJumpOutcome) replaces it
+// with what happened. Answer carries GitHub's own status and words, or the transport failure's
+// own text, for MergeJumpRefused and MergeJumpUnknown, and is empty for MergeJumpAsked and
+// MergeJumpAccepted, which have nothing to quote.
 //
-// Refused false is therefore "no refusal recorded", which is a jump GitHub took, a jump whose
-// answer has not come back yet, and a jump whose refusal the daemon could not write down — the
-// merge row's lease gone to another worker, or the repository's row since taken by a newer jump.
+// The mark is spent whichever way the jump ends, so without those two a jump that did not take
+// would stand as the request alone left it, and one that did would be indistinguishable from it.
 //
 // The record's Issue is not bound to the issue record. An issue is deleted when its tree is
 // cleaned up, and the account of what a jump asked to go ahead of must outlive it, so the column
@@ -99,8 +139,8 @@ type MergeJumpRecord struct {
 	Entries        []MergeQueueEntryRecord
 	EntriesTotal   int
 	EntriesUnknown bool
-	Refused        bool
-	Refusal        string
+	Outcome        MergeJumpOutcome
+	Answer         string
 }
 
 // MergeQueueEntryRecord is one entry of GitHub's merge queue as it stood before a jump, kept in

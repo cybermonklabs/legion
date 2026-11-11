@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // mergeMarkState is a state carrying all four merge-mark keys: two issues marked for a jump, two
 // live holds — one of a named repository and one of every repository the project serves — one
-// merge a hold is keeping back, and the newest jump of each of two repositories, the second of
-// them carrying a refusal. Every key is filled, because the strip below takes all four together
-// and a key that was empty in the fixture would be passed by a strip that never ran.
+// merge a hold is keeping back, and the newest jump of each of two repositories, one of them
+// asked and the other refused. Every key is filled, because the strip below takes all four
+// together and a key that was empty in the fixture would be passed by a strip that never ran.
 func mergeMarkState() State {
 	setAt := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	endsAt := time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC)
@@ -33,10 +35,10 @@ func mergeMarkState() State {
 				Reason: "the earlier blocker", EntriesTotal: 3, Entries: []MergeQueueEntryView{
 					{Number: 401, Position: 1, State: "QUEUED", EnqueuedAt: setAt.Add(-time.Hour)},
 					{Number: 402, Position: 2, Jump: true, State: "MERGEABLE", EnqueuedAt: setAt.Add(-30 * time.Minute)},
-				}},
+				}, Outcome: record.MergeJumpAsked},
 			{Repository: "zeta/tools", Issue: "LEGION-209", Number: 77, Head: "deadbee", At: setAt,
-				Reason: "the hotfix", EntriesUnknown: true, Refused: true,
-				Refusal: "the merge queue is not enabled on this repository"},
+				Reason: "the hotfix", EntriesUnknown: true, Outcome: record.MergeJumpRefused,
+				Answer: "the merge queue is not enabled on this repository"},
 		},
 	}
 }
@@ -88,7 +90,8 @@ func TestTheMergeMarksAreServedOnTheState(t *testing.T) {
 		t.Errorf("the state %s serves the held merges %+v, want the fixture's one", body, served.MergeHeld)
 	}
 	if len(served.MergeJumpRecords) != 2 || len(served.MergeJumpRecords[0].Entries) != 2 ||
-		!served.MergeJumpRecords[1].Refused {
+		served.MergeJumpRecords[0].Outcome != record.MergeJumpAsked ||
+		served.MergeJumpRecords[1].Outcome != record.MergeJumpRefused {
 		t.Errorf("the state %s serves the jump records %+v, want the fixture's two", body, served.MergeJumpRecords)
 	}
 

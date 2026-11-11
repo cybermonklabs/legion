@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -380,14 +381,40 @@ func (s *server) recordedMarkIssue(w http.ResponseWriter, r *http.Request, issue
 // The status is 409 and not 400: the request is well formed and the caller is authorized, and
 // what refuses it is the state the record is in, as the lingering tree of a rerun is
 // (TREE_LINGERING).
+//
+// The sentence says the issue's state in Dispatch's own words — done, on the backlog, in icebox,
+// in triage — rather than that it has left the workflow. ISSUE_LEFT_WORKFLOW is the repository's
+// own phrase and stays the code, which a controller matches on; the words beside it are read by
+// a person, and the two Dispatch has are the two a person knows.
 func runningMarkIssue(w http.ResponseWriter, recorded record.Issue) bool {
 	if !record.Stopped(recorded) {
 		return true
 	}
 	writeFailure(w, http.StatusConflict, "ISSUE_LEFT_WORKFLOW", fmt.Sprintf(
-		"%s has left the workflow (status %s, phase %s), so the daemon submits no merge of it to mark; a mark it still carries can be taken off",
-		recorded.Key, recorded.Status, recorded.Phase))
+		"%s is %s, so the daemon submits no merge of it to mark; a mark it still carries can be taken off",
+		recorded.Key, markIssueState(recorded)))
 	return false
+}
+
+// markIssueState is how the refusal above names an issue the daemon no longer runs, in the words
+// its Dispatch status is written in. A tree lingering after its close is named by its close,
+// since that is what a reader of the issue sees, and a status this build does not know is given
+// as it stands rather than guessed at.
+func markIssueState(recorded record.Issue) string {
+	switch recorded.Status {
+	case record.DoneStatus:
+		return "done"
+	case "backlog":
+		return "on the backlog"
+	case "icebox":
+		return "in icebox"
+	case "triage":
+		return "in triage"
+	}
+	if recorded.Lingers() || recorded.Phase == phase.Done {
+		return "done"
+	}
+	return "in " + recorded.Status
 }
 
 // markSession is the controller session a mark records as its author (record.MergeJump.Session,
@@ -473,32 +500,36 @@ type MergeQueueEntryView = record.MergeQueueEntryRecord
 // (record.MergeJumpRecord): the repository, the issue whose mark was spent, the pull request's
 // number and head, when the daemon asked, the reason the mark carried, the queue as it stood
 // before the request — oldest entry first, which is what names whose merge the jump asked to go
-// ahead of — how long that queue was, whether GitHub answered no queue at all, and whether a
-// refusal was recorded, with the words it carried.
+// ahead of — how long that queue was, whether GitHub answered no queue at all, and what became
+// of the jump's own request, with the words that decided it.
 //
 // EntriesTotal and EntriesUnknown are both here because Entries alone cannot be read: it may
 // hold less of the queue than the queue had, and an empty Entries is a queue of nothing only
-// when EntriesUnknown is false. Refused and Refusal are here because the mark is spent whether
-// or not the jump took, and without them a jump that did not would stand as the request alone
-// left it.
+// when EntriesUnknown is false.
 //
-// Refused false is "no refusal recorded" and never, on its own, a merge that went ahead of the
-// queue: the record is written before the mutation is sent, so it is also a jump whose answer
-// has not come back yet and one whose refusal the daemon could not write down. Nor does the
-// queue in Entries say where the merge stands: it is the queue as it was read before the
-// request, and GitHub alone knows what became of it.
+// Outcome is one of the four record.MergeJumpOutcome values and is never empty, so no reader
+// has to tell an outcome from a field nobody wrote: `asked` is the daemon having asked and not
+// learned what came of it, which is what the record says from the moment it is written until
+// GitHub answers; `accepted` is GitHub taking the request; `refused` is an answer that decided
+// it; and `unknown` is an answer that decided nothing or a request nothing came back for, which
+// Answer's own words tell apart. Answer carries GitHub's status and words, or the transport
+// failure's text, for the last two, and is empty for the first two.
+//
+// None of them says where the merge stands, `accepted` least of all: it is the mutation
+// answering and no place in a queue. Nor does Entries say it — that is the queue as the daemon
+// read it before the request, and GitHub alone knows what became of it.
 type MergeJumpRecordView struct {
-	Repository     string                `json:"repository"`
-	Issue          string                `json:"issue"`
-	Number         int                   `json:"number"`
-	Head           string                `json:"head"`
-	At             time.Time             `json:"at"`
-	Reason         string                `json:"reason"`
-	Entries        []MergeQueueEntryView `json:"entries"`
-	EntriesTotal   int                   `json:"entriesTotal"`
-	EntriesUnknown bool                  `json:"entriesUnknown"`
-	Refused        bool                  `json:"refused"`
-	Refusal        string                `json:"refusal"`
+	Repository     string                  `json:"repository"`
+	Issue          string                  `json:"issue"`
+	Number         int                     `json:"number"`
+	Head           string                  `json:"head"`
+	At             time.Time               `json:"at"`
+	Reason         string                  `json:"reason"`
+	Entries        []MergeQueueEntryView   `json:"entries"`
+	EntriesTotal   int                     `json:"entriesTotal"`
+	EntriesUnknown bool                    `json:"entriesUnknown"`
+	Outcome        record.MergeJumpOutcome `json:"outcome"`
+	Answer         string                  `json:"answer"`
 }
 
 // MarshalJSON keeps `entries` an array on the wire: a jump of an empty queue, and one whose
@@ -564,8 +595,8 @@ func MergeJumpRecordViewsOf(records []record.MergeJumpRecord) []MergeJumpRecordV
 			Entries:        jump.Entries,
 			EntriesTotal:   jump.EntriesTotal,
 			EntriesUnknown: jump.EntriesUnknown,
-			Refused:        jump.Refused,
-			Refusal:        jump.Refusal,
+			Outcome:        jump.Outcome,
+			Answer:         jump.Answer,
 		}
 	}
 	return views

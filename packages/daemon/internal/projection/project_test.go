@@ -879,7 +879,7 @@ func TestProjectAnswersTheControllersMergeMarks(t *testing.T) {
 		mergeHeld: []record.MergeHeldIssue{{Issue: "LEGION-211", DueAt: projectedAt.Add(time.Hour)}},
 		mergeJumpRecords: []record.MergeJumpRecord{{
 			Repository: "acme/widgets", Issue: "LEGION-207", Number: 412, Head: "c0ffee1", At: setAt,
-			Reason: "the earlier blocker", EntriesTotal: 2,
+			Reason: "the earlier blocker", EntriesTotal: 2, Outcome: record.MergeJumpAccepted,
 			Entries: []record.MergeQueueEntryRecord{{Number: 401, Position: 1, State: "QUEUED", EnqueuedAt: setAt}},
 		}},
 	}
@@ -899,8 +899,9 @@ func TestProjectAnswersTheControllersMergeMarks(t *testing.T) {
 		t.Fatalf("mergeHeld = %#v, want %#v", got.MergeHeld, wantHeld)
 	}
 	if len(got.MergeJumpRecords) != 1 || got.MergeJumpRecords[0].EntriesTotal != 2 ||
-		len(got.MergeJumpRecords[0].Entries) != 1 || got.MergeJumpRecords[0].Entries[0].Number != 401 {
-		t.Fatalf("mergeJumpRecords = %#v, want the one record with the entry it asked to go ahead of", got.MergeJumpRecords)
+		len(got.MergeJumpRecords[0].Entries) != 1 || got.MergeJumpRecords[0].Entries[0].Number != 401 ||
+		got.MergeJumpRecords[0].Outcome != record.MergeJumpAccepted {
+		t.Fatalf("mergeJumpRecords = %#v, want the one record with its outcome and the entry it asked to go ahead of", got.MergeJumpRecords)
 	}
 
 	empty, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)

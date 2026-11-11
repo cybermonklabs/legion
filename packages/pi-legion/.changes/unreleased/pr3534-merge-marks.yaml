@@ -4,8 +4,11 @@ body: |-
   merge. `set_merge_jump` (issue, reason) marks one issue, so that the daemon asks GitHub to put
   the next merge it submits for that issue at the head of GitHub's merge queue, ahead of the pull
   requests already in it; the mark is spent at that mutation, and the reason stays in the record
-  of the jump. The record is what Legion asked GitHub for and never where the merge stands: it is
-  written before the mutation is sent.
+  of the jump. The record carries what became of the jump's own request in `outcome` — `asked`,
+  which is Legion having asked and never learned, `accepted`, which is GitHub taking the
+  request, `refused`, which is an answer that decided it, and `unknown`, which is an answer that
+  decided nothing or a request nothing came back for, with `answer` carrying the words for the
+  last two — and never where the merge stands, `accepted` included.
   Only a merge that goes into a merge queue spends the mark, which is a merge whose base branch
   requires one: where the base requires none there is no queue to jump, the merge goes out as it
   always did, and the mark stands until it is cleared or the issue leaves the workflow.

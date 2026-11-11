@@ -106,12 +106,14 @@ type State struct {
 	MergeHeld []MergeHeldView `json:"mergeHeld"`
 	// MergeJumpRecords is the newest jump of each repository that has had one
 	// (record.Store.MergeJumpRecords), by repository: what the daemon asked GitHub for when it
-	// spent a mark, and what GitHub's queue held at that moment, which is what names whose merge
-	// the jump asked to go ahead of. It is the request and never where the merge stands: the
-	// record is written before the mutation is sent, and the queue in it is the queue as it was
-	// read before the request. The record outlives the mark and the issue, so this key answers a
-	// reader after the fact; there is one row per repository and no history. Never null; empty
-	// until the project's first jump (contract 72).
+	// spent a mark, what GitHub's queue held at that moment, which is what names whose merge
+	// the jump asked to go ahead of, and what became of the request (MergeJumpRecordView's
+	// Outcome, one of four and never empty). It is the request and its end, and never where the
+	// merge stands: the queue in it is the queue as it was read before the request, and an
+	// outcome of `accepted` is GitHub taking the request and no place in a queue. The record
+	// outlives the mark and the issue, so this key answers a reader after the fact; there is one
+	// row per repository and no history. Never null; empty until the project's first jump
+	// (contract 72).
 	MergeJumpRecords []MergeJumpRecordView `json:"mergeJumpRecords"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's

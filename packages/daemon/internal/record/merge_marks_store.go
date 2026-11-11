@@ -19,7 +19,7 @@ const mergeJumpColumns = `issue, reason, session, set_at`
 const mergeHoldColumns = `paths, repository, reason, ends_at, session, set_at`
 
 // mergeJumpRecordColumns is the jump record's columns in the order scanMergeJumpRecord reads them.
-const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, entries, entries_total, entries_unknown, refused, refusal`
+const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, entries, entries_total, entries_unknown, outcome, answer`
 
 // mergeHeldPayload is the SQL that says a ready_merge row's payload carries an open held
 // stretch (ReadyMerge.HeldSince), which is what makes the row one a merge hold caught: a run
@@ -30,7 +30,7 @@ const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, ent
 const mergeHeldPayload = `payload ? 'heldSince' and payload->>'heldSince' <> ''`
 
 // SetMergeJump writes issue's jump mark, and lands only while the issue's own record is still
-// one the daemon runs (Stopped). It answers whether it wrote, as RefuseMergeJumpRecord answers
+// one the daemon runs (Stopped). It answers whether it wrote, as SetMergeJumpOutcome answers
 // whether its own conditional update landed.
 //
 // The condition is read in this very transaction and under the issue row's lock, which is what
@@ -192,35 +192,39 @@ func (s *Postgres) PutMergeJumpRecord(ctx context.Context, tx pgx.Tx, project st
 		return fmt.Errorf("put the jump record of %s in %s: encode the queue entries: %w", record.Repository, project, err)
 	}
 	_, err = tx.Exec(ctx, `insert into merge_jump_records (project, repository, issue, number, head, at, reason,
-		entries, entries_total, entries_unknown, refused, refusal)
+		entries, entries_total, entries_unknown, outcome, answer)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		on conflict (project, repository) do update set issue = excluded.issue, number = excluded.number,
 		head = excluded.head, at = excluded.at, reason = excluded.reason, entries = excluded.entries,
 		entries_total = excluded.entries_total, entries_unknown = excluded.entries_unknown,
-		refused = excluded.refused, refusal = excluded.refusal`,
+		outcome = excluded.outcome, answer = excluded.answer`,
 		project, record.Repository, record.Issue, record.Number, record.Head, record.At, record.Reason,
-		entries, record.EntriesTotal, record.EntriesUnknown, record.Refused, record.Refusal)
+		entries, record.EntriesTotal, record.EntriesUnknown, string(record.Outcome), record.Answer)
 	if err != nil {
 		return fmt.Errorf("put the jump record of %s in %s: %w", record.Repository, project, err)
 	}
 	return nil
 }
 
-// RefuseMergeJumpRecord marks one jump's record refused, and lands only while the row of
-// (project, the record's repository) is still that jump's own: its issue and its head, which is
-// the identity a jump record has, since the table keeps one row per repository and no history
-// (MergeJumpRecord). A row a newer jump of the same repository has written answers false and is
-// left exactly as that jump wrote it.
+// SetMergeJumpOutcome writes what became of one jump — its outcome and the answer that decided
+// it (MergeJumpOutcome) — and lands only while the row of (project, the record's repository) is
+// still that jump's own: its issue and its head, which is the identity a jump record has, since
+// the table keeps one row per repository and no history (MergeJumpRecord). A row a newer jump of
+// the same repository has written answers false and is left exactly as that jump wrote it.
 //
-// Only refused and refusal are written. Everything else of the row — the queue the jump would
-// have displaced among it — is what the jump's own write put there (PutMergeJumpRecord), which
-// is the write this one follows a failed mutation with.
-func (s *Postgres) RefuseMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) (bool, error) {
-	tag, err := tx.Exec(ctx, `update merge_jump_records set refused = $5, refusal = $6
+// It is the one write that changes a record after the fact, and the only one that writes an
+// outcome other than MergeJumpAsked: the jump's own transaction writes the row with that value
+// before the mutation is sent (PutMergeJumpRecord), and this follows GitHub's answer to that
+// mutation, or its failure to answer. Only outcome and answer are written. Everything else of
+// the row — the queue the jump asked to go ahead of among all — is what the jump's own write put
+// there, which is what makes this write safe to lose: a record this never reached still says
+// MergeJumpAsked, which is what is then true of it.
+func (s *Postgres) SetMergeJumpOutcome(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) (bool, error) {
+	tag, err := tx.Exec(ctx, `update merge_jump_records set outcome = $5, answer = $6
 		where project = $1 and repository = $2 and issue = $3 and head = $4`,
-		project, record.Repository, record.Issue, record.Head, record.Refused, record.Refusal)
+		project, record.Repository, record.Issue, record.Head, string(record.Outcome), record.Answer)
 	if err != nil {
-		return false, fmt.Errorf("refuse the jump record of %s in %s: %w", record.Repository, project, err)
+		return false, fmt.Errorf("record what became of the jump of %s in %s: %w", record.Repository, project, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
@@ -254,8 +258,8 @@ func scanMergeJumpRecord(row pgx.Row) (MergeJumpRecord, error) {
 	var record MergeJumpRecord
 	var entries []byte
 	if err := row.Scan(&record.Repository, &record.Issue, &record.Number, &record.Head, &record.At,
-		&record.Reason, &entries, &record.EntriesTotal, &record.EntriesUnknown, &record.Refused,
-		&record.Refusal); err != nil {
+		&record.Reason, &entries, &record.EntriesTotal, &record.EntriesUnknown, &record.Outcome,
+		&record.Answer); err != nil {
 		return MergeJumpRecord{}, err
 	}
 	if err := json.Unmarshal(entries, &record.Entries); err != nil {

@@ -708,27 +708,43 @@ const legionMergeQueueEntry = z.object({
   enqueuedAt: timestamp,
 });
 
+/** The four values `api.MergeJumpRecordView.outcome` takes (`record.MergeJumpOutcome`), which a
+ * jump record carries from the moment it is written:
+ *
+ * - `asked`: the daemon asked GitHub and has not learned what came of it. It is written in the
+ *   transaction that spends the mark, before the mutation is sent, and a stopped daemon or a
+ *   lease that moved on leaves it standing, where it says what is true of both.
+ * - `accepted`: the enqueue mutation came back with no error, which is GitHub taking the
+ *   request.
+ * - `refused`: an answer came back that decides it — GitHub's own GraphQL error, or the 4xx it
+ *   decided the request itself with.
+ * - `unknown`: an answer came back and decided nothing — a 5xx of GitHub's own edge, a 2xx
+ *   carrying no data — or nothing came back at all — a dial that failed, a timeout, a
+ *   connection closed before any status arrived. `answer` tells those apart in its own words,
+ *   and no reader branches on the difference. */
+const legionMergeJumpOutcome = z.enum(["asked", "accepted", "refused", "unknown"]);
+
 /** `api.MergeJumpRecordView` — the newest jump of one repository (contract 72): the repository,
  * the issue whose mark was spent, the pull request's number and head, when the daemon asked, the
  * reason the mark carried, the queue as it stood before the request (oldest entry first, which
  * is what names whose merge the jump asked to go ahead of), how long that queue was, whether
- * GitHub answered no queue at all, and whether a refusal was recorded, with the words it
- * carried.
+ * GitHub answered no queue at all, and what became of the jump's own request, with the words
+ * that decided it.
  *
  * `entriesTotal` and `entriesUnknown` are both here because `entries` alone cannot be read: it may
  * hold less of the queue than the queue had, and an empty `entries` is a queue of nothing only
- * when `entriesUnknown` is false. `refused` and `refusal` are here because the mark is spent
- * whether or not the jump took, and without them a jump that did not would stand as the request
- * alone left it; `refusal` is empty where no refusal was recorded, and otherwise carries
- * GitHub's own words where an answer of GitHub's came back, a 502 of its own edge as much as a
- * 403, or says that Legion could not deliver it where nothing came back at all — a dial that
- * failed, a timeout, a connection closed before any status arrived.
+ * when `entriesUnknown` is false.
  *
- * `refused` false is "no refusal recorded" and never, on its own, a jump that went through: the
- * daemon writes this record before it sends the mutation, so a jump still in flight, and one
- * whose refusal the daemon could not write down, both read this way. Nor does `entries` say
- * where the merge stands: it is the queue as the daemon read it before the request, and what
- * GitHub then did with the queue is on GitHub. */
+ * `outcome` is one of four and never empty (`legionMergeJumpOutcome`), so no reader has to tell
+ * what became of a jump from a field nobody wrote: a record that carried a flag set only on
+ * failure read the same for a jump GitHub took, a jump still in flight and a jump whose failure
+ * the daemon could not write down, and every reader took the most hopeful of them. `answer`
+ * carries GitHub's status and words, or the transport failure's own text, for `refused` and
+ * `unknown`, and is empty for `asked` and `accepted`.
+ *
+ * None of the four says where the merge stands, `accepted` least of all: that is the mutation
+ * answering, and GitHub's queue after it is read on GitHub. Nor does `entries` say it — that is
+ * the queue as the daemon read it before the request. */
 const legionMergeJumpRecord = z.object({
   repository: nonEmptyString,
   issue: issueKey,
@@ -739,8 +755,8 @@ const legionMergeJumpRecord = z.object({
   entries: z.array(legionMergeQueueEntry),
   entriesTotal: z.number().int().nonnegative(),
   entriesUnknown: z.boolean(),
-  refused: z.boolean(),
-  refusal: z.string(),
+  outcome: legionMergeJumpOutcome,
+  answer: z.string(),
 });
 
 /** `api.State`, the body of `GET /legion/v1/state`. `controllerLocator` is absent until a session

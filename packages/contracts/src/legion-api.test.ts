@@ -1789,7 +1789,30 @@ test("the state golden carries the controller's merge marks", () => {
     },
   ]);
   expect(state.mergeHeld).toEqual([{ issue: "LEGION-211", dueAt: "2026-09-22T20:01:00Z" }]);
+  // One record per outcome a jump can end in, since the fixture is what pins the shape a reader
+  // of this key branches on, and `accepted` is as much a thing the daemon writes as `refused`.
   expect(state.mergeJumpRecords).toEqual([
+    {
+      repository: "acme/infra",
+      issue: "LEGION-213",
+      number: 96,
+      head: "5b2e1d9c4a7f08361ec5d4b3a2910f8e7d6c5b4a",
+      at: "2026-09-22T09:06:00Z",
+      reason: "the migration goes in first",
+      entries: [
+        {
+          number: 95,
+          position: 1,
+          jump: false,
+          state: "QUEUED",
+          enqueuedAt: "2026-09-22T09:04:00Z",
+        },
+      ],
+      entriesTotal: 1,
+      entriesUnknown: false,
+      outcome: "asked",
+      answer: "",
+    },
     {
       repository: "acme/widgets",
       issue: "LEGION-207",
@@ -1815,8 +1838,21 @@ test("the state golden carries the controller's merge marks", () => {
       ],
       entriesTotal: 2,
       entriesUnknown: false,
-      refused: false,
-      refusal: "",
+      outcome: "accepted",
+      answer: "",
+    },
+    {
+      repository: "beta/edge",
+      issue: "LEGION-212",
+      number: 18,
+      head: "7c3a9e1b5d2f84609a1b2c3d4e5f60718293a4b5",
+      at: "2026-09-22T09:04:00Z",
+      reason: "the rollback goes in first",
+      entries: [],
+      entriesTotal: 0,
+      entriesUnknown: true,
+      outcome: "unknown",
+      answer: "GitHub answered POST /graphql with 502: Bad Gateway",
     },
     {
       repository: "zeta/tools",
@@ -1828,10 +1864,36 @@ test("the state golden carries the controller's merge marks", () => {
       entries: [],
       entriesTotal: 0,
       entriesUnknown: true,
-      refused: true,
-      refusal: "GitHub refused the jump: the merge queue of zeta/tools takes no jump",
+      outcome: "refused",
+      answer: "GitHub refused the jump: the merge queue of zeta/tools takes no jump",
     },
   ]);
+  // The four the schema takes are the four the daemon writes, and nothing else goes in the
+  // column: a reader that let a fifth word through would be back to guessing what it meant, and
+  // one that let the key be absent would read an outcome out of a field nobody wrote.
+  expect(state.mergeJumpRecords?.map((jump) => jump.outcome)).toEqual([
+    "asked",
+    "accepted",
+    "unknown",
+    "refused",
+  ]);
+  const outcomes = fixture("state.json") as {
+    mergeJumpRecords: Record<string, unknown>[];
+  };
+  const ended = outcomes.mergeJumpRecords[0];
+  if (ended === undefined) {
+    throw new Error("state fixture lacks a jump record");
+  }
+  for (const outcome of ["asked", "accepted", "refused", "unknown"]) {
+    ended.outcome = outcome;
+    expect(LegionStateResponse.safeParse(outcomes).success).toBeTrue();
+  }
+  for (const refused of ["queued", "", "Accepted"]) {
+    ended.outcome = refused;
+    expect(LegionStateResponse.safeParse(outcomes).success).toBeFalse();
+  }
+  delete ended.outcome;
+  expect(LegionStateResponse.safeParse(outcomes).success).toBeFalse();
 
   const stage3 = LegionStateResponse.parse(fixture("state-stage3.json"));
   expect(stage3.mergeJumps).toEqual([]);

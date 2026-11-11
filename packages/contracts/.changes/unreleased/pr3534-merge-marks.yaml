@@ -6,5 +6,12 @@ body: |-
   `mergeJumpRecords`, the newest jump of each repository with the queue it asked to go ahead of. All
   four are optional, because the route serves a caller whose pod records an older contract a body
   that carries none of them.
+  A jump record says what became of its own request outright, in `outcome`: `asked`, which the
+  daemon writes before it sends the mutation and which a stopped daemon or a lost lease leaves
+  standing; `accepted`, which is GitHub taking the request; `refused`, which is an answer that
+  decided it; and `unknown`, which is an answer that decided nothing or a request nothing came
+  back for, with `answer` carrying GitHub's words or the transport failure's own for those last
+  two. No outcome says where the merge stands, `accepted` included, and `entries` is the queue
+  the daemon read before asking.
   `LegionMergeJumpRequest`, `LegionMergeJumpClearRequest` and `LegionMergeHoldsRequest` are the
   three controller routes the marks are set through.

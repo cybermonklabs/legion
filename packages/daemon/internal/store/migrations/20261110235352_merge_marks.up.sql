@@ -38,10 +38,11 @@
 -- it stood before the request, a JSON array of entries (record.MergeQueueEntryRecord), with
 -- entries_total the queue's length and entries_unknown set when GitHub did not answer the queue
 -- at all: a record that could not read the queue says so rather than reading as an empty queue.
--- refused and refusal carry a jump that did not take, so the mark being spent is never mistaken
--- for a jump that went through; refused false is no refusal recorded, since the row is written
--- before the mutation is sent. A jsonb array rather than a table of entries because nothing
--- queries one entry: the whole snapshot is written once and read whole.
+-- refused and refusal were this table's account of a jump that did not take, and 20261111124500
+-- replaces them with outcome and answer: this row is written before the mutation is sent, so an
+-- unset refused was no answer of anybody's, and what became of a jump is now recorded outright
+-- rather than read out of a column nothing wrote. A jsonb array rather than a table of entries
+-- because nothing queries one entry: the whole snapshot is written once and read whole.
 --
 -- merge_jump_records.issue deliberately carries no foreign key to issues (key). The record of
 -- what a jump asked to go ahead of outlives the issue record: an issue is deleted when its tree

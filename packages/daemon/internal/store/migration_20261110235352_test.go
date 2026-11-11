@@ -73,18 +73,18 @@ func TestTheMergeMarkTablesArriveWith20261110235352(t *testing.T) {
 	// account of what a jump asked to go ahead of outlives the issue record, so a key no issue row carries
 	// is recorded here.
 	const record = `insert into merge_jump_records (project, repository, issue, number, head, at, reason,
-		entries, entries_total, entries_unknown, refused, refusal)
+		entries, entries_total, entries_unknown, outcome, answer)
 		values ('LEGION', 'acme/widgets', 'LEGION-DELETED', 42, 'c0de', now(), 'the release waits on it',
 		'[{"number": 7, "position": 0, "jump": false, "state": "QUEUED", "enqueuedAt": "2026-11-10T00:00:00Z"}]',
-		1, false, false, '')`
+		1, false, 'asked', '')`
 	exec(record)
 	if _, err := store.Pool().Exec(ctx, record); err == nil || !strings.Contains(err.Error(), "merge_jump_records_pkey") {
 		t.Fatalf("a second jump record of one repository = %v, want the primary key to refuse it", err)
 	}
 	exec(`insert into merge_jump_records (project, repository, issue, number, head, at, reason,
-		entries, entries_total, entries_unknown, refused, refusal)
+		entries, entries_total, entries_unknown, outcome, answer)
 		values ('LEGION', 'acme/other', 'LEGION-208', 43, 'beef', now(), 'another repository of the project',
-		'[]', 0, true, true, 'GitHub refused the jump')`)
+		'[]', 0, true, 'refused', 'GitHub refused the jump')`)
 
 	exec(`delete from issues where key = 'LEGION-208'`)
 	var marks, holds, jumped int

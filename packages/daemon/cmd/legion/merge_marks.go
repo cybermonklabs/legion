@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // mergeHoldsSummary is the one line an operator reads for the paths the controller is holding
@@ -91,30 +92,23 @@ func mergeJumpsSummary(jumps []api.MergeJumpView, records []api.MergeJumpRecordV
 	return fmt.Sprintf("merge jumps: %s; the newest of each repository: %s", marked, strings.Join(spent, "; "))
 }
 
-// jumpAsked is what one spent jump asked for, as mergeJumpsSummary names it: the queue GitHub
-// answered just before the request, each entry by number and state, and how long that queue was.
-// It is the queue the jump asked to go ahead of and never where the merge stands, because the
-// record is written before the mutation is sent and is read again here long after: what GitHub
-// did with the request is on GitHub. A queue GitHub did not answer is told apart from an empty
-// one, since the record keeps the two apart (record.MergeJumpRecord.EntriesUnknown) and an
-// operator reading "an empty queue" of an unread queue would be reading a guess.
+// jumpAsked is what one spent jump asked for and what became of it, as mergeJumpsSummary names
+// it: the queue GitHub answered just before the request, each entry by number and state and how
+// long that queue was (jumpQueueAsked), and then the record's own outcome (jumpOutcomeTold).
 //
-// A record that carries a refusal says so with the refusal's own words instead, because the
-// mark was spent either way and the queue alone would read as a jump that took. Refused false is
-// no refusal recorded rather than a jump that went through — a record whose answer has not come
-// back yet carries none — which is why this line names the request and claims nothing of the
-// merge.
-//
-// The line says that the jump did not go through and never who refused it. Refused is true for
-// both shapes of a jump that failed — one GitHub answered and one Legion could not deliver — and
-// the record keeps no column for which, by decision: the words are what a reader reads
-// (record.MergeJumpRecord, the daemon's jumpRefusalRecorded). So this line prints the words and
-// adds no assertion of its own, since "refused by GitHub" over a request GitHub never saw sends
-// an operator to the repository's merge-queue settings for a fault in the network.
+// The queue is the queue the jump asked to go ahead of and never where the merge stands,
+// because the record is written before the mutation is sent and is read again here long after:
+// what GitHub did with the request is on GitHub. That holds for every outcome, the one GitHub
+// took among them, so no line of this summary places a merge in a queue.
 func jumpAsked(jump api.MergeJumpRecordView) string {
-	if jump.Refused {
-		return "the jump did not go through: " + quotedOrNone(jump.Refusal)
-	}
+	return jumpQueueAsked(jump) + ", " + jumpOutcomeTold(jump)
+}
+
+// jumpQueueAsked is the queue one jump was asked of, as the record read it just before the
+// request. A queue GitHub did not answer is told apart from an empty one, since the record keeps
+// the two apart (record.MergeJumpRecord.EntriesUnknown) and an operator reading "an empty queue"
+// of an unread queue would be reading a guess.
+func jumpQueueAsked(jump api.MergeJumpRecordView) string {
 	if jump.EntriesUnknown {
 		return "asked to go ahead of a queue GitHub did not answer"
 	}
@@ -126,4 +120,30 @@ func jumpAsked(jump api.MergeJumpRecordView) string {
 		ahead[i] = fmt.Sprintf("#%d %s", entry.Number, entry.State)
 	}
 	return fmt.Sprintf("asked to go ahead of %d queued: %s", jump.EntriesTotal, strings.Join(ahead, ", "))
+}
+
+// jumpOutcomeTold is what became of one jump's own request, a line of its own for each of the
+// four values the record carries (record.MergeJumpOutcome). Each says what the daemon learned
+// and stops there: `asked` is a request whose end Legion never learned, not a jump that went
+// through; `accepted` is GitHub taking the request, which is no place in the queue; and the two
+// that did not take print the words that came back and add no verdict of their own, since
+// "refused by GitHub" over a request GitHub never saw sends an operator to the repository's
+// merge-queue settings for a fault in the network.
+//
+// A value this build does not know is printed as itself rather than read as any of the four: a
+// daemon one release ahead of this command would otherwise have its outcome rendered as the
+// nearest one here.
+func jumpOutcomeTold(jump api.MergeJumpRecordView) string {
+	switch jump.Outcome {
+	case record.MergeJumpAsked:
+		return "and Legion never learned what GitHub did with the request"
+	case record.MergeJumpAccepted:
+		return "and GitHub took the request"
+	case record.MergeJumpRefused:
+		return "and the jump did not take: " + quotedOrNone(jump.Answer)
+	case record.MergeJumpUnknown:
+		return "and what became of the request is unknown: " + quotedOrNone(jump.Answer)
+	}
+	return fmt.Sprintf("and the record carries an outcome this command does not know, %s: %s",
+		quotedOrNone(string(jump.Outcome)), quotedOrNone(jump.Answer))
 }

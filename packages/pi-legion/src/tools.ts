@@ -362,9 +362,11 @@ export function createLegionTool(deps: {
         "(CONTROLLER_REQUIRED). Each answers an empty object, and read_state reads back what they wrote: mergeJumps the " +
         "marks that still stand, mergeHolds the hold list, mergeHeld the issues those holds are keeping back, which is " +
         "the merges a hold caught and not every merge a held path has, and mergeJumpRecords the newest jump of each " +
-        "repository, with the queue it asked to go ahead of and, where a refusal was recorded, whether GitHub " +
-        "answered the request or Legion could not deliver it. A jump record is what Legion asked GitHub for, written " +
-        "before the mutation was sent, and never where a merge stands in the queue: read GitHub for that. ",
+        "repository, with the queue it asked to go ahead of and, in outcome, what became of the request: asked, " +
+        "which is Legion having asked and never learned; accepted, which is GitHub taking the request; refused, " +
+        "which is an answer that decided it; and unknown, which is an answer that decided nothing or a request " +
+        "nothing came back for, answer carrying the words for those last two. A jump record is what Legion asked " +
+        "GitHub for and never where a merge stands in the queue, accepted included: read GitHub for that. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
