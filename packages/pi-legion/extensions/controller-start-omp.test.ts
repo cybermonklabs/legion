@@ -806,6 +806,8 @@ interface ControllerInbound {
    * session takes in that order.
    */
   repeat(sid: string, card: Card): Promise<unknown>;
+  /** The controller topic of the project, which a notice goes on and a case derives from. */
+  readonly noticeSubject: string;
   /**
    * Relays one triage notice on the controller topic to session `sid` and returns its summary
    * (`triage on <issue>`, the daemon's `noticeSummary`), whose issue key no other notice shares.
@@ -906,6 +908,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
       }
     );
   return {
+    noticeSubject,
     card(sid, label) {
       const summary = `CARD-${label}-${randomUUID().slice(0, 8)}`;
       const key = `${label}-${randomUUID()}`;
@@ -1148,7 +1151,10 @@ test.skipIf(skip)(
 // published the moment the controller topic is registered, both find the start turn already
 // queued: the first request carries the start message, and each of them reaches the model after
 // it, as a steer into the start turn or in a later turn. The card's frame and the repeat behind it
-// are taken by the session's one connection in the order they were published.
+// are taken by the session's one connection in the order they were published. The notice reaches
+// the session as a relay frame of its own consumer, which the session answers `received`
+// (`ControllerInbound.notice`); a notice the session never took is named by the wait that reads
+// it (`ControllerInbound.undelivered`), rather than left to read as a wait that ran out.
 test.skipIf(skip)(
   "a card published as soon as the role is claimed comes after the start turn",
   async () => {

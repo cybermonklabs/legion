@@ -61,10 +61,10 @@ func (st *step) subscribeSessions() (*natsSessions, error) {
 	} else {
 		ns.pulls = spy
 	}
-	ns.relay = newRelaySessions(len(st.sessions), len(ns.conns))
-	for i, s := range st.sessions {
+	ns.relay = newRelaySessions(len(st.ids), len(ns.conns))
+	for i, id := range st.ids {
 		nc := ns.conns[i%len(ns.conns)]
-		if _, err := nc.Subscribe(bus.DeliverSubject(s.id), ns.relay.handler(ns, i, contracts.AgentSubject(s.id), st.nonce)); err != nil {
+		if _, err := nc.Subscribe(bus.DeliverSubject(id), ns.relay.handler(ns, i, contracts.AgentSubject(id), st.nonce)); err != nil {
 			return ns, err
 		}
 		ns.subs++
@@ -74,6 +74,24 @@ func (st *step) subscribeSessions() (*natsSessions, error) {
 	}
 	st.lg.Printf("nats: %d subscriptions on %d connections", ns.subs, len(ns.conns))
 	return ns, nil
+}
+
+// envelopeEvent is the id and the type of the Dispatch event an envelope carries, as a session
+// reads them off a relay frame of its own consumer; ok is false when the bytes are no envelope,
+// or its payload is no event of Dispatch's (internal/contracts envelope.go).
+func envelopeEvent(data []byte) (id int64, typ string, ok bool) {
+	var env contracts.Envelope
+	if json.Unmarshal(data, &env) != nil {
+		return 0, "", false
+	}
+	var ev struct {
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(env.Payload), &ev) != nil {
+		return 0, "", false
+	}
+	return ev.ID, ev.Type, true
 }
 
 func (ns *natsSessions) close() {
@@ -175,26 +193,34 @@ func (r *registrar) register(ctx context.Context, i int) error {
 	return nil
 }
 
-// registrationFields is session s's registration with the listener: its directory, title and
-// the topics of the issues it watches. With -mention-frac, it advertises the default mention
-// delivery, so Dispatch delivers a mention of the session. registrar.register adds the delivery
-// field asking for consumer delivery.
-func (st *step) registrationFields(s session) map[string]any {
+// registrationFields is one session's registration with the listener: its directory, title and
+// the topics it watches, which are the issue topics it follows in each of the step's
+// populations. With -mention-frac, it advertises the default mention delivery, so Dispatch
+// delivers a mention of the session. registrar.register adds the delivery field asking for
+// consumer delivery.
+func (st *step) registrationFields(i int) map[string]any {
 	topics := []string{}
-	for _, w := range s.watched {
-		topics = append(topics, st.issueTopic(w))
+	for _, p := range st.pops {
+		topics = append(topics, p.topics(p.sessions[i])...)
 	}
+	return registrationFieldsOf(st.ids[i], topics, st.cfg.mentionFrac > 0)
+}
+
+// registrationFieldsOf is that registration for a session id and the topics it follows, which
+// the replay's roster builds one of before the session is laid out (newReplayStep). mentions
+// advertises the default mention delivery, which is what -mention-frac needs of a session.
+func registrationFieldsOf(id string, topics []string, mentions bool) map[string]any {
 	capabilities := []string{}
-	if st.cfg.mentionFrac > 0 {
+	if mentions {
 		capabilities = []string{mentionDelivery}
 	}
-	return map[string]any{"session_id": s.id, "dir": "/work/" + s.id, "title": "load " + s.id,
+	return map[string]any{"session_id": id, "dir": "/work/" + id, "title": "load " + id,
 		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": capabilities}
 }
 
-// registrationBody is registrationFields encoded, as the listener receives it.
-func (st *step) registrationBody(s session) []byte {
-	b, _ := json.Marshal(st.registrationFields(s))
+// registrationBody is registrationFieldsOf encoded, as the listener receives it.
+func registrationBody(id string, topics []string, mentions bool) []byte {
+	b, _ := json.Marshal(registrationFieldsOf(id, topics, mentions))
 	return b
 }
 
@@ -203,19 +229,19 @@ func (st *step) registrationBody(s session) []byte {
 // (relaySessions.delivery).
 func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registrar {
 	reg := &registrar{url: st.cfg.ep.listener, token: st.cfg.ep.listenerToken, client: &http.Client{Timeout: 10 * time.Second},
-		bodies: make([]map[string]any, len(st.sessions)), relay: ns.relay}
-	for i, s := range st.sessions {
-		reg.bodies[i] = st.registrationFields(s)
+		bodies: make([]map[string]any, len(st.ids)), relay: ns.relay}
+	for i := range st.ids {
+		reg.bodies[i] = st.registrationFields(i)
 	}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 16)
-	for i, s := range st.sessions {
+	for i, id := range st.ids {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
 			if err := reg.register(ctx, i); err != nil {
 				if reg.errs.Add(1) <= 5 {
-					st.lg.Printf("register %s: %v", s.id, err)
+					st.lg.Printf("register %s: %v", id, err)
 				}
 				return
 			}
@@ -234,7 +260,7 @@ func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registr
 // (contracts.SessionHeartbeat) is spread evenly, until ctx ends.
 func (st *step) startHeartbeat(ctx context.Context, reg *registrar) {
 	go func() {
-		t := time.NewTicker(contracts.SessionHeartbeat / time.Duration(len(st.sessions)))
+		t := time.NewTicker(contracts.SessionHeartbeat / time.Duration(len(st.ids)))
 		defer t.Stop()
 		for i := 0; ; i++ {
 			select {
@@ -244,10 +270,10 @@ func (st *step) startHeartbeat(ctx context.Context, reg *registrar) {
 				go func(i int) {
 					if err := reg.register(ctx, i); err != nil && ctx.Err() == nil {
 						if reg.heartbeatErrs.Add(1) <= 5 {
-							st.lg.Printf("heartbeat %s: %v", st.sessions[i].id, err)
+							st.lg.Printf("heartbeat %s: %v", st.ids[i], err)
 						}
 					}
-				}(i % len(st.sessions))
+				}(i % len(st.ids))
 			}
 		}
 	}()
