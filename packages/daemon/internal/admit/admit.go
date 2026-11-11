@@ -1092,7 +1092,7 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // (record.NeedsSlot, the one statement of the release, whose phase half the grant reads too —
 // record.KeepsSlot) and reports those issues in slot order. Each release is logged once the
 // fact commits. It is the one release the daemon makes: a tree leaving the workflow, a root
-// finishing, an issue reaching its done or its wait for a merge, and a linger all read the same
+// finishing, an issue whose work passes its review, and a linger all read the same
 // predicate, so there is one rule and one place a slot can go.
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
@@ -1515,12 +1515,20 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // predicate, so no pass hands out a row the next pass would take back.
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
-// it in, and the two agree wherever this is asked: KeepsSlot refuses done and awaiting_merge
-// alone, and no promotion moves an issue into or out of either. A first phase starts at
-// phase.Planning from a record standing at admitted, an answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
-// a root whose tree is opened keeps the phase its record carries, awaiting_merge included,
-// which makes such a root the one candidate the phase test refuses.
+// it in, and the two agree wherever this is asked: KeepsSlot refuses the four phases past an
+// issue's review — accepting, retro, merging and awaiting_merge — and done, and no promotion
+// moves an issue into or out of any of them. A first phase starts at phase.Planning from a
+// record standing at admitted, an answered root goes from awaiting_person back to admitted, a
+// returning issue keeps the worker phase it stands in, and a root whose tree is opened keeps
+// the phase its record carries.
+//
+// So a root another tree handed over carrying accepting, retro, merging or awaiting_merge is a
+// candidate this refuses, and its promotion opens its tree while it holds no row. That follows
+// from the rule and is intended: the work of such a root is its sign-off, its retro and its
+// merge, which write no more of the change, and the cap counts the issues whose change is still
+// to write. The tree opens, the phase's own worker starts on a row the outbox holds for no slot
+// (workflow.StartOrOwe), and the root takes a row again only where its architect sends the work
+// back to a phase that keeps one.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
@@ -1646,15 +1654,15 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // holding no slot.
 //
 // Holding no slot is the normal state of a root waiting to start: the cap counts the issues the
-// daemon has started, so a root waiting in the line, one whose tree has left the workflow and
-// one whose own wait is only for its merge hold none, while a root in accepting, waiting on a
-// person, on a blocker or for its children keeps the row it was started with. Every one of
-// those is a tree whose lifecycle stands open under the workflow, or whose root waits in the
-// line or on a person, which is exactly record.LiveRoots: so liveness is the term that replaces
-// the old slot test, and it covers the slots, the line and the awaiting_person wait together.
-// The children-first wait is asked of the issue as well, so that a later rule which holds an
-// issue somewhere liveness does not reach cannot silently have its work taken out of the
-// workflow.
+// daemon has started whose change is still to write, so a root waiting in the line, one whose
+// tree has left the workflow and one standing past its review — in accepting, retro, merging or
+// awaiting_merge — hold none, while a root waiting on a person, on a blocker or for its
+// children keeps the row it was started with. Every one of those is a tree whose lifecycle
+// stands open under the workflow, or whose root waits in the line or on a person, which is
+// exactly record.LiveRoots: so liveness is the term that replaces the old slot test, and it
+// covers the slots, the line and the awaiting_person wait together. The children-first wait is
+// asked of the issue as well, so that a later rule which holds an issue somewhere liveness does
+// not reach cannot silently have its work taken out of the workflow.
 //
 // What a root's own Dispatch links say is not asked, though it reads as a wait of the same
 // kind. A root the line holds behind an unfinished link is in todo, which this rule has already
@@ -1934,8 +1942,17 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	// half of it made.
 	var members []midPhaseMember
 	var keys []record.RoleRunKey
-	for _, member := range issues {
-		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
+	// The caller hands this the pass's own records with the promoted root's appended, as its
+	// promotion has just written it, so one key stands in the list twice. The later record is
+	// the fresher, so it is the one read and the earlier copy is passed over: a member started
+	// twice is a phase worker handed the same task on two rows, which the start of a phase past
+	// its review no longer coalesces into one (workflow.StartOrOwe).
+	latest := make(map[string]int, len(issues))
+	for index, member := range issues {
+		latest[member.Key] = index
+	}
+	for index, member := range issues {
+		if latest[member.Key] != index || member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			continue
 		}
 		if resume := workflow.ResumePhase(member); resume != member.Phase {
@@ -2030,26 +2047,41 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	return nil
 }
 
-// resumeSlottedWorkers is the repair of a slot whose worker has no task: an issue holding a slot
-// in a worker phase for which no start is queued and no delivery the claim is still working
+// resumeSlottedWorkers is the repair of an issue whose worker has no task: an issue in a worker
+// phase for which no start is queued and no delivery the claim is still working
 // (workflow.StartFor, the pending delivery's StillWorked). That can happen where a start row was
-// finished without acting while the slot stayed — a row the outbox fenced out, a row
-// finishFencedStarts finished earlier in this pass — and nothing else would ever start that
-// worker again, so the issue would hold its slot for ever doing nothing. Each one gets the start
+// finished without acting while the issue stayed where it was — a row the outbox fenced out, a
+// row finishFencedStarts finished earlier in this pass — and nothing else would ever start that
+// worker again, so the issue would stand there for ever doing nothing. Each one gets the start
 // a retry of a held phase gives (workflow's restart): the assignment its phases row already
 // names, so no completion in flight is refused for an assignment the worker was never given, and
 // the phase's resume task.
 //
-// It runs after the cap loop on every pass admission makes, over at most the cap's worth of
-// slotted issues, through one batched RoleRuns read rather than a read per slot. Running after
-// the fence repair rather than before it is what repairs a slot whose start row the fences
-// rejected on the pass that rejected it, instead of a pass later.
+// Its domain is the issues holding one of the cap's slots and this project's issues that stand
+// past their review (record.StandsAt in accepting, retro, merging or awaiting_merge), by key and
+// once each. The second half is there because such an issue holds no row at all now
+// (record.KeepsSlot) and its worker would otherwise be repaired by nothing. Both halves are read
+// from the records the pass already holds, so the widening costs no further read.
+//
+// The per-issue tests below bound it, and they are what keeps it from starting a worker the cap
+// has not admitted: workflow.RoleFor answers the empty role for awaiting_merge and the tree's
+// architect for accepting, which the loop passes over, and record.AtWork is false for
+// accepting, for awaiting_merge, and for merging while a closed design gate holds the merger's
+// READY (record.ReadyPending). So the widening reaches a retro, and a merging with no READY
+// pending, and nothing else. An issue at work that holds no row because it waits in the line is
+// not reached, which is the cap bypass this repair must never be: the architect standing in
+// accepting is passed over by the role test rather than missed.
+//
+// It runs after the cap loop on every pass admission makes, through one batched RoleRuns read
+// rather than a read per issue. Running after the fence repair rather than before it is what
+// repairs an issue whose start row the fences rejected on the pass that rejected it, instead of
+// a pass later.
 //
 // A slot no longer says a worker of its issue has work: an issue keeps its row through phases
-// no worker of it works (record.KeepsSlot), so a holder record.AtWork answers false for is
+// no worker of it works (record.KeepsSlot), so a candidate record.AtWork answers false for is
 // passed over, at the skip the loop below states. The pass hands this its own facts, so the
 // gate AtWork is asked with is the issue's real one and the call stays honest against its
-// contract, at one map lookup a holder.
+// contract, at one map lookup a candidate.
 func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
 ) error {
@@ -2069,24 +2101,44 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 	}
 	var holders []holder
 	var keys []record.RoleRunKey
+	candidates := make([]record.Issue, 0, len(slots))
+	seen := make(map[string]struct{}, len(slots))
+	take := func(issue record.Issue) {
+		if issue.Project != a.project {
+			return
+		}
+		if _, already := seen[issue.Key]; already {
+			return
+		}
+		seen[issue.Key] = struct{}{}
+		candidates = append(candidates, issue)
+	}
 	for _, slot := range slots {
 		issue, recorded := byKey[slot.Issue]
-		if !recorded || issue.Project != a.project {
+		if !recorded {
 			continue
 		}
+		take(issue)
+	}
+	for _, issue := range issues {
+		if record.StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging, phase.AwaitingMerge) {
+			take(issue)
+		}
+	}
+	for _, issue := range candidates {
 		role := workflow.RoleFor(issue.Phase)
 		if role == "" || role == claim.RoleArchitect {
 			continue
 		}
-		// A holder with no work where it stands is passed over, because this repair starts
-		// phase workers and that holder has none to start. One live case is left: an issue in
+		// A candidate with no work where it stands is passed over, because this repair starts
+		// phase workers and that candidate has none to start. One live case is left: an issue in
 		// merging whose merge request a closed design gate holds (record.ReadyPending), whose
 		// role is the merger, where a second task would ask for a READY a person has still to
-		// approve. Every other phase the rule keeps a row for has no worker role of its own —
-		// workflow.RoleFor answers the architect for accepting, which the skip above passes
-		// over, and the empty role for held, awaiting_person, admitted, awaiting_merge and
-		// done. So the gate decides nothing here either: AtWork reads it in the phase.Admitted
-		// arm alone, and no issue at admitted reaches this line.
+		// approve. Every other phase this reaches that no worker of it works has no worker role
+		// of its own either — workflow.RoleFor answers the architect for accepting, which the
+		// skip above passes over, and the empty role for held, awaiting_person, admitted,
+		// awaiting_merge and done. So the gate decides nothing here either: AtWork reads it in
+		// the phase.Admitted arm alone, and no issue at admitted reaches this line.
 		if !record.AtWork(issue, facts.Gates[issue.Tree]) {
 			continue
 		}
@@ -2095,8 +2147,8 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			continue
 		}
 		// An issue whose key yields no claim token has no run to read, as the wait reconcile
-		// reads none for such a root (workflow's ReconcileAwaiting): it keeps its slot and this
-		// repair passes over it rather than failing the whole fact.
+		// reads none for such a root (workflow's ReconcileAwaiting): it stays where it stands
+		// and this repair passes over it rather than failing the whole fact.
 		token, err := claim.NewToken(project, issue.Key, role)
 		if err != nil {
 			continue
@@ -2147,7 +2199,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			return fmt.Errorf("start the worker of slotted issue %s again: %w", held.issue.Key, err)
 		}
 		intake.OnCommit(ctx, func() {
-			a.log.Warn("admission: a slot held an issue whose worker had no task, so its phase is started again",
+			a.log.Warn("admission: an issue's worker had no task, so its phase is started again",
 				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase)
 		})
 	}

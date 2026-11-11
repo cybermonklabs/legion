@@ -550,7 +550,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 		issues: []record.Issue{
 			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
 			lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
-			lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "O"),
+			lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Implementing, "O"),
 			lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
 			lineIssue("LEGION-30", "LEGION-30", "todo", phase.Admitted, "Z"),
 			lineIssue("LEGION-50", "LEGION-50", "todo", phase.Accepting, "B"),

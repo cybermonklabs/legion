@@ -35,8 +35,8 @@ func TestTheWaitingLineRunsReturnsFirstThenTheBoardsRank(t *testing.T) {
 		// phase still to come and one released child waiting for its first.
 		lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
 		lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
-		// A child of that tree whose work came back: its merger's start waits for a slot.
-		lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "O"),
+		// A child of that tree whose work came back: its implementer's start waits for a slot.
+		lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Implementing, "O"),
 		// A root that never ran, ranked above the live tree's root.
 		lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
 		// A root that never ran, ranked below it.

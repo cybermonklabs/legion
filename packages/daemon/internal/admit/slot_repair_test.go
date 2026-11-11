@@ -299,13 +299,13 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 // retired claim's own slot is read by TestARetiredWorkersSlotIsNotRepaired, beside what the stop
 // costs.
 //
-// Each row reads its slot as well, because one of the four it passes over is passed over by the
-// pass before the repair ever reads it: no slot of a member of a lingering tree survives the
-// pass's own release of the slots an issue no longer needs (record.NeedsSlot). That row's guard
-// stands behind the release, so what it locks is the pass's answer rather than the guard. The
-// architect's row is the repair's own skip and nothing else: an issue in accepting keeps its
-// row now (record.KeepsSlot), so the release leaves it standing and only the role test answers
-// it.
+// Each row reads its slot as well, because two of the four it passes over are answered by the
+// pass before the repair ever reads them: no slot of a member of a lingering tree survives the
+// pass's own release of the slots an issue no longer needs (record.NeedsSlot), and no slot of
+// an issue standing in accepting survives it either, since an issue past its review keeps none
+// (record.KeepsSlot). Each row's guard stands behind the release, so what those two read is
+// the pass's answer rather than the guard; the architect's row is passed over by the repair's
+// own skip of the role whatever its slot says.
 //
 // The repair of a start that can no longer act (finishFencedStarts) ends an owed start row
 // written before its worker was stopped, because the row's only effect when a slot came would be
@@ -343,8 +343,8 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				why: "this row changes suspended_by alone, from the daemon to the idle rule's release of the pod: the wake gives the role the one task that says its pod came back, so a start here would be a second task for work it already holds"},
 			{name: "an architect's role", root: "LEGION-560", key: "LEGION-561", stands: phase.Accepting,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
-				taskGeneration: 1, confirmed: true,
-				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The member keeps its row in accepting (record.KeepsSlot), so the release leaves the row standing and the repair's own skip of the role is the whole answer"},
+				taskGeneration: 1, confirmed: true, slotGivenBack: true,
+				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The member stands past its review there, so the release takes its row back (record.KeepsSlot) and the repair reaches it on no row at all; the skip of the role is what answers it"},
 			{name: "a slot whose root lingers", root: "LEGION-570", key: "LEGION-571", stands: phase.Testing,
 				generation: 1, lingers: true, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, slotGivenBack: true,
@@ -376,7 +376,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
 				if held := holdsSlot(t, pool, row.key); held == row.slotGivenBack {
-					t.Fatalf("after the pass %s holds one of the cap's rows = %t, want %t: an issue keeps its row from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge, and the pass deletes it when the tree it belongs to has left (record.NeedsSlot), which the repair neither does nor undoes: %s",
+					t.Fatalf("after the pass %s holds one of the cap's rows = %t, want %t: an issue keeps its row from the moment the daemon starts it until its work is past its review, and the pass deletes it when the tree it belongs to has left (record.NeedsSlot), which the repair neither does nor undoes: %s",
 						row.key, held, !row.slotGivenBack, row.why)
 				}
 				got := startsOf(t, pool, row.key)

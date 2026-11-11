@@ -226,22 +226,22 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // A3. Every return the daemon makes for a worker applies its transition at once and owes that
 // worker one start, which waits for the issue's admission slot and for nothing else.
 //
-// The cap counts the issues at work, so a worker's start is the one thing a transition may not do
-// before its issue holds a slot. Everything else is written in the fact's own transaction: the
-// phase, the role's assignment on its phases row, the Dispatch status and the notices. The start
-// is one row (StartOrOwe), which carries the worker's task and which the outbox holds
-// unclaimable while the slots table names no slot of the issue (store.go's outboxInOrder), so
-// the worker comes back with its work rather than ahead of it.
+// The cap counts the issues whose change is still to write, so a worker's start into a phase up
+// to the review is the one thing a transition may not do before its issue holds a slot.
+// Everything else is written in the fact's own transaction: the phase, the role's assignment on
+// its phases row, the Dispatch status and the notices. The start is one row (StartOrOwe), which
+// carries the worker's task and which the outbox holds unclaimable while the slots table names
+// no slot of the issue (store.go's outboxInOrder), so the worker comes back with its work
+// rather than ahead of it.
 //
-// The rows are the returns the spec names, each of which starts a worker on an issue that held a
-// slot before: a red head, a head that conflicts with its base, the merge queue's failed_checks
-// removal, a push past READY, sign_off, a backward move and a held worker's retry. The eighth, a
-// re-admitted tree's mid-phase children, is admission's own start and is proven where it lives
-// (internal/admit's TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot).
-//
-// Two transitions before the slot start the worker once: the second updates the pending row in
-// place (record.Store.ReplaceOwedStart), keeping its id — the waiting line's ordering key — and
-// carrying the later task, so one task is delivered when the slot comes.
+// The rows are the returns the spec names that start a worker on the change again, each of
+// which starts a worker on an issue that held a slot before: a red head, a head that conflicts
+// with its base, the merge queue's failed_checks removal, a push past READY, a backward move
+// and a held worker's retry. The last, a re-admitted tree's mid-phase children, is admission's
+// own start and is proven where it lives (internal/admit's
+// TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot). A sign-off's start into the
+// retro waits for no slot, since the work is past its review there (record.KeepsSlot), and is
+// proven in internal/admit's TestAPhasePastReviewRunsWithNoSlot.
 func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 	const required = "pr-checks-result"
 	readyRoot := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string) {
@@ -315,18 +315,21 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 			role:   claim.RoleImplementer, want: phase.Implementing, status: "in_progress", task: "its head moved from head",
 		},
 		{
-			name: "sign_off, and a red head before the slot comes",
+			// Two transitions before the slot, each into a phase that keeps a row, which is
+			// what the coalescing is for: a sign-off's start waits for no row at all now
+			// (record.KeepsSlot), so it coalesces with nothing and is proven where it runs
+			// (internal/admit's TestAPhasePastReviewRunsWithNoSlot).
+			name: "a backward move, and a second one before the slot comes",
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
-				seedAccepting(t, pool)
-				seedTreeLifecycle(t, pool, returnIssue)
-				seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleImplementer, Claim: "implement-claim",
-					HandoffCommit: "implement-1", Assignment: servedAssignment})
+				readyRoot(t, pool, phase.Merging, "retro")
+				seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleReviewer, Claim: "review-claim", Assignment: servedAssignment,
+					HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed"})
+				seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleImplementer, Claim: "implement-claim", Assignment: servedAssignment})
 			},
-			fact: intake.SignOff{Issue: returnIssue},
-			second: intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head",
-				CheckRuns: []record.AttemptRun{{Name: acceptingRequired, ID: 1}}, Generation: 1, Snapshot: "red", Failing: []string{acceptingRequired}},
+			fact:   intake.BackwardMove{Issue: returnIssue, Requester: claim.RoleMerger, To: phase.Reviewing, Reason: "the packet names no migration"},
+			second: intake.BackwardMove{Issue: returnIssue, Requester: claim.RoleReviewer, To: phase.Implementing, Reason: "the migration is still to be written"},
 			engine: func() *Engine { return testEngine(config.DesignGateRootIssues, nil) },
-			role:   claim.RoleImplementer, want: phase.Implementing, status: "in_progress", task: "CI is red at head",
+			role:   claim.RoleImplementer, want: phase.Implementing, status: "in_progress", task: "the migration is still to be written",
 		},
 		{
 			name: "a backward move",

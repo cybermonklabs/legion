@@ -293,8 +293,10 @@ func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue recor
 
 // started enqueues the start both make, for a role start and restart have already held to one
 // that works a phase. It goes through StartOrOwe, so the worker comes back on the one row that
-// carries its new task, and that row waits for the issue's admission slot: a transition's start
-// puts a worker to work, which is exactly what the cap counts.
+// carries its new task, and that row waits for the issue's admission slot where the phase it
+// starts holds one: a transition's start into a phase up to the review puts a worker to work on
+// the change, which is exactly what the cap counts. The issue carries the phase the transition
+// wrote on it, so the rule reads the phase the start is for.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task, assignment string) error {
 	task, err := withApprovedHead(ctx, e.store, tx, issue.Key, role, task)
 	if err != nil {
@@ -313,17 +315,26 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // exported because admission starts phase workers too (admit's startMidPhaseMembers), so there
 // is one implementation of the rule and one place to test it.
 //
-// Every start it writes is marked for the issue's admission slot, which the outbox holds
-// unclaimable while the issue holds none (store.go's outboxInOrder). The cap counts the issues
-// the daemon has started, each holding its row from its start until its work ends
-// (record.KeepsSlot), so a start claimable at once would put a worker to work on an issue
-// holding no slot — where the cap is full that is what it would do — and a worker put to work
-// on an issue the cap has not admitted is what a start of a phase worker may never be. A
-// transition's start (Engine.started), admission's start of a mid-phase member and the boot's
-// resume by rule all come through here, so all of them wait. The mark is this function's and
-// not the caller's: it is a fact about every start of a phase worker, not about one request.
-// The row carries its task while it waits, so the delivery is made as soon as the slot comes
-// and the worker is up.
+// A start whose phase holds one of the cap's slots is marked for it, and the outbox holds such
+// a row unclaimable while the issue holds no slot (store.go's outboxInOrder). The cap counts
+// the issues the daemon has started whose change is still to write, each holding its row from
+// its start until its work is past its review (record.KeepsSlot), so a start claimable at once
+// would put a worker to work on an issue holding no slot — where the cap is full that is what
+// it would do — and a worker put to work on an issue the cap has not admitted is what a start
+// of a phase worker may never be. A transition's start (Engine.started), admission's start of a
+// mid-phase member and the boot's resume by rule all come through here, so each of them waits
+// where the phase it starts holds a row. The mark is this function's and not the caller's: it
+// is the one reading of the phase the start carries (record.PhaseKeepsSlot), never a decision
+// of one request. Every caller writes the phase on the record before it calls, so the payload's
+// phase is the phase the issue stands in. The row carries its task while it waits, so the
+// delivery is made as soon as the slot comes and the worker is up.
+//
+// A start the rule leaves unmarked needs none of the owed-start machinery and takes none of it.
+// Store.ReplaceOwedStart and Store.OwedStarts both match a marked row alone, so a retro's or a
+// merger's start is coalesced with no older waiting row and stands in no waiting line: it is
+// claimable the moment it commits, and the outbox's own phase and generation fences still end a
+// stale one. record.validateOutboxPayload asks a task and a phase of a marked row alone, so an
+// unmarked start passes it exactly as a marked one did.
 //
 // The row is written through Store.ReplaceOwedStart first and enqueued only when that replaced
 // nothing. ReplaceOwedStart matches by issue and not by role because the row's id and created_at
@@ -337,14 +348,14 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
-// the cap counts is its root's and the root holds it from its promotion until its work ends
-// (record.KeepsSlot), the production check's look (check.go), the pod wake (wake.go), the resume
-// of a cancelled idle release (the daemon's outbox) and the roles admission brings back beside a
-// member's phase worker (admit's startMidPhaseMembers) are enqueued directly and stay claimable
-// at once. None of them puts a worker to work on a phase, so none of them is the cap's to hold,
-// and a slot they waited for might never be offered.
+// the cap counts is its root's and the root holds it from its promotion until its work is past
+// its review (record.KeepsSlot), the production check's look (check.go), the pod wake
+// (wake.go), the resume of a cancelled idle release (the daemon's outbox) and the roles
+// admission brings back beside a member's phase worker (admit's startMidPhaseMembers) are
+// enqueued directly and stay claimable at once. None of them puts a worker to work on a phase,
+// so none of them is the cap's to hold, and a slot they waited for might never be offered.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
-	payload.NeedsSlot = true
+	payload.NeedsSlot = record.PhaseKeepsSlot(payload.Phase)
 	row, err := record.NewOutboxRow(issue, payload, at)
 	if err != nil {
 		return err

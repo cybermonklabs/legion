@@ -128,18 +128,19 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 	return token
 }
 
-// A3's eighth return, which is admission's own start rather than a transition: a re-admitted tree
-// whose two children stand mid-phase. Each child waits for a slot of its own, because the cap
-// counts the issues at work and the tree's one root slot no longer carries its children.
+// A3's eighth return, which is admission's own start rather than a transition: a re-admitted
+// tree whose two children stand mid-phase. The child short of its review waits for a slot of
+// its own, because the cap counts the issues whose change is still to write and the tree's one
+// root slot no longer carries its children; the child past its review waits for none
+// (record.KeepsSlot), so its start is claimable as soon as the branch row ahead of it is run.
 //
 // The promotion writes everything but the tasks in the fact's own transaction: the root's new
 // generation and Dispatch status, each child's branch row, and a task-less start of each role of
 // a member that holds a claim row, the durable record that the role has run (startMidPhaseMembers),
 // so the sessions a member has are brought back and answer while its work waits. Each child of
 // this fixture has run one role, the one whose phase it stands in, so no task-less start is
-// written for either of them. Each child then owes exactly one start, the phase worker's, which
-// carries that phase's task and is held unclaimable until the child holds a slot, and nothing
-// names its worker as a claim nothing will wake.
+// written for either of them. Each child then has exactly one start, the phase worker's, which
+// carries that phase's task, and nothing names its worker as a claim nothing will wake.
 //
 // Two assertions of the table in internal/workflow (owed_start_test.go) read differently here,
 // and the rule is the re-admission's. A resume hands the worker the phase it is already on, so it
@@ -185,26 +186,28 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 	// outboxInOrder). Running those rows, as their lane does, leaves the slot as the one thing
 	// still holding a task back.
 	runBranchRows(t, pool, testing_, retro)
-	for child, role := range map[string]claim.Role{testing_: claim.RoleTester, retro: claim.RoleImplementer} {
+	for child, want := range map[string]struct {
+		role claim.Role
+		// waits says the child's start waits for an admission slot, which the phase it stands
+		// in decides (record.PhaseKeepsSlot, read by workflow.StartOrOwe): the tester's start
+		// waits, and the retro implementer's does not, since an issue past its review holds no
+		// row for that start to wait for.
+		waits bool
+	}{testing_: {role: claim.RoleTester, waits: true}, retro: {role: claim.RoleImplementer}} {
 		if stands := issue(t, pool, child); stands.Phase != workflow.ResumePhase(stands) || stands.Generation != 1 {
 			t.Fatalf("%s stands at %s on generation %d, want its own phase on its own generation", child, stands.Phase, stands.Generation)
 		}
-		if got := assignmentOf(t, pool, child, role); got != "" {
-			t.Fatalf("the %s's row of %s carries assignment %q, want none: the re-admission cleared the generation's handoffs", role, child, got)
+		if got := assignmentOf(t, pool, child, want.role); got != "" {
+			t.Fatalf("the %s's row of %s carries assignment %q, want none: the re-admission cleared the generation's handoffs", want.role, child, got)
 		}
-		var owed, taskless []midPhaseStart
-		for _, row := range startsOf(t, pool, child) {
-			if row.needsSlot {
-				owed = append(owed, row)
-				continue
-			}
-			taskless = append(taskless, row)
+		starts := startsOf(t, pool, child)
+		if len(starts) != 1 || starts[0].role != want.role || starts[0].task == "" {
+			t.Fatalf("the starts of %s = %+v, want the %s one, carrying its resume task: the only role of it that has run is the one whose phase it stands in",
+				child, starts, want.role)
 		}
-		if len(owed) != 1 || owed[0].role != role || owed[0].task == "" || owed[0].claimable {
-			t.Fatalf("%s owes %+v, want the %s one start, carrying its resume task and runnable by nobody while it holds no slot", child, owed, role)
-		}
-		if len(taskless) != 0 {
-			t.Fatalf("%s has the task-less start rows %+v, want none: the only role of it that has run is the one whose phase it stands in, and that start carries its task", child, taskless)
+		if starts[0].needsSlot != want.waits || starts[0].claimable == want.waits {
+			t.Fatalf("the start of %s = %+v, want it marked for a slot = %t and claimable = %t: a start waits for the row its phase keeps, and runs at once where its phase keeps none",
+				child, starts[0], want.waits, !want.waits)
 		}
 	}
 	for token, state := range claimStates(t, pool) {
@@ -221,17 +224,12 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 	}
 	assertMidPhaseChildrenAreNotStranded(t, pool, root, map[string]claim.Token{testing_: tester, retro: implementer})
 
-	// The first slot a child takes delivers that child's one task, and the other child's start
-	// stays held: the cap is on the issues at work, one slot each.
+	// The slot the testing child takes delivers that child's one task. The retro child's start
+	// waited for no row at all, so the slot of another issue neither frees it nor holds it.
 	takeSlot(t, pool, testing_)
 	for _, row := range startsOf(t, pool, testing_) {
-		if row.needsSlot && !row.claimable {
+		if !row.claimable {
 			t.Fatalf("the start %+v of %s is still held, want its slot to have freed it", row, testing_)
-		}
-	}
-	for _, row := range startsOf(t, pool, retro) {
-		if row.needsSlot && row.claimable {
-			t.Fatalf("the start %+v of %s runs on another issue's slot, want it held for its own", row, retro)
 		}
 	}
 }

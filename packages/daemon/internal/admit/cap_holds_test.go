@@ -16,10 +16,10 @@ import (
 )
 
 // What the cap can and cannot hold back, now that an issue keeps its row from the moment the
-// daemon starts it until it is done, leaves the workflow or waits only for its merge
-// (record.KeepsSlot). An issue that holds a row starts its next phase whatever admission_cap
-// says, because its promotion takes no second row (admit's slotFor); an issue that holds none
-// takes one when the daemon starts it, and waits in the line while the project is at its cap.
+// daemon starts it until its work is past its review (record.KeepsSlot). An issue that holds a
+// row starts its next phase whatever admission_cap says, because its promotion takes no second
+// row (admit's slotFor); an issue that holds none takes one when the daemon starts it, and
+// waits in the line while the project is at its cap.
 
 // capMember records key under root in stands, with the Dispatch status a member in that phase
 // shows. It writes no row: what each case here is about is whether the issue holds one.
@@ -125,9 +125,13 @@ func TestAFinishedPhaseStartsTheNextOneWithNoNewRow(t *testing.T) {
 
 // A child the architect released holds no row, so it takes one when the daemon starts it and
 // waits in the line while the project is at its cap. The pass that finds a row free starts it.
+//
+// The cap is one row and the second tree holds it: the root above the child stands in
+// accepting, where an issue holds none (record.KeepsSlot), so the row that frees is that
+// second tree's and no other.
 func TestAReleasedChildWaitsForAFreeRow(t *testing.T) {
 	pool := migratedPool(t)
-	admission := quiet(t, 2)
+	admission := quiet(t, 1)
 	seedSlotted(t, pool, "LEGION-100", "A")
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: new(1)})
 	acceptingRoot(t, pool, "LEGION-100")
@@ -140,7 +144,7 @@ func TestAReleasedChildWaitsForAFreeRow(t *testing.T) {
 	if got := issue(t, pool, "LEGION-101"); got.Phase != phase.Admitted {
 		t.Fatalf("the released child under a full cap = %#v, want it still at admitted", got)
 	}
-	assertRowHolders(t, pool, "LEGION-100", "LEGION-200")
+	assertRowHolders(t, pool, "LEGION-200")
 	assertWaiting(t, pool, []string{"LEGION-101"})
 
 	closeTree(t, pool, admission, "second-closed", "LEGION-200", "B")
@@ -148,27 +152,28 @@ func TestAReleasedChildWaitsForAFreeRow(t *testing.T) {
 	if got := issue(t, pool, "LEGION-101"); got.Phase != phase.Planning {
 		t.Fatalf("the released child once a row freed = %#v, want it planning", got)
 	}
-	assertRowHolders(t, pool, "LEGION-100", "LEGION-101")
+	assertRowHolders(t, pool, "LEGION-101")
 	assertWaiting(t, pool, nil)
 }
 
-// An issue standing in a phase that keeps a row while holding none, which is what a deployment
-// of this release finds in every issue its predecessor left in accepting, in held or in
-// awaiting_person: no row is written back for it. Such an issue waits in the line once, at its
-// next start, and from then on it keeps the row it was given, accepting included.
+// An issue standing in a phase that keeps a row while holding none, which is what every issue
+// this release finds standing past its review becomes the moment its work comes back: no row is
+// written back for it, so it waits in the line once, at its next start, and from then on it
+// keeps the row it was given.
 func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	seedSlotted(t, pool, "LEGION-100", "A")
-	// The issue this change finds in accepting with no row of its own.
+	// The issue this change leaves in accepting with no row of its own.
 	capMember(t, pool, "LEGION-100", "LEGION-101", phase.Accepting, "needs_review", "A1")
 	seedSlotted(t, pool, "LEGION-200", "B")
 
-	// Its acceptance ends and its merger is owed a start, which is the next start it waits for.
+	// Its architect sends the work back to implementing, where a worker writes the change
+	// again, and its implementer is owed the start that waits for a row.
 	member := issue(t, pool, "LEGION-101")
-	member.Phase, member.Status, member.DispatchStatus = phase.Merging, "retro", "retro"
+	member.Phase, member.Status, member.DispatchStatus = phase.Implementing, "in_progress", "in_progress"
 	putIssue(t, pool, member)
-	oweMemberStart(t, pool, "LEGION-100", "LEGION-101", phase.Merging)
+	oweMemberStart(t, pool, "LEGION-100", "LEGION-101", phase.Implementing)
 
 	tick(t, pool, admission, "cap-full")
 
@@ -182,26 +187,27 @@ func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 	closeTree(t, pool, admission, "second-closed", "LEGION-200", "B")
 
 	if !claimableStart(t, pool, "LEGION-101") {
-		t.Fatalf("the starts of LEGION-101 = %#v, want its merger's task claimable once a row freed",
+		t.Fatalf("the starts of LEGION-101 = %#v, want its implementer's task claimable once a row freed",
 			startsOf(t, pool, "LEGION-101"))
 	}
 	assertRowHolders(t, pool, "LEGION-100", "LEGION-101")
 
-	// From then on it keeps that row: the phase it waited in before is one that keeps it now.
+	// From then on it keeps that row: every phase up to its review keeps one.
 	back := issue(t, pool, "LEGION-101")
-	back.Phase, back.Status, back.DispatchStatus = phase.Accepting, "needs_review", "needs_review"
+	back.Phase, back.Status, back.DispatchStatus = phase.Reviewing, "needs_review", "needs_review"
 	putIssue(t, pool, back)
 
-	tick(t, pool, admission, "back-in-accepting")
+	tick(t, pool, admission, "back-in-reviewing")
 
 	assertRowHolders(t, pool, "LEGION-100", "LEGION-101")
 }
 
-// An issue in merging whose merge request a closed design gate holds keeps its row and is at
-// work for nothing: a second task would ask its merger for a READY a person has still to
-// approve. So the pass that starts a row holder's worker again passes over it
-// (admit's resumeSlottedWorkers, record.AtWork), and starts the same issue's merger where the
-// gate holds no merge request of it.
+// An issue in merging whose merge request a closed design gate holds is at work for nothing: a
+// second task would ask its merger for a READY a person has still to approve. So the pass that
+// starts a worker with no task again passes over it (admit's resumeSlottedWorkers,
+// record.AtWork), and starts the same issue's merger where the gate holds no merge request of
+// it. Neither issue holds a row: merging stands past the issue's review, so the repair reaches
+// it on no row at all (record.KeepsSlot).
 func TestAHeldMergeRequestStartsNoMerger(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -223,9 +229,8 @@ func TestAHeldMergeRequestStartsNoMerger(t *testing.T) {
 				member.ReadyPending = &record.ReadyPending{Step: record.DesignStepSpec, Version: 2}
 				putIssue(t, pool, member)
 			}
-			takeSlot(t, pool, tc.key)
 			// A merger whose session the daemon suspended holds no task it still works, which is
-			// the state the repair of a row whose worker has none exists for.
+			// the state the repair of a worker with no task exists for.
 			putWorkerClaim(t, pool, tc.root, tc.key, claim.RoleMerger, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
 
 			tick(t, pool, quiet(t, 1), "tick")
@@ -233,20 +238,21 @@ func TestAHeldMergeRequestStartsNoMerger(t *testing.T) {
 			if got := claimableStart(t, pool, tc.key); got != tc.started {
 				t.Fatalf("a merger of %s was started = %t, want %t; starts = %#v", tc.key, got, tc.started, startsOf(t, pool, tc.key))
 			}
-			if !holdsSlot(t, pool, tc.key) {
-				t.Fatalf("rows = %#v, want %s still holding one: merging keeps a row whatever the gate holds", slots(t, pool), tc.key)
+			if holdsSlot(t, pool, tc.key) {
+				t.Fatalf("rows = %#v, want %s holding none: its work stands past its review", slots(t, pool), tc.key)
 			}
 		})
 	}
 }
 
-// An issue sent back from its merge holds no row — awaiting_merge is the one phase this rule
-// deletes one for — so it waits in the line. It waits among the issues whose work came back,
-// oldest first, which is the line's first part, ahead of an issue whose first phase has yet to
-// start, and it takes the next row that frees.
+// An issue sent back from its merge holds no row — its work stood past its review, which holds
+// none — so it waits in the line. It waits among the issues whose work came back, oldest
+// first, which is the line's first part, ahead of an issue whose first phase has yet to start,
+// and it takes the next row that frees. The cap is one row, the second tree holds it, and the
+// root above both members stands in accepting holding none.
 func TestAnIssueSentBackFromItsMergeStandsAtTheFrontOfTheLine(t *testing.T) {
 	pool := migratedPool(t)
-	admission := quiet(t, 2)
+	admission := quiet(t, 1)
 	seedSlotted(t, pool, "LEGION-100", "A")
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: new(1)})
 	acceptingRoot(t, pool, "LEGION-100")
@@ -261,12 +267,12 @@ func TestAnIssueSentBackFromItsMergeStandsAtTheFrontOfTheLine(t *testing.T) {
 
 	tick(t, pool, admission, "cap-full")
 
-	assertRowHolders(t, pool, "LEGION-100", "LEGION-200")
+	assertRowHolders(t, pool, "LEGION-200")
 	assertWaiting(t, pool, []string{"LEGION-101", "LEGION-102"})
 
 	closeTree(t, pool, admission, "second-closed", "LEGION-200", "B")
 
-	assertRowHolders(t, pool, "LEGION-100", "LEGION-101")
+	assertRowHolders(t, pool, "LEGION-101")
 	if !claimableStart(t, pool, "LEGION-101") {
 		t.Fatalf("the starts of LEGION-101 = %#v, want its implementer's task claimable on the row it took",
 			startsOf(t, pool, "LEGION-101"))
