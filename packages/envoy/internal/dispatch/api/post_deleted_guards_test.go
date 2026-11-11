@@ -1,0 +1,249 @@
+// post_deleted_guards_test.go is what a deleted post refuses and what it still takes. A write
+// that would add text to a post whose author withdrew it answers 409 POST_DELETED; a write that
+// moves no text stands, because the post keeps its row and its place in its thread. An edit and
+// a delete of a post of a closed issue answer 200: a wrong post nobody can correct after the
+// issue closes is the defect these routes exist for.
+package api
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+// refusedAsDeleted fails t unless the response is the one refusal a deleted post makes.
+func refusedAsDeleted(t *testing.T, name string, response *httptest.ResponseRecorder) {
+	t.Helper()
+	code, _ := refusalOf(t, response)
+	if response.Code != http.StatusConflict || code != "POST_DELETED" {
+		t.Fatalf("%s on a deleted post: status=%d body=%s, want 409 POST_DELETED",
+			name, response.Code, response.Body.String())
+	}
+}
+
+// Every write that would add text to a deleted post is refused, each in its own right: a
+// suggestion's accept and reject, a reply of either kind, a new delivery of either kind, and a
+// second edit of either kind. A second delete is refused by the same rule, which the author
+// tests of each delete route hold.
+func TestEveryWriteThatAddsToADeletedPostIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A deleted post refuses", "before")
+
+	suggestion := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body":       "Say this instead.",
+		"anchor":     map[string]any{"artifact": "spec", "quote": "before"},
+		"suggestion": map[string]string{"replace_with": "after"},
+	}, "alice")
+	deleteThreadComment(t, handler, suggestion.ID, "alice")
+
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the withdrawn comment", "actor": sessionActor(),
+	}, "")
+	deleteThreadComment(t, handler, comment.ID, "")
+
+	message := createSessionIssueMessage(t, handler, issue.Key, "the withdrawn message")
+	// The retry route answers for a message nobody targeted before it reads the delete, so the
+	// message this one refuses is a targeted one; the target is written here because an
+	// ordinary send needs a live agent listener, which this refusal has nothing to do with.
+	if _, err := database.Pool.Exec(context.Background(),
+		`update messages set target = 'session:s1' where id = $1`, message.ID); err != nil {
+		t.Fatalf("target the message: %v", err)
+	}
+	deleteIssueMessage(t, handler, message.ID, "")
+
+	t.Run("accept a suggestion", func(t *testing.T) {
+		refusedAsDeleted(t, "accept", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/comments/"+suggestion.ID+"/accept", map[string]any{}, "alice"))
+	})
+	t.Run("reject a suggestion", func(t *testing.T) {
+		refusedAsDeleted(t, "reject", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/comments/"+suggestion.ID+"/reject", map[string]any{}, "alice"))
+	})
+	t.Run("reply to a comment", func(t *testing.T) {
+		// The refusal comes before the mention the reply answers is looked for, so a session
+		// holding a delivery frame of the comment is told that the post is gone and not that
+		// the mention is.
+		refusedAsDeleted(t, "reply", sessionRequest(t, handler, http.MethodPost,
+			"/api/v1/comments/"+comment.ID+"/reply", map[string]any{
+				"actor": sessionActor(), "attempt": 1, "body": "answering it",
+			}))
+	})
+	t.Run("reply to a message", func(t *testing.T) {
+		refusedAsDeleted(t, "reply", sessionRequest(t, handler, http.MethodPost,
+			"/api/v1/messages/"+message.ID+"/reply", map[string]any{
+				"actor": sessionActor(), "attempt": 1, "body": "answering it",
+			}))
+	})
+	t.Run("deliver a comment again", func(t *testing.T) {
+		refusedAsDeleted(t, "retry the mention", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{"delivery": "steer"}, "alice"))
+	})
+	t.Run("deliver a message again", func(t *testing.T) {
+		refusedAsDeleted(t, "retry the send", dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/messages/"+message.ID+"/deliveries", map[string]any{"delivery": "steer"}, "alice"))
+	})
+	t.Run("edit a deleted comment", func(t *testing.T) {
+		refusedAsDeleted(t, "edit", sessionRequest(t, handler, http.MethodPatch,
+			"/api/v1/comments/"+comment.ID, map[string]any{"actor": sessionActor(), "body": "a second body"}))
+	})
+	t.Run("edit a deleted message", func(t *testing.T) {
+		refusedAsDeleted(t, "edit", sessionRequest(t, handler, http.MethodPatch,
+			"/api/v1/messages/"+message.ID, map[string]any{"actor": sessionActor(), "body": "a second body"}))
+	})
+	t.Run("delete a deleted comment", func(t *testing.T) {
+		refusedAsDeleted(t, "delete", sessionRequest(t, handler, http.MethodDelete,
+			"/api/v1/comments/"+comment.ID, map[string]any{"actor": sessionActor()}))
+	})
+	t.Run("delete a deleted message", func(t *testing.T) {
+		refusedAsDeleted(t, "delete", sessionRequest(t, handler, http.MethodDelete,
+			"/api/v1/messages/"+message.ID, map[string]any{"actor": sessionActor()}))
+	})
+
+	// Nothing the refused writes asked for was written: the posts stand as the deletes left
+	// them, with no reply under either.
+	if stored := readThreadComment(t, handler, comment.ID); stored.Body != "" || stored.DeletedAt == nil {
+		t.Fatalf("the deleted comment after the refused writes = %#v, want the mark and no body", stored)
+	}
+	var replies int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from messages where in_reply_to = $1`, message.ID).Scan(&replies); err != nil {
+		t.Fatalf("count the replies of the deleted message: %v", err)
+	}
+	if replies != 0 {
+		t.Fatalf("the deleted message holds %d replies, want none: each reply was refused", replies)
+	}
+}
+
+// A write that moves no text stands on a deleted post: a resolve and a reopen of its thread, and
+// the session's record that it took a deleted message as its own turn.
+func TestEveryWriteThatMovesNoTextStandsOnADeletedPost(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A deleted post stands", "before")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the withdrawn root"}, "alice")
+	deleteThreadComment(t, handler, comment.ID, "alice")
+
+	t.Run("resolve the thread", func(t *testing.T) {
+		resolved := dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/comments/"+comment.ID+"/resolve", map[string]any{}, "alice")
+		if resolved.Code != http.StatusOK {
+			t.Fatalf("resolve a deleted thread: status=%d body=%s, want 200", resolved.Code, resolved.Body.String())
+		}
+		if read := decodeBody[model.Comment](t, resolved); !read.Resolved || read.DeletedAt == nil {
+			t.Fatalf("the resolved comment = %#v, want it resolved and still deleted", read)
+		}
+	})
+	t.Run("reopen the thread", func(t *testing.T) {
+		reopened := dispatchRequest(t, handler, http.MethodPost,
+			"/api/v1/comments/"+comment.ID+"/reopen", map[string]any{}, "alice")
+		if reopened.Code != http.StatusOK {
+			t.Fatalf("reopen a deleted thread: status=%d body=%s, want 200", reopened.Code, reopened.Body.String())
+		}
+		if read := decodeBody[model.Comment](t, reopened); read.Resolved || read.DeletedAt == nil {
+			t.Fatalf("the reopened comment = %#v, want it open and still deleted", read)
+		}
+	})
+
+	// The accept route records that a session took a message as its user's own turn, which adds
+	// no text to the post. Its message is a person's direct send to the session, on no issue,
+	// which this change never deletes; the delete that the accept stands after is the mark on
+	// the row, written here as the one route that could write it refuses an issue-less message.
+	direct := seedConversationMessage(t, database, model.Actor{Kind: "user", ID: "alice"},
+		"take this as your turn", "session:session-0123456789abcdef")
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by)
+		values ($1, 1, 'aside', 'session-0123456789abcdef', 'sent', '{"kind":"user","id":"alice"}'::jsonb)
+	`, direct); err != nil {
+		t.Fatalf("seed the attempt the session accepts: %v", err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		update messages set deleted_at = now(), deleted_by = '{"kind":"user","id":"alice"}'::jsonb, body = ''
+		where id = $1
+	`, direct); err != nil {
+		t.Fatalf("mark the message deleted: %v", err)
+	}
+	t.Run("accept a delivery", func(t *testing.T) {
+		accepted := sessionRequest(t, handler, http.MethodPost,
+			"/api/v1/messages/"+direct+"/deliveries/1/accept", map[string]any{"actor": sessionActor()})
+		if accepted.Code != http.StatusOK {
+			t.Fatalf("accept an attempt of a deleted message: status=%d body=%s, want 200",
+				accepted.Code, accepted.Body.String())
+		}
+	})
+}
+
+// An edit and a delete of a post of a closed issue answer 200: they take the prologue that does
+// not refuse a closed owner. Every other write of an existing comment keeps today's refusal.
+func TestEditAndDeleteOfAPostOfAClosedIssue(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Correct a closed issue's posts", "before")
+	edited := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the first body"}, "alice")
+	deleted := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the withdrawn comment"}, "alice")
+	editedMessage := createSessionIssueMessage(t, handler, issue.Key, "the message's first body")
+	deletedMessage := createSessionIssueMessage(t, handler, issue.Key, "the withdrawn message")
+	closeIssue(t, handler, issue.Key)
+
+	response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+edited.ID,
+		map[string]any{"body": "the corrected body"}, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("edit a comment of a closed issue: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	if comment := decodeBody[model.Comment](t, response); comment.Body != "the corrected body" {
+		t.Fatalf("the edited comment = %#v, want the corrected body", comment)
+	}
+	if comment := deleteThreadComment(t, handler, deleted.ID, "alice"); comment.DeletedAt == nil {
+		t.Fatalf("the deleted comment of a closed issue = %#v, want the mark", comment)
+	}
+	if message := editIssueMessage(t, handler, editedMessage.ID, "the message's corrected body", ""); message.EditedAt == nil {
+		t.Fatalf("the edited message of a closed issue = %#v, want edited_at", message)
+	}
+	if message := deleteIssueMessage(t, handler, deletedMessage.ID, ""); message.DeletedAt == nil {
+		t.Fatalf("the deleted message of a closed issue = %#v, want the mark", message)
+	}
+
+	// Every other write of a comment of a closed issue is refused as it always was.
+	resolved := dispatchRequest(t, handler, http.MethodPost,
+		"/api/v1/comments/"+edited.ID+"/resolve", map[string]any{}, "alice")
+	code, _ := refusalOf(t, resolved)
+	if resolved.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
+		t.Fatalf("resolve a comment of a closed issue: status=%d body=%s, want 409 ISSUE_CLOSED",
+			resolved.Code, resolved.Body.String())
+	}
+}
+
+// A deleted reply keeps its place in the ask's thread, so it goes on deciding whose turn the ask
+// waits on: the delete clears the body and keeps the row newestReply reads.
+func TestADeletedNewestReplyStillDecidesTheAsksTurn(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "The turn after a delete", "before")
+	askID := openTurnAsk(t, handler, issue.Key, "Which auditor?")
+
+	replied := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Ask the second auditor.", "ask_id": askID,
+	}, "alice")
+	if replied.Code != http.StatusCreated {
+		t.Fatalf("reply on the ask: status=%d body=%s", replied.Code, replied.Body.String())
+	}
+	reply := decodeBody[model.Comment](t, replied)
+	if row := readInboxRow(t, handler, askID); row.WaitingOn != "agent" {
+		t.Fatalf("the ask waits on %q after the human's reply, want agent", row.WaitingOn)
+	}
+
+	deleted := deleteThreadComment(t, handler, reply.ID, "alice")
+	if deleted.AskID == nil || *deleted.AskID != askID || deleted.Turn == nil {
+		t.Fatalf("the deleted reply = %#v, want it still the ask's reply with its turn", deleted)
+	}
+
+	row := readInboxRow(t, handler, askID)
+	if row.WaitingOn != "agent" {
+		t.Fatalf("the ask waits on %q after its newest reply was deleted, want agent: the row still decides", row.WaitingOn)
+	}
+	if row.LastReply == nil || row.LastReply.Author.Kind != "user" {
+		t.Fatalf("the ask's last reply = %#v, want the deleted reply's own row", row.LastReply)
+	}
+	if detail := readAskDetail(t, handler, askID); detail.WaitingOn != "agent" {
+		t.Fatalf("the ask reads waiting_on %q, want agent", detail.WaitingOn)
+	}
+}

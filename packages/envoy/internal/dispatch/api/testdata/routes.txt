@@ -128,7 +128,9 @@ PUT /api/v1/me/issues/{key}/state any
 GET /api/v1/me/replies any
 GET /api/v1/me/state any
 PUT /api/v1/me/threads/{id}/read any
+DELETE /api/v1/messages/{id} any
 GET /api/v1/messages/{id} any
+PATCH /api/v1/messages/{id} any
 GET /api/v1/messages/{id}/blocks any
 POST /api/v1/messages/{id}/deliveries any
 POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer

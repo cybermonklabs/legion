@@ -37,7 +37,7 @@ func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serv
 			where c.id = $1::uuid`
 	case ItemMessage:
 		query = `
-			select m.body, m.created_at, m.issue_key is not null,
+			select m.body, coalesce(m.edited_at, m.created_at), m.issue_key is not null,
 			       s.message_id is not null, s.owed_at is not null, s.body_sha256
 			from messages m left join message_block_state s on s.message_id = m.id
 			where m.id = $1::uuid`

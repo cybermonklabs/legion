@@ -603,6 +603,10 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/messages/{id}":                        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks":                 {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"GET /api/v1/messages/{id}/history":                {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
+	"PATCH /api/v1/messages/{id}":                      {Status: http.StatusOK, Response: model.Message{}, Request: editMessageInput{}},
+	"DELETE /api/v1/messages/{id}": {
+		Status: http.StatusOK, Response: model.Message{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},

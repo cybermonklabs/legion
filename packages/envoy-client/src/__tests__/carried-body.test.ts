@@ -55,6 +55,8 @@ const comment = {
   resolved_by: null,
   resolved_at: null,
   edited_at: null,
+  deleted_at: null,
+  deleted_by: null,
   suggestion: null,
   reply_block: null,
   answers: null,

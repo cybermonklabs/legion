@@ -917,6 +917,12 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 		return
 	}
+	// A delivery of a deleted comment would send the text the delete withdrew, so there is
+	// nothing left to send.
+	if comment.DeletedAt != nil {
+		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
+		return
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select target from comment_mentions where comment_id = $1 order by target
 	`, comment.ID)
@@ -1040,6 +1046,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeHandlerError(w, err)
+		return
+	}
+	// A reply adds text under the post, which a deleted one no longer holds; the session's own
+	// text is not withdrawn by it, so the refusal names the post and not the reply.
+	if comment.DeletedAt != nil {
+		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
 		return
 	}
 	rows, err := tx.Query(r.Context(), `

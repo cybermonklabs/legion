@@ -196,7 +196,11 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
+	// The prologue that does not refuse a closed owner: a wrong post nobody can correct after
+	// the issue closes is the defect this route exists for, and a correction adds no new work
+	// to a closed issue. Every other write of an existing comment keeps lockedComment's
+	// 409 ISSUE_CLOSED.
+	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -207,6 +211,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// about.
 	if !comment.Author.SameAs(actor) {
 		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the comment author may edit it")
+		return
+	}
+	if comment.DeletedAt != nil {
+		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
@@ -296,6 +304,13 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	// An accept and a reject move the suggestion's replacement text into the document, and the
+	// delete cleared that text with the body, so neither has anything left to move. A resolve
+	// and a reopen of a deleted thread stand: they move no text.
+	if action != "resolve" && comment.DeletedAt != nil {
+		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)

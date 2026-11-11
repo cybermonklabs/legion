@@ -54,8 +54,8 @@ export function dispatchDocumentRef(owner: string, slug: string): string {
 
 /** The kinds of item whose blocks are its own rather than a document's: an ask, whose parts are
  *  its question, its options and its answer; a comment, whose blocks its own revisions number;
- *  and an issue message, which is never edited, so its blocks carry no revision at all. They are
- *  the parents a block node naming no document has. */
+ *  and an issue message, which its author edits without its blocks carrying any revision, since
+ *  a message numbers none. They are the parents a block node naming no document has. */
 export const ITEM_KINDS = ["ask", "comment", "message"] as const;
 
 /** One of those kinds. */

@@ -49,7 +49,9 @@ func (kind ItemKind) tables() (itemTables, error) {
 }
 
 // revisions is whether the kind counts its indexed revisions and records the text its blocks held
-// at each: a comment's and an ask's, never a message's, which is never edited.
+// at each: a comment's and an ask's, never a message's. A message is edited since INFRA-1523,
+// and its blocks are re-indexed at the edit, but it keeps no per-revision block text: the whole
+// body an edit replaced is kept in post_body_history, which serves it to the history read.
 func (tables itemTables) revisions() bool { return tables.texts != "" }
 
 // BlockKind is the storage kind of a block of an item of this kind, in graph_edges and refs:

@@ -49,6 +49,12 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
 	}
+	// A send of a deleted message would carry the text the delete withdrew, so there is nothing
+	// left to send; every attempt still pending when the delete ran was failed by it.
+	if message.DeletedAt != nil {
+		writeError(w, "POST_DELETED", http.StatusConflict, "this message is deleted")
+		return
+	}
 	// The send outlives the request's connection, keeping its values and dropping its
 	// cancellation, as createStoredMessage's does: the attempt is committed before the listener
 	// call, a cut connection must not strand it, and one a process death strands the delivery
@@ -884,6 +890,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	`, r.PathValue("id")))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
+		return
+	}
+	// A reply adds text under the post, which a deleted one no longer holds. The session keeps
+	// its attempt: a reply it cannot post is this refusal, not a lost delivery.
+	if message.DeletedAt != nil {
+		writeError(w, "POST_DELETED", http.StatusConflict, "this message is deleted")
 		return
 	}
 	if message.IssueKey != nil {
