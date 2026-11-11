@@ -2002,6 +2002,7 @@ jobs:
               # select.
               - '.github/workflows/**'
               - '.github/scripts/check-ci-filters.sh'
+              - '.github/scripts/check-workflow-files.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
@@ -3782,6 +3783,9 @@ jobs:
 
       - name: Test the action pin check
         run: .github/scripts/check-action-pins.test.sh
+
+      - name: Test the workflow file check
+        run: .github/scripts/check-workflow-files.test.sh
 
       - name: Test the private-name check
         run: .github/scripts/check-private-names.test.sh
@@ -5835,7 +5839,10 @@ jobs:
 
   # Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
   # with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-  # module cache, so the job needs Go but downloads no module and restores no cache.
+  # module cache, so the job needs Go but downloads no module and restores no cache. It also holds
+  # every workflow file to 64,000 bytes and to what GitHub's own parser reads
+  # (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a
+  # second time, in a file small enough to start when this one is too large to.
   ci-filters:
     needs: changes
     if: needs.changes.outputs.ci_filters == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5851,6 +5858,9 @@ jobs:
           cache: false
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
+
+      - name: Check every workflow file GitHub can read and its size
+        run: .github/scripts/check-workflow-files.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
