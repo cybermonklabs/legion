@@ -28,8 +28,8 @@ test(
   async () => {
     const child = Bun.spawn(["bun", "e2e/tools/row-map.ts"], {
       cwd: dispatchPackage,
-      // The generation lists the config in a subprocess of its own, which the config exempts
-      // from its unset-port refusal, so no harness port of this shell reaches it.
+      // The generation lists the config in a subprocess of its own, and a listing runs no
+      // `globalSetup`, so it starts no stack and nothing of this shell's environment reaches it.
       env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" },
       stderr: "pipe",
       stdout: "pipe",

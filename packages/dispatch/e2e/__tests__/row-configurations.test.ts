@@ -13,23 +13,14 @@ import {
   rowsOfListing,
 } from "../configurations";
 import { harnessProcessCount } from "../harness-processes";
+import realConfig from "../playwright.config";
+import doubledConfig, { doubledProject, doubledSpec } from "./fixtures/doubled-project.config";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
-// e2e/playwright.config.ts reads the command line as it evaluates: with no harness port set it
-// refuses the run unless that line is a listing, which starts no server and runs no spec
-// (`isListMode` and the unset-ports refusal after it, e2e/playwright.config.ts). This file reads
-// the config for its projects' `use` and starts nothing, so it says `--list` as the listings below
-// do, and puts the command line back for whatever test file this worker runs next. The imports
-// are dynamic because a static one would evaluate the config before this line could say so.
-const commandLine = process.argv;
-process.argv = [...commandLine, "--list"];
-const { default: realConfig } = await import("../playwright.config");
-const {
-  default: doubledConfig,
-  doubledProject,
-  doubledSpec,
-} = await import("./fixtures/doubled-project.config");
-process.argv = commandLine;
+// This file reads e2e/playwright.config.ts for its projects' `use` and starts nothing. Importing
+// it costs nothing but the read: the config starts no server of its own and refuses no run for
+// the harness's sake - `globalSetup` starts the stacks, and nothing here runs it
+// (e2e/global-setup.ts).
 
 // The process count reaches the listings below: that is what chooses the project list (the
 // config's `projects:`, e2e/playwright.config.ts), and the configurations below are read from
@@ -48,7 +39,7 @@ const ambientProcessCount: Record<string, string> =
 // The third names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
 // holds no row of theirs, so without this one the accounting below would read the suite with
-// `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` missing: 53 rows, which is what this
+// `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` missing: 50 rows, which is what this
 // head's wall-clock listing holds.
 //
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
@@ -115,11 +106,11 @@ function selectsAClockSpec(
   );
 }
 
-// The three listings run at once and cost about five seconds together on this two-core pod -
-// 5.02 and 5.48 seconds in two runs, measured at this head, of which the real listing alone is
-// about three and a half and the wall-clock one about one - so a test may take far longer than
-// Bun's five-second default; a minute and a half is the ceiling at which something is wrong
-// rather than slow.
+// The three listings run at once and cost about five and a half seconds together on this
+// two-core pod - 5.55 and 5.38 seconds in two runs of this file, measured at this head, of
+// which the real listing alone is 3.59 seconds and the wall-clock one 1.25 - so a test may take
+// far longer than Bun's five-second default; a minute and a half is the ceiling at which
+// something is wrong rather than slow.
 const listingTimeout = 90_000;
 
 test(
@@ -145,9 +136,9 @@ test(
     // project of the resolved configuration whatever the command selected - this head's
     // wall-clock listing names three projects and reports all fifteen - so an assertion over
     // the project list could not fail, and would pass with the wall-clock listing missing
-    // altogether. Measured at this head, the two listings hold 1,384 rows and every project
+    // altogether. Measured at this head, the two listings hold 1,349 rows and every project
     // owns some: the smallest is `firefox-download-navigation` with one, and the wall-clock
-    // three hold 19, 17 and 17.
+    // three hold 19, 14 and 17.
     const projectsWithRows = new Set(rows.map((row) => row.project));
     const namedProjects = (realConfig.projects ?? [])
       .map((project) => project.name)
@@ -203,7 +194,7 @@ test(
 // The four fields that give a wall-clock row its quiet machine and keep it out of a bare run,
 // and the list that is how every accounting of this suite finds those rows at all. Nothing else
 // in the suite reads them: `workers: 1` and `retries: 0` are what make a reading the page's own
-// work rather than three other lanes', `default: false` is what keeps 53 rows out of a run that
+// work rather than the other workers', `default: false` is what keeps 50 rows out of a run that
 // names no project, and a `dependencies` is what pulled the whole suite in behind a file filter
 // until dispatch://INFRA-1280 (e2e/playwright.config.ts, above `aloneProjects`).
 //

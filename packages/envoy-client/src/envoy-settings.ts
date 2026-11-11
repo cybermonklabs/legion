@@ -1,4 +1,5 @@
 import { SESSION_HEARTBEAT_MS } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { bearerCredential, bearerSource, fileBearer, type RequestCredential } from "./bearer";
 import {
   type BrokerSessionName,
@@ -221,7 +222,7 @@ function natsServerKey(url: string): string {
   );
   if (match === null) return url;
   const [, scheme = "", userinfo = "", host = "", port = "4222", rest = ""] = match;
-  return `${scheme.toLowerCase()}://${userinfo}${host.toLowerCase()}:${port}${rest.replace(/\/+$/, "")}`;
+  return `${scheme.toLowerCase()}://${userinfo}${host.toLowerCase()}:${port}${withoutTrailingSlashes(rest)}`;
 }
 
 /** The NATS user's seed: `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED`, else the section's
@@ -379,7 +380,7 @@ export function envoySettings(
   // made here instead of making it again from the variable (`startNotice`, session-settings.ts).
   return {
     enabled: true,
-    url: normalizeEnvoyUrl(url),
+    url: withoutTrailingSlashes(url),
     credential,
     inbound,
     heartbeatMs,
@@ -393,8 +394,4 @@ export function envoySettings(
         ? namedPassDeadlineMs
         : undefined,
   };
-}
-
-export function normalizeEnvoyUrl(value: string): string {
-  return value.replace(/\/+$/, "");
 }

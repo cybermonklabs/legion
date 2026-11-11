@@ -1,10 +1,8 @@
-import { type Browser, expect, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject } from "./api";
 import { directiveOpenersThenClosers, directiveOpenersThenLongLine } from "./heavy-bodies";
 import { expectSettled } from "./heavy-bodies-page";
 import { expectUnderTheBound, type Measured, measureDraw, record } from "./main-thread-hold";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -26,26 +24,21 @@ const inputs = [
   },
 ];
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 /**
  * Opens the issue's Conversation tab as alice and measures what the page's own work holds the
  * main thread for while the comment card draws, which is the longest gap between two ticks of
  * the page's own heartbeat on a machine these rows have to themselves. This spec runs in
  * `chromium-alone`, which is out of the default selection, so a command names that project:
- * `DISPATCH_E2E_WORKERS=1 bun run e2e -- --project=chromium-alone --workers=1 e2e/nested-directive.e2e.ts`,
- * the variable in front being the lane count the config holds `--workers=1` against, so the
- * command holds in a shell that exports another count. And `main-thread-hold.ts` fails a
- * measuring row in a run of more than one worker, which is what holds the reading to a machine
- * nothing else of this suite is running on. The thread is left as a reader finds it, collapsed,
- * so what the card draws is its two-line preview of the body (`ThreadCard`); the body is parsed
- * whole for that preview, which is where the freeze was. The record starts again when the page
- * first asks for the issue's comments, before that request goes out: the bundle has been
- * evaluated and the tab drawn by then, and the card cannot draw before the answer. The
- * measurement ends where the card has drawn a `:::a` line and owes no formatting: nothing on it
- * is still pending, and the parser refused nothing.
+ * `bun run e2e -- --project=chromium-alone e2e/nested-directive.e2e.ts`. That run is one worker
+ * wide, which is the configuration's own default (`workers: 1`, e2e/playwright.config.ts), and
+ * `main-thread-hold.ts` fails a measuring row in a run of more than one worker, which is what
+ * holds the reading to a machine nothing else of this suite is running on. The thread is left
+ * as a reader finds it, collapsed, so what the card draws is its two-line preview of the body
+ * (`ThreadCard`); the body is parsed whole for that preview, which is where the freeze was. The
+ * record starts again when the page first asks for the issue's comments, before that request
+ * goes out: the bundle has been evaluated and the tab drawn by then, and the card cannot draw
+ * before the answer. The measurement ends where the card has drawn a `:::a` line and owes no
+ * formatting: nothing on it is still pending, and the parser refused nothing.
  *
  * What the rows answer with is the parse's own cost: on an issue pod of two cores the hold is
  * 61 and 79 ms with the parse in the worker, and 312 to 444 ms over three runs with the

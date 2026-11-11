@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import {
@@ -14,8 +12,7 @@ import {
   getIssue,
 } from "./api";
 import { blockId } from "./editor";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, type Locator, type Page, test } from "./test";
 
 // Every row seeds through the real API and reads the real server: a block's id comes from
 // `GET /api/v1/artifacts/<id>/blocks`, never from a guess. Its helpers live in this file, in
@@ -30,9 +27,9 @@ import { signIn } from "./users";
 // a round trip: the default ladder would not look again until 350 ms.
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
+// The project every row of this file seeds into. The reset and alice's sign-in are the `test`
+// this file imports (e2e/test.ts), so what is left here is the seeding alone.
+test.beforeEach(async () => {
   await createProject({ key: "CORE", name: "Core" });
 });
 

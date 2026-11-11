@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig, devices, type Project } from "@playwright/test";
+import { defineConfig, devices, type Project, type ReporterDescription } from "@playwright/test";
 import { baseUrl } from "./api";
 import {
   clockFileOnCommandLine,
@@ -8,15 +8,6 @@ import {
   stubProjectNames,
   tagged,
 } from "./configurations";
-import { targetedListeners } from "./harness-listeners";
-import {
-  harnessPorts,
-  harnessVariables,
-  laneCount,
-  laneCountVariable,
-  workerCount,
-  workerCountVariable,
-} from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
@@ -31,22 +22,45 @@ import { stubSelection } from "./stub/selection";
 // open the plain-HTTP name, which only that project maps, and the origin rows' first assertion
 // fails on loopback by design.
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
-// The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone`, `@webkit` and
-// `@firefox`, written at the end of the test's title. Which tests take `@phone` is in
-// `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine tag names a row for one of two
-// reasons, and a comment above the row says which. Either the row exercises one engine behaviour
-// the comment above those projects lists - the usual reason - or every measured failure of that
-// row was in that engine, so the row is kept where its cause lives: a row green only on an engine
-// its defect was never seen on proves nothing about that defect. Two rows carry a tag for the
-// second reason today, each named in `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask
-// answer whose answer is lost (two timeouts in 213 CI runs, both in WebKit) and
-// `keyboard-agents-picker.e2e.ts`'s row back after the reader left mid-send (six failures on six
-// branches, every one in WebKit). A row that only repeats an assertion Chromium already made, and
-// whose failures are not an engine's, carries no tag. An untagged
-// test drops out with no failure. The pattern is anchored so a tag matches only as a whole
-// whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
-// `@webkit-iphone` or `@firefox-alone`.
+// The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone` (or the
+// `@phone-only` below it), `@webkit` and `@firefox`, written at the end of the test's title.
+// Which tests take `@phone` is in `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine
+// tag names a row for one of two reasons, and a comment above the row says which. Either the
+// row exercises one engine behaviour the comment above those projects lists - the usual reason
+// - or every measured failure of that row was in that engine, so the row is kept where its
+// cause lives: a row green only on an engine its defect was never seen on proves nothing about
+// that defect. Two rows carry a tag for the second reason today, each named in
+// `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask answer whose answer is lost (two
+// timeouts in 213 CI runs, both in WebKit) and `keyboard-agents-picker.e2e.ts`'s row back after
+// the reader left mid-send (six failures on six branches, every one in WebKit). A row that only
+// repeats an assertion Chromium already made, and whose failures are not an engine's, carries
+// no tag. An untagged test drops out with no failure. The pattern is anchored so a tag matches
+// only as a whole whitespace-separated token, never inside a longer one such as `@phones`,
+// `x@phone`, `@webkit-iphone` or `@firefox-alone`.
 const phoneTagged = tagged("phone");
+// A row of the phone projects alone, which `@phone` does not say: `@phone` means "runs on the
+// phone AS WELL", and `chromium`, `stub` and `visual` run those rows at their own width. A row
+// whose claim exists only below the phone breakpoint carries ` @phone-only` BESIDE its `@phone`,
+// and the desktop half of each pair inverts that second tag alone. `@phone` is never inverted:
+// a review of the stubbed layer read the three rows that cost when `stub` inverted it, and the
+// comment above `stub-phone` at the end of this file holds that reading.
+//
+// The pair is a selector, not a skip. Each of these rows used to be scheduled in the desktop
+// project and call `test.skip` against `testInfo.project.name` in its own body, so the report
+// named a row that was never going to run; the tag lets the project that owns the row select it
+// (dispatch://INFRA-1410). Playwright reads an array of patterns as OR, so a phone project
+// names both tags and takes a row carrying either.
+const phoneOnlyTagged = tagged("phone-only");
+const phoneRowTagged = [phoneTagged, phoneOnlyTagged];
+// `delivery-live.e2e.ts`'s one phone row, which `webkit-iphone` owns by itself: it carries no
+// `@phone`, since the Chromium phone project never ran it, and no `@phone-only` would say that
+// either - that tag would hand it to `iphone`. `chromium` is the only other project the file
+// reaches. Both projects name this constant: `webkit-iphone`'s `grep` selects the row by it,
+// and `chromium`'s `grepInvert` drops the row by it. The fragment is written here once, so a
+// title edit changes both projects together. A second copy of it could miss such an edit and
+// leave the row in `chromium`, where its phone assertions fail at the desktop width rather
+// than passing unseen.
+const webkitPhoneDeliveryRow = /on a phone the delivery page/;
 const webkitTagged = tagged("webkit");
 const firefoxTagged = tagged("firefox");
 // Specs of two Dispatch processes behind the round-robin proxy (e2e/round-robin-proxy.ts), each
@@ -59,9 +73,9 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // `stub` project at the end of this file runs them and nothing else runs them: this config's own
 // `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
-// annotation, because 150 spec files reset the database in a `beforeEach` and most of them sign in
-// and seed through the API: a stubbed row left among them would still run its file's hooks
-// (packages/dispatch/AGENTS.md, "The stubbed layer").
+// annotation, because a real-stack spec takes its `test` from e2e/test.ts, which resets the
+// database before every row and signs the default context in: a stubbed row left among them would
+// pay that fixture for nothing (packages/dispatch/AGENTS.md, "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
@@ -74,85 +88,49 @@ if (harnessProcessCount === 2 && process.env.PLAYWRIGHT_BASE_URL) {
   );
 }
 
-// The rows of e2e/harness-listeners.ts this run targets, as the environment names them when this
-// config evaluates.
-const targeted = targetedListeners();
-
 // `DISPATCH_E2E_REUSE_SERVERS=1` says the harness ports name servers that are already running:
-// the ones e2e/run.ts started, which sets it for the command it runs, or a harness a person
-// started and left listening. Any other value is refused rather than quietly read as "no".
-function resolveReuseServers(): boolean {
+// a harness a person started and left listening, or the one `e2e/harness-up.ts` printed for
+// another process to read. Any other value is refused rather than quietly read as "no".
+//
+// The refusal is made here, rather than in the hook, because this evaluates for every run, a
+// listing included, where `globalSetup` does not. What the value MEANS - that this run starts
+// no stack - is the hook's, and it reads the variable itself, by then knowing that it holds
+// "1" or nothing.
+function refuseUnknownReuseServers(): void {
   const requested = process.env.DISPATCH_E2E_REUSE_SERVERS;
-  if (requested === undefined || requested === "") return false;
-  if (requested === "1") return true;
+  if (requested === undefined || requested === "" || requested === "1") return;
   throw new Error(
     `DISPATCH_E2E_REUSE_SERVERS must be "1" or unset, not ${JSON.stringify(requested)}. ` +
-      "Run the suite through e2e/run.ts, which sets it for the harness it starts, or set it to 1 " +
-      "to run against a harness you started yourself."
+      "Leave it unset to have this run start its own stacks (e2e/global-setup.ts), or set it to " +
+      "1 to run against a harness you started yourself."
   );
 }
 
-// A listing (`--list`) starts no server and runs no spec, so it needs no harness: it is read from
-// argv before a `--` separator, and yields to a UI token, since `--ui`/`--ui-*` outrank the
-// computed list mode (`lib/cli/testActions.js:52`, `:62`) and a UI session runs specs. The test is
-// loose (any `--list`, whatever precedes it), and Playwright reads the `--list` of `--grep --list`
-// or `--grep-invert --list` as the option's value, which is a real run. So a listing is exempt only
-// from the unset-ports refusal: with every port unset nothing is targeted, and such a run fails at
-// e2e/preflight.ts; with any port set it meets the reuse refusal below like any run.
-function isListMode(argv: readonly string[]): boolean {
-  if (argv.some((arg) => arg === "--ui" || arg.startsWith("--ui-"))) return false;
-  const separator = argv.indexOf("--");
-  const scanned = separator === -1 ? argv : argv.slice(0, separator);
-  return scanned.includes("--list");
-}
+refuseUnknownReuseServers();
 
-// How many workers the command line asks for, if it does: `--workers <n>`, `--workers=<n>`,
-// `-j <n>` or `-j<n>`, read before a `--` separator as the list mode above is. A worker is a
-// lane, and e2e/run.ts started one harness per lane before Playwright, so a command line that
-// asks for another number is refused rather than quietly leaving a lane unused or putting two
-// workers on one lane's servers.
-function workersOnCommandLine(argv: readonly string[]): string | undefined {
-  const separator = argv.indexOf("--");
-  const scanned = separator === -1 ? argv : argv.slice(0, separator);
-  for (const [index, argument] of scanned.entries()) {
-    if (argument === "--workers" || argument === "-j") return scanned[index + 1];
-    if (argument.startsWith("--workers=")) return argument.slice("--workers=".length);
-    if (argument.startsWith("-j") && argument.length > 2) return argument.slice(2);
-  }
-  return undefined;
-}
-
-// This config starts no server. e2e/run.ts starts the harness (e2e/harness-start.ts) on ports
-// the OS chooses, exports the ports the servers report, and only then runs Playwright, so this
-// module, every worker that re-imports it, and every helper that reads a port at import see the
-// real ports when they evaluate. Without it, the run targets servers a person started: every
-// port set and DISPATCH_E2E_REUSE_SERVERS=1, since e2e/seed.ts truncates the database those
-// servers hold. Anything else is refused here, before a single spec runs, but a listing with every
-// port unset; `harnessPorts()` also refuses a malformed or duplicated port, a listing's included.
-const runThroughWrapper =
-  "bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts [args] (`bun run " +
-  "e2e` builds the SPA and runs the same)";
-const ports = harnessPorts();
-const reuseServers = resolveReuseServers();
-const unset = targeted.filter((listener) => ports[listener.key].port === 0);
-const listing = isListMode(process.argv);
+// THE PORTS ARE UNSET WHEN THIS EVALUATES, AND THAT IS THE DESIGN. Playwright loads this config
+// before it runs `globalSetup`, which is what starts the stacks (e2e/global-setup.ts), so in this
+// process every harness port is unset and `harnessPorts()` answers 0 for each of them - no
+// refusal, no listener addressed, nothing read from them here. Every worker process re-evaluates
+// this file AFTER `globalSetup`, with the manifest that hook wrote in its environment, and it is
+// that evaluation which decides the worker's `use.baseURL` and every import-time origin beside it
+// (e2e/api.ts, e2e/plain-http-origin.ts). The four refusals this file used to make - the unset
+// ports, the missing `DISPATCH_E2E_REUSE_SERVERS`, a `--workers` that disagreed with the number
+// of harnesses the wrapper had started and a worker count it had started none for - were all
+// about a harness that had to be up before Playwright started, which is no longer how a run
+// works.
+//
 // What this run wants of the stubbed layer, read once (e2e/stub/selection.ts): whether it is
 // recording, whether it holds a stubbed row at all - which is what decides the static file
-// server below - and whether it is the stubbed layer alone, which is what exempts it from the
-// four refusals here and from the global setup. That module says why each question is asked and
-// why the third travels to the workers in an environment variable.
+// server below - and whether it is the stubbed layer alone, which is what tells `globalSetup` to
+// start nothing. That module says why each question is asked and why the third travels to the
+// workers in an environment variable.
 const stub = stubSelection({
   argv: process.argv,
   env: process.env,
   processes: harnessProcessCount,
   projects: stubProjectNames,
 });
-
-// One worker per lane, and the lanes are e2e/run.ts's: a worker resolves its own harness from
-// `TEST_PARALLEL_INDEX` (e2e/harness-ports.ts), so a run with more workers than lanes would put
-// two workers on one lane's servers and database, which e2e/seed.ts truncates per row.
-const lanes = laneCount();
-const asked = workersOnCommandLine(process.argv);
 
 // A command that names a wall-clock spec file as a filter while naming no project
 // (`clockFileOnCommandLine`, e2e/configurations.ts). The three wall-clock projects
@@ -162,18 +140,18 @@ const asked = workersOnCommandLine(process.argv);
 // the message on standard error and the run's status above zero, and Playwright prints a config
 // error with a stack after it, so the first line is the command and nothing else.
 //
-// That line carries `DISPATCH_E2E_WORKERS=1`, which is how many lanes e2e/run.ts starts: the
-// third refusal below holds `--workers` to the lane count, so in a shell exporting more than one
-// lane the same line without it would be refused in turn and the one command the reader is given
-// to copy would fail.
+// That line names a project and nothing else. It needs no worker count: this config runs one
+// worker by default (`workers: 1` below), each wall-clock project caps its own workers at one
+// of its own, and no refusal here reads `--workers`, so a count written on that line would say
+// nothing the run does not already do.
 //
-// It stands above the harness refusals below and under no guard at all, theirs included: those
-// four are about servers a run of the stubbed layer alone never reaches, while a command line
-// that would list nothing is as wrong in that run as in any other.
+// It stands under no guard at all, where the reuse-servers refusal above is the only other one
+// this file makes: a command line that would list nothing is as wrong in a run of the stubbed
+// layer alone as in any other.
 const clockFile = clockFileOnCommandLine(process.argv);
 if (clockFile !== undefined) {
   throw new Error(
-    `DISPATCH_E2E_WORKERS=1 bun run e2e -- --project=chromium-alone --workers=1 ${clockFile}\n` +
+    `bun run e2e -- --project=chromium-alone ${clockFile}\n` +
       `\nThat is how ${clockFile} is run, and this command named no project. The wall-clock ` +
       `projects - ${clockProjectNames.join(", ")} - are out of the default selection, because ` +
       "their rows are read from the wall clock and need the machine to themselves, so a " +
@@ -185,62 +163,12 @@ if (clockFile !== undefined) {
   );
 }
 
-// Every refusal of this config is about the harness, so they stand together under one guard: a
-// run of the stubbed layer alone reaches no server of it and meets none of them, and every
-// other run meets all four. Each keeps its own sentence, so a person who forgets the harness
-// still gets the line that fixes it.
-if (!stub.onlyStub) {
-  if (!listing && unset.length > 0) {
-    throw new Error(
-      `The Dispatch e2e harness is not running: ${unset.map((listener) => harnessVariables[listener.key]).join(", ")} ` +
-        `${unset.length > 1 ? "are" : "is"} unset. This config starts no server; run it through ` +
-        `e2e/run.ts, which starts the harness on ports the OS chooses and exports them: ` +
-        `${runThroughWrapper}. To run against servers you started yourself, set ` +
-        `${targeted.map((listener) => harnessVariables[listener.key]).join(", ")} and ` +
-        "DISPATCH_E2E_REUSE_SERVERS=1."
-    );
-  }
-  if (!reuseServers && (!listing || unset.length < targeted.length)) {
-    const targets = targeted
-      .map((listener) => `${ports[listener.key].port} (${harnessVariables[listener.key]})`)
-      .join(", ");
-    throw new Error(
-      `This config starts no server, so it would run against whatever listens on ${targets}. Run ` +
-        `it through e2e/run.ts, which starts the harness: ${runThroughWrapper}. Or set ` +
-        "DISPATCH_E2E_REUSE_SERVERS=1 to run against servers you started yourself, whose " +
-        "database this run truncates."
-    );
-  }
-  if (asked !== undefined && asked !== String(lanes)) {
-    throw new Error(
-      `This run has ${lanes} lane${lanes === 1 ? "" : "s"}, each a harness of its own, so ` +
-        `--workers ${asked} would not match: a worker reads the lane of its own index. Set ` +
-        `${workerCountVariable}=${asked} instead, which starts that many lanes and runs that ` +
-        "many workers."
-    );
-  }
-  // `laneCount` answers the worker count where `DISPATCH_E2E_LANES` is unset, so that a run
-  // against servers a person started reads its own. That fallback is right for one worker and
-  // wrong for more: nothing exported a lane, so every worker would resolve lane 0 and share one
-  // harness's servers and database, which e2e/seed.ts truncates per row - rows would delete
-  // each other's fixtures and fail in ways that read as product faults. Only e2e/run.ts exports
-  // that variable.
-  if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
-    throw new Error(
-      `${workerCountVariable}=${workerCount()} asks for more than one worker, but nothing ` +
-        `exported ${laneCountVariable}, so there is one harness and every worker would share ` +
-        `it. Run this config through e2e/run.ts, which starts a lane per worker and exports ` +
-        `that count: ${runThroughWrapper}.`
-    );
-  }
-}
-
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).
 const expectTimeout = 15_000;
 
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
-// when this suite ran one row at a time; it now runs four lanes on a four-core runner. Read from
+// when this suite ran one row at a time; it now runs four workers on a four-core runner. Read from
 // the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
 // 2026-11-05T20:32:13Z (78 merge_group, 119 pull_request, 4 push), at base b7866f96d7fe.
 //
@@ -343,6 +271,13 @@ const multiprocessProjects = [
   },
 ];
 
+// The three rows of `heavy-bodies.e2e.ts` that read where a reader's place ends up once a long
+// body formats under them. The compensation they measure is layout Chromium and WebKit anchor
+// differently, and those are the two engines it was ever measured on, so `firefox-alone` below
+// inverts them. Each fragment names one row of that file and no other.
+const readersPlaceRows =
+  /a long comment above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long comment/;
+
 // The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
 // and `visual-phone` projects at the end of this list and in no project above them: a project
 // whose configuration key equals one of theirs - the same engine, viewport, origin and
@@ -353,17 +288,21 @@ const multiprocessProjects = [
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
 
-// Every project that runs four lanes wide.
+// Every project that runs as wide as the run's own workers.
 const parallelProjects = [
+  // The desktop half of the pair: every row of the suite except the two kinds this project is
+  // not the one for. A `@phone-only` row has no desktop case to make, and the one row of
+  // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
   {
     name: "chromium",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
-    grep: phoneTagged,
+    grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
   // WebKit runs the rows a WebKit decision can change, and nothing else: it selects by the
@@ -421,12 +360,19 @@ const parallelProjects = [
   // This project keeps its file `testMatch` and its title `grep` rather than an engine tag: 13
   // rows is already as narrow as a tag would make it, and Playwright reads an array of regexes
   // as OR (`createTitleMatcher` answers on the first that matches), so a tag beside the titles
-  // below would widen the project rather than narrow it.
+  // below would widen the project rather than narrow it. That OR is what lets the `grep` below
+  // be an array: the titles this project owns, then the one constant below.
+  // One of those rows, `delivery-live.e2e.ts`'s phone row, is this project's alone, and
+  // `chromium` inverts it. Both name `webkitPhoneDeliveryRow`, the one place that title
+  // fragment is written, and the comment above it says why the row is this project's.
   {
     name: "webkit-iphone",
     testMatch:
       /(agent-view|agent-view-settings|phone-conversation|delivery-live|live-socket)\.e2e\.ts/,
-    grep: /on a phone the live view|a document-scrolling route|covers none of|a capped model name|on a phone the delivery page|the header shows the session's reported model|a tab holds one live socket for every live view/,
+    grep: [
+      /on a phone the live view|a document-scrolling route|covers none of|a capped model name|the header shows the session's reported model|a tab holds one live socket for every live view/,
+      webkitPhoneDeliveryRow,
+    ],
     use: { ...devices["iPhone 13"] },
   },
   // Firefox runs the rows a Firefox decision can change, and nothing else: it selects by the
@@ -523,26 +469,27 @@ const parallelProjects = [
  * Each of these projects named every project before it in `dependencies` until
  * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
  * command naming one of their two files, because a filter narrows a project it selects and
- * never a project selected to run before it - at that base
- * `--list e2e/heavy-bodies.e2e.ts` listed 1,221 tests in 147 files, the dependency set entire.
- * With no dependency and no place in the default selection, such a command now selects nothing
- * at all, so the configuration refuses it at the top of this file and prints the command that
- * runs the file.
+ * never a project selected to run before it. With no dependency and no place in the default
+ * selection, such a command now selects nothing at all, so the configuration refuses it at the
+ * top of this file and prints the command that runs the file.
  *
  * What gives these rows the quiet machine is no longer the order they run in: it is a run one
  * worker wide, and the row itself is what holds the run to that. The row's own guard in
  * `e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker rather than
- * letting it report a reading of three other lanes' work, so a reading that survives was taken
- * alone whatever project it was taken in.
+ * letting it report a reading of what the other workers were running, so a reading that
+ * survives was taken alone whatever project it was taken in.
  *
- * Each still caps its own workers at one, which is what keeps a project's own rows from running
- * four at a time in a run of four lanes. Playwright 1.64.1 takes that cap per project -
- * `testProject.workers`, "The maximum number of concurrent worker processes to use for
- * parallelizing tests from this project", which its dispatcher holds a project's running jobs to
- * (`_workerLimitPerProjectId`, `playwright/lib/runner/index.js`) - and the run's own `workers`
- * above stays at the lane count, so the rest of the suite runs as wide as ever. A worker here
- * resolves a lane as any other worker does (`TEST_PARALLEL_INDEX`, e2e/harness-ports.ts), so
- * these rows run against one lane's harness while the other lanes stand idle.
+ * Each still caps its own workers at one, which holds a project's own rows to one at a time
+ * however wide the run is: the `workers: 1` below is this config's default, which a command
+ * line replaces, and CI names its own (.github/workflows/dispatch-browser.yaml). Playwright
+ * 1.64.1 takes that cap per project - `testProject.workers`, "The maximum number of concurrent
+ * worker processes to use for parallelizing tests from this project"
+ * (node_modules/.bun/playwright@1.64.1/node_modules/playwright/types/test.d.ts:761), which its
+ * dispatcher holds a project's running jobs to (`_workerLimitPerProjectId`,
+ * `playwright/lib/runner/index.js`) - and the run's own `workers` stays what it was given, so
+ * the rest of the suite runs as wide as ever. A worker here resolves a stack as any other
+ * worker does (`TEST_PARALLEL_INDEX`, e2e/harness-ports.ts), so these rows run against one
+ * stack's harness while the other stacks stand idle.
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
@@ -573,6 +520,7 @@ const aloneProjects = [
     name: "firefox-alone",
     default: false,
     testMatch: /heavy-bodies\.e2e\.ts/,
+    grepInvert: readersPlaceRows,
     use: { ...devices["Desktop Firefox"] },
     workers: 1,
     retries: 0,
@@ -595,7 +543,9 @@ const aloneProjects = [
  * Both projects run that one spec and split its rows by the ` @phone` tag its phone rows carry,
  * the tag the suite already selects phone rows by (`phoneTagged` above): `visual-phone` greps
  * it and `visual` inverts it, so every row runs under exactly one project and reads the
- * baseline directory of that project alone.
+ * baseline directory of that project alone. Each also names ` @phone-only` on its own side of
+ * that split, so a phone row written here with that tag alone lands in `visual-phone` rather
+ * than in both projects at once; no row of this spec carries it today.
  *
  * A baseline a person takes and a baseline CI compares must be the same rendering, so both
  * projects run inside the pinned Playwright image and nowhere else: `e2e/visual-run.sh` seeds on
@@ -611,8 +561,8 @@ const aloneProjects = [
  * configuration while the test still read green.
  *
  * They sit after `aloneProjects` in a group of their own rather than among the parallel
- * projects, because `parallelProjects` above is the projects that run four lanes wide and each
- * of these caps its own workers at one, for the reason below.
+ * projects, because `parallelProjects` above is the projects that run as wide as the run's own
+ * workers and each of these caps its own workers at one, for the reason below.
  *
  * `workers: 1`, which Playwright takes per project: these rows compare images, and two of them
  * drawing at once on one machine is the contention that makes a comparison read a half-drawn
@@ -625,7 +575,7 @@ const visualProjects = [
   {
     name: "visual",
     testMatch: visualSpecs,
-    grepInvert: phoneTagged,
+    grepInvert: phoneRowTagged,
     // A baseline is an input a person reads in a review, not an output of a row, so these files
     // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and are
     // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`
@@ -641,7 +591,7 @@ const visualProjects = [
   {
     name: "visual-phone",
     testMatch: visualSpecs,
-    grep: phoneTagged,
+    grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,
@@ -688,6 +638,7 @@ const stubProjects = [
     retries: 0,
     testMatch: stubSpecs,
     testIgnore: [],
+    grepInvert: phoneOnlyTagged,
     use: {
       ...devices["Desktop Chrome"],
       baseURL: stub.recording ? baseUrl : stubOrigin(),
@@ -698,15 +649,17 @@ const stubProjects = [
   // `iphone` does. `stub` does **not** invert the tag, which it did until a review read the
   // three rows that cost: a `@phone` row that `chromium` ran at the desktop width lost that
   // case in the move, and a moved row has to assert what it asserted before. A row that is a
-  // phone row alone says so itself, with the `test.skip` its author wrote against `iphone`,
-  // read here against this project's name - which is how those rows were skipped in `chromium`
-  // on the real stack too.
+  // phone row alone carries ` @phone-only` beside its `@phone`, which this project greps and
+  // `stub` inverts - the second tag, and not the first, is the one a desktop project may
+  // invert. Those rows used to say it in their own bodies instead, with a `test.skip` against
+  // `testInfo.project.name`, so `stub` scheduled a row it was never going to run
+  // (dispatch://INFRA-1410).
   {
     name: "stub-phone",
     retries: 0,
     testMatch: stubSpecs,
     testIgnore: [],
-    grep: phoneTagged,
+    grep: phoneRowTagged,
     use: {
       ...devices["iPhone 13"],
       browserName: "chromium" as const,
@@ -723,12 +676,17 @@ export default defineConfig({
   // project names `testIgnore: []`, which is what lets those rows reach it.
   testIgnore: harnessProcessCount === 1 ? [multiprocessSpecs, stubSpecs] : [stubSpecs],
   outputDir: "test-results",
-  // Every row is independent: it empties its lane's database and fake listeners itself
+  // Every row is independent: it empties its stack's database and fake listeners itself
   // (e2e/seed.ts), and a worker never runs two rows at once, so rows of one file may run in
-  // different lanes. A file whose rows must run in order says so itself, with
+  // different stacks. A file whose rows must run in order says so itself, with
   // `test.describe.configure({ mode: "serial" })` and the reason.
   fullyParallel: true,
-  workers: lanes,
+  // One worker by default, where Playwright's own default is half the machine's cores. A worker
+  // costs a whole stack - a Postgres, a Go server and three to six fake listeners
+  // (e2e/harness-pool.ts) - so a 16-core workstation would otherwise start eight of them before
+  // its first row. CI names its own `--workers`, which `globalSetup` reads as `config.workers`
+  // and starts that many stacks for.
+  workers: 1,
   // One retry on CI, none locally. A row that fails once and passes on the retry is reported
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
@@ -736,11 +694,21 @@ export default defineConfig({
   // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
   // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
-  // With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the
-  // list reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
-  reporter: measuring
-    ? [["list"], [fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))]]
-    : "list",
+  // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`
+  // learns how this run's rows ended, which is what decides whether its stack logs are kept
+  // (e2e/run-outcome.ts says why no other way reaches it). It is in every run that takes this
+  // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
+  // which is why a run given one keeps its logs whatever it did, and why
+  // .github/workflows/dispatch-browser.yaml names this file in both of its own. With
+  // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
+  // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
+  reporter: [
+    ["list"],
+    [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],
+    ...(measuring
+      ? [[fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))] as const]
+      : []),
+  ] satisfies ReporterDescription[],
   timeout: testTimeout,
   expect: { timeout: expectTimeout },
   use: {
@@ -758,16 +726,16 @@ export default defineConfig({
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
     trace: "retain-on-first-failure",
   },
-  // Runs before any row, against the servers the checks above require: it refuses a target that
-  // does not read this run's fake Envoy, and in two-process mode a pair whose processes do not
-  // both read it or do not accept each other's cookies (e2e/preflight.ts). A run of the `stub`
-  // project alone reaches no such server, so it has no global setup at all.
-  globalSetup: stub.onlyStub
-    ? undefined
-    : fileURLToPath(new URL("./preflight.ts", import.meta.url)),
-  // The one server this config starts, and it serves files: the built SPA, for the stubbed
-  // layer's own origin (e2e/stub/static-server.ts). The harness is e2e/run.ts's, which starts
-  // it before Playwright.
+  // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
+  // stops them afterwards (e2e/global-teardown.ts). Both hooks are declared for every run,
+  // including the two that start nothing - the stubbed layer alone, and a run against servers a
+  // person started - because that decision is the hook's own, which is where a reader now finds
+  // it. A deployed run starts a stack of the fakes alone, and the hook says why.
+  globalSetup: fileURLToPath(new URL("./global-setup.ts", import.meta.url)),
+  globalTeardown: fileURLToPath(new URL("./global-teardown.ts", import.meta.url)),
+  // The one server this config declares itself, and it serves files: the built SPA, for the
+  // stubbed layer's own origin (e2e/stub/static-server.ts). The harness is the pool's, which
+  // `globalSetup` starts (e2e/harness-pool.ts).
   //
   // It is declared for a run that holds a stubbed row and for no other (e2e/stub/selection.ts
   // says which runs those are and why the question has to be asked at all).

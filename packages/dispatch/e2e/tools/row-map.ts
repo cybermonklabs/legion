@@ -80,7 +80,7 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 //
 // The second names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
-// holds no row of `heavy-bodies.e2e.ts` or `nested-directive.e2e.ts` - 53 rows of those two
+// holds no row of `heavy-bodies.e2e.ts` or `nested-directive.e2e.ts` - 50 rows of those two
 // files in this head's wall-clock listing - and with the default listing alone this generation
 // refused outright: "the listing names no real-stack row in them: heavy-bodies.e2e.ts,
 // nested-directive.e2e.ts", measured by running the tool at this head before the second listing

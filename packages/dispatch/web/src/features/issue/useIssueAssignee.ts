@@ -22,6 +22,10 @@ export interface IssueAssigneeWrite {
  * project issue list and every inbox row that belongs to the issue (so a row the Inbox's
  * assignee filter judges by that login moves in or out of the list at once), rolls back on
  * failure, and the lists refetch once the server has answered (see `useIssueFieldWrite`).
+ *
+ * An inbox row is judged by the person it waits on, which the server answers as
+ * `coalesce(asked_of, assignee)`: so a row whose ask nobody has handed on follows the new
+ * assignee here, and one somebody handed to a person keeps that person whoever holds its issue.
  */
 export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
   const queryClient = useQueryClient();
@@ -36,7 +40,13 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
       current?.map((row) =>
         row.issue_key === issueKey && row.issue !== undefined
-          ? { ...row, issue: { ...row.issue, assignee } }
+          ? {
+              ...row,
+              issue: { ...row.issue, assignee },
+              ...(row.asked_of === null || row.asked_of === undefined
+                ? { waiting_on_person: assignee ?? undefined }
+                : {}),
+            }
           : row
       )
     );

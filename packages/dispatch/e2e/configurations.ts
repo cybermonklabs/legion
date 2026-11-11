@@ -12,6 +12,8 @@
  * from a listing's JSON, so every function is callable from a plain Bun test.
  */
 
+import { valuesTakenAt } from "./playwright-argv";
+
 /** A row of `playwright test --list --reporter=json`: one test of one project. */
 export type ListedRow = {
   /** What Playwright expects of the row, as the listing states it before anything runs:
@@ -235,31 +237,41 @@ export function tagged(tag: string): RegExp {
  *  Playwright's `--project <project-name...>` is variadic, so one flag takes every value up to
  *  the next option: `--project stub chromium` names two. A reader that took one value per flag
  *  would see `stub` alone there and answer that the run is the stubbed layer by itself, which
- *  waives the harness refusals and the preflight for the `chromium` rows beside it. Playwright
- *  matches a project name without regard to case, so the names come back lower-cased and a
- *  caller compares them against its own lower-case list.
+ *  leaves the `chromium` rows beside it with no stack at all: `globalSetup` starts none for a
+ *  run of the stubbed layer alone (`e2e/global-setup.ts`). Playwright matches a project name
+ *  without regard to case, so the names come back lower-cased and a caller compares them
+ *  against its own lower-case list.
  *
  *  A value holding `*` is a pattern Playwright expands against the config's own projects, which
  *  this cannot see, so it comes back as it was written and a caller reads it as "projects I
  *  cannot name": the conservative answer in both directions is that such a run may hold any
- *  project, so nothing is waived for it.
+ *  project, so it is given the server and its stacks alike.
  *
  *  An empty list is a run that names no project, which is every project of its mode. Every
- *  `--project` of the whole line is read, and a `--` ends one flag's values because it begins
- *  with `-`: `e2e/run.ts` reads the Playwright argv it passes after its own `--`, and the
- *  config reads a Playwright command line that has no `--` in it. */
+ *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
+ *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
+ *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
+ *  directory and names no project at all, and a reader that took it for one answered "the
+ *  stubbed layer alone" for a run holding real-stack rows, which then met no stack
+ *  (dispatch://INFRA-1410). A bare `--` ends the options, so every token after it is a
+ *  test-file filter and none of them is a project: `e2e/playwright-argv.ts`'s own measurements
+ *  show a command line that holds one (`-- --ui --list` ran its rows). */
 export function projectsOnCommandLine(argv: readonly string[]): string[] {
   const named: string[] = [];
-  for (const [index, word] of argv.entries()) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index] ?? "";
+    if (word === "--") break;
     if (word.startsWith("--project=")) {
       named.push(word.slice("--project=".length).toLowerCase());
       continue;
     }
-    if (word !== "--project") continue;
-    for (const value of argv.slice(index + 1)) {
-      if (value.startsWith("-")) break;
-      named.push(value.toLowerCase());
+    const values = valuesTakenAt(argv, index);
+    if (word === "--project") {
+      for (let value = 1; value <= values; value += 1) {
+        named.push((argv[index + value] ?? "").toLowerCase());
+      }
     }
+    index += values;
   }
   return named;
 }
@@ -295,88 +307,6 @@ export const clockSpecNames: readonly string[] = ["heavy-bodies", "nested-direct
  *  modules those specs import and no project may select them as test files. */
 export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
 
-/** The options of `playwright test` that take the token after them whatever that token is, which
- *  is every option the pinned Playwright declares with a REQUIRED value. The table is Playwright's
- *  own: `node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/program.js`, the
- *  `testOptions` array at line 188, where a required value is written `<file>` and an optional one
- *  `[mode]`. `addTestCommand` at line 37 builds the test command's options from that array and
- *  adds none of its own, so `-c, --config <file>` is the array's entry at line 192; the identical
- *  declaration at line 74 is `clear-cache`'s. Both spellings of an option stand here, the long one
- *  and, where the table gives one, the short, because `-g value` skips its value as `--grep value`
- *  does. `e2e/__tests__/clock-selection.test.ts` reads that table again and fails when either set
- *  has gone stale, so a raise of Playwright is read here rather than guessed at.
- *
- *  "Whatever that token is" is commander's own rule, measured at Playwright 1.64.1 in this
- *  workspace against a scratch config that refuses nothing, over a git repository of two spec
- *  files (`a.spec.ts` changed in the working copy, `heavy-bodies.e2e.ts` committed): `playwright
- *  test --config <scratch>/playwright.config.ts --grep --list` printed "Error: No tests found" and
- *  exited 1, listing no row at all, because `--list` became the grep rather than list mode.
- *
- *  `--project <project-name...>` is variadic and stands here all the same: the project question is
- *  `projectsOnCommandLine`'s, which the reader below asks before it scans, so all the scan needs
- *  of `--project` is that its first value is no positional filter.
- *
- *  The `--name=value` and `-j4` spellings carry their own value and stand nowhere here: they begin
- *  with `-`, which the reader below passes over. */
-const optionsTakingTheNextToken: ReadonlySet<string> = new Set([
-  "--add-reporter",
-  "--browser",
-  "-c",
-  "--config",
-  "--global-timeout",
-  "-g",
-  "--grep",
-  "-G",
-  "--grep-invert",
-  "--last-failed-file",
-  "--max-failures",
-  "--output",
-  "--project",
-  "--repeat-each",
-  "--reporter",
-  "--retries",
-  "--run-agents",
-  "--shard",
-  "--test-list",
-  "--test-list-invert",
-  "--timeout",
-  "--trace",
-  "--tsconfig",
-  "--ui-host",
-  "--ui-port",
-  "--update-source-method",
-  "-j",
-  "--workers",
-]);
-
-/** The options that take the token after them only when that token does not begin with `-`, which
- *  is every option the pinned table declares with an OPTIONAL value: `--debug [mode]`,
- *  `--only-changed [ref]`, `--shuffle [seed]` and `-u, --update-snapshots [mode]`. The asymmetry
- *  with the set above is commander's, and both halves of it are measured at Playwright 1.64.1
- *  against the scratch repository named above.
- *
- *  A token that is no dash IS taken, and the detached spelling is the attached one:
- *  `--list --only-changed <scratch>/specs/heavy-bodies.e2e.ts` and
- *  `--list --only-changed=<scratch>/specs/heavy-bodies.e2e.ts` printed the same failure, "Cannot
- *  detect changed files for --only-changed mode: git diff
- *  /legion/scratch/tmp/.../specs/heavy-bodies.e2e.ts --name-only", so the path became the option's
- *  own value - a git ref - in the detached form exactly as in the attached one. The same reading
- *  in the real suite: `--list --shuffle e2e/claim.e2e.ts` lists the whole suite, the path having
- *  become the seed, and `--list --debug e2e/claim.e2e.ts` exits 1 with "option '--debug [mode]'
- *  argument 'e2e/claim.e2e.ts' is invalid. Allowed choices are inspector, cli."
- *
- *  A DASH token is not taken: `--only-changed --list` and `--shuffle --list` both reached list mode
- *  and printed rows - 1 test in 1 file, the changed spec, and 2 tests in 2 files - and
- *  `--only-changed -x --list` listed that one row too, so neither `--list` nor `-x` became a value.
- *  That is the whole difference from the required side, where `--grep --list` took `--list`. */
-const optionsTakingTheNextTokenUnlessItBeginsWithDash: ReadonlySet<string> = new Set([
-  "--debug",
-  "--only-changed",
-  "--shuffle",
-  "-u",
-  "--update-snapshots",
-]);
-
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
  *  the three wall-clock projects are out of the default selection, so such a command selects no
@@ -384,71 +314,66 @@ const optionsTakingTheNextTokenUnlessItBeginsWithDash: ReadonlySet<string> = new
  *
  *  Reading begins after the `test` command word, and a command line with no such word answers
  *  `undefined`. A worker re-evaluates this configuration with Playwright's own argv rather than
- *  the command line (`e2e/stub/selection.ts:43-47`), and `bun test` and the tools that import this
- *  module carry an argv of their own, so none of them can meet the refusal. Nothing after a `--`
- *  is read. An option of `optionsTakingTheNextToken` takes the token after it whatever it is; an
- *  option of `optionsTakingTheNextTokenUnlessItBeginsWithDash` takes it only when it begins with
- *  no `-`, and a dash token behind such an option is read as the option or flag it is. Every other
- *  token beginning with `-` is a flag or a spelling that carries its own value, and is passed
- *  over. What is left is a positional filter, which Playwright matches as a regular expression
- *  against absolute file paths; this reader answers such a filter only where its text holds a
- *  wall-clock file's whole name, which is the rule the refusal is written for. A PARTIAL name is
- *  left alone: measured at this head, `bunx playwright test --config e2e/playwright.config.ts
- *  --list nested` is not refused here and exits 1 with Playwright's own "No tests found. Make
- *  sure that arguments are regular expressions matching test files." above "Total: 0 tests in 0
- *  files". That filter does select a wall-clock file - `nested-directive.e2e.ts` - and this
- *  reader says nothing about it.
+ *  the command line (`e2e/stub/selection.ts:47-49`), and `bun test` and the tools that import
+ *  this module carry an argv of their own, so none of them can meet the refusal. Nothing after
+ *  a `--` is read.
  *
- *  A user-interface command line answers `undefined`, exactly as this configuration's own
- *  `isListMode` (`e2e/playwright.config.ts:102-103`) yields to one: any `--ui` token or any
- *  spelling beginning `--ui-`, read over the whole argv as that function reads it. Playwright has
- *  two listing paths and they read `default: false` differently. A plain command line leaves the
- *  flag unset - `runAllTestsWithConfig` calls `filterProjects(config.projects,
- *  options.projectFilter)` (`playwright/lib/runner/index.js:7131`), and that function (`:2134`)
- *  answers `projects.filter((project) => includeNonDefault || project.default)` at `:2136` -
- *  while the user interface's own `listFiles` (`:6937`) and `listTests` (`:6971`, under the
- *  comment "Non-default projects are listed so that they can be selected by name.") each set
+ *  How far each option's value reaches is not asked here: `valuesTakenAt`
+ *  (`e2e/playwright-argv.ts`) answers how many tokens the option at an index takes, and that
+ *  module is this tree's one reader of Playwright's option table and holds the measurements for
+ *  every class. The scan steps over what it says an option takes, so a dash token an option did
+ *  not take is read as the option or flag it is. Every other token beginning with `-` is a flag
+ *  or a spelling that carries its own value, and is passed over. What is left is a positional
+ *  filter, which Playwright matches as a regular expression against absolute file paths; this
+ *  reader answers such a filter only where its text holds a wall-clock file's whole name, which
+ *  is the rule the refusal is written for. A PARTIAL name is left alone: measured at this head,
+ *  `bunx playwright test --config e2e/playwright.config.ts --list nested` is not refused here
+ *  and exits 1 with Playwright's own "No tests found. Make sure that arguments are regular
+ *  expressions matching test files." above "Total: 0 tests in 0 files". That filter does select
+ *  a wall-clock file - `nested-directive.e2e.ts` - and this reader says nothing about it.
+ *
+ *  A user-interface command line answers `undefined`: any `--ui` token and any spelling
+ *  beginning `--ui-`, read over the whole argv. Playwright has two listing paths and they read
+ *  `default: false` differently. A plain command line leaves the flag unset -
+ *  `runAllTestsWithConfig` calls `filterProjects(config.projects, options.projectFilter)`
+ *  (`playwright/lib/runner/index.js:7131`), and that function (`:2134`) answers
+ *  `projects.filter((project) => includeNonDefault || project.default)` at `:2136` - while the
+ *  user interface's own `listFiles` (`:6937`) and `listTests` (`:6971`, under the comment
+ *  "Non-default projects are listed so that they can be selected by name.") each set
  *  `includeNonDefaultProjects: true`. So in user-interface mode `chromium-alone` IS listed and
  *  its rows ARE selectable by a file filter: the refusal's premise - that such a command selects
  *  no row at all - is false there, and the command it prints drops the `--ui` the reader asked
  *  for. Measured at this head by importing `e2e/playwright.config.ts` with `process.argv` set to
- *  the command line and nothing started: with `--ui e2e/heavy-bodies.e2e.ts` the module throws
- *  the harness's own unset-ports refusal ("The Dispatch e2e harness is not running"), and with
- *  the same line less `--ui` it throws this refusal.
+ *  the command line and nothing started: `--ui e2e/heavy-bodies.e2e.ts` imports the module with
+ *  no throw of any kind, and the same line less `--ui` throws this refusal, whose first line is
+ *  `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts`.
  *
  *  The carve-out gives up no measurement: a wall-clock row started from the user interface still
- *  meets `refuseASharedRun` (`e2e/main-thread-hold.ts:62`), which fails a measuring row whenever
+ *  meets `refuseASharedRun` (`e2e/main-thread-hold.ts`), which fails a measuring row whenever
  *  the run is wider than one worker, so such a run still reports the page's own work or no
  *  reading at all.
  *
- *  The project question is `projectsOnCommandLine`'s, so `--project` is read once in this module;
- *  the scan meets it as an option that takes a token, which is all it needs of a flag whose
- *  values, when it has any, have already answered this function above. The rule the reader follows
- *  is Playwright's own parser's: it answers the token that parser would call a positional filter,
- *  and nothing else. A reader that read more than that refuses commands Playwright runs - `--grep
- *  heavy-bodies`, `--reporter list e2e/claim.e2e.ts`, `--shuffle e2e/heavy-bodies.e2e.ts`, whose
- *  path is a seed - which is the one failure mode that matters here. */
+ *  The project question is `projectsOnCommandLine`'s, so `--project` is read once in this
+ *  module; the scan meets it as an option whose values `valuesTakenAt` steps over, which is all
+ *  it needs of a flag whose values, when it has any, have already answered this function above.
+ *  The rule the reader follows is Playwright's own parser's: it answers the token that parser
+ *  would call a positional filter, and nothing else. A reader that read more than that refuses
+ *  commands Playwright runs - `--grep heavy-bodies`, `--reporter list e2e/claim.e2e.ts`,
+ *  `--shuffle e2e/heavy-bodies.e2e.ts`, whose path is a seed - which is the one failure mode
+ *  that matters here. */
 export function clockFileOnCommandLine(argv: readonly string[]): string | undefined {
   const command = argv.indexOf("test");
   if (command === -1) return undefined;
   if (projectsOnCommandLine(argv).length > 0) return undefined;
-  // The user-interface carve-out above, written as `isListMode` writes it
-  // (`e2e/playwright.config.ts:103`): the whole argv, `--ui` and every `--ui-*`.
+  // The user-interface carve-out above, over the whole argv: `--ui` and every `--ui-*`.
   if (argv.some((word) => word === "--ui" || word.startsWith("--ui-"))) return undefined;
   const separator = argv.indexOf("--", command + 1);
-  const scanned = argv.slice(command + 1, separator === -1 ? undefined : separator);
-  let pendingValue: "required" | "optional" | undefined;
-  for (const word of scanned) {
-    const takesThisToken = pendingValue;
-    pendingValue = undefined;
-    if (takesThisToken === "required") continue;
-    if (takesThisToken === "optional" && !word.startsWith("-")) continue;
-    if (optionsTakingTheNextToken.has(word)) {
-      pendingValue = "required";
-      continue;
-    }
-    if (optionsTakingTheNextTokenUnlessItBeginsWithDash.has(word)) {
-      pendingValue = "optional";
+  const end = separator === -1 ? argv.length : separator;
+  for (let index = command + 1; index < end; index += 1) {
+    const word = argv[index] ?? "";
+    const values = valuesTakenAt(argv, index);
+    if (values > 0) {
+      index += values;
       continue;
     }
     if (word.startsWith("-")) continue;

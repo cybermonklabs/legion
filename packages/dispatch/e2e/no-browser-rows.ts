@@ -47,9 +47,10 @@
  * network, no database and no server, so any process may call it.
  */
 
-import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as ts from "typescript";
+
+import { sourceFiles } from "./source-files";
 
 /** One `test(` call of one spec file. */
 export type SuiteRow = {
@@ -466,19 +467,10 @@ export function rowsOfFiles(directory: string, files: readonly string[]): SuiteR
  *  e2e/playwright.config.ts), resolved beside the config, so after a browser run it is a tree of
  *  traces, videos and screenshots holding no spec. */
 export function specFiles(directory: string): string[] {
-  const files: string[] = [];
-  const walk = (relative: string): void => {
-    for (const entry of readdirSync(join(directory, relative), { withFileTypes: true })) {
-      const path = relative === "" ? entry.name : `${relative}/${entry.name}`;
-      if (entry.isDirectory()) {
-        if (entry.name !== "node_modules" && entry.name !== "test-results") walk(path);
-      } else if (entry.isFile() && entry.name.endsWith(".e2e.ts")) {
-        files.push(path);
-      }
-    }
-  };
-  walk("");
-  return files.sort();
+  return sourceFiles(directory, {
+    directory: (name) => name !== "node_modules" && name !== "test-results",
+    file: (name) => name.endsWith(".e2e.ts"),
+  });
 }
 
 /** Whether the row opens a browser: it takes `page`, `browser` or `context`. */

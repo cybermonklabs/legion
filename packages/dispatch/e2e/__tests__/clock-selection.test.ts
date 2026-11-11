@@ -14,10 +14,9 @@
  *  Playwright process reads: the executable, the script, the `test` command word and the rest.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 
 import { clockFileOnCommandLine, clockSpecPattern } from "../configurations";
+import { optionValueClasses } from "../playwright-argv";
 
 const clockFile = "e2e/heavy-bodies.e2e.ts";
 
@@ -61,9 +60,9 @@ const refused: readonly { title: string; argv: readonly string[]; answer: string
     answer: "heavy-bodies",
   },
   {
-    // The dash token is not the seed: `--shuffle --list` and `--only-changed --list` both reach
-    // list mode and print rows, measured at Playwright 1.64.1 (e2e/configurations.ts). `--headed`
-    // is a flag of its own, so the path behind it is a file this command does name.
+    // The dash token is not the seed: an optional-value option leaves a token that begins with
+    // a dash alone, measured at Playwright 1.64.1 (e2e/playwright-argv.ts). `--headed` is a
+    // flag of its own, so the path behind it is a file this command does name.
     title: "a wall-clock file behind `--shuffle --headed`, whose dash token is no seed",
     argv: playwrightArgv("--shuffle", "--headed", "e2e/heavy-bodies.e2e.ts"),
     answer: "e2e/heavy-bodies.e2e.ts",
@@ -107,13 +106,13 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
   {
     // The path becomes a git ref: `--list --only-changed <path>` and the attached
     // `--only-changed=<path>` print the same "Cannot detect changed files for --only-changed
-    // mode: git diff <path> --name-only", measured at Playwright 1.64.1 (e2e/configurations.ts).
+    // mode: git diff <path> --name-only", measured at Playwright 1.64.1 (e2e/playwright-argv.ts).
     title: "a wall-clock path behind `--only-changed`, which Playwright takes as a git ref",
     argv: playwrightArgv("--only-changed", "e2e/heavy-bodies.e2e.ts"),
   },
   {
     title: "the command the configuration's own refusal prints, which carries its project",
-    argv: playwrightArgv("--project=chromium-alone", "--workers=1", "e2e/heavy-bodies.e2e.ts"),
+    argv: playwrightArgv("--project=chromium-alone", "e2e/heavy-bodies.e2e.ts"),
   },
   {
     title: "that command with the project named in the detached spelling",
@@ -146,9 +145,9 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
     argv: playwrightArgv("--ui", "e2e/heavy-bodies.e2e.ts"),
   },
   {
-    // `--ui-port` is one of the options that take the token after them, so the port is read as
-    // its value either way: what this row holds is the carve-out, which reads every `--ui-*`
-    // spelling as `isListMode` does (e2e/playwright.config.ts:103).
+    // `--ui-port` takes the token after it, so the port is read as its value either way: what
+    // this row holds is the carve-out, which reads `--ui` and every `--ui-*` spelling over the
+    // whole argv (`clockFileOnCommandLine`, e2e/configurations.ts).
     title: "that file under `--ui-port`, a user-interface run in another spelling",
     argv: playwrightArgv("--ui-port", "0", "e2e/heavy-bodies.e2e.ts"),
   },
@@ -178,47 +177,24 @@ describe("the command lines it leaves alone", () => {
   }
 });
 
-/** The pinned Playwright's own option table, read out of the version this workspace installed:
- *  `node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/program.js`, the
- *  `testOptions` array at line 188, from which `addTestCommand` at line 37 builds every option
- *  the `test` command has. The path names the pinned version, so a raise of Playwright fails
- *  this test on the missing file and the table is read here again against the new one. */
-const programPath = resolve(
-  import.meta.dir,
-  "../../../../node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/program.js"
-);
-
-type DeclaredOption = { spellings: string[]; arity: "required" | "optional" | "none" };
-
-/** Each option of that table: its spellings, long and short, and whether the table writes its
- *  value required (`<file>`), optional (`[mode]`) or declares none. */
-function optionsOfPinnedPlaywright(): DeclaredOption[] {
-  const source = readFileSync(programPath, "utf8");
-  const start = source.indexOf("const testOptions = [");
-  const table = source.slice(start, source.indexOf("\n];", start));
-  return [...table.matchAll(/^\s*\["([^"]+)",/gm)].map((entry) => {
-    const declaration = entry[1] ?? "";
-    const arity = declaration.includes("<")
-      ? "required"
-      : declaration.includes("[")
-        ? "optional"
-        : "none";
-    const spellings = declaration
-      .replace(/\s*[<[].*$/, "")
-      .split(",")
-      .map((spelling) => spelling.trim());
-    return { spellings, arity };
-  });
-}
-
-describe("the reader's option table against the pinned Playwright's own", () => {
-  test("a value of either arity swallows the path, and a dash token behind one does not", () => {
-    const declared = optionsOfPinnedPlaywright();
+/** The pinned Playwright's option table, read where this tree reads it: `optionValueClasses`
+ *  (`e2e/playwright-argv.ts`), whose own test re-runs `bunx playwright test --help` and fails
+ *  when that table adds, renames, drops or reclassifies an option
+ *  (`e2e/__tests__/playwright-argv.test.ts`). Reading it a second time here would be a second
+ *  copy of the same fact, one of which could age while the other did not. */
+describe("the reader against the option classes it steps over", () => {
+  test("a value of any class swallows the path, and a dash token behind one does not", () => {
+    const rows = [
+      ...[...optionValueClasses.required].map((spelling) => ({ spelling, taking: "required" })),
+      ...[...optionValueClasses.optional].map((spelling) => ({ spelling, taking: "optional" })),
+      ...[...optionValueClasses.variadic].map((spelling) => ({ spelling, taking: "variadic" })),
+      // Two tokens no class holds: a flag, which takes nothing and leaves the path a filter,
+      // and the user interface's own, which answers before any of this.
+      { spelling: "--headed", taking: "nothing" },
+      { spelling: "--ui", taking: "nothing" },
+    ];
     // A parse that found nothing would assert nothing below.
-    expect(declared.length).toBeGreaterThan(30);
-    const rows = declared.flatMap(({ arity, spellings }) =>
-      spellings.map((spelling) => ({ arity, spelling }))
-    );
+    expect(rows.length).toBeGreaterThan(30);
     const answers = rows.map(({ spelling }) => {
       const alone = clockFileOnCommandLine(playwrightArgv(spelling, clockFile));
       const behindDash = clockFileOnCommandLine(playwrightArgv(spelling, "--headed", clockFile));
@@ -227,19 +203,23 @@ describe("the reader's option table against the pinned Playwright's own", () => 
         `${spelling} --headed <path> → ${behindDash ?? "no file named"}`,
       ].join(", ");
     });
-    // An option that takes a value, required or optional, takes the path and the command names no
-    // file; an option that declares none leaves the path a positional filter. Behind the dash
-    // token `--headed`, which is a flag, the path is readable whatever the option's arity: a
-    // required value takes `--headed` itself, an optional one takes nothing. The user-interface
-    // spellings of this table - `--ui`, `--ui-host` and `--ui-port` - are read before any of
-    // that and name no file in either form: the user interface lists the non-default projects
-    // and a file filter does select their rows, so the refusal's premise does not hold for such
-    // a command (e2e/configurations.ts).
-    const expected = rows.map(({ arity, spelling }) => {
+    // An option that takes a value, of whatever class, takes the path and the command names no
+    // file; a flag leaves the path a positional filter. Behind the dash token `--headed`, which
+    // is a flag, the path is readable where the option's value stopped at it: a required value
+    // takes `--headed` itself, an optional one takes nothing. The variadic `--project` is the
+    // exception in both forms, because the project question is asked before the scan: it names
+    // `--headed` and the path as its projects, so the command names a project and this reader
+    // answers for no file. The user-interface spellings - `--ui`, `--ui-host` and `--ui-port` -
+    // name no file either way: the user interface lists the non-default projects and a file
+    // filter does select their rows, so the refusal's premise does not hold for such a command
+    // (e2e/configurations.ts).
+    const expected = rows.map(({ spelling, taking }) => {
       const userInterface = spelling === "--ui" || spelling.startsWith("--ui-");
+      const namesAFilter = taking === "nothing" && !userInterface;
+      const behindDash = !userInterface && taking !== "variadic";
       return [
-        `${spelling} <path> → ${arity === "none" && !userInterface ? clockFile : "no file named"}`,
-        `${spelling} --headed <path> → ${userInterface ? "no file named" : clockFile}`,
+        `${spelling} <path> → ${namesAFilter ? clockFile : "no file named"}`,
+        `${spelling} --headed <path> → ${behindDash ? clockFile : "no file named"}`,
       ].join(", ");
     });
     expect(answers).toEqual(expected);
