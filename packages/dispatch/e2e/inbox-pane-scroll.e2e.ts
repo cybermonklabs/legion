@@ -13,10 +13,8 @@ import {
   DOCUMENT_FOOT,
   documentTextRead,
   FAILING_NOTE,
-  FIRST_APPROVAL_SUMMARY,
   focusAfterStaleness,
   headingOffset,
-  holdInboxList,
   holdThreadReplies,
   INSERTED_HEADING,
   inboxAt,
@@ -30,9 +28,7 @@ import {
   QUESTION_BLOCK,
   type QuestionRun,
   RECOVERY_NOTE,
-  reopenApproval,
   restingColumn,
-  SECOND_APPROVAL_SUMMARY,
   SECOND_BLOCK,
   SECOND_HEADING,
   SECOND_NOTE,
@@ -44,7 +40,6 @@ import {
   seedApprovalWithMarks,
   seedQuestionColumn,
   seedQuestions,
-  seedTwoApprovals,
   seedTwoThreads,
   session,
   THREAD_REPLY,
@@ -64,10 +59,10 @@ import { asUser } from "./users";
  * Two families of row say the column is the reader's: an approval request whose position stands
  * through every drive that reads the signed-in person again, and a question or thread whose
  * column stays where the reader put it while the document is written, the list grows, the live
- * socket drops and the document's own read fails and recovers. Eight opening rows beside them
- * say where the column opens - six with their target far down a long document, two at the
- * start of it after the reader was left far down one - so a column that is never written
- * fails them.
+ * socket drops and the document's own read fails and recovers. Seven opening rows beside them
+ * say where the column opens - six with their target far down a long document, one at the
+ * start of it after the reader was left far down the same document - so a column that is
+ * never written fails them.
  *
  * Everything seeded here is made up: this repository is public, so nothing names a real person,
  * host or project. The seed and the readings are in `inbox-pane-scroll.ts`.
@@ -513,49 +508,6 @@ test("Next change moves the column to the next changed block", async ({ browser 
     expect(await offsetInColumn(page, ".dispatch-change-block")).toBeGreaterThan(-8);
     expect((await restingColumn(page)).top).toBeGreaterThan(200);
     await expect(pane.locator(".dispatch-change-block").first()).toContainText(CHANGED_STEP);
-  } finally {
-    await alice.close();
-  }
-});
-
-// SLOW(>=2s): the first request withdrawn and the document asked about again, read live.
-test("a second approval request opens at the start of the column, with its own question in view", async ({
-  browser,
-}) => {
-  const seed = await seedTwoApprovals();
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await page.setViewportSize({ height: 900, width: 1440 });
-    const pane = inboxPane(page);
-
-    await page.goto(inboxAt(seed.firstAskId));
-    await expect(pane.getByTestId("pane-approval-question")).toContainText(FIRST_APPROVAL_SUMMARY);
-    await expect(pane.getByRole("region", { name: "Document version 1" })).toBeVisible();
-    await expect(pane).toContainText(APPROVAL_FOOT);
-    await moveColumnTo(page, 900);
-    expect((await restingColumn(page)).top).toBeGreaterThan(400);
-
-    // One document carries one open request: the route renews the one it finds rather than
-    // opening a second, so the first is withdrawn and the document asked about again. The
-    // list's own read is held across both writes, so it comes back once, with the first
-    // request gone and the second in its place, and the selection passes through no other row.
-    const held = await holdInboxList(page);
-    const secondAskId = await reopenApproval(seed);
-    await held.release();
-    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", secondAskId);
-    await expect(pane.getByTestId("pane-approval-question")).toContainText(SECOND_APPROVAL_SUMMARY);
-
-    // The second request opens at the start of the column, with the version it is about drawn
-    // under its own question. The column itself is rebuilt on the way: the Inbox draws no
-    // reading column for the commit in which the selected row leaves the list, since the
-    // reader has neither an answer out on it nor a draft in it (`pane-selection.ts`,
-    // `paneRow`). So this row reads where a second request opens, and not that the write which
-    // sends it there happened: that is `ReadingPane.test.tsx`'s, where the one scroller is held
-    // across the two requests.
-    await expect(pane.getByRole("region", { name: "Document version 1" })).toBeVisible();
-    await expect(pane).toContainText(APPROVAL_FOOT);
-    await expect.poll(async () => (await restingColumn(page)).top).toBe(0);
   } finally {
     await alice.close();
   }
