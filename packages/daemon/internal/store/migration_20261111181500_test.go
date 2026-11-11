@@ -146,8 +146,11 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 		t.Fatalf("%d backfilled rows are stamped below their own release: every one must satisfy seen_release >= release_id, or the first wake after the deploy closes a live resume", below)
 	}
 
-	// What those anchors decide, driven through the heal itself: the stale row is closed at its
-	// first wake, the live one is not, and the one with no release is not.
+	// What those anchors decide, driven through the heal itself rather than read off the column:
+	// the stale row is closed at its first wake, and each of the three live shapes survives it —
+	// the pod coming back, the issue with no release, and the row the floor exists for, whose wake
+	// stands before the release it paired with. That last one is the case a value assertion cannot
+	// hold: a heal whose predicate changed could close it with the stored number still right.
 	records := podRecords(t, store)
 	for _, tc := range []struct {
 		name   string
@@ -159,6 +162,7 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 		{"a release came after the wake", "LEGION-208", staleResume, true, gone},
 		{"the pod is coming back", "LEGION-209", liveResume, false, 0},
 		{"the issue has no release", "LEGION-210", noRelease, false, 0},
+		{"the wake stands before its own release", "LEGION-213", listenerResume, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, store, func(tx pgx.Tx) error {
