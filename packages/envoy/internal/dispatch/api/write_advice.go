@@ -22,6 +22,38 @@ type adviceAsk struct {
 	Question string `json:"question"`
 }
 
+// adviceDeclinedAsk is one ask of the issue a person declined to answer: its id, the question
+// that was asked, and the person's own note, "" where they wrote none.
+//
+// A type of its own rather than a third field on adviceAsk, which is the item of
+// your_open_asks: that shape is published as its own schema (AdviceAsk) and read as a pair by
+// the client, and no open ask ever carries a note, so a note on it would be a field every open
+// ask serialises empty. The four sentences Dispatch writes beside the note are the same for
+// every decline (model.DeclineDispatchWords), so they are the reader's to print once, not
+// something to repeat per item.
+type adviceDeclinedAsk struct {
+	ID       string `json:"id"`
+	Question string `json:"question"`
+	Note     string `json:"note"`
+}
+
+// The two writes whose author is about to put a question to a person. They are named here, and
+// passed by the two calls themselves, so the route string every writeAdvice call already carries
+// decides which write hears about the issue's declined asks: the shared path needs no new
+// argument, and no caller outside these two changes.
+const (
+	routeOpenAsk      = "POST /api/v1/issues/{key}/asks"
+	routeEditDocument = "POST /api/v1/artifacts/{id}/edits"
+)
+
+// routeOpensAQuestion answers whether route is one of those two: the ask route, and a document
+// edit, whose ops can add the ask blocks that settle into asks. A comment, an issue patch, a
+// message and a document create put no question to anyone, so they carry no declined_asks and
+// the reminder reaches the agent that is about to ask and nobody else.
+func routeOpensAQuestion(route string) bool {
+	return route == routeOpenAsk || route == routeEditDocument
+}
+
 type writeAdvice struct {
 	IssueStatus             string      `json:"issue_status"`
 	SessionWritesSinceHuman int         `json:"session_writes_since_human"`
@@ -41,6 +73,12 @@ type writeAdvice struct {
 	// SupersededApproval is set by a document write that stored a version replacing the one a
 	// person had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
+	// DeclinedAsks is each ask of this issue a person declined to answer, so a session about to
+	// ask does not ask one of them again. Set only on the two writes that open a question
+	// (routeOpensAQuestion) and omitted when empty, so a write with nothing to report and a
+	// write that was never asked the question look the same to a reader: both have no declined
+	// ask to name.
+	DeclinedAsks []adviceDeclinedAsk `json:"declined_asks,omitempty"`
 	// Suggestions is the related-item check's result, set only on an issue or ask
 	// creation; nil (omitted) everywhere else.
 	Suggestions *model.Suggestions `json:"suggestions,omitempty"`
@@ -125,6 +163,11 @@ func (s *server) computeWriteAdvice(
 	if err := rows.Err(); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
+	// The issue's declined asks, for the two writes that open a question. Its failure is not
+	// fatal to the advice either (declinedAsksAdvice).
+	if routeOpensAQuestion(route) {
+		advice.DeclinedAsks = s.declinedAsksAdvice(ctx, tx, route, issueKey)
+	}
 	if status == model.IssueStatusTriage {
 		advice.LegionManagedStatus = s.legionManagedStatusAdvice(ctx, tx, route, issueKey)
 	}
@@ -132,14 +175,15 @@ func (s *server) computeWriteAdvice(
 }
 
 // legionManagedStatusAdvice answers whether Legion owns the issue's status for a write's advice,
-// or nil when the walk failed. It is the last step of computeWriteAdvice and the only one whose
-// failure is not fatal to the advice: the two before it are what a session asked for, while this
-// one decides a single line, and every issue is created in triage, so returning an
-// adviceQueryError here would put a third failure mode on the path that runs for every
-// session-authored `dispatch issue`. What that would cost a creation is its issue state alone: the
-// related-item check runs after the write commits whatever the advice answered, and rides a
-// suggestions-only advice when it failed (withSuggestions). Nothing runs after this step, so the
-// advice already assembled is complete without it.
+// or nil when the walk failed. It is the last step of computeWriteAdvice and, with the declined
+// asks read before it, one of the two whose failure the advice survives: the two reads at the
+// top are what a session asked for, while this one decides a single line, and every issue is
+// created in triage, so returning an adviceQueryError here would put a third failure mode on
+// the path that runs for every session-authored `dispatch issue`. What that would cost a
+// creation is its issue state alone: the related-item check runs after the write commits
+// whatever the advice answered, and rides a suggestions-only advice when it failed
+// (withSuggestions). Nothing runs after this step, so the advice already assembled is complete
+// without it.
 //
 // The walk takes a savepoint of its own inside the advice savepoint, because a failed statement
 // aborts the transaction it ran in: run directly on the advice savepoint, its failure would also
@@ -169,6 +213,77 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 		return nil
 	}
 	return &managed
+}
+
+// declinedAsksAdvice is each ask of issueKey a person declined to answer, for the advice of a
+// write that is about to open another question, or nil when the read failed. It names every one
+// of them, oldest first, because R6 asks for each declined ask of the issue: a row cap would
+// silently drop exactly the question the session is about to put again, which is the one thing
+// this field exists to prevent. What bounds the read is the 500 ms statement_timeout the advice
+// holds every query of a write to, not a count of rows.
+//
+// Its failure is not fatal to the advice, for the reason legionManagedStatusAdvice gives for
+// its own. The two reads before it are what the calling session asked about - the write it just
+// made, and its own open asks - while this one only keeps it from asking again what a person has
+// already refused to answer. Returning an adviceQueryError would cost the write its issue
+// status, its writes-since-human count, its open asks and the triage line, and on an ask
+// creation every suggestion too (the related-item check rides a suggestions-only advice when
+// the write advice failed), all for a reminder. So a failure here leaves the field unset and
+// the rest of the advice stands.
+//
+// Like the walk it takes a savepoint of its own inside the advice savepoint, because a failed
+// statement aborts the transaction it ran in: run directly on the advice savepoint, its failure
+// would also take the statement_timeout reset and the release that follow it (writeAdvice), and
+// the advice would be dropped anyway. The 500 ms bound writeAdvice set covers it, and the
+// failure is logged once in the shape every omitted advice query takes.
+func (s *server) declinedAsksAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string) []adviceDeclinedAsk {
+	read, err := tx.Begin(ctx)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "declined_asks", err)
+		return nil
+	}
+	declined, err := s.readDeclinedAsks(ctx, read, issueKey)
+	if err != nil {
+		_ = read.Rollback(ctx)
+		s.logAdviceError(route, issueKey, "declined_asks", err)
+		return nil
+	}
+	if err := read.Commit(ctx); err != nil {
+		s.logAdviceError(route, issueKey, "declined_asks", err)
+		return nil
+	}
+	return declined
+}
+
+// readDeclinedAsks is declinedAsksAdvice's read, apart so its rows are closed before the
+// savepoint they were read on is released. Nil, not an empty list, where the issue holds no
+// declined ask: the field is omitted rather than sent empty.
+func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey string) ([]adviceDeclinedAsk, error) {
+	if err := s.runAdviceQueryHook(ctx, tx, "declined_asks"); err != nil {
+		return nil, err
+	}
+	// The note is the resolution's reason, which a person who wrote none leaves empty.
+	rows, err := tx.Query(ctx, `
+		select id::text, question, coalesce(resolution->>'reason', '') from asks
+		where issue_key = $1 and state = 'resolved' and resolution->>'kind' = 'declined'
+		order by created_at, id
+	`, issueKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var declined []adviceDeclinedAsk
+	for rows.Next() {
+		var ask adviceDeclinedAsk
+		if err := rows.Scan(&ask.ID, &ask.Question, &ask.Note); err != nil {
+			return nil, err
+		}
+		declined = append(declined, ask)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return declined, nil
 }
 
 func (s *server) runAdviceQueryHook(ctx context.Context, tx pgx.Tx, query string) error {

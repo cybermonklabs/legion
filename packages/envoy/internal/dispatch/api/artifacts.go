@@ -1159,10 +1159,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			r.Context(), tx, "POST /api/v1/artifacts/{id}/edits", artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 	}
+	// routeEditDocument, the name write_advice.go knows this route by: an edit can add the ask
+	// blocks that settle into asks, so it hears about the asks of this issue a person declined
+	// to answer, as the ask route does.
 	var advice *writeAdvice
 	if artifact.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/artifacts/{id}/edits", *artifact.IssueKey, actor, "", *status,
+			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, "", *status,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {

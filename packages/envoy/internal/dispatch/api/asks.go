@@ -295,10 +295,13 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	ask.OpenedEventID = &event.ID
 	appended = append(appended, event)
+	// routeOpenAsk, the name write_advice.go knows this route by: a write that opens a question
+	// hears about the asks of this issue a person declined to answer, so the same question is
+	// not put to them again.
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/asks", *owner.IssueKey, actor, rowID, *status,
+			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, rowID, *status,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
