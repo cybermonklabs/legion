@@ -614,7 +614,10 @@ recorded_ladder() {
 # pinned_ladder <max_time>: the nine words ci_tools_curl pins before the file it writes, with
 # that row's own bound in place.
 pinned_ladder() {
-  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$1" -o
+  # `--retry-max-time 120` and not 60: R1's floor of dispatch://INFRA-1545 is the ladder itself,
+  # at least five attempts with the last starting at least 120 s after the first, and at 60 curl
+  # refuses the seventh wait, which .github/scripts/check-download-retry.sh refuses in turn.
+  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 120 --max-time "$1" -o
 }
 
 # whole_record <max_time> <url>: the eleven words ci_tools_curl hands curl for a row whose fetch
