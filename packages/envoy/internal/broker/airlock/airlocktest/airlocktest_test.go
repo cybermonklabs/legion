@@ -209,13 +209,8 @@ func TestTheGitHubStandAnswersTheInstallationsItWasGiven(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7, "zed-org": 9}}).Answer)
 
-	_, pemText := githubapptest.Key(t)
-	value, err := json.Marshal(map[string]string{"app_id": "123456", "private_key": pemText})
-	if err != nil {
-		t.Fatal(err)
-	}
 	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
-		Value: string(value), GitHubOwners: []string{"acme-org"},
+		Value: gitHubAppValue(t), GitHubOwners: []string{"acme-org"},
 	})
 	if err != nil {
 		t.Fatalf("mint a github-app secret against the stand-in: %v", err)
@@ -343,19 +338,19 @@ func TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne(t *testing.T) {
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
 		name      string
-		widen     bool
+		answer    GitHubTokenAnswer
 		narrowing *secrets.GitHubNarrowing
 		class     string
 	}{
 		{name: "the repositories the narrowing named", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
 		{name: "the read access the narrowing named", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
-		{name: "every repository, for a narrowing that named one", widen: true, class: "upstream", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
-		{name: "a grant past the read set, for a read-only narrowing", widen: true, class: "upstream", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
+		{name: "every repository, for a narrowing that named one", answer: GitHubTokensWider, class: "upstream", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
+		{name: "a grant past the read set, for a read-only narrowing", answer: GitHubTokensWider, class: "upstream", narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service := newService(t, ServiceOptions{Plain: true})
 			service.AnswerWith(NewGitHubStand(GitHubOptions{
-				Installations: map[string]int64{"acme-org": 7}, WidenTokens: tc.widen,
+				Installations: map[string]int64{"acme-org": 7}, Answer: tc.answer,
 			}).Answer)
 			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
 				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
@@ -395,7 +390,7 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service := newService(t, ServiceOptions{Plain: true})
 			service.AnswerWith(NewGitHubStand(GitHubOptions{
-				Installations: map[string]int64{"acme-org": 7}, RefuseTokens: true,
+				Installations: map[string]int64{"acme-org": 7}, Answer: GitHubTokensRefused,
 			}).Answer)
 			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
 				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
@@ -573,7 +568,7 @@ func TestTheGitHubStandAnswersTheMintersOwnRevoke(t *testing.T) {
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{
-		Installations: map[string]int64{"acme-org": 7}, WidenTokens: true,
+		Installations: map[string]int64{"acme-org": 7}, Answer: GitHubTokensWider,
 	}).Answer)
 
 	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{

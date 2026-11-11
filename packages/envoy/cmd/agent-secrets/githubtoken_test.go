@@ -5,110 +5,20 @@
 package main
 
 import (
-	"encoding/json"
-	"io"
 	"maps"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
-// githubTokenReleases is what the fake broker releases for each name these tests ask for: APP is
-// a github-app secret of one installation, TWO_APP one of two, and PLAIN a stored password. Each
-// github-app value is the object the broker really mints (internal/broker/secrets,
-// githubMintedInstallations), so what a child reads back is what a caller reads back today.
+// githubTokenReleases is what the fake broker (narrow_test.go's narrowBroker) releases for each
+// name these tests ask for: APP is a github-app secret of one installation, TWO_APP one of two,
+// and PLAIN a stored password. Each github-app value is the object the broker really mints
+// (internal/broker/secrets, githubMintedInstallations), so what a child reads back is what a
+// caller reads back today.
 var githubTokenReleases = map[string]string{
 	"APP":     `{"installations":{"ada":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}}}`,
 	"TWO_APP": `{"installations":{"acme":{"installation_id":7,"token":"ghs_acme","expires_at":"2100-01-01T00:00:00Z"},"ada":{"installation_id":8,"token":"ghs_ada","expires_at":"2100-01-01T00:00:00Z"}}}`,
 	"PLAIN":   "topsecretvalue123",
-}
-
-// githubTokenBroker is a fake broker for --github-token: every request is granted at once, under
-// a grant that holds every name the request asked for, and the release answers each of those
-// names its githubTokenReleases value. A release it was sent a narrowing for answers that same
-// narrowing, as a broker that applied it does, so narrowedAsAsked passes and the flag under test
-// is what decides the run. It counts the requests and releases it served, so a usage refusal is
-// shown to have reached it with nothing.
-type githubTokenBroker struct {
-	srv *httptest.Server
-
-	mu       sync.Mutex
-	grants   map[string][]string // grant id -> the names that grant holds
-	requests int
-	releases int
-}
-
-func newGitHubTokenBroker(t *testing.T) *githubTokenBroker {
-	t.Helper()
-	b := &githubTokenBroker{grants: map[string][]string{}}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Request string `json:"request"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		obj, err := record.VerifyRequestObject(body.Request, b.srv.URL, time.Minute, time.Now())
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		names := make([]string, 0, len(obj.Details))
-		granted := make([]map[string]string, 0, len(obj.Details))
-		for _, detail := range obj.Details {
-			names = append(names, detail.Identifier)
-			granted = append(granted, map[string]string{"name": detail.Identifier, "decision": "automatic"})
-		}
-		grantID := "grant-" + strings.ToLower(strings.Join(names, "-"))
-		b.mu.Lock()
-		b.requests++
-		b.grants[grantID] = names
-		b.mu.Unlock()
-		writeJSON(w, map[string]any{
-			"request_id": "req-" + grantID, "state": "granted", "secrets": granted,
-			"grant_id": grantID, "record_id": nil, "approver": nil, "lifetime_seconds": nil,
-		})
-	})
-	mux.HandleFunc("POST /v1/grants/{id}/values", func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		var sent struct {
-			GitHubApp json.RawMessage `json:"github_app"`
-		}
-		if len(raw) > 0 && json.Unmarshal(raw, &sent) != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		b.mu.Lock()
-		b.releases++
-		names := b.grants[r.PathValue("id")]
-		b.mu.Unlock()
-		values := make(map[string]string, len(names))
-		for _, name := range names {
-			values[name] = githubTokenReleases[name]
-		}
-		answer := map[string]any{"values": values, "expires_at": nil}
-		if sent.GitHubApp != nil {
-			answer["github_app"] = sent.GitHubApp
-		}
-		writeJSON(w, answer)
-	})
-	b.srv = httptest.NewServer(mux)
-	t.Cleanup(b.srv.Close)
-	return b
-}
-
-// served is how many requests and releases the broker has answered.
-func (b *githubTokenBroker) served() (requests, releases int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.requests, b.releases
 }
 
 // TestTheGitHubTokenFlagHandsOverTheTokenAlone: with --github-token the child's NAME holds that
@@ -117,7 +27,7 @@ func (b *githubTokenBroker) served() (requests, releases int) {
 // what a caller sends to GitHub today and GitHub answers 401.
 func TestTheGitHubTokenFlagHandsOverTheTokenAlone(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newGitHubTokenBroker(t)
+	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
 	for _, tc := range []struct {
 		name string
@@ -143,7 +53,7 @@ func TestTheGitHubTokenFlagHandsOverTheTokenAlone(t *testing.T) {
 // github-app secret runs with that password as it is stored and the App's token alone.
 func TestTheGitHubTokenFlagLeavesAPlainValueAsItIs(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newGitHubTokenBroker(t)
+	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
 	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil,
 		"PLAIN", "APP", "--github-owner", "ada", "--github-token", "--", "sh", "-c", `printf '%s|%s' "$PLAIN" "$APP"`)
@@ -157,30 +67,32 @@ func TestTheGitHubTokenFlagLeavesAPlainValueAsItIs(t *testing.T) {
 // not even the request a person would approve.
 func TestTheGitHubTokenFlagWithoutAnOwnerExitsTwo(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newGitHubTokenBroker(t)
+	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
 	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil,
 		"APP", "--github-token", "--", "sh", "-c", "echo ran-the-child")
 	if exit != 2 || strings.Contains(stdout, "ran-the-child") || !strings.Contains(stderr, "--github-token") || !strings.Contains(stderr, "--github-owner") {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 2 naming --github-token and --github-owner", exit, stdout, stderr)
 	}
-	if requests, releases := b.served(); requests != 0 || releases != 0 {
-		t.Fatalf("the broker served %d requests and %d releases, want none", requests, releases)
+	if requests, releases := b.takeRequests(), len(b.take()); requests != 0 || releases != 0 {
+		t.Fatalf("the broker was asked %d requests and %d releases, want none", requests, releases)
 	}
 }
 
 // TestAGitHubAppReleaseOfTwoInstallationsRunsNothing: --github-token hands over one installation's
 // token, and a release of two holds no one token, so the exec form exits 1 naming the secret and
-// the flag, and runs nothing. The refusal names no part of either token.
+// the flag, and runs nothing. The refusal names a remedy the caller can take, a narrowing that
+// leaves one installation, and no part of either token.
 func TestAGitHubAppReleaseOfTwoInstallationsRunsNothing(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newGitHubTokenBroker(t)
+	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
 	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil,
 		"TWO_APP", "--github-owner", "ada", "--github-token", "--", "sh", "-c", "echo ran-the-child")
 	if exit != 1 || strings.Contains(stdout, "ran-the-child") || !strings.Contains(stderr, "TWO_APP") ||
-		!strings.Contains(stderr, "--github-token") || !strings.Contains(stderr, "nothing was run") {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming TWO_APP and --github-token, and nothing run", exit, stdout, stderr)
+		!strings.Contains(stderr, "--github-token") || !strings.Contains(stderr, "nothing was run") ||
+		!strings.Contains(stderr, "a narrowing that leaves one installation") {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming TWO_APP, --github-token and a remedy, and nothing run", exit, stdout, stderr)
 	}
 	if strings.Contains(stderr, "ghs_") {
 		t.Fatalf("stderr %q names a token; a refusal names the secret and the accounts alone", stderr)
@@ -192,7 +104,7 @@ func TestAGitHubAppReleaseOfTwoInstallationsRunsNothing(t *testing.T) {
 // send a password to GitHub, so the exec form exits 1 naming the names it read and the flag.
 func TestAGrantWithNoGitHubAppReleaseRunsNothing(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newGitHubTokenBroker(t)
+	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
 	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil,
 		"PLAIN", "--github-owner", "ada", "--github-token", "--", "sh", "-c", "echo ran-the-child")
@@ -248,8 +160,12 @@ func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 }
 
 // TestGitHubTokensAloneNamesNoToken: the two refusals name the secret, or the names the grant
-// released, with the flag and the accounts, and no part of any token; and a grant that holds one
-// release beside a password leaves that password as it is.
+// released, with the flag and the accounts, and no part of any token. A grant that holds one
+// release beside a password leaves that password as it is. The refusal of a release of two names
+// a remedy the caller can take: a narrowing that leaves one installation, or the same run
+// without the flag. It never asks for --github-owner again, which the caller gave already and
+// which cannot make two installations one, since the mint compares the owner without regard to
+// case.
 func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 	values := map[string]string{"APP": githubTokenReleases["APP"], "PLAIN": githubTokenReleases["PLAIN"]}
 	if err := githubTokensAlone(values); err != nil {
@@ -262,8 +178,10 @@ func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 
 	err := githubTokensAlone(map[string]string{"TWO_APP": githubTokenReleases["TWO_APP"]})
 	if err == nil || !strings.Contains(err.Error(), "TWO_APP") || !strings.Contains(err.Error(), "--github-token") ||
-		!strings.Contains(err.Error(), "acme, ada") || strings.Contains(err.Error(), "ghs_") {
-		t.Fatalf("githubTokensAlone of two installations = %v, want a refusal naming TWO_APP, --github-token and both accounts, and no token", err)
+		!strings.Contains(err.Error(), "acme, ada") || strings.Contains(err.Error(), "ghs_") ||
+		!strings.Contains(err.Error(), "a narrowing that leaves one installation") ||
+		strings.Contains(err.Error(), "name the account with --github-owner") {
+		t.Fatalf("githubTokensAlone of two installations = %v, want a refusal naming TWO_APP, --github-token, both accounts and a remedy the caller can take, and no token", err)
 	}
 
 	err = githubTokensAlone(map[string]string{"PLAIN": githubTokenReleases["PLAIN"], "OTHER": "another-password"})

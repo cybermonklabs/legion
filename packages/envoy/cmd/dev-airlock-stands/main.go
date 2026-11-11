@@ -545,47 +545,48 @@ func recordsHandler(services map[string]*airlocktest.Service, model *airlocktest
 			_ = encoder.Encode(service.Requests())
 		})
 	}
-	mux.HandleFunc("POST "+modelAnswerPath, func(w http.ResponseWriter, r *http.Request) {
-		var body modelAnswerRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, maxModelAnswerBody)).Decode(&body); err != nil {
-			http.Error(w, "the answer is no JSON object: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		answer, err := modelAnswerOf(body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		model.Answers(answer)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"text": answer.Text, "delay": answer.Delay.String()})
-	})
-	mux.HandleFunc("POST "+githubAnswerPath, func(w http.ResponseWriter, r *http.Request) {
-		var body githubAnswerRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, maxModelAnswerBody)).Decode(&body); err != nil {
-			http.Error(w, "the answer is no JSON object: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		answer, err := githubAnswerOf(body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		github.Answers(answer)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"mode": string(answer)})
-	})
+	mux.HandleFunc("POST "+modelAnswerPath, answerRoute(modelAnswerOf, model.Answers,
+		func(answer airlocktest.ModelAnswer) map[string]string {
+			return map[string]string{"text": answer.Text, "delay": answer.Delay.String()}
+		}))
+	mux.HandleFunc("POST "+githubAnswerPath, answerRoute(githubAnswerOf, github.Answers,
+		func(answer airlocktest.GitHubTokenAnswer) map[string]string {
+			return map[string]string{"mode": string(answer)}
+		}))
 	return mux
 }
 
+// answerRoute is one of those two routes: it reads the request body as a Body, hands it to read,
+// which answers the answer it names or what is wrong with it, sets that answer on its stand and
+// answers the caller what reply makes of it. A body that is no JSON object, and one that names
+// no answer, are each 400 and set nothing, so a check that misspelled an answer reads that
+// rather than drive the next case against the answer still in place.
+func answerRoute[Body, Answer any](read func(Body) (Answer, error), set func(Answer), reply func(Answer) map[string]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body Body
+		if err := json.NewDecoder(io.LimitReader(r.Body, maxAnswerBody)).Decode(&body); err != nil {
+			http.Error(w, "the answer is no JSON object: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		answer, err := read(body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		set(answer)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reply(answer))
+	}
+}
+
 // modelAnswerPath and githubAnswerPath are where a check sets what the model stand and the
-// GitHub stand answer from there on, and maxModelAnswerBody what one such request is read of: a
-// reply is a sentence or two and a mode is one word, so a body past this is a mistake rather
-// than an answer.
+// GitHub stand answer from there on, and maxAnswerBody what one such request is read of: a reply
+// is a sentence or two and a mode is one word, so a body past this is a mistake rather than an
+// answer.
 const (
-	modelAnswerPath    = "/answers/model"
-	githubAnswerPath   = "/answers/github"
-	maxModelAnswerBody = 1 << 20
+	modelAnswerPath  = "/answers/model"
+	githubAnswerPath = "/answers/github"
+	maxAnswerBody    = 1 << 20
 )
 
 // githubAnswerRequest is the body POST <records URL>/answers/github takes.

@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -70,18 +69,16 @@ func narrowedAsAsked(asked, applied *GitHubNarrowing) error {
 	return fmt.Errorf("the broker did not narrow the GitHub App token to %s: it answered %s", encoded, answered)
 }
 
-// githubLogin is a GitHub account login, and the only text of a release a refusal here ever
-// quotes: the broker keys each installation by the account GitHub answered with, so a document
-// whose key is no login is no release of the broker's. The daemon's token_command reads a release
-// the same way (packages/daemon/internal/appauth/tokencommand.go, loginPattern).
-var githubLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
-
 // githubTokensOf reads value as a github-app secret's released value: the JSON object the broker
 // mints, {"installations":{"<account>":{"installation_id":…,"token":…,"expires_at":…}}}, one entry
 // per installation the release covers (internal/broker/secrets, githubMintedInstallations). It
 // answers each account's own token, keyed by that account, and ok only for that object: the
-// document holds the installations field and nothing else, every key is a login, and every entry
-// carries all three fields of a minted installation, each of its own type. Every other value — a
+// document holds the installations field and nothing else, every key is a GitHub login by the
+// broker's own parser (policy.ParseGitHubLogin), and every entry carries all three fields of a
+// minted installation, each of its own type. The broker keys each installation by the account
+// GitHub answered with, so a document whose key is no login is no release of the broker's. The
+// daemon's token_command reads a release the same way
+// (packages/daemon/internal/appauth/tokencommand.go, loginPattern). Every other value — a
 // password, a JSON document of another shape — answers ok false and keeps its own value, so
 // --github-token reads a release and never guesses at one.
 //
@@ -92,22 +89,21 @@ func githubTokensOf(value string) (tokens map[string]string, ok bool) {
 	if json.Unmarshal([]byte(value), &document) != nil || len(document) != 1 || document["installations"] == nil {
 		return nil, false
 	}
-	// Each field is a pointer, so that a missing one is told from an empty one, and the
-	// installation id is read on its own below: json.Number takes a JSON string that holds a
-	// number too, and the broker writes the id as a number.
+	// Each field is a pointer, so that a missing one is told from an empty one, and so that a
+	// JSON null leaves it nil: an entry short of a field is no minted installation. The broker
+	// writes the installation id as a number, so a JSON string that holds one, such as "8",
+	// fails this decode as any other wrong type does.
 	var installations map[string]struct {
-		InstallationID *json.RawMessage `json:"installation_id"`
-		Token          *string          `json:"token"`
-		ExpiresAt      *string          `json:"expires_at"`
+		InstallationID *int64  `json:"installation_id"`
+		Token          *string `json:"token"`
+		ExpiresAt      *string `json:"expires_at"`
 	}
 	if json.Unmarshal(document["installations"], &installations) != nil || installations == nil {
 		return nil, false
 	}
 	tokens = make(map[string]string, len(installations))
 	for account, installation := range installations {
-		var installationID int64
-		if !githubLogin.MatchString(account) || installation.InstallationID == nil ||
-			json.Unmarshal(*installation.InstallationID, &installationID) != nil {
+		if _, err := policy.ParseGitHubLogin(account); err != nil || installation.InstallationID == nil {
 			return nil, false
 		}
 		if installation.Token == nil || *installation.Token == "" || installation.ExpiresAt == nil || *installation.ExpiresAt == "" {
@@ -126,13 +122,19 @@ func githubTokensOf(value string) (tokens map[string]string, ok bool) {
 // nothing about a password.
 //
 // Two refusals keep the flag from handing over something a caller cannot use. A release of other
-// than one installation has no one token to hand over, and --github-owner is what makes it one. A
-// grant with no release at all is a flag that does nothing, and the caller would learn of it only
-// at GitHub's 401. Each refusal names the secret or the names it read, the accounts and the flag,
+// than one installation has no one token to hand over, and a narrowing cannot always make it one:
+// GitHubApp.Mint compares the owner without regard to case, so --github-owner ada mints for ada
+// and for Ada alike. The refusal therefore asks for a narrowing that leaves one installation, or
+// for the same run without the flag, whose child reads the token out of the JSON object. A grant
+// with no release at all is a flag that does nothing, and the caller would learn of it only at
+// GitHub's 401. Each refusal names the secret or the names it read, the accounts and the flag,
 // and no part of any token.
 func githubTokensAlone(values map[string]string) error {
-	found := false
-	for _, name := range slices.Sorted(maps.Keys(values)) {
+	names := slices.Sorted(maps.Keys(values))
+	// The releases are rewritten only once the walk found no reason to refuse, so a refusal
+	// leaves the caller's values as they were rather than half rewritten.
+	alone := make(map[string]string, len(names))
+	for _, name := range names {
 		tokens, isRelease := githubTokensOf(values[name])
 		if !isRelease {
 			continue
@@ -143,17 +145,17 @@ func githubTokensAlone(values map[string]string) error {
 			if len(accounts) > 0 {
 				held = fmt.Sprintf("%d installations (%s)", len(accounts), strings.Join(accounts, ", "))
 			}
-			return fmt.Errorf("--github-token hands over one installation's token, and the release of %s holds %s: name the account with --github-owner", name, held)
+			return fmt.Errorf("--github-token hands over one installation's token, and the release of %s holds %s: ask again with a narrowing that leaves one installation, or without --github-token, and read the token out of the JSON object the release hands over", name, held)
 		}
-		values[name] = tokens[accounts[0]]
-		found = true
+		alone[name] = tokens[accounts[0]]
 	}
-	if found {
-		return nil
+	if len(alone) == 0 {
+		read := "no value at all"
+		if len(names) > 0 {
+			read = strings.Join(names, ", ")
+		}
+		return fmt.Errorf("--github-token hands over a GitHub App installation token, and the grant released none: it read %s", read)
 	}
-	read := "no value at all"
-	if len(values) > 0 {
-		read = strings.Join(slices.Sorted(maps.Keys(values)), ", ")
-	}
-	return fmt.Errorf("--github-token hands over a GitHub App installation token, and the grant released none: it read %s", read)
+	maps.Copy(values, alone)
+	return nil
 }

@@ -46,6 +46,12 @@
 # its token out of its own environment and prints the repository it asked for and the status it
 # got, and a refusal is printed as agent-secrets wrote it, which names no part of any token.
 #
+# Whether a command ran is read from the child's standard output alone, apart from
+# agent-secrets' own standard error, and the test is for a line that is exactly `ran`, the word
+# the child prints. agent-secrets writes `the grant from ...` and `was granted ...` on reachable
+# paths of these same runs, and each of those holds the letters of `ran`, so a test for `ran`
+# anywhere in both streams together would call a correct run a failure.
+#
 # Usage: packages/envoy/scripts/github-narrowing-check.sh [--keep-stack]
 #        --keep-stack leaves the stack and the work directory up for a person to look at a
 #        failure with. --help prints this usage.
@@ -136,20 +142,23 @@ judge() { # <what the property is> <condition...>
 	return 0
 }
 
-# The conditions the properties are judged by. holds and lacks report whether text holds a
-# string, without either reaching the output; is compares two strings; and ran reports a command
-# that exited as it should and printed the word its child prints.
+# The conditions the properties are judged by. holds reports whether text holds a string,
+# without the text reaching the output. is compares two strings. printed_ran reports whether the
+# child printed its word, read from the child's standard output alone (see the header). ran
+# reports a command that exited as it should and printed that word.
 holds() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
-lacks() { ! holds "$1" "$2"; }
 is() { [ "$1" = "$2" ]; }
-ran() { # <want status> <got status> <output>
-	is "$1" "$2" && holds "ran" "$3"
+printed_ran() { # <the child's standard output>
+	printf '%s\n' "$1" | grep -qx ran
 }
-refused() { # <want status> <got status> <output>
-	is "$1" "$2" && lacks "ran" "$3"
+ran() { # <want status> <got status> <the child's standard output>
+	is "$1" "$2" && printed_ran "$3"
 }
-failed_without_running() { # <got status> <output>
-	! is 0 "$1" && lacks "ran" "$2"
+refused() { # <want status> <got status> <the child's standard output>
+	is "$1" "$2" && ! printed_ran "$3"
+}
+failed_without_running() { # <got status> <the child's standard output>
+	! is 0 "$1" && ! printed_ran "$2"
 }
 
 # answered is the status one line of the child's output carries for a repository, and "nothing"
@@ -236,13 +245,17 @@ EOF
 chmod +x "$READ_REPOSITORIES"
 
 # run_agent_secrets runs one agent-secrets command of this check. It puts its exit status in
-# STATUS and everything it wrote in OUTPUT - its own stderr and the child's output in one
-# stream, as a person at a terminal reads them.
+# STATUS, everything it wrote in OUTPUT - its own stderr and the child's output together, as a
+# person at a terminal reads them - and the child's standard output on its own in CHILD_OUT,
+# which is what every "no command ran" property is judged by.
 STATUS=0
 OUTPUT=""
+CHILD_OUT=""
 run_agent_secrets() {
 	STATUS=0
-	OUTPUT="$("$AGENT_SECRETS_BIN" "$@" 2>&1)" || STATUS=$?
+	"$AGENT_SECRETS_BIN" "$@" >"$WORK_DIR/stdout" 2>"$WORK_DIR/stderr" || STATUS=$?
+	CHILD_OUT="$(cat "$WORK_DIR/stdout")"
+	OUTPUT="$(cat "$WORK_DIR/stdout" "$WORK_DIR/stderr")"
 }
 
 # token_requests is how many installation token requests the stand-in has been sent so far, and
@@ -316,7 +329,7 @@ for mode in refuse widen; do
 		--github-owner "$DEV_BROKER_GITHUB_OWNER" --github-repo "$NAMED_REPOSITORY" --github-token \
 		-- sh -c 'echo ran'
 	judge "k2 the $mode answer makes agent-secrets exit non-zero and run no command (it exited $STATUS and printed no ran)" \
-		failed_without_running "$STATUS" "$OUTPUT"
+		failed_without_running "$STATUS" "$CHILD_OUT"
 	judge "k2 the $mode answer's refusal names the secret (agent-secrets exited $STATUS and said: $OUTPUT)" \
 		holds "$DEV_BROKER_GITHUB_SECRET" "$OUTPUT"
 	judge "k2 the $mode answer's refusal names it ($refusal; agent-secrets exited $STATUS)" \
@@ -328,14 +341,14 @@ run_agent_secrets "$DEV_BROKER_GITHUB_SECRET" \
 	--github-owner "$DEV_BROKER_GITHUB_OWNER" --github-repo "$NAMED_REPOSITORY" --github-token \
 	-- sh -c 'echo ran'
 judge "k2 control: with the ordinary answer the command runs and gets a value (agent-secrets exited $STATUS)" \
-	ran 0 "$STATUS" "$OUTPUT"
+	ran 0 "$STATUS" "$CHILD_OUT"
 
 # --- k4: a release of two installations is no one token to hand over ------------------------------
 
 k4_mark="$(token_requests)"
 run_agent_secrets "$DEV_BROKER_GITHUB_CASE_SECRET" --github-token -- sh -c 'echo ran'
 judge "k4 --github-token with no narrowing exits 2 and runs nothing (it exited $STATUS and said: $OUTPUT)" \
-	refused 2 "$STATUS" "$OUTPUT"
+	refused 2 "$STATUS" "$CHILD_OUT"
 k4_asked="$(($(token_requests) - k4_mark))"
 judge "k4 that run asked the stand-in for no token at all (it sent $k4_asked token requests)" \
 	is 0 "$k4_asked"
@@ -343,8 +356,9 @@ judge "k4 that run asked the stand-in for no token at all (it sent $k4_asked tok
 run_agent_secrets "$DEV_BROKER_GITHUB_CASE_SECRET" --github-owner "$DEV_BROKER_GITHUB_CASE_OWNER" --github-token -- sh -c 'echo ran'
 k4_narrowed_status="$STATUS"
 k4_narrowed_output="$OUTPUT"
+k4_narrowed_child="$CHILD_OUT"
 judge "k4 --github-token narrowed to $DEV_BROKER_GITHUB_CASE_OWNER exits 1 and runs nothing (it exited $k4_narrowed_status and said: $k4_narrowed_output)" \
-	refused 1 "$k4_narrowed_status" "$k4_narrowed_output"
+	refused 1 "$k4_narrowed_status" "$k4_narrowed_child"
 judge "k4 that refusal names the secret (agent-secrets exited $k4_narrowed_status)" \
 	holds "$DEV_BROKER_GITHUB_CASE_SECRET" "$k4_narrowed_output"
 judge "k4 that refusal names --github-token (agent-secrets exited $k4_narrowed_status)" \
@@ -352,10 +366,10 @@ judge "k4 that refusal names --github-token (agent-secrets exited $k4_narrowed_s
 
 run_agent_secrets "$DEV_BROKER_GITHUB_CASE_SECRET" -- sh -c 'echo ran'
 judge "k4 control: the same run without the flag prints ran and exits 0 (it exited $STATUS)" \
-	ran 0 "$STATUS" "$OUTPUT"
+	ran 0 "$STATUS" "$CHILD_OUT"
 run_agent_secrets "$DEV_BROKER_GITHUB_CASE_SECRET" --github-owner "$DEV_BROKER_GITHUB_CASE_OWNER" -- sh -c 'echo ran'
 judge "k4 control: the narrowed run without the flag prints ran and exits 0 (it exited $STATUS)" \
-	ran 0 "$STATUS" "$OUTPUT"
+	ran 0 "$STATUS" "$CHILD_OUT"
 
 if [ "$PASSED" -eq "$TOTAL" ]; then
 	printf 'all %d assertions passed\n' "$TOTAL"

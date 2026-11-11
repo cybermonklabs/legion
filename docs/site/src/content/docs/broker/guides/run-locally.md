@@ -6,10 +6,12 @@ sidebar:
 ---
 
 `packages/envoy/scripts/dev-broker.sh` creates a Postgres database of its own, builds the broker,
-its clients and `dev-oidc-issuer`, writes a fake secrets file, which stands in for Secrets Manager,
-starts `dev-oidc-issuer`, which stands in both for a cluster's ServiceAccount token issuer and for
-the identity provider a person signs in to the broker at, and starts the broker on a free port,
-trusting that issuer for both. It needs Go, and a Postgres server: by default it
+its clients, `dev-oidc-issuer` and `dev-airlock-stands`, writes a fake secrets file, which stands
+in for Secrets Manager, starts `dev-airlock-stands`, whose GitHub stand is the GitHub the two
+`github-app` secrets mint at, starts `dev-oidc-issuer`, which stands in both for a cluster's
+ServiceAccount token issuer and for the identity provider a person signs in to the broker at, and
+starts the broker on a free port, trusting that issuer for both. It needs Go, `jq`, `curl` and a
+Postgres server: by default it
 starts one in Docker through `packages/envoy/scripts/dev-postgres.sh` (a container named
 `dispatch-pg`, reused when it is there; one made from another image than that script's is
 refused, with the commands that move its data onto the right one). Without Docker, run Postgres
@@ -22,38 +24,51 @@ With Docker the command is the script alone; this run used a Postgres of its own
 
 ```console
 $ DEV_BROKER_POSTGRES_URL='postgres://broker:<password>@127.0.0.1:5433/postgres?sslmode=disable' packages/envoy/scripts/dev-broker.sh
-dev-broker: workdir /tmp/agent-secrets-dev.lRLs0J
-dev-broker: created isolated database dev_broker_lrls0j
-dev-broker: building broker, dev-oidc-issuer, agent-secrets, agent-secrets-helper and agent-secrets-devrelay...
+dev-broker: workdir /tmp/agent-secrets-dev.LsGorY
+dev-broker: created isolated database dev_broker_lsgory
+dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay...
+dev-broker: starting dev-airlock-stands (its GitHub stand mints the github-app secrets)...
+dev-airlock-stands: stands listening records=http://127.0.0.1:50479
 dev-broker: starting dev-oidc-issuer...
-dev-oidc-issuer: /tmp/agent-secrets-dev.lRLs0J/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod 715d7b04-23fe-433b-9710-f4a981a37072)
-dev-oidc-issuer: /tmp/agent-secrets-dev.lRLs0J/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod a11d7c0a-0fbc-4b6f-ab0f-92718e8847e4)
-dev-oidc-issuer: /tmp/agent-secrets-dev.lRLs0J/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod 814aaff2-717d-45a1-922f-beef231136c4)
-dev-oidc-issuer: /tmp/agent-secrets-dev.lRLs0J/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod 814aaff2-717d-45a1-922f-beef231136c4)
-dev-oidc-issuer: /tmp/agent-secrets-dev.lRLs0J/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod 71705342-8c20-4165-a715-f8874519f345)
+dev-oidc-issuer: /tmp/agent-secrets-dev.LsGorY/account-token holds system:serviceaccount:example-ns:example-dispatch's token for audience legion-broker-pod (pod 7c13b48e-70f7-465e-84ca-8377fab03474)
+dev-oidc-issuer: /tmp/agent-secrets-dev.LsGorY/listener-token holds system:serviceaccount:example-ns:example-listener's token for audience legion-broker-pod (pod 69babc12-ca99-4803-aea7-ebb31beff28e)
+dev-oidc-issuer: /tmp/agent-secrets-dev.LsGorY/exchange-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-exchange (pod 6d75548a-6373-4837-a09f-84aa2f3b2921)
+dev-oidc-issuer: /tmp/agent-secrets-dev.LsGorY/pod-token holds system:serviceaccount:example-ns:example-worker's token for audience legion-broker-pod (pod 6d75548a-6373-4837-a09f-84aa2f3b2921)
+dev-oidc-issuer: /tmp/agent-secrets-dev.LsGorY/registrar-token holds system:serviceaccount:example-ns:example-daemon's token for audience legion-broker-pod (pod b47e2ad2-ffb3-4397-b803-2c9353ed2bc8)
 dev-oidc-issuer: code flow serves client dev-broker; an authorization with none queued at /_dev/sign-in-as signs in ada@example.com
-dev-oidc-issuer: issuer listening url=http://127.0.0.1:65207
+dev-oidc-issuer: issuer listening url=http://127.0.0.1:49971
 dev-broker: starting broker...
-2026/11/01 04:09:31 INFO broker stop budget drain=0s shutdown=60s total=60s
-2026/11/01 04:09:31 INFO database sign-in method=password
-2026/11/01 04:09:31 INFO approval sign-in on issuer=http://127.0.0.1:65207 client_id=dev-broker domain=example.com
-2026/11/01 04:09:32 INFO secret store store=aws-secrets-manager credentials="fake secrets file"
-2026/11/01 04:09:32 INFO broker: listening for the other pods' secret rereads channel=broker_secret_reread
-2026/11/01 04:09:32 INFO broker listening addr=127.0.0.1:29106
-2026/11/01 04:09:32 INFO token exchange state=on kubernetes=true github=false accounts=1 workflows=0
-2026/11/01 04:09:32 INFO broker: registered a pod to write under a session name service=legion-daemon account=system:serviceaccount:example-ns:example-worker pod=814aaff2-717d-45a1-922f-beef231136c4 session=example-worker-session
+2026/11/11 01:30:15 INFO broker stop budget drain=0s shutdown=60s total=60s
+2026/11/11 01:30:15 INFO database sign-in method=password
+2026/11/11 01:30:15 INFO approval sign-in on issuer=http://127.0.0.1:49971 client_id=dev-broker domain=example.com
+2026/11/11 01:30:15 INFO secret store store=aws-secrets-manager credentials="fake secrets file"
+2026/11/11 01:30:16 INFO broker: listening for the other pods' secret rereads channel=broker_secret_reread
+2026/11/11 01:30:16 INFO broker listening addr=127.0.0.1:64633
+2026/11/11 01:30:16 INFO model judge state=off detail="none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"
+2026/11/11 01:30:16 INFO token exchange state=on kubernetes=true github=false accounts=1 workflows=0 machines=0
+2026/11/11 01:30:16 INFO machine login device grant state=on verification_uri=http://127.0.0.1/credentials/machine
+2026/11/11 01:30:16 INFO broker reread rate replicas=2 every=1s burst=10
+2026/11/11 01:30:16 INFO broker: registered a pod to write under a session name service=legion-daemon account=system:serviceaccount:example-ns:example-worker pod=6d75548a-6373-4837-a09f-84aa2f3b2921 session=example-worker-session
 dev-broker: registered the exchange pod to write under example-worker-session
 
 dev-broker: ready.
 
-  export AGENT_SECRETS_URL=http://127.0.0.1:29106
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.lRLs0J/account-token
+  export AGENT_SECRETS_URL=http://127.0.0.1:64633
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/tmp/agent-secrets-dev.LsGorY/account-token
   export AGENT_SECRETS_APPROVER=ada@example.com
-  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.lRLs0J/helper.sock
-  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.lRLs0J/operator
-  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.lRLs0J/machine.json
-  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.lRLs0J
-  export PATH=/tmp/agent-secrets-dev.lRLs0J/bin:$PATH
+  export AGENT_SECRETS_HELPER_SOCK=/tmp/agent-secrets-dev.LsGorY/helper.sock
+  export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.LsGorY/operator
+  export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.LsGorY/machine.json
+  export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.LsGorY/sessions.json
+  export DEV_BROKER_DIR=/tmp/agent-secrets-dev.LsGorY
+  export DEV_BROKER_GITHUB_URL=http://127.0.0.1:44686
+  export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:50479/records/github
+  export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:50479/answers/github
+  export DEV_BROKER_GITHUB_SECRET=DEMO_GITHUB_APP
+  export DEV_BROKER_GITHUB_OWNER=acme-org
+  export DEV_BROKER_GITHUB_CASE_SECRET=DEMO_GITHUB_APP_CASE_PAIR
+  export DEV_BROKER_GITHUB_CASE_OWNER=ada
+  export PATH=/tmp/agent-secrets-dev.LsGorY/bin:$PATH
 ...
 ```
 
@@ -95,10 +110,17 @@ knows, so a typo never becomes a caller that reaches nothing.
 The fake secrets file holds two secrets of `ada@example.com`'s, under the namespace
 `example/agent-secrets/` and on its example key: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
 own sessions ([the kinds of session](/legion/broker/concepts/#sessions-and-enrollment)) get without
-asking, and `DEMO_API_KEY`, tagged `tier=human`, which she approves. A third,
-`DEMO_SERVICE_TOKEN`, tagged `owner=legion-daemon tier=agent`, is the registered service's own:
-a pod session enrolled under that service gets it without asking, and no person's session sees
-it at all. A grant lasts for the `--ttl` its
+asking, and `DEMO_API_KEY`, tagged `tier=human`, which she approves. Three more are the
+registered service's own, each tagged `owner=legion-daemon tier=agent`: a pod session enrolled
+under that service gets each without asking, and no person's session sees any of them at all.
+They are `DEMO_SERVICE_TOKEN`, a stored value, and two `github-app` secrets minted at the GitHub
+stand this stack starts: `DEMO_GITHUB_APP`, whose `github-owners` tag names `acme-org`, and
+`DEMO_GITHUB_APP_CASE_PAIR`, whose tag names `ada`, on which that stand's App is installed twice
+under logins that differ only in case (`ada` and `Ada`), so a release of it holds two
+installations and `agent-secrets --github-token` refuses it. The exports name both secrets, the
+stand's address, the route that reads back every call it was sent, and the route that sets what
+it answers the next token request (`ordinary`, `refuse` or `widen`). A grant lasts for the
+`--ttl` its
 request names; with none, 15 minutes when any secret it names is human tier and 12 hours otherwise
 (until its session ends for a secret tagged `default-grant=session`), and never past its session. Every command below runs in that second shell.
 

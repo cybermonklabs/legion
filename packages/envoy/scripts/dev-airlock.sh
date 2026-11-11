@@ -8,11 +8,13 @@
 #     and reading what it prints. Everything this script needs of a local stack but the airlock
 #     itself is there already - the six built binaries, the local token issuer with a pod's,
 #     a registrar's and two listed callers' tokens, the broker's own sign-in client, and the
-#     Postgres server - so this script starts none of it a second time. What that costs is one
-#     broker process this script does not use, on a database of its own; what it buys is that
-#     the identities, the token files and the issuer are the ones dev-broker.sh documents, and
-#     that a change there reaches both scripts. The airlock's own brokers get a database of
-#     their own (below), so they never share a policy or a secret store with that broker.
+#     Postgres server - so this script starts none of it a second time. What that costs is two
+#     processes of dev-broker.sh's that this script never points at: its broker, on a database
+#     of its own, and the cmd/dev-airlock-stands it starts for its own github-app secrets. What
+#     it buys is that the identities, the token files and the issuer are the ones dev-broker.sh
+#     documents, and that a change there reaches both scripts. The airlock's own brokers get a
+#     database of their own (below), so they never share a policy or a secret store with that
+#     broker.
 #   - cmd/dev-airlock-stands: the two HTTPS services S and T, which record every request they
 #     get; the stand-in GitHub and Google endpoints a github-app and a google-login secret mint
 #     at; the stand-in Microsoft token endpoint the azure kind exchanges at, which also plays
@@ -306,7 +308,7 @@ trap cleanup EXIT
 
 echo "dev-airlock: workdir $WORK_DIR" >&2
 
-# --- dev-broker.sh: Postgres, dev-oidc-issuer, the five binaries and its own broker. Its output
+# --- dev-broker.sh: Postgres, dev-oidc-issuer, the six binaries and its own broker. Its output
 # is teed to a log of this run's own and to this script's stderr, so a human sees it live and
 # this script can read the identities and addresses out of it. tee ignores SIGTERM and SIGINT so
 # a signal to the process group reaches dev-broker.sh and tee together. ---
@@ -406,7 +408,9 @@ CREATED_DB=true
 echo "dev-airlock: created isolated database $DB_NAME" >&2
 DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
 
-# --- The one binary dev-broker.sh does not build: the stands, the fronts and the enrolment. ---
+# --- dev-airlock-stands, into this script's own bin directory: the stands, the fronts and the
+# enrolment. dev-broker.sh builds it into its workdir for the stand it starts there, and this
+# script's exports name the one it builds here. ---
 echo "dev-airlock: building dev-airlock-stands..." >&2
 mkdir -p "$BIN_DIR"
 ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$STANDS_BIN" ./cmd/dev-airlock-stands )

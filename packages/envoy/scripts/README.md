@@ -137,15 +137,17 @@ Brings up the whole local surface the airlock's checks run on, with no container
 runtime and no cluster, and prints the exports a check needs. It runs
 `dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
-second time; on top it starts `cmd/dev-airlock-stands` (the stand-in services S and
-T, the GitHub, Google and Microsoft endpoints and the AWS service, and the
-certificate authority they are signed by), writes a rules file and a fake Secrets
-Manager naming each other, starts **two** broker processes on a database of their
-own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front over both brokers'
-API ports and one over both proxy ports (`dev-airlock-stands front`, round-robin per
-connection), and enrols one pod session the way the Legion daemon does — a service
-login at `POST /v1/launcher-credentials/token`, then `POST /v1/enrollments` of kind
-`pod` — so `agent-secrets self` answers `kind: pod`.
+second time. On top it starts a `cmd/dev-airlock-stands` of its own (the stand-in
+services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
+and the certificate authority they are signed by), which is a second such process:
+`dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
+at, and this script points nothing at that one. It then writes a rules file and a
+fake Secrets Manager naming each other, starts **two** broker processes on a
+database of their own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front
+over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
+front`, round-robin per connection), and enrols one pod session the way the Legion
+daemon does — a service login at `POST /v1/launcher-credentials/token`, then
+`POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh

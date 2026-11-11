@@ -83,6 +83,12 @@
 # (AGENT_SECRETS_STATE_FILE): the helper keeps its records beside its machine login by default,
 # and an export that named only the socket would leave this helper writing the records of the
 # helper installed under this HOME, whose named sessions' signing keys are in them.
+#
+# Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
+# that server through psql, and without it, it starts the dispatch-pg container through
+# dev-postgres.sh, which needs Docker. It builds the fake secrets file with jq -n and reads the
+# stand's report with jq -r, so a box without jq fails once Postgres is up and the six builds
+# have run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

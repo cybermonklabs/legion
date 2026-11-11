@@ -43,26 +43,10 @@ type GitHubOptions struct {
 	// Lifetime is how long from now each token's expires_at is, and zero is an hour, the life
 	// GitHub gives one.
 	Lifetime time.Duration
-	// RefuseTokens starts the stand on GitHubTokensRefused: every token request is answered HTTP
-	// 422 and mints nothing, which is what GitHub answers a body naming a permission the
-	// installation does not hold. The answer says nothing of a rate limit, so the minter reads it
-	// as the caller's narrowing and refuses the release (secrets.GitHubNarrowing.refusal) rather
-	// than as the upstream's trouble. A read-only narrowing asks once more without actions, which
-	// this answers 422 as well, so that refusal reaches the caller too and no token is ever
-	// released.
-	RefuseTokens bool
-	// WidenTokens starts the stand on GitHubTokensWider: every token request is answered a token
-	// wider than its body asked for, every repository of the account rather than the ones the
-	// body named, and a grant past the read set a read-only body asks for. GitHub applies the
-	// body it is sent, so a token like this is one something between the broker and GitHub
-	// widened: the minter revokes it and releases nothing (secrets.GitHubNarrowing.heldBy). It is
-	// how a check drives that path, which nothing else reaches.
-	//
-	// The two are the answer the stand starts on, for a Go test that sets it at construction;
-	// GitHubStand.Answers replaces it while the stand runs, which is how one stack drives all
-	// three answers one after another. A stand given both starts on the refusal, which is the
-	// answer it gave before there was a third.
-	WidenTokens bool
+	// Answer is the answer the stand starts on, for a Go test that sets it at construction, and
+	// "" is GitHubTokensOrdinary. GitHubStand.Answers replaces it while the stand runs, which is
+	// how one stack drives all three answers one after another.
+	Answer GitHubTokenAnswer
 }
 
 // GitHubTokenAnswer is one of the three answers a GitHubStand gives a token request, which
@@ -74,10 +58,19 @@ type GitHubTokenAnswer string
 const (
 	// GitHubTokensOrdinary answers each token request what its own body asked for, as GitHub does.
 	GitHubTokensOrdinary GitHubTokenAnswer = "ordinary"
-	// GitHubTokensRefused answers every token request HTTP 422 and mints nothing (RefuseTokens).
+	// GitHubTokensRefused answers every token request HTTP 422 and mints nothing, which is what
+	// GitHub answers a body naming a permission the installation does not hold. The answer says
+	// nothing of a rate limit, so the minter reads it as the caller's narrowing and refuses the
+	// release (secrets.GitHubNarrowing.refusal) rather than as the upstream's trouble. A
+	// read-only narrowing asks once more without actions, which this answers 422 as well, so that
+	// refusal reaches the caller too and no token is ever released.
 	GitHubTokensRefused GitHubTokenAnswer = "refuse"
-	// GitHubTokensWider answers each token request a token wider than its body asked for
-	// (WidenTokens).
+	// GitHubTokensWider answers each token request a token wider than its body asked for: every
+	// repository of the account rather than the ones the body named, and a grant past the read
+	// set a read-only body asks for. GitHub applies the body it is sent, so a token like this is
+	// one something between the broker and GitHub widened: the minter revokes it and releases
+	// nothing (secrets.GitHubNarrowing.heldBy). It is how a check drives that path, which nothing
+	// else reaches.
 	GitHubTokensWider GitHubTokenAnswer = "widen"
 )
 
@@ -121,15 +114,12 @@ type githubScope struct {
 	repositories []string
 }
 
-// NewGitHubStand builds one, answering as its options say to begin with. Install it with
-// Service.AnswerWith(stand.Answer).
+// NewGitHubStand builds one, answering as its options say to begin with, where an Answer of ""
+// is the ordinary mint. Install it with Service.AnswerWith(stand.Answer).
 func NewGitHubStand(o GitHubOptions) *GitHubStand {
-	answer := GitHubTokensOrdinary
-	switch {
-	case o.RefuseTokens:
-		answer = GitHubTokensRefused
-	case o.WidenTokens:
-		answer = GitHubTokensWider
+	answer := o.Answer
+	if answer == "" {
+		answer = GitHubTokensOrdinary
 	}
 	return &GitHubStand{options: o, answer: answer, scopes: map[string]githubScope{}}
 }
@@ -295,23 +285,26 @@ func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner str
 // cannot see; and 401 for a credential this stand-in never minted.
 func (g *GitHubStand) answerRepository(w http.ResponseWriter, credential, owner, repository string) {
 	scope, minted := g.scopeOf(credential)
-	reaches := len(scope.repositories) == 0 ||
-		slices.ContainsFunc(scope.repositories, func(name string) bool { return strings.EqualFold(name, repository) })
-	switch {
-	case !minted:
+	if !minted {
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Bad credentials"})
-	case !strings.EqualFold(scope.owner, owner) || !reaches:
+		return
+	}
+	// A scope that names no repository reaches every repository of its account, which is the
+	// token a narrowing that named none is minted as.
+	reaches := len(scope.repositories) == 0 ||
+		slices.ContainsFunc(scope.repositories, func(name string) bool { return strings.EqualFold(name, repository) })
+	if !strings.EqualFold(scope.owner, owner) || !reaches {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
-	default:
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"name":      repository,
-			"full_name": owner + "/" + repository,
-			"owner":     map[string]string{"login": owner},
-			"private":   true,
-		})
+		return
 	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"name":      repository,
+		"full_name": owner + "/" + repository,
+		"owner":     map[string]string{"login": owner},
+		"private":   true,
+	})
 }
 
 // answerRevoke is GitHub's answer to the revoke a caller makes with the token itself, which the
