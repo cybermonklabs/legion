@@ -330,6 +330,100 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 	}
 }
 
+// Every claim a previous daemon left in a plugin update round leaves it at this boot, whatever
+// its state, and the live ones are refreshed by the stale-plugin lane in that same pass
+// (dispatch://INFRA-2712 R5, endPluginRounds). Nothing of this release opens a plugin round and
+// nothing of it carries one — the sweep reads pod rounds alone (reconcilePodUpdates) — so a
+// round left standing would hold the claim's next task behind it for as long as the claim
+// lives, and the lane would pass over that claim at every sweep for ever.
+//
+// The two halves are one pass because the order of the posts decides them: the de-round pass
+// runs first, one machine's inbox is FIFO (supervisor.inbox), and the refresh pass's skip is by
+// round kind rather than by "in a round at all" (refreshStalePlugins, InPodRound), so the live
+// claim is posted its StalePlugin behind its own end and relaunched at this boot rather than a
+// sweep later. Both passes read the claims the boot restored, where the round still stands,
+// which is exactly why the skip has to be by kind.
+//
+// The suspended claim is driven beside it because the boot posts for every claim in a round,
+// not only the live ones: its round is as durable as a live one's, and nothing but this end
+// would ever take it off. It is left suspended, as the lane leaves every claim with no process
+// to replace (supervise's refreshPlugin reads HoldsCapability).
+//
+// The negative controls are one each: the de-round pass dropped from supervision.start, which
+// leaves both rounds standing, and the refresh pass's skip put back to `c.UpdateRound != ""`,
+// which leaves the live claim unrefreshed at this boot. Both are read where this test asks for
+// the round and the resume.
+func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing.T) {
+	sup, rt := newPluginSupervisor(t, 24, true)
+	project, _ := claim.ProjectToken("legion")
+	live, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
+	suspended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
+	round := supervise.PluginRound(24)
+	now := time.Now()
+	inRound := func(token claim.Token, role claim.Role, state supervise.ClaimState, loc *runtime.Locator) supervise.Claim {
+		return supervise.Claim{
+			Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: role,
+			Generation: 1, State: state, Session: "ses_" + string(role), SessionFile: "/sessions/" + string(role) + ".jsonl",
+			PluginContract: 23, Locator: loc,
+			// The round the earlier daemon opened and the worker answered, with the task the
+			// claim was handed next waiting behind it.
+			UpdateRound: round, UpdateReasons: "plugin", UpdateOpenedAt: &now, UpdateSignalledAt: &now,
+			Pending: &supervise.Delivery{ID: "outbox:" + string(token), Task: "implement the plan", QueuedAt: now},
+		}
+	}
+	// The suspended claim records no process: a suspension lets its own go (supervise's letGo).
+	claims := []supervise.Claim{
+		inRound(live, claim.RoleImplementer, supervise.StateIdle, pluginTestLocator(live)),
+		inRound(suspended, claim.RoleTester, supervise.StateSuspended, nil),
+	}
+	if _, err := sup.restore(context.Background(), claims); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	logs := &syncBuffer{}
+	s := &supervision{log: jsonLogger(logs), supervisor: sup, claims: claims, plan: plan{pluginRelaunchable: true}}
+
+	s.endPluginRounds(s.claims)
+	s.refreshStalePlugins(s.claims, "boot")
+
+	for _, token := range []claim.Token{live, suspended} {
+		m, ok := sup.Machine(token)
+		if !ok {
+			t.Fatalf("%s is not supervised", token)
+		}
+		testwait.Eventually(t, "the end of "+string(token)+"'s plugin round", func() bool {
+			return m.Claim().UpdateRound == ""
+		})
+		if c := m.Claim(); c.UpdateSignalledAt != nil || c.UpdateReasons != "" || c.UpdateOpenedAt != nil {
+			t.Errorf("the claim of %s after the boot's end = %+v, want every field the round wrote cleared", token, c)
+		}
+		if c := m.Claim(); c.Pending == nil {
+			t.Errorf("the claim of %s holds no task after the end, want the one the round was holding back", token)
+		}
+	}
+	lines := loggedLines(t, logs.String(), "an earlier daemon left these claims in a plugin update round")
+	if len(lines) != 1 || lines[0]["claims"] != float64(len(claims)) {
+		t.Fatalf("the de-round pass logged %+v, want one line naming %d claims (log: %s)", lines, len(claims), logs.String())
+	}
+
+	testwait.Eventually(t, "the stale-plugin relaunch of the live claim", func() bool {
+		return len(resumesOf(rt, live)) == 1
+	})
+	m, _ := sup.Machine(live)
+	m.Wait()
+	if c := m.Claim(); c.State != supervise.StateLaunching {
+		t.Fatalf("the live claim after the boot's two passes is %s, want %s: the lane refreshes it in this same pass",
+			c.State, supervise.StateLaunching)
+	}
+	if calls := resumesOf(rt, suspended); len(calls) != 0 {
+		t.Fatalf("resumed the suspended claim %v, want it left suspended: it has no process to replace", calls)
+	}
+	sus, _ := sup.Machine(suspended)
+	sus.Wait()
+	if c := sus.Claim(); c.State != supervise.StateSuspended {
+		t.Fatalf("the suspended claim after the boot's two passes is %s, want %s", c.State, supervise.StateSuspended)
+	}
+}
+
 // A stale claim found working with a suspension held for its turn (the workflow asked to suspend
 // it, and the machine is waiting for the turn to end) is left running by the boot pass, and the
 // turn's end runs that suspension rather than a relaunch: the process the relaunch would have

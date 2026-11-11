@@ -1552,11 +1552,58 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		defer s.wg.Done()
 		s.reconcileOrphans(s.supervisor.ctx)
 	}()
+	s.endPluginRounds(s.claims)
 	s.refreshStalePlugins(s.claims, "boot")
 	if len(unfinished) > 0 {
 		s.relaunchUnfinished(unfinished, reconciled)
 	}
 	return nil
+}
+
+// endPluginRounds takes every claim this boot restored out of the plugin update round an earlier
+// daemon left on it, whatever state the claim is in (supervise.PodUpdateEnded, endPodUpdate).
+// Nothing of this release opens a plugin round — the stale-plugin lane replaces a stale process
+// and asks its worker nothing (supervise's refreshPlugin, relaunchStale) — but the daemon this
+// one replaces could, and a round nobody ends holds the claim's next task behind it for ever:
+// the round's own answer is what releases that task, and no sweep of this release opens, carries
+// or ends a plugin round at all (reconcilePodUpdates reads pod rounds). So the boot ends them,
+// once, over the claims it read from the store (dispatch://INFRA-2712 R5).
+//
+// The end takes the claim out of the round whole: the ask the round left unread goes, every
+// round field goes, the claim is written, and the task the round was holding back is sent
+// (supervise's endPodUpdate, leaveRound). A claim with no agent is sent nothing by that last
+// step and needs nothing more — sendPending hands nothing to a claim that is not ready or idle
+// — so the suspended and the failed claims of a round are served by this same post.
+//
+// It runs before the stale-plugin pass rather than after it, and one machine's inbox is FIFO
+// (supervisor.inbox: "unbounded … and in order, so a claim sees its events as its sources
+// reported them"), so the StalePlugin that pass posts a moment later is decided behind this
+// end. That is what makes the order right: the refresh reads a claim already out of its round,
+// and the pass's own skip is by round kind for the same reason (refreshStalePlugins), since the
+// claims both passes walk are the boot's own reading, where the round still stands.
+//
+// A retired claim is posted nothing it needs: its round went with it (supervise's retire calls
+// clearUpdate), and the end is ignored in that state anyway. A worker that answers such a round
+// after this boot — a turn that was in flight when the daemon restarted — is refused as
+// supervise's podUpdateSignalled already refuses an answer for a round its claim is not in:
+// nothing is recorded, and the claim is neither failed nor retired for it.
+//
+// One line is written for the pass, with the number of claims it found, because that number is
+// what an operator reads this boot's inheritance by; a daemon that finds none writes nothing,
+// which is every boot after the release that deleted the round.
+func (s *supervision) endPluginRounds(claims []supervise.Claim) {
+	found := 0
+	for _, c := range claims {
+		if !c.InPluginRound() {
+			continue
+		}
+		found++
+		s.supervisor.post(c.Token, supervise.PodUpdateEnded{Claim: c.Token, Round: c.UpdateRound})
+	}
+	if found > 0 {
+		s.log.Info("supervise: an earlier daemon left these claims in a plugin update round; this boot takes each of them out of it",
+			"claims", found)
+	}
 }
 
 // refreshStalePlugins posts StalePlugin to every live claim whose recorded plugin contract is not
@@ -1585,13 +1632,23 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // turnEnded). staleRegistration accepts such a registration and charges it nothing, for the same
 // reason (supervise.Deps.NoPluginInstall).
 //
-// A claim in an update round is skipped, whatever contract it records. A pod round is carrying
-// it, and the process is replaced when that round ends (reconcilePodUpdates), so a StalePlugin
-// post would relaunch mid-turn a claim the round is waiting on and take the pod's replacement
-// its answer. A plugin round an earlier daemon left on the claim is skipped by the same
-// reading: nothing of this release opens one, and such a claim leaves its round at the
-// registration that speaks this daemon's contract (supervise's endCurrentPluginRound) or at an
-// end posted for it (endPodUpdate), after which this pass posts for it like any other.
+// A claim in a pod round is skipped, whatever contract it records (InPodRound). That round is
+// carrying it, and the process is replaced when the round ends (reconcilePodUpdates), so a
+// StalePlugin post would relaunch mid-turn a claim the round is waiting on and take the pod's
+// replacement its answer.
+//
+// A claim in a plugin round is not skipped, and the skip is by round kind for that reason. The
+// boot's own de-round pass has posted such a claim its end a moment before this pass runs
+// (endPluginRounds), and one machine's inbox is FIFO, so that end is decided ahead of this post
+// and the machine sees a claim in no round at all. What this pass reads is the claims the boot
+// restored, where the round still stands, so a skip by "in any round" would pass over exactly
+// the claims the de-round pass has just freed and leave each of them a sweep — a whole minute,
+// and a credit of the gate each — behind the rest of the fleet. A claim whose plugin round is
+// somehow still standing when its machine takes the post is decided nothing wrong by it either:
+// refreshPlugin relaunches it, and no plugin round holds a relaunch back, since the ask that
+// did was deleted with the round. A claim that left its round at a registration speaking this
+// daemon's contract (supervise's endCurrentPluginRound) is no longer stale at all, and the
+// contract check above passes over it.
 //
 // A daemon that cannot relaunch onto a plugin (PluginRelaunchable false, LEGION-164's degraded
 // Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only — a sweep's
@@ -1634,7 +1691,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 		if noPluginInstall(s.cfg, c) {
 			continue
 		}
-		if c.UpdateRound != "" {
+		if c.InPodRound() {
 			continue
 		}
 		if !s.plan.pluginRelaunchable {

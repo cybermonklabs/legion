@@ -453,6 +453,40 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	return claim.StalePluginContract(got, m.deps.PluginContract)
 }
 
+// staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because
+// its plugin is stale, and it is what holds a pending delivery back (sendPending). It and
+// internal/api's staleClaim must answer the same question, because what the hold rests on is
+// exactly that refusal: a task handed to a claim whose every `legion` call is refused buys a
+// model turn in which the worker can read the task and do nothing with it — no grant, no
+// handoff, no phase op — and the turn puts the claim in a turn, which postpones the one thing
+// the claim is waiting for, the relaunch this lane holds until that turn ends
+// (refreshPlugin, holdStaleRelaunch). So the set is recomputed here from the Deps the machine
+// already holds rather than asked of internal/api, which imports this package and not the
+// other way round.
+//
+// The set is staleClaim's: the recorded contract is not this daemon's, the claim is in no
+// update round — a round's whole point is that the daemon serves the claim on its contract of
+// before the round until the round ends — this daemon can relaunch onto a plugin at all
+// (PluginRelaunchable), and the claim's own launch installs one (NoPluginInstall false).
+// staleClaim's fifth term, that the claim is in no turn, is answered before this is asked:
+// sendPending hands nothing to a claim that is not ready or idle, so every claim that reaches
+// this is out of a turn, which is the claim staleClaim refuses.
+//
+// Two claims the lane can never refresh hold nothing back, and both fall out of the set rather
+// than being named again here. A claim whose launch installs no plugin — a Claude Code role's
+// in a pod, whose plugin is the image's own claude-envoy — is served on whatever contract it
+// records, at this release's own or below it, because nothing but a new image moves that
+// plugin; and on a daemon that can relaunch onto no plugin (LEGION-164's degraded Kubernetes
+// mode) every stale claim is served rather than refused, since no relaunch is coming for any of
+// them. Held there, a task would wait for a replacement process that is never started.
+func (m *Machine) staleRefusesClaim() bool {
+	if m.deps.NoPluginInstall != nil && m.deps.NoPluginInstall(m.claim) {
+		return false
+	}
+	return m.deps.PluginRelaunchable && m.claim.PluginContract != m.deps.PluginContract &&
+		m.claim.UpdateRound == ""
+}
+
 // NoPluginSourceMessage is logged whenever a daemon that can relaunch nothing onto a plugin
 // (supervise.Deps.PluginRelaunchable false, LEGION-164's degraded Kubernetes mode) finds a stale
 // process instead of relaunching it: staleRegistration here, refreshStalePlugins

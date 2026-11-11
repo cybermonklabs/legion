@@ -1304,6 +1304,93 @@ func TestPodUpdateACurrentRegistrationEndsThePluginRound(t *testing.T) {
 	h.wantCalls("Resume", 0)
 }
 
+// A claim an earlier daemon left in a plugin update round leaves that round at the end this
+// release's boot posts for it, whatever state it is in, and the task the round was holding back
+// is released (dispatch://INFRA-2712 R5, internal/daemon's endPluginRounds). Nothing of this
+// release opens a plugin round, and nothing of it carries one either: the sweep reads pod rounds
+// alone (reconcilePodUpdates), so a round left standing would hold the claim's next task behind
+// it for as long as the claim lives. The end takes the round whole — the ask nothing read, every
+// field the round wrote, the claim's write — and launches nothing of its own: a plugin round's
+// process is the lane's to replace at a paced wake, not this end's (endPodUpdate, leaveRound).
+//
+// Both states are driven because the boot posts for every claim in a round, not only the live
+// ones: a suspended claim's round is as durable as a live one's and holds the task it will be
+// resumed for. The live claim's task goes at the end itself, the suspended claim's at the resume
+// that brings its process back, which is where every task of a suspended claim goes.
+//
+// The daemon here can relaunch onto no plugin (PluginRelaunchable false, LEGION-164's degraded
+// Kubernetes mode), which is what makes the release readable as a prompt: on a daemon that can,
+// the released task meets the refresh lane's own hold and goes at the ready of the process that
+// lane's relaunch starts instead (sendPending's staleRefusesClaim,
+// TestAStaleClaimHoldsItsTaskUntilItsReplacementRegistersOnThisDaemonsContract).
+//
+// The negative control is the end made to pass over a plugin round (`if m.claim.InPluginRound()
+// { return nil }` at the head of endPodUpdate): the round then stands, and with it the hold its
+// answer puts on the claim's task, which both halves of this test read at the prompts.
+func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.T) {
+	const next = "review the pull request"
+	round := PluginRound(PodUpdateContract + 1)
+	for _, tc := range []struct {
+		name    string
+		suspend bool
+	}{
+		{name: "live"},
+		{name: "suspended", suspend: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateIdle)
+			// The walk to idle delivers a phase task and works it, so one prompt is already sent.
+			sent := len(h.prompts())
+			// This daemon speaks the contract the round was opened for; the claim's process
+			// still speaks the one it registered on. PluginRelaunchable is left false.
+			h.m.deps.PluginContract = PodUpdateContract + 1
+			// The round an earlier daemon opened, answered by the worker and holding the task
+			// the claim was handed next: the state this boot finds the claim in.
+			h.openUpdate(round, testReasons)
+			h.wantPrompts(sent + 1)
+			h.must(StreamTurnStart{Claim: h.token})
+			h.signalUpdate("c0ffee")
+			h.must(StreamTurnEnd{Claim: h.token})
+			h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
+			h.wantPrompts(sent + 1)
+			if tc.suspend {
+				h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+				h.wantState(StateSuspended)
+			}
+
+			h.must(PodUpdateEnded{Claim: h.token, Round: round})
+
+			c := h.wantRound("")
+			if c.UpdateReasons != "" || c.UpdateOpenedAt != nil || c.UpdateTaskedAt != nil ||
+				c.UpdateSignalledAt != nil || c.UpdateHead != "" {
+				t.Errorf("the claim after the end = %+v, want every field the round wrote cleared", c)
+			}
+			if stored := h.store.load(h.token); stored.UpdateRound != "" {
+				t.Errorf("the stored claim = %+v, want the round cleared in the store too: a restart must not read it back",
+					stored)
+			}
+			h.wantCalls("Resume", 0)
+			if p := h.claim().Pending; p == nil || p.Task != next {
+				t.Fatalf("the claim after the end holds %+v, want the task %q the round was holding back", p, next)
+			}
+
+			if tc.suspend {
+				// A suspended claim is handed nothing, as it is handed nothing in any other
+				// round or none (sendPending): the resume is what brings its process back and
+				// sends the task the round no longer holds.
+				h.wantPrompts(sent + 1)
+				h.must(RequestResume{Claim: h.token})
+				h.relaunched()
+			}
+
+			if got := h.wantPrompts(sent + 2)[sent+1]; got.Message != next {
+				t.Fatalf("the prompt after the end is %+v, want the task %q the round held back", got, next)
+			}
+		})
+	}
+}
+
 // The sweep posts the end from what it read at the start of a tick, so a claim whose round ended
 // in between is posted an end for a round that is already over. That post decides nothing: it
 // writes the claim nothing, and a claim in no round has nothing left for an end to take.

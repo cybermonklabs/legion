@@ -858,15 +858,18 @@ func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
-	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = true
 
 	// The agent acknowledges a task, the sweep finds the claim's plugin stale and raises the
 	// relaunch, and that launch waits its turn over the process the agent is on. The turn of the
 	// task starts and ends inside the wait, with Oh My Pi's result still to come, so the launch's
-	// turn finds a confirmed task to take back.
+	// turn finds a confirmed task to take back. The daemon's contract moves between the task and
+	// the sweep, as it does in life: a task handed to a claim already stale is held rather than
+	// sent, since every `legion` call of that process is refused (sendPending's
+	// staleRefusesClaim).
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", ID: "outbox:7", Row: 7, Generation: 7})
 	sent := h.pending().ID
+	h.m.deps.PluginContract = 25
+	h.m.deps.PluginRelaunchable = true
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
 	h.must(StreamTurnStart{Claim: h.token, DeliveryID: sent})
@@ -1278,19 +1281,21 @@ func TestALaunchRefusedAtItsTurnLeavesItsBootingProcessWatched(t *testing.T) {
 func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
-	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = true
 	store := &unansweredCheckLaunchStore{memStore: h.store}
 	h.m.deps.Store = store
 
 	// The task is sent and the agent acknowledges it, which is what arms the bound; the sweep
 	// then finds the claim's plugin stale and relaunches it, and that launch waits its turn
-	// over the process the agent is on.
+	// over the process the agent is on. The contract moves between the two, as it does in life:
+	// a task handed to a claim already stale is held rather than sent, so no prompt of it would
+	// be acknowledged and no bound armed (sendPending's staleRefusesClaim).
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
 	acked := h.wantPrompts(1)[0].DeliveryID
 	if _, awaiting := h.m.timers[TimerTurn]; !awaiting {
 		t.Fatal("the acknowledged prompt waits for its turn on nothing, want the bound armed")
 	}
+	h.m.deps.PluginContract = 25
+	h.m.deps.PluginRelaunchable = true
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
