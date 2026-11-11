@@ -154,9 +154,11 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
       "data-moved",
       "true"
     );
-    // The shared label parameter remains readable by the Board strip.
+    // The Board applies the label from the shared URL; it has no separate filter strip.
     await page.getByRole("button", { name: "Board", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Remove Label: frontend filter" })).toBeVisible();
+    const board = page.getByRole("region", { name: "Project board" });
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/u);
+    await expect(board.getByRole("article")).toHaveCount(30);
     await page.getByRole("button", { name: "List", exact: true }).click();
     await expect(filterPicker(page, "Labels")).toHaveAttribute(
       "aria-label",

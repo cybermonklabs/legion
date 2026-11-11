@@ -57,7 +57,9 @@ export function IssueViewTabs({ counts, hasLegion, saved }: IssueViewTabsProps):
         }
         const next = builtIn.find((candidate) => candidate.id === id);
         if (next === undefined) return;
-        setParams(next.params(hasLegion));
+        const query = next.params(hasLegion);
+        if (next.id !== "open") query.set("view", next.id);
+        setParams(query);
       }}
       tabs={tabs}
     />

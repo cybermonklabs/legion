@@ -195,7 +195,11 @@ const renderings = (
     sortingFn: (a, b) =>
       Number(a.original.issue.key.split("-")[1]) - Number(b.original.issue.key.split("-")[1]),
     cell: ({ row }) => (
-      <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
+      <span
+        className="flex items-center gap-1 font-semibold whitespace-nowrap"
+        data-cell="key"
+        data-value={row.original.issue.key}
+      >
         <Link
           className={`${linkText} ${linkHoverText}`}
           to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}

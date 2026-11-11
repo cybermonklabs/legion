@@ -598,7 +598,7 @@ The Issues route's `layout=board` is part of the same URL as `view`, filters, se
 The Issues route has two layouts of one `IssuesTable` view.
 List is the default; `layout=board` mounts `IssueBoard` beneath the view tabs and toolbar, with `model.listedLeaves` and the open listing key plus the done-window key when it is present.
 The Board never reads a project listing or the Legion board route: it draws the table's already sorted, searched and filtered `Item` rows, so no view reads the full issue listing.
-`groupItemsByStage` draws every Dispatch status as a drop target and adds a Legion phase column only when the current view holds a row in it, at that phase's `LIFECYCLE_ORDER` position; phase columns are read-only.
+`groupItemsByStage` draws only the Dispatch status columns the current view's Stage or Status filter permits, then adds a Legion phase column only when the view holds a row in it; phase columns are read-only.
 Board cards retain the table row's issue content and Legion facts; a phase card can be dragged to a Dispatch status column, and every optimistic move updates each listing cache that already holds the issue.
 Icebox and Done remain collapsed rails unless the per-login `project.board-edges` preference is shown; lanes remain the per-login `project.board-lanes` preference and use the same stage columns.
 The List and Board share all URL view controls and the table toolbar; the Board filter strip is deleted, while `project.issue-view` remembers the reader's choice only when the URL names no layout.

@@ -60,6 +60,12 @@ export interface StageColumn {
   readonly items: Item[];
 }
 
+/** The Board's visible stages, taken from the active table view's Stage and Status filters. */
+export interface BoardStageFilter {
+  readonly stages?: readonly string[];
+  readonly statuses?: readonly string[];
+}
+
 /** A phase exists on the Board only when its card came from the Legion board response.
  * `stageOf` gives a Legion-labelled issue a table stage before that response arrives; without
  * a card the Board keeps the project's normal Dispatch status columns. */
@@ -70,9 +76,15 @@ function boardStageOf(item: Item): string {
     : stage;
 }
 
-/** Places every Dispatch status on the board and adds only the Legion phase stages that the
- * current view holds, in the lifecycle order that the table's Stage column uses. */
-export function groupItemsByStage(items: readonly Item[]): StageColumn[] {
+/** Places the Dispatch status targets and occupied Legion phases the active view can hold in
+ * lifecycle order. A Status filter limits drop targets, while a Stage filter limits both kinds
+ * of column directly. */
+export function groupItemsByStage(
+  items: readonly Item[],
+  filter?: BoardStageFilter
+): StageColumn[] {
+  const allowedStages = filter?.stages === undefined ? undefined : new Set(filter.stages);
+  const allowedStatuses = filter?.statuses === undefined ? undefined : new Set(filter.statuses);
   const itemsByStage = new Map<string, Item[]>();
   for (const item of items) {
     const stage = boardStageOf(item);
@@ -87,10 +99,17 @@ export function groupItemsByStage(items: readonly Item[]): StageColumn[] {
     ).flatMap<StageColumn>((stage) => {
       const status = stage.slice("status:".length);
       if (isIssueStatus(status)) {
+        if (
+          (allowedStages !== undefined && !allowedStages.has(stage)) ||
+          (allowedStatuses !== undefined && !allowedStatuses.has(status))
+        )
+          return [];
         return [{ stage, droppable: true, items: itemsByStage.get(stage) ?? [] }];
       }
       const stageItems = itemsByStage.get(stage);
-      return stageItems === undefined ? [] : [{ stage, droppable: false, items: stageItems }];
+      if (stageItems === undefined || (allowedStages !== undefined && !allowedStages.has(stage)))
+        return [];
+      return [{ stage, droppable: false, items: stageItems }];
     })
   );
 }
@@ -297,8 +316,8 @@ export interface StageLane {
 
 /** Splits the current view into priority lanes while retaining one stage layout across every
  * lane, so a Legion phase column never shifts a lane's status columns sideways. */
-export function groupItemsByLane(items: readonly Item[]): StageLane[] {
-  const columns = groupItemsByStage(items);
+export function groupItemsByLane(items: readonly Item[], filter?: BoardStageFilter): StageLane[] {
+  const columns = groupItemsByStage(items, filter);
   const cells = new Map<string, Item[]>();
   for (const item of items) {
     const key = `${laneKey(issuePriority(item.issue.priority))}|${boardStageOf(item)}`;

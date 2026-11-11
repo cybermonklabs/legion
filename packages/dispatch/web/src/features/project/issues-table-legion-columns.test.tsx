@@ -155,6 +155,12 @@ test("Place exposes each card's waiting_place rather than the listing order", as
   expect(cell("ACME-5", "queue")?.textContent).toBe("#2");
 });
 
+test("Key exposes its issue key as a cell value", async () => {
+  await renderTable({ issues: [issue("ACME-1")] });
+
+  expect(cell("ACME-1", "key")?.dataset.value).toBe("ACME-1");
+});
+
 test("Legion cells expose the board values that their row reads", async () => {
   const user = userEvent.setup();
   await renderTable();

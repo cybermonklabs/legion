@@ -55,6 +55,7 @@ import {
 } from "./board-keys";
 import {
   type BoardColumn,
+  type BoardStageFilter,
   dropTarget,
   groupItemsByLane,
   groupItemsByStage,
@@ -333,6 +334,7 @@ export function IssueBoard({
   listingKeys,
   showEdges = false,
   lanes = false,
+  stageFilter,
 }: {
   project: string;
   /** The rows the active table view already filtered, searched and sorted. */
@@ -343,6 +345,8 @@ export function IssueBoard({
   showEdges?: boolean;
   /** Group the board into swimlanes by priority. */
   lanes?: boolean;
+  /** Status and Stage values the active view permits as Board columns. */
+  stageFilter?: BoardStageFilter;
 }): ReactNode {
   const userState = useQuery(userStateQuery());
   const visibleKeys = useMemo(() => new Set(items.map((item) => item.issue.key)), [items]);
@@ -411,8 +415,11 @@ export function IssueBoard({
     clickBelongsToDrop.current = true;
     setDragging(false);
   };
-  const columns = useMemo(() => groupItemsByStage(items), [items]);
-  const boardLanes = useMemo(() => (lanes ? groupItemsByLane(items) : []), [items, lanes]);
+  const columns = useMemo(() => groupItemsByStage(items, stageFilter), [items, stageFilter]);
+  const boardLanes = useMemo(
+    () => (lanes ? groupItemsByLane(items, stageFilter) : []),
+    [items, lanes, stageFilter]
+  );
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
     if (over === null) return;

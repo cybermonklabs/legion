@@ -127,6 +127,34 @@ test("groups table rows into every status and occupied Legion phase at lifecycle
   ]);
 });
 
+test("omits status columns outside the view filter while retaining in-view targets", () => {
+  const items = buildItems(
+    [issue({ key: "ACME-1", status: "in_progress" })],
+    (actor) => actor.id,
+    [],
+    undefined,
+    boardWithFacts()
+  );
+
+  const columns = groupItemsByStage(items, {
+    stages: ["status:in_progress", "phase:implementing", "status:testing"],
+  });
+
+  expect(columns.map((column) => column.stage)).toEqual([
+    "status:in_progress",
+    "phase:implementing",
+    "status:testing",
+  ]);
+  expect(columns.find((column) => column.stage === "status:in_progress")).toMatchObject({
+    droppable: true,
+    items: [],
+  });
+  expect(columns.find((column) => column.stage === "status:testing")).toMatchObject({
+    droppable: true,
+    items: [],
+  });
+});
+
 test("keeps a project without Legion board cards in Dispatch status columns", () => {
   const [item] = buildItems(
     [issue({ key: "CORE-1", labels: ["legion"], status: "in_progress" })],

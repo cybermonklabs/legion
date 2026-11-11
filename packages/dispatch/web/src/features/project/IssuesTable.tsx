@@ -355,6 +355,20 @@ function IssuesTableContent({
   const { attachAbove } = layout;
 
   const boardLayout = params.get("layout") === "board";
+  const boardStageFilter = useMemo(() => {
+    const valuesOf = (id: string): readonly string[] | undefined => {
+      const value = filters.find((filter) => filter.id === id)?.value;
+      return Array.isArray(value) && value.length > 0 ? value.map(String) : undefined;
+    };
+    const stages = valuesOf("stage");
+    const statuses = valuesOf("status");
+    if (
+      (activeView.id === "open" && !params.has("f.stage") && !params.has("status")) ||
+      (stages === undefined && statuses === undefined)
+    )
+      return undefined;
+    return { stages, statuses };
+  }, [activeView.id, filters, params]);
   const viewChanged = activeSaved === undefined && viewIsChanged(params, view, hasLegion);
   const resetView = useCallback(() => {
     const next = new URLSearchParams();
@@ -692,6 +706,7 @@ function IssuesTableContent({
       {boardLayout ? (
         <IssueBoard
           items={model.listedLeaves}
+          stageFilter={boardStageFilter}
           lanes={lanes}
           listingKeys={listingKeys}
           project={project}

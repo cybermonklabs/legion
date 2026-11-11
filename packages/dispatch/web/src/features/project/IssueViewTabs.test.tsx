@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { IssueViewTabs } from "./IssueViewTabs";
@@ -75,6 +76,30 @@ test("an overridden built-in view marks its active tab", () => {
     const active = screen.getByRole("tab", { name: "In flight 4" });
     expect(active).toHaveAttribute("aria-selected", "true");
     expect(active.querySelector("[data-tab-marked]")).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("switching to each built-in view leaves its selected tab unmarked", async () => {
+  const user = userEvent.setup();
+  const view = tabs();
+
+  try {
+    for (const name of [
+      /^All open 8$/u,
+      /^Triage 3$/u,
+      /^Waiting line 2$/u,
+      /^In flight 4$/u,
+      /^Slots 2\/4$/u,
+      /^Finished$/u,
+      /^Created by me 1$/u,
+    ]) {
+      const tab = screen.getByRole("tab", { name });
+      await user.click(tab);
+      expect(tab).toHaveAttribute("aria-selected", "true");
+      expect(tab.querySelector("[data-tab-marked]")).toBeNull();
+    }
   } finally {
     view.unmount();
   }

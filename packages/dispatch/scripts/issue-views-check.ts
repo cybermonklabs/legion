@@ -156,14 +156,18 @@ async function isNotFound(page: Page): Promise<boolean> {
 }
 
 /** Waits until the Issues tab has read its data, since rows and counts arrive after the section
- *  does: the In flight tab's count (which waits on the Legion board) and the current view's
- *  count are drawn, and nothing in the tab is still loading. A tab that never settles is read as
- *  it stands, so a missing selector still reports as it did. */
+ * does: the In flight tab's count (which waits on the Legion board), the current view's count
+ * where that route supplies one, and nothing in the tab is still loading. A tab that never
+ * settles is read as it stands, so a missing selector still reports as it did. */
 async function settled(page: Page, root: Locator): Promise<void> {
   const deadline = Date.now() + SETTLE_MS;
   const view = await root.getAttribute("data-view");
+  const params = new URL(page.url()).searchParams;
   for (const id of new Set(["in-flight", view ?? ""])) {
     if (id === "" || id.startsWith("saved:")) continue;
+    // Finished's tab count is only the cached 28-day default. Its `all` route deliberately has
+    // no count, including the one-row route k4 uses to compare a closed issue's cells.
+    if (id === "finished" && params.get("f.closed") === "all") continue;
     const tab = tabFor(page, id);
     if ((await tab.count()) === 0) continue;
     try {
@@ -438,31 +442,58 @@ function near(actual: number, expected: number, label: string): void {
 
 async function checkK1(page: Page, options: Options): Promise<string[]> {
   const tableCalls = await run(
-    ["git", "grep", "-n", "useReactTable", "packages/dispatch/web/src"],
-    options.repo
-  );
-  const otherTables = await run(
     [
       "git",
       "grep",
       "-n",
       "-E",
-      "IssueGrid|stubItem|function (Slots|WaitingLine|FinishedIssues)|<DataTable",
-      "packages/dispatch/web/src/features",
+      String.raw`\buseReactTable\s*\(`,
+      "--",
+      "packages/dispatch/web/src",
+      ":(exclude,glob)packages/dispatch/web/src/**/*.test.tsx",
     ],
     options.repo
   );
+  const legacyReferences = await run(
+    [
+      "git",
+      "grep",
+      "-n",
+      "-E",
+      "IssueGrid|stubItem|function (Slots|WaitingLine|FinishedIssues)",
+      "--",
+      "packages/dispatch/web/src",
+    ],
+    options.repo
+  );
+  const dataTableUse = await run(
+    [
+      "git",
+      "grep",
+      "-n",
+      "<DataTable",
+      "--",
+      "packages/dispatch/web/src/features/project/IssuesTable.tsx",
+    ],
+    options.repo
+  );
+  const results = [tableCalls, legacyReferences, dataTableUse];
+  if (results.some((result) => result.exitCode > 1))
+    throw new Error("could not inspect the table implementation");
+
   const tableLines = tableCalls.stdout.trim().split("\n").filter(Boolean);
-  const otherLines = otherTables.stdout.trim().split("\n").filter(Boolean);
+  const legacyLines = legacyReferences.stdout.trim().split("\n").filter(Boolean);
+  const dataTableLines = dataTableUse.stdout.trim().split("\n").filter(Boolean);
   if (
     tableLines.length !== 1 ||
     !tableLines[0]?.includes("DataTable.tsx") ||
-    otherLines.length !== 1 ||
-    !otherLines[0]?.includes("IssuesTable.tsx") ||
-    !otherLines[0]?.includes("<DataTable")
+    legacyLines.length !== 0 ||
+    dataTableLines.length === 0
   )
     throw new Error(
-      `useReactTable: ${tableLines.join(" | ") || "none"}; legacy table references: ${otherLines.join(" | ") || "none"}`
+      `useReactTable calls: ${tableLines.join(" | ") || "none"}; legacy references: ${
+        legacyLines.join(" | ") || "none"
+      }; DataTable uses: ${dataTableLines.join(" | ") || "none"}`
     );
 
   await page.goto(projectUrl(options, "/evals"));
