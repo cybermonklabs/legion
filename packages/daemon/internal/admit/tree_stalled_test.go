@@ -383,18 +383,51 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	if got := stalledNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the two-hour deployment was told %#v, want %#v: the bound is the deployment's own number", got, want)
 	}
+
+	// A root the daemon has just started is named by nothing. It waited in the line carrying
+	// the moved_at of the moment a person handed it over — nine hours here, which is how long
+	// a full cap can hold a root — and its promotion is what moves it: the tree is opened, the
+	// root is written in_progress and its architect's start is queued, so the record says the
+	// daemon started it now (record.Store.MarkIssueMoved at the promotion). Were that movement
+	// not written, the next pass would read the old stamp, find the tree running with no claim
+	// at work and no wait of the daemon's own, and tell the controller that a tree the daemon
+	// had started a moment before had stopped.
+	publishStalledNotices(t, pool)
+	const promotedRoot = "LEGION-430"
+	seedWaiting(t, pool, promotedRoot, "D")
+	markMoved(t, pool, promotedRoot, fourHoursQuiet.Add(-9*time.Hour))
+	promotedAt := fourHoursQuiet.Add(time.Minute)
+	admission.now = func() time.Time { return promotedAt }
+	tick(t, pool, admission, "promotion")
+	if started := issue(t, pool, promotedRoot); started.Status != "in_progress" {
+		t.Fatalf("%s stands at %s/%s after the pass, want the promotion that opens its tree: this case is about a root the daemon has just started",
+			promotedRoot, started.Phase, started.Status)
+	}
+	if got := stalledRoots(t, pool); got != nil {
+		t.Fatalf("the pass that promoted %s told the controller of %v, want nothing", promotedRoot, got)
+	}
+	later = promotedAt.Add(time.Hour)
+	admission.now = func() time.Time { return later }
+	tick(t, pool, admission, "after-the-promotion")
+	if got := stalledRoots(t, pool); got != nil {
+		t.Fatalf("the pass after the promotion told the controller of %v, want nothing: a tree the daemon started an hour ago has not stopped", got)
+	}
 }
 
-// Four waits the daemon makes on purpose are never a stall, and five trees that look like them
-// are. A tree held by one of the four is working as designed: something the daemon itself
-// knows about will move it, and telling the controller it has stopped would send a person to
-// read a tree that is exactly where the rules put it.
+// Four waits the daemon makes on purpose are never a stall, and seven trees that look like
+// them are. A tree every quiet issue of which is held by one of the four is working as
+// designed: something the daemon itself knows about will move it, and telling the controller
+// it has stopped would send a person to read a tree that is exactly where the rules put it.
 //
-// The five told beside them are the shapes a careless rule would silence with the four: an
+// The seven told beside them are the shapes a careless rule would silence with the four: an
 // issue with an open child of its own that is no children-first wait, because that rule holds
 // an issue whose first phase has not started and nothing else; a held issue and an issue
-// awaiting its merge, neither of which the daemon holds for anybody; and a tree with a notice
-// queued to a suspended role, which is a delivery waiting for a role nothing brings back.
+// awaiting its merge, neither of which the daemon holds for anybody; a tree with a notice
+// queued to a suspended role, which is a delivery waiting for a role nothing brings back; and
+// two mixed trees, each with one issue in a wait of the daemon's and one that has simply
+// stopped. The mixed two are what holds the rule to every quiet issue rather than any
+// (dispatch://INFRA-2560, R5): a rule answered on one member would silence a tree whose other
+// member nothing is going to move.
 func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	pool := migratedPool(t)
 	bound := deploymentBound(t, "")
@@ -403,7 +436,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	}
 	// The cap is exactly the slots the fixture holds, so the one issue below that owes its
 	// worker a start and holds no slot waits behind a full cap, which is the fourth wait.
-	admission := quiet(t, 7)
+	admission := quiet(t, 9)
 	admission.UseStalledTreeNotice(bound)
 	registerController(t, pool)
 	records := claimStore(t, pool)
@@ -418,9 +451,16 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	idle(awaiting, awaiting)
 
 	// 2. A child a Dispatch blocked-by link holds where it stands: the waiting line passes over
-	// it every pass until the issue it waits on is done.
+	// it every pass until the issue it waits on is done. Its root waits for that child under
+	// the children-first rule — a blocker holds a child alone (blockers.Holdable), so a tree
+	// silent by this wait is one whose root waits too — and the child's own blocker is what
+	// carries it: take the blocked-by rule out of the four and this tree is told, because
+	// nothing would then stand between the child and a stall.
 	const blockedRoot, blockedChild, blocker = "LEGION-510", "LEGION-511", "LEGION-519"
-	seedQuietRoot(t, pool, blockedRoot, "B", phase.Implementing)
+	seedQuietRoot(t, pool, blockedRoot, "B", phase.Admitted)
+	blockedApproved := 1
+	seedGate(t, pool, record.DesignGate{Issue: blockedRoot, ArtifactID: "artifact-510", LatestVersion: 1,
+		ApprovedVersion: &blockedApproved, EverOpened: true})
 	seedQuietChild(t, pool, blockedRoot, blockedChild, "B1", phase.Admitted, "todo")
 	seedMirror(t, pool, blockedRoot, "in_progress")
 	seedMirrorChild(t, pool, blockedChild, "todo", blockedRoot, blocker)
@@ -498,6 +538,26 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		}
 	})
 
+	// 10. A tree whose root waits on a person over a child that has stopped. The first wait is
+	// the root's and the root's alone; the child in implementing is nobody's to move, and the
+	// tree is told.
+	const mixedAwaiting, mixedAwaitingChild = "LEGION-590", "LEGION-591"
+	seedQuietRoot(t, pool, mixedAwaiting, "J", phase.AwaitingPerson)
+	seedQuietChild(t, pool, mixedAwaiting, mixedAwaitingChild, "J1", phase.Implementing, "in_progress")
+	idle(mixedAwaiting, mixedAwaiting)
+
+	// 11. A tree whose child a Dispatch blocked-by link holds where it stands while its root
+	// has stopped in implementing. The second wait is the child's, and the root is told with
+	// it: the same mixture as the tree above, read from the other side of the tree and through
+	// another of the four.
+	const mixedBlocked, mixedBlockedChild, mixedBlocker = "LEGION-600", "LEGION-601", "LEGION-609"
+	seedQuietRoot(t, pool, mixedBlocked, "K", phase.Implementing)
+	seedQuietChild(t, pool, mixedBlocked, mixedBlockedChild, "K1", phase.Admitted, "todo")
+	seedMirror(t, pool, mixedBlocked, "in_progress")
+	seedMirrorChild(t, pool, mixedBlockedChild, "todo", mixedBlocked, mixedBlocker)
+	seedMirror(t, pool, mixedBlocker, "in_progress")
+	idle(mixedBlocked, mixedBlocked)
+
 	// The fixture's own premise: each of the four is the wait it says it is, read from the
 	// facts the pass itself judges from. Without this, a tree left out for some other reason —
 	// a tree the daemon does not run, one that is not quiet — would read here as a wait
@@ -505,6 +565,10 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	facts, slots := passFacts(t, pool)
 	if _, blocked := facts.Held[blockedChild]; !blocked {
 		t.Fatalf("%s is held by no Dispatch blocker: the pass's own facts hold %v", blockedChild, facts.Held)
+	}
+	if _, waits := facts.ChildWaits[blockedRoot]; !waits {
+		t.Fatalf("%s waits for no child of its own: its tree is silent only while both of its issues wait, the pass's own facts hold %v",
+			blockedRoot, facts.ChildWaits)
 	}
 	if _, waits := facts.ChildWaits[childrenFirst]; !waits {
 		t.Fatalf("%s waits for no child of its own: the pass's own facts hold %v", childrenFirst, facts.ChildWaits)
@@ -520,16 +584,24 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	if !issue(t, pool, awaiting).AwaitingPerson() {
 		t.Fatalf("%s does not wait on a person: the first wait is the root that does", awaiting)
 	}
+	if _, blocked := facts.Held[mixedBlockedChild]; !blocked {
+		t.Fatalf("%s is held by no Dispatch blocker: the mixed tree's premise is that one of its two issues waits by design, the pass's own facts hold %v",
+			mixedBlockedChild, facts.Held)
+	}
+	if !issue(t, pool, mixedAwaiting).AwaitingPerson() {
+		t.Fatalf("%s does not wait on a person: the mixed tree's premise is that its root does", mixedAwaiting)
+	}
 
 	settled := settleMovements(t, pool, awaiting, blockedRoot, blockedChild, childrenFirst, owedStart,
-		stopped, working, held, awaitingMerge, suspended)
+		stopped, working, held, awaitingMerge, suspended, mixedAwaiting, mixedAwaitingChild,
+		mixedBlocked, mixedBlockedChild)
 	admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
 
 	tick(t, pool, admission, "waits")
 
-	want := []string{stopped, working, held, awaitingMerge, suspended}
+	want := []string{stopped, working, held, awaitingMerge, suspended, mixedAwaiting, mixedBlocked}
 	if got := stalledRoots(t, pool); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the controller was told of %v, want %v: the four waits the daemon makes by design are no stall, and the five beside them are",
+		t.Fatalf("the controller was told of %v, want %v: a tree is silent only where every quiet issue of it waits by design, and the two mixed trees are told",
 			got, want)
 	}
 }

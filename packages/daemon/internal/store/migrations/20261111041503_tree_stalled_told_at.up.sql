@@ -4,11 +4,12 @@
 --
 -- What the column holds. The admission pass tells the project's controller once of a tree of
 -- its own that has stopped: quiet for longer than `stalled_tree_notice_hours`, no claim of it
--- at work, and no issue of it waiting by a rule of the daemon's own. In the same transaction as
--- the notice it writes here the tree's newest movement at that moment (record.TreeQuiet.MovedAt,
--- record.Store.MarkTreeStalledTold), which is the one fact that says which stall was told. A
--- later pass tells the same tree again only when the tree has moved past the mark, so a tree
--- that has stopped is reported once and a tree that moves and stops again is reported anew.
+-- at work, and at least one quiet issue of it waiting by no rule of the daemon's own. In the
+-- same transaction as the notice it writes here the tree's newest movement at that moment
+-- (record.TreeQuiet.MovedAt, record.Store.MarkTreeStalledTold), which is the one fact that says
+-- which stall was told. A later pass tells the same tree again only when the tree has moved
+-- past the mark, so a tree that has stopped is reported once and a tree that moves and stops
+-- again is reported anew.
 --
 -- Why a column and not a time of the telling. A clock of the telling would need a rule of its
 -- own to decide when to tell again — an hour, a day — and every such rule either tells about a

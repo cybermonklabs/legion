@@ -361,7 +361,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 // the three facts the measure may read and no others: a later reader of the same question takes
 // it from here and cannot quietly read a fourth. The admission pass measures the same thing
 // with the same statement, over the claims its own read gives it (admit's quietTrees), so the
-// state and the pass cannot say different things about one tree.
+// two read one statement of the measure and neither keeps a rule of its own.
+//
+// One statement is what they share, and not one answer: the records each is handed differ.
+// This one is given `own`, every record of the project the state holds, a done one included,
+// while the pass is given record.Store.LiveIssues, which leaves out a done record holding no
+// slot. A root is a member of its tree whatever its own status says (record.TreeMember), so a
+// tree whose root is done is measured here from that root and is no tree of the pass's at all,
+// and the two can read one tree from different members. Nothing rests on their agreeing: the
+// state reports what it measures, and the pass tells the controller only of the trees it runs
+// (record.RunningRoots), which are trees whose records the live read holds.
 func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
 	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }

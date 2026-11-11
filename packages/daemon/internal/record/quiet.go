@@ -99,6 +99,13 @@ func TreeMember(issue Issue) bool {
 // already holds. Neither may read per tree — both judge every tree of the project in one pass —
 // so the measure answers them all from one walk of the records and one of the claims.
 //
+// One statement is what the two readers share, and not one answer: each is handed its own
+// records. The pass is given the project's live ones (Store.LiveIssues, which leaves out a done
+// record holding no slot) and the state every record it holds, a done one included; a root is a
+// member of its tree whatever its own status says (TreeMember), so a tree whose root is done is
+// measured by the state and by no pass. The rule never varies between them — what it is asked
+// about does.
+//
 // The tree of a root is that root and the issues under it the workflow still runs (TreeMember),
 // and nothing else. A child the record shows as done is no member: its pull request goes on
 // drawing GitHub events — a comment, a deployment, a late check run — long after the work

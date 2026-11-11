@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -1011,6 +1010,18 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
 	}
+	// The re-admission is a new generation of the tree: this write changes the generation, the
+	// phase, the status and, below, the facts of every issue under the root, which is news of
+	// the issue and so a movement (record.Store.MarkIssueMoved, the rule in workflow's
+	// dispatchIssue). A person's live todo is marked by the engine's own handler as well, and
+	// the mark is written forwards alone, so the second write of the same fact changes nothing;
+	// the daemon's own hand-over and the boot listing's re-admission reach no such mark, and
+	// the generation this opens is news whichever of the three brought it. That is what parts
+	// it from the listing's plain observation, which the rule leaves unmarked because it tells
+	// the daemon what it already knows.
+	if err := a.store.MarkIssueMoved(ctx, tx, stored.Key, a.now()); err != nil {
+		return err
+	}
 	// A generation that ended takes what its architect handed back with it: the re-admission is a
 	// handout, so an ask.opened or a hand-back of the old run, delivered late, at or below what the
 	// record holds now, declares nothing in this one. Its catch-up cursor starts again too, so the
@@ -1433,6 +1444,19 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
+				// The answer takes the root out of its wait and back to admitted, which is a
+				// phase change and so a movement of the tree (record.Store.MarkIssueMoved, the
+				// rule in workflow's dispatchIssue). Nothing else writes one for it: the
+				// person's act that answered the wait was recorded on Dispatch and is read here
+				// from the record rather than carried by a fact of this issue, and the
+				// architect's claim stands idle through the resume, which the quiet measure
+				// counts as no work (record's restingStates). Unmarked, the root would keep the
+				// moved_at of its last real movement, which is where it stood when it handed
+				// the question to the person, and the next pass would tell the controller that
+				// a tree the daemon has just resumed has stopped.
+				if err := a.store.MarkIssueMoved(ctx, tx, issue.Key, now); err != nil {
+					return admitted, released, err
+				}
 				if writeInProgress {
 					if err := a.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, now); err != nil {
 						return admitted, released, err
@@ -1464,6 +1488,23 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				issue.HandedOverFrom = ""
 				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
+				}
+				// The promotion opens the tree's lifecycle, writes the root in_progress and
+				// queues its architect's start below: a phase of the tree's life the record did
+				// not carry before, and a start, which the rule counts as movements
+				// (record.Store.MarkIssueMoved, the rule in workflow's dispatchIssue). The
+				// architect start writes none of its own — it is queued through
+				// Engine.EnqueueNaming, which waits for no slot and so never reaches
+				// workflow.StartOrOwe, where a phase worker's start marks one — so without this
+				// the root would keep the moved_at of the moment a person labelled it, however
+				// many hours it then waited in the line. The next pass reads that stamp:
+				// record.RunningRoots takes the root in from here on, no claim of it is at work
+				// yet because the outbox has still to build its pod, and a root at admitted
+				// with no open child under it is no wait the daemon makes by design. So that
+				// next pass would tell the controller that a tree the daemon started a moment
+				// ago has stopped.
+				if err := a.store.MarkIssueMoved(ctx, tx, issue.Key, now); err != nil {
+					return admitted, released, err
 				}
 				if err := a.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, now); err != nil {
 					return admitted, released, err
@@ -1535,297 +1576,6 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return admitted, released, err
 	}
 	return admitted, released, nil
-}
-
-// quietTrees is the pass's measure of its trees: how long each tree of the project has been
-// still and whether any claim of it is at work (record.QuietTrees), over the records the pass
-// has already read and one read of the claims of the project (record.Store.ProjectClaims). It
-// is one query for the whole pass, like the issues and the slots beside it: a pass that judges
-// every tree of the project may make no read per tree.
-//
-// issues are the pass's own live records and now the instant the pass measures from, so that
-// every reading of a tree it makes — this one and the record-only one it is filtered with — is
-// taken from one instant. The claim read is keyed by the claim project token, which
-// `claims.project` holds, not by the Dispatch project key the issue records carry.
-//
-// Where it is called from: tellStalledTrees, after blockers.JudgeLine and the releases, where
-// the pass holds the facts it judges from and has given back every slot it is going to. The
-// measure is behind this method rather than in the pass because the rule that acts on it and
-// the read it needs belong together. The state's projection answers the same question from the
-// same statement over the claims it already holds (projection's quietTrees), so the pass and
-// the state cannot say different things about one tree.
-func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, now time.Time) (map[string]record.TreeQuiet, error) {
-	project, err := claim.ProjectToken(a.project)
-	if err != nil {
-		return nil, err
-	}
-	claims, err := a.store.ProjectClaims(ctx, tx, project)
-	if err != nil {
-		return nil, err
-	}
-	return record.QuietTrees(issues, claims, now), nil
-}
-
-// tellStalledTrees tells the project's controller, once for each stall, of every tree of this
-// daemon's own that has stopped. A tree has stopped when all of this holds: its root is one
-// the daemon runs (record.RunningRoots), it has been quiet for longer than
-// `stalled_tree_notice_hours` (record.TreeQuiet.Quiet, UseStalledTreeNotice), no claim of it
-// is at work (record.TreeQuiet.AtWork), its newest movement stands after the stall its root
-// was last told about (record.Issue.TreeStalledToldAt), and no issue of it waits by a rule of
-// the daemon's own (waitsByDesign).
-//
-// Why the mark is a movement and not a time of telling: the rule reads the tree's own movement
-// already, so a tree told about is a tree whose movement the daemon has named. The mark is
-// written only for a notice that went into the outbox, in this same transaction (the answer
-// wakeController gives), so a stall found while no controller was registered, or while an
-// older stalled-tree notice of the same root still waited to be published, is told at a later
-// pass rather than marked told and lost. The notice is keyed per issue
-// (record.NoticePerClaim), so a second tree that stops while the first tree's notice waits is
-// told in the same pass.
-//
-// What it reads, and in what order. This runs inside promoteHolds, on every fact, every tick
-// and every boot, and on a healthy project the answer is always that nothing has stopped, so
-// each read is made only once the pass cannot answer without it:
-//
-//  1. the records alone (record.QuietTrees with no claims), which costs no query. A claim's
-//     step times only ever move a tree's measured movement forward, so the quiet time with the
-//     claims is never longer than the quiet time without them: a root the records alone show
-//     inside the bound is inside it whatever the claims say. A pass whose running roots are all
-//     inside it ends there, which is every pass of a project whose trees are working;
-//  2. the claims of the project (quietTrees, one read), which carry the step times the records
-//     do not and whether an agent of the tree is at work. The told mark is compared with this
-//     movement and never with the record-only one, which can stand behind it;
-//  3. whether a controller is registered, and whether this root's own tree-stalled notice is
-//     still unsent (record.Store.ControllerRegistered, ControllerNoticePending). Both are
-//     refusals wakeController makes below, and a root either one refuses is left out here, so
-//     that no membership, reason or pull-request read is built for a notice that cannot be
-//     queued. wakeController still decides: it asks both again, and the mark is written only
-//     for a row that went into the outbox;
-//  4. the membership of the stalled trees, the slots of their members and one batched read of
-//     those members' pull requests (record.Store.PullRequestsOf), each built for the roots that
-//     are already candidates and for no other issue of the project.
-func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
-	facts record.LineFacts,
-) error {
-	if a.stalledTreeNotice <= 0 {
-		return nil
-	}
-	now := a.now()
-	// Step 1: the reading that costs no query. A root inside the bound here is inside it under
-	// any claim of its tree, so this is the whole of a working project's pass.
-	recorded := record.QuietTrees(issues, nil, now)
-	running := record.RunningRoots(issues, facts)
-	candidates := make([]record.Issue, 0, len(running))
-	for _, issue := range issues {
-		if _, runs := running[issue.Key]; !runs {
-			continue
-		}
-		if recorded[issue.Key].Quiet > a.stalledTreeNotice {
-			candidates = append(candidates, issue)
-		}
-	}
-	if len(candidates) == 0 {
-		return nil
-	}
-	// Step 2: the measure the rule decides on.
-	quiet, err := a.quietTrees(ctx, tx, issues, now)
-	if err != nil {
-		return err
-	}
-	stalled := make([]record.Issue, 0, len(candidates))
-	for _, root := range candidates {
-		measure := quiet[root.Key]
-		if measure.AtWork || measure.Quiet <= a.stalledTreeNotice {
-			continue
-		}
-		if told := root.TreeStalledToldAt; told != nil && !measure.MovedAt.After(*told) {
-			continue
-		}
-		stalled = append(stalled, root)
-	}
-	if len(stalled) == 0 {
-		return nil
-	}
-	// Step 3: the two refusals, each asked before anything is built for the notice it would
-	// refuse. A controller that is not registered refuses every root of this pass at once.
-	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
-	if err != nil || !registered {
-		return err
-	}
-	// A root whose own tree-stalled notice still waits unsent is refused on its own. The kind is
-	// keyed by its issue and by no role at all (record.NoticePerClaim, wakeController), which is
-	// the pair asked for here.
-	unsent := make([]record.Issue, 0, len(stalled))
-	for _, root := range stalled {
-		pending, err := a.store.ControllerNoticePending(ctx, tx, a.project, record.TreeStalledNotice, root.Key, "")
-		if err != nil {
-			return err
-		}
-		if !pending {
-			unsent = append(unsent, root)
-		}
-	}
-	if len(unsent) == 0 {
-		return nil
-	}
-	// Step 4: the tree is its root and the issues under it the workflow still runs
-	// (record.TreeMember), which is the membership the measure counts and the membership the
-	// notice names: a child the record shows as done is no member of either, since a comment on
-	// its old pull request is no movement of the tree and its phase is nobody's to act on. It is
-	// gathered for the roots above alone, since no other tree of the project is named by
-	// anything this pass writes.
-	telling := make(map[string]struct{}, len(unsent))
-	for _, root := range unsent {
-		telling[root.Key] = struct{}{}
-	}
-	members := make(map[string][]record.Issue, len(unsent))
-	of := make(map[string]struct{}, len(unsent))
-	for _, issue := range issues {
-		if _, tells := telling[issue.Tree]; !tells || !record.TreeMember(issue) {
-			continue
-		}
-		members[issue.Tree] = append(members[issue.Tree], issue)
-		of[issue.Key] = struct{}{}
-	}
-	// The slots of those members, by issue, which the fourth wait below reads: a start marked
-	// for its issue's admission slot is a start the outbox holds unclaimable while the table
-	// names no row of that issue (record.Store's outboxInOrder), so the pair is the wait. Only a
-	// member is ever asked for, so no slot of another tree is mapped.
-	slotted := make(map[string]struct{}, len(of))
-	for _, slot := range slots {
-		if _, member := of[slot.Issue]; member {
-			slotted[slot.Issue] = struct{}{}
-		}
-	}
-	var stopped []record.Issue
-	named := 0
-	for _, root := range unsent {
-		if a.waitsByDesign(members[root.Key], slotted, facts) {
-			continue
-		}
-		stopped = append(stopped, root)
-		named += len(members[root.Key])
-	}
-	if len(stopped) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, named)
-	for _, root := range stopped {
-		for _, member := range members[root.Key] {
-			keys = append(keys, member.Key)
-		}
-	}
-	requests, err := a.store.PullRequestsOf(ctx, tx, keys)
-	if err != nil {
-		return err
-	}
-	for _, root := range stopped {
-		measure := quiet[root.Key]
-		notice := record.ControllerNotice{Kind: record.TreeStalledNotice,
-			Reason: stalledTreeReason(root.Key, measure, members[root.Key], requests)}
-		told, err := a.wakeController(ctx, tx, notice, root.Key, a.now())
-		if err != nil {
-			return fmt.Errorf("tell the controller that the tree of %s has stopped: %w", root.Key, err)
-		}
-		if !told {
-			continue
-		}
-		if err := a.store.MarkTreeStalledTold(ctx, tx, root.Key, measure.MovedAt); err != nil {
-			return err
-		}
-		intake.OnCommit(ctx, func() {
-			a.log.Warn("admission: told the controller a tree has stopped", "issue", root.Key,
-				"quiet", measure.Quiet, "movedAt", measure.MovedAt)
-		})
-	}
-	return nil
-}
-
-// waitsByDesign says whether any issue of a quiet tree stands in one of the four waits the
-// daemon makes on purpose, each of which is a tree that has not stopped but is holding still
-// for a reason the daemon itself knows:
-//
-//  1. a root waiting on a person (record.Issue.AwaitingPerson): the tree waits for an answer,
-//     and only a person's act moves it. The test is made of every member, which costs nothing
-//     and says the same thing: only a root ever stands in that phase;
-//  2. an issue a Dispatch blocked-by link holds where it stands (record.LineFacts.Held, the
-//     judgement blockers.LineWaitsOn reads), which the line passes over every pass;
-//  3. an issue the children-first rule holds (record.LineFacts.ChildWaits, waitsForChildren),
-//     whose own first phase waits for the open Dispatch children under it. It is that
-//     judgement and never record.ChildrenFirstCandidates, which names every issue at admitted
-//     under an open gate whether or not a child of it is open: taken for this, it would silence
-//     the commonest quiet shape there is, a tree whose root stands at admitted doing nothing;
-//  4. an issue whose start row is marked for its admission slot while the slots table names no
-//     row of it (record.LineFacts.Owed with the pass's own slots): the worker waits for the cap
-//     to free a slot, which is the waiting line working as designed.
-//
-// Only a start held that way silences a tree. A task, a notice or a message queued for a role
-// silences nothing: a notice queued to a suspended role waits for a role nothing brings back,
-// so a tree with one in its outbox has stopped like any other. An issue in `held` and an issue
-// in `awaiting_merge` are told like any other stall as well — a held issue waits for its
-// architect, which is the tree's own work, and an issue awaiting its merge waits for GitHub,
-// which is nothing the daemon holds it for.
-func (a *Admission) waitsByDesign(members []record.Issue, slotted map[string]struct{}, facts record.LineFacts) bool {
-	for _, issue := range members {
-		if issue.AwaitingPerson() {
-			return true
-		}
-		if _, held := facts.Held[issue.Key]; held {
-			return true
-		}
-		if a.waitsForChildren(facts.ChildWaits, issue) {
-			return true
-		}
-		if _, owes := facts.Owed[issue.Key]; owes {
-			if _, holds := slotted[issue.Key]; !holds {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// stalledTreeReason is what a stalled-tree notice tells the project's controller: the root, how
-// long the tree has been quiet, and, for each member of the tree (record.TreeMember), the phase
-// its record carries — `held` for a held issue — the role whose turn that issue's standing is
-// (workflow.RoleFor over record.StandsAt, which is the phase a held issue was held from) or
-// that the phase has no role, and the state of its pull request. It ends by telling the
-// controller to read the tree and decide.
-//
-// The membership is the measure's own and is read from the one predicate, so the notice names
-// exactly the issues whose stillness was measured: a root, whatever its own status says, and
-// every issue under it the workflow still runs. The caller gathers members by the same
-// predicate, so the test here refuses nothing it handed over.
-//
-// It is written in short sentences a controller agent reads without decoding anything: the
-// daemon knows the tree has stopped and knows nothing of why, so what it hands over is the
-// facts and the decision, never a guess. The pull request is named from the record of its own
-// table (requests, keyed by issue), because the state a stopped tree is most often in is a
-// merged one — the tree whose work landed and whose roles then stopped — which no list of the
-// open pull requests could answer.
-func stalledTreeReason(root string, measure record.TreeQuiet, members []record.Issue, requests map[string]record.PullRequest) string {
-	var reason strings.Builder
-	fmt.Fprintf(&reason, "%s has stopped. The tree has been quiet for %.1f hours. No agent of the tree is at work.",
-		root, measure.Quiet.Hours())
-	for _, member := range members {
-		if !record.TreeMember(member) {
-			continue
-		}
-		fmt.Fprintf(&reason, "\n%s is in %s. ", member.Key, member.Phase)
-		if role := workflow.RoleFor(record.StandsAt(member)); role != "" {
-			fmt.Fprintf(&reason, "The %s has the turn. ", role)
-		} else {
-			reason.WriteString("No role works this phase. ")
-		}
-		if pr, recorded := requests[member.Key]; recorded {
-			fmt.Fprintf(&reason, "Pull request %d is %s.", pr.Number, pr.State)
-		} else {
-			reason.WriteString("The record holds no pull request.")
-		}
-	}
-	reason.WriteString("\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can move an issue back a phase. You can park the tree.")
-	return reason.String()
 }
 
 // reread takes this pass's shared reads again, after the pass has itself written something that
@@ -2414,6 +2164,23 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 // record.PhaseKeepsSlot moves this repair with it. Both halves are read from the records the
 // pass already holds, so the widening costs no further read.
 //
+// The second half asks of the record the three terms the first half gets from the row itself,
+// and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in the
+// workflow, its tree running and its root not lingering, while an issue past its review is in
+// the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
+// every record that is not done, a parked one included. So this half asks each of the three —
+// record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
+// record.TreeRuns over the pass's lifecycles and gates, which carries the lingering root with
+// it. Without them the repair's bound would be the retired-claim skip further down rather than
+// the rule: a parked issue in its retro, or one whose tree left the workflow, would have its
+// worker started again. The three sibling passes carry the same guard
+// (startMidPhaseMembers, finishFencedStarts, workflow's booted).
+//
+// record.TreeRuns is asked of each such issue's root rather than record.RunningRoots being
+// built once for the call: the set costs a walk of every record of the project and a map the
+// size of it on every pass, while the rule asked here costs two map lookups for each issue
+// past its review, of which a healthy project has a handful.
+//
 // The per-issue tests below bound it, and they are what keeps it from starting a worker the cap
 // has not admitted: workflow.RoleFor answers the empty role for awaiting_merge and the tree's
 // architect for accepting, which the loop passes over, and record.AtWork is false for
@@ -2472,9 +2239,14 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		take(issue)
 	}
 	for _, issue := range issues {
-		if record.PastReview(issue) {
-			take(issue)
+		if !record.PastReview(issue) || !record.InWorkflow(issue) {
+			continue
 		}
+		root, rooted := byKey[issue.Tree]
+		if !rooted || !record.TreeRuns(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) {
+			continue
+		}
+		take(issue)
 	}
 	for _, issue := range candidates {
 		role := workflow.RoleFor(issue.Phase)

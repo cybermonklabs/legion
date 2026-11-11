@@ -32,9 +32,11 @@ const movedIssue = "LEGION-208"
 // record changed leaves the mark at that fact's own moment, and the daemon's own bookkeeping
 // leaves it where it stands.
 //
-// This test is in internal/admit because it is the one package that can show both halves. The six
-// write sites are in internal/workflow and the boot's read of the Dispatch listing is
-// Admission.Reconcile's, and admit imports workflow, so an Engine and an Admission stand side by
+// This test is in internal/admit because it is the one package that can show every half. Seven
+// of the ten write sites are in internal/workflow and three are admission's own — the
+// re-admission, the resume of an answered root and the promotion of a root the line was
+// holding — and the boot's read of the Dispatch listing, which marks nothing of its own, is
+// Admission.Reconcile's; admit imports workflow, so an Engine and an Admission stand side by
 // side here exactly as the daemon runs them. internal/store, whose own migrateThrough helper would
 // have served the last part, cannot: admit's own dependencies reach it, so a test in package store
 // could not drive the listing at all. The last part therefore takes the column off a migrated pool
@@ -174,6 +176,96 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		t.Fatalf("report the activity of the architect claim of %s = %t, %v", movedIssue, known, err)
 	}
 	assertMoved("a claim's session activity report", at(6))
+
+	// The four writes of a phase or of a start that no fact of the issue carries, and that no
+	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
+	// person (workflow's enterAwaiting), the promotion of a root the waiting line was holding
+	// and the resume of a root a person answered (both admit's promoteHolds), and a
+	// re-admission (admit's readmit). Each is driven by the fact that reaches it, as the daemon
+	// drives it, and the engine's clock is held apart from the pass's so that every mark names
+	// the site that wrote it.
+	t.Run("the daemon marks the phases and the starts it writes itself", func(t *testing.T) {
+		pool := migratedPool(t)
+		const (
+			waits      = "LEGION-210"
+			promoted   = "LEGION-211"
+			readmitted = "LEGION-212"
+		)
+		// A slotted root whose architect handed a question to a person, a root waiting in the
+		// line behind it, and a closed root a person is about to set back to todo. The cap is
+		// the two slots the first two take, so the re-admitted root below stays in the line and
+		// the mark it carries can only be the re-admission's own.
+		seedSlotted(t, pool, waits, "U")
+		seedWaiting(t, pool, promoted, "V")
+		seedArchitectClaim(t, pool, waits, true)
+		seedHandBack(t, pool, waits, "ask-q", 5)
+		putIssue(t, pool, record.Issue{Key: readmitted, Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Project: testProject, Title: readmitted, Tree: readmitted,
+			Phase: phase.Done, Generation: 1, Status: record.DoneStatus, DispatchStatus: record.DoneStatus,
+			Rank: "W", HandedOver: true, LastDispatchSeq: 1})
+
+		var engineNow, passNow time.Time
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+			Clock: func() time.Time { return engineNow }}, nil)
+		admission := New(record.NewStore(), engine, 2, testProject, nil)
+		admission.now = func() time.Time { return passNow }
+
+		// Every clock below runs from just after the stamp the seeding left, because a mark is
+		// only ever written forwards: a time behind the row's own would be the monotone no-op
+		// the rule makes it, and would prove nothing.
+		base := settleMovements(t, pool, waits, promoted, readmitted).Add(time.Minute)
+		at := func(minutes int) time.Time { return base.Add(time.Duration(minutes) * time.Minute) }
+		marked := func(what, key string, want time.Time) {
+			t.Helper()
+			if got := movedAt(t, pool, key); !got.Equal(want) {
+				t.Fatalf("after %s the record says %s last moved at %s, want %s, the moment of that write",
+					what, key, got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+			}
+		}
+
+		// One pass writes two of them, each on its own clock: the root that now waits only on a
+		// person enters that wait on the engine's, and the root the line was holding is promoted
+		// on the pass's.
+		engineNow, passNow = at(1), at(2)
+		tick(t, pool, admission, "pass-1")
+		if got := issue(t, pool, waits); !got.AwaitingPerson() {
+			t.Fatalf("%s stands at %s, want it waiting on a person: the wait is the write this case is about", waits, got.Phase)
+		}
+		marked("a root entered its wait on a person", waits, at(1))
+		if got := issue(t, pool, promoted); got.Status != "in_progress" {
+			t.Fatalf("%s stands at %s/%s, want the promotion that opens its tree and starts its architect",
+				promoted, got.Phase, got.Status)
+		}
+		marked("the promotion of a root the line was holding", promoted, at(2))
+
+		// The person acts, and the next pass resumes the root where it stands.
+		answerWait(t, pool, waits, record.AnsweredByAsk, "ask-q")
+		passNow = at(3)
+		tick(t, pool, admission, "pass-2")
+		if got := issue(t, pool, waits); got.Phase != phase.Admitted || got.Awaiting != nil {
+			t.Fatalf("%s stands at %s holding %+v, want it admitted again with no wait: the resume is the write this case is about",
+				waits, got.Phase, got.Awaiting)
+		}
+		marked("the resume of a root a person answered", waits, at(3))
+
+		// A person sets the closed root back to todo. The engine's own handler marks that event
+		// first, on its own clock, so the pass's clock standing after it is what says the
+		// re-admission wrote the mark the record carries.
+		engineNow, passNow = at(4), at(5)
+		apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: readmitted, ResolvedRepo: "acme/widgets",
+			Seq: 2, Type: "issue.updated", Status: "todo", Title: readmitted, Rank: "W", HandedOver: handed}, engine)
+		if got := issue(t, pool, readmitted); got.Generation != 2 || got.Phase != phase.Admitted {
+			t.Fatalf("%s stands at %s in generation %d, want admitted in generation 2: the fact must be the re-admission it is read as",
+				readmitted, got.Phase, got.Generation)
+		}
+		for _, slot := range slots(t, pool) {
+			if slot.Issue == readmitted {
+				t.Fatalf("%s holds admission slot %d: the cap must keep it in the line, so that the mark it carries is the re-admission's own",
+					readmitted, slot.Index)
+			}
+		}
+		marked("a re-admission", readmitted, at(5))
+	})
 
 	t.Run("the migration stamps every issue written before it", func(t *testing.T) {
 		pool := migratedPool(t)

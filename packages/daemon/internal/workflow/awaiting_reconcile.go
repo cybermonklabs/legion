@@ -478,6 +478,16 @@ func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
 		return err
 	}
+	// The root moves from admitted into awaiting_person here, which is a phase change and so a
+	// movement (record.Store.MarkIssueMoved, the rule in dispatchIssue). The wait is reached
+	// from a root standing at admitted (ReconcileAwaiting's own read), so this write never
+	// re-asserts the phase the record carries, and no fact of its own brings it: the pass
+	// decides it from the record on any fact at all, so nothing else would mark it. Unmarked,
+	// a root that waits on a person carries the stamp of whatever last moved it before the
+	// wait, and the stall rule would read the wait itself as stillness of that age.
+	if err := e.store.MarkIssueMoved(ctx, tx, root.Key, e.now()); err != nil {
+		return err
+	}
 	waitReason := fmt.Sprintf("%s waits on a person (%s): it keeps its admission slot until they answer", root.Key, reason)
 	if err := e.enqueue(ctx, tx, root.Key, record.ControllerNotice{Kind: record.AwaitingPersonNotice, Reason: waitReason}); err != nil {
 		return err

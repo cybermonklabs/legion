@@ -595,9 +595,10 @@ What each part is for:
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
   absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
-  controller is told once about that tree, decimals allowed; a tree with a role at work and a tree
-  waiting by design are never told, and no value turns the notice off, so a deployment that wants
-  fewer notices raises the number, to 596 at most), `review_round_cap` (3),
+  controller is told once about that tree, decimals allowed; a tree with a role at work is never
+  told, nor is one every quiet issue of which waits by design, and no value turns the notice off,
+  so a deployment that wants fewer notices raises the number, to 596 at most),
+  `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
   (3), `prompt_failure_limit` (3) and `prompt_retire_limit` (2).
   `controller_wake_interval_seconds` also sets the period of the daemon's status repair, which

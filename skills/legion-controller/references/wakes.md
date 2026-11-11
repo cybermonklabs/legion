@@ -84,8 +84,9 @@ it happens however full the cap is. A lost label or a foreign Dispatch claim sen
 ## `tree-stalled on <KEY>` (`{kind: "tree-stalled", reason}`)
 
 A tree of your project has stopped: `<KEY>` is its root, nothing of the tree has moved for longer
-than `stalled_tree_notice_hours` (six by default), no agent of it is at work, and no issue of it
-waits by design — on a person, on a Dispatch blocker, for an open child, or for a free slot. The
+than `stalled_tree_notice_hours` (six by default), no agent of it is at work, and at least one
+issue of it waits by no rule of the daemon's own — a tree is silent only while every quiet issue
+of it waits on a person, on a Dispatch blocker, for an open child, or for a free slot. The
 `reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
 line for each issue of the tree the workflow still runs: the phase its record carries, the role
 whose turn that phase is or that no role works it, and the state of that issue's pull request or

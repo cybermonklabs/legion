@@ -6,10 +6,10 @@
 -- What the column holds. The daemon writes it at the points that already mean the record
 -- changed: a Dispatch event of the issue, a GitHub event of its pull request, a phase change, a
 -- recorded handoff, a start and a completion (record.Store.MarkIssueMoved, and the write sites
--- in internal/workflow). The write is monotone — the statement keeps the later of the two times
--- — so a fact delivered late moves nothing backwards. Nothing takes the column back to null:
--- every row has a time from the moment it exists, this statement's for a row the deploy finds
--- and the default's for one written after it.
+-- in internal/workflow and internal/admit). The write is monotone — the statement keeps the
+-- later of the two times — so a fact delivered late moves nothing backwards. Nothing takes the
+-- column back to null: every row has a time from the moment it exists, this statement's for a
+-- row the deploy finds and the default's for one written after it.
 --
 -- Why the default is the whole of the backfill. now() is stable inside a transaction and a
 -- migration runs in one (store's apply), so every issue the deploy finds takes the change's own

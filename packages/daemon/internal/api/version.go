@@ -932,15 +932,17 @@ package api
 // slot since 70's first slice, and a done child recorded under the tree alike — and a reader
 // that wants to know whether a tree has stopped asks any one of its issues. The measure behind
 // the keys is `record.QuietTrees`, the one statement of the question the admission pass reads
-// too, so the state and the pass can never say different things about one tree: the movement is
-// the newest of the `MovedAt` of every member the workflow still runs and the step times of
-// those members' claims, and a tree that has never moved at all is measured from the zero time,
-// where the daemon's duration saturates: such a tree reads as quiet for 2562047.788 hours, 292
-// years, rather than carrying no key. An issue whose tree has left the workflow — one no longer
-// among `admission.trees` — carries neither key, and neither does an issue the workflow does
-// not record. Nothing of the operator's plain `legion state` output changes: a line per issue
-// would print hundreds of them on a live deployment, so the two values are in `--json` and in
-// the one issue a pane prints, which is where the memory keys and the waiting line each landed.
+// too, so the state and the pass read one rule and neither keeps a measure of its own — the
+// records they are handed are their own, so a tree whose root is done is measured here and by
+// no admission pass. The movement is the newest of the `MovedAt` of every member the workflow
+// still runs and the step times of those members' claims, and a tree that has never moved at
+// all is measured from the zero time, where the daemon's duration saturates: such a tree reads
+// as quiet for 2562047.788 hours, 292 years, rather than carrying no key. An issue whose tree
+// has left the workflow — one no longer among `admission.trees` — carries neither key, and
+// neither does an issue the workflow does not record. Nothing of the operator's plain
+// `legion state` output changes: a line per issue would print hundreds of them on a live
+// deployment, so the two values are in `--json` and in the one issue a pane prints, which is
+// where the memory keys and the waiting line each landed.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 70 is served the issues without the two keys (api's stateFor,
 // withoutQuietTime), as a caller below 62 is served the workers with no `backwardMoves`, one

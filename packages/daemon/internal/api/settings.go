@@ -83,10 +83,11 @@ type Settings struct {
 	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
 	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the four
-	// above are: how long a tree this daemon runs may be quiet — nothing of it at work, nothing of
-	// it waiting by design — before the daemon tells the project's controller once for that tree
-	// (dispatch://INFRA-2560 R5). No value turns that notice off, since the loader refuses zero
-	// for every key in hours; a deployment that wants fewer notices raises the number.
+	// above are: how long a tree this daemon runs may be quiet — nothing of it at work, and at
+	// least one quiet issue of it waiting by no rule of the daemon's own — before the daemon tells
+	// the project's controller once for that tree (dispatch://INFRA-2560 R5). No value turns that
+	// notice off, since the loader refuses zero for every key in hours; a deployment that wants
+	// fewer notices raises the number.
 	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
 	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
 	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and

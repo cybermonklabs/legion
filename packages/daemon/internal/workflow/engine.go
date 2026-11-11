@@ -273,17 +273,27 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq || fact.Status == issue.Status {
 		return intake.Result{}, nil
 	}
-	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the six
+	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the ten
 	// points that write that mark, and the rule every one of them follows is written here.
 	//
 	// The mark is written where the record changes, never from a list of fact kinds. A list would
 	// silently miss a kind a later change adds — the mark would stop being written for it, with
 	// nothing failing to say so — and three of the six movements are no fact of their own anyway:
 	// a phase change, a start and a recorded handoff are consequences several different facts
-	// reach. So each site sits at the write it is about: this one, the Dispatch event of the
-	// issue; the pull request's row (Engine.putPullRequest); the phase write (Engine.transition
-	// and Engine.retryPhase); the handoff's phase row and the completion that records it
-	// (Engine.handoff); and the start (StartOrOwe).
+	// reach. So each site sits at the write it is about. Seven are in this package: this one, the
+	// Dispatch event of the issue; the pull request's row (Engine.putPullRequest); the phase
+	// write (Engine.transition and Engine.retryPhase); the handoff's phase row and the completion
+	// that records it (Engine.handoff); the wait on a person a root enters (enterAwaiting); and
+	// the start (StartOrOwe).
+	//
+	// The other three are the admission pass's own writes of a phase and of a start, which no
+	// fact of the issue carries and which this package therefore never sees: the re-admission
+	// that opens a new generation of a tree (admit's readmit), the resume of a root a person
+	// answered, and the promotion of a root the line has been holding, which opens its tree and
+	// queues its architect's start (both in admit's promoteHolds). Unmarked, a root the pass had
+	// just started would carry the stamp of the moment a person labelled it, and the next pass
+	// would read a tree the daemon opened a second ago as a tree that had stopped
+	// (admit's tellStalledTrees).
 	//
 	// Here the mark goes past both of the fences above, so an event the record has already
 	// applied — a redelivery, or one older than the newest the record took — moves nothing, and
@@ -300,10 +310,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// those would make a stopped tree move for ever: nothing outside the daemon happened, and the
 	// daemon's own re-assertion would keep refreshing the mark of an issue nobody is working.
 	//
-	// Three other paths are deliberately left unmarked, and none of them reaches a write site.
-	// The boot's read of the Dispatch listing records an observation of its own
-	// (admit.Admission.Reconcile and applySummary), which is the daemon catching up with what it
-	// already knew rather than news of the issue. The status repair (statusRepairTick) queues the
+	// Three other paths are deliberately left unmarked. The boot's read of the Dispatch listing
+	// records an observation of its own (admit.Admission.Reconcile and applySummary), which is
+	// the daemon catching up with what it already knew rather than news of the issue; it is the
+	// observation that is left unmarked, so a re-admission the same listing brings is marked
+	// all the same, at the write site in admit's readmit, since the generation it opens is news
+	// of the issue whatever read brought it. The status repair (statusRepairTick) queues the
 	// status of the phase the issue already stands in, so it writes no movement of its own. And a
 	// claim's activity report or state change writes the claims table and never the issue: a
 	// session that is up is no proof that the issue it holds has moved, which is the whole of
