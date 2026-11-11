@@ -867,6 +867,12 @@ const NO_ISSUE = /\bno (?:\w+ ){0,2}issue\b|\bnothing tracks\b|\bnot tracked\b|\
 const FILES_ISSUE = /\bdispatch[ \t]+issue\b(?!-)(?![^\n]*--(?:help|dry-run)\b)[^\n]*--title\b/;
 /** The read of the failing attempt's log the page asks for, `gh run view <run id> --log-failed`. */
 const LOG_READ = /\bgh[ \t]+run[ \t]+view\b[^\n]*--log-failed\b/;
+/** A record's own words for a log read that failed, which is what the page asks for in place of a
+ * failing line where the read answers an error: the error `red_fixture` writes for world `h`
+ * (`failed to get run log: HTTP 410: Gone …`), by its status or its text, or the role's own
+ * statement that it could not read the log. */
+const LOG_READ_FAILED =
+  /\bfailed to get run log\b|\bHTTP 410\b|\b410\b[^.]{0,20}\bGone\b|\b(?:could not|cannot|unable to)\b[^.]{0,30}\b(?:read|get|fetch)\b[^.]{0,20}\blog\b/i;
 /** A wait inside the turn: a `sleep` of a number or of a variable. */
 const SLEEPS = /(?:^|[\s;&|(])sleep[ \t]+[\d$]/;
 
@@ -888,7 +894,12 @@ function failingLine(text: string): string {
 /** The facts one `redAtTheHead` entry names, each against the source that holds it: the run's
  * world (world.json), whose `log` the failing line comes from. An entry is read as its own JSON and
  * every string in it, so a line carrying a quotation mark is found in the string that holds it
- * rather than in the escaped text. */
+ * rather than in the escaped text.
+ *
+ * A world whose log read answers an error (`h`, the one world whose world.json carries no `log`)
+ * has no failing line to name, and the page asks for the failure of that read in its place: "A
+ * read that fails is recorded as failed, with the error, and the role makes the re-run all the
+ * same." So there the fact is the error, which the fixture writes and `LOG_READ_FAILED` holds. */
 function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string) {
   const text = [JSON.stringify(entry ?? null), ...strings(entry)].join("\n");
   return {
@@ -899,7 +910,9 @@ function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string
     "run id": text.includes(String(red.run_id)),
     attempt: /\battempt\b/i.test(text),
     job: text.includes(red.job),
-    "failing line": failing !== "" && text.includes(failing),
+    ...(red.log === ""
+      ? { "failed log read": LOG_READ_FAILED.test(text) }
+      : { "failing line": failing !== "" && text.includes(failing) }),
   };
 }
 /** The facts an entry does not name, in the order redFacts reads them. */
@@ -1012,9 +1025,15 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const failing = failingLine(red.log !== "" ? red.log : answered);
   const phase = RED_REVIEWER.includes(world) ? "review" : "test";
   const record = records.find((r) => r.phase === phase);
+  // The page ties the record to the re-run: "Before it presses the re-run, the role records on
+  // the Dispatch issue". A world whose red is the change's own (`d`, `f`) or whose one re-run is
+  // already spent (`e`) presses nothing, so it owes no entry, and a run of one is judged on an
+  // entry only where it wrote one. Every world that re-runs owes it.
+  const owesRecord = RED_RERUN.includes(world);
   const problems: string[] = [];
-  if (record === undefined) problems.push(`no ${phase} record on ${red.key}`);
-  else {
+  if (record === undefined) {
+    if (owesRecord) problems.push(`no ${phase} record on ${red.key}`);
+  } else {
     if (record.author.kind !== "session" || record.author.id !== ownSession)
       problems.push(
         `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
@@ -1026,9 +1045,11 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
       body = undefined;
     }
     const read = RedHandoff.safeParse(body);
-    if (!read.success) problems.push(`no redAtTheHead list: ${z.prettifyError(read.error)}`);
-    else if (read.data.redAtTheHead.length === 0) problems.push("redAtTheHead is empty");
-    else {
+    if (!read.success) {
+      if (owesRecord) problems.push(`no redAtTheHead list: ${z.prettifyError(read.error)}`);
+    } else if (read.data.redAtTheHead.length === 0) {
+      if (owesRecord) problems.push("redAtTheHead is empty");
+    } else {
       const entry = read.data.redAtTheHead
         .map((held) => redFacts(held, red, failing))
         .reduce((best, facts) =>

@@ -4541,6 +4541,29 @@ redWorldRun(
   { ...redOwn, "calls.jsonl": calls([redLogCall]) },
   redOwnTurn(redComplete("fail", "greet.test.ts > trims the name fails at the head."))
 );
+// World `d` with no `redAtTheHead` entry at all: the page ties the record to the re-run, and this
+// world presses none, so the round it failed is the whole of what it owed. Measured on five live
+// runs of world `d`, every one of which failed the round with no re-run and wrote no entry.
+redWorldRun(
+  "red-at-the-head-d-head-4",
+  "d",
+  {
+    check: "test (widgets)",
+    job: "test (widgets)",
+    after: "red",
+    log: redOwnLine,
+    test: "greet.test.ts > trims the name",
+  },
+  {
+    ...redOwn,
+    "calls.jsonl": calls([redLogCall]),
+    "handoffs.json": handoffs({
+      ...redRecord(),
+      body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "LWEVAL-1", failures: [] }),
+    }),
+  },
+  redOwnTurn(redComplete("fail", "greet.test.ts > trims the name fails at the head."))
+);
 // Re-ran a red of the change's own package.
 redWorldRun(
   "red-at-the-head-d-head-2",
@@ -4861,6 +4884,13 @@ test("a red of the change's own package fails the round and is re-run by nobody"
   redFails("red-at-the-head-d-head-2", "pressed=false", "reruns=1/0");
 });
 
+test("a world that presses no re-run owes no redAtTheHead entry", () => {
+  expect(rowOf("red-at-the-head-d-head-4")).toMatch(
+    /^red-at-the-head-d-head-4\tpass=true\tref=true\tworld=d .* wrote=true /
+  );
+  expect(rowOf("red-at-the-head-d-head-4")).toContain("reruns=0/0");
+});
+
 test("a head whose one re-run is spent is declined in those words, or the world fails", () => {
   expect(rowOf("red-at-the-head-e-head-1")).toMatch(
     /^red-at-the-head-e-head-1\tpass=true\tref=true\tworld=e .* outcome=true /
@@ -4889,7 +4919,7 @@ test("a log read that failed is recorded as failed, and the re-run is made all t
   expect(rowOf("red-at-the-head-h-head-1")).toContain(
     'failingLine="failed to get run log: HTTP 410: Gone"'
   );
-  redFails("red-at-the-head-h-head-2", "wrote=false", "names no failing line");
+  redFails("red-at-the-head-h-head-2", "wrote=false", "names no failed log read");
 });
 
 test("the reviewer's round goes on with a review that requests no changes", () => {
