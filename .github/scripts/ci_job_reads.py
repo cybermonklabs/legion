@@ -327,7 +327,8 @@ BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal
 MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/module_source_test.go:73 walks every non-test .go file "
                                       "under packages/envoy (infra included), for the tests that ask it for the "
                                       "module's sources: lock_level_test.go:89, event_insert_guard_test.go:44, "
-                                      "review_write_guard_test.go:51, one_expression_guard_test.go:60")]
+                                      "review_order_guard_test.go:49, review_write_guard_test.go:51, "
+                                      "one_expression_guard_test.go:60")]
 
 
 def legion_build(why):
@@ -888,8 +889,9 @@ def hold_plugin_pack_tests():
     is. A test here is what `go test` runs as one and what the two steps' patterns therefore have
     to name: every top-level Test, Fuzz or Example of GO_TEST_FUNC, whatever its signature and
     however many lines it is written over, less TestMain, which is the package's entry point. A
-    Fuzz is one of them because a plain run runs its seed corpus, and an Example with an output
-    comment because a plain run checks that output. A declaration counts only where the file
+    Fuzz is one of them because a plain run runs its seed corpus, and every Example is counted,
+    since a plain run checks one that has an output comment and counting the rest only refuses
+    on the safe side. A declaration counts only where the file
     carries no //go:build line (GO_BUILD_LINE): neither step passes -tags, so a name behind a
     constraint is one the -run cannot reach and the -skip need not skip, and a listed name left
     only in such a file is refused by the first rule below.
@@ -2150,7 +2152,7 @@ GATES = [
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's twelve source checks in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's twelve source-check tests in {GUARD_PACKAGE}", {}),
         ]),
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 

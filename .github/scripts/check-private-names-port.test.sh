@@ -39,7 +39,7 @@
 # the build below is the first thing to fail.
 #
 # Run from anywhere: .github/scripts/check-private-names-port.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's private-names-port job (.github/workflows/ci-job-private-names-port.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
 
