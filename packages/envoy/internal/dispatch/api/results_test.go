@@ -155,6 +155,58 @@ func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number in
 	}
 }
 
+// The pull-request body line carries the reading the role recorded, because that is the record
+// a reader of the pull request cannot see anywhere else: the check's own words are on the
+// issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
+// word boundary and marked, a short one prints whole, and a result with no reading says so.
+func TestThePullRequestLineCarriesTheReading(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+
+	long := "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case."
+	for _, row := range []struct {
+		name     string
+		observed string
+		want     string
+	}{
+		{
+			name:     "a reading over the budget is cut at a word boundary",
+			observed: long,
+			want:     "The rig drove the command against a local Dispatch and the refusal named the…",
+		},
+		{
+			name:     "a reading under the budget prints whole",
+			observed: "Every one of the twenty runs printed its listing.",
+			want:     "Every one of the twenty runs printed its listing.",
+		},
+		{
+			name:     "a result with no reading says so",
+			observed: "",
+			want:     "The role recorded no reading.",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			body := map[string]any{"surface": "cli"}
+			if row.observed != "" {
+				body["observed"] = row.observed
+			}
+			recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, body))
+			if recorded.Code != http.StatusCreated {
+				t.Fatalf("record a result: status=%d body=%s", recorded.Code, recorded.Body.String())
+			}
+			line := decodeBody[recordedResult](t, recorded).Line
+			want := "- Check k1 (before_merge): pass at " + headCommit + ", recorded by implementer. " + row.want
+			if line != want {
+				t.Fatalf("line = %q, want %q", line, want)
+			}
+			if strings.Contains(line, "The server records a result against a check") {
+				t.Fatalf("the line carries the check's own words: %q", line)
+			}
+		})
+	}
+}
+
 // A result is recorded against a check of the issue's own Verification document and against a
 // check of an ancestor's; the event goes on the check's issue either way, and the answer carries
 // the pull-request body line. An id neither holds is refused, and one two of them share is
@@ -177,7 +229,7 @@ func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
 		t.Fatalf("result = recorded on %s against %s, want both %s", recorded.Result.IssueKey, recorded.Result.CheckIssueKey, parent.Key)
 	}
 	wantLine := "- Check k1 (before_merge): pass at " + headCommit +
-		", recorded by implementer. The server records a result against a check."
+		", recorded by implementer. ok"
 	if recorded.Line != wantLine {
 		t.Fatalf("line = %q, want %q", recorded.Line, wantLine)
 	}
@@ -1097,7 +1149,7 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 	// Recorded as production records a merge, through the writer that seeds the one fact the
 	// merge itself proves: the base branch held the merge commit.
 	attributed := issue.Key
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
+	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: 48, HeadSHA: headCommit, HeadRef: "legion/work",
 		BaseRef: "integration/x", State: "merged", IssueKey: &attributed, AttributionSource: "title",
 		AttributionComplete: true, Title: "A change", URL: "https://github.com/acme/widgets/pull/48",

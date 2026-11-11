@@ -46,8 +46,8 @@ const (
 	checkWhenDefaultBranch = "default_branch"
 )
 
-// checkResultSummaryRunes is how much of a check's words the pull-request body line carries.
-const checkResultSummaryRunes = 80
+// checkResultReadingRunes is how much of the role's reading the pull-request body line carries.
+const checkResultReadingRunes = 80
 
 // checkResultColumns is the column list every check_results read scans, in scanCheckResult's
 // order.
@@ -702,13 +702,25 @@ func blockWords(node *pmdoc.Node) string {
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it
 // rather than each caller, so every writer writes one grammar; it carries no link to Dispatch
 // and no Dispatch host.
+//
+// The tail is the reading the role recorded (Observed) and not the check's own words, which
+// every reader of the pull request can read on the issue and which a pass and a fail would
+// carry alike: the line's whole purpose is to say what was seen. A reading longer than the
+// budget is cut at a word boundary and marked with an ellipsis, so a reader can tell a cut
+// line from a short one; a result with no reading says so, since a line that simply stopped
+// after the role would read as a reading nobody recorded.
 func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.When, result.Verdict, result.CommitSHA, result.Role)
-	if summary := text.HeadRunes(check.Text, checkResultSummaryRunes); summary != "" {
-		line += " " + summary
+	reading := strings.Join(strings.Fields(result.Observed), " ")
+	if reading == "" {
+		return line + " The role recorded no reading."
 	}
-	return line
+	head, cut := text.HeadWords(reading, checkResultReadingRunes)
+	if cut {
+		head += "…"
+	}
+	return line + " " + head
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.
@@ -878,7 +890,8 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if known {
 		return
 	}
-	if _, _, err := delivery.ReadThroughCommitPulls(ctx, s.deps.Store.Pool, s.deps.GitHub, *repo, sha, time.Now()); err != nil {
+	if _, _, err := delivery.ReadThroughCommitPulls(
+		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)
 	}
