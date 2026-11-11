@@ -3,7 +3,7 @@
 // the Conversation, the Inbox's ask card and a hover card, and `nested-directive.e2e.ts`, whose
 // rows draw the two bodies that froze a reader's tab - so both read a hold the same way and
 // against the same bound (sjawhar/legion#2612).
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, type Route, test } from "@playwright/test";
 
 declare global {
   interface Window {
@@ -19,6 +19,12 @@ declare global {
 /** The longest the page's own work may hold the main thread while the card draws. */
 const longestHoldMs = 1_000;
 
+/** The one read a cold page makes for its viewer, whose single answer carries the shell every
+ *  page draws and the page the address names (`web/src/api/queries.ts`, `readLanding`). A body
+ *  that answer carries reaches the page in it and in no request of that body's own, so this is
+ *  the request the record starts at for such a body (`measureDraw`). */
+const landingRead = /\/api\/v1\/landing(\?.*)?$/;
+
 export interface Measured {
   /** Milliseconds from the record's start until this row saw the formatted body; the row's own
    *  polling rounds it up. */
@@ -33,8 +39,14 @@ export interface Measured {
  * Installs a heartbeat before the page's own scripts - a `setTimeout(0)` loop whose gap between
  * ticks a parse holding the main thread widens to the parse's length - and starts the record
  * again when the page first asks for the data the body comes in, before that request goes out:
- * the bundle has been evaluated and the tab drawn by then, and the body cannot draw before the
- * answer.
+ * the bundle has been evaluated by then, since that ask is the bundle's own code asking, and
+ * the body cannot draw before the answer.
+ *
+ * For a body the landing carries, that ask is the landing, which goes out before the shell has
+ * drawn, so the window holds the shell's first render as well as the draw. That widens what a
+ * gap can be read from and narrows nothing: a longest gap over a longer window is at least the
+ * longest gap over the draw alone, so the bound below is asserted of strictly more of the
+ * page's work than it was when every body came in a read of its own.
  *
  * A gap counts three things, and only the first is what these rows are about: the page's own
  * work on its own thread; wall time in which the operating system did not schedule this renderer
@@ -98,20 +110,34 @@ export async function measureDraw(
     };
     setTimeout(tick, 0);
   });
-  // Only the first request resets: a later one could wait out the draw, then erase its gap.
+  // The record starts at the page's first ask for this body, and at its first GET alone: a
+  // later request of the same shape could wait out the draw and erase the gap it was there to
+  // hold.
+  //
+  // Two requests can be that ask. The landing is every page's first read, and a body it carries
+  // - a comment of the issue the address names, which rides the issue page it answers, or an
+  // ask of the Inbox, which rides the shell - reaches the page in that one answer: the key is
+  // seeded from it, so the component that draws the body sends no request of its own and a
+  // record waiting for that body's route would wait for a request that never comes
+  // (`web/src/api/queries.ts`, `seedIssuePage` and `seedShell`). `reset` is the read for a body
+  // the page still fetches itself - the issue's messages, or the one comment behind a hover
+  // card - and the landing precedes it. Whichever goes out first is the first ask, so whichever
+  // goes out first starts the record, and the row's bound is read from there.
   let started = false;
-  await page.route(reset, async (route) => {
+  const startRecord = async (route: Route) => {
     if (!started && route.request().method() === "GET") {
       started = true;
       await page.evaluate(() => window.__mainThreadResetGap?.());
     }
     await route.continue();
-  });
+  };
+  await page.route(landingRead, startRecord);
+  await page.route(reset, startRecord);
 
   await open();
   await drawn();
   if (!started) {
-    throw new Error(`the page never asked for ${reset.source}`);
+    throw new Error(`the page asked for neither ${landingRead.source} nor ${reset.source}`);
   }
   const measured = await page.evaluate(() => ({
     drawn: performance.now() - (window.__mainThreadResetAt ?? Number.NaN),

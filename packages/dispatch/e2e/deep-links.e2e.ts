@@ -382,8 +382,16 @@ test("a document link followed while the page before it is still downloading its
     // link. WebKit and Firefox cancel that download as the navigation starts, and the page must
     // not answer the failed chunk by reloading itself over the navigation. The first page's
     // download stays held until the link is followed, and the next page downloads its own.
+    //
+    // The open waits for the navigation to commit rather than for `load`: the entry starts the
+    // document's chunks as the document parses now (`web/src/app.tsx`, `preloadRouteChunk`),
+    // and the held one is a download of the document itself, which the load event waits for.
+    // Waiting for `load` here would mean waiting for the very request this row holds. The row
+    // waits for that request instead, which is what says the page is downloading its document.
     const transportCode = await holdFirstRequest(page, /\/assets\/yjs-[^/]+\.js$/u);
-    await page.goto(`/issues/${issue.key}/spec?comment=${comments[0].id}`);
+    await page.goto(`/issues/${issue.key}/spec?comment=${comments[0].id}`, {
+      waitUntil: "commit",
+    });
     const held = await transportCode.held;
 
     const link = `/issues/${issue.key}/artifacts/${secondarySlug}?comment=${comments[1].id}`;

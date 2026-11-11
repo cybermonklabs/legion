@@ -138,11 +138,17 @@ test("the page reads the agent list once, asks nothing per agent, and shows a re
   try {
     const page = await alice.newPage();
     await page.clock.install();
+    // The registry read, by whichever request carries it. On a cold page that request is the
+    // landing: its one answer carries the agent registry beside the rest of the shell and seeds
+    // it under the key every surface reads it by (`web/src/api/queries.ts`, `seedShell`), so
+    // the page asks `/agents` not at all until the shell's poll asks for a fresh one. Either is
+    // one read of the list, which is what "once" counts here, and a page that sent both would
+    // count two and fail.
     const registryReads: string[] = [];
     const perAgentReads: string[] = [];
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
-      if (path === "/api/v1/agents") {
+      if (path === "/api/v1/agents" || path === "/api/v1/landing") {
         registryReads.push(path);
       } else if (path.startsWith("/api/v1/agents/")) {
         perAgentReads.push(path);

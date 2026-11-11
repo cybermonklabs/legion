@@ -27,6 +27,9 @@ import {
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  type IssueRoute,
+  type IssueTab,
+  issueTabForRoute,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -137,6 +140,29 @@ const loadDocumentChunks = () =>
     ),
   ]);
 
+/** The issue tabs whose panel draws a live document, and so the tabs that reach the chunks
+ *  above: the Spec, which is the tab a bare `/issues/<key>` opens on, and the two role
+ *  documents, Verification and Plan - each panel renders `ArtifactDocument`
+ *  (`features/issue/IssuePage.tsx`). The Conversation, Children, Activity, Decisions and
+ *  Collaborators panels render none, and a reader who opens one of them must download no
+ *  editor and no transport at all (`e2e/doc.e2e.ts`, "the Conversation tab downloads no editor
+ *  transport; the Spec tab loads it on demand"). */
+const DOCUMENT_TABS: readonly IssueTab[] = ["spec", "verification", "plan"];
+
+/** Whether the issue page at this address draws a live document, read from the address by the
+ *  router's own parse of it (`features/refs/routes.ts`, `issueTabForRoute`) rather than by a
+ *  second rule kept here, which could say one thing while the page drew another.
+ *
+ *  An address naming an artifact - `/issues/<key>/artifact/<slug>` - draws that artifact as a
+ *  document when it is one, and whether it is one is not known until the issue has been read.
+ *  `issueTabForRoute` reads such an address as the Artifacts tab while the artifact is unknown,
+ *  so it is taken here by its own kind instead: the chunks come down for every named artifact,
+ *  which is what the page needs for the documents among them and a prefetch the others do not
+ *  use. */
+function issueDrawsDocument(route: IssueRoute): boolean {
+  return route.kind === "artifact" || DOCUMENT_TABS.includes(issueTabForRoute(route, undefined));
+}
+
 /**
  * Starts the chunks the address needs, beside the landing read rather than after it.
  *
@@ -148,11 +174,14 @@ const loadDocumentChunks = () =>
  * the page's reads go out in the wave that follows the landing's answer.
  *
  * The address is read exactly as the landing read reads it (`landingReadOf`), so one parse
- * decides both. An issue page and a project document page each draw a live document, so both
- * take the document chunks; the board and the Inbox draw none and take none, and an address that
- * is no page of a cold landing starts nothing. A chunk that fails here is left to the router:
- * `lazy` asks for the same import again, and that failure - a reader in front of a page that
- * cannot draw - is the one `DeploymentResilience` reloads for (`prefetchChunk`).
+ * decides which page is coming. The document chunks go to the addresses whose page draws a
+ * document and to no others: a project's document page always draws one, and an issue page
+ * draws one on the tabs `issueDrawsDocument` names and on no other, so the Conversation of an
+ * issue downloads no editor. The board and the Inbox draw no document and take neither chunk,
+ * and an address that is no page of a cold landing starts nothing. A chunk that fails here is
+ * left to the router: `lazy` asks for the same import again, and that failure - a reader in
+ * front of a page that cannot draw - is the one `DeploymentResilience` reloads for
+ * (`prefetchChunk`).
  *
  * `pathname` is the caller's and has no default: the one call site is `main.tsx`, which passes
  * `window.location.pathname` - the address the browser is loading, read before React renders
@@ -161,10 +190,14 @@ const loadDocumentChunks = () =>
  */
 export function preloadRouteChunk(pathname: string): void {
   switch (landingReadOf(pathname).page) {
-    case "issue":
+    case "issue": {
       prefetchChunk(loadIssuePage);
-      prefetchChunk(loadDocumentChunks);
+      // The tab decides the document chunks, not the issue: see `issueDrawsDocument`. The parse
+      // answers for every address this arm is reached by, since that is the arm's own test.
+      const route = parseIssuePath(pathname);
+      if (route !== undefined && issueDrawsDocument(route)) prefetchChunk(loadDocumentChunks);
       break;
+    }
     case "document":
       prefetchChunk(loadDocumentPage);
       prefetchChunk(loadDocumentChunks);

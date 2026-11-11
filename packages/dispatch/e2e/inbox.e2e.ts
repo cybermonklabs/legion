@@ -34,7 +34,7 @@ import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -45,6 +45,30 @@ const session = {
   },
   as: "agent" as const,
 };
+
+/**
+ * Answers this page's landing with no Inbox list, so the page reads that list on its own route.
+ *
+ * A landing carries the list and seeds it under the key the Inbox reads it by
+ * (`web/src/api/queries.ts`, `seedShell`), and a page given it asks `/api/v1/inbox` not at all
+ * on its first load. Null is what a Dispatch that could not read that part answers, and the
+ * seed leaves a null part for its own route on purpose, so this is the page's own fallback and
+ * no behaviour invented here.
+ *
+ * The two rows that use it are about what the page does with an Inbox RESPONSE that is older
+ * than an event: the freshness marker an event sets while an Inbox read is in flight, and what
+ * a later response does with it (`web/src/features/inbox/ask-thread-freshness.ts`). That read
+ * is the page's own, in flight, with the page's live socket already open - a landing cannot
+ * stand in for it, since a page whose landing is still out has no socket and no card to mark -
+ * and every refresh the Inbox makes after its first load is exactly this read.
+ */
+async function landingWithoutTheInboxList(page: Page): Promise<void> {
+  await page.route("**/api/v1/landing*", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { shell: Record<string, unknown> };
+    await route.fulfill({ json: { ...body, shell: { ...body.shell, inbox: null } }, response });
+  });
+}
 
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({
   browser,
@@ -249,6 +273,8 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
     "websocket",
     (socket) => new URL(socket.url()).pathname === "/ws/live"
   );
+  // The list is read on its own route here, and held below: see `landingWithoutTheInboxList`.
+  await landingWithoutTheInboxList(page);
   // Only the first response is held on the pre-event snapshot; a refresh the client issues
   // after the event reaches the real server, exactly as a browser's would.
   let heldFirstInbox = false;
@@ -308,6 +334,9 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
     if (path === "/api/v1/inbox") inboxReads += 1;
     if (path === `/api/v1/asks/${hiddenAsk.id}`) hiddenAskReads += 1;
   });
+  // The reloaded page below reads its Inbox list on its own route, which is the read this row
+  // holds: see `landingWithoutTheInboxList`.
+  await landingWithoutTheInboxList(page);
   await page.goto("/");
   await expect(page.getByTestId(`ask-${visibleAsk.id}`)).toBeVisible();
   inboxReads = 0;
@@ -335,10 +364,19 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
         if (frame.type === "event" && frame.event?.issue_key === hiddenIssue.key) hiddenFrames += 1;
       });
     });
-    const pinnedRead = (request: { method(): string; url(): string }) =>
-      request.method() === "GET" &&
-      new URL(request.url()).pathname === "/api/v1/issues" &&
-      new URL(request.url()).searchParams.get("pinned") === "true";
+    // The page's pinned list, by whichever request carries it: the landing, whose one answer
+    // carries it beside the rest of the shell (`web/src/api/queries.ts`, `seedShell`), and the
+    // list's own route, which a pin event makes the page read again. The load below reads it in
+    // the landing, and the pin written later on its own route; both are what this row times
+    // against.
+    const pinnedRead = (request: { method(): string; url(): string }) => {
+      if (request.method() !== "GET") return false;
+      const url = new URL(request.url());
+      return (
+        url.pathname === "/api/v1/landing" ||
+        (url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true")
+      );
+    };
     // The desktop sidebar reads pins during load. Start watching before reload so it cannot be
     // mistaken for the post-reply pin refresh below.
     const firstPinnedRead = page.waitForRequest(pinnedRead);
@@ -1151,12 +1189,21 @@ test("Nothing needs you stays on screen through a focus and a return to the Inbo
         failures.push(`${response.status()} ${new URL(response.url()).pathname}`);
       }
     });
+    // Every read of the pending credential list, by whichever request carries it: the landing,
+    // whose one answer carries the list beside the rest of the shell and seeds it under the key
+    // the Inbox reads it by (`web/src/api/queries.ts`, `seedShell`), and the list's own route,
+    // which the page asks for every read after that. The page's first read is let through and
+    // every read after it is held, which is the measurement: a refresh that put the list back
+    // to loading would take the empty state off the screen for as long as the hold lasts.
     let credentialCalls = 0;
-    await page.route("**/api/v1/credential-requests?approver=me", async (route) => {
-      credentialCalls += 1;
-      if (credentialCalls > 1) await held.promise;
-      await route.continue();
-    });
+    await page.route(
+      (url) => url.pathname === "/api/v1/credential-requests" || url.pathname === "/api/v1/landing",
+      async (route) => {
+        credentialCalls += 1;
+        if (credentialCalls > 1) await held.promise;
+        await route.continue();
+      }
+    );
     // Every live socket reaches Dispatch; once `forceGap` is set, the event feed's resume on a
     // socket opened after it names an id far above the log's head.
     let forceGap = false;

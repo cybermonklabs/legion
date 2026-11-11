@@ -318,6 +318,13 @@ test("an empty input lists the person's recent items and the actions of that pag
 // to Issues. The bar a person opened in that moment is theirs, and a redirect the page made on
 // its own is no navigation of theirs, so the bar stays open and stays typable
 // (dispatch://INFRA-2452).
+//
+// The reader reaches that address from the sidebar here, rather than by opening it cold,
+// because that is where the moment now is: a cold load reads the landing, whose one answer
+// carries that project's architecture sources and seeds them under the key the page decides by
+// (`web/src/api/queries.ts`, `seedBoardPage`), so such a page has settled before its first
+// render and there is nothing to open a bar in front of. Followed from the sidebar, the board
+// reads the sources for itself, which is the read held below.
 // SLOW(>=2s): the seed of a project, two issues and a document, then a page held mid-redirect.
 test("the bar opened on a project page that has not settled survives that page's own redirect", async ({
   browser,
@@ -336,7 +343,13 @@ test("the bar opened on a project page that has not settled survives that page's
       /\/api\/v1\/projects\/[^/]+\/architecture-sources$/u
     );
 
-    await page.goto("/projects/CORE");
+    await page.goto("/");
+    const sidebarLink = page
+      .getByRole("navigation", { name: "Navigation" })
+      .locator('a[href="/projects/CORE"]');
+    await expect(sidebarLink).toBeVisible();
+    await sidebarLink.click();
+    await expect(page).toHaveURL(/\/projects\/CORE$/);
     await page.locator("body").focus();
     await openBar(page, ["/"]);
     const box = page.getByRole("combobox", { name: "Search" });

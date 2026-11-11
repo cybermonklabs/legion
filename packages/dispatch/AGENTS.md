@@ -1324,7 +1324,13 @@ deployment); if rendering still fails, `MarkdownBody` exposes its literal-text f
 each, and a page whose assets fail on every load stops after three reloads. A chunk the entry
 only prefetched is the one failure that reloads nothing: `preloadRouteChunk` (`web/src/app.tsx`)
 starts the landed route's chunks beside the landing read, before React has rendered anything, and
-nobody is waiting on those downloads. The router asks for the same chunk when it renders the
+nobody is waiting on those downloads. What it starts is the route's own chunk, and the editor
+library and Yjs transport only where the landed page draws a document: a project's document page
+always, an issue page on the tabs that render one — the Spec, Verification and Plan, and an
+address naming an artifact (`issueDrawsDocument`, read from the address by `issueTabForRoute`) —
+and no other issue address, so a reader who opens the Conversation downloads no editor and no
+transport (`e2e/doc.e2e.ts`).
+The router asks for the same chunk when it renders the
 route (`renderChunk`, which each `lazy` route goes through), and that failure — a reader in front
 of a page that cannot draw — is the one the recovery reloads for, so a prefetch costs the reader
 no reload the render's own failure does not, and the page is never thrown away before it has

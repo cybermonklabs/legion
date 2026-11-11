@@ -207,13 +207,27 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
       seen.push({ type: `visibilitychange:${document.visibilityState}` })
     );
   });
+  // Each document this page fetched for an address of this issue: the first and the reload the
+  // failed chunk asks for, which is of the Artifacts tab's address, since that is the tab the
+  // reader is on by then. The `load` event is not that count any more - the entry starts the
+  // landed page's document chunks as the document parses (`web/src/app.tsx`,
+  // `preloadRouteChunk`), and a chunk held on the wire, as this row holds one, holds the load
+  // event with it, so the first load would be reported only once the row had let the chunk go.
+  // A reload is a navigation request of the main frame, which the hold does not touch
+  // (`e2e/live-socket.e2e.ts` counts reloads the same way). The Download link is a navigation
+  // request of the main frame too - that is the case this row is about - but to the file's own
+  // address under `/api/`, so naming this issue's addresses counts the reloads and not it.
+  const address = `/issues/${issue.key}`;
   let loads = 0;
-  page.on("load", () => {
-    loads += 1;
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+    if (new URL(request.url()).pathname.startsWith(address)) loads += 1;
   });
 
   try {
-    await page.goto(`/issues/${issue.key}/spec`);
+    // Committed rather than loaded, for the reason above: the load event waits for the held
+    // chunk, and the row holds it until the Download link has been followed.
+    await page.goto(`${address}/spec`, { waitUntil: "commit" });
     const held = await transportCode.held;
     await page.getByRole("tab", { name: /^Artifacts/ }).click();
     const download = page.waitForEvent("download");
