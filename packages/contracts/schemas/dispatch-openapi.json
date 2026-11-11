@@ -20334,11 +20334,40 @@
               "integer"
             ]
           },
+          "slot_since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "slot_use": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "title": {
             "type": "string"
           },
           "tree": {
             "type": "string"
+          },
+          "tree_slot": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionBoardWaiting"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "waiting_on": {
             "anyOf": [
@@ -20349,6 +20378,12 @@
                 "type": "null"
               }
             ]
+          },
+          "waiting_place": {
+            "type": [
+              "null",
+              "integer"
+            ]
           }
         },
         "required": [
@@ -20358,10 +20393,15 @@
           "phase",
           "phase_since",
           "slot",
+          "tree_slot",
+          "slot_since",
+          "waiting_place",
           "roles",
           "checks_verdict",
           "blocked_by",
           "waiting_on",
+          "slot_use",
+          "waiting",
           "tree",
           "children"
         ],
@@ -20519,6 +20559,35 @@
           "kind",
           "since",
           "answered_at"
+        ],
+        "type": "object"
+      },
+      "LegionBoardWaiting": {
+        "properties": {
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "reason",
+          "since",
+          "blocked_by"
         ],
         "type": "object"
       },

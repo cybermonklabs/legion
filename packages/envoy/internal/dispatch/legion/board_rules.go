@@ -1,0 +1,200 @@
+package legion
+
+// board_rules.go holds the two rules a Legion card carries beside the facts the daemon reports —
+// what the slot an issue holds is used for, and why the issue waits — and the column table both
+// of them read. Two readers answer them: the board route, which writes each on a card
+// (internal/dispatch/api/legion_board.go), and the per-issue facts, which are computed for an
+// issue with no card at all. A rule stated in the route alone is a rule the facts state a second
+// time, and one rule stated twice is a card and a fact that disagree about the same issue.
+//
+// Every rule here takes plain values — a phase, a column, the roles in a turn, a slot — so a
+// reader that builds no card can call it. The labels the view draws are not here: they belong to
+// the view, and the route holds them beside the order it draws the columns in.
+
+import "time"
+
+// The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
+// link holds, of the issues that have not started work: no slot and no working phase
+// (WorkingColumns); an issue of either list in a working phase, or holding a slot, is in its
+// phase's column with its place in the line on its card. Design holds the issues whose phase is
+// still `admitted` that are on a card at all — the slot holders, whose architect runs at the
+// design gate, and the ones no card stands above, which are on no other issue's count; Merging
+// `retro`, `merging` and `awaiting_merge`; and Held the phase metric 2 puts on the "no role" bar
+// beside `awaiting_person` (the plan's D11).
+const (
+	ColumnQueue        = "queue"
+	ColumnDesign       = "design"
+	ColumnPlanning     = "planning"
+	ColumnImplementing = "implementing"
+	ColumnTesting      = "testing"
+	ColumnReviewing    = "reviewing"
+	ColumnAccepting    = "accepting"
+	ColumnMerging      = "merging"
+	ColumnAwaiting     = "awaiting_person"
+	ColumnHeld         = "held"
+)
+
+// PhaseColumns is the column each phase the daemon reports falls in. A phase this does not name
+// (`done`, and any phase a later daemon adds) puts the issue on no card: the board shows the work
+// in flight, and a phase Dispatch has never heard of is not something it can place. The Merging
+// column holds the merger's phases, which are declared once beside the phases themselves
+// (MergerPhases) and read here rather than spelled again.
+var PhaseColumns = func() map[string]string {
+	columns := map[string]string{
+		PhaseAdmitted:       ColumnDesign,
+		PhasePlanning:       ColumnPlanning,
+		PhaseImplementing:   ColumnImplementing,
+		PhaseTesting:        ColumnTesting,
+		PhaseReviewing:      ColumnReviewing,
+		PhaseAccepting:      ColumnAccepting,
+		PhaseAwaitingPerson: ColumnAwaiting,
+		PhaseHeld:           ColumnHeld,
+	}
+	for _, phase := range MergerPhases {
+		columns[phase] = ColumnMerging
+	}
+	return columns
+}()
+
+// WorkingColumns are the columns of the phases a worker works in. An issue in one of them has
+// started its work, so the Queue never holds it, even where the daemon's waiting line names it
+// while it waits for a slot to come back.
+var WorkingColumns = map[string]bool{
+	ColumnPlanning:     true,
+	ColumnImplementing: true,
+	ColumnTesting:      true,
+	ColumnReviewing:    true,
+	ColumnAccepting:    true,
+	ColumnMerging:      true,
+}
+
+// What the slot an issue holds of its own is used for: a worker of it is in a turn, nobody of it
+// is in a turn in a phase of its own, it waits on a person, or it holds the slot for its
+// children, who either work or do not.
+const (
+	SlotUseWorking      = "working"
+	SlotUseBetweenTurns = "between_turns"
+	SlotUseHeldChildren = "held_children"
+	SlotUseHeldPerson   = "held_person"
+	SlotUseHeldIdle     = "held_idle"
+)
+
+// heldForChildren are the phases in which a slot holder holds its slot for its children alone:
+// its own work is done until they answer.
+var heldForChildren = map[string]bool{
+	PhaseAccepting:      true,
+	PhaseAwaitingMerge:  true,
+	PhaseAwaitingPerson: true,
+}
+
+// ChildWork are the phases of a child that keep its root's held slot busy. A reader of SlotUse
+// answers its childWorks from this set over the children of the tree it holds.
+var ChildWork = map[string]bool{
+	PhaseImplementing: true,
+	PhaseTesting:      true,
+	PhaseReviewing:    true,
+}
+
+// SlotUse is what the slot an issue holds of its own is used for, and "" for an issue that holds
+// no slot of its own. It is the one rule: the Legion tab worked this out itself until
+// dispatch://INFRA-979's contract moved it to the server, and now reads the field.
+//
+// A worker in a turn (an architect's included) makes the slot working, since a turn is the work
+// the slot was given for. With no worker in a turn, a root waiting on a person holds it for the
+// person; a root in a phase of its own holds it between turns; and a root in a phase it can only
+// leave once its children answer (heldForChildren) holds it for them — busy where a child of its
+// tree works (childWorks), idle where none does.
+//
+// phase is the daemon's phase of the issue, roles the roles of it that are in a turn, slot the
+// slot it holds of its own, and childWorks whether a child of its tree is in a phase of
+// ChildWork.
+func SlotUse(phase string, roles []string, slot *int, childWorks bool) string {
+	if slot == nil {
+		return ""
+	}
+	switch {
+	case len(roles) > 0:
+		return SlotUseWorking
+	case phase == PhaseAwaitingPerson:
+		return SlotUseHeldPerson
+	case !heldForChildren[phase]:
+		return SlotUseBetweenTurns
+	case childWorks:
+		return SlotUseHeldChildren
+	default:
+		return SlotUseHeldIdle
+	}
+}
+
+// Why an issue waits: it is ready for the daemon to start it, it works nothing while it waits
+// for a slot to come back, a blocker link holds it, or a person has not answered it.
+const (
+	WaitingReady   = "ready"
+	WaitingSlot    = "slot"
+	WaitingBlocked = "blocked"
+	WaitingPerson  = "person"
+)
+
+// Wait is the daemon's record of what a root waits on, as the sampler wrote it: the kind of wait
+// (`ask`, `gate`, or whatever a later daemon names), when it began, and when a person answered
+// it. An answered root waits for a slot at the front of the queue rather than for a person.
+type Wait struct {
+	Kind       string
+	Since      *time.Time
+	AnsweredAt *time.Time
+}
+
+// Waiting is why an issue waits, since when, and the issues a blocker link holds it on. Since is
+// when the wait began: when the person was asked for a wait on a person, and the phase entry
+// otherwise; nil where neither was recorded.
+type Waiting struct {
+	Reason    string
+	Since     *time.Time
+	BlockedBy []string
+}
+
+// WaitingInput is what CardWaiting reads of one issue: the daemon's phase, the column the issue
+// is on, its place in the daemon's waiting line from 1 (nil for an issue the line does not name),
+// the issues a blocker link holds it on, when it entered its phase, and the wait the daemon
+// recorded of it.
+type WaitingInput struct {
+	Phase        string
+	Column       string
+	WaitingPlace *int
+	BlockedBy    []string
+	PhaseSince   *time.Time
+	WaitingOn    *Wait
+}
+
+// CardWaiting is why the issue waits, and nil for an issue that waits for nothing. It is the one
+// rule, which the Legion tab's waiting line reads rather than working out again.
+//
+// An issue waits when the daemon's line names it (WaitingPlace), when it is in the Queue column,
+// or when it waits on a person. Of those, a blocker link holds the ones it names; an issue the
+// line names that is on a column of its own has started its work and waits for a slot to come
+// back; an issue whose wait on a person no answer has ended waits for the person; and the rest
+// are ready for the daemon to start them.
+func CardWaiting(in WaitingInput) *Waiting {
+	placed := in.WaitingPlace != nil || in.Column == ColumnQueue
+	if !placed && in.Column != ColumnAwaiting {
+		return nil
+	}
+	// An issue out of the line that is on the awaiting-a-person column waits for the person
+	// whatever the daemon recorded of the wait; an issue in the line waits for one while its own
+	// wait stands unanswered.
+	onPerson := !placed || (in.WaitingOn != nil && in.WaitingOn.AnsweredAt == nil)
+	waiting := Waiting{Reason: WaitingReady, BlockedBy: in.BlockedBy}
+	switch {
+	case placed && len(in.BlockedBy) > 0:
+		waiting.Reason = WaitingBlocked
+	case placed && in.Column != ColumnQueue && in.Phase != PhaseAwaitingPerson:
+		waiting.Reason = WaitingSlot
+	case onPerson:
+		waiting.Reason = WaitingPerson
+	}
+	waiting.Since = in.PhaseSince
+	if onPerson && in.WaitingOn != nil && in.WaitingOn.Since != nil {
+		waiting.Since = in.WaitingOn.Since
+	}
+	return &waiting
+}

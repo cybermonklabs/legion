@@ -4783,9 +4783,15 @@ export interface components {
       priority: null | number;
       roles: string[] | null;
       slot: null | number;
+      /** Format: date-time */
+      slot_since: null | string;
+      slot_use: null | string;
       title: string;
       tree: string;
+      tree_slot: null | number;
+      waiting: components["schemas"]["LegionBoardWaiting"] | null;
       waiting_on: components["schemas"]["LegionBoardWait"] | null;
+      waiting_place: null | number;
     };
     LegionBoardColumn: {
       cards: components["schemas"]["LegionBoardCard"][] | null;
@@ -4830,6 +4836,12 @@ export interface components {
       /** Format: date-time */
       answered_at: null | string;
       kind: string;
+      /** Format: date-time */
+      since: null | string;
+    };
+    LegionBoardWaiting: {
+      blocked_by: string[] | null;
+      reason: string;
       /** Format: date-time */
       since: null | string;
     };
@@ -13072,6 +13084,7 @@ export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionBoardWaiting = components["schemas"]["LegionBoardWaiting"];
 export type LegionFiledIssue = components["schemas"]["LegionFiledIssue"];
 export type LegionMetricsResponse = components["schemas"]["LegionMetricsResponse"];
 export type LegionPhaseTime = components["schemas"]["LegionPhaseTime"];
