@@ -73,9 +73,9 @@ function refuseASharedRun(): void {
   const commandLine = info.config.argv.join(" ");
   // The command comes first and alone, as the wall-clock refusal in `e2e/playwright.config.ts`
   // prints it, so the line a reader is shown beside the failed row is the one that fixes it. It
-  // names its own `--workers=1`: this run reached here with more than one worker, and a command
-  // that left the count to the configuration's default (`workers: 1`,
-  // e2e/playwright.config.ts) would be the same command this run already widened.
+  // names its own `--workers=1`, because spec R2 has every command that measures a wall-clock
+  // row state the one worker its reading rests on, rather than take it from the configuration's
+  // default (`workers: 1`, e2e/playwright.config.ts).
   const file = relative(packageRoot, info.file);
   throw new Error(
     `bun run e2e -- --project=${info.project.name} ${file} --workers=1` +

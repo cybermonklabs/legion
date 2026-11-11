@@ -2,13 +2,15 @@
  *  before it refuses such a command (`e2e/configurations.ts`'s `clockFileOnCommandLine`).
  *
  *  Both directions cost a reader something, and only one of them is loud. A command the reader
- *  misses selects no row and Playwright answers "No tests found", which names no cure, and that
- *  answer is the whole reason the refusal exists (INFRA-1280). A command the reader answers for
- *  where Playwright would have run it is refused for nothing, and the rows below are the shapes
- *  that invite that reading: an option whose value is a file name or a grep, a `--` the filter
- *  sits behind, a user-interface run, which lists the non-default projects and lets a file filter
- *  select their rows, a filter holding part of a wall-clock name rather than the whole of it, and
- *  an argv that is not a Playwright command line at all.
+ *  misses runs no row of the file the person named - Playwright answers "No tests found", or
+ *  drops a filter written after a `--` and runs the whole default selection instead - and
+ *  neither answer names a cure, which is the whole reason the refusal exists (INFRA-1280). A
+ *  command the reader answers for where Playwright would have run it is refused for nothing,
+ *  and the rows below are the shapes that invite that reading: an option whose value is a file
+ *  name or a grep, a `--` the filter sits behind, a user-interface run, which lists the
+ *  non-default projects and lets a file filter select their rows, a filter holding part of a
+ *  wall-clock name rather than the whole of it, and an argv that is not a Playwright command
+ *  line at all.
  *
  *  The user-interface carve-out pulls the other way, and the rows hold both of its edges: a
  *  `--ui` an option swallowed (`--grep --ui <file>`) and a `--ui` behind the `--` are no
@@ -103,10 +105,11 @@ const refused: readonly { title: string; argv: readonly string[]; answer: string
     // The `--` is `--grep`'s own value, so it is no separator and the scan goes on past it to the
     // file. Driven at this head, `--list --grep -- e2e/heavy-bodies.e2e.ts` exits 1 with this
     // refusal's own command line. A scan that stopped at that `--` read no filter and left the
-    // run to Playwright, which drops a trailing filter for every token after the first `--` of
-    // its argv (playwright/lib/program.js:51-53): `--list --grep -- 'e2e/heavy.bodies.e2e.ts'`,
-    // the same selection this reader passes, exits 1 with `Error: No tests found` above `Total:
-    // 0 tests in 0 files`.
+    // run to Playwright, which keeps `args.slice(0, args.length - postDashCount)` of its filters,
+    // `postDashCount` being the tokens after the first `--` of its argv
+    // (playwright/lib/program.js:51-53), so here it keeps none: `--list --grep --
+    // 'e2e/heavy.bodies.e2e.ts'`, the same selection this reader passes, exits 1 with `Error: No
+    // tests found` above `Total: 0 tests in 0 files`.
     title: "a wall-clock file after a `--` that is `--grep`'s value and no separator",
     argv: playwrightArgv("--grep", "--", "e2e/heavy-bodies.e2e.ts"),
     answer: "e2e/heavy-bodies.e2e.ts",
@@ -135,8 +138,8 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
     argv: playwrightArgv("--reporter", "list", "e2e/claim.e2e.ts"),
   },
   {
-    // `--list --shuffle e2e/claim.e2e.ts` lists the whole suite, the path having become the seed,
-    // so the command names no file and Playwright runs it.
+    // `--list --shuffle e2e/claim.e2e.ts` lists the whole default selection, the path having
+    // become the seed, so the command names no file and Playwright runs it.
     title: "a wall-clock path behind `--shuffle`, which Playwright takes as the seed",
     argv: playwrightArgv("--shuffle", "e2e/heavy-bodies.e2e.ts"),
   },

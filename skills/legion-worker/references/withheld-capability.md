@@ -137,7 +137,7 @@ issue pod, on the issue's own disk, by the issue's roles together.
 `packages/dispatch` is proved in the pod by driving the specs it touches, one spec a command
 (`bun run e2e -- e2e/<one spec file>`) — except a wall-clock spec, whose three projects are out
 of the default selection, so its command names its project:
-`bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts`.
+`bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`.
 `packages/dispatch/AGENTS.md` carries both of those as the three commands to copy as they stand.
 CI's `dispatch-browser` job runs one of two lanes, and neither is the whole suite on every pull
 request. An unlabelled pull request gets the pull-request lane: `chromium`, `iphone`, `stub`

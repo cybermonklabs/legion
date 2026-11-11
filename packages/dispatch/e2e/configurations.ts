@@ -311,12 +311,14 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
 
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
- *  the three wall-clock projects are out of the default selection, so such a command selects no
- *  row at all and Playwright answers "No tests found", which names no cure.
+ *  the three wall-clock projects are out of the default selection, so no run that names no
+ *  project holds a row of the file such a command named, whatever Playwright then does with the
+ *  rest of the line - answer "No tests found", or run the whole default selection, which is what
+ *  a filter dropped after a `--` leaves (the post-dash drop below). Neither answer names a cure.
  *
  *  Reading begins after the `test` command word, and a command line with no such word answers
  *  `undefined`. A worker re-evaluates this configuration with Playwright's own argv rather than
- *  the command line (`e2e/stub/selection.ts:47-49`), and `bun test` and the tools that import
+ *  the command line (`e2e/stub/selection.ts:48-50`), and `bun test` and the tools that import
  *  this module carry an argv of their own, so none of them can meet the refusal. The scan ends
  *  at the first `--` no option took as its value; a `--` an option DID take is that option's
  *  value, and Playwright reads what follows it as ordinary tokens, so the scan does too.
@@ -349,9 +351,9 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  user interface's own `listFiles` (`:6937`) and `listTests` (`:6971`, under the comment
  *  "Non-default projects are listed so that they can be selected by name.") each set
  *  `includeNonDefaultProjects: true`. So in user-interface mode `chromium-alone` IS listed and
- *  its rows ARE selectable by a file filter: the refusal's premise - that such a command selects
- *  no row at all - is false there, and the command it prints drops the `--ui` the reader asked
- *  for.
+ *  its rows ARE selectable by a file filter: the refusal's premise - that no run naming no
+ *  project holds a row of the file - is false there, and the command it prints drops the `--ui`
+ *  the reader asked for.
  *
  *  Measured at this head from `packages/dispatch`, each line driven as `timeout 45 bunx
  *  playwright test --config e2e/playwright.config.ts --list <rest>`.
@@ -372,20 +374,22 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  nothing at all; and `--grep -- e2e/heavy-bodies.e2e.ts`, where the `--` is `--grep`'s value,
  *  so the scan steps over it and goes on to the file.
  *
- *  That last line is refused for what the run would otherwise be, and that run is a measured
- *  one. Playwright drops as many trailing filters as its argv holds tokens after the FIRST
- *  `--`, whether or not an option took that token as its value: `const dashDashIndex =
- *  process.argv.indexOf("--")`, `postDashCount`, `args.slice(0, args.length - postDashCount)`
- *  (`playwright/lib/program.js:51-53`). So `--list --output -- e2e/claim.e2e.ts` lists the
- *  whole default selection, 1,299 rows in 179 files, where `--list --output /tmp/o
- *  e2e/claim.e2e.ts` lists 1 - the filter is dropped although `--output` swallowed the `--`,
- *  which `--list --output -- --not-a-flag` shows it did, that line exiting 1 with `error:
- *  unknown option '--not-a-flag'` rather than the `error: option '--output <dir>' argument
- *  missing` of `--list --output`. A wall-clock file written there is the same: `--list --grep
- *  -- e2e/heavy-bodies.e2e.ts` reached the runner with no filter and a grep of `--`, and
- *  exited 1 with `Error: No tests found` above `Total: 0 tests in 0 files` - the answer with
- *  no cure in it, which is what this refusal replaces, and the one the person who wrote that
- *  file name gets however Playwright reaches it.
+ *  That last line is refused although Playwright would not run the file it names. Playwright
+ *  keeps `args.slice(0, args.length - postDashCount)` of its positional filters, where
+ *  `postDashCount` counts the tokens after the FIRST `--` of its argv, whether or not an option
+ *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
+ *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
+ *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
+ *  selection, 1,299 rows in 179 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
+ *  the filter is dropped although `--output` swallowed the `--`, which `--list --output --
+ *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
+ *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What
+ *  the run does without its filter depends on the option that took the `--`: `--list --grep --
+ *  e2e/heavy-bodies.e2e.ts`, written as a regex this reader does not answer for, reached the
+ *  runner with no filter and a grep of `--` and exited 1 with `Error: No tests found` above
+ *  `Total: 0 tests in 0 files`, and `--list --output -- 'e2e/heavy.bodies.e2e.ts'` lists the
+ *  1,299 rows of the default selection. Neither run reaches the wall-clock file the person
+ *  named, so the refusal, and the command it prints, is the useful answer to both.
  *
  *  A reader that took any `--ui` of the whole argv for the mode would answer `undefined` for
  *  the first two of those three, and what the person then gets is the answer this refusal
@@ -403,12 +407,12 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  module; the scan meets it as an option whose values `valuesTakenAt` steps over, which is all
  *  it needs of a flag whose values, when it has any, have already answered this function above.
  *  The rule the reader follows is Playwright's own parser's: it answers the token that parser
- *  reads as a positional filter, and nothing else - the post-dash drop above being the one
- *  place where such a token reaches the runner as no filter, and a command that selects
- *  nothing there all the same. A reader that read more than that refuses
- *  commands Playwright runs - `--grep heavy-bodies`, `--reporter list e2e/claim.e2e.ts`,
- *  `--shuffle e2e/heavy-bodies.e2e.ts`, whose path is a seed - which is the one failure mode
- *  that matters here. */
+ *  reads as a positional filter, and nothing else - with one exception, the post-dash drop
+ *  above, where such a token reaches the runner as no filter and the reader refuses a command
+ *  Playwright would run, because the file it names is not what that run would run. A reader
+ *  that read more than that refuses commands that DO run the files they name - `--grep
+ *  heavy-bodies`, `--reporter list e2e/claim.e2e.ts`, `--shuffle e2e/heavy-bodies.e2e.ts`,
+ *  whose path is a seed - which is the failure mode that matters here. */
 export function clockFileOnCommandLine(argv: readonly string[]): string | undefined {
   const command = argv.indexOf("test");
   if (command === -1) return undefined;

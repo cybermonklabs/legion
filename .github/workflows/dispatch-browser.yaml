@@ -558,7 +558,7 @@ jobs:
           # node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
           # under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
           # the pull-request lane and ten in the full one. The `default: false` each `-alone`
-          # project carries (e2e/playwright.config.ts:513, :521, :530) is what keeps them out of
+          # project carries (e2e/playwright.config.ts:514, :522, :531) is what keeps them out of
           # a run that names no project, which this is not. The alone job names them, one
           # machine each.
           #
