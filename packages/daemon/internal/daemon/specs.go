@@ -35,14 +35,12 @@ type specs struct {
 	instructions string
 	secrets      map[string]string
 	prompts      *prompts.Composer
-	// memoryInstructions is the daemon's copy of the block's instructions file
-	// (config.WriteMemoryInstructions), the last fragment of a memory-group launch's system
-	// prompt; "" when the block names none, which `mode: on` may, and nothing is then appended.
-	memoryInstructions string
-	// memoryGroup is whether tree was drawn into the `memory` arm of the experiment of that name
-	// (treeMemoryGroup, over the daemon's own store). Boot always sets it; it is nil only in a
-	// test whose specs literal leaves it out, and such a specs launches nothing with memory.
-	memoryGroup func(ctx context.Context, tree string) (bool, error)
+	// variants is every arm of a declared experiment the claim's unit was drawn into, in the
+	// order the project's file declares the experiments (launchVariants, over the daemon's own
+	// store), each carrying the arm's overlays and the daemon's copy of its instructions. Boot
+	// always sets it; it is nil only in a test whose specs literal leaves it out, and such a
+	// specs launches every role in no experiment.
+	variants func(ctx context.Context, tree, issue string) ([]runtime.Variant, error)
 	// designSteps is the design-gate steps the project gates (gates.design), in the order it
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
@@ -62,7 +60,7 @@ type specs struct {
 	// commit_issue_trailer_repos against, so a launch on the name a transfer moved a repository
 	// away from stamps exactly as one on the name the project wrote. Boot always sets it; it is
 	// nil only in a test whose specs literal leaves it out, and such a specs stamps no issue key
-	// at all, as memoryGroup's nil leaves a launch without memory.
+	// at all, as variants' nil leaves every launch in no experiment.
 	same func(a, b string) bool
 	// identity is the role's App bot identity every pane commits as, minted for the owner whose
 	// installation holds the repository the launch works — the record's name over a transfer, the
@@ -105,7 +103,7 @@ func rolePromptPath(stateDir string, token claim.Token) string {
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
 // when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
-// deployment instructions and, for a tree in the project's memory group, the memory instructions
+// deployment instructions and the instructions of each arm the claim's unit was drawn into
 // — and its repository with that repository's default branch, whose workspace is on the daemon's
 // host by then when the runtime leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
@@ -162,11 +160,11 @@ func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
 }
 
 // workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It is the one
-// launch that may carry memory: whether the claim's tree is in the project's memory group
-// (memoryGroup), which decides both the overlays each runtime names last in PI_CONFIG_FILES
-// (runtime.SpawnSpec.Memory) and the memory instructions its prompt ends with. It is the one
-// launch that may stamp an issue key into its commits too (issueTrailer), since it is the one
-// that works a repository.
+// launch that may run in an experiment: the arms the claim's unit was drawn into (variants),
+// which decide both the overlays each runtime names last in PI_CONFIG_FILES
+// (runtime.SpawnSpec.Variants) and the instructions its prompt ends with. It is the one launch
+// that may stamp an issue key into its commits too (issueTrailer), since it is the one that
+// works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
 	promptPaths, err := s.rolePromptPaths(c)
 	if err != nil {
@@ -206,20 +204,22 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		Addressing:                 addressing,
 		DeploymentInstructionsPath: s.instructions,
 	}
-	// The memory group is the tree's, read from its root's record alone: a tree the daemon drew
-	// into the memory group keeps its overlays and its instructions while the block names them,
-	// whatever the project's mode is now — the mode decides which new trees are drawn, and only
-	// removing the keys takes the files away. A specs with no reader (memoryGroup nil, a test's)
-	// asks nothing, so none of its launches carries memory, and a project whose block names no
-	// instructions file appends nothing, its memory-group panes being the overlays alone.
-	if s.memoryGroup != nil {
-		memory, err := s.memoryGroup(ctx, c.Tree)
+	// The arms are read from the record alone: a unit the daemon drew into an arm keeps that
+	// arm's overlays and its instructions while the project's file names them, whatever the
+	// experiment's mode is now — the mode decides which new units are drawn, and only taking the
+	// arm out of the file takes the files away. A specs with no reader (variants nil, a test's)
+	// asks nothing, so each of its launches runs in no experiment, and an arm that names no
+	// instructions file appends nothing, its roles getting the overlays alone.
+	if s.variants != nil {
+		variants, err := s.variants(ctx, c.Tree, c.Issue)
 		if err != nil {
-			return runtime.SpawnSpec{}, fmt.Errorf("the memory group of tree %s: %w", c.Tree, err)
+			return runtime.SpawnSpec{}, fmt.Errorf("the experiment variants of %s: %w", c.Token, err)
 		}
-		if memory {
-			spec.Memory = true
-			spec.Prompt.MemoryInstructionsPath = s.memoryInstructions
+		spec.Variants = variants
+		for _, variant := range variants {
+			if variant.InstructionsPath != "" {
+				spec.Prompt.VariantInstructionsPaths = append(spec.Prompt.VariantInstructionsPaths, variant.InstructionsPath)
+			}
 		}
 	}
 	if s.identity != nil {
@@ -345,9 +345,9 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // they change; a spec cannot set that variable.
 // It has no repository and no git identity: the controller works Dispatch, never a checkout, and
 // commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
-// which validateControllerShape refuses on a controller's spec). It is in no memory group and is
-// told no memory instructions whatever the project's mode is: a memory group is a tree's, and the
-// controller runs in none.
+// which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
+// told no variant instructions whatever the modes are: an experiment's unit is a tree or an
+// issue of one, and the controller runs in neither.
 //
 // Of the passthrough variables it carries the two refusal cooldowns itself: the model fallback
 // those two bound serves every Legion role, the controller's session among them

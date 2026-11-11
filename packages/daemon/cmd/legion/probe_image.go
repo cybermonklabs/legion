@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -112,7 +111,7 @@ func runProbeImage(ctx context.Context, args []string, stdout, stderr io.Writer)
 	roleNamespaces := flags.String("role-namespaces", "", "run one role generation's namespaces (legion launcher role-init) over a layout of its own in this directory, on a volume of its own, and refuse when it fails; its home is an empty directory there, not the image's (the probe Sandbox passes it)")
 	testPostgres := flags.String("test-postgres", "", "prove the pod's own test database in this directory — the image's legion-testpg checked and started, a database made and dropped through LEGION_TEST_PG_DSN, and the server stopped — and refuse when it fails (the probe Sandbox passes it for a deployment that sets runtime.kubernetes.test_postgres; the image build does not)")
 	var roleOverlays roleConfigFilesFlag
-	flags.Var(&roleOverlays, strings.TrimPrefix(bootprobe.RoleConfigFilesFlag, "--"), "<role>=<file>[:<file>…]: a role's own Oh My Pi overlays (role_config_files), read after the environment's PI_CONFIG_FILES as that role's Oh My Pi starts on them; repeatable, one per role (the probe Sandbox passes it)")
+	flags.Var(&roleOverlays, strings.TrimPrefix(bootprobe.RoleConfigFilesFlag, "--"), "<role>=<file>[:<file>…]: one whole PI_CONFIG_FILES tail of a role (role_config_files, and the overlays of one arm of one declared experiment), read after the environment's PI_CONFIG_FILES as that role's Oh My Pi starts on it; repeatable, once per role per arm, and each occurrence is read on its own (the probe Sandbox passes it)")
 	if code, ok := parseFlags(flags, args); !ok {
 		return code
 	}
@@ -302,9 +301,11 @@ type roleOverlays struct {
 	files []string
 }
 
-// roleConfigFilesFlag is every --role-config-files value, in the order given; a role given twice,
-// a name that is no Legion role, and a file that is not an absolute path are refused as the flag
-// is read.
+// roleConfigFilesFlag is every --role-config-files value, in the order given, one entry per
+// occurrence: a role is named once per whole PI_CONFIG_FILES tail it starts on, so a deployment
+// that declares two arms naming overlays passes that role one value per arm, and each is read on
+// its own — the union of two arms is a configuration no launch produces. A name that is no
+// Legion role, and a file that is not an absolute path, are refused as the flag is read.
 type roleConfigFilesFlag []roleOverlays
 
 func (f *roleConfigFilesFlag) String() string {
@@ -326,9 +327,6 @@ func (f *roleConfigFilesFlag) Set(value string) error {
 	}
 	if !known {
 		return fmt.Errorf("%q is not a Legion role", role)
-	}
-	if slices.ContainsFunc(*f, func(entry roleOverlays) bool { return entry.role == role }) {
-		return fmt.Errorf("%s is given twice", role)
 	}
 	for _, file := range files {
 		if !filepath.IsAbs(file) {

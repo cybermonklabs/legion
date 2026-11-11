@@ -29,21 +29,21 @@ func baselineRoles() []claim.Role {
 	return slices.Concat(claim.Roles, []claim.Role{claim.RoleController})
 }
 
-// baselineRuntime is the test runtime of a deployment that declares no memory block at all —
-// memoryRuntime's shape with no memory overlays — over the operator's pod, whose own
+// baselineRuntime is the test runtime of a deployment that declares no experiment at all —
+// memoryRuntime's shape with no declared variant — over the operator's pod, whose own
 // PI_CONFIG_FILES entry every pod carries, with baselineRoleFiles as role_config_files.
 func baselineRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	return runtimeWithOptions(t, func(o *Options) {
 		o.RoleConfigFiles = baselineRoleFiles
-		o.MemoryConfigFiles = nil
+		o.ExperimentVariants = nil
 	})
 }
 
 // baselineSpec is role's launch under that deployment: a role of the tree's root issue, or the
-// project controller's own launch, which runs in no tree. Neither carries a memory group
-// (SpawnSpec.Memory) and neither names memory instructions, so each is a launch of a deployment
-// that declares nothing beyond the roles.
+// project controller's own launch, which runs in no tree. Neither carries a variant
+// (SpawnSpec.Variants) and neither names variant instructions, so each is a launch of a
+// deployment that declares nothing beyond the roles.
 func baselineSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 	t.Helper()
 	if role == claim.RoleController {

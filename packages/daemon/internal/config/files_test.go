@@ -248,20 +248,20 @@ func TestMaterializeDeploymentInstructionsRefusesAnUnusableFile(t *testing.T) {
 	}
 }
 
-// The project's memory instructions are read as the deployment's are: the operator's file
-// verbatim, and a refusal naming the operator's path for a file that is missing, unreadable, or
-// blank, since a configured key with nothing to append is a misconfiguration, not an empty
-// fragment.
-func TestReadMemoryInstructionsAnswersTheFileOrRefusesIt(t *testing.T) {
+// A declared variant's instructions are read as the deployment's are: the operator's file
+// verbatim, and a refusal naming the operator's path, with the experiment and the arm that name
+// it, for a file that is missing, unreadable, or blank, since a configured key with nothing to
+// append is a misconfiguration, not an empty fragment.
+func TestReadVariantInstructionsAnswersTheFileOrRefusesIt(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "memory.md")
 	content := "Read the tree's memory before you plan.\n\n- write what you learned\n"
 	if err := os.WriteFile(good, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ReadMemoryInstructions(good)
+	got, err := ReadVariantInstructions("memory", "memory", good)
 	if err != nil {
-		t.Fatalf("ReadMemoryInstructions: %v", err)
+		t.Fatalf("ReadVariantInstructions: %v", err)
 	}
 	if string(got) != content {
 		t.Errorf("contents = %q, want %q", got, content)
@@ -275,12 +275,12 @@ func TestReadMemoryInstructionsAnswersTheFileOrRefusesIt(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, want string
 	}{
-		{name: "blank", path: blank, want: "memory instructions file " + blank + " is empty"},
-		{name: "absent", path: absent, want: "memory instructions file " + absent + " could not be read: "},
-		{name: "a directory", path: dir, want: "memory instructions file " + dir + " could not be read: "},
+		{name: "blank", path: blank, want: "instructions file " + blank + " of experiment memory variant memory is empty"},
+		{name: "absent", path: absent, want: "instructions file " + absent + " of experiment memory variant memory could not be read: "},
+		{name: "a directory", path: dir, want: "instructions file " + dir + " of experiment memory variant memory could not be read: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ReadMemoryInstructions(tc.path)
+			_, err := ReadVariantInstructions("memory", "memory", tc.path)
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want it to start %q", err, tc.want)
 			}
@@ -288,12 +288,14 @@ func TestReadMemoryInstructionsAnswersTheFileOrRefusesIt(t *testing.T) {
 	}
 }
 
-// The copy a memory-group pane's prompt `$(cat)`s last, written as boot writes it — the read with
-// every other refusal first, then the write: a heading naming the legion as the operator wrote
-// it, a blank line, and the operator's file verbatim, beside the deployment's own copy under the
-// state directory. A file ReadMemoryInstructions refuses never reaches the write, so nothing is
-// written for it.
-func TestWriteMemoryInstructionsWritesTheHeadedCopy(t *testing.T) {
+// The copy a launch's prompt `$(cat)`s last, one per arm the launch runs in, written as boot
+// writes it — the read with every other refusal first, then the write: a heading naming the
+// experiment, the arm and the legion as the operator wrote it, a blank line, and the operator's
+// file verbatim, under a directory of the experiment's own beside the deployment's own copy. Two
+// arms of two experiments never collide, since the directory holds the experiment's name and no
+// name may hold `/`. A file ReadVariantInstructions refuses never reaches the write, so nothing
+// is written for it.
+func TestWriteVariantInstructionsWritesTheHeadedCopyPerVariant(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "memory.md")
 	content := "Your tree keeps a memory.\n\n- read it first\n"
 	if err := os.WriteFile(source, []byte(content), 0o644); err != nil {
@@ -301,30 +303,35 @@ func TestWriteMemoryInstructionsWritesTheHeadedCopy(t *testing.T) {
 	}
 	stateDir := filepath.Join(t.TempDir(), "state")
 
-	contents, err := ReadMemoryInstructions(source)
+	contents, err := ReadVariantInstructions("memory", "memory", source)
 	if err != nil {
-		t.Fatalf("ReadMemoryInstructions: %v", err)
+		t.Fatalf("ReadVariantInstructions: %v", err)
 	}
-	written, err := WriteMemoryInstructions(contents, stateDir, "sjawhar/legion")
-	if err != nil {
-		t.Fatalf("WriteMemoryInstructions: %v", err)
-	}
-	if want := filepath.Join(stateDir, MemoryInstructionsFile); written != want {
-		t.Errorf("path = %q, want %q", written, want)
-	}
-	got, err := os.ReadFile(written)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "# Memory instructions (sjawhar/legion)\n\n" + content; string(got) != want {
-		t.Errorf("contents = %q, want %q", got, want)
+	// Two arms whose flat `<experiment>-<variant>` names would be one and the same file.
+	for _, tc := range []struct{ experiment, variant string }{
+		{"memory", "memory"}, {"plan", "length-long"}, {"plan-length", "long"},
+	} {
+		written, err := WriteVariantInstructions(contents, stateDir, "sjawhar/legion", tc.experiment, tc.variant)
+		if err != nil {
+			t.Fatalf("WriteVariantInstructions: %v", err)
+		}
+		if want := filepath.Join(stateDir, ExperimentsDir, tc.experiment, tc.variant+".md"); written != want {
+			t.Errorf("path = %q, want %q", written, want)
+		}
+		got, err := os.ReadFile(written)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "# " + tc.experiment + "/" + tc.variant + " instructions (sjawhar/legion)\n\n" + content; string(got) != want {
+			t.Errorf("contents = %q, want %q", got, want)
+		}
 	}
 
 	refused := filepath.Join(t.TempDir(), "state")
-	if _, err := ReadMemoryInstructions(filepath.Join(t.TempDir(), "absent.md")); err == nil {
+	if _, err := ReadVariantInstructions("memory", "memory", filepath.Join(t.TempDir(), "absent.md")); err == nil {
 		t.Fatal("a missing file was read")
 	}
-	if _, err := os.Stat(filepath.Join(refused, MemoryInstructionsFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(refused, ExperimentsDir)); !os.IsNotExist(err) {
 		t.Errorf("a refused file still wrote the copy (stat: %v)", err)
 	}
 }

@@ -134,14 +134,19 @@ type Options struct {
 	// operator's mounts', which every pod and the image probe's carry, and the image probe reads
 	// every role's (probeManifest). Nil is none.
 	RoleConfigFiles map[claim.Role][]string
-	// MemoryConfigFiles is the project's `memory.config_files`: absolute paths of Oh My Pi
-	// settings overlays a role whose tree is in the memory group (runtime.SpawnSpec.Memory) names
-	// last in PI_CONFIG_FILES, after the operator's own and the role's own, so they outrank both
-	// (roleOperatorEnv). The files are the operator's mounts', as a role's own are, and the image
-	// probe reads them with every workflow role's (probeManifest). The daemon hands them over
-	// whatever the project's mode is, since a tree already drawn into the memory group names them
-	// under any mode; a project with no block names none. Nil is none.
-	MemoryConfigFiles []string
+	// ExperimentVariants is every arm of every experiment the project declares
+	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
+	// within one experiment, the order it declares the arms. A role names the overlays of the
+	// arms its own unit was drawn into (runtime.SpawnSpec.Variants) last in PI_CONFIG_FILES,
+	// after the operator's own and the role's own, so they outrank both (roleOperatorEnv); this
+	// list is every arm any role could be given, which is what the readers that hold a pod or the
+	// deployment and no tree take — the pod's own overlay drift (movedRoleOverlays), what a kept
+	// pod holds (heldRoleOverlays) and the image probe, which reads one value per role per arm
+	// (probeManifest). The files are the operator's mounts', as a role's own are. The daemon
+	// hands them over whatever each experiment's mode is, since a unit already drawn into an arm
+	// names its files under any mode; a project that declares nothing names none. Nil is none.
+	// A variant's InstructionsPath is the daemon's to inline in the prompt and is not read here.
+	ExperimentVariants []runtime.Variant
 	// ProviderKeys maps each variable Oh My Pi reads to the key of the providers Secret
 	// (ProvidersSecretName) that holds its value. With any, every pod mounts exactly those keys at
 	// ProvidersDir and the worker's shim exports them into Oh My Pi's environment alone; with none,

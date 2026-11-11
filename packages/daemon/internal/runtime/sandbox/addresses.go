@@ -499,9 +499,10 @@ func ghDirsName(dirs []string) string {
 
 // movedRoleOverlays is the first overlay of any role role_config_files names
 // (Options.RoleConfigFiles) that runs in role's container of the pod spec — every issue role
-// shares an issue pod's one container, the controller has its own pod — or of the project's own
-// (Options.MemoryConfigFiles), which every pod of the deployment is read for, since any tree may
-// be drawn into the memory group, whose holder in a pod created now, the deepest
+// shares an issue pod's one container, the controller has its own pod — or of any arm of any
+// experiment the project declares (Options.ExperimentVariants), which every pod of the
+// deployment is read for, since any unit may be drawn into any arm, whose holder in a pod created
+// now, the deepest
 // operator mount at or above the file (runtime.kubernetes.pod volume_mounts) with its volume, is
 // not the deepest mount at or above the file in that container as a role sees it (an issue pod's
 // HomeMountsDir view mapped back to the image's home): another volume, sub_path or mount path, a
@@ -516,7 +517,7 @@ func ghDirsName(dirs []string) string {
 // It is asked of a running pod's spec and of a Sandbox's stored pod template alike: the template
 // is the pod's own build, which is what a launch that keeps the pod reads.
 func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedAddress, bool) {
-	if len(r.roleConfigFiles) == 0 && len(r.memoryConfigFiles) == 0 {
+	if len(r.roleConfigFiles) == 0 && len(r.variantFiles) == 0 {
 		return movedAddress{}, false
 	}
 	seen, ok := roleMounts(pod, role)
@@ -533,25 +534,33 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 			}
 		}
 	}
-	// The controller runs in no tree, so no memory group ever names it these files and a pod of
-	// its own that lacks them is no drift of its: its own overlays alone are read above.
+	// The controller runs in no tree, so it is in no experiment and no arm ever names it these
+	// files; a pod of its own that lacks them is no drift of its: its own overlays alone are
+	// read above.
 	if role != claim.RoleController {
-		for _, file := range r.memoryConfigFiles {
-			if held, want, moved := r.movedOverlay(seen, pod.Volumes, file); moved {
-				return movedAddress{where: memoryOverlayField + " " + file, held: held, handed: want}, true
+		for _, variant := range r.experimentVariants {
+			for _, file := range variant.ConfigFiles {
+				if held, want, moved := r.movedOverlay(seen, pod.Volumes, file); moved {
+					return movedAddress{where: variantOverlayField(variant) + " " + file, held: held, handed: want}, true
+				}
 			}
 		}
 	}
 	return movedAddress{}, false
 }
 
-// memoryOverlayField is the project's `memory.config_files`, as a drift of one of its overlays
-// names it (movedRoleOverlays): the key an operator reads in the daemon's configuration, which
-// names no project, since a daemon runs one.
-const memoryOverlayField = "memory.config_files"
+// variantOverlayField is the key a drift of one of a variant's overlays names (movedRoleOverlays):
+// `experiments.<experiment>.variants.<variant>.config_files`, the key an operator reads in the
+// daemon's configuration, which names no project, since a daemon runs one. The `memory` block is
+// the experiment named memory, whose arms are memory and none
+// (config.Project.ExperimentsDeclared), so its overlays are named under that key too.
+func variantOverlayField(variant runtime.Variant) string {
+	return "experiments." + variant.Experiment + ".variants." + variant.Name + ".config_files"
+}
 
 // heldRoleOverlays are the overlays role_config_files names for role (Options.RoleConfigFiles) and
-// the project's own memory overlays (Options.MemoryConfigFiles), each in that order, that the pod
+// the overlays of every arm the project declares (Options.ExperimentVariants), each in that
+// order, that the pod
 // spec's own container for role holds: each file the pod carries where a pod created now would
 // (movedOverlay), none of the ones it was built too early to carry. ok is false when the spec has
 // no container for role at all, where nothing can be said of what the pod holds.
@@ -560,9 +569,10 @@ const memoryOverlayField = "memory.config_files"
 // pod's stored template (relaunch's keptBy, roleOperatorEnv): Oh My Pi refuses to start on an
 // entry that is not there, so a role started in a drifted pod against the configuration as it now
 // reads would never register and never answer the round that is to replace that pod. A pod built
-// before the memory overlays were mounted holds none of them, and the memory-group role it keeps
-// is told none.
-func (r *Runtime) heldRoleOverlays(pod corev1.PodSpec, role claim.Role) (own, memory []string, ok bool) {
+// before an arm's overlays were mounted holds none of them, and a role of a unit recorded in that
+// arm is told none of them — it runs in neither arm until the round replaces the pod, which
+// launch.overlays logs.
+func (r *Runtime) heldRoleOverlays(pod corev1.PodSpec, role claim.Role) (own, variants []string, ok bool) {
 	seen, ok := roleMounts(pod, role)
 	if !ok {
 		return nil, nil, false
@@ -576,7 +586,7 @@ func (r *Runtime) heldRoleOverlays(pod corev1.PodSpec, role claim.Role) (own, me
 		}
 		return kept
 	}
-	return held(r.roleConfigFiles[role]), held(r.memoryConfigFiles), true
+	return held(r.roleConfigFiles[role]), held(r.variantFiles), true
 }
 
 // carriesEnrollment is whether the pod spec carries the secrets broker's enrollment for role: the

@@ -136,12 +136,15 @@ type Options struct {
 	// overlays a pane of that role alone names in PI_CONFIG_FILES, after PiConfigFiles, so each
 	// outranks those, by role, the controller's pane included. Nil is none.
 	RoleConfigFiles map[claim.Role][]string
-	// MemoryConfigFiles is the project's `memory.config_files`: absolute paths of Oh My Pi
-	// settings overlays a pane whose tree is in the memory group (runtime.SpawnSpec.Memory) names
-	// last in PI_CONFIG_FILES, after PiConfigFiles and the role's own, so they outrank both. The
-	// daemon hands them over whatever the project's mode is, since a tree already drawn into the
-	// memory group names them under any mode; a project with no block names none. Nil is none.
-	MemoryConfigFiles []string
+	// ExperimentVariants is every arm of every experiment the project declares
+	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
+	// within one experiment, the order it declares the arms. A pane names the overlays of the
+	// arms its own unit was drawn into (runtime.SpawnSpec.Variants) last in PI_CONFIG_FILES,
+	// after PiConfigFiles and the role's own, so they outrank both; this list is every arm any
+	// pane could be given, which is what New holds to a path PI_CONFIG_FILES can name. The daemon
+	// hands them over whatever each experiment's mode is, since a unit already drawn into an arm
+	// names its files under any mode; a project that declares nothing names none. Nil is none.
+	ExperimentVariants []runtime.Variant
 	// TakeOver is the operator's `runtime.tmux.take_over`: TakeOverKubernetes to take over the
 	// claims a daemon running the project under runtime kubernetes left in the store (foreign), ""
 	// to refuse them, as every locator of another runtime is refused without it.
@@ -198,9 +201,6 @@ type Runtime struct {
 	operatorEnv          map[string]string
 	piConfigFiles        []string
 	roleConfigFiles      map[claim.Role][]string
-	// memoryConfigFiles are the project's memory overlays (Options.MemoryConfigFiles), named last
-	// in PI_CONFIG_FILES by a pane whose tree is in the memory group alone.
-	memoryConfigFiles []string
 	// takeOver is the runtime whose locators this runtime takes over (Options.TakeOver):
 	// runtime.RuntimeSandbox under TakeOverKubernetes, "" for none.
 	takeOver string
@@ -308,7 +308,9 @@ func New(opts Options) (*Runtime, error) {
 	for _, files := range opts.RoleConfigFiles {
 		overlays = append(overlays, files...)
 	}
-	overlays = append(overlays, opts.MemoryConfigFiles...)
+	for _, variant := range opts.ExperimentVariants {
+		overlays = append(overlays, variant.ConfigFiles...)
+	}
 	for _, path := range overlays {
 		if !filepath.IsAbs(path) || strings.Contains(path, ":") {
 			return nil, fmt.Errorf("tmux runtime: Oh My Pi overlay %q is not an absolute path PI_CONFIG_FILES can name", path)
@@ -355,7 +357,6 @@ func New(opts Options) (*Runtime, error) {
 		operatorEnv:          opts.PaneEnv,
 		piConfigFiles:        opts.PiConfigFiles,
 		roleConfigFiles:      opts.RoleConfigFiles,
-		memoryConfigFiles:    opts.MemoryConfigFiles,
 		takeOver:             takeOver,
 		readProc:             os.ReadFile,
 		tracked:              map[string]*trackedProcess{},

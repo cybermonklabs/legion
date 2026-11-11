@@ -361,7 +361,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		RepositoryCache:         cache,
 		Log:                     log,
 	}
-	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles
+	opts.ExperimentVariants = declaredVariants(cfg)
 	return opts, nil
 }
 

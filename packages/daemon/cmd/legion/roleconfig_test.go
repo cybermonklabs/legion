@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -90,5 +92,41 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 		if refused := strings.Contains(stderr.String(), bootprobe.RoleOverlaysRefusedLine("merger", tc.why)); refused != (tc.why != "") {
 			t.Errorf("%s: stderr %q, refusal line printed %t", tc.name, stderr.String(), refused)
 		}
+	}
+}
+
+// The probe Sandbox passes a role one --role-config-files value per arm of each declared
+// experiment that names overlays (runtime/sandbox's probeManifest), so the flag takes a role more
+// than once rather than refusing the second occurrence, and every occurrence is read on its own:
+// the union of two arms is a configuration no launch produces, and Oh My Pi may take each arm and
+// refuse the pair. A value two roles share is still read once.
+func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
+	own := []string{"/etc/legion-operator/tester.yml"}
+	alpha, beta := append(slices.Clone(own), "/etc/legion-alpha/alpha.yml"), append(slices.Clone(own), "/etc/legion-beta/beta.yml")
+	var flag roleConfigFilesFlag
+	for _, value := range []string{
+		bootprobe.RoleConfigFilesValue("tester", alpha),
+		bootprobe.RoleConfigFilesValue("tester", beta),
+		bootprobe.RoleConfigFilesValue("merger", alpha),
+	} {
+		if err := flag.Set(value); err != nil {
+			t.Fatalf("the flag refused %q: %v; a role is named once per arm", value, err)
+		}
+	}
+	if len(flag) != 3 {
+		t.Fatalf("the flag holds %d entries, want one per occurrence: %v", len(flag), flag)
+	}
+
+	var read [][]string
+	var stderr bytes.Buffer
+	code := checkRoleOverlays(flag, func(files []string) (string, error) {
+		read = append(read, files)
+		return "", nil
+	}, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("checkRoleOverlays = %d, stderr %q; want 0 and nothing", code, stderr.String())
+	}
+	if want := [][]string{alpha, beta}; !reflect.DeepEqual(read, want) {
+		t.Errorf("the probe read %q, want each arm on its own and the merger's repeat of the first read once: %q", read, want)
 	}
 }

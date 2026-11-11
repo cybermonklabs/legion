@@ -35,43 +35,52 @@ func memoryBlock(mode config.MemoryMode) config.Memory {
 	return config.Memory{Mode: mode, ConfigFiles: memoryFiles, InstructionsPath: "/etc/legion-memory/instructions.md"}
 }
 
-// A project that names overlays hands them to the tmux runtime whatever its mode is: the mode
-// decides which new trees are drawn into the memory group, and a tree drawn into it before the
-// mode moved to off still has files to name. A project with no block hands over none, which is
-// the pane every deployment built before this release.
+// memoryVariants are the two arms the `memory` block maps to, as each runtime's options carry
+// them (config.Project.ExperimentsDeclared, declaredVariants): memory with the block's overlays,
+// then none with no file at all.
+var memoryVariants = []runtime.Variant{
+	{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles},
+	{Experiment: "memory", Name: "none"},
+}
+
+// A project that names overlays hands the arms that carry them to the tmux runtime whatever its
+// mode is: the mode decides which new trees are drawn into the memory group, and a tree drawn
+// into it before the mode moved to off still has files to name. A project with no block declares
+// no experiment and hands over none, which is the pane every deployment built before this
+// release.
 func TestAProjectThatNamesOverlaysHandsThemToTheTmuxRuntimeAtEveryMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		memory config.Memory
-		want   []string
+		want   []runtime.Variant
 	}{
-		{"on", memoryBlock(config.MemoryOn), memoryFiles},
-		{"random", memoryBlock(config.MemoryRandom), memoryFiles},
-		{"off", memoryBlock(config.MemoryOff), memoryFiles},
-		{"no mode", memoryBlock(""), memoryFiles},
+		{"on", memoryBlock(config.MemoryOn), memoryVariants},
+		{"random", memoryBlock(config.MemoryRandom), memoryVariants},
+		{"off", memoryBlock(config.MemoryOff), memoryVariants},
+		{"no mode", memoryBlock(""), memoryVariants},
 		{"no block", config.Memory{}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tmuxOptions(memoryConfig(tc.memory), "test", nil, "", "", quietLogger()).MemoryConfigFiles
+			got := tmuxOptions(memoryConfig(tc.memory), "test", nil, "", "", quietLogger()).ExperimentVariants
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("tmux MemoryConfigFiles = %v, want %v", got, tc.want)
+				t.Errorf("tmux ExperimentVariants = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// The Sandbox runtime is handed the same list on the same rule, since a pod's memory-group role
-// names those overlays whatever the project's mode is now.
+// The Sandbox runtime is handed the same list on the same rule, since a pod's role of a unit
+// drawn into an arm names that arm's overlays whatever the project's mode is now.
 func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		memory config.Memory
-		want   []string
+		want   []runtime.Variant
 	}{
-		{"on", memoryBlock(config.MemoryOn), memoryFiles},
-		{"random", memoryBlock(config.MemoryRandom), memoryFiles},
-		{"off", memoryBlock(config.MemoryOff), memoryFiles},
-		{"no mode", memoryBlock(""), memoryFiles},
+		{"on", memoryBlock(config.MemoryOn), memoryVariants},
+		{"random", memoryBlock(config.MemoryRandom), memoryVariants},
+		{"off", memoryBlock(config.MemoryOff), memoryVariants},
+		{"no mode", memoryBlock(""), memoryVariants},
 		{"no block", config.Memory{}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,15 +90,15 @@ func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *tes
 			if err != nil {
 				t.Fatalf("sandboxOptions: %v", err)
 			}
-			if !reflect.DeepEqual(opts.MemoryConfigFiles, tc.want) {
-				t.Errorf("sandbox MemoryConfigFiles = %v, want %v", opts.MemoryConfigFiles, tc.want)
+			if !reflect.DeepEqual(opts.ExperimentVariants, tc.want) {
+				t.Errorf("sandbox ExperimentVariants = %v, want %v", opts.ExperimentVariants, tc.want)
 			}
 		})
 	}
 }
 
-// memorySpecs is a spec builder for a project whose memory instructions boot materialized, over a
-// reader that answers memory for the tree LEGION-1 alone. The mode is no part of a launch's
+// memorySpecs is a spec builder for a project whose memory instructions boot materialized, over
+// a reader that gives the tree LEGION-1 the memory arm alone. The mode is no part of a launch's
 // decision, so it is no part of this builder either.
 func memorySpecs(t *testing.T, instructions string) specs {
 	t.Helper()
@@ -99,8 +108,13 @@ func memorySpecs(t *testing.T, instructions string) specs {
 	}
 	return specs{
 		stateDir: t.TempDir(), project: "test", prompts: composer, repositories: noRepositoriesView,
-		instructions: "/state/deployment-instructions.md", memoryInstructions: instructions,
-		memoryGroup: func(_ context.Context, tree string) (bool, error) { return tree == "LEGION-1", nil },
+		instructions: "/state/deployment-instructions.md",
+		variants: func(_ context.Context, tree, _ string) ([]runtime.Variant, error) {
+			if tree != "LEGION-1" {
+				return nil, nil
+			}
+			return []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, InstructionsPath: instructions}}, nil
+		},
 	}
 }
 
@@ -118,77 +132,91 @@ func memorySpawn(t *testing.T, s specs, tree, issue string, role claim.Role) run
 	return spec
 }
 
-// Every role of a tree the draw put in the memory group launches with memory: the spec says so, so
-// each runtime names the project's overlays last, and its prompt ends with the memory instructions
-// the daemon materialized at boot, after the deployment's own. A role of a tree with no group, and
+// inMemory is whether spec runs in the memory arm with instructions: the one variant the arm is,
+// and that arm's instructions path among the prompt's.
+func inMemory(spec runtime.SpawnSpec, instructions string) bool {
+	want := []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, InstructionsPath: instructions}}
+	var paths []string
+	if instructions != "" {
+		paths = []string{instructions}
+	}
+	return reflect.DeepEqual(spec.Variants, want) && reflect.DeepEqual(spec.Prompt.VariantInstructionsPaths, paths)
+}
+
+// Every role of a tree the draw put in the memory group launches in that arm: the spec says so,
+// so each runtime names the arm's overlays last, and its prompt ends with the instructions the
+// daemon materialized at boot, after the deployment's own. A role of a tree with no group, and
 // the daemon's controller, carry neither.
 func TestMemoryReachesOnlyTheRolesOfAMemoryTree(t *testing.T) {
-	const instructions = "/state/memory-instructions.md"
+	const instructions = "/state/experiments/memory/memory.md"
 	s := memorySpecs(t, instructions)
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
 		spec := memorySpawn(t, s, "LEGION-1", "LEGION-2", role)
-		if !spec.Memory || spec.Prompt.MemoryInstructionsPath != instructions {
-			t.Errorf("the %s of a memory tree: Memory = %v, instructions = %q; want true and %q",
-				role, spec.Memory, spec.Prompt.MemoryInstructionsPath, instructions)
+		if !inMemory(spec, instructions) {
+			t.Errorf("the %s of a memory tree: variants = %+v, instructions = %q; want the memory arm and %q",
+				role, spec.Variants, spec.Prompt.VariantInstructionsPaths, instructions)
 		}
 		if spec.Prompt.DeploymentInstructionsPath != s.instructions {
 			t.Errorf("the %s of a memory tree: deployment instructions = %q, want %q", role, spec.Prompt.DeploymentInstructionsPath, s.instructions)
 		}
 	}
 	noMemory := memorySpawn(t, s, "LEGION-7", "LEGION-8", claim.RoleTester)
-	if noMemory.Memory || noMemory.Prompt.MemoryInstructionsPath != "" {
-		t.Errorf("a tree with no group: Memory = %v, instructions = %q; want false and \"\"", noMemory.Memory, noMemory.Prompt.MemoryInstructionsPath)
+	if len(noMemory.Variants) != 0 || len(noMemory.Prompt.VariantInstructionsPaths) != 0 {
+		t.Errorf("a tree with no group: variants = %+v, instructions = %q; want neither", noMemory.Variants, noMemory.Prompt.VariantInstructionsPaths)
 	}
 
 	controller, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("test"), Project: "test", Role: claim.RoleController})
 	if err != nil {
 		t.Fatalf("the controller's SpawnSpec: %v", err)
 	}
-	if controller.Memory || controller.Prompt.MemoryInstructionsPath != "" {
-		t.Errorf("the controller: Memory = %v, instructions = %q; want false and \"\"", controller.Memory, controller.Prompt.MemoryInstructionsPath)
+	if len(controller.Variants) != 0 || len(controller.Prompt.VariantInstructionsPaths) != 0 {
+		t.Errorf("the controller: variants = %+v, instructions = %q; want neither", controller.Variants, controller.Prompt.VariantInstructionsPaths)
 	}
 }
 
-// `mode: off` draws no new tree into the memory group and takes memory from no tree already drawn
-// into it: the launch follows the record, so a tree the daemon recorded `memory` keeps its
-// overlays and its instructions while the block still names them, whatever the mode is now. Only
-// removing the block takes the files away (dispatch://INFRA-990's spec: every tree keeps its
-// group for its life; INFRA-1101's R3 and R6).
+// `mode: off` draws no new tree into the memory group and takes memory from no tree already
+// drawn into it: the launch follows the record, so a tree the daemon recorded `memory` keeps its
+// overlays and its instructions while the file still names that arm, whatever the mode is now.
+// Only taking the arm out of the file takes the files away (dispatch://INFRA-990's spec: every
+// tree keeps its group for its life; INFRA-1101's R3 and R6).
 func TestAMemoryTreeKeepsItsFilesAfterTheProjectMovesToModeOff(t *testing.T) {
-	const instructions = "/state/memory-instructions.md"
+	const instructions = "/state/experiments/memory/memory.md"
 	// The mode reaches no launch at all, so the one builder serves every mode; what the tmux and
 	// Sandbox options hand over at off is the two tables above.
 	off := memorySpecs(t, instructions)
 	drawn := memorySpawn(t, off, "LEGION-1", "LEGION-1", claim.RoleTester)
-	if !drawn.Memory || drawn.Prompt.MemoryInstructionsPath != instructions {
-		t.Errorf("a recorded memory tree at mode off: Memory = %v, instructions = %q; want true and %q",
-			drawn.Memory, drawn.Prompt.MemoryInstructionsPath, instructions)
+	if !inMemory(drawn, instructions) {
+		t.Errorf("a recorded memory tree at mode off: variants = %+v, instructions = %q; want the memory arm and %q",
+			drawn.Variants, drawn.Prompt.VariantInstructionsPaths, instructions)
 	}
 	undrawn := memorySpawn(t, off, "LEGION-2", "LEGION-2", claim.RoleTester)
-	if undrawn.Memory || undrawn.Prompt.MemoryInstructionsPath != "" {
-		t.Errorf("a tree with no draw at mode off: Memory = %v, instructions = %q; want false and \"\"",
-			undrawn.Memory, undrawn.Prompt.MemoryInstructionsPath)
+	if len(undrawn.Variants) != 0 || len(undrawn.Prompt.VariantInstructionsPaths) != 0 {
+		t.Errorf("a tree with no draw at mode off: variants = %+v, instructions = %q; want neither",
+			undrawn.Variants, undrawn.Prompt.VariantInstructionsPaths)
 	}
 }
 
-// A block with no instructions file is allowed: the tree's roles get the overlays and nothing is
-// appended to their prompt. A reader that cannot answer refuses the launch rather than running it
-// as a tree with no memory.
+// An arm with no instructions file is allowed: the tree's roles get the overlays and nothing is
+// appended to their prompt. A reader that cannot answer refuses the launch rather than running
+// the tree in no arm at all.
 func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing.T) {
 	on := memorySpecs(t, "")
 	spec := memorySpawn(t, on, "LEGION-1", "LEGION-2", claim.RoleTester)
-	if !spec.Memory || spec.Prompt.MemoryInstructionsPath != "" {
-		t.Errorf("a block with no instructions: Memory = %v, instructions = %q; want true and \"\"", spec.Memory, spec.Prompt.MemoryInstructionsPath)
+	if !inMemory(spec, "") {
+		t.Errorf("an arm with no instructions: variants = %+v, instructions = %q; want the memory arm and none",
+			spec.Variants, spec.Prompt.VariantInstructionsPaths)
 	}
 
-	refused := memorySpecs(t, "/state/memory-instructions.md")
-	refused.memoryGroup = func(context.Context, string) (bool, error) { return false, errors.New("the store is down") }
+	refused := memorySpecs(t, "/state/experiments/memory/memory.md")
+	refused.variants = func(context.Context, string, string) ([]runtime.Variant, error) {
+		return nil, errors.New("the store is down")
+	}
 	token, err := claim.NewToken("test", "LEGION-2", claim.RoleTester)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = refused.SpawnSpec(context.Background(), supervise.Claim{Token: token, Project: "test", Issue: "LEGION-2", Tree: "LEGION-1", Role: claim.RoleTester})
-	want := "the memory group of tree LEGION-1: the store is down"
+	want := "the experiment variants of legion-test-legion-2-tester: the store is down"
 	if err == nil || err.Error() != want {
 		t.Fatalf("SpawnSpec over an unreadable record = %v, want %q", err, want)
 	}
@@ -199,7 +227,7 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 // already drawn into the memory group names those overlays under any mode, so an unreadable one
 // would stop its roles at off as surely as at on. A project with no overlays has none to read.
 func TestMemoryOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
-	want := "projects.test.memory.config_files names /etc/legion-memory/absent.yml, which a memory-group role's Oh My Pi could not read: "
+	want := "projects.test.memory.config_files names /etc/legion-memory/absent.yml, which a role drawn into that arm could not read: "
 	for _, mode := range []config.MemoryMode{config.MemoryOn, config.MemoryRandom, config.MemoryOff, ""} {
 		cfg := memoryConfig(config.Memory{Mode: mode, ConfigFiles: []string{"/etc/legion-memory/absent.yml"}})
 		err := checkRoleConfigFiles(cfg)

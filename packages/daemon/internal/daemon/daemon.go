@@ -610,10 +610,11 @@ type plan struct {
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
 	instructions string
-	// memoryInstructions is the daemon's copy of the project's memory instructions
-	// (config.WriteMemoryInstructions), the last fragment of a memory-group launch's system
-	// prompt; "" when the project names no memory block or its block names no instructions file.
-	memoryInstructions string
+	// variantInstructions is the daemon's copy of each declared variant's instructions file
+	// (config.WriteVariantInstructions), by experiment and arm (variantKey): the fragment a
+	// launch whose unit was drawn into that arm ends its system prompt with. Empty for a project
+	// whose declared variants name no instructions file, and for one that declares nothing.
+	variantInstructions map[string]string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	prompts       *prompts.Composer
@@ -718,11 +719,16 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		}
 	}
 
-	memoryInstructions := ""
-	if reads.memoryInstructions != nil {
-		if memoryInstructions, err = config.WriteMemoryInstructions(reads.memoryInstructions, cfg.StateDir, cfg.Project); err != nil {
+	// One copy per declared variant that names an instructions file, each under its experiment's
+	// own directory, since two names may hold `-` and neither may hold `/`
+	// (config.VariantInstructionsFile).
+	variantInstructions := map[string]string{}
+	for _, read := range reads.variantInstructions {
+		written, err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant)
+		if err != nil {
 			return plan{}, err
 		}
+		variantInstructions[variantKey(read.experiment, read.variant)] = written
 	}
 
 	clock := o.clock
@@ -750,8 +756,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
-		memoryInstructions: memoryInstructions,
-		dispatchToken:      reads.dispatchToken, prompts: composer, roleReferences: prompts.RoleReferences(),
+		variantInstructions: variantInstructions,
+		dispatchToken:       reads.dispatchToken, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		pluginRelaunchable: pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
@@ -842,96 +848,169 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
 // operator's own, as that role's pane will start Oh My Pi: its PI_CONFIG_FILES,
 // runtime.tmux.pi_config_files then the role's own files (role_config_files) and, for a workflow
-// role of a project whose block names memory overlays, those after them, each file
+// role of a project that declares an arm naming overlays, that arm's files after them, each file
 // read and the role's own each read alone by image's Oh My Pi (capabilities.CheckOverlays), so a
 // file a pane's Oh My Pi would refuse refuses the boot, naming the key and the file, rather than
 // every launch that names it. Legion names no overlay of its own, so those lists are the whole of
-// a pane's PI_CONFIG_FILES. The controller is in no memory group, so it is never probed with
-// them; the mode is not read here, since a tree already drawn into the memory group names those
-// overlays whatever the mode is now. A run that never reached an exit
-// of its own is logged, not refused, as the model-fallback read is.
+// a pane's PI_CONFIG_FILES.
+//
+// One value per role per arm, never one value holding two arms' files, as the image probe reads
+// them (runtime/sandbox's probeManifest): the union of two arms is a configuration no launch
+// produces. An arm that names no overlay adds no value of its own, since its panes start on the
+// role's own files, which the role's own value already reads. The controller runs in no tree, so
+// it is in no arm and is never probed with one; no mode is read here, since a unit already drawn
+// into an arm names that arm's overlays whatever the mode is now. A run that never reached an
+// exit of its own is logged, not refused, as the model-fallback read is.
 func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabilities.Image, log *slog.Logger) error {
 	var every []string
 	if block := cfg.Runtime.Tmux; block != nil {
 		every = block.PiConfigFiles
 	}
-	memory := cfg.Projects[cfg.Project].Memory
-	memoryField := "projects." + cfg.Project + ".memory.config_files"
+	declared, blockWritten := cfg.Projects[cfg.Project].ExperimentsDeclared(), memoryBlockWritten(cfg)
 	// probed is each PI_CONFIG_FILES value already read, so one value shared by six roles costs
 	// one read of each of its files rather than six.
 	probed := make(map[string]struct{}, len(config.RoleConfigRoles))
 	for _, role := range config.RoleConfigRoles {
 		own := cfg.RoleConfigFiles[role]
-		field := "role_config_files." + string(role)
-		// A memory-group pane of this role names the memory overlays last, so the gate reads the
-		// value that pane would start on rather than the role's half of it.
-		if len(memory.ConfigFiles) > 0 && role != claim.RoleController {
-			own = slices.Concat(own, memory.ConfigFiles)
-			if len(cfg.RoleConfigFiles[role]) == 0 {
-				field = memoryField
-			} else {
-				field += " with " + memoryField
+		ownField := "role_config_files." + string(role)
+		// A pane of this role drawn into an arm names that arm's overlays last, so the gate reads
+		// each value such a pane would start on rather than the role's half of it.
+		type candidate struct {
+			field string
+			files []string
+		}
+		var values []candidate
+		if role != claim.RoleController {
+			for _, experiment := range declared {
+				for _, variant := range experiment.Variants {
+					if len(variant.ConfigFiles) == 0 {
+						continue
+					}
+					field := declaredOverlayField(cfg.Project, blockWritten, experiment, variant)
+					if len(own) > 0 {
+						field = ownField + " with " + field
+					}
+					values = append(values, candidate{field: field, files: slices.Concat(own, variant.ConfigFiles)})
+				}
 			}
 		}
-		if len(own) == 0 {
-			continue
+		if len(values) == 0 {
+			values = []candidate{{field: ownField, files: own}}
 		}
-		// Every workflow role of a memory-group project that names no overlays of its own is
-		// given one and the same value, so each distinct value is read once rather than once per
-		// role: the runs Oh My Pi is asked for are identical, and so is their verdict. The first
-		// role holding a value Oh My Pi refuses is still the role the refusal names, since the
-		// loop reaches it before any other role of that value.
-		value := strings.Join(own, ":")
-		if _, read := probed[value]; read {
-			continue
-		}
-		probed[value] = struct{}{}
-		why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, own), own)
-		if err != nil {
-			log.Warn("boot gate: Oh My Pi did not answer on some of a role's overlays; its files were read", "role", role, "error", err)
-		}
-		if why != "" {
-			return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", field, role, why)
+		for _, value := range values {
+			if len(value.files) == 0 {
+				continue
+			}
+			// Every workflow role of a project whose arm reaches it and that names no overlays of
+			// its own is given one and the same value, so each distinct value is read once rather
+			// than once per role: the runs Oh My Pi is asked for are identical, and so is their
+			// verdict. The first role holding a value Oh My Pi refuses is still the role the
+			// refusal names, since the loop reaches it before any other role of that value.
+			joined := strings.Join(value.files, ":")
+			if _, read := probed[joined]; read {
+				continue
+			}
+			probed[joined] = struct{}{}
+			why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, value.files), value.files)
+			if err != nil {
+				log.Warn("boot gate: Oh My Pi did not answer on some of a role's overlays; its files were read", "role", role, "error", err)
+			}
+			if why != "" {
+				return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", value.field, role, why)
+			}
 		}
 	}
 	return nil
 }
 
-// treeMemoryGroup answers whether tree was drawn into the `memory` arm of the experiment named
-// memory, the answer recorded for the tree when it was opened and read back at every launch of
-// its roles (record.Assignment, the experiment config.Project.ExperimentsDeclared maps the
-// `memory` block to). An issue's memory group is its tree root's, and the root key is the claim's
-// own tree, so there is no ancestor walk; a tree with no record, one no experiment was declared
-// for, and a root first opened before the experiment was declared hold no row and run without
-// memory.
+// memoryBlockWritten is whether the project writes the `memory` block at all, the condition
+// Project.ExperimentsDeclared maps it to the experiment named memory under. A project writes the
+// block or `experiments.memory`, never both (config.checkExperimentMemory), so this is what tells
+// the two spellings of that one experiment apart where a refusal must name the operator's key.
+func memoryBlockWritten(cfg config.Config) bool {
+	memory := cfg.Projects[cfg.Project].Memory
+	return memory.Mode != "" || len(memory.ConfigFiles) > 0 || memory.InstructionsPath != ""
+}
+
+// declaredOverlayField is the key an operator reads for one declared arm's overlays: the `memory`
+// block's own `config_files` where the arm came from the block, and the experiment's own
+// `projects.<KEY>.experiments.<experiment>.variants.<variant>.config_files` otherwise.
+func declaredOverlayField(project string, blockWritten bool, experiment config.Experiment, variant config.Variant) string {
+	if blockWritten && experiment.Name == "memory" {
+		return "projects." + project + ".memory.config_files"
+	}
+	return "projects." + project + ".experiments." + experiment.Name + ".variants." + variant.Name + ".config_files"
+}
+
+// variantKey names one arm of one experiment in a map the daemon keys by both names: neither a
+// experiment's name nor an arm's may hold `/` (config.experimentNamePattern), so the pair is one
+// string and no two pairs collide.
+func variantKey(experiment, variant string) string { return experiment + "/" + variant }
+
+// launchVariants is the one reader a launch's arms come from: for each experiment the project
+// declares, in the file's order (config.Project.ExperimentsDeclared, which maps the `memory`
+// block to the experiment named memory), the arm recorded for the unit that experiment covers —
+// the issue's tree root for a tree experiment, the issue itself for an issue experiment
+// (record.Assignment, written when the unit was opened and read back at every launch of its
+// roles). A unit with no row for an experiment, one no experiment was declared for, and a root
+// first opened before the experiment was declared run in no arm of it.
 //
-// It reads one experiment by name and answers one bool because that is what its caller takes
-// today. A later task replaces it wholesale with a reader of every variant a unit was drawn, so
-// this is deliberately the smallest change that stops reading record.Issue.MemoryGroup, which
-// nothing writes any more.
+// A unit whose recorded arm the project's file no longer names contributes nothing: a launch
+// names the files the file still holds, so an arm taken out of the file takes its overlays and
+// its instructions with it, and the unit runs as one in no experiment does. Its row stays, so a
+// file that names the arm again gives the unit the arm it was drawn into.
+//
+// Each arm carries the daemon's own copy of its instructions file (instructions, by variantKey),
+// never the operator's path: a pod cannot read the daemon's configuration, and the operator's
+// file may change under a running daemon.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
 // the same store with no workflow configured (api's drawExperiments), and a launch that could not
-// read that draw back would run the tree against an arm the daemon had already recorded for it.
-func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bool, error) {
+// read that draw back would run the unit against an arm the daemon had already recorded for it.
+func launchVariants(st *store.Store, declared []config.Experiment, instructions map[string]string) func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
 	records := record.NewStore()
-	return func(ctx context.Context, tree string) (bool, error) {
-		var assignments []record.Assignment
-		err := st.Tx(ctx, func(tx pgx.Tx) error {
-			var err error
-			assignments, err = records.AssignmentsOf(ctx, tx, tree)
-			return err
-		})
-		if err != nil {
-			return false, err
+	return func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
+		keys := []string{tree}
+		if issue != tree {
+			keys = append(keys, issue)
 		}
-		for _, assignment := range assignments {
-			if assignment.Experiment == "memory" {
-				return assignment.Variant == "memory", nil
+		var recorded map[string][]record.Assignment
+		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			var err error
+			recorded, err = records.AssignmentsFor(ctx, tx, keys)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		var variants []runtime.Variant
+		for _, experiment := range declared {
+			unit := tree
+			if experiment.Unit == config.ExperimentIssue {
+				unit = issue
+			}
+			drawn := ""
+			for _, assignment := range recorded[unit] {
+				if assignment.Experiment == experiment.Name {
+					drawn = assignment.Variant
+				}
+			}
+			if drawn == "" {
+				continue
+			}
+			for _, variant := range experiment.Variants {
+				if variant.Name != drawn {
+					continue
+				}
+				variants = append(variants, runtime.Variant{
+					Experiment:       experiment.Name,
+					Name:             variant.Name,
+					ConfigFiles:      variant.ConfigFiles,
+					InstructionsPath: instructions[variantKey(experiment.Name, variant.Name)],
+				})
 			}
 		}
-		return false, nil
+		return variants, nil
 	}
 }
 
@@ -999,13 +1078,31 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 	}
 }
 
+// declaredVariants is every arm of every experiment the project declares
+// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
+// within one experiment, the order it declares the arms: what each runtime is held to as a path
+// PI_CONFIG_FILES can name, and what its readers that hold a pod or the deployment and no tree
+// take, since any unit may be drawn into any arm. They are handed over whatever each
+// experiment's mode is: the mode decides which new units are drawn, and a unit already drawn
+// into an arm names that arm's files under any mode. A project that declares nothing hands over
+// none, which is the launch every deployment built before any experiment existed.
+//
+// A variant's instructions are left out: the daemon inlines its own copy of them in the launch's
+// prompt (launchVariants), and no runtime reads them from its options.
+func declaredVariants(cfg config.Config) []runtime.Variant {
+	var variants []runtime.Variant
+	for _, experiment := range cfg.Projects[cfg.Project].ExperimentsDeclared() {
+		for _, variant := range experiment.Variants {
+			variants = append(variants, runtime.Variant{Experiment: experiment.Name, Name: variant.Name, ConfigFiles: variant.ConfigFiles})
+		}
+	}
+	return variants
+}
+
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), and the project's memory overlays (`memory.config_files`), handed over
-// whatever the mode is: the mode decides which new trees are drawn into the memory group, and a
-// tree already drawn into it names those overlays under any mode. A project with no block hands
-// over none, which is the pane every deployment built before the block existed.
+// (role_config_files), and every declared experiment's arms (declaredVariants).
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
 		Project:           project,
@@ -1026,7 +1123,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 	if block := cfg.Runtime.Tmux; block != nil {
 		opts.PaneEnv, opts.PiConfigFiles, opts.TakeOver = block.PaneEnv, block.PiConfigFiles, block.TakeOver
 	}
-	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles
+	opts.ExperimentVariants = declaredVariants(cfg)
 	return opts
 }
 
@@ -1312,7 +1409,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			mergeRules: cfg.Projects[cfg.Project].Merge, runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
+			variants: launchVariants(st, cfg.Projects[cfg.Project].ExperimentsDeclared(), p.variantInstructions),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		Secrets:                 p.secretsEnroller,

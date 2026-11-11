@@ -139,13 +139,13 @@ var doubleQuoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`
 // SystemPromptArgument is the one `--append-system-prompt` word every pane's OMP receives, and
 // the operator-launched controller's (`legion controller start`). OMP's
 // flag is last-wins, so every fragment rides a single value, in order: the role prompt files, the
-// addressing text, the deployment instructions file, then the project's memory instructions file,
-// separated by a blank line. It is one double-quoted word holding `$(cat <files>)`, so the pane's
-// own shell reads the files — their size and quoting never pass through tmux's argv — and the
-// addressing text is escaped for the double quotes (systemPromptArguments and shellDoubleQuoted,
-// runtime-tmux.ts). The caller has checked there is a role prompt. A launch whose tree is in no
-// memory group, and every launch under a project with no memory instructions, names no memory
-// file and ends at the deployment's own (runtime.PromptParts).
+// addressing text, the deployment instructions file, then one file per variant the launch runs
+// in, in the order the project's file declares the experiments, separated by a blank line. It is
+// one double-quoted word holding `$(cat <files>)`, so the pane's own shell reads the files —
+// their size and quoting never pass through tmux's argv — and the addressing text is escaped for
+// the double quotes (systemPromptArguments and shellDoubleQuoted, runtime-tmux.ts). The caller
+// has checked there is a role prompt. A launch in no experiment, and one whose variants name no
+// instructions file, names none of them and ends at the deployment's own (runtime.PromptParts).
 func SystemPromptArgument(parts runtime.PromptParts) string {
 	fragments := []string{"$(cat " + shellprefix.Command(parts.RolePromptPaths) + ")"}
 	if parts.Addressing != "" {
@@ -154,8 +154,11 @@ func SystemPromptArgument(parts runtime.PromptParts) string {
 	if parts.DeploymentInstructionsPath != "" {
 		fragments = append(fragments, "$(cat "+shellprefix.Word(parts.DeploymentInstructionsPath)+")")
 	}
-	if parts.MemoryInstructionsPath != "" {
-		fragments = append(fragments, "$(cat "+shellprefix.Word(parts.MemoryInstructionsPath)+")")
+	for _, path := range parts.VariantInstructionsPaths {
+		if path == "" {
+			continue
+		}
+		fragments = append(fragments, "$(cat "+shellprefix.Word(path)+")")
 	}
 	return `--append-system-prompt "` + strings.Join(fragments, "\n\n") + `"`
 }

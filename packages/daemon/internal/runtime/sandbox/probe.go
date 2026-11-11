@@ -1320,10 +1320,11 @@ type probeSpec struct {
 // and already retried on failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day
 // eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
-// passes that role's overlays (--role-config-files), with the project's memory overlays
-// (Options.MemoryConfigFiles) after them for every workflow role, which any tree's memory group
-// may give them to, and never for the controller, which runs in no tree: the probe reads each
-// value as that role's Oh My Pi will. None are passed for a deployment that names neither.
+// passes that role's overlays (--role-config-files), and for every workflow role one value per
+// arm the project declares that names overlays (Options.ExperimentVariants), that arm's files
+// after the role's own — never for the controller, which runs in no tree and so is in no arm:
+// the probe reads each value as that role's Oh My Pi will. None are passed for a deployment that
+// names neither.
 func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) probeSandbox {
 	labels := map[string]string{labelProject: r.project, labelProbe: "image"}
 	providers, providersMounts := r.providers()
@@ -1348,18 +1349,40 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 	if r.testPostgres {
 		command = append(command, "--test-postgres", RoleProbeDir+"/"+launcher.TestPGDirName)
 	}
-	// Each role that names overlays of its own, and every workflow role of a project whose memory
-	// overlays reach it, is read as it will start: the probe pod mounts the operator's volumes as
-	// every pod does, so a file a role's PI_CONFIG_FILES names and the mounts lack refuses the
-	// boot here, naming the role and the file, rather than that role's Oh My Pi at its first
-	// launch.
+	// Each role that names overlays of its own, and every workflow role of a project whose
+	// declared variants name overlays, is read as it will start: the probe pod mounts the
+	// operator's volumes as every pod does, so a file a role's PI_CONFIG_FILES names and the
+	// mounts lack refuses the boot here, naming the role and the file, rather than that role's Oh
+	// My Pi at its first launch.
+	//
+	// One value per role per arm, never one value holding two arms' files: the union of two arms
+	// is a configuration no launch produces, and Oh My Pi may refuse a pair of overlays it takes
+	// one at a time. An arm that names no overlay adds no value of its own, since its roles start
+	// on the role's own files, which the role's own value already reads; a value two arms produce
+	// alike is read once. A role of a deployment that declares no experiment, and the controller,
+	// which runs in no tree and so is in no arm, are read on their own files alone, the value the
+	// probe was told before any experiment existed.
 	for _, role := range roleConfigRoles {
-		files := r.roleConfigFiles[role]
+		own := r.roleConfigFiles[role]
+		var values [][]string
 		if role != claim.RoleController {
-			files = withMemoryOverlays(files, r.memoryConfigFiles)
+			for _, variant := range r.experimentVariants {
+				if len(variant.ConfigFiles) > 0 {
+					values = append(values, slices.Concat(own, variant.ConfigFiles))
+				}
+			}
 		}
-		if len(files) > 0 {
-			command = append(command, bootprobe.RoleConfigFilesFlag, bootprobe.RoleConfigFilesValue(string(role), files))
+		if len(values) == 0 {
+			values = [][]string{own}
+		}
+		read := map[string]bool{}
+		for _, files := range values {
+			value := bootprobe.RoleConfigFilesValue(string(role), files)
+			if len(files) == 0 || read[value] {
+				continue
+			}
+			read[value] = true
+			command = append(command, bootprobe.RoleConfigFilesFlag, value)
 		}
 	}
 	container := corev1.Container{

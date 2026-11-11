@@ -43,15 +43,28 @@ func memoryRuntime(t *testing.T, files []string) *Runtime {
 		o.Pod.Volumes = append(o.Pod.Volumes, volume)
 		o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, mount)
 		o.RoleConfigFiles = roleFiles
-		o.MemoryConfigFiles = files
+		o.ExperimentVariants = memoryVariants(files)
 	})
+}
+
+// memoryVariants are the two arms the `memory` block declares
+// (config.Project.ExperimentsDeclared): memory, carrying the block's overlays, and none, carrying
+// nothing. A nil list is a project that names no block at all, which declares no experiment.
+func memoryVariants(files []string) []runtime.Variant {
+	if files == nil {
+		return nil
+	}
+	return []runtime.Variant{
+		{Experiment: "memory", Name: "memory", ConfigFiles: files},
+		{Experiment: "memory", Name: "none"},
+	}
 }
 
 // memorySpec is a launch for an issue whose tree was drawn into the memory group.
 func memorySpec(t *testing.T) runtime.SpawnSpec {
 	t.Helper()
 	spec := workerSpec(t)
-	spec.Memory = true
+	spec.Variants = []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryOverlays}}
 	return spec
 }
 
@@ -88,7 +101,7 @@ func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) 
 		RolePromptPaths:            []string{write("role.md", "You are the tester.\n")},
 		Addressing:                 "Legion addressing: your role topic is `notifications.role.worker`.",
 		DeploymentInstructionsPath: write("instructions.md", "Deployment instructions.\n"),
-		MemoryInstructionsPath:     write("memory.md", "Read the tree's memory.\n\n"),
+		VariantInstructionsPaths:   []string{write("memory.md", "Read the tree's memory.\n\n")},
 	}
 	got, err := systemPrompt(parts)
 	if err != nil {
@@ -98,7 +111,7 @@ func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) 
 	if got != want {
 		t.Errorf("the memory-group role's system prompt =\n%q\nwant\n%q", got, want)
 	}
-	parts.MemoryInstructionsPath = ""
+	parts.VariantInstructionsPaths = nil
 	if got, err := systemPrompt(parts); err != nil || got != strings.TrimSuffix(want, "\n\nRead the tree's memory.") {
 		t.Errorf("a launch told no memory instructions = %q, %v, want the prompt to end at the deployment's own", got, err)
 	}
@@ -133,8 +146,8 @@ func TestAKeptPodBuiltBeforeTheMemoryMountIsToldNoMemoryOverlay(t *testing.T) {
 			if !slices.Equal(kept.overlays, roleFiles[claim.RoleTester]) {
 				t.Errorf("the kept pod holds the tester's %q, want %q", kept.overlays, roleFiles[claim.RoleTester])
 			}
-			if !slices.Equal(kept.memory, tc.memory) {
-				t.Errorf("the kept pod holds the memory overlays %q, want %q", kept.memory, tc.memory)
+			if !slices.Equal(kept.variantFiles, tc.memory) {
+				t.Errorf("the kept pod holds the memory overlays %q, want %q", kept.variantFiles, tc.memory)
 			}
 			l.kept = &kept
 			if got := envOf(corev1.Container{Env: after.roleOperatorEnv(l)})["PI_CONFIG_FILES"]; got != tc.want {
@@ -160,8 +173,8 @@ func TestAKeptPodHoldingTheMemoryOverlaysTellsALaunchInNoMemoryGroupNone(t *test
 	if !readable {
 		t.Fatal("keptBy could not read the pod's template")
 	}
-	if !slices.Equal(kept.memory, memoryOverlays) {
-		t.Fatalf("the kept pod holds the memory overlays %q, want %q: the launch is told none of a pod that holds them", kept.memory, memoryOverlays)
+	if !slices.Equal(kept.variantFiles, memoryOverlays) {
+		t.Fatalf("the kept pod holds the memory overlays %q, want %q: the launch is told none of a pod that holds them", kept.variantFiles, memoryOverlays)
 	}
 	l.kept = &kept
 	if got := envOf(corev1.Container{Env: r.roleOperatorEnv(l)})["PI_CONFIG_FILES"]; got != own {
@@ -181,14 +194,14 @@ func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.
 			volume, mount := memoryMount(dir)
 			o.Pod.Volumes = append(o.Pod.Volumes, volume)
 			o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, mount)
-			o.MemoryConfigFiles = []string{dir + "/memory.yml"}
+			o.ExperimentVariants = memoryVariants([]string{dir + "/memory.yml"})
 		}
 	}
 	before, after := runtimeWithOptions(t, at("/etc/a")), runtimeWithOptions(t, at("/etc/b"))
 	worker := workerSpec(t)
 	pod := podOf(t, before, worker)
 	got, moved := after.movedRoleOverlays(pod, worker.Role)
-	if want := "memory.config_files /etc/b/memory.yml"; !moved || got.where != want {
+	if want := "experiments.memory.variants.memory.config_files /etc/b/memory.yml"; !moved || got.where != want {
 		t.Errorf("%s: moved %v %+v, want a move of %s", worker.Role, moved, got, want)
 	}
 	if got, moved := before.movedRoleOverlays(pod, worker.Role); moved {
@@ -254,8 +267,8 @@ func TestNoMemoryBeforeOrAfterTheBlockBuildsTheSamePod(t *testing.T) {
 func TestConfigureRefusesAMemoryOverlayPIConfigFilesCannotName(t *testing.T) {
 	for _, file := range []string{"memory.yml", "/etc/a:b.yml"} {
 		opts := testOptions()
-		opts.MemoryConfigFiles = []string{file}
-		want := `sandbox runtime: the memory overlay "` + file + `" is not an absolute path PI_CONFIG_FILES can name`
+		opts.ExperimentVariants = memoryVariants([]string{file})
+		want := `sandbox runtime: the overlay "` + file + `" of experiment memory variant memory is not an absolute path PI_CONFIG_FILES can name`
 		if _, err := configure(opts); err == nil || err.Error() != want {
 			t.Errorf("configure with the memory overlay %q = %v, want %q", file, err, want)
 		}

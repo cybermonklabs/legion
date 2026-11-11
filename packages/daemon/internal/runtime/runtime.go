@@ -305,11 +305,12 @@ func (k Known) Validate() error {
 // image's own copies; nil for every launch that installs nothing — every tmux launch, and every
 // Kubernetes launch that is not replacing a process on another plugin contract. The tmux runtime
 // ignores it: a pane always resumes on the plugin installed on the daemon's host, which the boot
-// gate already holds to the daemon's contract. Memory is whether the claim's tree was drawn into
-// the project's memory group (record.Issue.MemoryGroup on the tree's root, which internal/daemon's
-// specs reads): such a launch names the project's memory overlays last in PI_CONFIG_FILES and ends
-// its system prompt with the memory instructions; false for every no-memory tree and for the
-// controller, which runs in no tree. IssueTrailer is the issue key this pane stamps into its
+// gate already holds to the daemon's contract. Variants are the arms of the project's declared
+// experiments this launch's unit was drawn into, in the order the project's file declares the
+// experiments (internal/daemon's specs reads them): such a launch names each variant's overlays
+// last in PI_CONFIG_FILES, in that order, and ends its system prompt with each variant's
+// instructions in that same order; empty for a launch in no experiment and for the controller,
+// which runs in no tree. IssueTrailer is the issue key this pane stamps into its
 // commits, as the `Dispatch: <KEY>` trailer the agent's jj overlay writes (LEGION_ISSUE_TRAILER,
 // which each runtime sets itself): the claim's own issue when the project names its repository in
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
@@ -331,9 +332,36 @@ type SpawnSpec struct {
 	DefaultBranch     string
 	ResumeSessionFile string
 	Plugins           *PluginInstall
-	Memory            bool
+	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+}
+
+// Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
+// experiment's name and the arm's, as the draw recorded them (config.Experiment.Name,
+// config.Variant.Name), the Oh My Pi settings overlays the arm names (config.Variant.ConfigFiles),
+// and the daemon's own copy of the arm's instructions file, which the launch's system prompt ends
+// with. Either file may be absent: an arm that names neither is the control the others are
+// measured against, and a launch carrying it alone is the launch a unit in no experiment gets.
+type Variant struct {
+	Experiment       string
+	Name             string
+	ConfigFiles      []string
+	InstructionsPath string
+}
+
+// VariantOverlays are the Oh My Pi settings overlays of variants as one PI_CONFIG_FILES tail:
+// each variant's own files in its own order, the variants in theirs, which for a launch's
+// variants is the order the project's file declares the experiments. Both runtimes name it after
+// the operator's overlays and the role's own, so a variant's file outranks both; a list of
+// variants that names no file at all answers none, so a launch under a project whose declared
+// variants name no overlay is told the value it was told before any experiment was declared.
+func VariantOverlays(variants []Variant) []string {
+	var files []string
+	for _, variant := range variants {
+		files = append(files, variant.ConfigFiles...)
+	}
+	return files
 }
 
 // PluginInstall is the plugin pair a Kubernetes launch installs before Oh My Pi starts, and the
@@ -351,14 +379,15 @@ type PluginInstall struct {
 // concatenates them into exactly one `--append-system-prompt` word — one, because a second
 // occurrence of the flag replaces the first rather than adding to it: the role prompt files, the
 // sentence that tells the agent which claim it is, the operator's deployment instructions, and
-// the project's memory instructions. MemoryInstructionsPath is set only for a launch whose tree
-// was drawn into the memory group (SpawnSpec.Memory) under a project whose `memory` block names
-// an instructions file; "" for every other launch, whose prompt ends at the deployment's own.
+// the instructions of each variant the launch runs in. VariantInstructionsPaths are the daemon's
+// own copies of those files, one per variant that names one, in the order the project's file
+// declares the experiments (SpawnSpec.Variants); empty for every launch whose variants name none
+// and for every launch in no experiment, whose prompt ends at the deployment's own.
 type PromptParts struct {
 	RolePromptPaths            []string
 	Addressing                 string
 	DeploymentInstructionsPath string
-	MemoryInstructionsPath     string
+	VariantInstructionsPaths   []string
 }
 
 // ObservationKind is what a runtime can say about a process.

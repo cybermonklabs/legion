@@ -182,17 +182,18 @@ func TestSystemPromptArgument(t *testing.T) {
 				"$(cat /state/deployment-instructions.md)\"",
 		},
 		{
-			name: "all four fragments, the memory instructions last",
+			name: "every fragment, one variant instructions file per arm, in declaration order",
 			parts: runtime.PromptParts{
 				RolePromptPaths:            []string{"/roles/core/common.md", "/roles/tester.md"},
 				Addressing:                 "Your topic is `notifications.role.legion-omp-LEGION-42-tester`.",
 				DeploymentInstructionsPath: "/state/deployment-instructions.md",
-				MemoryInstructionsPath:     "/state/memory-instructions.md",
+				VariantInstructionsPaths:   []string{"/state/experiments/memory/memory.md", "/state/experiments/plan-length/long.md"},
 			},
 			want: "--append-system-prompt \"$(cat /roles/core/common.md /roles/tester.md)\n\n" +
 				"Your topic is \\`notifications.role.legion-omp-LEGION-42-tester\\`.\n\n" +
 				"$(cat /state/deployment-instructions.md)\n\n" +
-				"$(cat /state/memory-instructions.md)\"",
+				"$(cat /state/experiments/memory/memory.md)\n\n" +
+				"$(cat /state/experiments/plan-length/long.md)\"",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

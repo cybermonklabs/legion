@@ -291,13 +291,13 @@ type keptPod struct {
 	// actually holds, in configuration order: the only ones its generation's PI_CONFIG_FILES may
 	// name (heldRoleOverlays, roleOperatorEnv).
 	overlays []string
-	// memory are the project's memory overlay files (Options.MemoryConfigFiles) the pod's
-	// container actually holds, in configuration order: what the pod holds for every role, as
-	// overlays is (heldRoleOverlays). Which launch is told them is a launch's own question, and
-	// launch.overlays asks it once — only a launch whose tree is in the memory group
-	// (runtime.SpawnSpec.Memory) names them in its generation's PI_CONFIG_FILES, after the role's
-	// own (roleOperatorEnv).
-	memory []string
+	// variantFiles are the overlay files of the project's declared variants
+	// (Options.ExperimentVariants) the pod's container actually holds, in configuration order:
+	// what the pod holds for every role, as overlays is (heldRoleOverlays). Which of them a
+	// launch is told is a launch's own question, and launch.overlays asks it once — a launch
+	// names the files of the arms its unit was drawn into (runtime.SpawnSpec.Variants), and of
+	// those only the ones this list holds, after the role's own (roleOperatorEnv).
+	variantFiles []string
 	// store is the session store this pod was built under (heldSessionStore), the kind alone: it
 	// is all a start command names, since the URL itself is in the file the pod projects or its
 	// own launcher writes (sessionDSNFile). A pod created before the store was configured carries
@@ -350,32 +350,74 @@ func (l launch) enrolls(r *Runtime) bool {
 }
 
 // overlays are this launch's settings overlays, which its generation is told in PI_CONFIG_FILES
-// after the operator's own (roleOperatorEnv): the role's own overlays, then, for a launch whose
-// tree is in the memory group (runtime.SpawnSpec.Memory), the project's memory overlays, which
-// outrank them. They are the ones a kept pod holds, which may be fewer than role_config_files and
-// memory.config_files now name, and all of the configuration's for a launch that builds the pod.
-// This is the one place a launch's memory group decides what it is told, for a kept pod as for a
-// fresh one: the pod holds the memory overlays for every role of it (keptPod.memory).
+// after the operator's own (roleOperatorEnv): the role's own overlays, then the overlays of each
+// arm this launch's unit was drawn into (runtime.SpawnSpec.Variants), in the order the project's
+// file declares the experiments, which outrank them. They are the ones a kept pod holds, which
+// may be fewer than role_config_files and the declared variants now name, and all of the
+// configuration's for a launch that builds the pod. This is the one place a launch's variants
+// decide what it is told, for a kept pod as for a fresh one: the pod holds every declared
+// variant's overlays for every role of it (keptPod.variantFiles).
+//
+// A pod built before an arm's mount was added holds none of that arm's files, so a unit recorded
+// in it starts its role without them — in neither arm, until the update round replaces the pod —
+// since Oh My Pi refuses to start on an entry that is not there and a role that never starts
+// never answers that round (INFRA-484). Each such drop is logged once, at the launch that makes
+// it, naming the issue, the role, the experiment and the arm, because nothing else says that this
+// generation ran outside the arm it was drawn into.
 func (l launch) overlays(r *Runtime) []string {
-	own, memory := r.roleConfigFiles[l.spec.Role], r.memoryConfigFiles
+	own := r.roleConfigFiles[l.spec.Role]
 	if l.kept != nil {
-		own, memory = l.kept.overlays, l.kept.memory
+		own = l.kept.overlays
 	}
-	if !l.spec.Memory {
-		return own
+	var variants []string
+	for _, variant := range l.spec.Variants {
+		files := variant.ConfigFiles
+		if l.kept != nil {
+			files = heldOf(l.kept.variantFiles, variant.ConfigFiles)
+		}
+		if len(files) != len(variant.ConfigFiles) {
+			r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod",
+				"issue", l.spec.Issue, "role", l.spec.Role, "experiment", variant.Experiment, "variant", variant.Name,
+				"dropped", dropped(variant.ConfigFiles, files))
+		}
+		variants = append(variants, files...)
 	}
-	return withMemoryOverlays(own, memory)
+	return withVariantOverlays(own, variants)
 }
 
-// withMemoryOverlays is one PI_CONFIG_FILES list: a role's own overlays and then the project's
-// memory overlays, which outrank them, and own itself where there is no memory overlay to add, so
-// a deployment whose project names no memory overlay hands every caller the list it handed before
-// the block existed (launch.overlays, probeManifest).
-func withMemoryOverlays(own, memory []string) []string {
-	if len(memory) == 0 {
+// heldOf are the files of want that held holds, in want's order: a kept pod's share of one
+// variant's overlays.
+func heldOf(held, want []string) []string {
+	var kept []string
+	for _, file := range want {
+		if slices.Contains(held, file) {
+			kept = append(kept, file)
+		}
+	}
+	return kept
+}
+
+// dropped are the files of want that held does not hold, in want's order: the share of one
+// variant's overlays a kept pod lacks, which the launch's one log line names.
+func dropped(want, held []string) []string {
+	var missing []string
+	for _, file := range want {
+		if !slices.Contains(held, file) {
+			missing = append(missing, file)
+		}
+	}
+	return missing
+}
+
+// withVariantOverlays is one PI_CONFIG_FILES list: a role's own overlays and then the variants'
+// own, which outrank them, and own itself where there is no variant overlay to add, so a
+// deployment whose project declares no experiment, and one whose variants name no overlay, hands
+// every caller the list it handed before any experiment existed (launch.overlays, probeManifest).
+func withVariantOverlays(own, variants []string) []string {
+	if len(variants) == 0 {
 		return own
 	}
-	return slices.Concat(own, memory)
+	return slices.Concat(own, variants)
 }
 
 // sessionStore is the kind of store this launch's generation keeps its session in: the one the
@@ -504,10 +546,11 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 
 // systemPrompt is the one --append-system-prompt value, the same text tmux's pane shell builds
 // (runtime/tmux/prompt.go): the role prompt files concatenated, then the addressing sentence,
-// then the deployment instructions, then the project's memory instructions, which only a launch
-// whose tree is in the memory group is given (PromptParts.MemoryInstructionsPath), separated by a
-// blank line, each file's trailing newlines dropped as `$(cat …)` drops them. A pod cannot read
-// the daemon's files, so the text is inlined here.
+// then the deployment instructions, then one text per arm this launch's unit was drawn into, in
+// the order the project's file declares the experiments
+// (PromptParts.VariantInstructionsPaths), separated by a blank line, each file's trailing
+// newlines dropped as `$(cat …)` drops them. A pod cannot read the daemon's files, so the text is
+// inlined here.
 func systemPrompt(parts runtime.PromptParts) (string, error) {
 	var role strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -521,7 +564,7 @@ func systemPrompt(parts runtime.PromptParts) (string, error) {
 	if parts.Addressing != "" {
 		fragments = append(fragments, parts.Addressing)
 	}
-	for _, path := range []string{parts.DeploymentInstructionsPath, parts.MemoryInstructionsPath} {
+	for _, path := range slices.Concat([]string{parts.DeploymentInstructionsPath}, parts.VariantInstructionsPaths) {
 		if path == "" {
 			continue
 		}
@@ -953,8 +996,8 @@ func (r *Runtime) operatorEnv() []corev1.EnvVar {
 const settingsOverlays = "PI_CONFIG_FILES"
 
 // roleOperatorEnv is operatorEnv as the launch's role is told it: with the launch's own overlays
-// (launch.overlays, the role's from Options.RoleConfigFiles and then a memory-group launch's from
-// Options.MemoryConfigFiles) after the operator's in PI_CONFIG_FILES, so each of them outranks the
+// (launch.overlays, the role's from Options.RoleConfigFiles and then those of the arms its unit
+// was drawn into, from runtime.SpawnSpec.Variants) after the operator's in PI_CONFIG_FILES, so each of them outranks the
 // operator's, or as PI_CONFIG_FILES in name order when the operator's pod env names none. A role
 // with none is told operatorEnv unchanged.
 //

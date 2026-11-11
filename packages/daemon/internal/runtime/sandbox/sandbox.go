@@ -89,35 +89,40 @@ type Runtime struct {
 	tools                          Tools
 	pod                            Pod
 	roleConfigFiles                map[claim.Role][]string
-	memoryConfigFiles              []string
-	providerKeys                   map[string]string
-	providersSecrets               []string
-	natsUser                       string
-	sessionStore                   ompsessions.Store
-	agentSecrets                   *AgentSecrets
-	controllerSlackChannels        []string
-	agent                          []string
-	setup                          []string
-	skills                         ghrepo.Repository
-	testPostgres                   bool
-	bootTimeout                    time.Duration
-	registrationIntervals          int
-	busyBackoff                    time.Duration
-	provisionBound                 time.Duration
-	launchBound                    time.Duration
-	terminationGrace               time.Duration
-	probeInterval                  time.Duration
-	adoptTimeout                   time.Duration
-	tokens                         ProvisionTokens
-	gitHubCredential               runtime.GitHubCredential
-	controllerCredential           runtime.ControllerCredential
-	gitHubDirs                     func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                          Store
-	conns                          runtime.Conns
-	launchers                      *launchers
-	launcherAuth                   launcherCredentials
-	now                            func() time.Time
-	log                            *slog.Logger
+	// experimentVariants are every arm of every experiment the project declares
+	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
+	// same order: the union every reader that holds a pod or the deployment and no tree takes,
+	// since any unit may be drawn into any arm (movedRoleOverlays, heldRoleOverlays).
+	experimentVariants      []runtime.Variant
+	variantFiles            []string
+	providerKeys            map[string]string
+	providersSecrets        []string
+	natsUser                string
+	sessionStore            ompsessions.Store
+	agentSecrets            *AgentSecrets
+	controllerSlackChannels []string
+	agent                   []string
+	setup                   []string
+	skills                  ghrepo.Repository
+	testPostgres            bool
+	bootTimeout             time.Duration
+	registrationIntervals   int
+	busyBackoff             time.Duration
+	provisionBound          time.Duration
+	launchBound             time.Duration
+	terminationGrace        time.Duration
+	probeInterval           time.Duration
+	adoptTimeout            time.Duration
+	tokens                  ProvisionTokens
+	gitHubCredential        runtime.GitHubCredential
+	controllerCredential    runtime.ControllerCredential
+	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                   Store
+	conns                   runtime.Conns
+	launchers               *launchers
+	launcherAuth            launcherCredentials
+	now                     func() time.Time
+	log                     *slog.Logger
 	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
 	// encoded once here. Every input of a shape — the image, the kind's reservation, the
 	// operator's volumes and mounts and the disk — is set at construction and never written
@@ -346,9 +351,11 @@ func configureProber(opts Options) (*Runtime, error) {
 			}
 		}
 	}
-	for _, file := range opts.MemoryConfigFiles {
-		if !filepath.IsAbs(file) || strings.Contains(file, ":") {
-			return refuse("the memory overlay %q is not an absolute path PI_CONFIG_FILES can name", file)
+	for _, variant := range opts.ExperimentVariants {
+		for _, file := range variant.ConfigFiles {
+			if !filepath.IsAbs(file) || strings.Contains(file, ":") {
+				return refuse("the overlay %q of experiment %s variant %s is not an absolute path PI_CONFIG_FILES can name", file, variant.Experiment, variant.Name)
+			}
 		}
 	}
 	r := &Runtime{
@@ -356,7 +363,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, memoryConfigFiles: opts.MemoryConfigFiles,
+		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
+		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
 		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
