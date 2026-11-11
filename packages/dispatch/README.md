@@ -142,6 +142,19 @@ Arguments after the config go to Playwright, as in
 (`bun run e2e` runs the same after the SPA build). `e2e/run.ts` stops the harness
 when Playwright exits and exits with Playwright's status.
 
+### Checking the Issues tab's views on a running Dispatch
+
+```bash
+bun packages/dispatch/scripts/issue-views-check.ts \
+  --base http://localhost:5181 --project INFRA --token-file /path/to/token --out /tmp/issue-views-check
+```
+
+The command checks the ten Issues-tab design checks without resetting the running Dispatch, writes
+`report.json` and full-page screenshots to `--out`, and exits nonzero only when a check fails.
+`--checks k1,k2` runs a subset; a check whose UI has not reached the server reports `NOT-YET`.
+The browser signs in through the dev sign-in route as `sami@theorem.dev` unless `--login` selects
+another user.
+
 `DISPATCH_E2E_WORKERS` runs the suite in parallel: it is how many Playwright
 workers the run has, unset or empty being one, and `e2e/run.ts` starts one lane
 per worker before Playwright starts. A lane is a whole harness of its own — a

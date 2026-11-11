@@ -9,7 +9,7 @@
     "build:web": "vite build --config web/vite.config.ts",
     "check:classes": "bun web/src/theme/classes-in-build-css.ts",
     "check:asset-sizes": "bun web/src/asset-sizes-in-build.ts",
-    "test": "bun run build:contracts && bun run test:web web/src && bun test --parallel e2e/__tests__",
+    "test": "bun run build:contracts && bun run test:web web/src && bun test --parallel e2e/__tests__ scripts/issue-views-check",
     "test:web": "bun test --parallel --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts",
     "dispatch:local": "bun e2e/local-instance.ts",
     "build:contracts": "bun run --filter @legion/contracts build",
