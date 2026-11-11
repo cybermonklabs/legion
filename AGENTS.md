@@ -867,6 +867,49 @@ A tree is live while its lifecycle is open and it does not linger, or while its 
 `legion state` counts the slot holders against the cap and prints the live trees;
 its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
 
+Every issue of a project that the daemon's record holds in the workflow stands in `admission.active`, in `admission.waiting`, or in `admission.held`.
+`admission.held` names no issue that `admission.active` or `admission.waiting` names, while those two keep the overlap above, where an issue holding a row stands in both until the pass that promotes it;
+`admission.blocked` keeps its rows and its overlaps with all three, so a held issue a Dispatch link holds stands in both lists.
+Each row of `admission.held` carries three fields:
+`issue`, the issue key; `reason`, one word of the list below; and `heldBy`, the issues that hold it, which is absent where no other issue holds the one that waits.
+The reason is the first of these eleven words that is true of the issue, and the daemon reads them in this order wherever it leaves a candidate behind, so one issue reads one reason, and it reads the same reason in the state and in the controller's tick notice:
+
+- `tree_closed` — the issue's tree root carries the Dispatch status `done`, or the tree lingers.
+
+- `tree_parked` — the issue's tree root left the workflow to `backlog` or `icebox`.
+
+- `label_off` — the issue is a root the waiting line does not carry, because the record says the `legion` label is off.
+
+- `ancestry` — the root's Dispatch chain reaches another live root, so the issue is that tree's unreleased work.
+
+- `root_awaiting_person` — the tree root waits on a person's answer.
+
+- `design_gate` — the tree root's design gate is not open.
+
+- `dispatch_blocker` — a Dispatch `blocked_by` link names an issue that is not done, and holds this issue where it stands.
+
+- `children_first` — Dispatch shows an open child under the issue, so its own first phase waits.
+
+- `accepted_ancestor` — an ancestor's reviewed head is accepted, and the issue starts at that ancestor's close.
+
+- `at_work` — the issue stands in a phase that holds no admission slot and that the waiting line does not carry.
+  An issue at `awaiting_merge` reads this word.
+  The workers of such a phase run as they did before, and the word says nothing about them.
+
+- `unclassified` — no reason above is true of the issue.
+  The daemon carries it all the same and logs it once for that issue and run, as it tells a children-first wait once.
+
+`heldBy` holds the issue or issues the reason names:
+the tree root for `tree_closed`, `tree_parked`, `design_gate` and `root_awaiting_person`;
+the live root the chain reaches for `ancestry`;
+the accepted ancestor for `accepted_ancestor`;
+the unfinished blockers for `dispatch_blocker`;
+and the open children for `children_first`.
+It is absent for `label_off`, `at_work` and `unclassified`.
+An issue in `admission.held` holds no admission slot, so the list changes no count against `admission_cap`.
+The daemon starts none of these issues by itself:
+an architect's release adopts a member of a closed tree, and a person's own act moves a parked tree or a root whose label is off.
+
 **Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
 So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that has no open child.
 `sign_off` and `close_root` are refused while an issue beneath is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), and `release_children` and `rerun_child` refuse a child whose ancestor is in `retro`, `merging` or `awaiting_merge` (`CHILD_UNDER_ACCEPTED_PARENT`, naming the ancestor);
@@ -950,7 +993,8 @@ admitting its old root again never takes it back, no other tree adopts it, and n
 `release_children` adopts a joinable child the same way before it answers `released`, naming it under `held` when it waits on an unfinished issue, and refuses one it cannot, writing nothing:
 `CHILD_NOT_ADOPTABLE` for a root that ran as a tree of its own, carries a run of its own, or left another tree as a root of its own, `CHILD_IN_OTHER_TREE` for a child recorded in another tree.
 A labelled `todo` issue whose parent is not recorded, or is recorded as a root of its own, and whose Dispatch chain reaches a live tree (a child that tree's architect has not released, or a root parked under it) is held under that unreleased child, the ancestry hold:
-out of `admission.waiting`, and not in `admission.blocked`, which names blocked-by links and children-first waits, neither of which is what holds it.
+out of `admission.waiting`, and not in `admission.blocked`, which names blocked-by links and children-first waits, neither of which is what holds it;
+it stands in `admission.held` under the reason `ancestry`, which does name what holds it.
 It waits for no slot until that release, or its parent's, brings it into the tree, and a `todo` child of it waits with it and moves with it;
 it queues as a root of its own once no live tree is left on its chain:
 each lingers or leaves the workflow, or a person moves an ancestor, recorded or not, out from under it.
@@ -994,6 +1038,7 @@ a blocker added to a running tree's issue changes nothing for it.
 Two backstops catch a close no event brought:
 the daemon's boot reads the whole project listing, and its periodic turn (`controller_wake_interval_seconds`, an hour by default) re-reads from Dispatch the issues anything is waiting on and looks again.
 `legion state` prints the waits as `blocked on Dispatch links:`, the state's JSON carries them under `admission.blocked`, and the periodic wake to the project's controller carries the same list (the tick notice's `blocked`), for the day's report.
+`legion state` prints a held line of its own, how many issues the project holds in `admission.held` and how many of each reason, and the periodic wake to the project's controller carries the held rows beside the blocked ones.
 The mark is a label rather than the issue's `route` because Dispatch publishes every event of a routed issue to the route's topic, where a label only marks the issue; it carries no workflow state.
 
 **Waiting on a person:** an admitted root whose architect asked a person a question, or handed its spec to a person for approval, keeps its admission slot while it waits, in its own `awaiting_person` phase.
