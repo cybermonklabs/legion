@@ -157,7 +157,7 @@
 #       through a 504, and the job that proves the outage survivable would fail in it.
 #
 #   install-bound
-#       The seconds no install of this job may reach, printed and nothing else.
+#       The seconds no timed install may reach, printed and nothing else.
 #       INSTALL_BOUND below is the one place that number is written, and the `tool-fallback`
 #       job's control over its eight installs with nowhere to go reads it through this verb, so
 #       the bound the rig holds the sixteen corrupted cases to and the bound that step holds
@@ -241,7 +241,9 @@ RESERVED_SUFFIX=".invalid"
 # all, which is the reading the probe refuses the job for.
 PROBE_BOUND=15
 
-# The seconds no install of this job may reach, read by `report` over the mark `corrupt` wrote.
+# The seconds no timed install may reach, read by `report` over the mark `corrupt` wrote. The
+# twenty-four installs whose control accepts a failure are the timed ones; the head's own eight,
+# which no control lets fail, are not checked against it.
 # Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
 # step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
 # `report` holds a case to, so a hung install would otherwise pass as a refusal.
@@ -249,8 +251,10 @@ PROBE_BOUND=15
 # over 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z is 326 s (`install-jj`
 # on slow runs), so this leaves 274 s over the slowest healthy install and at least 60 s under
 # the fastest a held step can be, and it reads no ladder's length.
-# It is the one install bound, and this line is the one place it is written; `PROBE_BOUND` above
-# bounds the probe's two requests and is another thing. The `tool-fallback` job holds its eight
+# It is the one wall-clock bound `report` and the control step judge an install by, and this line
+# is the one place it is written. Two other bounds are not it: `timeout-minutes: 11`, which the
+# runner enforces on the step rather than reading after it, and `PROBE_BOUND` above, which
+# bounds the probe's two requests. The `tool-fallback` job holds its eight
 # installs with nowhere to go to the same seconds, and its control step reads them from here
 # through the `install-bound` verb rather than writing a second number that nothing keeps equal
 # to this one.
@@ -1350,7 +1354,7 @@ report() {
   else
     echo "    nothing: this case asked no faulted host"
   fi
-  echo "  the install of this case took ${elapsed}s, against the ${INSTALL_BOUND}s no install of this job may reach"
+  echo "  the install of this case took ${elapsed}s, against the ${INSTALL_BOUND}s no timed install may reach"
 
   if [ "$outcome" != "$wanted" ]; then
     echo "::error::ci-tools-proof: case $name: the install step's outcome is $outcome, and this case is the proof that the install reaches $wanted: read the step's own log above for what it did instead." >&2

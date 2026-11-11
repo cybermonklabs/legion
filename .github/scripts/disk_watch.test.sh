@@ -218,14 +218,34 @@ check "start left a sampler to stop" "$(is "$status" 0)"
 pid=$(field "$stall_state" sampler_pid)
 sleep 3
 kill -STOP "$pid"
-# The two clocks are read inside the stall: stopped_at after the signal landed and resumed_at
-# before it is let go, so the sampler was off the CPU for the whole of every second from
-# stopped_at + 1 to resumed_at - 1. The second it was stopped in may carry a line it wrote
-# before the signal, and the second it is let go in may carry the line it writes on waking, so
-# those two are left out of the window. Reading them inside the stall also keeps the case off
-# the second that can turn over between `kill -CONT` and a `date` run after it.
-stopped_at=$(date -u +%s)
+# `kill -STOP` only queues the signal: the sampler stops when it next runs, which can be a
+# whole pass later. Waiting for the kernel to report it stopped means the series read below is
+# the series of a process that cannot write.
+for _ in $(seq 50); do
+  [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && break
+  sleep 0.1
+done
+check "the kernel has the sampler off the CPU" \
+  "$(is "$(ps -o state= -p "$pid" | tr -d ' ')" T)"
+# While the sampler is off the CPU it cannot write, so its series file is stable here and its
+# last stamp is the last second it has a line for. The second after that one is the second it
+# was waiting for when the signal landed, and that is where the window of seconds no line may
+# name begins. It cannot begin at a clock read taken after the stop: a sampler that stamps a
+# line before taking its readings carries that pending second out of the stall and writes it
+# on waking, and when the stop lands early in a second - 20 ms in does it - the pending second
+# IS that clock read, so a window starting a second later lets the late line through. Measured
+# against the old sampler with the stop landed 20 ms in: 0 late lines found in 3 of 3 runs,
+# though every run wrote one.
+# One edge: if a stop lands between the stamp and the append in disk_watch.py's `sample`, the
+# current sampler writes that line after the second it names too, and this window refuses it.
+# Those two statements are microseconds apart, so such a run is rare - and it would be a true
+# failure, a line that reached the series after its own second, rather than a false one.
+last_before_stall=$(stamps "$stall_state.series" | tail -1)
 sleep 4
+# resumed_at is read before the sampler is let go, so the second it is let go in - which may
+# carry the line it writes on waking - is left out of the window. Reading it inside the stall
+# also keeps the case off the second that can turn over between `kill -CONT` and a `date` run
+# after it.
 resumed_at=$(date -u +%s)
 kill -CONT "$pid"
 sleep 3
@@ -235,18 +255,13 @@ pid=""
 seconds=$(stamps "$stall_state.series")
 ticks=$(grep -c '^[0-9]' <<<"$seconds")
 after=$(awk -v resumed="$resumed_at" '$1 >= resumed' <<<"$seconds" | grep -c '^[0-9]' || true)
-# Two measures of the stamps: the greatest step from one tick's second to the next, and the
-# number of ticks whose second did not move on. A sampler that counts its seconds rather than
-# reading the clock steps by exactly one every pass, so it leaves no hole where it was
-# stopped; one that reads the clock at the wrong moment could stamp two ticks with one second.
-# So the checks below ask for a greatest step of two seconds or more - the stop, left as a
-# hole - and for no second written twice or out of order.
-biggest_step=$(awk 'NR > 1 && $1 - last > big { big = $1 - last } { last = $1 } END { print big + 0 }' <<<"$seconds")
+# The number of ticks whose second did not move on: a sampler that reads the clock at the
+# wrong moment could stamp two ticks with one second.
 out_of_order=$(awk 'NR > 1 && $1 <= last { n += 1 } { last = $1 } END { print n + 0 }' <<<"$seconds")
-# The one line a sampler that stamps before it reads writes late: the tick it was waiting for
-# when the signal landed, written on waking and stamped with a second that ended during the
-# stall.
-inside_stall=$(awk -v from="$((stopped_at + 1))" -v to="$((resumed_at - 1))" \
+# The lines naming a second the sampler was off the CPU for the whole of - from the second
+# after its last stamp to the second before it was let go. A sampler that stamps before it
+# reads writes exactly one: the tick it was waiting for when the signal landed.
+inside_stall=$(awk -v from="$((last_before_stall + 1))" -v to="$((resumed_at - 1))" \
   '$1 >= from && $1 <= to { n += 1 } END { print n + 0 }' <<<"$seconds")
 # What this proves is that the sampler was running before the stop and came back after it, so
 # the hole below is the stop rather than a sampler that died in it. It cannot ask for a tick in
@@ -256,8 +271,10 @@ check "the sampler ticked either side of the stop" \
   "$([ "$ticks" -ge 4 ] && [ "$after" -ge 1 ] && echo true || echo false)"
 check "the stamps follow the real clock: no second is written twice or out of order" \
   "$(is "$out_of_order" 0)"
-check "the seconds it was stopped for are a hole in the series, not lines written afterwards" \
-  "$([ "$biggest_step" -ge 2 ] && echo true || echo false)"
+# The window has to hold seconds for the check below it to mean anything, and the four-second
+# stall is what puts them there.
+check "the stall left whole seconds that no line may name" \
+  "$([ "$((resumed_at - 1))" -ge "$((last_before_stall + 1))" ] && echo true || echo false)"
 check "no line names a second the sampler was off the CPU for the whole of" \
   "$(is "$inside_stall" 0)"
 
