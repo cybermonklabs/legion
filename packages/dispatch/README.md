@@ -401,7 +401,21 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-All three source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+`e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
+document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`
+and the bearer, makes the project and the issue it needs, and runs nine assertions:
+`dispatch artifact --issue <KEY> --name "Launch notes"`, with neither `--path` nor `--content`,
+exits zero and says the document was made, naming its `dispatch://` reference; that reference
+reads back one version whose markdown is empty; `dispatch read --issue <KEY>` lists the document
+under `Documents:`; `dispatch doc-edit` writes a line into it and the line reads back; the same
+name a second time with no content is refused, naming the document that holds the title;
+`--name rows.jsonl` with no content is refused by the Markdown-name rule, which sends nothing;
+and `--path` and `--content` each still make a document. Each passing assertion prints
+`PASS: <n> <what>` on stderr, the first failure prints `FAIL:` and exits 1, and a run that reaches
+the end writes `all <n> assertions passed` as the one line on stdout, so a run cut short fails a
+reader that reads that line.
+
+All four source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
