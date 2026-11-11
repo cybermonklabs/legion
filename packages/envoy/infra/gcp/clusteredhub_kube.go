@@ -109,8 +109,8 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 		pulumi.Transforms([]pulumi.ResourceTransform{protectClusteredHubStatefulSet}),
 	}
 	// Kubernetes refuses every pod naming a class that does not exist, so the class is read first
-	// and the chart and the tailnet hosts wait on the read: a missing class fails the preview rather
-	// than the rollout.
+	// and the chart, the tailnet hosts and the session listener wait on the read: a missing class
+	// fails the preview rather than the rollout.
 	var classRead []pulumi.Resource
 	if s.priorityClassName != "" {
 		class, err := schedulingv1.GetPriorityClass(ctx, s.name+"-priority-class", pulumi.ID(s.priorityClassName), nil, child...)

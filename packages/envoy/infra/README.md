@@ -319,9 +319,14 @@ The component writes the pod count, one, and no input changes it. Two copies wou
 one durable `listener-<tailnet.listener.machineId>`: until cybermonklabs/legion#2404 gives the
 listener a delivery lease, the second copy waits the listener's bind deadline
 (`durableBindDeadline`, 135 seconds) for the durable the first copy holds, then exits, and is
-restarted over and over. The rolling update's surge is the one window where two copies exist. It
-lasts at most 33 seconds, the old pod's 5-second preStop wait and its 28-second stop, so the new
-pod binds the durable well inside those 135 seconds.
+restarted over and over. The rolling update's surge is the one window where two copies exist, and
+with `maxUnavailable: 0` and `maxSurge: 1` it is longer than the old pod's stop: the new pod's
+listener contends for the durable from the moment its container starts, and the old pod is sent
+SIGTERM only once the new pod is Ready. The window is therefore the new pod's time to its first
+`/healthz` answer plus the old pod's 33 seconds, its 5-second preStop wait and its 28-second
+stop, and what has to hold it is the new pod's own 135-second bind deadline, counted from its own
+start. A new pod that never becomes Ready leaves the old one serving while the new one restarts
+on its bind deadline.
 
 Three more objects carry that pod:
 

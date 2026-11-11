@@ -96,8 +96,6 @@ func TestClusteredNatsHubListenerService(t *testing.T) {
 	r := runClusteredHub(t, clusteredArgs()).Named(t, serviceType, clusteredListenerName)
 	requireClusteredKubernetesChild(t, r)
 	inputs := r.Inputs.Mappable()
-	ports := inputs["spec"].(map[string]any)["ports"].([]any)
-	require.Len(t, ports, 1, "the listener serves one port")
 	require.Equal(t, map[string]any{
 		"apiVersion": "v1", "kind": "Service",
 		"metadata": map[string]any{"name": clusteredListenerName, "namespace": "envoy"},
@@ -121,7 +119,6 @@ func TestClusteredNatsHubListenerNetworkPolicy(t *testing.T) {
 	require.Equal(t, map[string]any{"matchLabels": listenerPodLabels}, spec["podSelector"])
 
 	rules := spec["ingress"].([]any)
-	require.NotEmpty(t, rules, "the policy admits the tailnet entry")
 	require.Len(t, rules, 1, "one rule, and no other source reaches the listener")
 	require.Equal(t, podRule(9020, tailnetPodLabels), rules[0])
 }
@@ -150,7 +147,6 @@ func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
 	listener := podContainer(t, template, "listener")
 
 	env := containerEnv(t, listener)
-	require.NotEmpty(t, env, "the container carries an environment")
 	require.Equal(t, map[string]any{
 		"PORT":                            "9020",
 		"ENVOY_MACHINE_ID":                "envoy-hub",
@@ -161,11 +157,9 @@ func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
 		"NATS_NKEY_SEED_FILE":             "/var/run/secrets/envoy/nats-seed",
 		"ENVOY_API_ALLOW_UNAUTHENTICATED": "1",
 	}, env)
-	require.NotContains(t, env, "ENVOY_API_TOKEN")
 
 	require.Equal(t, []any{map[string]any{"name": "nats-seed", "mountPath": "/var/run/secrets/envoy", "readOnly": true}}, listener["volumeMounts"])
 	volumes := template["spec"].(map[string]any)["volumes"].([]any)
-	require.NotEmpty(t, volumes)
 	var seed any
 	for _, v := range volumes {
 		if v.(map[string]any)["name"] == "nats-seed" {
@@ -201,23 +195,11 @@ func TestClusteredNatsHubListenerProbes(t *testing.T) {
 			"periodSeconds": 5.0, "timeoutSeconds": 6.0, "failureThreshold": 2.0,
 		},
 	}
-	read := 0
 	for _, name := range []string{"startupProbe", "livenessProbe", "readinessProbe"} {
 		probe, ok := listener[name]
 		require.True(t, ok, "%s is rendered", name)
 		require.NotNil(t, probe, name)
-		read++
 		require.Equal(t, want[name], probe, name)
-	}
-	require.Equal(t, 3, read, "the three probes were read")
-
-	ready := listener["readinessProbe"].(map[string]any)["exec"].(map[string]any)["command"].([]any)
-	require.Contains(t, ready, "-fsS", "readiness fails on a status curl -f refuses")
-	require.Equal(t, []any{"curl", "-fsS", "http://127.0.0.1:9020/healthz"}, ready)
-	require.Len(t, ready, 3)
-	for _, word := range ready {
-		require.NotContains(t, []string{"-o", "--output", "-w", "--write-out", "-d", "--data", "grep"}, word,
-			"readiness reads the status alone, never the body")
 	}
 }
 
@@ -229,7 +211,7 @@ func TestClusteredNatsHubListenerProbes(t *testing.T) {
 func TestClusteredNatsHubListenerStopFitsItsGrace(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	grace := template["spec"].(map[string]any)["terminationGracePeriodSeconds"].(float64)
-	require.Equal(t, 35.0, grace)
+	require.Equal(t, float64(gcp.ClusteredHubListenerGraceSeconds), grace, "the pod renders the grace the package holds its stop within")
 
 	wait := preStopSeconds(t, podContainer(t, template, "listener"))
 	require.Equal(t, 5.0, wait, "the endpoint removal's reach")

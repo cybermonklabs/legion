@@ -240,16 +240,19 @@ client such as pi-envoy or claude-envoy registers and sends through
 `http://<h>.<tailnet>:9020`; it receives directly from NATS, with no listener of its own. A client
 that registers a port is refused: the listener answers 400 naming `port`, since it pushes to no
 session's port. Register with no port and receive from the session's own NATS consumer. The
-listener's `/v1` API takes no bearer, which the listener allows only on a loopback address
-(`packages/envoy/cmd/listener/apiauth.go`), so the tailnet's policy
-for port 9020 is the only thing that decides who may call it, and a caller gets the whole API
-with no credential: it can publish to any topic outside the agent topics with a `source` of its
-choosing, under the listener's user's publish grant (Dispatch, GitHub, Slack, Legion and role
-notifications included), claim a role, list every session and delete one, and read any session's
-stored inbox for the last 72 hours by naming its id (`POST /v1/replay`: the listener does not
-check that the session is live or that the caller is that session). That holds whether or not the
-hub has a `sessionUser`, so a hub without one still has an open bus for any device the policy
-lets reach 9020: grant 9020 only to devices that may act as any agent.
+listener's `/v1` API takes no bearer, which the listener allows on a loopback address, or off
+loopback where `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says something else fences the port, as the
+clustered hub's session listener sets it (`packages/envoy/cmd/listener/apiauth.go`). On this VM
+the listener is on loopback, so the tailnet's policy for port 9020 is the only thing that decides
+who may call it; on the clustered hub the listener's own NetworkPolicy is a second fence there.
+Either way a caller that gets through gets the whole API with no credential: it can publish to any
+topic outside the agent topics with a `source` of its choosing, under the listener's user's
+publish grant (Dispatch, GitHub, Slack, Legion and role notifications included), claim a role,
+list every session and delete one, and read any session's stored inbox for the last 72 hours by
+naming its id (`POST /v1/replay`: the listener does not check that the session is live or that
+the caller is that session). That holds whether or not the hub has a `sessionUser`, so a hub
+without one still has an open bus for any device the policy lets reach 9020: grant 9020 only to
+devices that may act as any agent.
 
 Because the API takes no bearer, a web page open on any device the policy lets reach 9020 could
 otherwise post to it: a browser sends a cross-site form without asking. The listener refuses any
@@ -927,12 +930,16 @@ the hosts.
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
 `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness
 reads the HTTP status of `/healthz` and never its body, so the new pod is ready while it still
-waits for the durable, and the rolling update never waits for the stream. The old pod keeps
-answering for 5 seconds, the time its removal from the Service's endpoints takes to reach every
-node's proxy, and then stops in 28 seconds, inside its grace period of 35. Those 35 seconds are
-under the 135-second bind deadline, so the old pod frees the durable before the new one gives up,
-and the two overlap for at most 33 seconds. The Tailscale Service's port 9020 refuses connections
-while no listener pod is ready, and its port 4222 serves through it.
+waits for the durable, and the rolling update never waits for the stream. The two copies contend
+for the durable from the moment the new pod's container starts, and the old pod is sent SIGTERM
+only once the new pod is Ready, so the window where both exist is the new pod's time to its first
+`/healthz` answer plus the old pod's 33 seconds: it keeps answering for 5 seconds, the time its
+removal from the Service's endpoints takes to reach every node's proxy, and then stops in 28
+seconds, inside its grace period of 35. What has to hold that whole window is the new pod's own
+135-second bind deadline, counted from its own start, not the old pod's grace. A new pod that
+never becomes Ready leaves the old one serving: nothing stops it, and the new one restarts on its
+bind deadline. The Tailscale Service's port 9020 refuses connections while no listener pod is
+ready, and its port 4222 serves through it.
 
 What is watched. The startup and liveness probes read `/healthz` with `curl -sS`, which exits 0
 whatever the HTTP status, so a 503 during a NATS outage or a cache warm-up restarts nothing. The

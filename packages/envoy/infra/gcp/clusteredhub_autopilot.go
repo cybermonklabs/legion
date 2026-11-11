@@ -61,34 +61,33 @@ func autopilotPodSize(pod autopilotPod) (cpu, memory string, err error) {
 	}
 	podCPU = new(big.Rat).Add(podCPU, sidecarCPU)
 	podMemory = new(big.Rat).Add(podMemory, sidecarMemory)
-	// with names each sidecar's size, as size writes it, for a refusal: the clause the sentence
-	// puts before the pod, ending in the space that separates it, and nothing at all for a pod of
-	// one container, whose sentence names the pod alone.
-	with := func(size func(autopilotSidecar) string) string {
+	// subject is the refusal's subject: the pod as a sentence names it, with each sidecar's size
+	// before it as size writes it, and the pod's name alone for a pod of one container.
+	subject := func(size func(autopilotSidecar) string) string {
 		if len(pod.sidecars) == 0 {
-			return ""
+			return pod.name
 		}
 		sizes := make([]string, len(pod.sidecars))
 		for i, sidecar := range pod.sidecars {
 			sizes[i] = sidecar.name + "'s " + size(sidecar)
 		}
-		return "with " + strings.Join(sizes, " and ") + " "
+		return "with " + strings.Join(sizes, " and ") + " " + pod.name
 	}
 	cpuOf := func(s autopilotSidecar) string { return s.cpu }
 	memoryOf := func(s autopilotSidecar) string { return s.memory }
 	switch {
 	case podCPU.Cmp(clusteredHubPodMinCPU) < 0:
-		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at least %s: %s%s would request less than %s, below which Autopilot raises a pod with neither pod anti-affinity nor the safe-to-evict annotation",
-			pod.cpuInput, cpu, milliCPU(new(big.Rat).Sub(clusteredHubPodMinCPU, sidecarCPU)), with(cpuOf), pod.name, milliCPU(clusteredHubPodMinCPU))
+		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at least %s: %s would request less than %s, below which Autopilot raises a pod with neither pod anti-affinity nor the safe-to-evict annotation",
+			pod.cpuInput, cpu, milliCPU(new(big.Rat).Sub(clusteredHubPodMinCPU, sidecarCPU)), subject(cpuOf), milliCPU(clusteredHubPodMinCPU))
 	case podCPU.Cmp(autopilotPodMaxCPU) > 0:
-		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at most %s: %s%s would request above %s CPU, and Autopilot rejects such a pod",
-			pod.cpuInput, cpu, milliCPU(new(big.Rat).Sub(autopilotPodMaxCPU, sidecarCPU)), with(cpuOf), pod.name, autopilotPodMaxCPU.RatString())
+		return "", "", core.InputErrorf(pod.cpuInput, "%s %q must be at most %s: %s would request above %s CPU, and Autopilot rejects such a pod",
+			pod.cpuInput, cpu, milliCPU(new(big.Rat).Sub(autopilotPodMaxCPU, sidecarCPU)), subject(cpuOf), autopilotPodMaxCPU.RatString())
 	case podMemory.Cmp(autopilotPodMinMemory) < 0:
-		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at least %s: %s%s would request less than %s, below which Autopilot raises it",
-			pod.memoryInput, memory, mebibytes(new(big.Rat).Sub(autopilotPodMinMemory, sidecarMemory)), with(memoryOf), pod.name, mebibytes(autopilotPodMinMemory))
+		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at least %s: %s would request less than %s, below which Autopilot raises it",
+			pod.memoryInput, memory, mebibytes(new(big.Rat).Sub(autopilotPodMinMemory, sidecarMemory)), subject(memoryOf), mebibytes(autopilotPodMinMemory))
 	case podMemory.Cmp(autopilotPodMaxMemory) > 0:
-		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at most %s: %s%s would request above 110Gi, and Autopilot rejects such a pod",
-			pod.memoryInput, memory, mebibytes(new(big.Rat).Sub(autopilotPodMaxMemory, sidecarMemory)), with(memoryOf), pod.name)
+		return "", "", core.InputErrorf(pod.memoryInput, "%s %q must be at most %s: %s would request above 110Gi, and Autopilot rejects such a pod",
+			pod.memoryInput, memory, mebibytes(new(big.Rat).Sub(autopilotPodMaxMemory, sidecarMemory)), subject(memoryOf))
 	}
 	gibPerCPU := new(big.Rat).Quo(podMemory, podCPU)
 	gibPerCPU.Quo(gibPerCPU, gibibyte)
@@ -99,7 +98,7 @@ func autopilotPodSize(pod autopilotPod) (cpu, memory string, err error) {
 	if gibPerCPU.Cmp(autopilotMinGiBPerCPU) < 0 {
 		smaller = pod.memoryInput
 	}
-	return "", "", core.InputErrorf(smaller, "%s %q and %s %q: %s%s must hold between 1 and 6.5 GiB of memory per CPU, or Autopilot raises the smaller of the two",
+	return "", "", core.InputErrorf(smaller, "%s %q and %s %q: %s must hold between 1 and 6.5 GiB of memory per CPU, or Autopilot raises the smaller of the two",
 		pod.cpuInput, cpu, pod.memoryInput, memory,
-		with(func(s autopilotSidecar) string { return s.cpu + " and " + s.memory }), pod.name)
+		subject(func(s autopilotSidecar) string { return s.cpu + " and " + s.memory }))
 }

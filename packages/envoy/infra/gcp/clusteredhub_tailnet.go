@@ -1,7 +1,6 @@
 package gcp
 
 import (
-	"fmt"
 	"strconv"
 
 	appsv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apps/v1"
@@ -20,18 +19,6 @@ const (
 	// advertiser exits on its SIGTERM at once (tailnetAdvertiserBody's trap), so the pod is gone
 	// when the tailscale container is, not at the grace period's SIGKILL.
 	clusteredHubTailnetGraceSeconds = 60
-	// clusteredHubListenerPreStopSeconds is the listener's preStop wait, the one gcp:Dispatch's
-	// listener takes (sleepPreStop): it holds the pod open while its removal from its Service's
-	// endpoints reaches every node's proxy, so a connection a node still forwards is still
-	// answered. The 25 s it was existed only to outlast the tailscale container's drain in the
-	// same pod; the listener has a pod of its own now.
-	clusteredHubListenerPreStopSeconds = 5
-	// clusteredHubListenerShutdownSeconds is the longest the session listener takes to stop on its
-	// SIGTERM: the HTTP server's 10 s, the role lane's 5 s (a 3 s drain of the lane's own client,
-	// and the 2 s receipt window for the forwards its handler handed over, roleLane.drain) and the
-	// NATS connection's 13 s drain, run one after another
-	// (packages/envoy/cmd/listener/main.go:1225,1263,1270, its sum stated at :1267-1269).
-	clusteredHubListenerShutdownSeconds = 10 + 5 + 13
 
 	// clusteredHubTailnetUID is the one uid every container of a tailnet host pod runs as
 	// (tailnetPodSecurity says why one), and the uid the listener pod runs as too. It is a
@@ -43,13 +30,10 @@ const (
 
 	// The tailnet host pod's volumes and where its containers mount them: the state volume the
 	// tailscale container, the advertiser and the init container share (tailnetServicePaths), and
-	// the serve config from ConfigMap <name>-tailnet. The two seed names below are the listener
-	// pod's: its NATS seed from the operator's Secret, by reference.
+	// the serve config from ConfigMap <name>-tailnet.
 	clusteredHubTailnetStateMount = "/var/lib/tailnet"
 	clusteredHubTailnetServeMount = "/etc/tailscale"
 	clusteredHubTailnetServeFile  = "serve.json"
-	clusteredHubListenerSeedMount = "/var/run/secrets/envoy"
-	clusteredHubListenerSeedFile  = "nats-seed"
 	// clusteredHubTailnetAuthKeyKey is the key of Secret <name>-tailnet-authkey holding the auth key.
 	clusteredHubTailnetAuthKeyKey = "TS_AUTHKEY"
 
@@ -62,11 +46,6 @@ const (
 	clusteredHubAdvertiserCPU    = "50m"
 	clusteredHubAdvertiserMemory = "64Mi"
 )
-
-// clusteredHubListenerHealthURL is the session listener's /healthz on its own pod's loopback,
-// which the listener's startup and liveness probes read. The tailnet hosts' advertiser no longer
-// reads it: the listener runs in a pod of its own, and no advertiser can reach that loopback.
-var clusteredHubListenerHealthURL = fmt.Sprintf("http://127.0.0.1:%d/healthz", core.DefaultListenerPort)
 
 // clusteredHubTailnetHost is the tailnet hosts' Tailscale Service host: svc:<tailnet.serviceName>,
 // joined with the component's auth key and the tags, serving the TCP serve config mounted from
@@ -94,38 +73,6 @@ func clusteredHubServeConfig(s clusteredHubSettings) string {
 		{port: natsPort, target: clusterLocal(s.serviceName, s.namespace) + ":" + strconv.Itoa(natsPort)},
 		{port: core.DefaultListenerPort, target: clusterLocal(clusteredHubListenerName(s.name), s.namespace) + ":" + strconv.Itoa(core.DefaultListenerPort)},
 	})
-}
-
-// clusteredHubListenerProbe is the listener's startup and liveness check: any HTTP answer from
-// /healthz, within the 5 s its handler answers in (curl's 6 s, the probe's 7 s), passes. Without
-// -f curl exits 0 on a 503, so a listener answering 503 while NATS is down or its caches warm is
-// alive: it retries by itself, and a restart would only drop its warm caches. Only a listener
-// that answers nothing at all is restarted. Readiness is readyProbe, curl -fsS of the same
-// /healthz, which reads the HTTP status and never the body: a pod still waiting for its durable,
-// which /healthz answers 200 with a starting body, is ready, so the rolling update never waits
-// for the stream. Startup and liveness stay status-blind, so a 503 never restarts the pod.
-func clusteredHubListenerProbe(periodSeconds, failureThreshold int) *corev1.ProbeArgs {
-	return &corev1.ProbeArgs{
-		Exec: &corev1.ExecActionArgs{Command: pulumi.ToStringArray([]string{
-			"curl", "-sS", "-o", "/dev/null", "--max-time", strconv.Itoa(tailnetHealthTimeoutSeconds),
-			clusteredHubListenerHealthURL,
-		})},
-		PeriodSeconds:    pulumi.Int(periodSeconds),
-		TimeoutSeconds:   pulumi.Int(tailnetHealthTimeoutSeconds + 1),
-		FailureThreshold: pulumi.Int(failureThreshold),
-	}
-}
-
-// clusteredHubListenerEnv is the listener container's environment: the resolver's rendering of
-// core.ListenerConfig, in its order, the seed file mounted from the operator's Secret, and the
-// flag that lets the API serve /v1 with no credential. No ENVOY_API_TOKEN: what keeps /v1 to its
-// callers is the listener's NetworkPolicy, which admits the tailnet entry's pods alone, and the
-// listener serves on every address of its pod, where its API refuses to start with neither
-// bearer nor OIDC pair unless ENVOY_API_ALLOW_UNAUTHENTICATED is set
-// (packages/envoy/cmd/listener/apiauth.go).
-func clusteredHubListenerEnv(l clusteredHubListener) corev1.EnvVarArray {
-	env := append(envVars(l.env), valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedMount+"/"+clusteredHubListenerSeedFile))
-	return append(env, valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
 }
 
 // clusteredHubTailnetPod is a tailnet host's pod: the tailscale container serving the Service

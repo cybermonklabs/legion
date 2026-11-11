@@ -3,12 +3,10 @@
 package gcp_test
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -20,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // The tests in this file run the listener binary of this checkout in the environment
@@ -33,12 +32,13 @@ import (
 // machine id is ready while the first holds the listener's durable and binds it once the first
 // stops, which is the whole of a rolling update of that pod.
 //
-// They need no container runtime: the one server they run is a nats-server installed with go
-// install at the version the hub runs, through installTools (clusteredhub_live_test.go), and a
-// tool that does not install fails the test rather than skipping it. The listener is built from
-// packages/envoy/cmd/listener under the repository's root go.work, as
-// core/permissions_live_test.go's buildEnvoyCommand builds it, and a build that fails fails the
-// test the same way.
+// They need no container runtime: the one server they run is the nats-server this binary links
+// in, started in the test process by testnats.Start and shut down with the test. Its version is
+// not what these tests read — they read the listener's own behaviour against a bus with
+// JetStream — and the versions the hub actually deploys are TestClusteredNatsHubChart's and
+// TestClusteredNatsHubCluster's to prove. The listener is built from packages/envoy/cmd/listener
+// under the repository's root go.work, as core/permissions_live_test.go's buildEnvoyCommand
+// builds it, and a build that fails fails the test the same way.
 const (
 	// clusteredHubListenerLiveHost is the one name ENVOY_ALLOWED_HOSTS carries here: the tailnet
 	// address the component renders from its hostname and tailnetDnsName, the address its clients
@@ -80,35 +80,11 @@ func buildLiveListener(t *testing.T) string {
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Dir: filepath.Join("..", "..", "cmd", "listener")})
 }
 
-// startLiveNatsServer installs nats-server at the version the hub runs and starts one with
-// JetStream, no authorization and a store directory of the test's own, on a loopback port drawn
-// from ports, and returns its client URL. A single server is enough here: what these tests read is
-// the listener's own behaviour, and the cluster the component renders is
-// TestClusteredNatsHubCluster's to prove.
-func startLiveNatsServer(t *testing.T, ports *loopbackPorts) string {
-	t.Helper()
-	dir := t.TempDir()
-	binary := installTools(t, dir, liveTool{natsServerTool, "nats-server"})[0]
-	store := filepath.Join(dir, "jetstream")
-	require.NoError(t, os.MkdirAll(store, 0o755))
-	var port int
-	startBound(t, "nats-server", func() *exec.Cmd {
-		port = ports.draw(t, 1)[0]
-		return exec.Command(binary, "-a", "127.0.0.1", "-p", strconv.Itoa(port), "-js", "--store_dir", store)
-	}, func(p *cmdtest.Process) error {
-		if !strings.Contains(p.Output.String(), "Server is ready") {
-			return errors.New("the server has not said it is ready")
-		}
-		return nil
-	})
-	return fmt.Sprintf("nats://127.0.0.1:%d", port)
-}
-
 // liveListenerEnv is the whole environment of a listener pod of gcp:ClusteredNatsHub on this
 // machine: core.ListenerConfig.Env for the config the component resolves — PORT,
 // ENVOY_LISTEN_HOST=0.0.0.0, ENVOY_ALLOWED_HOSTS, ENVOY_MACHINE_ID and NATS_URLS — with
 // ENVOY_API_ALLOW_UNAUTHENTICATED=1 after it, as clusteredHubListenerEnv adds it
-// (clusteredhub_tailnet.go), unless allowUnauthenticated is false, which is the negative control.
+// (clusteredhub_listener.go), unless allowUnauthenticated is false, which is the negative control.
 // It is the process's whole environment, so there is no ENVOY_API_TOKEN and no OIDC pair in it,
 // which is what the pod renders too. The pod's NATS_NKEY_SEED_FILE is left out: this server
 // carries no authorization, so there is no seed to mount.
@@ -203,7 +179,6 @@ func liveListenerAnswer(t *testing.T, addr, path, host string) (int, string) {
 	req, err := http.NewRequest(http.MethodGet, "http://"+addr+path, nil)
 	require.NoError(t, err)
 	req.Host = host
-	require.Empty(t, req.Header.Get("Authorization"), "the request must carry no credential")
 	resp, err := liveListenerClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -240,9 +215,12 @@ func nonLoopbackIPv4(t *testing.T) string {
 		if !ok {
 			continue
 		}
-		examined++
 		ip := ipnet.IP.To4()
-		if ip == nil || ip.IsLoopback() {
+		if ip == nil {
+			continue
+		}
+		examined++
+		if ip.IsLoopback() {
 			continue
 		}
 		return ip.String()
@@ -265,7 +243,7 @@ func nonLoopbackIPv4(t *testing.T) string {
 func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 	binary := buildLiveListener(t)
 	ports := newLoopbackPorts()
-	natsURL := startLiveNatsServer(t, ports)
+	_, natsURL := testnats.Start(t)
 
 	listeners := 0
 	process, port := startLiveListener(t, "the listener", binary, natsURL, ports)
@@ -314,8 +292,6 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 	_, _, err = liveListenerHealthz(controlPort)
 	require.Error(t, err, "something answered /healthz on the refused listener's port %d", controlPort)
 
-	require.Equal(t, 2, listeners, "the proof needs both the listener and its negative control")
-
 	// The pod's own address, with no credential: the Host the hub told it is served, every other
 	// is not.
 	addr := net.JoinHostPort(nonLoopbackIPv4(t), strconv.Itoa(port))
@@ -334,7 +310,6 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 		"the refusal does not name the list that would have served %s", clusteredHubListenerOtherHost)
 	t.Logf("GET /v1/sessions at %s as %s: %d %s", addr, clusteredHubListenerOtherHost, misdirected, strings.TrimSpace(body))
 
-	require.NotZero(t, answers, "no HTTP answer was read at all")
 	t.Logf("%d listener process(es) run, %d HTTP answer(s) read", listeners, answers)
 }
 
@@ -348,7 +323,7 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	binary := buildLiveListener(t)
 	ports := newLoopbackPorts()
-	natsURL := startLiveNatsServer(t, ports)
+	_, natsURL := testnats.Start(t)
 
 	listeners := 0
 	answers := 0
@@ -361,7 +336,6 @@ func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 
 	second, secondPort := startLiveListener(t, "the second listener", binary, natsURL, ports)
 	listeners++
-	require.Equal(t, 2, listeners, "the hand-over needs two listeners of the one machine id")
 
 	// The second pod is up and serving while the first still holds the durable: 200, and a body
 	// that says "starting". Both are asserted, because the two say different things and the
@@ -392,6 +366,5 @@ func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 		"the hand-over took %.1fs, at or past the %s at which the second listener gives up its start:\n%s",
 		handover.Seconds(), clusteredHubListenerBindDeadline, second.Output.String())
 
-	require.NotZero(t, answers, "no HTTP answer was read at all")
 	t.Logf("%d listener process(es) run, %d HTTP answer(s) read", listeners, answers)
 }

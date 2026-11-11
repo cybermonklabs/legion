@@ -172,7 +172,8 @@ type ClusteredNatsHubArgs struct {
 }
 
 // ClusteredHubTailnetArgs are the hub's tailnet entry: the Tailscale Service svc:<serviceName>,
-// served by replicas hosts, each joined with the tags and running the session listener.
+// served by replicas hosts, each joined with the tags, forwarding the Service's NATS port to the
+// hub and its port 9020 to the session listener the hub runs as a workload of its own.
 type ClusteredHubTailnetArgs struct {
 	ServiceName    string                    `pulumi:"serviceName"`    // the Service's name without svc:
 	TailnetDnsName string                    `pulumi:"tailnetDnsName"` // <tailnet>.ts.net
@@ -188,11 +189,12 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 	a.SetToken("gcp", "ClusteredHubTailnet")
 }
 
-// ClusteredHubListenerArgs are the session listener each tailnet host runs: its image, its
-// machine id, the public key of its NATS user's seed, and the existing Kubernetes Secret in the
-// hub's namespace, and the key in it, holding that seed, which the component mounts by reference
-// and never reads. The hub renders the listener's user itself, named after the machine id and
-// granted core.ListenerPermissions for it, as gcp:NatsHub renders its own listener's.
+// ClusteredHubListenerArgs are the session listener the hub runs as a workload of its own, which
+// the tailnet hosts forward the Tailscale Service's port 9020 to: its image, its machine id, the
+// public key of its NATS user's seed, and the existing Kubernetes Secret in the hub's namespace,
+// and the key in it, holding that seed, which the component mounts by reference and never reads.
+// The hub renders the listener's user itself, named after the machine id and granted
+// core.ListenerPermissions for it, as gcp:NatsHub renders its own listener's.
 type ClusteredHubListenerArgs struct {
 	Image          string  `pulumi:"image"`              // pinned: <name>@sha256:<digest>
 	MachineID      *string `pulumi:"machineId,optional"` // default tailnet.serviceName
@@ -267,8 +269,9 @@ type clusteredHubTailnet struct {
 	natsURL, envoyURL           string
 }
 
-// clusteredHubListener is the resolved session listener of each tailnet host: env is its
-// environment but the seed (core.ListenerConfig.Env).
+// clusteredHubListener is the resolved session listener the hub runs beside its tailnet hosts,
+// which forward the Tailscale Service's port 9020 to it: env is its environment but the seed
+// (core.ListenerConfig.Env).
 type clusteredHubListener struct {
 	image, machineID              string
 	seedSecretName, seedSecretKey string
@@ -664,7 +667,7 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	}
 	l := t.Listener
 	if l == nil {
-		return nil, nil, core.InputErrorf("tailnet.listener", "tailnet.listener is required with tailnet: each tailnet host serves the session listener on port %d", core.DefaultListenerPort)
+		return nil, nil, core.InputErrorf("tailnet.listener", "tailnet.listener is required with tailnet: the tailnet hosts forward the Tailscale Service's port %d to the session listener the hub runs as a workload of its own", core.DefaultListenerPort)
 	}
 	if !imageRule.MatchString(l.Image) {
 		return nil, nil, core.InputErrorf("tailnet.listener.image", "tailnet.listener.image %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", l.Image)

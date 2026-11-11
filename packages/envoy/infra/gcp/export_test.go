@@ -99,10 +99,11 @@ var ProtectClusteredHubStatefulSet = protectClusteredHubStatefulSet
 // The shutdown budget of each gcp:ClusteredNatsHub workload that stops on a SIGTERM, for the
 // tests that hold each within its own pod's grace period: the tailnet host's tailscale container,
 // whose preStop hook and containerboot's shutdown run inside that pod's grace, and the session
-// listener's own shutdown, which runs inside the listener pod's, after its preStop wait.
+// listener's own shutdown, which runs inside the listener pod's grace, after its preStop wait.
 const (
 	TailnetShutdownSeconds              = tailnetShutdownSeconds
 	ClusteredHubListenerShutdownSeconds = clusteredHubListenerShutdownSeconds
+	ClusteredHubListenerGraceSeconds    = clusteredHubListenerGraceSeconds
 )
 
 // DispatchRollingUpdate is the resolved rolling update's bounds, for the tests outside the package.

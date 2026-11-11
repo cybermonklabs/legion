@@ -1,6 +1,9 @@
 package gcp
 
 import (
+	"fmt"
+	"strconv"
+
 	appsv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apps/v1"
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	metav1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/meta/v1"
@@ -10,6 +13,75 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 )
+
+const (
+	// clusteredHubListenerPreStopSeconds is the listener's preStop wait, the one gcp:Dispatch's
+	// listener takes (sleepPreStop): it holds the pod open while its removal from its Service's
+	// endpoints reaches every node's proxy, so a connection a node still forwards is still
+	// answered. The 25 s it was existed only to outlast the tailscale container's drain in the
+	// same pod; the listener has a pod of its own now.
+	clusteredHubListenerPreStopSeconds = 5
+	// clusteredHubListenerShutdownSeconds is the longest the session listener takes to stop on its
+	// SIGTERM: the HTTP server's 10 s, the role lane's 5 s (a 3 s drain of the lane's own client,
+	// and the 2 s receipt window for the forwards its handler handed over, roleLane.drain) and the
+	// NATS connection's 13 s drain, run one after another
+	// (packages/envoy/cmd/listener/main.go:1225,1263,1270, its sum stated at :1267-1269).
+	clusteredHubListenerShutdownSeconds = 10 + 5 + 13
+	// clusteredHubListenerGraceSeconds is the listener pod's terminationGracePeriodSeconds: it
+	// holds the preStop wait and the listener's own stop (clusteredHubListenerPreStopSeconds +
+	// clusteredHubListenerShutdownSeconds, 33 s) with a margin, so the pod is gone before the
+	// kubelet's SIGKILL, and it stays under the 135 s bind deadline at which a starting listener
+	// gives up waiting for the durable this one holds (packages/envoy/cmd/listener/durable.go).
+	clusteredHubListenerGraceSeconds = 35
+	// clusteredHubListenerProbeTimeoutSeconds is the time clusteredHubListenerProbe gives /healthz
+	// to answer: its handler answers within 5 s, so a read that runs out at 6 s read a listener
+	// that answered nothing at all. It is the listener's own, not the health gate of a tailnet
+	// host (tailnetHealthTimeoutSeconds): the listener's pod is not a tailnet host.
+	clusteredHubListenerProbeTimeoutSeconds = 6
+
+	// The listener pod's seed volume and where its container mounts it: its NATS seed from the
+	// operator's Secret, by reference.
+	clusteredHubListenerSeedMount = "/var/run/secrets/envoy"
+	clusteredHubListenerSeedFile  = "nats-seed"
+)
+
+// clusteredHubListenerHealthURL is the session listener's /healthz on its own pod's loopback,
+// which the listener's startup and liveness probes read. The tailnet hosts' advertiser no longer
+// reads it: the listener runs in a pod of its own, and no advertiser can reach that loopback.
+var clusteredHubListenerHealthURL = fmt.Sprintf("http://127.0.0.1:%d/healthz", core.DefaultListenerPort)
+
+// clusteredHubListenerProbe is the listener's startup and liveness check: any HTTP answer from
+// /healthz, within the 5 s its handler answers in (curl's 6 s, the probe's 7 s), passes. Without
+// -f curl exits 0 on a 503, so a listener answering 503 while NATS is down or its caches warm is
+// alive: it retries by itself, and a restart would only drop its warm caches. Only a listener
+// that answers nothing at all is restarted. Readiness is readyProbe, curl -fsS of the same
+// /healthz, which reads the HTTP status and never the body: a pod still waiting for its durable,
+// which /healthz answers 200 with a starting body, is ready, so the rolling update never waits
+// for the stream. Startup and liveness stay status-blind, so a 503 never restarts the pod.
+func clusteredHubListenerProbe(periodSeconds, failureThreshold int) *corev1.ProbeArgs {
+	return &corev1.ProbeArgs{
+		Exec: &corev1.ExecActionArgs{Command: pulumi.ToStringArray([]string{
+			"curl", "-sS", "-o", "/dev/null", "--max-time", strconv.Itoa(clusteredHubListenerProbeTimeoutSeconds),
+			clusteredHubListenerHealthURL,
+		})},
+		PeriodSeconds:    pulumi.Int(periodSeconds),
+		TimeoutSeconds:   pulumi.Int(clusteredHubListenerProbeTimeoutSeconds + 1),
+		FailureThreshold: pulumi.Int(failureThreshold),
+	}
+}
+
+// clusteredHubListenerEnv is the listener container's environment: the resolver's rendering of
+// core.ListenerConfig, in its order, the seed file mounted from the operator's Secret, and the
+// flag that lets the API serve /v1 with no credential. No ENVOY_API_TOKEN: what keeps /v1 to its
+// callers is the listener's NetworkPolicy, which admits the tailnet entry's pods alone, and the
+// listener serves on every address of its pod, where its API refuses to start with neither
+// bearer nor OIDC pair unless ENVOY_API_ALLOW_UNAUTHENTICATED is set
+// (packages/envoy/cmd/listener/apiauth.go).
+func clusteredHubListenerEnv(l clusteredHubListener) corev1.EnvVarArray {
+	return append(envVars(l.env),
+		valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedMount+"/"+clusteredHubListenerSeedFile),
+		valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
+}
 
 // clusteredHubListenerSelector is the selector labels of the hub's session listener, the pod the
 // tailnet hosts forward the Service's listener port to: what its workload selects, what its
@@ -32,15 +104,14 @@ func clusteredHubListenerName(release string) string {
 
 // clusteredHubListenerPod is the session listener's pod: the listener container alone, with the
 // NATS seed mounted from the operator's Secret by reference. It runs as clusteredHubTailnetUID,
-// the uid its image's own user has, and its grace period holds the preStop wait and the
-// listener's own stop (clusteredHubListenerPreStopSeconds + clusteredHubListenerShutdownSeconds,
-// 33 s) with a margin, so the pod is gone before the kubelet's SIGKILL.
+// the uid its image's own user has, and stops inside clusteredHubListenerGraceSeconds, which
+// holds the preStop wait and the listener's own stop.
 func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 	l := s.tailnet.listener
 	pod := corev1.PodSpecArgs{
 		ServiceAccountName:            pulumi.String(clusteredHubListenerName(s.name)),
 		EnableServiceLinks:            pulumi.Bool(false),
-		TerminationGracePeriodSeconds: pulumi.Int(35),
+		TerminationGracePeriodSeconds: pulumi.Int(clusteredHubListenerGraceSeconds),
 		SecurityContext:               tailnetPodSecurity(clusteredHubTailnetUID),
 		Containers: corev1.ContainerArray{corev1.ContainerArgs{
 			Name: pulumi.String("listener"), Image: pulumi.String(l.image),

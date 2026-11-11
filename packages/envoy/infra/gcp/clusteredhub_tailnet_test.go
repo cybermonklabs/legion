@@ -39,34 +39,11 @@ func clusteredTailnetPodSpec(t *testing.T, m *pulumitest.Mocks) map[string]any {
 // The tailnet host's pod, whole: the init container creating tailscaled's state directory, the
 // tailscale container serving svc:envoy-hub and the advertiser deciding when it does, both as
 // the one uid, with the state volume and the serve config. The session listener is a workload of
-// its own now (TestClusteredNatsHubListenerPodMatchesGolden), so neither its container nor its
-// seed volume is here: the lists this reads are counted first, since an absence is true of a pod
-// that rendered nothing.
+// its own now (TestClusteredNatsHubListenerPodMatchesGolden), and the golden is what pins the
+// absence of its container and of its seed volume: it is the whole pod template, so a listener
+// container or a nats-seed volume back in this pod would not match it.
 func TestClusteredNatsHubTailnetPodMatchesGolden(t *testing.T) {
-	m := runClusteredHub(t, clusteredArgs())
-	requirePodGolden(t, m, clusteredTailnetName, "clustered-hub-tailnet-pod.golden")
-
-	pod := clusteredTailnetPodSpec(t, m)
-	initContainers := pod["initContainers"].([]any)
-	require.Len(t, initContainers, 1)
-	require.Equal(t, "tailscale-state", initContainers[0].(map[string]any)["name"])
-	containers := pod["containers"].([]any)
-	require.Len(t, containers, 2, "the pod holds the tailscale container and the advertiser")
-	names := make([]string, len(containers))
-	for i, container := range containers {
-		names[i] = container.(map[string]any)["name"].(string)
-	}
-	require.Equal(t, []string{"tailscale", "advertiser"}, names)
-	require.NotContains(t, names, "listener", "the session listener runs in a pod of its own")
-
-	volumes := pod["volumes"].([]any)
-	require.NotEmpty(t, volumes)
-	volumeNames := make([]string, len(volumes))
-	for i, volume := range volumes {
-		volumeNames[i] = volume.(map[string]any)["name"].(string)
-	}
-	require.Equal(t, []string{"state", "serve"}, volumeNames)
-	require.NotContains(t, volumeNames, "nats-seed", "the seed is mounted in the listener's own pod")
+	requirePodGolden(t, runClusteredHub(t, clusteredArgs()), clusteredTailnetName, "clustered-hub-tailnet-pod.golden")
 }
 
 // The serve config forwards the Service's NATS port to the hub's client Service and its listener
