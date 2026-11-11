@@ -18,7 +18,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'merge_queue_publish', 'issue_branch', 'issue_suspend',
   'auto_merge_disable', 'ready_merge', 'check_wake', 'check_look', 'check_bound',
   'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release',
-  'design_gates_publish'));
+  'hook_prompt', 'design_gates_publish'));
 
 -- One publish row per issue, which is what lets the enqueue be an upsert
 -- (record.Postgres.EnqueueDesignGates): the row waits on its lane until Dispatch takes it, and

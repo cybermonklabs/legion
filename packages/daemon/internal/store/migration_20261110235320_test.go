@@ -44,7 +44,7 @@ func TestTheOutboxTakesTheDesignGatesPublishKindWith20261110235320(t *testing.T)
 		"linger_close", "workspace_remove", "merge_queue_publish", "issue_branch", "issue_suspend",
 		"auto_merge_disable", "ready_merge", "check_wake", "check_look", "check_bound",
 		"phase_ended", "issue_bundle", "issue_release", "gated_steps_publish", "claim_release",
-		"design_gates_publish",
+		"hook_prompt", "design_gates_publish",
 	} {
 		if err := queue(kind, "LEGION-208"); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
