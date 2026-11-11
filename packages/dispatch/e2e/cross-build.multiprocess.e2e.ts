@@ -40,7 +40,10 @@ import { signIn } from "./users";
  * writable it types and sees the edit saved and shown in a context of the other build's page, and
  * where it admits the page read-only the page says so and the stored document is untouched
  * (`pageWritable`) - and opens the Delivery page, whose live socket subscribes to the timeline and
- * is answered a snapshot. Every selector is one both builds' own browser suites use.
+ * is answered a snapshot. Every selector is one both builds' own browser suites use. Each
+ * direction then reads the entry chunk its page loaded and holds it to the one that build's own
+ * `index.html` names (`entryChunk`), so a direction whose server is the previous release but
+ * whose page this tree served is a failure here rather than a row that passes unnoticed.
  *
  * Each seed call names the process it runs on (`process` in e2e/api.ts, which pins its sign-in
  * there too), so the build that wrote a row and the build that reads it back are both known.
@@ -59,6 +62,34 @@ const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
  *  `pmdoc/schema/blocks.json` and its `web/` dist. */
 const envoyDir = fileURLToPath(new URL("../../envoy", import.meta.url));
 const buildB = binaryB === undefined ? undefined : dirname(resolve(envoyDir, binaryB));
+
+/** The web dist each process's build serves: this tree's `web/dist` for A, and for B the `web/`
+ *  beside the envoy-dispatch `DISPATCH_E2E_BINARY_B` names, which build-dispatch-build.sh wrote
+ *  into that build's one directory, or this tree's `web/dist-b` where there is no previous build
+ *  (the second build of this source `bun run e2e:multiprocess` makes). It is read off the build
+ *  itself rather than off `DISPATCH_E2E_WEB_DIST_B`, which is only what the harness was told to
+ *  serve: what the row below holds is that the two agree. */
+const webDist: Record<DispatchProcess, string> = {
+  a: resolve(envoyDir, "..", "dispatch", "web", "dist"),
+  b:
+    buildB === undefined
+      ? resolve(envoyDir, "..", "dispatch", "web", "dist-b")
+      : resolve(buildB, "web"),
+};
+
+/** The entry chunk a build's `index.html` names, `/assets/index-*.js`: the file a page of that
+ *  build loads itself from, and the one thing in the page that names the build it came from
+ *  (`readBuild` in e2e/two-builds.multiprocess.e2e.ts reads it the same way). */
+function entryChunk(process: DispatchProcess): string {
+  const page = resolve(webDist[process], "index.html");
+  const entry = /<script type="module" crossorigin src="(\/assets\/[^"]+\.js)"><\/script>/.exec(
+    readFileSync(page, "utf8")
+  )?.[1];
+  if (entry === undefined) {
+    throw new Error(`${page} names no entry chunk`);
+  }
+  return entry;
+}
 
 /** The schema manifest version a build's server reads and admits a page by. */
 function manifestVersion(process: DispatchProcess): number {
@@ -294,6 +325,22 @@ for (const pageProcess of dispatchProcesses) {
         expect(opened.length, `a ${path} socket opened`).toBeGreaterThan(0);
         expect(opened.filter((socket) => socket.upstream !== server)).toEqual([]);
       }
+
+      // And the page this whole row ran on is that process's own build's: the entry chunk the
+      // document it loaded names is the one `index.html` of that build names. Nothing above can
+      // tell one build's page from the other's - a page of this tree drives every row here
+      // against the previous build's server just as B's own page does - so this is what holds
+      // B's page to B's binary, which is read from the `web/` beside that binary and not from
+      // the `DISPATCH_E2E_WEB_DIST_B` the harness was handed: a run that served B this tree's
+      // page while running the previous release's server fails here, as a dropped default for
+      // that variable in packages/dispatch/package.json made it do. Where there is no previous
+      // build the two processes are one build of the server, and B serves this tree's own
+      // `web/dist-b`, a second build of this source under another build id: the assertion then
+      // says the page came from the process it was pinned to and nothing about a second build.
+      const loaded = await page
+        .locator('head > script[type="module"][src^="/assets/"]')
+        .getAttribute("src");
+      expect(loaded, `the page was served by ${builds[pageProcess]}`).toBe(entryChunk(pageProcess));
 
       // The document, in a context of the other build's page against this page's own server: the
       // edit where this page could make one, and the text it opened with where it could not.

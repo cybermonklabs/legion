@@ -696,6 +696,19 @@ test("a row with no created_at stays last when Created is sorted the other way",
   ).toEqual(["CORE-3", "CORE-1", "CORE-2"]);
 });
 
+test("the Created filter files a row a server sent with no created_at under Older", async () => {
+  // The column's filter asks `createdAt` and files a row without a time under Older
+  // (`issues-table-model.ts`), the bucket an issue old enough to come from a server of the
+  // release before `created_at` would reach anyway, so a reader who picks that age still sees
+  // the row. The row that carries a time is today's, so the filter is doing the choosing.
+  table(
+    [issue("CORE-1", { created_at: new Date().toISOString() }), issueFromOlderServer("CORE-2")],
+    "?f.created=Older"
+  );
+  expect(await screen.findByRole("row", { name: "CORE-2 Work CORE-2" })).toBeDefined();
+  expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+});
+
 test("the Legion queue puts an issue with no created_at after one of the same rank that has one", async () => {
   table([
     issueFromOlderServer("CORE-1", { labels: ["legion"], rank: "m" }),
