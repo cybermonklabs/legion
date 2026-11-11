@@ -4827,6 +4827,7 @@ export interface components {
       tree: string;
       tree_slot: null | number;
       waiting_on: components["schemas"]["LegionBoardWait"] | null;
+      waiting_place: null | number;
     };
     LegionBoardColumn: {
       cards: components["schemas"]["LegionBoardCard"][] | null;

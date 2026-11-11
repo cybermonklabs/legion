@@ -215,11 +215,13 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
 /** The Slot column's value: the slot number the issue works in, its tree root's for a child,
- *  as text. A row with no slot, and every row of a project with no daemon, reads "No slot". */
+ *  as text. A row the daemon's waiting line names with no slot reads "Waiting for a slot"; any
+ *  other row with no slot, and every row of a project with no daemon, reads "No slot". */
 export function legionSlotValue(item: Item): string {
   const card = item.legion?.card;
   const slot = card?.slot ?? card?.tree_slot;
-  return slot === undefined || slot === null ? "No slot" : String(slot);
+  if (slot !== undefined && slot !== null) return String(slot);
+  return card?.waiting_place != null ? "Waiting for a slot" : "No slot";
 }
 /** A Legion phase's label as the views write it: the board column's label, except that an issue
  *  in retro reads "Retro". The board shows retro in its Merging column, but the Legion tab and
@@ -228,10 +230,11 @@ export function legionPhaseLabel(label: string, phase: string): string {
   return phase === "retro" ? "Retro" : label;
 }
 /** A card's slot in words: its own slot, its tree root's for a child (a slot belongs to the
- *  tree's root), or none. */
+ *  tree's root), its place in the waiting line, or none. */
 export function legionSlotText(card: LegionBoardCard): string {
   if (card.slot !== null) return `slot ${card.slot}`;
   if (card.tree_slot !== null) return `slot ${card.tree_slot} · via ${card.tree}`;
+  if (card.waiting_place !== null) return `waiting for a slot, #${card.waiting_place} in line`;
   return "no slot";
 }
 /** A card's roles in a turn in words; none working is "between turns". */

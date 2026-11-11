@@ -69,6 +69,7 @@ function card(key: string): LegionBoardCard {
     tree: key,
     tree_slot: null,
     slot_since: null,
+    waiting_place: null,
     waiting_on: null,
   };
 }

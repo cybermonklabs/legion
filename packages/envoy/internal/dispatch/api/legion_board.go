@@ -37,8 +37,11 @@ import (
 )
 
 // The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
-// link holds; Design the issues whose phase is still `admitted` that are on a card at all — the
-// slot holders, and the ones no card stands above, which are on no other issue's count
+// link holds, of the issues that have not started work: no slot and no working phase
+// (legionBoardQueues); an issue of either list in a working phase, or holding a slot, is in its
+// phase's column with its place in the line on its card. Design holds the issues whose phase is
+// still `admitted` that are on a card at all — the slot holders, whose architect runs at the
+// design gate, and the ones no card stands above, which are on no other issue's count
 // (legionBoardCompute); Merging `retro`, `merging` and `awaiting_merge`; and Held the phase
 // metric 2 puts on the "no role" bar beside `awaiting_person` (the plan's D11).
 const (
@@ -91,6 +94,27 @@ var legionPhaseColumns = func() map[string]string {
 	}
 	return columns
 }()
+
+// legionWorkingColumns are the columns of the phases a worker works in. An issue in one of them
+// has started its work, so the Queue never holds it, even where the daemon's waiting line names
+// it while it waits for a slot to come back.
+var legionWorkingColumns = map[string]bool{
+	legionColumnPlanning:     true,
+	legionColumnImplementing: true,
+	legionColumnTesting:      true,
+	legionColumnReviewing:    true,
+	legionColumnAccepting:    true,
+	legionColumnMerging:      true,
+}
+
+// legionBoardQueues is whether an issue the daemon's waiting line or a blocker link names is on
+// the Queue column: one that holds no slot and is in no working phase, or one whose phase no
+// column holds. A slot holder in `admitted` is a root whose architect runs at the design gate,
+// and an issue in a working phase keeps that phase while it waits for a slot.
+func legionBoardQueues(issue *legionBoardIssue) bool {
+	column, named := legionPhaseColumns[issue.phase]
+	return !named || (issue.slot == nil && !legionWorkingColumns[column])
+}
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
 // Legion daemon gets, whichever route or live view asked (getLegionBoard,
@@ -162,7 +186,10 @@ type legionBoardCard struct {
 	// holding its own slot, and a tree whose root holds none.
 	TreeSlot *int `json:"tree_slot"`
 	// SlotSince is when the issue was admitted to its own slot; null with no slot of its own.
-	SlotSince     *time.Time       `json:"slot_since"`
+	SlotSince *time.Time `json:"slot_since"`
+	// WaitingPlace is the issue's place in the daemon's waiting line, from 1; null for an issue
+	// the line does not name.
+	WaitingPlace  *int             `json:"waiting_place"`
 	Roles         []string         `json:"roles"`
 	ChecksVerdict *string          `json:"checks_verdict"`
 	BlockedBy     []string         `json:"blocked_by"`
@@ -559,7 +586,8 @@ func (c *legionBoardCards) nearestCard(key string) string {
 // A card's column is the first of these that holds: the daemon's waiting line, in its own order,
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
 // first, then follows Dispatch's rank); the issues a blocker link holds, after them in the Queue
-// column; and otherwise the column its phase falls in. An issue the daemon reports in `admitted`
+// column — of both lists only the issues that have not started work (legionBoardQueues); and
+// otherwise the column its phase falls in. An issue the daemon reports in `admitted`
 // that holds no slot and that neither list names is a child its tree has not started: it is on no
 // card, and the nearest card above it in its tree counts it. Where no issue above it carries a
 // card — its tree climbs through issues the daemon reports nothing of, or through issues whose
@@ -580,19 +608,25 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 
 	// The queue: the daemon's waiting line in its own order, then the issues a blocker link holds
-	// that the line does not already name.
+	// that the line does not already name, of the issues that have not started work
+	// (legionBoardQueues). Each issue the line names keeps its place in it, on whichever column
+	// its card is.
 	queued := make([]string, 0, len(waiting)+len(blockers))
 	seen := map[string]bool{}
+	places := map[string]int{}
 	for _, key := range waiting {
 		if p.issues[key] == nil || seen[key] {
 			continue
 		}
 		seen[key] = true
-		queued = append(queued, key)
+		places[key] = len(places) + 1
+		if legionBoardQueues(p.issues[key]) {
+			queued = append(queued, key)
+		}
 	}
 	blocked := make([]string, 0, len(blockers))
 	for key := range blockers {
-		if p.issues[key] != nil && !seen[key] {
+		if p.issues[key] != nil && !seen[key] && legionBoardQueues(p.issues[key]) {
 			blocked = append(blocked, key)
 		}
 	}
@@ -640,6 +674,13 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 	for _, key := range queued {
 		cards[legionColumnQueue] = append(cards[legionColumnQueue], p.card(p.issues[key], blockers[key], uncarded[key]))
+	}
+	for _, made := range cards {
+		for index := range made {
+			if place, named := places[made[index].Key]; named {
+				made[index].WaitingPlace = &place
+			}
+		}
 	}
 	// A root's count is known only once every issue has been placed, so the cards already made
 	// take theirs now.

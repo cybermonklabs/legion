@@ -273,6 +273,61 @@ func TestTheMergingColumnHoldsEveryPhaseTheMergerWorks(t *testing.T) {
 	}
 }
 
+// TestTheQueueHoldsOnlyTheIssuesThatHaveNotStarted: a root in `admitted` that holds a slot is
+// at its design gate, so it is a Design card even where a blocker link names it; an issue in a
+// working phase that the waiting line names keeps its phase's column and its place in the line;
+// only the issues of either list with no slot and no working phase are on the Queue column.
+func TestTheQueueHoldsOnlyTheIssuesThatHaveNotStarted(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	for _, issue := range []struct {
+		number      int
+		rank, phase string
+	}{
+		{1, "a", "implementing"}, // waits for a slot to come back, first in the line
+		{2, "b", "admitted"},     // waits for its first slot
+		{3, "c", "admitted"},     // holds a slot and a blocker link names it
+		{4, "d", "admitted"},     // a blocker link holds it before it starts
+	} {
+		key := seedLegionIssue(t, database, "INFRA", issue.number, "An issue", issue.rank, nil, "")
+		seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+issue.phase+`"`, now.Add(-3*time.Hour))
+	}
+	seedLegionObservation(t, database, "INFRA", "INFRA-3", legion.FieldSlot, `5`, now.Add(-2*time.Hour))
+	seedLegionObservation(t, database, "INFRA", legion.AdmissionKey, legion.FieldAdmission, `{
+		"cap": 4,
+		"active": ["INFRA-3"],
+		"waiting": ["INFRA-1", "INFRA-2"],
+		"blocked": [{"issue": "INFRA-3", "blockedBy": ["INFRA-9"]}, {"issue": "INFRA-4", "blockedBy": ["INFRA-9"]}]
+	}`, now.Add(-time.Hour))
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
+
+	board := legionBoardOf(t, handler, "INFRA")
+	for id, want := range map[string][]string{
+		legionColumnQueue:        {"INFRA-2", "INFRA-4"},
+		legionColumnDesign:       {"INFRA-3"},
+		legionColumnImplementing: {"INFRA-1"},
+	} {
+		if got := legionColumnKeys(t, board, id); !slices.Equal(got, want) {
+			t.Errorf("the %s column holds %v, want %v", id, got, want)
+		}
+	}
+	implementing := legionCard(t, board, "INFRA-1")
+	if implementing.WaitingPlace == nil || *implementing.WaitingPlace != 1 {
+		t.Errorf("the implementing issue's place in the line = %v, want 1", implementing.WaitingPlace)
+	}
+	if implementing.PhaseSince == nil || !implementing.PhaseSince.Before(now.Add(-2*time.Hour)) {
+		t.Errorf("the implementing issue's phase began %v, want when it entered implementing", implementing.PhaseSince)
+	}
+	if queued := legionCard(t, board, "INFRA-2"); queued.WaitingPlace == nil || *queued.WaitingPlace != 2 {
+		t.Errorf("the queued root's place in the line = %v, want 2", queued.WaitingPlace)
+	}
+	if design := legionCard(t, board, "INFRA-3"); design.WaitingPlace != nil || !slices.Equal(design.BlockedBy, []string{"INFRA-9"}) {
+		t.Errorf("the design root's card = %+v, want no place in the line and its blocker named", design)
+	}
+}
+
 // TestTheLegionBoardQueuesByRankUntilADaemonRecordsItsWaitingLine: before any read recorded an
 // admission block — every read a daemon before this release answered — the Queue column is the
 // roots waiting for a slot in Dispatch's rank order, which is the order the daemon's own line

@@ -20457,6 +20457,12 @@
                 "type": "null"
               }
             ]
+          },
+          "waiting_place": {
+            "type": [
+              "null",
+              "integer"
+            ]
           }
         },
         "required": [
@@ -20468,6 +20474,7 @@
           "slot",
           "tree_slot",
           "slot_since",
+          "waiting_place",
           "roles",
           "checks_verdict",
           "blocked_by",

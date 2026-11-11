@@ -18,6 +18,7 @@ function card(overrides: Partial<LegionBoardCard>): LegionBoardCard {
     tree: "ACME-1",
     tree_slot: null,
     slot_since: null,
+    waiting_place: null,
     waiting_on: null,
     ...overrides,
   };
@@ -27,6 +28,8 @@ test("a card's slot is its own, its tree root's for a child, or none", () => {
   expect(legionSlotText(card({ key: "ACME-1", slot: 3, tree: "ACME-1" }))).toBe("slot 3");
   expect(legionSlotText(card({ tree_slot: 3 }))).toBe("slot 3 · via ACME-1");
   expect(legionSlotText(card({}))).toBe("no slot");
+  // An issue in a working phase that the waiting line names waits for a slot to come back.
+  expect(legionSlotText(card({ waiting_place: 1 }))).toBe("waiting for a slot, #1 in line");
 });
 
 test("no role in a turn reads as between turns", () => {

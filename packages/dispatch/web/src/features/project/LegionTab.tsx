@@ -297,6 +297,19 @@ function WaitingLine({
   const rows = useMemo((): WaitingRow[] => {
     const queue = board.columns.find((column) => column.id === "queue")?.cards ?? [];
     const awaiting = board.columns.find((column) => column.id === "awaiting_person")?.cards ?? [];
+    // The daemon's line by its own places: the Queue's cards and the issues in a working phase
+    // that wait for a slot, which keep their phase's column; then the cards a blocker link alone
+    // holds, in the Queue's order.
+    const line = [
+      ...board.columns
+        .flatMap((column) => column.cards)
+        .filter((card) => card.waiting_place !== null)
+        .sort((a, b) => (a.waiting_place ?? 0) - (b.waiting_place ?? 0)),
+      ...queue.filter((card) => card.waiting_place === null),
+    ];
+    const started = new Set(
+      board.columns.filter((column) => column.id !== "queue").flatMap((column) => column.cards)
+    );
     // A wait on a person counts from when the person was asked, else from the phase entry.
     const row = (card: LegionBoardCard, place: number | null): WaitingRow => {
       const onPerson =
@@ -308,20 +321,23 @@ function WaitingLine({
         why:
           place !== null && card.blocked_by.length > 0
             ? `held by ${card.blocked_by.join(", ")}`
-            : onPerson
-              ? "awaiting a person"
-              : "ready",
+            : place !== null && started.has(card) && card.phase !== "awaiting_person"
+              ? "waiting for a slot"
+              : onPerson
+                ? "awaiting a person"
+                : "ready",
         since: (onPerson ? card.waiting_on?.since : null) ?? card.phase_since,
       };
     };
     return [
-      ...awaiting.map((card) => row(card, null)),
-      ...queue.map((card, index) => row(card, index + 1)),
+      ...awaiting.filter((card) => card.waiting_place === null).map((card) => row(card, null)),
+      ...line.map((card, index) => row(card, index + 1)),
     ];
   }, [board]);
   const ready = rows.filter((row) => row.why === "ready").length;
   const blocked = rows.filter((row) => row.why.startsWith("held by")).length;
   const awaiting = rows.filter((row) => row.why === "awaiting a person").length;
+  const slotless = rows.filter((row) => row.why === "waiting for a slot").length;
   const now = Date.now();
   return (
     <section aria-label="Waiting line" className={CARD} data-legion-waiting-line>
@@ -330,8 +346,9 @@ function WaitingLine({
         title="Waiting line"
       />
       <p className={`text-sm tabular-nums ${textSecondaryOnCanvas}`} data-legion-waiting-summary>
-        {rows.length} issues · {ready} ready · {blocked} held by a dependency · {awaiting} awaiting
-        a person
+        {rows.length} issues · {ready} ready ·{" "}
+        {slotless > 0 ? `${slotless} in a working phase · ` : ""}
+        {blocked} held by a dependency · {awaiting} awaiting a person
       </p>
       <IssueGrid<WaitingRow>
         columns={[
@@ -351,7 +368,9 @@ function WaitingLine({
                   title="Not in the queue: waits for a person"
                 />
               ) : (
-                <span className="tabular-nums">{row.place}</span>
+                <span className="tabular-nums" data-legion-place>
+                  {row.place}
+                </span>
               ),
             filter: false,
             size: 64,

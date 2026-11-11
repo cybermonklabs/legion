@@ -318,6 +318,7 @@ function card(key: string, phase: string): LegionBoardCard {
     slot: null,
     tree_slot: null,
     slot_since: null,
+    waiting_place: null,
     roles: [],
     checks_verdict: null,
     blocked_by: [],

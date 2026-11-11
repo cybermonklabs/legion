@@ -58,6 +58,7 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
     tree: key,
     tree_slot: null,
     slot_since: null,
+    waiting_place: null,
     waiting_on: null,
     ...overrides,
   };
@@ -74,6 +75,8 @@ const BOARD: LegionBoardResponse = {
         ? [
             card("ACME-1", { slot: 0, roles: ["implementer"], checks_verdict: "green" }),
             card("ACME-21", { tree: "ACME-2" }),
+            // In implementing with no slot, first in the daemon's waiting line.
+            card("ACME-8", { waiting_place: 1, phase_since: "2026-11-09T12:00:00Z" }),
           ]
         : column.id === "accepting"
           ? [
@@ -90,7 +93,7 @@ const BOARD: LegionBoardResponse = {
             ? [card("ACME-3", { phase: "awaiting_merge", slot: 2, checks_verdict: "red" })]
             : column.id === "queue"
               ? [
-                  card("ACME-4", { phase: "admitted" }),
+                  card("ACME-4", { phase: "admitted", waiting_place: 2 }),
                   card("ACME-5", { phase: "admitted", blocked_by: ["ACME-1"] }),
                 ]
               : column.id === "awaiting_person"
@@ -295,8 +298,19 @@ test("the waiting line keeps the daemon's order, says why each root waits and ho
   expect(row("Waiting line", "ACME-5")?.textContent).toContain("held by ACME-1");
   expect(row("Waiting line", "ACME-4")?.textContent).toContain("ready");
   expect(row("Waiting line", "ACME-4")?.querySelector("[data-legion-waited]")).not.toBeNull();
+  // An issue in implementing that waits for a slot keeps its phase, and stands in the line at
+  // its place, its wait counted from when it entered implementing.
+  const back = row("Waiting line", "ACME-8");
+  expect(back?.textContent).toContain("waiting for a slot");
+  expect(back?.querySelector('[data-legion-waited="ACME-8"]')?.getAttribute("title")).toBe(
+    "2026-11-09T12:00:00Z"
+  );
+  const places = ["ACME-8", "ACME-4", "ACME-5"].map(
+    (key) => row("Waiting line", key)?.querySelector("[data-legion-place]")?.textContent
+  );
+  expect(places).toEqual(["1", "2", "3"]);
   expect(document.querySelector("[data-legion-waiting-summary]")?.textContent).toBe(
-    "3 issues · 1 ready · 1 held by a dependency · 1 awaiting a person"
+    "4 issues · 1 ready · 1 in a working phase · 1 held by a dependency · 1 awaiting a person"
   );
   // A root awaiting a person has no place in the queue, and its wait counts from the ask.
   const awaiting = row("Waiting line", "ACME-7");

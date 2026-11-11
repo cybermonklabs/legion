@@ -1892,6 +1892,9 @@ export interface LegionBoardCard {
   readonly tree_slot: number | null;
   /** When the issue was admitted to its own slot; null with no slot of its own. */
   readonly slot_since: string | null;
+  /** The issue's place in the daemon's waiting line, from 1; null where the line does not name
+   *  it. An issue in a working phase that waits for a slot keeps its phase's column and has one. */
+  readonly waiting_place: number | null;
   readonly roles: readonly string[];
   readonly checks_verdict: string | null;
   readonly blocked_by: readonly string[];
