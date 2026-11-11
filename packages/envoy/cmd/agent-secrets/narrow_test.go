@@ -97,7 +97,9 @@ func newNarrowBroker(t *testing.T, values map[string]string) *narrowBroker {
 			writeJSON(w, answer)
 			return
 		}
-		name := strings.ToUpper(strings.TrimPrefix(r.PathValue("id"), "grant-"))
+		// The one name this half answers for, as the grant holds it: a fake that read the name
+		// out of its own grant id would make that id's shape a contract of the fake's.
+		name := held[0]
 		answer := map[string]any{"values": map[string]string{name: "owner-wide"}, "expires_at": nil}
 		switch {
 		case sent.GitHubApp == nil || name == "OLD_APP":

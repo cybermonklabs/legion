@@ -73,43 +73,47 @@ func narrowedAsAsked(asked, applied *GitHubNarrowing) error {
 // mints, {"installations":{"<account>":{"installation_id":…,"token":…,"expires_at":…}}}, one entry
 // per installation the release covers (internal/broker/secrets, githubMintedInstallations). It
 // answers each account's own token, keyed by that account, and ok only for that object: the
-// document holds the installations field and nothing else, every key is a GitHub login by the
-// broker's own parser (policy.ParseGitHubLogin), and every entry carries all three fields of a
-// minted installation, each of its own type. The broker keys each installation by the account
-// GitHub answered with, so a document whose key is no login is no release of the broker's. The
-// daemon's token_command reads a release the same way
-// (packages/daemon/internal/appauth/tokencommand.go, loginPattern). Every other value — a
-// password, a JSON document of another shape — answers ok false and keeps its own value, so
-// --github-token reads a release and never guesses at one.
+// document carries an installations field that is a map, every key of it is a GitHub login by
+// the broker's own parser (policy.ParseGitHubLogin), and every entry carries all three fields of
+// a minted installation, each of its own type. The broker keys each installation by the account
+// GitHub answered with, so a document whose key is no login is no release of the broker's. Every
+// other value — a password, a JSON document of another shape — answers ok false and keeps its
+// own value, so --github-token reads a release and never guesses at one.
+//
+// A field beside installations is read over, as every unknown field of an entry is. The daemon's
+// token_command reads the same release that way (packages/daemon/internal/appauth/tokencommand.go,
+// parseRelease), and the broker and this client roll out one without the other: a field a later
+// broker adds to a release must not make every --github-token run read the release as no release
+// at all.
 //
 // It reads no expiry and no installation id beyond their shape: the broker refuses an expired
 // mint, and the flag chooses what the child is handed, not how long it works for.
 func githubTokensOf(value string) (tokens map[string]string, ok bool) {
-	var document map[string]json.RawMessage
-	if json.Unmarshal([]byte(value), &document) != nil || len(document) != 1 || document["installations"] == nil {
+	// The installation id is a pointer, which is what tells an entry that carries no id from one
+	// whose id is 0, and what a JSON null leaves nil. The token and the expiry are plain strings,
+	// since a missing field, a null and an empty one are all no minted installation and are
+	// refused together below, as parseRelease refuses them. The broker writes the installation id
+	// as a number, so a JSON string that holds one, such as "8", fails this decode as any other
+	// wrong type does.
+	var release struct {
+		Installations map[string]struct {
+			InstallationID *int64 `json:"installation_id"`
+			Token          string `json:"token"`
+			ExpiresAt      string `json:"expires_at"`
+		} `json:"installations"`
+	}
+	if json.Unmarshal([]byte(value), &release) != nil || release.Installations == nil {
 		return nil, false
 	}
-	// Each field is a pointer, so that a missing one is told from an empty one, and so that a
-	// JSON null leaves it nil: an entry short of a field is no minted installation. The broker
-	// writes the installation id as a number, so a JSON string that holds one, such as "8",
-	// fails this decode as any other wrong type does.
-	var installations map[string]struct {
-		InstallationID *int64  `json:"installation_id"`
-		Token          *string `json:"token"`
-		ExpiresAt      *string `json:"expires_at"`
-	}
-	if json.Unmarshal(document["installations"], &installations) != nil || installations == nil {
-		return nil, false
-	}
-	tokens = make(map[string]string, len(installations))
-	for account, installation := range installations {
+	tokens = make(map[string]string, len(release.Installations))
+	for account, installation := range release.Installations {
 		if _, err := policy.ParseGitHubLogin(account); err != nil || installation.InstallationID == nil {
 			return nil, false
 		}
-		if installation.Token == nil || *installation.Token == "" || installation.ExpiresAt == nil || *installation.ExpiresAt == "" {
+		if installation.Token == "" || installation.ExpiresAt == "" {
 			return nil, false
 		}
-		tokens[account] = *installation.Token
+		tokens[account] = installation.Token
 	}
 	return tokens, true
 }

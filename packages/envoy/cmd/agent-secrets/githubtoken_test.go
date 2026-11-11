@@ -118,9 +118,12 @@ func TestAGrantWithNoGitHubAppReleaseRunsNothing(t *testing.T) {
 }
 
 // TestOnlyAGitHubAppReleaseIsReadAsOne: githubTokensOf reads the object the broker mints and
-// nothing else. A document of another shape — another field beside installations, an entry short
-// of a field, a field of another type, an account that is no GitHub login — is no release, so its
-// value is handed over as it is rather than read for a token it does not hold.
+// nothing else. A document of another shape — no installations field, an entry short of a field,
+// a field of another type, an account that is no GitHub login — is no release, so its value is
+// handed over as it is rather than read for a token it does not hold. A release that carries a
+// field beside the ones read, at the top or in an entry, is still a release, as it is to the
+// daemon's own reader (packages/daemon/internal/appauth/tokencommand.go, parseRelease): the
+// broker may add one, and it rolls out without this client.
 func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 	const entry = `"ada":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}`
 	for _, tc := range []struct {
@@ -135,7 +138,8 @@ func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 		{"a stored password", githubTokenReleases["PLAIN"], nil, false},
 		{"a token on its own", "ghs_one_installation", nil, false},
 		{"an empty value", "", nil, false},
-		{"another field beside installations", `{"installations":{` + entry + `},"expires_at":"2100-01-01T00:00:00Z"}`, nil, false},
+		{"a field beside installations, which a later broker may add", `{"installations":{` + entry + `},"expires_at":"2100-01-01T00:00:00Z"}`, map[string]string{"ada": "ghs_one_installation"}, true},
+		{"a field beside the three of an entry", `{"installations":{"ada":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z","repository_selection":"all"}}}`, map[string]string{"ada": "ghs_one_installation"}, true},
 		{"no installations field", `{"tokens":{` + entry + `}}`, nil, false},
 		{"a null installations field", `{"installations":null}`, nil, false},
 		{"an array of releases", `[{"installations":{` + entry + `}}]`, nil, false},
