@@ -54,6 +54,19 @@ func (kind ItemKind) tables() (itemTables, error) {
 // body an edit replaced is kept in post_body_history, which serves it to the history read.
 func (tables itemTables) revisions() bool { return tables.texts != "" }
 
+// ItemTable is where the items of this kind are stored: the table holding the items themselves
+// ("comments"), and the column naming one of them, which every table keyed by an item carries
+// ("comment_id"). It is the one map of a kind to its storage, which a caller outside this
+// package reads rather than restating (api's postHistoryOwner, whose post_body_history is keyed
+// by this column).
+func (kind ItemKind) ItemTable() (items, item string, err error) {
+	tables, err := kind.tables()
+	if err != nil {
+		return "", "", err
+	}
+	return tables.items, tables.item, nil
+}
+
 // BlockKind is the storage kind of a block of an item of this kind, in graph_edges and refs:
 // comment_block, message_block or ask_block. The API names every block node kind block; the
 // storage kind keeps a build that predates item blocks from counting or resolving their rows
@@ -222,6 +235,57 @@ func IndexItem(
 			return itemBlockPairs(next, ids, located)
 		},
 	})
+}
+
+// TombstoneItem takes the body of comment or message itemID out of every table of its blocks,
+// in the caller's transaction, for the delete that cleared the item's own body column at `at`
+// (api's deleteComment and deleteMessage, the only callers). previous is the body the delete
+// cleared; it returns the reference changes that delete's event counts.
+//
+// The three writes are the three copies of the body the cleared column does not carry with it:
+//
+//   - the block index, re-indexed from the empty body, which splits into no block: each block's
+//     position is nulled, removed_at is stamped, a null text is written at the new revision for
+//     a kind that records one, each block mention goes, and every embedding window of the item
+//     is dropped (ReplaceCountedItemEdit, indexItemBlocks).
+//   - each block's stored excerpt, which a removal keeps and which is what a reply read serves
+//     as the text of the block it answers (ReplyBlocks), so without this clear a reply still
+//     prints the deleted text.
+//   - the text each revision recorded of a block, for a kind that records them, which a pinned
+//     block reference serves the latest of at or before its revision (ItemBlockAt) and which
+//     the null text the re-index wrote at this revision does not reach.
+//
+// The last two belong to the delete alone: an ordinary edit keeps the excerpt of a block it
+// removed, and the texts it recorded are what a pin to an earlier revision of an item that
+// stands reads.
+func TombstoneItem(
+	ctx context.Context,
+	tx pgx.Tx,
+	kind ItemKind,
+	itemID, previous, serverURL string,
+	at time.Time,
+) (model.ReferenceChanges, error) {
+	tables, err := kind.tables()
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	changes, err := ReplaceCountedItemEdit(ctx, tx, kind, itemID, previous, "", serverURL, at, nil)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		update `+tables.blocks+` set excerpt = '' where `+tables.item+` = $1::uuid and excerpt <> ''
+	`, itemID); err != nil {
+		return model.ReferenceChanges{}, fmt.Errorf("clear the stored excerpts of %s %s: %w", kind, itemID, err)
+	}
+	if tables.revisions() {
+		if _, err := tx.Exec(ctx, `
+			update `+tables.texts+` set text = null where `+tables.item+` = $1::uuid and text is not null
+		`, itemID); err != nil {
+			return model.ReferenceChanges{}, fmt.Errorf("clear the recorded block texts of %s %s: %w", kind, itemID, err)
+		}
+	}
+	return changes, nil
 }
 
 // itemBlockSource is one reading of an item's blocks, which indexItemBlocks writes: the blocks in

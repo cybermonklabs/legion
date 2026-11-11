@@ -787,3 +787,38 @@ test("a deleted comment reads as deleted where its body was, and its reply keeps
     view.unmount();
   }
 });
+
+// A deleted post takes no new text: the server refuses an edit of one and a reply to one (409),
+// so the card offers neither where the post is gone, and both where it stands.
+test("a deleted comment offers no Edit and no reply, and its live reply keeps Edit", () => {
+  const deleted = {
+    deleted_at: "2026-09-10T00:05:00Z",
+    deleted_by: { id: "alice", kind: "user" } as const,
+  };
+
+  const deletedRoot = renderCard(
+    thread({ root: { comment: comment("root-1", "", root.created_at, deleted), kind: "comment" } })
+  );
+  try {
+    // Only the reply below it, which alice wrote and nobody deleted, is hers to edit.
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+  } finally {
+    deletedRoot.unmount();
+  }
+
+  const deletedReply = renderCard(
+    thread({
+      replies: [
+        comment("reply-1", "", reply.created_at, { ...deleted, anchor: null, reply_to: root.id }),
+      ],
+    })
+  );
+  try {
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+    // The root stands, so the thread still takes a reply.
+    expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
+  } finally {
+    deletedReply.unmount();
+  }
+});

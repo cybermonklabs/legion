@@ -694,10 +694,10 @@ func (s *server) readMyReplyRows(
 		// The thread's root post and the reply the row shows each carry the mark of a delete, so
 		// a row whose text a delete cleared says that the post is deleted and not an empty line.
 		var err error
-		if row.DeletedAt, row.DeletedBy, err = deletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
+		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
 			return nil, err
 		}
-		if row.Reply.DeletedAt, row.Reply.DeletedBy, err = deletedPostMark(replyDeletedAt, replyDeletedBy); err != nil {
+		if row.Reply.DeletedAt, row.Reply.DeletedBy, err = model.DeletedPostMark(replyDeletedAt, replyDeletedBy); err != nil {
 			return nil, err
 		}
 		row.Reply.Kind = "reply"
@@ -735,24 +735,6 @@ func (s *server) readMyReplyRows(
 		return nil, fmt.Errorf("list my replies: %w", err)
 	}
 	return read, nil
-}
-
-// deletedPostMark reads a post's deleted_at and deleted_by columns into the mark a read that
-// gives one line of the post carries (model.MyReplyRow, model.MyReplyReply): both are nil for a
-// post that stands, and an author that deleted it is read as the actor it was stored as.
-func deletedPostMark(at *time.Time, by []byte) (*time.Time, *model.Actor, error) {
-	if at == nil {
-		return nil, nil, nil
-	}
-	deleted := at.UTC()
-	if by == nil {
-		return &deleted, nil, nil
-	}
-	var actor model.Actor
-	if err := json.Unmarshal(by, &actor); err != nil {
-		return nil, nil, fmt.Errorf("decode the actor that deleted a post: %w", err)
-	}
-	return &deleted, &actor, nil
 }
 
 // threadReadInput is the body of PUT /api/v1/me/threads/{id}/read.

@@ -1415,9 +1415,16 @@ export class DispatchClient {
   /** `GET /api/v1/messages/{id}`: the conversation a message belongs to, by any message id in
    *  it - the root and every reply. It takes no issue, so it reads a human's direct message to
    *  a session and the replies to it, which belong to none. It reads as `session`; which
-   *  threads a session may read is the route's rule (`GET /api/v1` describes it). */
-  async getMessageThread(id: string, session: string): Promise<MessageRead> {
-    return this.#json("GET", ["api", "v1", "messages", id], undefined, { session });
+   *  threads a session may read is the route's rule (`GET /api/v1` describes it). A caller with
+   *  no session of its own names none, as `messageHistory` does: a thread on an issue follows
+   *  the issue's rule, and a direct one is then refused (400 SESSION_REQUIRED). */
+  async getMessageThread(id: string, session?: string): Promise<MessageRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "messages", id],
+      undefined,
+      session === undefined ? undefined : { session }
+    );
   }
 
   /** `PATCH /api/v1/messages/{id}`: the author replaces the body of its own issue message whole.

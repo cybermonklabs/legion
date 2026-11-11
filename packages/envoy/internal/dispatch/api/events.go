@@ -307,10 +307,12 @@ var messageBodyEventKinds = map[string]bool{
 }
 
 // deletedPost is the mark a post's author left on it: when it was deleted and by whom
-// (comments.deleted_at, messages.deleted_at).
+// (comments.deleted_at, messages.deleted_at), as model.DeletedPostMark reads every other read's
+// copy of it. by is nil where the row records no actor, which is the mark an event payload then
+// carries as a null deleted_by.
 type deletedPost struct {
-	at time.Time
-	by model.Actor
+	at *time.Time
+	by *model.Actor
 }
 
 // deletedPostKey names one post an event page holds: the table its id is in, and the id. Each
@@ -337,7 +339,11 @@ type deletedPostKey struct {
 // are marked here.
 func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Event) error {
 	commentIDs, messageIDs := []string{}, []string{}
-	postIDs := make([]string, len(events))
+	// What the first pass found for each event, which the second reads rather than finding
+	// again: the post the payload names, and the payload it was read from. A raw payload is
+	// nil for every event this read leaves alone.
+	keys := make([]deletedPostKey, len(events))
+	raws := make([]json.RawMessage, len(events))
 	// A page holds several events of one post - its creation, its edit, its delete - and the
 	// read asks after each post once.
 	asked := map[deletedPostKey]bool{}
@@ -358,8 +364,8 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 		if err := json.Unmarshal(raw, &header); err != nil || header.ID == "" {
 			continue
 		}
-		postIDs[index] = header.ID
 		key := deletedPostKey{comment: comment, id: header.ID}
+		keys[index], raws[index] = key, raw
 		if asked[key] {
 			continue
 		}
@@ -378,21 +384,17 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 		return nil
 	}
 	for index := range events {
-		if postIDs[index] == "" {
+		if raws[index] == nil {
 			continue
 		}
 		// Each kind's id names its own table, so a comment event reads the comments' marks and
-		// a message event the messages'.
-		deleted, found := marks[deletedPostKey{
-			comment: commentBodyEventKinds[events[index].Type],
-			id:      postIDs[index],
-		}]
+		// a message event the messages', which is what the key the first pass built says.
+		deleted, found := marks[keys[index]]
 		if !found {
 			continue
 		}
-		raw := events[index].Payload.(json.RawMessage)
 		payload := map[string]any{}
-		if err := json.Unmarshal(raw, &payload); err != nil {
+		if err := json.Unmarshal(raws[index], &payload); err != nil {
 			return fmt.Errorf("decode %s payload: %w", events[index].Type, err)
 		}
 		// The body, the mark that it was cut short, and a suggestion's replacement text, which
@@ -433,14 +435,15 @@ func (s *server) readDeletedPosts(ctx context.Context, commentIDs, messageIDs []
 	defer rows.Close()
 	for rows.Next() {
 		var key deletedPostKey
-		var at time.Time
+		var at *time.Time
 		var by []byte
 		if err := rows.Scan(&key.comment, &key.id, &at, &by); err != nil {
 			return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
 		}
-		mark := deletedPost{at: at.UTC()}
-		if err := json.Unmarshal(by, &mark.by); err != nil {
-			return nil, fmt.Errorf("decode the actor that deleted post %s: %w", key.id, err)
+		var mark deletedPost
+		var err error
+		if mark.at, mark.by, err = model.DeletedPostMark(at, by); err != nil {
+			return nil, fmt.Errorf("post %s: %w", key.id, err)
 		}
 		marks[key] = mark
 	}

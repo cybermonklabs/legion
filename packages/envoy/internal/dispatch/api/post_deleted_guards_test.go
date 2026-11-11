@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // refusedAsDeleted fails t unless the response is the one refusal a deleted post makes.
@@ -114,6 +116,138 @@ func TestEveryWriteThatAddsToADeletedPostIsRefused(t *testing.T) {
 	}
 	if replies != 0 {
 		t.Fatalf("the deleted message holds %d replies, want none: each reply was refused", replies)
+	}
+}
+
+// A session that answered a delivery and then deleted its own answer has nothing left to
+// follow up under: ?follow_up=true is refused 409 POST_DELETED, as every other reply to a
+// deleted post is. The post a follow-up hangs under is that answer and not the message the
+// attempt carried, so the route reads the answer's own mark (replyAfterAnswer,
+// message_delivery.go).
+func TestAFollowUpUnderADeletedAnswerIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A follow-up under a withdrawn answer", "before")
+	message := createIssueMessage(t, handler, issue.Key,
+		map[string]any{"body": "the message the session answers"}, "alice")
+	// The attempt the session answers is written here because an ordinary send needs a live
+	// agent listener, which this refusal has nothing to do with.
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+		values ($1, 1, 'steer', $2, 'pending')
+	`, message.ID, sessionActor()["id"]); err != nil {
+		t.Fatalf("seed the attempt the session answers: %v", err)
+	}
+
+	answered := sessionRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply?follow_up=true",
+		map[string]any{"actor": sessionActor(), "attempt": 1, "body": "the answer it withdraws"})
+	if answered.Code != http.StatusCreated {
+		t.Fatalf("the session answers the delivery: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	answer := decodeBody[replyResponse](t, answered)
+	deleteIssueMessage(t, handler, answer.ID, "")
+
+	refusedAsDeleted(t, "a follow-up under the deleted answer", sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/messages/"+message.ID+"/reply?follow_up=true",
+		map[string]any{"actor": sessionActor(), "attempt": 1, "body": "more, under the answer it withdrew"}))
+
+	var replies int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from messages where in_reply_to = $1`, answer.ID).Scan(&replies); err != nil {
+		t.Fatalf("count the replies of the deleted answer: %v", err)
+	}
+	if replies != 0 {
+		t.Fatalf("the deleted answer holds %d replies, want none: the follow-up was refused", replies)
+	}
+}
+
+// replyLockWaitWindow bounds how long the probe below waits for the reply to queue on the
+// issue's row. It is far longer than the reply's own first read and shorter than the package's
+// test timeout, so a reply that never reaches the lock is reported rather than hanging the run.
+const replyLockWaitWindow = 20 * time.Second
+
+// waitForALockWaiter blocks until a backend of this database waits on a lock it has not been
+// granted, which is the reply's transaction queuing on the issue row this test holds. The two
+// backends are this test's own: nothing else writes this database while the test runs.
+func waitForALockWaiter(t *testing.T, database *store.Store) {
+	t.Helper()
+	deadline := time.Now().Add(replyLockWaitWindow)
+	for {
+		var waiting int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from pg_locks l join pg_stat_activity a on a.pid = l.pid
+			where not l.granted and a.datname = current_database()
+		`).Scan(&waiting); err != nil {
+			t.Fatalf("read the lock waiters: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nothing waited for the issue's row within %s: the reply never reached the lock", replyLockWaitWindow)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The window the delete commits in, driven rather than reasoned about. A transaction of this
+// test's own takes the issue row exactly as lockIssue takes it, the reply reads the message -
+// standing, since nothing is committed yet - and then queues on that row; the holder marks the
+// message deleted and commits, which is the delete this route must not post behind; the reply
+// takes the lock and reads the row again under it. The delete is written here rather than sent
+// to DELETE /api/v1/messages/{id} because that route takes the same row lock, and a second
+// waiter cannot commit inside the first one's wait.
+//
+// Before the re-read (message_delivery.go's replyMessage) the deleted check read the row taken
+// before the lock, so this reply was judged on a message that still stood and posted under a
+// deleted one.
+func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheIssueRow(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A delete inside the reply's window", "before")
+	message := createIssueMessage(t, handler, issue.Key,
+		map[string]any{"body": "the message the delete withdraws"}, "alice")
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+		values ($1, 1, 'steer', $2, 'pending')
+	`, message.ID, sessionActor()["id"]); err != nil {
+		t.Fatalf("seed the attempt the session answers: %v", err)
+	}
+
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction that holds the issue's row: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	// The statement lockIssue runs (issueStatus under ownerRowLock, server.go).
+	if _, err := holder.Exec(ctx,
+		`select status, closed_at is null from issues where key = $1 for no key update`, issue.Key); err != nil {
+		t.Fatalf("hold the issue's row: %v", err)
+	}
+
+	replied := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		replied <- sessionRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply",
+			map[string]any{"actor": sessionActor(), "attempt": 1, "body": "answering a message that was withdrawn"})
+	}()
+	waitForALockWaiter(t, database)
+
+	if _, err := holder.Exec(ctx,
+		`update messages set body = '', deleted_at = now(), deleted_by = $2::jsonb where id = $1`,
+		message.ID, `{"kind":"user","id":"alice"}`); err != nil {
+		t.Fatalf("delete the message inside the reply's window: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the delete: %v", err)
+	}
+
+	refusedAsDeleted(t, "a reply the delete beat to the issue's row", <-replied)
+	var replies int
+	if err := database.Pool.QueryRow(ctx,
+		`select count(*) from messages where in_reply_to = $1`, message.ID).Scan(&replies); err != nil {
+		t.Fatalf("count the replies of the deleted message: %v", err)
+	}
+	if replies != 0 {
+		t.Fatalf("the deleted message holds %d replies, want none: the reply was refused", replies)
 	}
 }
 

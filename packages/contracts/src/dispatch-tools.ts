@@ -1126,7 +1126,10 @@ export const dispatchToolSpecs = [
       "again: each read marks it deleted and names who deleted it and when. Its replies keep " +
       "their own text and their own places, a suggestion's replacement text goes with the body, " +
       "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
-      "and search stops matching it. Dispatch keeps the body: " +
+      "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
+      "document before the body goes, so the text an insert suggestion put there goes with it. " +
+      "Every block of it loses the text each revision recorded, so a reference pinned to a block " +
+      "of the comment reads none either. Dispatch keeps the body: " +
       "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +
       "and lists no body. Correct a wording with dispatch edit-comment instead, and close an " +
       "addressed thread with dispatch resolve-comment. A comment of a closed issue is deleted " +

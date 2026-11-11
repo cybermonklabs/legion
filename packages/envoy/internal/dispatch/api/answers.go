@@ -130,7 +130,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// The reply's own mark, so a reply the caller deleted reads as deleted and not as an
 			// empty line.
-			deletedAt, deletedBy, err := deletedPostMark(replyDeletedAt, replyDeletedBy)
+			deletedAt, deletedBy, err := model.DeletedPostMark(replyDeletedAt, replyDeletedBy)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return

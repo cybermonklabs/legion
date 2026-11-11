@@ -38,16 +38,21 @@ type postHistoryRead struct {
 }
 
 // postHistoryOwner is the post_body_history column naming a post of this kind, and the table
-// the post itself is in. kind is the handler's own constant and never caller input, so a kind
-// with no history is this server's own fault rather than a refusal a caller can provoke.
+// the post itself is in, both read from refs, which owns the map of an item kind to its
+// storage (refs.ItemKind.ItemTable): post_body_history keys a post by the same column every
+// table of that post's blocks keys it by. Only a comment and a message keep a history, so an
+// ask, which is an item kind of its own, is refused here rather than there. kind is the
+// handler's own constant and never caller input, so a kind with no history is this server's
+// own fault rather than a refusal a caller can provoke.
 func postHistoryOwner(kind refs.ItemKind) (column, items string, err error) {
-	switch kind {
-	case refs.ItemComment:
-		return "comment_id", "comments", nil
-	case refs.ItemMessage:
-		return "message_id", "messages", nil
+	if kind != refs.ItemComment && kind != refs.ItemMessage {
+		return "", "", fmt.Errorf("read the body history of a %q: only a comment and a message keep one", string(kind))
 	}
-	return "", "", fmt.Errorf("read the body history of a %q: only a comment and a message keep one", string(kind))
+	items, column, err = kind.ItemTable()
+	if err != nil {
+		return "", "", err
+	}
+	return column, items, nil
 }
 
 // recordPostBodyHistory keeps the body a write of comment or message itemID is about to
@@ -111,20 +116,16 @@ func (s *server) writePostHistory(w http.ResponseWriter, r *http.Request, kind r
 // (post_body_history_comment, post_body_history_message), so the read sorts nothing, and
 // edited_at is clock_timestamp(), so two writes of one transaction order by it with the
 // identity breaking a tie within one reading.
+//
+// The post's deleted mark and its kept bodies are one statement, so both are read in one
+// snapshot: as two statements a delete that committed between them served the bodies the
+// first read found with no mark on them, which is the one answer this read must never give.
+// The post itself drives the join, so a post that is not there answers no row at all, as the
+// single read of it did (pgx.ErrNoRows, 404); the lateral is its page of kept bodies, read
+// through the same partial index under the same order and limit, and a post that kept none
+// answers one row with every history column null.
 func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string, before time.Time) (postHistoryRead, error) {
 	column, items, err := postHistoryOwner(kind)
-	if err != nil {
-		return postHistoryRead{}, err
-	}
-	read := postHistoryRead{Entries: []postHistoryEntry{}}
-	var deletedAt *time.Time
-	var deletedBy []byte
-	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select deleted_at, deleted_by from `+items+` where id = $1
-	`, id).Scan(&deletedAt, &deletedBy); err != nil {
-		return postHistoryRead{}, err
-	}
-	read.DeletedAt, read.DeletedBy, err = deletedPostMark(deletedAt, deletedBy)
 	if err != nil {
 		return postHistoryRead{}, err
 	}
@@ -133,32 +134,54 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 		cursor = &before
 	}
 	// A delete gives no part of the body on any read of the post, so the mark stands in place of
-	// every body this list would otherwise serve and the read fetches none of them.
+	// every body this list would otherwise serve and the read answers none of them.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select case when $4::boolean then '' else body end, edited_by, edited_at
-		from post_body_history
-		where `+column+` = $1 and ($2::timestamptz is null or edited_at < $2)
-		order by edited_at desc, id desc
-		limit $3
-	`, id, cursor, maxEventPage, read.DeletedAt != nil)
+		select p.deleted_at, p.deleted_by,
+		       case when p.deleted_at is null then h.body else '' end, h.edited_by, h.edited_at
+		from `+items+` p
+		left join lateral (
+			select body, edited_by, edited_at
+			from post_body_history
+			where `+column+` = p.id and ($2::timestamptz is null or edited_at < $2)
+			order by edited_at desc, id desc
+			limit $3
+		) h on true
+		where p.id = $1
+	`, id, cursor, maxEventPage)
 	if err != nil {
 		return postHistoryRead{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
 	}
 	defer rows.Close()
+	read := postHistoryRead{Entries: []postHistoryEntry{}}
+	found := false
 	for rows.Next() {
-		var entry postHistoryEntry
-		var editedBy []byte
-		if err := rows.Scan(&entry.Body, &editedBy, &entry.EditedAt); err != nil {
+		var deletedAt, editedAt *time.Time
+		var deletedBy, editedBy []byte
+		var body *string
+		if err := rows.Scan(&deletedAt, &deletedBy, &body, &editedBy, &editedAt); err != nil {
 			return postHistoryRead{}, fmt.Errorf("scan a kept body of %s %s: %w", kind, id, err)
 		}
+		if !found {
+			found = true
+			if read.DeletedAt, read.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+				return postHistoryRead{}, err
+			}
+		}
+		// The post kept no body this page holds: the left join's one row carries the mark alone.
+		if editedAt == nil {
+			continue
+		}
+		entry := postHistoryEntry{Body: *body, EditedAt: editedAt.UTC()}
 		if err := json.Unmarshal(editedBy, &entry.EditedBy); err != nil {
 			return postHistoryRead{}, fmt.Errorf("decode the actor of a kept body of %s %s: %w", kind, id, err)
 		}
-		entry.EditedAt = entry.EditedAt.UTC()
 		read.Entries = append(read.Entries, entry)
 	}
 	if err := rows.Err(); err != nil {
 		return postHistoryRead{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
+	}
+	if !found {
+		return postHistoryRead{}, pgx.ErrNoRows
 	}
 	return read, nil
 }

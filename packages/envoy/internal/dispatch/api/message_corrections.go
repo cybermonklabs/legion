@@ -78,7 +78,7 @@ func (s *server) lockedMessageForCorrection(
 		return model.Message{}, false
 	}
 	if message.DeletedAt != nil {
-		writeError(w, "POST_DELETED", http.StatusConflict, "this message is deleted")
+		s.writeHandlerError(w, deletedPostError(refs.ItemMessage))
 		return model.Message{}, false
 	}
 	return message, true
@@ -96,7 +96,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, ok := s.correctionActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -171,7 +171,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, ok := s.correctionActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -211,22 +211,12 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	message.Body = ""
 	message.DeletedAt = &deletedAt
 	message.DeletedBy = &actor
-	// The block index does not follow the cleared column. An empty body splits into no blocks,
-	// so this re-index removes each one: its position is nulled, removed_at is stamped, each
-	// block mention goes, and every embedding window of the message is dropped (refs/blocks.go).
-	referenceChanges, err := refs.ReplaceCountedItemEdit(
-		r.Context(), tx, refs.ItemMessage, message.ID, previousBody, "", s.deps.ServerURL, deletedAt, nil)
+	// The block index and each block's stored excerpt do not follow the cleared column, so the
+	// whole of the message's text is taken out of them here (refs.TombstoneItem), in this
+	// transaction. A message records no per-revision block text, so it has none to clear.
+	referenceChanges, err := refs.TombstoneItem(
+		r.Context(), tx, refs.ItemMessage, message.ID, previousBody, s.deps.ServerURL, deletedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// A removal keeps the block's stored excerpt, which is what a reply read serves as the text
-	// of the block it answers (refs.ReplyBlocks), so without this clear a reply still prints the
-	// deleted text. An ordinary edit keeps the excerpt of a block it removed; the clear belongs
-	// to the delete alone.
-	if _, err := tx.Exec(r.Context(), `
-		update message_blocks set excerpt = '' where message_id = $1 and excerpt <> ''
-	`, message.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

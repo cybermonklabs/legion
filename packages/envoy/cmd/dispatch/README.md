@@ -3420,7 +3420,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/comments/{id}` (PATCH; cookie, trusted header, or bearer)
 
-  Edit a comment body, its author alone (`403 NOT_AUTHOR`), naming itself in `actor` where the credential proves no session, as the resolve does.
+  Edit a comment body, its author alone (`403 NOT_AUTHOR`).
+  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`).
   The body it replaces is kept and `GET /api/v1/comments/{id}/history` reads it; a comment of a closed issue is edited too, and a deleted one is `409 POST_DELETED`.
   An edit that would leave the comment's margin record or its document's margin past its bound (above) and bigger is `413 CAP_EXCEEDED`.
   `blocks` (`[{id, from}]`, each block id the editor carried and where its span starts in `body`, in UTF-16 code units, in body order) with `base_revision` (the revision `.../blocks` answered) keeps each id on the new block its span starts in;
@@ -3429,9 +3430,11 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/comments/{id}` (DELETE; cookie, trusted header, or bearer)
 
-  Delete a comment, its author alone (`403 NOT_AUTHOR`), naming itself in `actor` where the credential proves no session.
+  Delete a comment, its author alone (`403 NOT_AUTHOR`).
+  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`).
   The comment keeps its row and its place in its thread, and every read of it gives `deleted_at` and `deleted_by` and no body; the body it held is kept, and `GET /api/v1/comments/{id}/history` reads the mark in its place.
-  The suggestion's replacement text goes with the body, each block is removed with its excerpt cleared, the margin mark is projected again with no text, and every mention attempt still pending is failed, `not sent: the post was deleted`.
+  A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it.
+  The suggestion's replacement text goes with the body, each block is removed with its excerpt cleared and the text every revision recorded of it cleared too (`refs.TombstoneItem`), the margin mark is projected again with no text, and every mention attempt still pending is failed, `not sent: the post was deleted`.
   A comment of a closed issue is deleted too; a second delete is `409 POST_DELETED`.
 
 - `/api/v1/comments/{id}/history?before=` (GET; cookie, trusted header, or bearer)
@@ -3485,16 +3488,18 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/messages/{id}` (PATCH; cookie, trusted header, or bearer)
 
-  Edit an issue message's body, its author alone (`403 NOT_AUTHOR`), naming itself in `actor` where the credential proves no session, as the comment edit does.
+  Edit an issue message's body, its author alone (`403 NOT_AUTHOR`).
+  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`), as the comment edit reads it.
   The body it replaces is kept and `GET /api/v1/messages/{id}/history` reads it; the block ids follow the text, since no editor carries them through the edit.
   A message of a closed issue is edited too.
   A message of a conversation with no issue is `409 NOT_AN_ISSUE_MESSAGE`, and a deleted message `409 POST_DELETED`.
 
 - `/api/v1/messages/{id}` (DELETE; cookie, trusted header, or bearer)
 
-  Delete an issue message, its author alone (`403 NOT_AUTHOR`), naming itself in `actor` where the credential proves no session.
+  Delete an issue message, its author alone (`403 NOT_AUTHOR`).
+  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`).
   The message keeps its row and its place in its thread, and every read of it gives `deleted_at` and `deleted_by` and no body; the body it held is kept, and `GET /api/v1/messages/{id}/history` reads the mark in its place.
-  Each block is removed with its excerpt cleared, and every send still pending is failed, `not sent: the post was deleted`.
+  Each block is removed with its excerpt cleared (`refs.TombstoneItem`), and every send still pending is failed, `not sent: the post was deleted`.
   A message of a closed issue is deleted too.
   A message of a conversation with no issue is `409 NOT_AN_ISSUE_MESSAGE`, and a second delete is `409 POST_DELETED`.
 

@@ -206,10 +206,10 @@ const commentThreadColumns = `c.id, c.issue_key, c.artifact_id, c.author, c.body
 func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 	var comment model.Comment
 	var author, anchor, resolvedBy, suggestion, deletedBy []byte
-	var resolvedAt, editedAt *time.Time
+	var resolvedAt, editedAt, deletedAt *time.Time
 	destinations := []any{
 		&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers, &comment.DeletedAt, &deletedBy,
+		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers, &deletedAt, &deletedBy,
 	}
 	destinations = append(destinations, extra...)
 	if err := row.Scan(destinations...); err != nil {
@@ -232,12 +232,9 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 		}
 		comment.ResolvedBy = &value
 	}
-	if len(deletedBy) > 0 {
-		var value model.Actor
-		if err := json.Unmarshal(deletedBy, &value); err != nil {
-			return model.Comment{}, fmt.Errorf("decode comment deleted_by: %w", err)
-		}
-		comment.DeletedBy = &value
+	var err error
+	if comment.DeletedAt, comment.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.Comment{}, err
 	}
 	comment.ResolvedAt = timestampPtr(resolvedAt)
 	comment.EditedAt = timestampPtr(editedAt)

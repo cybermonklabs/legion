@@ -312,9 +312,12 @@ export function ThreadCard({
       saveEdit={onEdit}
     />
   );
+  /* A deleted post takes no new text: the server refuses an edit of one (409), so its author is
+     offered none and the editor never opens on an empty body. */
   const editButton = (comment: ThreadComment) =>
     savingCommentEditId === undefined &&
     !isClosed &&
+    postDeletion(comment) === null &&
     comment.author.kind === "user" &&
     comment.author.id === viewerLogin ? (
       <button
@@ -331,26 +334,28 @@ export function ThreadCard({
      and sends there too (`closed` only hides the kinds a closed issue refuses), while Resolve,
      Reopen, Edit, Accept and Reject stay hidden; on a decided suggestion's thread, which offers
      no reply, it shows only a reply of its own still out or its refusal, and still sends
-     (`finishing`). `contents`, so the composer's own box is the one laid out. It sits next to
-     the newest message: under the root in Newest first, at the foot of the thread in Oldest
-     first. */
-  const replyComposer = expanded ? (
-    <div className="contents" hidden={hideReplyComposer}>
-      <MentionComposer
-        closed={isClosed}
-        finishing={terminalSuggestion}
-        frame={composerClassName}
-        inline
-        kind="comment"
-        mutationKey={replyMutationKey}
-        onCancelReply={onToggle}
-        onClose={onToggle}
-        onSent={() => {}}
-        owner={composerOwner(owner)}
-        replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
-      />
-    </div>
-  ) : null;
+     (`finishing`). A deleted root takes no reply either - the server refuses one (409) - so the
+     composer stays away from it. `contents`, so the composer's own box is the one laid out. It
+     sits next to the newest message: under the root in Newest first, at the foot of the thread
+     in Oldest first. */
+  const replyComposer =
+    expanded && rootDeleted === null ? (
+      <div className="contents" hidden={hideReplyComposer}>
+        <MentionComposer
+          closed={isClosed}
+          finishing={terminalSuggestion}
+          frame={composerClassName}
+          inline
+          kind="comment"
+          mutationKey={replyMutationKey}
+          onCancelReply={onToggle}
+          onClose={onToggle}
+          onSent={() => {}}
+          owner={composerOwner(owner)}
+          replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+        />
+      </div>
+    ) : null;
 
   return (
     <>

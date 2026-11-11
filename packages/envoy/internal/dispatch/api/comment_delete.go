@@ -1,16 +1,20 @@
 // comment_delete.go is DELETE /api/v1/comments/{id}: the author withdraws its own comment. The
 // row and its place in the thread stay; the body goes, and with it every copy of the body that
-// does not follow the cleared column — the block index, each block's stored excerpt, and the
-// document margin mark — each rewritten in the one transaction that clears it.
+// does not follow the cleared column — the block index, each block's stored excerpt, the text
+// each revision recorded of a block, and the document margin mark — each rewritten in the one
+// transaction that clears it. A pending suggestion's proof is in the document itself, so the
+// same transaction rejects it before the clear.
 package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -31,7 +35,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, ok := s.correctionActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -51,6 +55,31 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// A pending suggestion's mark is proof in the document that the suggestion stands, and an
+	// insert suggestion's text is in the document's own body (docs/reject.go, rejectedInsert).
+	// The margin projection below rewrites the mark record and removes neither, and the clear
+	// leaves an accept and a reject with nothing to move (409 POST_DELETED), so the delete
+	// rejects the suggestion here, as the reject arm of commentAction does. An orphaned mark is
+	// already out of the document: the delete records that on the anchor and stands, where an
+	// accept and a reject answer 409.
+	if comment.Suggestion != nil && comment.Suggestion.Accepted == nil && comment.Anchor != nil {
+		if err := s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor); err != nil {
+			if !errors.Is(err, docs.ErrAnchorOrphaned) {
+				s.writeHandlerError(w, err)
+				return
+			}
+			comment.Anchor.Orphaned = true
+			anchor, err := encodeJSON(comment.Anchor)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if _, err := tx.Exec(r.Context(), `update comments set anchor = $2 where id = $1`, comment.ID, anchor); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 	}
 	previousBody := comment.Body
 	if err := recordPostBodyHistory(r.Context(), tx, refs.ItemComment, comment.ID, previousBody, actor); err != nil {
@@ -80,23 +109,12 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	comment.Suggestion = nil
 	comment.DeletedAt = &deletedAt
 	comment.DeletedBy = &actor
-	// The block index does not follow the cleared column. An empty body splits into no blocks,
-	// so this re-index removes each one: its position is nulled, removed_at is stamped, a null
-	// block text is written at the new revision, each block mention goes, and every embedding
-	// window of the comment is dropped (refs/blocks.go).
-	referenceChanges, err := refs.ReplaceCountedItemEdit(
-		r.Context(), tx, refs.ItemComment, comment.ID, previousBody, "", s.deps.ServerURL, deletedAt, nil)
+	// The block index, each block's stored excerpt and the text each revision recorded of a
+	// block do not follow the cleared column, so the whole of the comment's text is taken out
+	// of them here (refs.TombstoneItem), in this transaction.
+	referenceChanges, err := refs.TombstoneItem(
+		r.Context(), tx, refs.ItemComment, comment.ID, previousBody, s.deps.ServerURL, deletedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// A removal keeps the block's stored excerpt, which is what a reply read serves as the text
-	// of the block it answers (refs.ReplyBlocks), so without this clear a reply still prints the
-	// deleted text. An ordinary edit keeps the excerpt of a block it removed; the clear belongs
-	// to the delete alone.
-	if _, err := tx.Exec(r.Context(), `
-		update comment_blocks set excerpt = '' where comment_id = $1 and excerpt <> ''
-	`, comment.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

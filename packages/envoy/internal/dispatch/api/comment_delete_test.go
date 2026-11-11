@@ -3,11 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -276,5 +280,125 @@ func TestDeleteCommentIsAuthorOnlyAndFinal(t *testing.T) {
 	})
 	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), `"code":"POST_DELETED"`) {
 		t.Fatalf("a second delete: status=%d body=%s, want 409 POST_DELETED", again.Code, again.Body.String())
+	}
+}
+
+// A pinned block reference serves the text the block's revision recorded (refs.ItemBlockAt), and
+// the delete's re-index writes a null text at the new revision alone, so every earlier revision
+// of the block still held the withdrawn text. The delete clears them, and a pin to any revision
+// of a deleted comment's block then reads as one the comment does not hold. The same pinned read
+// of a comment that stands is the control: it still gives its text.
+func TestAPinnedBlockReferenceToADeletedCommentGivesNoText(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Pinned blocks of a deleted comment", "before")
+	const withdrawn = "The second paragraph of the withdrawn claim."
+	const standing = "The second paragraph of the claim that stands."
+	withdrawnComment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\n" + withdrawn}, "alice")
+	standingComment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Gamma.\n\n" + standing}, "alice")
+	withdrawnRef := "dispatch://" + issue.Key + "/comment/" + withdrawnComment.ID + "#b-b2"
+	standingRef := "dispatch://" + issue.Key + "/comment/" + standingComment.ID + "#b-b2"
+	requirePinnedText := func(step, ref, text string) {
+		t.Helper()
+		read := readGraph(t, handler, url.Values{"to": {ref + "@v1"}})
+		if read.Node.Pin == nil || read.Node.Pin.Text != text {
+			t.Fatalf("%s: the pin reads %#v, want the text %q", step, read.Node.Pin, text)
+		}
+	}
+	requirePinnedText("before the delete", withdrawnRef, withdrawn)
+	requirePinnedText("the comment that stands, before the delete", standingRef, standing)
+
+	deleteThreadComment(t, handler, withdrawnComment.ID, "alice")
+
+	response := graphRequest(t, handler, url.Values{"to": {withdrawnRef + "@v1"}})
+	if response.Code != http.StatusNotFound ||
+		!strings.Contains(response.Body.String(), `no block \"b2\" in comment `+withdrawnComment.ID+" at revision 1") {
+		t.Fatalf("the pinned read of a deleted comment's block: status=%d body=%s, want 404 for a revision that holds no block",
+			response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), withdrawn) {
+		t.Fatalf("the pinned read of a deleted comment's block gives its text: %s", response.Body.String())
+	}
+	requirePinnedText("the comment that stands, after the delete", standingRef, standing)
+}
+
+// A pending suggestion is proof in the document as much as a row: its mark says the suggestion
+// stands, and an insert suggestion's text is in the document's own body. The delete rejects it,
+// so the mark goes and an insert's text goes with it; nothing else could, since an accept and a
+// reject of a deleted post answer 409 POST_DELETED and a resolve unmarks nothing. Each check
+// reads the document rather than the comment row.
+func TestDeleteCommentRejectsItsPendingSuggestion(t *testing.T) {
+	for _, test := range []struct {
+		name, quote, replaceWith, want string
+		insert                         bool
+	}{
+		{name: "a replace suggestion", quote: "quick", replaceWith: "slow", want: "The quick brown fox\n"},
+		{name: "an insert suggestion", quote: "quick ", want: "The brown fox\n", insert: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			documentService, handler, database := browserDocumentService(t)
+			issue := createInteractionIssue(t, handler, "TEST", "Delete a pending suggestion", "The quick brown fox")
+			anchor := map[string]any{"artifact": "spec", "quote": test.quote}
+			if test.insert {
+				writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
+					Kind:  docs.MarkSuggestion,
+					ID:    "m-insert",
+					Attrs: pmdoc.Attrs{"id": "m-insert", "by": "user:alice", "kind": "insert"},
+				}, test.quote)
+				anchor = map[string]any{"artifact": "spec", "mark_id": "m-insert"}
+			}
+			comment := createThreadComment(t, handler, issue.Key, map[string]any{
+				"body": "Say this instead.", "anchor": anchor,
+				"suggestion": map[string]string{"replace_with": test.replaceWith},
+			}, "alice")
+			if comment.Anchor == nil || comment.Suggestion == nil {
+				t.Fatalf("the comment was created as %#v, want an anchored suggestion", comment)
+			}
+			if _, err := documentService.VerifyMark(context.Background(), issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID); err != nil {
+				t.Fatalf("the suggestion's mark before the delete: %v, want it in the document", err)
+			}
+
+			deleteThreadComment(t, handler, comment.ID, "alice")
+
+			if _, err := documentService.VerifyMark(context.Background(), issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID); !errors.Is(err, docs.ErrAnchorMissing) {
+				t.Fatalf("the suggestion's mark after the delete = %v, want it gone from the document", err)
+			}
+			markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+			if err != nil || markdown != test.want {
+				t.Fatalf("the document after the delete = %q (%v), want %q", markdown, err, test.want)
+			}
+		})
+	}
+}
+
+// An orphaned suggestion's mark is already out of the document, so the delete has nothing to
+// reject: it records the orphaning on the anchor, as the accept and the reject arms do, and
+// stands with 200 where those two answer 409. A delete nothing can undo is what a withdrawn post
+// needs, and the orphaned mark is the one case the reject itself refuses.
+func TestDeleteCommentWithAnOrphanedSuggestionStands(t *testing.T) {
+	documentService, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Delete an orphaned suggestion", "The quick brown fox")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "Use red.", "anchor": map[string]any{"artifact": "spec", "quote": "brown"},
+		"suggestion": map[string]string{"replace_with": "red"},
+	}, "alice")
+	// A browser edit takes the marked text out of the live document, which orphans the mark;
+	// the service settles no version here (Settle is an hour), so nothing has refreshed the
+	// comment's own anchor and the row still reads as anchored, which the delete is left to
+	// find out for itself.
+	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, "The quick fox\n")
+	if before := readThreadComment(t, handler, comment.ID); before.Anchor == nil || before.Anchor.Orphaned {
+		t.Fatalf("the comment before the delete = %#v, want an anchor not yet known to be orphaned", before.Anchor)
+	}
+
+	deleted := deleteThreadComment(t, handler, comment.ID, "alice")
+	if deleted.Body != "" || deleted.DeletedAt == nil || deleted.Anchor == nil || !deleted.Anchor.Orphaned {
+		t.Fatalf("the delete answered %#v, want an empty body with the mark and an orphaned anchor", deleted)
+	}
+	stored := readThreadComment(t, handler, comment.ID)
+	if stored.Body != "" || stored.DeletedAt == nil || stored.Suggestion != nil {
+		t.Fatalf("the comment reads back as %#v, want an empty body with the mark and no suggestion", stored)
+	}
+	if stored.Anchor == nil || !stored.Anchor.Orphaned {
+		t.Fatalf("the deleted comment's anchor = %#v, want the orphaning recorded", stored.Anchor)
 	}
 }

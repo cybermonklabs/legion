@@ -237,7 +237,10 @@ type ItemBlockRevision struct {
 // it: a block of a comment as that revision of the comment records it, a part of an ask as that
 // revision of the ask's parts does, over the kind's state and texts tables, where the text at
 // revision N is the latest row with revision <= N. A revision past Current is one the item has
-// not reached; its Text is still the block's latest, which the caller does not read.
+// not reached; its Text is still the block's latest, which the caller does not read. A deleted
+// comment records no text at any revision, since the delete clears every text its rows hold
+// (api/comment_delete.go), so each revision reads as one that does not hold the block and no
+// pinned read serves the withdrawn body.
 func ItemBlockAt(ctx context.Context, q Queryer, kind ItemKind, itemID, blockID string, revision int) (ItemBlockRevision, error) {
 	tables, err := kind.tables()
 	if err != nil {

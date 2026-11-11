@@ -1260,36 +1260,6 @@ export class DispatchApiClient {
     return this.patch("/api/v1/comments/{id}", { id }, input, bounds);
   }
 
-  /** `DELETE /api/v1/comments/{id}`: its author withdraws the comment. The row and its place in
-   *  the thread stand, and every read of it then carries `deleted_at` and `deleted_by` and no
-   *  body. */
-  deleteComment(id: string, bounds: WriteBounds) {
-    return this.remove("/api/v1/comments/{id}", { id }, bounds);
-  }
-
-  /** `GET /api/v1/comments/{id}/history`: every body an edit or a delete of this comment
-   *  replaced, newest first, with the actor and the time of each. */
-  commentHistory(id: string) {
-    return this.read("/api/v1/comments/{id}/history", { id });
-  }
-
-  /** `PATCH /api/v1/messages/{id}`: its author replaces the body of an issue message. A message
-   *  of a conversation with no issue is refused. */
-  editMessage(id: string, input: Body<"/api/v1/messages/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/messages/{id}", { id }, input, bounds);
-  }
-
-  /** `DELETE /api/v1/messages/{id}`: its author withdraws an issue message, as
-   *  `deleteComment` withdraws a comment. */
-  deleteMessage(id: string, bounds: WriteBounds) {
-    return this.remove("/api/v1/messages/{id}", { id }, bounds);
-  }
-
-  /** `GET /api/v1/messages/{id}/history`: `commentHistory` for an issue message. */
-  messageHistory(id: string) {
-    return this.read("/api/v1/messages/{id}/history", { id });
-  }
-
   /** The comment's current blocks, each with its span in the stored body, and its revision: what
    *  the editor carries block ids from (`editComment`'s `blocks` and `base_revision`). */
   commentBlocks(id: string) {

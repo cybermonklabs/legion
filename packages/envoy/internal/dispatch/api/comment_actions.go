@@ -41,6 +41,47 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id 
 	return s.loadCommentForUpdate(ctx, tx, id)
 }
 
+// correctionActor is the caller of a correction: an edit or a delete, of a comment
+// (editComment, deleteComment) or of an issue message (editMessage, deleteMessage,
+// message_corrections.go). The author of a post is a session or a person, so all four read
+// both.
+//
+// The session comes first, through requireActor: the one the credential proves, or the one the
+// body names, which is how a bearer names its writer on every other write it makes, the post's
+// own create among them. A caller that names a session acts as that session, and the author
+// check compares that session with the author.
+//
+// What is left is a credential that proves no session on a call that names none either. Where
+// it holds the person scope it is a person's own - their browser's cookie, or a personal token
+// of theirs - and the caller is that person (actingPerson), the path the person half of the
+// author rule has always taken and the one the spec keeps for a personal token. Without it
+// such a token could correct nothing: bearerSessionActor would ask its body to name a session
+// (400 ACTOR_KIND), and a session is not the author of the comment its owner wrote in a
+// browser (403 NOT_AUTHOR). Every other credential that proves no session - the deployment's
+// shared token, a pod's service-account token - holds no person scope and keeps that refusal.
+// The ask reword reads the two the same way (editAsk, asks.go).
+//
+// The person's act names the agent beside them, from `?session=` (actingPerson). The body
+// names no writer at all in that arm, so actSessionFromBody would have nothing to read.
+//
+// ok is false once it has written the refusal.
+func (s *server) correctionActor(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, bool) {
+	caller, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return model.Actor{}, false
+	}
+	// The session the credential proves, and a body that names a writer at all: the two
+	// bearerSessionActor reads, in the shape it reads them, so a body naming anything but the
+	// session it acts as is answered there and not silently taken as its owner's own write.
+	provesSession := caller.Kind == "session" && caller.ID != ""
+	namesWriter := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
+	if !provesSession && !namesWriter && caller.Credential.Holds(model.ScopePerson) {
+		return s.actingPerson(w, r)
+	}
+	return s.requireActor(w, r, supplied)
+}
+
 // lockedCommentForCorrection is the prologue both corrections of a comment take, the comment
 // twin of lockedMessageForCorrection (message_corrections.go): the prologue that does not refuse
 // a closed owner - a wrong post nobody can correct after the issue closes is the defect these
@@ -69,7 +110,7 @@ func (s *server) lockedCommentForCorrection(
 		return model.Comment{}, false
 	}
 	if comment.DeletedAt != nil {
-		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
+		s.writeHandlerError(w, deletedPostError(refs.ItemComment))
 		return model.Comment{}, false
 	}
 	return comment, true
@@ -190,7 +231,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, ok := s.correctionActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -313,13 +354,6 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		s.writeHandlerError(w, err)
 		return
 	}
-	// An accept and a reject move the suggestion's replacement text into the document, and the
-	// delete cleared that text with the body, so neither has anything left to move. A resolve
-	// and a reopen of a deleted thread stand: they move no text.
-	if action != "resolve" && comment.DeletedAt != nil {
-		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
-		return
-	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -359,6 +393,14 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		comment.ResolvedBy = &actor
 		comment.ResolvedAt = timestampPtr(&resolvedAt)
 	case "accept", "reject":
+		// Both move the suggestion's replacement text into the document, and the delete cleared
+		// that text with the body, so neither has anything left to move. It is refused before
+		// the suggestion itself is read, since the delete took that too. A resolve of a deleted
+		// thread stands: it moves no text.
+		if comment.DeletedAt != nil {
+			s.writeHandlerError(w, deletedPostError(refs.ItemComment))
+			return
+		}
 		if comment.Suggestion == nil {
 			writeError(w, "INVALID_SUGGESTION", http.StatusBadRequest, "accept and reject require a suggestion")
 			return

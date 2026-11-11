@@ -285,7 +285,7 @@ func (s *server) normalizeCommentThreadTarget(
 		// comment stands whatever became of the root above it, and a reply written before the
 		// delete keeps its text and its place.
 		if parent.DeletedAt != nil {
-			return commentThreadTarget{}, errorf(http.StatusConflict, "POST_DELETED", "this comment is deleted")
+			return commentThreadTarget{}, deletedPostError(refs.ItemComment)
 		}
 		target, err := s.threadHeadOf(ctx, tx, owner, parent)
 		if err != nil || input.ReplyToBlock == nil {

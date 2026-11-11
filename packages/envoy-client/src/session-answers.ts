@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
-import { actorText } from "./actor-text";
+import { deletedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, isNoRoute } from "./dispatch-http";
@@ -81,12 +81,12 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * One item as both the per-request list and `dispatch answers` print it, in this order: the time
  * the person wrote it, the person (with the agent that wrote it for them, through
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
- * that replaced one, `edited <time>` on an edited comment, and `deleted by <actor> at <time>` on
- * a post its author withdrew, whose words the server sends empty); its `dispatch://` reference
- * and its issue or document, or that it is a direct message; the ask's question, cut to 200
- * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
- * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
- * sentences Dispatch wrote for the asking agent; then the person's words in full.
+ * that replaced one, `edited <time>` on an edited comment, and the mark every read prints for a
+ * post its author withdrew (`deletedMark`), whose words the server sends empty); its
+ * `dispatch://` reference and its issue or document, or that it is a direct message; the ask's
+ * question, cut to 200 characters, on an answer, on a decline and on a reply in an ask's thread;
+ * on an answer, `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:`
+ * with the sentences Dispatch wrote for the asking agent; then the person's words in full.
  *
  * The person's own words and Dispatch's stand on lines of their own, the label naming whose
  * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
@@ -101,11 +101,8 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
   if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
   // A deleted post gives no part of its body to any read: the server sends its text empty, and
-  // this mark stands where the words would, never an empty line.
-  if (item.deleted_at !== undefined) {
-    const by = item.deleted_by === undefined ? "its author" : actorText(item.deleted_by);
-    head.push(`deleted by ${by} at ${item.deleted_at}`);
-  }
+  // the one mark every read prints stands where the words would, never an empty line.
+  if (item.deleted_at !== undefined) head.push(deletedMark(item.deleted_at, item.deleted_by));
   const owner = item.owner === null ? undefined : ownerTitle(item.owner);
   const where =
     item.ref === null

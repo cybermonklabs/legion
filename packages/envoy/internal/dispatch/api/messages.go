@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -264,7 +265,7 @@ func (s *server) createStoredMessage(
 	// replyMessage), on the parent row this read already holds. Only the message in_reply_to
 	// named is judged, and a reply written before the delete keeps its text and its place.
 	if parent.Deleted {
-		return model.Message{}, nil, errorf(http.StatusConflict, "POST_DELETED", "this message is deleted")
+		return model.Message{}, nil, deletedPostError(refs.ItemMessage)
 	}
 	var block *namedBlock
 	if input.InReplyToBlock != nil {
@@ -966,9 +967,10 @@ const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::
 func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	var message model.Message
 	var author, deletedBy []byte
+	var deletedAt *time.Time
 	dest := append([]any{
 		&message.ID, &message.IssueKey, &author, &message.Body, &message.Target, &message.InReplyTo, &message.BroadcastID, &message.CreatedAt, &message.RepliesToBlock,
-		&message.EditedAt, &message.DeletedAt, &deletedBy,
+		&message.EditedAt, &deletedAt, &deletedBy,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return model.Message{}, err
@@ -976,12 +978,9 @@ func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	if err := json.Unmarshal(author, &message.Author); err != nil {
 		return model.Message{}, fmt.Errorf("decode message author: %w", err)
 	}
-	if len(deletedBy) > 0 {
-		var value model.Actor
-		if err := json.Unmarshal(deletedBy, &value); err != nil {
-			return model.Message{}, fmt.Errorf("decode message deleted_by: %w", err)
-		}
-		message.DeletedBy = &value
+	var err error
+	if message.DeletedAt, message.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.Message{}, err
 	}
 	message.Deliveries = []model.MessageDelivery{}
 	return message, nil

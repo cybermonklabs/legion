@@ -5837,10 +5837,11 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
-  describe("an ask or comment a ref names on an owner it is not on", () => {
+  describe("an ask, comment or message a ref names on an owner it is not on", () => {
     const commentID = "cccccccc-0000-4000-8000-000000000042";
     const askID = "aaaaaaaa-0000-4000-8000-000000000042";
-    // Both items are on OTHER-9; every ref below names them on DSP-42 by their full id.
+    const messageID = "eeeeeeee-0000-4000-8000-000000000042";
+    // Every item is on OTHER-9; every ref below names it on DSP-42 by its full id.
     const writes: string[] = [];
     const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
       const target = new URL(String(url));
@@ -5850,6 +5851,9 @@ describe("executeDispatchTool", () => {
       }
       if (target.pathname === `/api/v1/asks/${askID}`) {
         return response({ ask: { id: askID, issue_key: "OTHER-9" }, replies: [], answers: [] });
+      }
+      if (target.pathname === `/api/v1/messages/${messageID}`) {
+        return response({ message: { id: messageID, issue_key: "OTHER-9" }, replies: [] });
       }
       if (target.pathname === "/api/v1/projects/CORE/artifacts/runbook-md") {
         return response({ id: "artifact-runbook", project: "CORE", slug: "runbook-md" });
@@ -5880,6 +5884,8 @@ describe("executeDispatchTool", () => {
     const ask = `dispatch://DSP-42/ask/${askID}`;
     const offComment = `${comment} names comment ${commentID} on DSP-42, but it is on OTHER-9; name it dispatch://OTHER-9/comment/${commentID}`;
     const offAsk = `${ask} names ask ${askID} on DSP-42, but it is on OTHER-9; name it dispatch://OTHER-9/ask/${askID}`;
+    const message = `dispatch://DSP-42/message/${messageID}`;
+    const offMessage = `${message} names message ${messageID} on DSP-42, but it is on OTHER-9; name it dispatch://OTHER-9/message/${messageID}`;
 
     test("read refuses it", async () => {
       expect(await problemsOf("dispatch_read", { ref: comment })).toEqual([offComment]);
@@ -5898,6 +5904,10 @@ describe("executeDispatchTool", () => {
         await problemsOf("dispatch_resolve_ask", { ask, kind: "resolved", reason: "Done." })
       ).toEqual([offAsk]);
       expect(await problemsOf("dispatch_edit_ask", { ask, urgency: "high" })).toEqual([offAsk]);
+      expect(await problemsOf("dispatch_edit_message", { message, body: "Corrected." })).toEqual([
+        offMessage,
+      ]);
+      expect(await problemsOf("dispatch_delete_message", { message })).toEqual([offMessage]);
       expect(writes).toEqual([]);
     });
   });
@@ -13575,7 +13585,15 @@ test("edits an issue message through its reference and says Dispatch keeps the b
       message: `dispatch://DSP-42/message/${correctedMessage}`,
       body: "corrected text",
     },
-    () => messageRow({ edited_at: "2026-11-11T09:00:00Z" })
+    (pathname, method) => {
+      if (pathname !== `/api/v1/messages/${correctedMessage}`) {
+        throw new Error(`unexpected request: ${pathname}`);
+      }
+      // The read before the write answers the whole thread; the edit answers the row.
+      return method === "GET"
+        ? { message: messageRow(), replies: [] }
+        : messageRow({ edited_at: "2026-11-11T09:00:00Z" });
+    }
   );
 
   expect(result).toEqual({
@@ -13583,6 +13601,9 @@ test("edits an issue message through its reference and says Dispatch keeps the b
     details: { issue: "DSP-42", message: correctedMessage },
   });
   expect(requests).toEqual([
+    // The message named by a reference is read first, to hold it to the issue the reference
+    // names.
+    { method: "GET", pathname: `/api/v1/messages/${correctedMessage}`, body: undefined },
     {
       method: "PATCH",
       pathname: `/api/v1/messages/${correctedMessage}`,

@@ -76,7 +76,7 @@ import {
 } from "@legion/contracts";
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
-import { actorText } from "./actor-text";
+import { actorText, deletedMark } from "./actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine, commandName } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -762,21 +762,27 @@ function messageIdOf(value: string): string | undefined {
 const messageArgumentProblem =
   "message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference";
 
+/** A `dispatch://KEY/message/<id>` reference: a message lives on an issue, so its owner is one. */
+type IssueMessageRef = ParsedDispatchRef & { readonly owner: Extract<Owner, { kind: "issue" }> };
+
 /** The message a `message` argument of `dispatch_edit_message` or `dispatch_delete_message`
- *  names: the full uuid, or, inside a reference, the issue and the id prefix that
- *  `resolveMessageArgument` resolves against that issue's messages. Undefined for anything
- *  else. */
+ *  names: the id - a full uuid, or, inside a reference, the prefix `resolveMessageArgument`
+ *  resolves against the reference's issue's messages - and the reference itself, whose issue
+ *  the message is then held to. Undefined for anything else. */
 function messageArgumentId(
   value: string
-): { readonly id: string; readonly issue?: string } | undefined {
-  const full = messageIdOf(value);
-  if (full !== undefined) return { id: full };
-  if (!value.startsWith("dispatch://")) return undefined;
-  const ref = parseDispatchRef(value);
-  if (ref?.kind !== "message" || ref.owner.kind !== "issue" || !isIdPrefix(ref.id)) {
-    return undefined;
+): { readonly id: string; readonly ref?: IssueMessageRef } | undefined {
+  if (!value.startsWith("dispatch://")) {
+    const bare = normalizeUUID(value);
+    return bare === undefined ? undefined : { id: bare };
   }
-  return { id: ref.id, issue: ref.owner.issue };
+  const ref = parseDispatchRef(value);
+  if (ref?.kind !== "message") return undefined;
+  const full = normalizeUUID(ref.id);
+  const owner = ref.owner;
+  if (owner.kind !== "issue") return full === undefined ? undefined : { id: full };
+  if (full === undefined && !isIdPrefix(ref.id)) return undefined;
+  return { id: full ?? ref.id, ref: { ...ref, owner } };
 }
 
 /** A block reference to a part of an ask, or to a block of a comment or message: the item and
@@ -870,13 +876,14 @@ interface RefItem {
 }
 
 /**
- * Refuses an ask or comment a reference names under an owner it is not on. A full id is read as
- * it is, whatever owner the reference names, so the item read is held to that owner: its issue,
- * or for a project document's reference, that document (`documentId`, read only then).
+ * Refuses an ask, comment or message a reference names under an owner it is not on. A full id is
+ * read as it is, whatever owner the reference names, so the item read is held to that owner: its
+ * issue, or for a project document's reference, that document (`documentId`, read only then). A
+ * message is on an issue or on none, so only its issue is compared.
  */
 async function refuseItemOffRef(
   tool: string,
-  kind: "ask" | "comment",
+  kind: "ask" | "comment" | "message",
   ref: ParsedDispatchRef,
   refText: string,
   item: RefItem,
@@ -899,7 +906,9 @@ async function refuseItemOffRef(
   }
   const where =
     item.issue_key === null
-      ? "another document"
+      ? kind === "message"
+        ? "no issue: it is a message of a direct conversation"
+        : "another document"
       : `${item.issue_key}; name it dispatch://${item.issue_key}/${kind}/${item.id}`;
   throw new ToolInputError(tool, [
     `${refText} names ${kind} ${item.id} on ${refOwnerName(ref)}, but it is on ${where}`,
@@ -973,24 +982,42 @@ async function resolveCommentArgument(
 
 /**
  * The message a `message` argument of an edit or a delete names: the full uuid it carries, or
- * the id a reference's prefix matches among its issue's messages, replies included. The listing
- * is read only for a prefix; `argumentProblems` refused every other value.
+ * the id a reference's prefix matches among its issue's messages, replies included. A bare id is
+ * the message itself; a reference holds the message to the issue it names, as
+ * `resolveCommentArgument` holds a comment to its owner, so a full uuid under the wrong issue is
+ * refused rather than written to. `session` is the host session the thread is read as, empty or
+ * undefined for a caller with none. `argumentProblems` refused every other value.
  */
 async function resolveMessageArgument(
   tool: string,
   reference: string,
-  client: DispatchClient
+  client: DispatchClient,
+  session: string | undefined
 ): Promise<string> {
   const named = messageArgumentId(reference);
   if (named === undefined) throw new ToolInputError(tool, [messageArgumentProblem]);
-  if (named.issue === undefined) return named.id;
-  const issueKey = named.issue;
-  return resolveIdPrefix(tool, "message", named.id, issueKey, async () =>
+  const ref = named.ref;
+  if (ref === undefined) return named.id;
+  const issueKey = ref.owner.issue;
+  const id = await resolveIdPrefix(tool, "message", named.id, issueKey, async () =>
     (await client.issueMessages(issueKey)).flatMap((thread) => [
       thread.message,
       ...(thread.replies ?? []),
     ])
   );
+  // The thread the message belongs to, read by its id alone, names the issue it is really on:
+  // the listing above resolves a prefix among this issue's messages, but a full uuid names a
+  // message of any issue. A message is on an issue or on none, so no document is read for it.
+  const read = await client.getMessageThread(id, session === "" ? undefined : session);
+  await refuseItemOffRef(
+    tool,
+    "message",
+    ref,
+    reference,
+    { id, issue_key: read.message.issue_key },
+    async () => ""
+  );
+  return id;
 }
 
 /** The issue a corrected message sits on. Only a message on an issue is edited or deleted, a
@@ -3242,15 +3269,6 @@ function formatInboxSummary(
   ].join("\n");
 }
 
-/**
- * How every read names a post its author withdrew, in place of its body: who deleted it and
- * when. A deleted post gives no part of its body to any read, so this line stands wherever the
- * body would, and never an empty one.
- */
-function deletedMark(at: string, by: Actor | null | undefined): string {
-  return `Deleted by ${by == null ? "its author" : actorText(by)} at ${at}`;
-}
-
 /** A post as a read prints it: the deleted mark alone for a withdrawn post, else the body with
  *  the time of the last edit above it where the author replaced it. */
 function postBodyLines(post: {
@@ -4890,7 +4908,12 @@ export async function executeDispatchTool(
       };
     }
     case "dispatch_edit_message": {
-      const id = await resolveMessageArgument(input.tool, stringArg(args, "message"), client);
+      const id = await resolveMessageArgument(
+        input.tool,
+        stringArg(args, "message"),
+        client,
+        hostSession
+      );
       const message = await client.editMessage(id, { body: stringArg(args, "body"), actor });
       const issue = messageIssueKey(message);
       return {
@@ -4899,7 +4922,12 @@ export async function executeDispatchTool(
       };
     }
     case "dispatch_delete_message": {
-      const id = await resolveMessageArgument(input.tool, stringArg(args, "message"), client);
+      const id = await resolveMessageArgument(
+        input.tool,
+        stringArg(args, "message"),
+        client,
+        hostSession
+      );
       const message = await client.deleteMessage(id, actor);
       const issue = messageIssueKey(message);
       return {

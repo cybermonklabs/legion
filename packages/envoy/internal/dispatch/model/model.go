@@ -228,6 +228,28 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 	return nil
 }
 
+// DeletedPostMark reads a post's deleted_at and deleted_by columns into the mark every read of
+// a deleted comment or message carries - the comment and message rows themselves, the event
+// log's payloads, the Inbox's reply rows, a session's answers and the body history - so that
+// one decode stands behind all of them and no read of a deleted post can answer a mark of
+// another shape. Both are nil for a post that stands, the time is answered in UTC as every
+// other time a read answers is, and an author that deleted the post is read as the actor it
+// was stored as. A mark with no actor stored (a row an older build wrote) is the time alone.
+func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
+	if at == nil {
+		return nil, nil, nil
+	}
+	deleted := at.UTC()
+	if len(by) == 0 {
+		return &deleted, nil, nil
+	}
+	var actor Actor
+	if err := json.Unmarshal(by, &actor); err != nil {
+		return nil, nil, fmt.Errorf("decode the actor that deleted a post: %w", err)
+	}
+	return &deleted, &actor, nil
+}
+
 // AnchorInput selects document text by quote or identifies a browser-owned mark.
 type AnchorInput struct {
 	// Artifact is required: an anchor naming no document is refused (400 INVALID_ANCHOR,
