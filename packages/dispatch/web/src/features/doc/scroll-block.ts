@@ -5,10 +5,13 @@ import { refocusWhenSettled } from "./refocus-when-settled";
  * Scrolls `container` so `element` sits at its top. A container already showing it there is not
  * moved, the two rect tops being equal.
  *
- * This is the whole of the placement `scrollBlockToTop` performs, and the reading column's
- * `Next change` performs it too, for a block it has found by its mark rather than by its id.
- * That caller is deliberately not `scrollBlockToTop`: it wants this scroll alone, without the
- * re-run after the diagrams draw and without cancelling a pending one.
+ * This is the whole of the placement `scrollBlockToTop` performs, and it is what the Inbox's
+ * reading column scrolls with: its placement writes the column with this on every drawing pass
+ * the hold still allows (`features/inbox/pane-placement.ts`), and `Next change` performs it for
+ * a block found by its mark rather than by its id. Neither of them is `scrollBlockToTop`, whose
+ * one caller is the column's **Skip to the answer**, a placement the reader asked for: they
+ * want this scroll alone, without the re-run after the diagrams draw and without cancelling a
+ * pending one.
  */
 export function scrollElementToTop(element: Element, container: HTMLElement): void {
   container.scrollTop +=

@@ -80,6 +80,7 @@ test.beforeEach(async () => {
 // The approval request the reader reads down.
 // ---------------------------------------------------------------------------
 
+// SLOW(>=2s): four drives, each a committed event, a socket gap or a refocus the page must read.
 test("the approval pane keeps the place the reader scrolled to", async ({ browser }) => {
   const seed = await seedApprovalPlace();
   const alice = await asUser(browser, "alice");
@@ -347,18 +348,21 @@ async function keepsTheColumn(browser: Browser, run: QuestionRun): Promise<void>
   }
 }
 
+// SLOW(>=2s): the 3 s bound waited out, then six drives and a read that fails and recovers.
 test("the question pane leaves the column where the reader put it, under a heading", async ({
   browser,
 }) => {
   await keepsTheColumn(browser, "heading");
 });
 
+// SLOW(>=2s): the 3 s bound waited out, then six drives and a read that fails and recovers.
 test("the question pane leaves the column where the reader put it, with no heading above the block", async ({
   browser,
 }) => {
   await keepsTheColumn(browser, "plain");
 });
 
+// SLOW(>=2s): the 3 s bound waited out, then six drives, a failed read and the late reply.
 test("the question pane leaves the column where the reader put it, for an anchored thread", async ({
   browser,
 }) => {
@@ -369,6 +373,7 @@ test("the question pane leaves the column where the reader put it, for an anchor
 // Where the column opens.
 // ---------------------------------------------------------------------------
 
+// SLOW(>=2s): a long document seeded and drawn before the placement can be polled for.
 test("a question far down its document opens with its section at the top of the column", async ({
   browser,
 }) => {
@@ -395,6 +400,7 @@ test("a question far down its document opens with its section at the top of the 
   }
 });
 
+// SLOW(>=2s): that long document drawn, then placed again at the second question's section.
 test("a second question of the document the column shows opens at its own section", async ({
   browser,
 }) => {
@@ -423,6 +429,7 @@ test("a second question of the document the column shows opens at its own sectio
   }
 });
 
+// SLOW(>=2s): that long document drawn, then placed again at a question with no section.
 test("a second question with no heading above it opens at the start of the column", async ({
   browser,
 }) => {
@@ -450,6 +457,7 @@ test("a second question with no heading above it opens at the start of the colum
   }
 });
 
+// SLOW(>=2s): the 3 s bound waited out between the two threads of one drawn document.
 test("a second thread anchored to the same block opens at that block's section", async ({
   browser,
 }) => {
@@ -482,6 +490,7 @@ test("a second thread anchored to the same block opens at that block's section",
   }
 });
 
+// SLOW(>=2s): two versions seeded and the marked one drawn before the step is read.
 test("Next change moves the column to the next changed block", async ({ browser }) => {
   const seed = await seedApprovalWithMarks();
   const alice = await asUser(browser, "alice");
@@ -507,6 +516,7 @@ test("Next change moves the column to the next changed block", async ({ browser 
   }
 });
 
+// SLOW(>=2s): the first request withdrawn and the document asked about again, read live.
 test("a second approval request opens at the start of the column, with its own question in view", async ({
   browser,
 }) => {
@@ -549,6 +559,7 @@ test("a second approval request opens at the start of the column, with its own q
   }
 });
 
+// SLOW(>=2s): the diagram is held undrawn, so the row waits the placement's 3 s limit out.
 test("Skip to the answer pressed while the placement runs leaves the column at the answer", async ({
   browser,
 }) => {
@@ -578,6 +589,7 @@ test("Skip to the answer pressed while the placement runs leaves the column at t
   }
 });
 
+// SLOW(>=2s): the 3 s bound waited out before the held replies are served and read.
 test("a thread whose replies are served after the placement opens at its anchored section", async ({
   browser,
 }) => {
