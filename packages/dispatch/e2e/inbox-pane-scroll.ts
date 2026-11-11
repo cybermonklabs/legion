@@ -662,6 +662,10 @@ export function holdThreadReplies(page: Page, artifactId: string): Promise<HeldR
  *  has passed, so a row that must read the column after it waits rather than polls, and the page
  *  gets no attribute of its own for a test to read. */
 export async function waitOutPlacement(page: Page): Promise<void> {
+  // This wait measures the placement's own bound: `LIMIT_MS` is the 3 s after the first drawing
+  // pass at which the placement stops writing the column, and the 500 ms over it are the frames
+  // the last write of a placement still running at the bound would land in, so a column read
+  // after this wait is one no placement may write again.
   await page.waitForTimeout(LIMIT_MS + 500);
 }
 
