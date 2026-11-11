@@ -110,7 +110,9 @@ function CoreTable({
         renderRow={({ row, index, measure }) => (
           <tr data-index={index} data-row={row.id} ref={measure}>
             {row.getVisibleCells().map((cell) => (
-              <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+              <td className="bg-white" key={cell.id}>
+                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+              </td>
             ))}
           </tr>
         )}
@@ -294,6 +296,11 @@ test("the phone layout draws the title under the key", async () => {
   const titleRow = view.container.querySelector('[data-grid-title-row="CORE-1"]') as HTMLElement;
   expect(titleRow).toBeTruthy();
   expect(within(titleRow).getByText("First row")).toBeDefined();
+  const keyCell = view.container.querySelector('tbody tr:not([aria-hidden]) td') as HTMLElement;
+  expect(keyCell.className).not.toContain("border-b");
+  expect(titleRow.firstElementChild?.className).toContain("border-b");
+  expect(keyCell.className).toContain("bg-white");
+  expect(titleRow.firstElementChild?.className).toContain("bg-white");
 });
 
 test("groups in the caller's group order", async () => {

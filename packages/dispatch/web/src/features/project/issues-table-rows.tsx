@@ -191,7 +191,7 @@ export function IssueRow({
         const pinned = cell.column.getIsPinned() === "left";
         return (
           <td
-            className={`overflow-hidden px-2 py-2 ${continues ? "" : "border-b"} ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
+            className={`overflow-hidden px-2 py-2 ${continues ? "" : "border-b"} ${borderDefault} ${changed ? selectedCardBg : surfaceBg} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
             key={cell.id}
             style={{
               width: cell.column.getSize(),

@@ -34,7 +34,7 @@ import {
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import { InfoHint } from "../../components/InfoHint";
-import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, surfaceBg, textMutedOnCanvas } from "../../theme/classes";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { ColumnsMenu, IssueTablePager } from "./issues-table-controls";
 import { useRowKeymap } from "./issues-table-keys";
@@ -486,7 +486,7 @@ export function DataTable<Row>({
     return (
       <tr data-grid-title-row={row.id}>
         <td
-          className={`box-border border-b px-2 pb-2 ${borderDefault}`}
+          className={`box-border border-b px-2 pb-2 ${borderDefault} ${surfaceBg}`}
           colSpan={row.getVisibleCells().length}
           style={{
             maxWidth: model.narrow ? "100%" : layout.boxWidth,
