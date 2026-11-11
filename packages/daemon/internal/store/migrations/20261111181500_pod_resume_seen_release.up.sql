@@ -35,10 +35,33 @@ alter table pod_resumes add column seen_release bigint not null default 0;
 -- closes it. A resume of an issue with no release keeps the default, and the next release of that
 -- issue is what makes it stale.
 --
+-- The `p.at <= r.at` clause is a PROXY for committed order, and the two columns it compares are
+-- different clocks: pod_resumes.at of a role-message or agent-message wake is the Envoy listener's
+-- clock at the report (workflow/wake.go carries it through), while pod_releases.at is the daemon's
+-- own clock at the end of the teardown. So a wake consumed after a release committed can carry
+-- r.at < p.at with no skew at all, and the proxy misses that release both ways:
+--
+--   * too low, which is the over-reach that costs a live pod a second start row. The row's own
+--     release_id is the floor against it: the writer read that release in the take's own
+--     transaction, so it is a committed-order fact and the writer's value is never below it, and
+--     greatest() below keeps every backfilled row at or above it (seen_release >= release_id, the
+--     invariant the test asserts over every row). A floor suppresses no legitimate heal, since a
+--     release recorded after the resume has a higher id than the one the resume paired with.
+--   * too high, which costs a stale row its heal: a release whose at is at or before the resume's
+--     but which committed after it is counted, and the heal then reads nothing above it. That is
+--     the conservative direction — a resume the delivery wake or an operator still recovers —
+--     and it is the one the proxy cannot do better on.
+--
+-- One inversion the floor does not cover: a release of a pod no claim could use, committed before
+-- the wake but stamped after it, is left out of the max and is not the row's release_id either, so
+-- such a resume is stamped below the release that took its pod and its first wake closes it. That
+-- needs the listener's clock to be behind the daemon's by more than the gap between the release
+-- and the wake, and the cost is one wake of a role whose pod is coming back.
+--
 -- Only the open rows are written. A resume with a first turn or a closed_at is no wake's to heal
 -- and the heal passes over it (store's ClosePodGoneResume), so a value there would say something
 -- about a row nothing reads.
-update pod_resumes r set seen_release = coalesce(
+update pod_resumes r set seen_release = greatest(r.release_id, coalesce(
   (select max(p.id) from pod_releases p
-    where p.project = r.project and p.issue = r.issue and p.at <= r.at), 0)
+    where p.project = r.project and p.issue = r.issue and p.at <= r.at), 0))
   where r.first_turn_at is null and r.closed_at is null;

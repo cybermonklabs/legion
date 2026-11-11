@@ -533,8 +533,10 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 // rather than after a refusal: a resume of a pod still coming back was written after the newest
 // release there is, so no release stands above its own, and the row stands.
 //
-// It answers the release that made the row stale, and 0 where it closed none, so the caller can
-// say in the log that a pod went away under an open resume. Nothing else records that: the row it
+// It answers the issue's newest release where it closed a row, and 0 where it closed none, so the
+// caller can say in the log that a pod went away under an open resume. That release is the one
+// standing above the resume's own, which with two releases since the wake is the later of them
+// rather than the one that took the pod. Nothing else records that: the row it
 // closes leaves the stuck warning and the stranded report with it (release_records.go's
 // podResumesWithoutAFirstTurn), so without the line a pod vanishing under a waiting role is
 // written down nowhere.

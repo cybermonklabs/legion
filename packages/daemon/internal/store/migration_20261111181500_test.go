@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,8 +56,10 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 		return id
 	}
 
-	if _, err := store.Pool().Exec(ctx, `update pod_resumes set seen_release = 1`); err == nil {
-		t.Fatal("writing seen_release before the migration was taken, want the column to be unknown: it is what the migration adds")
+	if _, err := store.Pool().Exec(ctx, `update pod_resumes set seen_release = 1`); err == nil ||
+		!strings.Contains(err.Error(), "42703") {
+		t.Fatalf("writing seen_release before the migration = %v, want SQLSTATE 42703, the undefined column: it is what the migration adds, and any other error would satisfy a weaker control",
+			err)
 	}
 
 	// LEGION-208's pod went away under its resume: the wake came, and a release of the issue
@@ -68,8 +71,9 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	live := release("LEGION-209", at.Add(-3*time.Hour))
 	liveResume := resume("LEGION-209", live, at.Add(-2*time.Hour))
 	noRelease := resume("LEGION-210", 0, at.Add(-2*time.Hour))
-	// A resume whose role took its turn is no wake's to heal, so the backfill leaves it alone
-	// although a release of its issue came after it, which is what would stamp it otherwise.
+	// A resume no wake can heal is left alone by the backfill although a release of its issue came
+	// after it, which is what would stamp it otherwise. There are two such rows, one for each half
+	// of the where clause: a resume whose role took its turn, and one something closed.
 	turned := release("LEGION-211", at.Add(-3*time.Hour))
 	finished := resume("LEGION-211", turned, at.Add(-2*time.Hour))
 	if _, err := store.Pool().Exec(ctx, `update pod_resumes set first_turn_at = $2 where id = $1`,
@@ -77,6 +81,21 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 		t.Fatalf("stamp the finished resume's first turn: %v", err)
 	}
 	release("LEGION-211", at.Add(-time.Hour))
+	shut := release("LEGION-212", at.Add(-3*time.Hour))
+	closedResume := resume("LEGION-212", shut, at.Add(-2*time.Hour))
+	if _, err := store.Pool().Exec(ctx, `update pod_resumes set closed_at = $2 where id = $1`,
+		closedResume, at.Add(-80*time.Minute)); err != nil {
+		t.Fatalf("close the resume a release ended: %v", err)
+	}
+	release("LEGION-212", at.Add(-time.Hour))
+
+	// The row a daemon really writes when the wake is a listener's: pod_resumes.at carries the
+	// listener's clock at the report and pod_releases.at the daemon's at the teardown, so a wake
+	// consumed after a release committed can stand before it in the table. Its own release_id is
+	// the committed-order fact, and the floor is what keeps the backfill from stamping it below
+	// that and sending the first wake after the deploy at a pod already coming back.
+	listener := release("LEGION-213", at.Add(200*time.Millisecond))
+	listenerResume := resume("LEGION-213", listener, at)
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the resume's own anchor: %v", err)
@@ -102,6 +121,25 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	}
 	if got := seen(finished); got != 0 {
 		t.Fatalf("the anchor of a resume with a first turn = %d, want 0: the backfill writes the open rows alone", got)
+	}
+	if got := seen(closedResume); got != 0 {
+		t.Fatalf("the anchor of a resume something closed = %d, want 0: the backfill writes the open rows alone", got)
+	}
+	if got := seen(listenerResume); got != listener {
+		t.Fatalf("the anchor of the resume whose wake stands before its own release = %d, want %d, its release_id: the two columns are different clocks, and the row's own release is the committed-order fact",
+			got, listener)
+	}
+
+	// The invariant over every backfilled row, not the seeded cases alone: no row is stamped below
+	// the release it paired with, which is the release the writer read in the take's own
+	// transaction, so the heal reads nothing above a resume whose pod is coming back.
+	var below int64
+	if err := store.Pool().QueryRow(ctx, `select count(*) from pod_resumes
+		where first_turn_at is null and closed_at is null and seen_release < release_id`).Scan(&below); err != nil {
+		t.Fatalf("read the backfilled rows: %v", err)
+	}
+	if below != 0 {
+		t.Fatalf("%d backfilled rows are stamped below their own release: every one must satisfy seen_release >= release_id, or the first wake after the deploy closes a live resume", below)
 	}
 
 	// What those anchors decide, driven through the heal itself: the stale row is closed at its

@@ -54,8 +54,8 @@ type Pods interface {
 	// a wake another pass already took, which is already bringing the pod back.
 	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time) (bool, error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
-	// has gone away: a release of the issue recorded since that wake was taken. It answers that
-	// release, and 0 where it closed nothing.
+	// has gone away: a release of the issue recorded since that wake was taken. It answers the
+	// issue's newest release where it closed a row, and 0 where it closed none.
 	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
@@ -236,19 +236,18 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
-	gone, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
+	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
 	if err != nil {
 		return false, err
 	}
-	if gone > 0 {
+	if newest > 0 {
 		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
-			"issue", issue.Key, "role", released.Role, "release", gone, "kind", kind, "detail", detail)
+			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
 	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
 	if err != nil || !taken {
 		return false, err
 	}
-
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, WakeTask(kind, detail)))
 }
