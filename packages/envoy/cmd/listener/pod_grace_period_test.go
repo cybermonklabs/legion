@@ -76,9 +76,14 @@ func TestListenerPodGracesCoverTheStopBudget(t *testing.T) {
 		})
 	}
 
+	// The count is held to the literal 2, never to len(listenerPodGoldens), which would compare
+	// the list with itself: an entry dropped from it would take its own assertion away and the
+	// run would pass having covered one pod less, and an emptied list would pass having covered
+	// none. Both were measured.
+	const listenerPods = 2
 	t.Logf("read %d listener pod goldens", read)
-	if read != len(listenerPodGoldens) {
-		t.Fatalf("read %d of the %d listener pod goldens; a run that reads a pod less covers a pod less, so it fails here rather than passing", read, len(listenerPodGoldens))
+	if read != listenerPods {
+		t.Fatalf("read %d of the %d listener pods this test covers; a run that reads a pod less covers a pod less, and a run that reads none proves nothing at all, so each fails here rather than passing", read, listenerPods)
 	}
 }
 
