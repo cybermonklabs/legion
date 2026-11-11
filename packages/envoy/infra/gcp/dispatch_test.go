@@ -1840,7 +1840,9 @@ func TestDispatchAppAndListenerAgreeOnNats(t *testing.T) {
 
 // A stopping listener pod keeps answering /v1 while its removal from Service example-dispatch-
 // listener reaches every node's proxy: it waits 5 s before it is signalled, and its 40 s grace
-// period covers that wait and the listener's own stop of 28 s, with a margin of 7 s.
+// period covers that wait and the listener's own stop of 28 s, with the margin
+// listenerGraceMargin names (packages/envoy/cmd/listener/main.go), which that listener's own
+// TestListenerPodGracesCoverTheStopBudget holds this pod's golden to.
 func TestDispatchListenerKeepsServingUntilItsRemovalFromRoutingPropagates(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
