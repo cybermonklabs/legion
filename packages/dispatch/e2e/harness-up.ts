@@ -23,9 +23,9 @@
  *  nothing to build the server with and nothing to seed the database through. The script
  *  therefore starts the stack on the host through this, hands the container the variables
  *  below, and the run inside reads `DISPATCH_E2E_REUSE_SERVERS=1` and starts nothing
- *  (`e2e/global-setup.ts`). The other caller is a person who wants Playwright's UI mode: that
- *  mode runs no `globalSetup` that starts servers, so `e2e/playwright.config.ts` refuses a UI
- *  session unless a stack is up beside it, and the lines above are how one is.
+ *  (`e2e/global-setup.ts`). The other caller is a person who wants Playwright's UI mode against
+ *  a stack that outlives one session: a UI session starts stacks of its own when a client
+ *  connects, and the lines above hand it one that is up already instead.
  *
  *  `e2e/local-instance.ts` (`bun run dispatch:local`) keeps its own job and is not merged into
  *  this one: it is a Dispatch for a person to open, on the repository's dev Postgres, seeded with

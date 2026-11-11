@@ -138,15 +138,18 @@ One spec by hand is the Playwright command itself, as in
 (`bun run e2e` runs the same after the contracts and SPA builds). Playwright stops the harness
 when the run ends, a Ctrl-C included, and exits with its own status.
 
-Playwright's UI mode is refused unless a stack is already up beside it, and all
-three flags that enter it are refused alike: `--ui`, `--ui-host <host>` and
-`--ui-port <port>`. Each is matched as a whole argument that is no other
-option's value, the way Playwright's own parser reads argv, so `--grep --ui`
-runs as usual: Playwright reads that `--ui` as `--grep`'s value. UI mode runs
-no `globalSetup` that starts servers, so a session with nothing up has no
-stack to run against. Its tree holds the `global-setup.ts` node alone, Run
-all runs no row, and nothing says why. Start one stack, apply the variables
-it prints, and start the UI in that environment:
+Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
+when a client connects rather than when it begins listening, so a session
+opened on the listening URL starts its own stacks, runs rows against them, and
+stops them when the session ends: measured at this head, a second Run all in
+the one session left no second set of stacks, and closing it left nothing
+behind. Every project is in play in such a session, whatever `--project` the
+command line held, so it needs all three engines downloaded
+(`bun run e2e:install`); with only Chromium, it stops at its `global-setup.ts`
+node while the same command line without `--ui` runs green.
+
+To point a session at a stack that is already up instead, start one, apply the
+variables it prints, and start the UI in that environment:
 
 ```bash
 cd packages/dispatch
@@ -157,8 +160,8 @@ bunx playwright test --config e2e/playwright.config.ts --ui
 ```
 
 `kill` that harness when the session ends. `e2e/visual-run.sh` is the same
-recipe written as a script, for the container it runs Playwright in. A run of
-the stubbed layer alone is never refused, since it addresses no stack at all:
+recipe written as a script, for the container it runs Playwright in. A session
+of the stubbed layer alone needs no stack at all, since it addresses none:
 `--project=stub --ui` opens as it is.
 
 Playwright's own `--workers <n>` runs the suite in parallel, and the config's
@@ -208,10 +211,10 @@ which is a Postgres per stack. The other way is one worker, which the config
 defaults to and the one case that takes a `DATABASE_URL`.
 `e2e/global-setup.ts` refuses the run before it starts anything, naming the
 variable and the reason, so you meet a sentence rather than an `EADDRINUSE`.
-The deleted wrapper refused the same five, and this is where that rule is
-written down now. CI's shard leg already sets `DISPATCH_E2E_PG_BIN` and none of
-the five, so the refusal changes no job of this repository and only a run by
-hand.
+The refusal is the harness's own rule, not one caller's habit: a run of more
+than one worker meets it however you started it, because one stack owns each of
+the five. CI's shard leg sets `DISPATCH_E2E_PG_BIN` and none of the five, so
+the rule reaches no job of this repository and only a run by hand.
 
 Every other mode runs on the default one worker, and so one stack: the deployed
 run, two-process mode,

@@ -10,9 +10,9 @@
  *  index.js:6320-6323, :6498-6501). So the status cannot reach the teardown from there.
  *
  *  What does reach it is a reporter's `onTestEnd`, which fires as each row ends, long before the
- *  teardown: `e2e/failure-reporter.ts` records every row here, and the teardown reads the answer.
- *  The runner loads the reporter, the hook and this module in one process, so one module holds
- *  one tally.
+ *  teardown, and its `onError`, which fires for a failure that belongs to no row at all:
+ *  `e2e/failure-reporter.ts` records both here, and the teardown reads the answer. The runner
+ *  loads the reporter, the hook and this module in one process, so one module holds one tally.
  *
  *  WHY THE QUESTION IS "DID THIS RUN PASS" AND NOT "DID A ROW FAIL". A `--reporter` on the
  *  command line REPLACES the configured reporter list; it does not add to it. The resolved
@@ -38,7 +38,7 @@
  *  its trace. A row a Ctrl-C cut off counts the same way, for the same reason. */
 
 /** Whether any row at all reached this module, which is what tells a reported run from a silent
- *  one, and whether any row that did failed. */
+ *  one, and whether any failure did - a row's own, or one that belonged to no row. */
 let recorded = false;
 let failed = false;
 
@@ -48,7 +48,15 @@ export function recordRow(rowFailed: boolean): void {
   if (rowFailed) failed = true;
 }
 
-/** Whether this run passed: a row was recorded, and no recorded row failed. Read by
+/** Called for a failure that belongs to no row (`e2e/failure-reporter.ts`'s `onError`): the
+ *  error of a worker that died, or of an `afterAll` that failed after the last row. It does NOT
+ *  set `recorded`, which answers "did a row reach this module" and nothing else; a failure is
+ *  enough on its own, since a run that recorded one has not passed whatever its rows did. */
+export function recordError(): void {
+  failed = true;
+}
+
+/** Whether this run passed: a row was recorded, and nothing recorded a failure. Read by
  *  `e2e/global-teardown.ts`, which keeps the stack logs of every run that did not. */
 export function runPassed(): boolean {
   return recorded && !failed;

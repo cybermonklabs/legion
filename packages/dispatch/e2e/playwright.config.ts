@@ -8,7 +8,6 @@ import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
-import { namesUiSession } from "./ui-argv";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -86,10 +85,14 @@ if (harnessProcessCount === 2 && process.env.PLAYWRIGHT_BASE_URL) {
 // `DISPATCH_E2E_REUSE_SERVERS=1` says the harness ports name servers that are already running:
 // a harness a person started and left listening, or the one `e2e/harness-up.ts` printed for
 // another process to read. Any other value is refused rather than quietly read as "no".
-function resolveReuseServers(): boolean {
+//
+// The refusal is made here, rather than in the hook, because this evaluates for every run, a
+// listing included, where `globalSetup` does not. What the value MEANS - that this run starts
+// no stack - is the hook's, and it reads the variable itself, by then knowing that it holds
+// "1" or nothing.
+function refuseUnknownReuseServers(): void {
   const requested = process.env.DISPATCH_E2E_REUSE_SERVERS;
-  if (requested === undefined || requested === "") return false;
-  if (requested === "1") return true;
+  if (requested === undefined || requested === "" || requested === "1") return;
   throw new Error(
     `DISPATCH_E2E_REUSE_SERVERS must be "1" or unset, not ${JSON.stringify(requested)}. ` +
       "Leave it unset to have this run start its own stacks (e2e/global-setup.ts), or set it to " +
@@ -97,11 +100,7 @@ function resolveReuseServers(): boolean {
   );
 }
 
-// Read here rather than in the hook because this evaluates for every run, a listing included,
-// where `globalSetup` does not: the value's own refusal is one reason, and the UI refusal below
-// is the other reader. What the answer MEANS - that this run starts no stack - is the hook's,
-// and it reads the variable itself, by then knowing it holds "1" or nothing.
-const reusingServers = resolveReuseServers();
+refuseUnknownReuseServers();
 
 // THE PORTS ARE UNSET WHEN THIS EVALUATES, AND THAT IS THE DESIGN. Playwright loads this config
 // before it runs `globalSetup`, which is what starts the stacks (e2e/global-setup.ts), so in this
@@ -126,47 +125,6 @@ const stub = stubSelection({
   processes: harnessProcessCount,
   projects: stubProjectNames,
 });
-
-// A UI SESSION WITH NO STACK IS REFUSED, because the alternative measured here is silence.
-// Playwright's UI mode runs no `globalSetup` that starts servers, so a session of this config
-// started with nothing up has no stack to run against: its tree held the `global-setup.ts` node
-// alone, Run all ran no row, and no error reached the UI, its page or its process
-// (dispatch://INFRA-1410). Before the stacks moved into `globalSetup` a UI session could not
-// load this config at all - the unset-ports refusal fired - so the sentence below is what that
-// refusal used to give a person.
-//
-// The three conditions are the whole of it. `DISPATCH_E2E_REUSE_SERVERS=1` means a stack is up
-// beside this run, which is the cure rather than the disease; the stubbed layer alone addresses
-// no stack at all and replays a recording in the UI as happily as anywhere. A deployed run
-// (`PLAYWRIGHT_BASE_URL`) is NOT exempt, deliberately: its fakes come out of the same hook and
-// would not start either, and `e2e/harness-up.ts` with that variable set starts exactly the
-// subset such a run needs.
-//
-// All three UI flags are matched, and matched as whole arguments that are no other option's
-// value. The runner declares `--ui`, `--ui-host <host>` and `--ui-port <port>`
-// (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/program.js:223-225) and
-// enters UI mode on any of them (`opts.ui || opts.uiHost || opts.uiPort`,
-// lib/cli/testActions.js:60). A bare substring would be a trap of its own, the one the deleted
-// `--list` reading carried, and so is a flat `some()` over the three spellings: Playwright reads
-// the `--ui` of `--grep --ui` as that option's VALUE, exactly as it reads the `--list` of
-// `--grep --list`, so the run is an ordinary one and must load. `e2e/ui-argv.ts` reads argv the
-// way the runner's parser reads it, holds the options that take the next argument, and carries
-// the measurement each half of that rule rests on.
-const uiSession = namesUiSession(process.argv);
-if (uiSession && !reusingServers && !stub.onlyStub) {
-  throw new Error(
-    "Playwright's UI mode starts no stack of its own: it runs no `globalSetup` that would, so " +
-      "a UI session of this config with nothing up runs no row and says nothing about why. " +
-      "Start one stack beside it and point the session at it. From packages/dispatch:\n" +
-      "  bun e2e/harness-up.ts > exports.sh &\n" +
-      "  # wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then\n" +
-      "  . ./exports.sh\n" +
-      "  bunx playwright test --config e2e/playwright.config.ts --ui\n" +
-      "and `kill` that harness when the session ends. `e2e/visual-run.sh` does exactly this for " +
-      "the container. The stubbed layer needs no stack and is never refused: " +
-      "`--project=stub` opens in the UI as it is."
-  );
-}
 
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).

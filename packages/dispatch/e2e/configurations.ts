@@ -12,6 +12,8 @@
  * from a listing's JSON, so every function is callable from a plain Bun test.
  */
 
+import { valuesTakenAt } from "./ui-argv";
+
 /** A row of `playwright test --list --reporter=json`: one test of one project. */
 export type ListedRow = {
   /** What Playwright expects of the row, as the listing states it before anything runs:
@@ -246,21 +248,30 @@ export function tagged(tag: string): RegExp {
  *  project, so it is given the server and its stacks alike.
  *
  *  An empty list is a run that names no project, which is every project of its mode. Every
- *  `--project` of the whole line is read, and a `--` ends one flag's values because it begins
- *  with `-`: the Playwright command line this reads holds no `--`, and a line that held one
- *  would not have it taken for a project name. */
+ *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
+ *  (`e2e/ui-argv.ts`), because a token that reads like a flag of this run may be some other
+ *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
+ *  directory and names no project at all, and a reader that took it for one answered "the
+ *  stubbed layer alone" for a run holding real-stack rows, which then met no stack
+ *  (dispatch://INFRA-1410). A bare `--` ends the options, so every token after it is a
+ *  test-file filter and none of them is a project: `e2e/ui-argv.ts`'s own measurements show a
+ *  command line that holds one (`-- --ui --list` ran its rows). */
 export function projectsOnCommandLine(argv: readonly string[]): string[] {
   const named: string[] = [];
-  for (const [index, word] of argv.entries()) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index] ?? "";
+    if (word === "--") break;
     if (word.startsWith("--project=")) {
       named.push(word.slice("--project=".length).toLowerCase());
       continue;
     }
-    if (word !== "--project") continue;
-    for (const value of argv.slice(index + 1)) {
-      if (value.startsWith("-")) break;
-      named.push(value.toLowerCase());
+    const values = valuesTakenAt(argv, index);
+    if (word === "--project") {
+      for (let value = 1; value <= values; value += 1) {
+        named.push((argv[index + value] ?? "").toLowerCase());
+      }
     }
+    index += values;
   }
   return named;
 }

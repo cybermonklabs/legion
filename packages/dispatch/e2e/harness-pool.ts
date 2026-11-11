@@ -26,6 +26,7 @@
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   pgBinVariable,
@@ -75,6 +76,31 @@ let stopped = false;
  *  for. */
 const stopping = new AbortController();
 
+/** The start that is still in flight, or undefined when none is. SIGTERM waits for this before
+ *  it stops anything, because `stacks` takes a stack only once its whole harness is up: a
+ *  Postgres that is serving, an initdb halfway through, a server the harness has started are
+ *  all held by this promise alone, and it is the start's own `catch` - and the stop paths of
+ *  `e2e/harness-start.ts` and `e2e/harness-postgres.ts` under it - that puts them down. It
+ *  never rejects; the copy kept here swallows what `startStacks` hands its caller. */
+let starting: Promise<unknown> | undefined;
+
+/** Set by the SIGTERM listener, so a second signal ends this process rather than starting a
+ *  second stop over the top of the first. */
+let terminating = false;
+
+/** How long SIGTERM waits for a start in flight to put down what it is holding, after which it
+ *  stops what is up and ends this process anyway.
+ *
+ *  A start that has read the abort unwinds in about a second, since every wait in it takes that
+ *  signal; what it cannot cut short is an `execFile` already running - a `pg_ctl -w start` or
+ *  the `pg_ctl -w stop` that follows it, each bounded by PGCTLTIMEOUT - and the harness's own
+ *  `Supervisor.stop`, which SIGKILLs whatever is left 10 s after its SIGTERM. The bound is not
+ *  generous for its own sake, because whoever sent the signal is counting too: a pod's
+ *  `terminationGracePeriodSeconds` is 30 s by default and a `timeout -k` is of that order, and
+ *  a handler still waiting when the SIGKILL arrives stops nothing at all. 15 s leaves the stop
+ *  that follows it the 10 s `Supervisor.stop` can take, inside a 30 s grace. */
+const terminateGraceMs = 15_000;
+
 /** The pool's own signal listeners, held so they can be taken off again: `stopStacks` leaves
  *  this process's signal handling as the pool found it, so a second `startStacks` in one
  *  process - Playwright's UI mode, and this package's own unit tests - adds no second copy.
@@ -90,12 +116,26 @@ const stopping = new AbortController();
  *  SIGTERM is nobody's. Playwright's runner does not handle it, so `kill <pid>`, a `timeout` and
  *  a pod's grace period reach this process alone - and a listener that only set a flag would be
  *  worse than none, since registering one removes Node's own default exit and the run would
- *  carry on to its end with every server up. So this listener does the work: it stops the stacks
- *  and then ends the process with the signal's OWN disposition rather than an exit status this
- *  file invented, which it can do because `stopStacks` has by then removed the listener and the
+ *  carry on to its end with every server up. So this listener does the work: it cancels the
+ *  start, WAITS for it (`starting`, bounded by `terminateGraceMs`), stops the stacks, and then
+ *  ends the process with the signal's OWN disposition rather than an exit status this file
+ *  invented, which it can do because `stopStacks` has by then removed the listener and the
  *  second SIGTERM meets Node's default. */
 let onInterrupt: (() => void) | undefined;
 let onTerminate: (() => void) | undefined;
+
+/** What SIGTERM does, in order: cancel the start, wait for it to unwind, stop what is up, and
+ *  end this process with the signal's own disposition. */
+async function terminate(): Promise<void> {
+  stopping.abort();
+  // The start in flight is awaited BEFORE anything is stopped, because dying here is what left
+  // a Postgres serving a loopback port and a data directory behind it: the stack is not in
+  // `stacks` yet, so `stopStacks` would stop nothing and remove the run directory under a
+  // server that is still up. The wait is bounded, so a start that never settles still ends.
+  if (starting !== undefined) await Promise.race([starting, sleep(terminateGraceMs)]);
+  await stopStacks(true);
+  process.kill(process.pid, "SIGTERM");
+}
 
 function watchSignals(): void {
   if (onInterrupt === undefined) {
@@ -104,11 +144,20 @@ function watchSignals(): void {
   }
   if (onTerminate === undefined) {
     onTerminate = (): void => {
-      // A start still in flight is cancelled, and whatever is up is stopped. The logs are kept:
-      // a run this signal ended reported no verdict on anything, and what its servers were doing
-      // when it stopped is the only account there is (`e2e/run-outcome.ts` keeps the same rule).
-      stopping.abort();
-      void stopStacks(true).finally(() => process.kill(process.pid, "SIGTERM"));
+      // The logs are kept: a run this signal ended reported no verdict on anything, and what
+      // its servers were doing when it stopped is the only account there is
+      // (`e2e/run-outcome.ts` keeps the same rule).
+      //
+      // A second SIGTERM, while the first is still waiting on the start, is whoever sent it
+      // saying they will not wait: the listener comes off and the signal is sent on to Node's
+      // default, which ends the process now.
+      if (terminating) {
+        unwatchSignals();
+        process.kill(process.pid, "SIGTERM");
+        return;
+      }
+      terminating = true;
+      void terminate();
     };
     process.on("SIGTERM", onTerminate);
   }
@@ -175,11 +224,30 @@ function clearRunDir(keepLogs: boolean): void {
 
 /** Starts `count` stacks at once - each is an initdb or a `docker run` and a server build away,
  *  and they share nothing - and returns them in index order. A stack that fails to start stops
- *  what started, this run's directory included, and the failure is the caller's to report. */
+ *  what started, this run's directory included, and the failure is the caller's to report.
+ *
+ *  The start is held as one promise while it runs, so a SIGTERM that lands in the middle of it
+ *  waits for it rather than ending this process on top of what it has started (`starting`). */
 export async function startStacks(
   count: number,
   options: StackPoolOptions = {}
 ): Promise<readonly Stack[]> {
+  // `startPool` runs as far as its own `watchSignals()` before it hands this promise back, and
+  // a signal is delivered as a task of its own, so no SIGTERM lands between these two lines.
+  const start = startPool(count, options);
+  // The listener's own copy, which swallows: the rejection a cancelled start hands its caller
+  // is handled by the `await` below, and a second reference to it must not become an unhandled
+  // rejection of the handler's.
+  starting = start.catch(() => undefined);
+  try {
+    return await start;
+  } finally {
+    starting = undefined;
+  }
+}
+
+/** The whole of a start, as the one promise `startStacks` holds it by. */
+async function startPool(count: number, options: StackPoolOptions): Promise<readonly Stack[]> {
   const env = options.env ?? process.env;
   watchSignals();
   try {

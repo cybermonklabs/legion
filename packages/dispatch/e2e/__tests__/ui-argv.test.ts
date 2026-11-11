@@ -1,16 +1,24 @@
-/** `e2e/ui-argv.ts`'s option set, against the help of the Playwright this checkout installs.
+/** `e2e/ui-argv.ts`'s classification, against the help of the Playwright this checkout installs.
  *
- *  `optionsTakingTheNextArgument` decides which `--ui` of a command line is a flag and which is
- *  another option's value, so a raise of Playwright that adds, renames or drops an option that
- *  takes a separate value would silently move that line. It would show up as a refused ordinary
- *  run, or as a UI session that loaded with no stack and said nothing - the very silence
- *  `e2e/__tests__/ui-without-stack.test.ts` exists for. The two rows below read the set out of
- *  `bunx playwright test --help` instead, so the raise fails here.
+ *  Two readers of one command line take their rule from that classification: `projectsOnCommandLine`
+ *  (`e2e/configurations.ts`), which asks about a DASH token - is this `--project` an option of
+ *  the run or another option's value? - and the INFRA-1280 tree's, which asks about a POSITIONAL
+ *  - is this path a test-file filter or another option's value? A raise of Playwright that adds,
+ *  renames, drops or reclassifies an option that takes a value moves both readings silently, and
+ *  each answers wrongly in a direction nobody looks at: a run given the stubbed layer's answer
+ *  meets no stack, a spec path read as a seed runs the whole suite.
+ *
+ *  Which options take a value is a fact about another program's interface, so this checkout
+ *  cannot derive it - it can only read it where that program states it and keep the reading
+ *  honest. A measured set in the module, behind a row here that re-reads `bunx playwright test
+ *  --help` and compares, is that durable form: the module stays a plain constant every caller
+ *  can read without spawning anything, and the day the fact changes a test fails instead of a
+ *  run.
  */
 
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { optionsTakingTheNextArgument } from "../ui-argv";
+import { optionValueClasses, valuesTakenAt } from "../ui-argv";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -21,15 +29,16 @@ const helpTimeout = 60_000;
  *  the short one included; `value` is how the help writes what it takes. */
 interface HelpOption {
   readonly names: readonly string[];
-  readonly value: "none" | "optional" | "required";
+  readonly value: "none" | "optional" | "required" | "variadic";
 }
 
 /** The option list of `bunx playwright test --help`.
  *
  *  The help prints one option per line, two spaces in, as its spellings and then its value -
- *  `-g, --grep <grep>`, `--debug [mode]`, `--ui` - and at least two spaces before the
- *  description. A description that wraps is indented far enough that no continuation line starts
- *  with a dash in column 3, so the signature of each line is all this reads. */
+ *  `-g, --grep <grep>`, `--debug [mode]`, `--project <project-name...>`, `--ui` - and at least
+ *  two spaces before the description. A description that wraps is indented far enough that no
+ *  continuation line starts with a dash in column 3, so the signature of each line is all this
+ *  reads. */
 async function helpOptions(): Promise<readonly HelpOption[]> {
   const child = Bun.spawn(["bunx", "playwright", "test", "--help"], {
     cwd: dispatchPackage,
@@ -48,51 +57,62 @@ async function helpOptions(): Promise<readonly HelpOption[]> {
     if (signature === undefined) continue;
     const names = signature.split(/[\s,]+/).filter((token) => /^-{1,2}[A-Za-z][\w-]*$/.test(token));
     if (names.length === 0) continue;
-    const value = signature.endsWith(">")
-      ? "required"
-      : signature.endsWith("]")
-        ? "optional"
-        : "none";
+    const value = signature.endsWith("...>")
+      ? "variadic"
+      : signature.endsWith(">")
+        ? "required"
+        : signature.endsWith("]")
+          ? "optional"
+          : "none";
     options.push({ names, value });
   }
   return options;
 }
 
 test(
-  "every option the help writes `--name <value>` is in the set, in both spellings",
+  "every option the help writes with a value is in its own class, in both spellings",
   async () => {
     const options = await helpOptions();
     // A help this read nothing out of would make every assertion below vacuous.
     expect(options.length).toBeGreaterThan(20);
     expect(options.flatMap(({ names }) => names)).toContain("--grep");
 
-    const required = options
-      .filter(({ value }) => value === "required")
-      .flatMap(({ names }) => names)
-      .sort();
-    expect(required).toEqual([...optionsTakingTheNextArgument].sort());
+    const spellings = (value: HelpOption["value"]) =>
+      options
+        .filter((option) => option.value === value)
+        .flatMap(({ names }) => names)
+        .sort();
+    // Each class separately: an option the help moved from one to another fails here, where a
+    // single flat set of everything that takes a value would still hold it.
+    expect(spellings("required")).toEqual([...optionValueClasses.required].sort());
+    expect(spellings("optional")).toEqual([...optionValueClasses.optional].sort());
+    expect(spellings("variadic")).toEqual([...optionValueClasses.variadic].sort());
   },
   helpTimeout
 );
 
-test(
-  "an option the help writes with `[value]` or with no value is out of the set",
-  async () => {
-    // The other half of the rule, and the half that is measured rather than read: an option whose
-    // value is optional leaves a token beginning with a dash alone, so `--debug --ui` opens the
-    // UI where `--grep --ui` lists rows (the readings are in `e2e/ui-argv.ts`). A raise that made
-    // one of these take a value would reach the set through the row above; this row catches the
-    // reverse, an option the set names that stopped taking one.
-    const options = await helpOptions();
-    const optional = options
-      .filter(({ value }) => value === "optional")
-      .flatMap(({ names }) => names);
-    const none = options.filter(({ value }) => value === "none").flatMap(({ names }) => names);
-    expect(optional).toContain("--debug");
-    expect(none).toContain("--ui");
-    for (const name of [...optional, ...none]) {
-      expect(optionsTakingTheNextArgument.has(name), `${name} takes no separate value`).toBe(false);
-    }
-  },
-  helpTimeout
-);
+test("a required-value option takes the next token whatever it looks like", () => {
+  expect(valuesTakenAt(["--grep", "--ui", "--list"], 0)).toBe(1);
+  expect(valuesTakenAt(["--output", "--project=stub", "e2e/smoke.e2e.ts"], 0)).toBe(1);
+  // Nothing to take: the parser would refuse the line, and a reader of it runs off no end.
+  expect(valuesTakenAt(["--grep"], 0)).toBe(0);
+});
+
+test("an optional-value option takes the next token only when it is no dash token", () => {
+  expect(valuesTakenAt(["--shuffle", "--ui", "--list"], 0)).toBe(0);
+  expect(valuesTakenAt(["--shuffle", "e2e/claim.e2e.ts"], 0)).toBe(1);
+  expect(valuesTakenAt(["--only-changed", "e2e/claim.e2e.ts"], 0)).toBe(1);
+});
+
+test("a variadic option takes its first value like a required one and stops at the next dash", () => {
+  expect(valuesTakenAt(["--project", "--ui", "--list"], 0)).toBe(1);
+  expect(valuesTakenAt(["--project", "chromium", "firefox", "--list"], 0)).toBe(2);
+  expect(valuesTakenAt(["--project", "chromium", "firefox"], 0)).toBe(2);
+});
+
+test("a flag, a self-contained `--name=value` and a positional take nothing", () => {
+  expect(valuesTakenAt(["--list", "--ui"], 0)).toBe(0);
+  expect(valuesTakenAt(["--grep=--ui", "--list"], 0)).toBe(0);
+  expect(valuesTakenAt(["e2e/smoke.e2e.ts", "--list"], 0)).toBe(0);
+  expect(valuesTakenAt(["--", "--ui", "--list"], 0)).toBe(0);
+});

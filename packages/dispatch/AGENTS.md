@@ -1632,18 +1632,25 @@ Address the harness as `127.0.0.1:<port>`, never
 a fixture server. `bun run dispatch:local` runs the same harness by hand,
 seeded and signed in, and leaves it running (below, after the port rules).
 
-Playwright's UI mode is refused unless a stack is already up beside it, and the
-three flags that enter it are refused alike: `--ui`, `--ui-host <host>` and
-`--ui-port <port>`. Each is matched as a whole argument that is no other
-option's value, the way Playwright's own parser reads argv: `--grep --ui` hands
-Playwright that `--ui` as `--grep`'s value, so the run is an ordinary one and
-loads (`e2e/ui-argv.ts`, which holds the options that take the next argument
-and the measurement behind them). UI mode runs no `globalSetup` that starts
-servers, so a session with nothing up has no stack to run against. Its tree
-holds the `global-setup.ts`
-node alone, Run all runs no row, and nothing says why, which is the silence
-this refusal replaces. The way to run it is three steps, from
-`packages/dispatch`:
+Playwright's UI mode starts this suite's stacks itself. The UI server runs no
+`globalSetup` when it begins listening; it runs one when a client connects
+(`runGlobalSetup`, playwright 1.64.1 `lib/runner/index.js:6896-6915`), so a
+session opened on the listening URL starts its own stacks, runs rows against
+them, and stops them when the session ends. Measured at this head: with nothing
+up, the UI listened and started nothing; a browser opened on that URL made one
+run directory and listed the file's rows; Run all passed the row; a second Run
+all passed it again and made no second set of stacks; closing the session left
+no run directory and no process behind.
+
+Every project is in play in a UI session, whatever `--project` the command line
+held (the UI's own header reads `Projects: all`), so `e2e/global-setup.ts`
+requires every engine Playwright can run here, not the one engine a row needs.
+With `firefox` and `webkit` not downloaded, a UI session stops at its
+`global-setup.ts` node while the same command line without `--ui` runs green.
+`bun run e2e:install` downloads all three.
+
+To point a session at a stack that is already up instead, export that stack's
+variables first, from `packages/dispatch`:
 
 ```bash
 bun e2e/harness-up.ts > exports.sh &
@@ -1654,11 +1661,9 @@ bunx playwright test --config e2e/playwright.config.ts --ui
 
 `kill` that harness when the session ends. `e2e/visual-run.sh` is the same
 recipe written as a script, for the container it runs Playwright in: it reads
-the same `export` lines through a fifo and applies them. A run of the stubbed
-layer alone is never refused, since it addresses no stack at all
-(`--project=stub --ui`). A deployed run is refused like any other: its fakes
-come out of the same hook, and `e2e/harness-up.ts` with `PLAYWRIGHT_BASE_URL`
-set starts the subset such a run needs.
+the same `export` lines through a fifo and applies them. A session of the
+stubbed layer alone needs no stack at all, since it addresses none
+(`--project=stub --ui`).
 
 Playwright's own `--workers <n>` is how many workers the run has — the config's
 default is 1 — and `e2e/global-setup.ts` starts one stack per worker, all at
@@ -1725,11 +1730,12 @@ as the product's rather than the run's.
 its own return on `DISPATCH_E2E_REUSE_SERVERS=1`, naming the first such
 variable and what one stack owns it for (`refuseStackConflicts`,
 `e2e/harness-ports.ts`). A person meets that sentence rather than an
-`EADDRINUSE`. The deleted wrapper refused the same five, and this is where that
-rule is written down now. CI's shard leg already sets `DISPATCH_E2E_PG_BIN` and
-none of the five, so the refusal changes no job of this repository and only a
-run by hand. A run of the stubbed layer alone is out of the rule, since it
-addresses no stack.
+`EADDRINUSE`. The refusal is the harness's own rule, not one caller's habit: a
+run of more than one worker meets it however it was started, because one stack
+owns each of the five. CI's shard leg sets `DISPATCH_E2E_PG_BIN` and none of
+the five, so the rule reaches no job of this repository and only a run by
+hand. A run of the stubbed layer alone is out of the rule, since it addresses
+no stack.
 
 Run instead a Postgres provider with those five unset: `DISPATCH_E2E_PG_BIN`, a
 directory holding `initdb` and `pg_ctl`, or `DISPATCH_E2E_PG_IMAGE`, each of
@@ -2244,12 +2250,12 @@ downloaded a browser the run's projects launch, naming
 `bun run e2e:install` and how large that download is: Playwright's own message comes at the first
 browser launch, with every stack's harness and Postgres already up. A `--project` on the command
 line narrows which browsers the check requires; a listing (`--list`) runs no `globalSetup` at
-all, so it needs none of them.
+all, so it needs none of them. A UI session narrows nothing: every project is in play there,
+whatever the command line held, so it requires every engine (the end-to-end section above).
 
-`e2e/playwright.config.ts` starts no server: `globalSetup` does. It makes two refusals of its
-own, each before a single spec runs. The first is a `DISPATCH_E2E_REUSE_SERVERS` whose value is
-neither `1` nor empty, named with the value it holds. The second is a UI session with no stack
-up beside it, which the end-to-end section above gives the recipe for.
+`e2e/playwright.config.ts` starts no server: `globalSetup` does. It makes one refusal of its
+own, before a single spec runs: a `DISPATCH_E2E_REUSE_SERVERS` whose value is neither `1` nor
+empty, named with the value it holds.
 `DISPATCH_E2E_REUSE_SERVERS=1` says the harness ports name servers that are already running — a
 harness a person started and left listening, or the stack `e2e/harness-up.ts` printed — and the
 hook then returns before a directory is made or a server starts. Pair it with that harness's own

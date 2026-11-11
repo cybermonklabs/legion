@@ -144,8 +144,9 @@ test("harnessPorts resolves the stack's ports and keeps both of its refusals", (
 // hand every stack the one database, the one set of servers or the one port - and the rows
 // would then delete each other's fixtures, because e2e/test.ts truncates that database before
 // every row, and fail as though the product were broken. `DISPATCH_E2E_REUSE_SERVERS` is the
-// one this suite lost and had to get back: `globalSetup` returns on it, so without the refusal
-// `--workers 4 DISPATCH_E2E_REUSE_SERVERS=1` put four workers on one server in silence.
+// one that goes unnoticed without a row here: `globalSetup` returns on it before it starts
+// anything, so a `--workers 4 DISPATCH_E2E_REUSE_SERVERS=1` that is not refused puts four
+// workers on one server in silence.
 test("a run of more than one stack refuses every variable one stack owns, by name", () => {
   const refused: Record<string, string> = {
     DATABASE_URL: "postgres://localhost/dispatch",
