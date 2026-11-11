@@ -5509,7 +5509,11 @@ Anything but line endings after the first line is refused with exit 2.
 Bytes arriving after that quiet window can reach the shell; multi-line values should be piped, not pasted.
 A terminal hang-up before the line or paste ends returns an error, never a partial value, and so does a bracketed paste that falls quiet for `maxPasteDrain` (10 s) before its closing mark comes, where the signal keys pressed meanwhile were pasted text;
 input arriving after it is given up reaches the shell.
-Piped input is read to EOF, less one trailing newline.
+Piped input is read to EOF.
+Either arm's value then meets the broker's own shape rule (`policy.TrimForShape`), the one statement of what a stored value is:
+with `shape: token` the whole trailing run of carriage returns and line feeds goes, unless the value is nothing but line endings, with `shape: document` nothing goes, and with no shape tag that run goes only where the rest of the value is not empty and holds no carriage return and no line feed.
+Where the rule changed nothing, one final line feed goes, which this reader has always removed, so `echo` and a file ending in a newline give the value without one.
+`secret set` reads the secret's own shape tag (`currentTags`) before it reads the value, so a document's owner stores a document.
 Empty and non-UTF-8 values are usage errors on either path.
 
 The reader alone changes the terminal, including its final flushing restore and bracketed-paste disable.
@@ -5555,7 +5559,7 @@ SIGQUIT uses the kernel default, not Go's goroutine dump.
 Core dumps are disabled once, before the first value byte is read, for the rest of the process (`PR_SET_DUMPABLE` 0 on Linux, `RLIMIT_CORE` 0 on Darwin), not just on SIGQUIT.
 `secret_job_linux_test.go` hosts prompts under interactive bash to test Ctrl-Z/bg/fg, a start with `&` (the restored settings are compared with those bash hands a foreground job, and the label with the terminal's owner and echo when it is printed), a stop before the label, an orphaned group, a shell that exits under a background prompt, SIGTERM and SIGHUP after `bg`, an external SIGSTOP, bytes after Ctrl-Z in one write, signal keys inside a paste, a paste that begins after the line, ignored SIGTSTP wrappers, quiet-window stops, refusal draining, shell history and terminal restoration.
 
-`secret.go` builds the one tag map a write sends (`optionalTags`), owner and tier plus `kind`, `github-owners`, `requesters`, `scopes`, `admin`, `max-grant` and `default-grant` when the command names them, and the rollback guard beside a kind, under the broker's own rules (`policy.ValidKind`, `policy.ParseGitHubOwners`, `policy.ParseRequesterShapes`, `policy.ParseScopes`, `policy.ParseMaxGrant`), and each backend writes a map it does not read into (`create(tags)`, `setTags`, `removeTags`).
+`secret.go` builds the one tag map a write sends (`optionalTags`), owner and tier plus `kind`, `github-owners`, `requesters`, `scopes`, `admin`, `shape`, `max-grant` and `default-grant` when the command names them, and the rollback guard beside a kind, under the broker's own rules (`policy.ValidKind`, `policy.ParseGitHubOwners`, `policy.ParseRequesterShapes`, `policy.ParseScopes`, `checkShape`, `policy.ParseMaxGrant`), and each backend writes a map it does not read into (`create(tags)`, `setTags`, `removeTags`).
 AWS `create` writes on the settings' key with those tags and no `ClientRequestToken` (the SDK sets one).
 A `retag` is one write: it either sets tags or removes them, never both, and refuses `none` beside another change before any read or write, so a refused call never leaves it half applied.
 Either reads the secret's tags once (`currentTags`, a `heldTags` with GCP's etag) and builds from them the tags the secret will hold once the write lands (`after`), and applies the github-owners rule to those once (`checkGitHubOwnersFor`), as create applies it to its flags, so neither writes a `github-app` secret without owners.
@@ -5563,9 +5567,8 @@ Each writes against that read: GCP sends the held annotations, changed, with the
 AWS's tag calls take no condition, so its `setTags` and `removeTags` read the tags back (`awsBackend.raceCheck`) and, when another writer left a kind/owners pair the broker refuses, restore the tags read and answer `errTagsChanged` too, and the retag exits 1 naming the race.
 A retag on AWS is safe only with one writer at a time.
 The retag form lives in `secret_retag.go`.
-One that sets tags sends owner and tier in one `TagResource`, plus `kind` (with the rollback guard), `github-owners`, `requesters`, `scopes`, `admin`, `max-grant` and `default-grant` when the command sets them, so an IAM condition on the request's tags sees them;
-one that removes tags (`--kind none`, which also removes the rollback guard, `--github-owners
-none`, `--requesters none`, `--scopes none`, `--admin none`, `--max-grant none`, `--default-grant none`) is one `UntagResource` of those keys.
+One that sets tags sends owner and tier in one `TagResource`, plus `kind` (with the rollback guard), `github-owners`, `requesters`, `scopes`, `admin`, `shape`, `max-grant` and `default-grant` when the command sets them, so an IAM condition on the request's tags sees them;
+one that removes tags (`--kind none`, which also removes the rollback guard, `--github-owners none`, `--requesters none`, `--scopes none`, `--admin none`, `--shape none`, `--max-grant none`, `--default-grant none`) is one `UntagResource` of those keys.
 On `AccessDenied` for a retag that sets tags on a secret held shared, or a retag to `--owner shared`, it adds that a shared secret's owner and tier are an administrator's to change (a person's own secret may be made shared where their access allows the retag;
 only an existing shared secret's tags are reserved); `delete` schedules a 30-day recovery window, never forced, and prints `DeleteSecret`'s own `DeletionDate`.
 GCP `create` creates the secret with automatic replication under the broker's `kms_key_name` and owner, tier and any named kind, `github-owners`, requesters, scopes, admin mark, max grant, default grant and the rollback guard beside a kind as annotations (never labels, so they carry no GCP label naming rules), then adds the value as its first version;
