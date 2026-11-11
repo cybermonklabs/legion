@@ -1,8 +1,8 @@
 // The sweep of the stream's session consumers: the loop that runs every interval and once as the
 // listener starts, and the pass it makes, which deletes the consumer of every session the session
 // registry judges gone. It is the bound behind the deregistration's own delete
-// (sessionDelivery.deleteAfterAnswer, api.go), which reaches only a registration this listener
-// removed.
+// (sessionDelivery.deleteAfterAnswer, session_consumer_delete.go), which reaches only a
+// registration this listener removed.
 
 package main
 
