@@ -180,8 +180,8 @@ type trimmer struct {
 	said string
 	// saidRead is the same memory for the one standing state that is not a settings state: a
 	// volume this process cannot read. It is its own field because says is cleared on every
-	// interval whose settings the trimmer can run (saidNothing), which is every interval a
-	// failing statfs happens on.
+	// interval whose settings the trimmer can run (saidNothing), and a failing statfs happens on
+	// those intervals as much as on any other.
 	saidRead string
 }
 
@@ -315,9 +315,9 @@ func (t *trimmer) intervals(ctx context.Context, inForce shimwire.LauncherVolume
 	// a volume this process still cannot read is news again under the settings that came back,
 	// and without this the started: line above would be the last thing the pod's log carried for
 	// as long as the fault lasts. It is cleared here rather than in saidNothing because tick
-	// calls that on every interval whose settings are runnable, which is every interval a
-	// failing statfs happens on: clearing it there would put the read-error line back to one per
-	// interval and undo what TestAVolumeTheTrimmerCannotReadIsSaidOnce pins.
+	// calls that on every interval whose settings are runnable, and a failing statfs happens on
+	// those intervals as much as on any other: clearing it there would put the read-error line
+	// back to one per interval and undo what TestAVolumeTheTrimmerCannotReadIsSaidOnce pins.
 	t.saidRead = ""
 	ticks, stop := t.ticks(settingsInterval(inForce))
 	defer func() { stop() }()
