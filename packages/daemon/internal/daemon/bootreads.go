@@ -172,6 +172,38 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	return r, nil
 }
 
+// ownRuntime refuses a configuration a build of the runtime named name must not read: one
+// naming the other runtime, one carrying the other runtime's block, and, under kubernetes, one
+// whose own block is nil — every pod option is read out of that block (readSandbox's
+// `*cfg.Runtime.Kubernetes`), so a nil one there is a nil dereference inside config.Live.Apply,
+// under the settings holder's lock, in a daemon that is supervising pods. Nothing of the tmux
+// block is required: `runtime: tmux` with no block is what most deployments write, and a nil
+// one names no pane key (config.Tmux, tmuxOptions).
+//
+// No loaded configuration reaches it: the loader reads the block the selector names and no
+// other (config's readRuntime), and a file that swaps the whole `runtime` key settles neither
+// half of the swap, since the settle puts the runtime the daemon booted on back whole (config's
+// pinFixed). This is the defence behind that pin — a nil block must not be able to kill the
+// process even if some later path reaches it — and it is the one refusal both runtimes' builds
+// make: readSandbox, which boot and every Sandbox rebuild read their client and Options
+// through, and the tmux build prepareTmux leaves behind (p.runtimeFor).
+func ownRuntime(name string, cfg config.Config) error {
+	if cfg.Runtime.Name != name {
+		return fmt.Errorf("the %s runtime was given a configuration naming runtime %q: the daemon supervises the processes of the runtime it booted on, and builds nothing from another runtime's configuration", name, cfg.Runtime.Name)
+	}
+	switch name {
+	case "kubernetes":
+		if cfg.Runtime.Kubernetes == nil {
+			return errors.New("the kubernetes runtime was given a configuration with no runtime.kubernetes block: every pod option is read out of that block, and the daemon builds nothing without it")
+		}
+	case "tmux":
+		if cfg.Runtime.Kubernetes != nil {
+			return errors.New("the tmux runtime was given a configuration carrying a runtime.kubernetes block: a pane reads `runtime.tmux` and nothing of the other runtime's block, which no loaded configuration holds beside `runtime: tmux`")
+		}
+	}
+	return nil
+}
+
 // natsConnection is the NATS user the daemon's own connection authenticates as: its own seed
 // (natsauth.DaemonSeed) when it has one, else the pane seed every pane receives (launchSecrets),
 // else no credential. No launch carries it.

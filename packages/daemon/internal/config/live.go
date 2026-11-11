@@ -455,61 +455,53 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 // value the daemon booted on, and a reader that takes a fixed value from the boot configuration
 // of its own is a second defence rather than the only one.
 //
-// Which paths are fixed is Classes and no second list: the walk is walkSettings' own, so a row
-// the table makes fixed is pinned with nothing else edited. Two kinds of fixed path it does not
-// reach, both of them a value the table holds inside another:
+// `runtime` is pinned whole, before the walk, because that one key carries the selector and the
+// block it names together (readRuntime). A file that swaps tmux for kubernetes — the edit
+// docs/deployment.md has an operator make before a restart — would otherwise settle the
+// selector the daemon booted on beside the other runtime's block: a configuration no loader
+// produces, which every reader of the block reads as the runtime having lost it, and which the
+// Sandbox build dereferences (internal/daemon's readSandbox, `*cfg.Runtime.Kubernetes`) inside
+// this very apply, under the holder's lock, in a daemon that is supervising pods. Set back
+// whole, the daemon goes on running the runtime it booted on with every member of its block
+// live, the walk below finds nothing left to pin under `runtime`, and the swap is reported
+// once, as `runtime`. The restart `whyRuntime` names is what settles such an edit.
+//
+// Which paths are fixed is Classes and no second list, and the walk is WalkSettings' own — the
+// one walk of the configuration the daemon has — so a row the table makes fixed is pinned with
+// nothing else edited, and the pin and the diff can never disagree about which paths the
+// configuration holds. Two kinds of fixed path it does not reach, both of them a value the
+// table holds inside another:
 //
 // The fixed rows under `projects` (`projects.<KEY>.memory.mode` and `.instructions`), because
 // the table makes `projects` one value compared whole — Config.Projects is no Block row — and
 // pinning it would pin the whole rebuild-class block with it.
 //
-// And a fixed value inside a block only one of the two readings carries, since there is no
-// settled value to pin or no field to pin it into. Pinning such a block whole instead would
-// hold keys an operator is entitled to change: `runtime.tmux` is a fixed row whose own members
-// are launch keys, and a file that drops the block drops those
-// (TestABlockTheFileDropsReadsAsUnset). What that leaves is the file that swaps the whole
-// `runtime` key, tmux for kubernetes, which is one key carrying the selector and its block
-// (readRuntime): the selector is pinned, so every reader of it goes on reading the runtime the
-// daemon launches into, while the block beside it is the other runtime's and the runtime
-// holder's own rebuild is what meets that. The restart `whyRuntime` names is what settles such
-// an edit, as it was before this pin.
+// And a fixed value inside a block only one of the two readings carries: the walk descends into
+// a block the reading it is given carries and no other, so the settled reading holds no value
+// to pin or the new one no field to pin it into. That is the file that drops `runtime.tmux`
+// under the runtime it booted on, whose members are launch keys an operator is entitled to
+// change (TestABlockTheFileDropsReadsAsUnset).
 func pinFixed(settled, next *Config) []Refusal {
 	var pinned []Refusal
-	pinFixedIn(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), &pinned)
-	return pinned
-}
-
-// pinFixedIn is walkSettings' walk over two readings of one block at once: it descends where
-// that walk descends — into a block both readings carry — and where the row is a fixed value
-// it puts the settled reading's value back.
-func pinFixedIn(settled, next reflect.Value, pinned *[]Refusal) {
-	typ := next.Type()
-	for i := range typ.NumField() {
-		field := typ.Field(i)
-		if !field.IsExported() {
-			continue
-		}
-		row, known := rowOf(typ.Name() + "." + field.Name)
-		if !known {
-			continue
-		}
-		was, now := settled.Field(i), next.Field(i)
-		if row.Block {
-			if was.Kind() == reflect.Pointer {
-				if was.IsNil() || now.IsNil() {
-					continue
-				}
-				was, now = was.Elem(), now.Elem()
-			}
-			pinFixedIn(was, now, pinned)
-			continue
-		}
-		if row.Class != ClassFixed || Render(was) == Render(now) {
-			continue
-		}
-		now.Set(was)
-		*pinned = append(*pinned, Refusal{Path: row.Path, Reason: row.Why})
+	if settled.Runtime.Name != next.Runtime.Name {
+		next.Runtime = settled.Runtime
+		pinned = append(pinned, Refusal{Path: "runtime", Reason: whyRuntime})
 	}
+	boot := map[string]reflect.Value{}
+	WalkSettings(settled, func(row Row, value reflect.Value) {
+		if row.Class == ClassFixed {
+			boot[row.Path] = value
+		}
+	})
+	WalkSettings(next, func(row Row, value reflect.Value) {
+		was, booted := boot[row.Path]
+		if row.Class != ClassFixed || !booted || Render(value) == Render(was) {
+			return
+		}
+		value.Set(was)
+		pinned = append(pinned, Refusal{Path: row.Path, Reason: row.Why})
+	})
+	return pinned
 }
 
 // Render is one value as a log line shows it: a duration as its own string, another scalar as it

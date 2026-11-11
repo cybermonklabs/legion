@@ -37,6 +37,29 @@ func rewrite(t *testing.T, path, body string) {
 	}
 }
 
+// kubernetesLiveFile is kubernetesFile with App keys this holder can resolve: NewLive runs the
+// loader whole, every `private_key_command` with it, and that fixture's commands are written to
+// fail.
+var kubernetesLiveFile = strings.ReplaceAll(kubernetesFile, `private_key_command: "exit 1"`, "private_key: app-test-key")
+
+// tmuxLiveFile is that same file with its one `runtime` key written as the other runtime's,
+// which is the swap docs/deployment.md has an operator make before a restart. Everything else
+// is one deployment's, so a rewrite from either file to the other changes that key alone, and
+// the tmux side carries a block of its own: a settle must keep the whole of whichever block
+// the daemon booted on.
+var tmuxLiveFile = runtimeSwapped(kubernetesLiveFile, "runtime:\n  tmux:\n    pi_config_files: [overlay.json]\n")
+
+// runtimeSwapped is file with its `runtime` key, the last key kubernetesFile holds, replaced by
+// block. It panics on a file carrying no such key, so a fixture that stops holding one cannot
+// pass by swapping nothing.
+func runtimeSwapped(file, block string) string {
+	head, _, found := strings.Cut(file, "runtime:\n")
+	if !found {
+		panic("the fixture carries no runtime key to swap")
+	}
+	return head + block
+}
+
 func TestNewLiveResolvesTheFileUnderItsStoredOverlay(t *testing.T) {
 	live, _ := newLive(t, minimalFile, map[string]any{"admission_cap": 9})
 
@@ -336,6 +359,47 @@ func TestABlockTheFileDropsReadsAsUnset(t *testing.T) {
 	}
 	if applied[index].New != UnsetValue {
 		t.Errorf("the dropped path reads %q, want %q", applied[index].New, UnsetValue)
+	}
+}
+
+// A file that swaps the whole `runtime` key settles neither half of the swap: the daemon keeps
+// the runtime it booted on with every member of its block, and the edit is refused once, as
+// `runtime`.
+//
+// The selector alone would be worse than nothing. `runtime` is one key carrying the selector
+// and the block it names (readRuntime), so a settle that pinned the name and took the file's
+// block would hold a configuration no loader produces: `kubernetes` beside no
+// `runtime.kubernetes`, whose every member every reader of the block then reads as unset — and
+// whose nil block the Sandbox build dereferences (internal/daemon's readSandbox), inside this
+// apply, under the holder's lock, in a daemon supervising pods.
+func TestAFileThatSwapsTheRuntimeKeyKeepsTheWholeBlockBootSettled(t *testing.T) {
+	for _, tc := range []struct{ name, booted, swapped string }{
+		{"kubernetes to tmux", kubernetesLiveFile, tmuxLiveFile},
+		{"tmux to kubernetes", tmuxLiveFile, kubernetesLiveFile},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, tc.booted, nil)
+			booted := live.Snapshot().Runtime
+
+			rewrite(t, path, tc.swapped)
+			applied, refused, err := live.Apply(SourceFile, "", nil)
+
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			want := []Refusal{{Path: "runtime", Reason: whyRuntime}}
+			if !slices.Equal(refused, want) {
+				t.Fatalf("the settle refused %+v, want exactly %+v: the key the file swapped, named once", refused, want)
+			}
+			if settled := live.Snapshot().Runtime; !reflect.DeepEqual(settled, booted) {
+				t.Fatalf("the settled runtime = %+v, want the whole of the boot's %+v: the daemon supervises that runtime's processes", settled, booted)
+			}
+			for _, change := range applied {
+				if change.Path == "runtime" || strings.HasPrefix(change.Path, "runtime.") {
+					t.Errorf("applied carries %+v, want no `runtime` path at all: a pinned path is no change of the daemon's", change)
+				}
+			}
+		})
 	}
 }
 

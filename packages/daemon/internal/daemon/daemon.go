@@ -967,8 +967,13 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 		}
 		// Everything but the configuration — the launchers, the provider key directory, the
 		// Dispatch token file, the gh boot resolved — is this boot's; the rest is read again from
-		// the configuration each build is given, the boot's own included.
+		// the configuration each build is given, the boot's own included. A configuration that
+		// is not this runtime's is refused rather than built from (ownRuntime), as the Sandbox
+		// build refuses one (readSandbox).
 		p.runtimeFor = func(c config.Config) (runtimeFactory, error) {
+			if err := ownRuntime("tmux", c); err != nil {
+				return nil, err
+			}
 			return tmuxRuntime(c, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, log), nil
 		}
 	}
