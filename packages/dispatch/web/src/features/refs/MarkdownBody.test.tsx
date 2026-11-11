@@ -822,6 +822,9 @@ test("a bare dispatch ask reference renders an inline link to the ask route with
   const askRead: AskRead = {
     ask: {
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
@@ -961,6 +964,9 @@ test("two references in one body each resolve their own inline link and title, r
   const askRead: AskRead = {
     ask: {
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
@@ -1048,6 +1054,9 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
   const askRead: AskRead = {
     ask: {
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
