@@ -922,7 +922,9 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     repeat: (sid, card) => relay(sid, `notifications.agent.${sid}`, card.frame),
     notice(sid) {
       const message = storeNotice();
-      void message.deliver(sid);
+      // Nothing awaits this delivery, so its refusal - a session that answers nak, or one that
+      // takes no frame at all - is caught here rather than raised with no owner.
+      void message.deliver(sid).catch(() => undefined);
       return message.summary;
     },
     storeNotice,
@@ -951,7 +953,7 @@ test.skipIf(natsUrl === undefined && !onActions)(
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
     const codec = StringCodec();
-    const send = (sid: string): Promise<string> =>
+    const send = (sid: string) =>
       sendRelayFrame({
         connection,
         newHeaders: natsHeaders,
@@ -964,43 +966,48 @@ test.skipIf(natsUrl === undefined && !onActions)(
         withinMs: RELAY_REFUSAL_MS,
       });
 
-    // A session takes the frame on its own deliver subject and answers it as a session does, so
-    // this half is what `await taken` means everywhere else in this file, and the word itself is
-    // read rather than the fact that a reply came.
-    const answers = async (sid: string, word: string): Promise<void> => {
+    // One session on its own deliver subject, answering each frame as the half wants: the word it
+    // writes, or nothing at all for the half whose session takes the frame and never answers.
+    const listens = async (sid: string, answer: (reply: string) => void): Promise<void> => {
       const session = await connect({ servers: natsUrl ?? "" });
       cleanup.push(() => session.close());
       const frames = session.subscribe(deliverSubject(sid));
       void (async () => {
-        for await (const message of frames) message.respond(codec.encode(word));
+        for await (const message of frames) {
+          if (message.reply !== undefined && message.reply !== "") answer(message.reply);
+        }
       })();
       await session.flush();
     };
+    const answers = (sid: string, word: string): Promise<void> =>
+      listens(sid, (reply) => connection.publish(reply, codec.encode(word)));
+
+    // A session takes the frame on its own deliver subject and answers it as a session does, so
+    // this half is what `await taken` means everywhere else in this file, and the word itself is
+    // read rather than the fact that a reply came.
     const heard = `heard-${randomUUID()}`;
     await answers(heard, "received");
     expect(await send(heard)).toBe("received");
 
-    // The answer a closed session sends for a frame it cannot take: the relay refuses it by name,
-    // so a caller that only awaits the send cannot read it as a take.
+    // The answer a closed session sends for a frame it cannot take, and a word of no protocol at
+    // all: the relay refuses each by name, so a caller that only awaits the send reads neither as
+    // a take.
     const naked = `naked-${randomUUID()}`;
     await answers(naked, "nak");
-    await expect(send(naked)).rejects.toThrow(`${naked} answered nak`);
+    await expect(send(naked)).rejects.toThrow(`${naked} answered "nak"`);
+
+    const babbling = `babbling-${randomUUID()}`;
+    await answers(babbling, "sure thing");
+    await expect(send(babbling)).rejects.toThrow(`${babbling} answered "sure thing"`);
 
     const unheard = `nobody-${randomUUID()}`;
     await expect(send(unheard)).rejects.toThrow(
       new RegExp(`${unheard} took no relay frame.*503`, "s")
     );
 
-    const silent = await connect({ servers: natsUrl ?? "" });
-    cleanup.push(() => silent.close());
     const sid = `silent-${randomUUID()}`;
-    const subscription = silent.subscribe(deliverSubject(sid));
-    void (async () => {
-      for await (const _message of subscription) {
-        // Taken and never answered, which is the shape the bound exists for.
-      }
-    })();
-    await silent.flush();
+    // Taken and never answered, which is the shape the bound exists for.
+    await listens(sid, () => undefined);
     const started = Date.now();
     await expect(send(sid)).rejects.toThrow(new RegExp(`${sid} took no relay frame.*TIMEOUT`, "s"));
     expect(Date.now() - started).toBeGreaterThanOrEqual(RELAY_REFUSAL_MS);

@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
   type Cleanup,
@@ -12,7 +11,7 @@ import {
   ompNatsGuard,
   ompRoot,
   type Request,
-  STANDIN_STREAM_ID,
+  sendRelayFrame,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
@@ -158,24 +157,30 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
 
 /**
  * A core NATS client on a socket, which relays one frame of the session's consumer as the
- * listener does: CONNECT with headers on, then one HPUB per frame on the session's deliver
- * subject, carrying the stored subject, sequence, stream and time, with a reply inbox of its own.
- * A session takes its messages from that relay alone now (INFRA-771), so nothing reaches it on
- * its agent subject. The `nats` package is deliberately not imported (see the file header), so
- * the frame, its header block and the reply are written and read here.
+ * listener does. The `nats` package is deliberately not imported (see the file header), so the
+ * socket is written here; what a relay frame is, and what counts as the session taking one, is
+ * not written here at all. This implements the one call `sendRelayFrame` needs of a connection
+ * (`RelayConnection`, packages/pi-shared/test/omp-harness.ts) - one request on a reply inbox of
+ * its own, answered with the session's own word - and that shared helper does the rest: the
+ * header block, the resend while the pane has not subscribed its deliver subject yet, the
+ * deadline, and the refusal by name of a `nak` or any other word that is no take. A rig that
+ * read the arrival of any reply as a take would read a closed session's refusal as one, which is
+ * what this file's own loop did (review round 37).
  *
- * The frame goes again every 100 ms until the session answers it: until the pane has subscribed
- * its deliver subject the server drops the send, and nothing but the next send says so. The
- * stamp returned is the moment the answered send went out, which is the message's arrival: it is
- * earlier than the session's own reply, so measuring the role's next turn against it is the
- * stronger of the two readings.
+ * A session takes its messages from that relay alone now (INFRA-771), so nothing reaches it on
+ * its agent subject. The stamp returned is the moment the answered send went out, which is the
+ * message's arrival: it is earlier than the session's own reply, so measuring the role's next
+ * turn against it is the stronger of the two readings.
  */
 async function natsRelay(
   url: string
 ): Promise<(sessionID: string, payload: string, seq: number) => Promise<Moment>> {
   const address = new URL(url);
   const inbox = `_INBOX.bgsub.${randomUUID()}`;
-  let answered = 0;
+  // One waiter per request, under the inbox subject that request named: the socket hands it the
+  // first answer on that subject and forgets it.
+  const waiting = new Map<string, (answer: string) => void>();
+  let requests = 0;
   let buffered = Buffer.alloc(0);
   const socket = await Bun.connect({
     hostname: address.hostname,
@@ -193,8 +198,15 @@ async function natsRelay(
             const fields = line.split(" ");
             const bytes = Number(fields[fields.length - 1]);
             if (buffered.length < end + 2 + bytes + 2) return;
+            const body = buffered.subarray(end + 2, end + 2 + bytes).toString();
             buffered = buffered.subarray(end + 2 + bytes + 2);
-            answered += 1;
+            const subject = fields[1] ?? "";
+            const answer = waiting.get(subject);
+            if (answer !== undefined) {
+              waiting.delete(subject);
+              // A session answers its word and no header block, so the body is that word whole.
+              answer(body);
+            }
             continue;
           }
           buffered = buffered.subarray(end + 2);
@@ -207,36 +219,67 @@ async function natsRelay(
     socket.end();
   });
   socket.write('CONNECT {"verbose":false,"pedantic":false,"protocol":1,"headers":true}\r\n');
-  socket.write(`SUB ${inbox} 1\r\n`);
-  return async (sessionID, payload, seq) => {
-    const headers =
-      "NATS/1.0\r\n" +
-      `${RelayHeader.subject}: notifications.agent.${sessionID}\r\n` +
-      `${RelayHeader.streamSeq}: ${seq}\r\n` +
-      `${RelayHeader.streamID}: ${STANDIN_STREAM_ID}\r\n` +
-      `${RelayHeader.delivered}: 1\r\n` +
-      `${RelayHeader.storedAt}: ${new Date().toISOString()}\r\n` +
-      "\r\n";
-    const headerBytes = Buffer.byteLength(headers);
-    const total = headerBytes + Buffer.byteLength(payload);
-    const taken = answered;
-    const deadline = Date.now() + DEADLINE_MS;
-    for (;;) {
-      const sent = moment();
+  socket.write(`SUB ${inbox}.* 1\r\n`);
+
+  /** The header set `sendRelayFrame` fills, which this writes out as the wire block it sends. */
+  interface FrameHeaders {
+    set(name: string, value: string): void;
+    /** The header block as the wire carries it, its trailing blank line included. */
+    block(): string;
+  }
+  const newHeaders = (): FrameHeaders => {
+    const held: string[] = [];
+    return {
+      set(name: string, value: string): void {
+        held.push(`${name}: ${value}\r\n`);
+      },
+      block(): string {
+        return `NATS/1.0\r\n${held.join("")}\r\n`;
+      },
+    };
+  };
+  let sent = moment();
+  const connection = {
+    request(
+      subject: string,
+      payload: Uint8Array,
+      options: { readonly timeout: number; readonly headers: FrameHeaders }
+    ): Promise<{ readonly data: Uint8Array }> {
+      requests += 1;
+      const reply = `${inbox}.${requests}`;
+      const headers = options.headers.block();
+      const headerBytes = Buffer.byteLength(headers);
+      const total = headerBytes + payload.byteLength;
+      const answered = Promise.withResolvers<{ readonly data: Uint8Array }>();
+      // The one real timer here: the server says nothing at all about a send no session has
+      // subscribed for, so only this bound tells the helper to send the frame again.
+      const timer = setTimeout(() => {
+        waiting.delete(reply);
+        answered.reject(new Error(`no answer on ${reply} within ${options.timeout} ms`));
+      }, options.timeout);
+      waiting.set(reply, (word) => {
+        clearTimeout(timer);
+        answered.resolve({ data: new TextEncoder().encode(word) });
+      });
+      sent = moment();
       socket.write(
-        `HPUB ${deliverSubject(sessionID)} ${inbox} ${headerBytes} ${total}\r\n${headers}${payload}\r\n`
+        `HPUB ${subject} ${reply} ${headerBytes} ${total}\r\n${headers}${Buffer.from(payload).toString()}\r\n`
       );
-      // A real clock, deliberately, as the shared sendRelayFrame uses one: a session that has
-      // not subscribed its deliver subject yet emits no signal at all here, and the server only
-      // drops the send, so the next send is the one thing that can tell this rig it is up.
-      for (let waited = 0; waited < 100; waited += 10) {
-        if (answered > taken) return sent;
-        await Bun.sleep(10);
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`${sessionID} took no relay frame carrying ${payload}`);
-      }
-    }
+      return answered.promise;
+    },
+  };
+  return async (sessionID, payload, seq) => {
+    await sendRelayFrame({
+      connection,
+      newHeaders,
+      sessionID,
+      subject: `notifications.agent.${sessionID}`,
+      payload: new TextEncoder().encode(payload),
+      seq,
+      delivered: 1,
+      withinMs: DEADLINE_MS,
+    });
+    return sent;
   };
 }
 

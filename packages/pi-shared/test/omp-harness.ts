@@ -162,13 +162,13 @@ export interface RelayFrame {
  * (`createConsumerDelivery`).
  *
  * Answers that word, so awaiting this is reading that the session took the frame and not only
- * that it answered something: `received` is the frame decoded, `progress` is it held unwritten,
- * and `done` is it written, or skipped, suppressed, rejected or a duplicate, which a session
- * answers first for an undecodable frame or one it has written already
- * (`RelayReply`, packages/envoy-client/src/consumer-delivery.ts). The `nak` a session sends for a
- * frame it cannot take - a closed session's answer - is refused by name instead, since a caller
- * that awaits a send reads it as a take; so is any other word, which is a session answering
- * something this protocol does not hold.
+ * that it answered something. Which word comes first says what the session did with it: a session
+ * answers `received` as soon as the frame decodes, and `done` first only for a frame it could not
+ * decode, so the frames this sends are answered `received` first and `done` or `progress` only as
+ * a later answer of the same frame (`createConsumerDelivery`, packages/envoy-client/src/consumer-
+ * delivery.ts). Any other word is a refusal and is thrown by name, the `nak` a session sends for
+ * a frame it cannot take - a closed session's answer - among them, since a caller that awaits a
+ * send would otherwise read one as a take.
  */
 export async function sendRelayFrame(frame: RelayFrame): Promise<Exclude<RelayReply, "nak">> {
   const deadline = Date.now() + (frame.withinMs ?? 30_000);
@@ -198,12 +198,9 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<Exclude<RelayRe
       await Bun.sleep(100);
       continue;
     }
-    if (answered === "nak") {
-      throw new Error(`${frame.sessionID} answered nak on ${frame.subject}, so it took no frame`);
-    }
     if (answered !== "received" && answered !== "progress" && answered !== "done") {
       throw new Error(
-        `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}, which is no relay answer`
+        `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}, so it took no frame`
       );
     }
     return answered;

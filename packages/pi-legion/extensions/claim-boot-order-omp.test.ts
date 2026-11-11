@@ -119,8 +119,8 @@ interface Worker {
   refusal(): string | undefined;
   /** The summary of the message the stand-in listener kept for this worker's role. */
   readonly kept: string;
-  /** Resolves once the session has taken that message: the lane receipt it answers the forwarded
-   * envelope with before it delivers it (`expectsLaneReceipt`, packages/envoy-client). */
+  /** Resolves once the session has taken that message: the word it answers the relay frame with
+   * (`sendRelayFrame`, which refuses a `nak` by name, so this resolves on a take alone). */
   handedOver(what: string): Promise<void>;
   /** How long after the stand-in answered `claims/ready` the role claim reached the listener. */
   claimedAfterReadyMs(): number;
