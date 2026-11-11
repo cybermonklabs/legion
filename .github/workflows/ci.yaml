@@ -1032,6 +1032,10 @@ jobs:
               # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
               # cites to a heading of that skill's SKILL.md.
               - 'skills/**'
+              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
+              # and its ALLOWED names lines of four of them, so rewording one of those lines
+              # fails that test and this job has to run for it.
+              - 'packages/*/AGENTS.md'
               # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
