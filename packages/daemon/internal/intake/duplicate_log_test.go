@@ -67,12 +67,37 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	if !strings.Contains(line, "level=INFO") {
 		t.Errorf("the dropped duplicate's line is not at info, the level the rate is read at: %s", line)
 	}
-	// The seven fields an operator tells a redelivery from a copy of the listener's mention
-	// fan-out by, and reads the rate per consumer and source from. What each one holds is the
-	// delivery's, so the row asks that it is reported and not what it reads.
-	for _, field := range []string{"consumer=", "source=", "event_id=", "subject=", "stream_seq=", "delivery_seq=", "delivered="} {
+	// The consumer the rate is read per, by value: a line carrying consumer="" is the metadata
+	// read of the duplicate branch failing (consume.go), and reads as a drop on no consumer at
+	// all.
+	if said := logValue(line, "consumer"); said != consumer {
+		t.Errorf("the dropped duplicate's line says consumer=%s, want %s, the GitHub durable whose share of the drops is read from it: %s", said, consumer, line)
+	}
+	// One delivery, by value: each publication is a stream message of its own, so the dropped
+	// copy is that message's own first delivery, and a count above one would be a JetStream
+	// redelivery. This 1 rests on the AckWait guard above, the same guard the count of one line
+	// rests on. A delivered=0 is the metadata read failing, and no reading of a drop.
+	if said := logValue(line, "delivered"); said != "1" {
+		t.Errorf("the dropped duplicate's line says delivered=%s, want 1, the dropped copy's own first delivery: %s", said, line)
+	}
+	// The other five fields an operator tells a redelivery from a copy of the listener's mention
+	// fan-out by. What each one holds is the fixture's — its subject, its ids and the stream's
+	// numbering — so the row asks that it is reported and not what it reads.
+	for _, field := range []string{"source=", "event_id=", "subject=", "stream_seq=", "delivery_seq="} {
 		if !strings.Contains(line, field) {
 			t.Errorf("the dropped duplicate's line carries no %s, which is what the rate is read by: %s", field, line)
 		}
 	}
+}
+
+// logValue is what a slog text line holds for key: what follows " key=" up to the next space, or
+// "" when the line carries no such key. Neither field this row reads by value holds a space, so
+// neither is quoted and neither runs past the space that ends it.
+func logValue(line, key string) string {
+	_, after, found := strings.Cut(line, " "+key+"=")
+	if !found {
+		return ""
+	}
+	value, _, _ := strings.Cut(after, " ")
+	return value
 }
