@@ -29,7 +29,12 @@
  *  90 s is three times the inferred 27.5 s, which is this tree's own bar applied to the worst
  *  shape known to exist. It is deliberately generous, because this limit is no row's subject: a
  *  number too large costs a slower report of a true hang, a number too small costs a flake that
- *  ejects a pull request from the merge queue, and the two are not comparable. A row this limit
- *  cuts off reads about 90 s. Bun's unwritten 5 s default is under every reading above but the
- *  3.90 s one, which is why a busy machine read as a defect of whatever change was under test. */
+ *  ejects a pull request from the merge queue, and the two are not comparable.
+ *
+ *  So it is two things at once, and a reader should not take it for one. On the slow shape it is
+ *  a limit sized from measurement, through the inference above. On this pod it is seven times
+ *  the worst reading ever taken here, which is past any sizing: here it is a hang guard, and a
+ *  row it cuts off reads about 90 s. Bun's unwritten 5 s default is under every reading above
+ *  but the 3.90 s one, which is why a busy machine read as a defect of whatever change was
+ *  under test. */
 export const SPAWN_TEST_MS = 90_000;
