@@ -37,6 +37,14 @@ type curveSeries struct {
 	// voidsStarved is set for a series that voids a step whose own generator was starved
 	// (markVoid).
 	voidsStarved bool
+	// ownFactorsOnly is set for a series whose steps each offer their own rates, so a step whose
+	// summary carries no loop factor drove no load of this series at all and reads factor 0
+	// rather than borrowing configFactor's requests-over-60 rule. That rule is the cluster
+	// series' own and is load-bearing there, where every step is scaled against a 1x baseline of
+	// 60 requests a second; inherited by the loop series it labelled a baseline that drove no
+	// loop load "factor 1", in the same table as a 1x step that failed at that factor
+	// (INFRA-988).
+	ownFactorsOnly bool
 }
 
 // clusterSeries is INFRA-598's cluster series: the grid 1, 2, 3, 5, 7, 10, a knee refined until
@@ -54,7 +62,7 @@ var clusterSeries = &curveSeries{
 var loopSeries = &curveSeries{
 	name: "loop", grid: []float64{1, 2, 3, 4, 6, 8, 12, 16, 20}, bracket: 0.5,
 	crits:        []int{critCommits, critRequests, critDelivery, critCPULimit, critPool, critFailed, critLost, critCloudSQLCPU},
-	voidsStarved: true,
+	voidsStarved: true, ownFactorsOnly: true,
 }
 
 // curveSeriesByName are the series -series takes.
@@ -182,7 +190,7 @@ func readCurveStep(se *curveSeries, dir string) (*curveStep, error) {
 		if cs.stepData, err = readStep(dir); err != nil {
 			return nil, err
 		}
-		cs.factor = configFactor(cs.sum.Config)
+		cs.factor = se.stepFactor(cs.name, cs.sum.Config)
 	}
 	if cs.cloudsql, err = readCloudSQLCPUFile(dir); err != nil {
 		return nil, err
@@ -235,6 +243,29 @@ func configFactor(c summaryConfig) float64 {
 		return c.RequestsPerS / 60
 	}
 	return c.EventsPerS / 4
+}
+
+// stepFactor is the load factor this series reads a step at, from its name and its configuration.
+// The loop factor its run was given is first for every series. For a series whose steps each
+// offer their own rates (ownFactorsOnly) the step's own name is next — the series' own steps are
+// named "<f>x" — and a step with neither drove no load of that series at all and reads 0: it is a
+// control row, and borrowing configFactor's requests-over-60 rule labelled such a step "factor 1"
+// in CURVES.md and curves.csv, in the same table as a 1x step that failed at that factor
+// (INFRA-988, read off a baseline offering exactly 60 requests a second). Every other series
+// reads configFactor as it always has, which the cluster series needs: there every step is scaled
+// against a 1x baseline of 60 requests a second, so that division is how a cluster step's factor
+// is known at all.
+func (se *curveSeries) stepFactor(name string, c summaryConfig) float64 {
+	if c.LoopFactor > 0 {
+		return c.LoopFactor
+	}
+	if se.ownFactorsOnly {
+		if f, ok := nameFactor(name); ok {
+			return f
+		}
+		return 0
+	}
+	return configFactor(c)
 }
 
 // nameFactor is the factor a step name starts with, "<f>x", as the cluster script names steps.

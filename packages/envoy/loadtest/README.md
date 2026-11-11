@@ -3781,8 +3781,14 @@ host networking, so that port answers on its own machine's loopback and nowhere 
 need it:
 
 - The profiles a step keeps (`cpu.pprof`, `goroutines.txt`, `heap.pprof`, `heap.txt`) are fetched
-  after the load from that machine itself, over ssh. A fetch that fails is a note, never a step
-  failure: the step's measurements stand without its profile.
+  from that machine itself, over ssh, by a job `step` runs **beside the load**: the CPU profile
+  is asked for when the warm-up ends and answers the window's seconds later, so it is a profile
+  of the measured window, and the three state snapshots are read when it returns, at the
+  window's end with the load still on. A fetch that fails is a note, never a step
+  failure: the step's measurements stand without its profile. Where `loadgen run` reached the
+  profiling port through the tunnel below and wrote these files itself, its copies are the ones
+  the step keeps and this job's are dropped; `profiles.txt` in the step directory names the
+  writer of each.
 - The 5 s sampler inside `loadgen run` reads Dispatch's goroutines, its pool acquire waiters and
   its heap **while the step runs**, and it runs on the load machine.
 
