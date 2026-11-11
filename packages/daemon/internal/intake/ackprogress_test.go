@@ -200,9 +200,10 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// first report is due is 2.58 times 517 ms and 2.69 times 495.6 ms, where a second and a half
 	// would leave 1000 ms, which is 1.9 times. The acknowledgement path adds its parts up instead
 	// of competing: one period, plus the report's lateness, plus the acknowledgement's trip,
-	// which at this window is 667 + 337 + 516.8 = 1520.8 ms of the 2000 ms, leaving 996 ms
-	// against that 516.8 ms trip, 1.93 times. Two seconds is the smallest half-second that covers
-	// both paths with those margins, and it stands. Those delays are wall-clock and not a
+	// which at this window is 667 + 337 + 516.8: the acknowledgement lands 1520.8 ms into the
+	// 2000 ms window, 479.2 ms spare, and its trip of 516.8 ms has 996 ms available, which is
+	// 1.93 times. Two seconds is the smallest half-second that covers both paths with those
+	// margins, and it stands. Those delays are wall-clock and not a
 	// fraction of the period, because the mechanism is a goroutine and a socket that are not
 	// scheduled: a starved goroutine is late by the time it waits, whatever interval it was
 	// waiting for. The keeper's clock starts at the entry of the callback consumeConsumer passes
@@ -622,9 +623,10 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 	mu.Lock()
 	retry := entered[1].Sub(entered[0])
 	mu.Unlock()
-	// The margin: the delay the nak asked for is a fortieth of AckWait, and a late tick would make
-	// this retry a whole AckWait. A quarter of AckWait is five times the delay, which a loaded
-	// runner's scheduling does not cross, and four times under the window a late tick would cost.
+	// The margin: the delay the nak asked for is a fortieth of AckWait, 50 ms of 2 seconds, and a
+	// late tick would make this retry a whole AckWait. The guard is a quarter of AckWait, 500 ms,
+	// which is ten times the delay, so a loaded runner's scheduling does not cross it, and a
+	// quarter of the 2 seconds a late tick would cost.
 	if retry > spec.AckWait/4 {
 		t.Errorf("the naked fact was delivered again after %s, want nearer its %s nak delay than its %s acknowledgement window: a progress signal after the nak reset the server's redelivery timer",
 			retry, spec.NakDelay, spec.AckWait)
