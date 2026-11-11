@@ -15,6 +15,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1969,6 +1970,29 @@ func newArtifactNameRefusal(name string) error {
 	return errorf(http.StatusBadRequest, "INVALID_ARTIFACT",
 		"artifact name is %d bytes, past the %d bytes a new artifact's name may hold; give it a shorter name",
 		len(name), maxNewArtifactKeyBytes)
+}
+
+// documentNameExtension is a name's extension: what follows its last dot when that holds no
+// blank. markdownNameExtension is the extension a document's name may carry. The two are the
+// rule the command line already holds inline content to (artifactProblem,
+// packages/contracts/src/dispatch-tools.ts), written here in Go for the first time.
+var (
+	documentNameExtension = regexp.MustCompile(`\.([^\s.]+)$`)
+	markdownNameExtension = regexp.MustCompile(`(?i)^(md|markdown)$`)
+)
+
+// markdownDocumentNameRefusal is the 400 refusing a document's name that carries an extension
+// which is not Markdown, or nil. A document holds Markdown, so it goes only under a name that
+// says Markdown or says nothing: a `rows.jsonl` stored that way reads back as Markdown, which
+// is not the file the name promises.
+func markdownDocumentNameRefusal(name string) error {
+	extension := documentNameExtension.FindStringSubmatch(strings.TrimSpace(name))
+	if extension == nil || markdownNameExtension.MatchString(extension[1]) {
+		return nil
+	}
+	return errorf(http.StatusBadRequest, "INVALID_ARTIFACT",
+		"a document holds Markdown, and %q is not a Markdown name; a name ends in .md or .markdown, or carries no extension",
+		name)
 }
 
 // newArtifactKeyRefusal is the 400 refusing a new artifact whose reference key, the target's
