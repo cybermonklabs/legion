@@ -1623,15 +1623,17 @@ func documentReferenceLabels(documents []model.Artifact) string {
 	return strings.Join(labels, ", ")
 }
 
+// loadArtifact reads one artifact by id, with the details every artifact read carries: the row
+// loadArtifactRowByID finds, and then its versions and its approval (loadArtifactDetails).
 func (s *server) loadArtifact(ctx context.Context, q queryer, id string) (model.Artifact, error) {
-	parsed, err := parseArtifactID(id)
+	artifact, err := loadArtifactRowByID(ctx, q, id)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	return s.loadArtifactRow(ctx, q, q.QueryRow(ctx, `
-		select `+artifactColumns+`
-		from artifacts where id = $1
-	`, parsed))
+	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}); err != nil {
+		return model.Artifact{}, err
+	}
+	return artifact, nil
 }
 
 func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey string) (model.Artifact, error) {
@@ -1641,9 +1643,10 @@ func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey str
 	`, refKey))
 }
 
-// loadArtifactRow reads one artifact from the row a lookup by id or by ref_key returns, with the
-// details every artifact read carries - its versions, and its approval when it is a document - in
-// one batch (loadArtifactDetails), so the read costs that lookup and one round trip more.
+// loadArtifactRow reads one artifact from the row a lookup by ref_key or by any other column
+// returns, with the details every artifact read carries - its versions, and its approval when it
+// is a document - in one batch (loadArtifactDetails), so the read costs that lookup and one
+// round trip more.
 func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifactOrNotFound(row)
 	if err != nil {

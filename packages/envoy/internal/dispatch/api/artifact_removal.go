@@ -16,18 +16,25 @@ import (
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
 // title and never written in. It answers 204 and no body.
 //
-// It needs the person scope (routeScopes) and takes two locks before it reads what the document
-// holds: the owner's, as the title correction does (renameArtifact), so a correction and a
-// removal of one owner cannot each miss the other, and then the document's room
-// (docs.LockDocumentRoom), which is the lock a durable write of the document takes. In that
-// order, which is the one docs/persistence.go states: the owner row first, then the room, as a
-// settlement takes them, and a room's own writers take no owner row, so this joins no lock
-// cycle. Every test of "untouched" is read inside this transaction, under both locks, from the
-// row this transaction re-read: a version written, an edit typed, or a comment, ask, review,
-// approval request, check result, read mark or citation left between the request and the locks
-// refuses the removal rather than being deleted with the document. An append of another process
-// either committed before the room's lock was taken, which refuses the removal, or waits for
-// this transaction and then meets the row that has gone.
+// It needs the person scope (routeScopes) and takes two locks: the owner's row, as the title
+// correction does (renameArtifact), so a correction and a removal of one owner cannot each miss
+// the other, and then the document's room (docs.LockDocumentRoom), which is the lock a durable
+// write of the document takes. In that order, which is the one docs/persistence.go states: the
+// owner row first, then the room, as a settlement takes them, and a room's own writers take no
+// owner row, so this joins no lock cycle.
+//
+// Four refusals read the artifact row alone: the kind, the role, the issue's spec and a
+// project's document (artifactRowIsUntouched). The removal answers them from the row
+// beginArtifactWrite re-read, before the room's lock. A DELETE of the spec, of a role document
+// or of a picture then waits for no room lock that a room's batch, a compaction or a snapshot
+// holds, and it frees the issue's row at once for every comment, ask and upload of that issue.
+//
+// What the document holds needs the room's lock and is read under it (artifactIsUntouched),
+// inside this transaction and from the row this transaction re-read: a version written, an edit
+// typed, or a comment, ask, review, approval request, check result, read mark or link left
+// between the request and the lock refuses the removal rather than being deleted with the
+// document. An append of another process either committed before the room's lock was taken,
+// which refuses the removal, or waits for this transaction and then meets the row that has gone.
 //
 // The rows go in one transaction: first the rows the artifact's own delete would leave behind or
 // be refused by (artifactRemovalClears) and the reference rows package refs keeps for the
@@ -53,6 +60,13 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The refusals the artifact row alone answers, judged before the room's lock: the removal of
+	// the spec, of a role document or of anything that is no document waits for no lock a room's
+	// own writers hold.
+	if refusal := artifactRowIsUntouched(artifact); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	// The document's room, taken after the owner's row and before anything of the document is
 	// read: an append that commits between the read of its stored updates and their delete
 	// would be deleted with the document, and one still in flight at the artifact's own delete
@@ -61,6 +75,8 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The refusals that need the lock: the versions, the edits that have not settled, what
+	// points at the document and what links to it.
 	if refusal := artifactIsUntouched(r.Context(), tx, artifact); refusal != nil {
 		s.writeHandlerError(w, refusal)
 		return
@@ -72,7 +88,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// What package refs holds for the document: its own mentions, the index it is owed and the
-	// backoff a mention of it was deferred under, through that package's own statements.
+	// backoff its own mentions were deferred under, through that package's own statements.
 	if err := refs.ForgetDocument(r.Context(), tx, artifact.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -109,17 +125,16 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// artifactIsUntouched answers the refusal artifact reads, or nil when it is a document of an
-// issue that holds nothing and nothing names. Each test is read inside tx, the removal's own
-// transaction, so what it reads is what the delete below it deletes.
-//
-// The tests are the ones R10 names, in its order: the kind, the role, the issue's spec, the
-// owner, the versions, the unsettled edits, and what points at the document. A project's
-// document reads a refusal of its own, because a project document's events are its own
-// (events.artifact_id under events_one_owner) and its removal event would need the row the
-// removal deletes. An artifact of an agent's conversation names neither an issue nor a project
-// and is never a document, so the kind test above is the one it reads.
-func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact) error {
+// artifactRowIsUntouched answers the refusal the artifact's own row reads, or nil when that row
+// is a document of an issue. These are the four tests R10 names first - the kind, the role, the
+// issue's spec and the owner - and each reads a column of the row beginArtifactWrite re-read
+// under the owner's lock, so the removal answers them before it takes the room's lock
+// (removeArtifact). A project's document reads a refusal of its own, because a project
+// document's events are its own (events.artifact_id under events_one_owner) and its removal
+// event would need the row the removal deletes. An artifact of an agent's conversation names
+// neither an issue nor a project and is never a document, so the kind test here is the one it
+// reads.
+func artifactRowIsUntouched(artifact model.Artifact) error {
 	switch {
 	case artifact.Kind != "doc":
 		return artifactNotUntouched(artifact, fmt.Sprintf("it is a %s and not a document", artifact.Kind))
@@ -130,6 +145,21 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 	case artifact.IssueKey == nil:
 		return projectDocumentRemovalRefusal(artifact)
 	}
+	return nil
+}
+
+// artifactIsUntouched answers the refusal what the document holds reads, or nil when it holds
+// nothing and nothing names it. These are the rest of the tests R10 names, in its order: the
+// versions, the unsettled edits, what points at the document and what links to it. The four
+// tests of the row alone ran before this one (artifactRowIsUntouched).
+//
+// Each test is read inside tx, the removal's own transaction, and under the document's room
+// lock, which removeArtifact takes before it calls this. The versions and the unsettled edits
+// are what need that lock: a room's own writer takes no owner row, so the issue's row this
+// transaction holds does not order it. The writers of a comment, an ask, a review, an approval
+// request and a check result do take the issue's row, so one that arrives meanwhile waits
+// behind this transaction, reads the document again and is refused.
+func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact) error {
 	// The versions, read in one row: how many there are, whether the version the document was
 	// made at holds text, and whether any later version does. A document made by typing a title
 	// holds version 1 and nothing in it; one made with content holds that content at version 1;
@@ -219,7 +249,7 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		return err
 	}
 	if cited {
-		return artifactNotUntouched(artifact, "another document cites it")
+		return artifactNotUntouched(artifact, "something in Dispatch links to it")
 	}
 	return nil
 }

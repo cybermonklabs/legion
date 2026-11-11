@@ -7,13 +7,18 @@ import (
 
 // ForgetDocument deletes what the reference tables hold for the document artifactID, inside the
 // transaction that is about to delete the document's own row (api.removeArtifact): the refs rows
-// written from it, the row it owes the re-index queue, and the backoff a mention of it was
-// deferred under. None of them carries a foreign key to artifacts(id), so each would outlive the
-// document, and the next document minted at the same reference key would inherit it.
+// written from it, the row it owes the re-index queue, and the backoff its own mentions were
+// deferred under (ClearExcerptBackoff). None of them carries a foreign key to artifacts(id), so
+// each would outlive the document. Every one of them is keyed by the document's uuid
+// (refs.from_id, refs_grammar_owed.id, reference_excerpt_backoff.artifact_id), and a document
+// minted later at the same reference key is a new uuid, so it inherits none of them: a row left
+// here would sit unread rather than reach anybody.
 //
-// What points AT the document is left where it stands, because nothing points at it: a removal
-// is refused while another node cites the document or a block of it (DocumentIsCited), and the
-// test is read in this same transaction.
+// What points AT the document is left where it stands: a removal is refused while another node
+// cites the document or a block of it (DocumentIsCited), and that test is read in this same
+// transaction. The indexers of other nodes take neither the issue's row nor this document's
+// room lock, so a citation committed after that test still lands, and the row it writes then
+// points at a reference key that no longer resolves.
 //
 // The queue rows (refs_grammar_owed) are keyed by kind and id, and a document is owed under two
 // kinds - `artifact`, its own block index, and `scope`, the sources around it - so the id alone

@@ -198,7 +198,8 @@ func everyArtifactIDColumn(t *testing.T, database *store.Store) []artifactColumn
 
 // assertNoRowNamesTheDocument is the census: no row of the catalogue names the removed document.
 // It reads the catalogue twice - every foreign key to artifacts(id), and every uuid column whose
-// name ends in artifact_id - and then refs, whose two ends are text and carry no key at all.
+// name ends in artifact_id - and then refs, where a row written from the document holds its uuid
+// in from_id under no key at all.
 func assertNoRowNamesTheDocument(t *testing.T, database *store.Store, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -220,7 +221,7 @@ func assertNoRowNamesTheDocument(t *testing.T, database *store.Store, artifactID
 	}
 	var cited bool
 	if err := database.Pool.QueryRow(ctx,
-		`select exists(select 1 from refs where from_id = $1 or to_id = $1)`, artifactID).Scan(&cited); err != nil {
+		`select exists(select 1 from refs where from_id = $1)`, artifactID).Scan(&cited); err != nil {
 		t.Fatalf("read refs for the removed document: %v", err)
 	}
 	if cited {
@@ -450,17 +451,17 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			{
 				what: "a document a comment cites", document: cited,
 				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
-				sentence: notUntouchedSentence(cited, "another document cites it"),
+				sentence: notUntouchedSentence(cited, "something in Dispatch links to it"),
 			},
 			{
 				what: "a document another document's block cites", document: blockCited,
 				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
-				sentence: notUntouchedSentence(blockCited, "another document cites it"),
+				sentence: notUntouchedSentence(blockCited, "something in Dispatch links to it"),
 			},
 			{
 				what: "a document an ask's option cites", document: askCited,
 				status: http.StatusConflict, code: "ARTIFACT_NOT_UNTOUCHED",
-				sentence: notUntouchedSentence(askCited, "another document cites it"),
+				sentence: notUntouchedSentence(askCited, "something in Dispatch links to it"),
 			},
 			{
 				what: "a document that plays a role", document: plan,
@@ -515,11 +516,12 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 
 		removals := make(chan *httptest.ResponseRecorder, 1)
 		go func() { removals <- removeDocument(t, handler, document.ID) }()
-		// The removal takes the issue's row, then this room's lock, where it waits.
+		// The removal takes the issue's row, reads the refusals that row answers, and then waits
+		// for this room's lock.
 		waitForDatabaseLocks(t, appending, 1)
 		select {
 		case answered := <-removals:
-			t.Fatalf("the removal answered status=%d body=%s while an append of the document was in flight; it read the document without the room's lock",
+			t.Fatalf("the removal answered status=%d body=%s while an append of the document was in flight; it answers only once the append has committed or rolled back",
 				answered.Code, answered.Body.String())
 		default:
 		}
@@ -527,7 +529,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		if err := appending.Commit(ctx); err != nil {
 			t.Fatalf("commit the append in flight: %v", err)
 		}
-		response := <-removals
+		response := awaitResponse(t, removals)
 		refusal := decodeBody[refusedWrite](t, response)
 		sentence := notUntouchedSentence(document, "an edit of it has not settled")
 		if response.Code != http.StatusConflict || refusal.Code != "ARTIFACT_NOT_UNTOUCHED" || refusal.Error != sentence {
