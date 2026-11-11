@@ -199,7 +199,11 @@ func newIdleRig(t *testing.T) *idleRig {
 		notices: &outboxPublisher{}, log: quietLogger(),
 		now: func() time.Time { return time.Now().Add(time.Minute) },
 	}
-	w := &workflowRuntime{pool: pool, projectID: "legion", log: quietLogger(),
+	// The rig's issue records carry the Dispatch project key and its claims the claim token's
+	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
+	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
+	// reads the claims' (projectID).
+	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}

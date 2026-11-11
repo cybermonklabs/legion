@@ -241,6 +241,24 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 	return nil
 }
 
+// OpenPodHold is whether a hold streak of the pod is running, on the pool: the same question
+// readIdleView answers as IdleView.Holding, asked outside any transaction. The release of a pod
+// no claim owns needs it there, because the one pass that reads no view at all — the issue whose
+// Sandbox the runtime no longer holds — still has a streak to end, and opening ReleaseIdleIssue
+// to learn that would cost the transaction, and the daemon's global fact serializer with it,
+// that reading the Sandbox first exists to save (daemon.releaseUnownedPod). The answer bounds a
+// write and nothing else: a pod with no streak is left alone, since an update that matches no
+// row costs a write transaction all the same.
+func (s *Store) OpenPodHold(ctx context.Context, project, issue string) (bool, error) {
+	var holding bool
+	if err := s.pool.QueryRow(ctx, `select exists (
+		select 1 from pod_holds where project = $1 and issue = $2 and not ended)`,
+		project, issue).Scan(&holding); err != nil {
+		return false, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
+	}
+	return holding, nil
+}
+
 // endPodHoldStreaks marks the running streaks of the pod ended through the caller's transaction.
 // A streak already ended is left as it is, so its first_at, at and passes stay what the passes
 // of that streak made them.

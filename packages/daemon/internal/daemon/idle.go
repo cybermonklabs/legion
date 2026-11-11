@@ -33,10 +33,13 @@ type issuePods interface {
 	IssueSandbox(issue string) (name string, present bool)
 }
 
-// tickIdle decides every pod of the project on the daemon's own period (idleTickInterval), and
-// releases each one the rule says has had no turn in progress and no turn due for the idle
-// period. It returns at once — running no ticker at all — when release is off: `idle_minutes: 0`,
-// or a runtime that is not Kubernetes, which has no pod to release and no image to compare.
+// tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
+// under both release rules: the release of a pod no claim owns, whose every claim is failed,
+// retired or suspended (releaseUnownedPods), and the idle release, which takes a pod whose live
+// roles have had no turn in progress and no turn due for the idle period (releaseIdlePods). It
+// returns at once — running no ticker at all — when release is off: `idle_minutes: 0`, or a
+// runtime that is not Kubernetes, which has no pod to release and no image to compare. Both
+// rules are off with it, since one period and one tick carry the two.
 func (w *workflowRuntime) tickIdle(ctx context.Context) {
 	if w.idlePeriod <= 0 || w.idleStore == nil || w.idleRuntime == nil {
 		return
@@ -52,6 +55,14 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// The release of a pod no claim owns runs first, and outside the gate the idle
+			// release reads (workflowRuntime.listenerLive). That gate exists because an idle
+			// release suspends live claims, and such a claim comes back for a role or an agent
+			// message only while the Envoy listener reports those messages. This release
+			// suspends no claim and leaves none waiting for a message, and the two starts that
+			// build its pod again — an operator's retry and a start the daemon queues — read no
+			// listener, so nothing of that reasoning reaches it.
+			w.releaseUnownedPods(ctx)
 			w.releaseIdlePods(ctx)
 		}
 	}
@@ -125,6 +136,139 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
 		"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
 	w.wakeOutbox(issue, record.OutboxKindSupervise)
+}
+
+// releaseUnownedPods decides each pod of the project that no claim of its issue can use: an
+// issue whose every claim is failed, retired or suspended holds a pod of 3 CPU and 19 GiB that
+// no role can take a turn in, and this is the pass that releases it. One issue's failure is
+// logged and the rest are decided, as the idle pass has it: a release is a saving, never a
+// correctness step, and nothing waits on it.
+//
+// It writes one line saying what the whole pass did — how many issues it decided, how many it
+// released and how many it held under each reason — whenever it decided at least one. That line
+// is what tells a reader of the daemon's log that this rule ran on a day it released nothing,
+// which a release line alone cannot say, and it is what a production check of this rule reads.
+// A pass with no candidate at all writes nothing, so a deployment whose issues are all working
+// pays no line a minute for it.
+func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
+	// The project is spelled two ways here, and the two are not the same string. The candidate
+	// answer is read from the issue records, whose project column holds the Dispatch project key
+	// (w.dispatchProject, "LEGION"), while the release's transaction, the hold records and
+	// pod_holds are all keyed on the claim token's spelling (w.projectID, "legion"), which is
+	// what IdlePods and ReleaseIdleIssue read. Store.UnownedPods says so in its own doc comment:
+	// handing it w.projectID answers no issue at all.
+	issues, err := w.idleStore.UnownedPods(ctx, w.dispatchProject, record.OutOfWorkflowStatuses)
+	if err != nil {
+		w.log.Warn("unowned release: could not list the project's pods no claim owns", "error", err)
+		return
+	}
+	decided, released := 0, 0
+	held := map[string]int{}
+	for _, issue := range issues {
+		if ctx.Err() != nil {
+			return
+		}
+		decided++
+		hold, marked := w.releaseUnownedPod(ctx, issue)
+		switch {
+		case marked:
+			released++
+		case hold != workflow.IdleHoldNone:
+			// A pod whose decision could not be read at all answers IdleHoldNone and no mark,
+			// and is counted under neither: its own warning has already named it.
+			held[hold.String()]++
+		}
+	}
+	if decided == 0 {
+		return
+	}
+	holds := make([]string, 0, len(held))
+	for reason, count := range held {
+		holds = append(holds, fmt.Sprintf("%s=%d", reason, count))
+	}
+	slices.Sort(holds)
+	w.log.Info("unowned release: decided every pod of the project no claim owns",
+		"decided", decided, "released", released, "held", strings.Join(holds, ","))
+}
+
+// releaseUnownedPod decides one issue's pod under the rule for a pod no claim owns
+// (workflow.UnownedPodRelease) and, when the rule releases it, writes the release's one row and
+// its mark in one transaction with the view they rest on (store.ReleaseIdleIssue). It answers
+// the hold that kept the pod and whether a release was marked, which is what the pass counts.
+//
+// The issue's Sandbox is read before that transaction, from the runtime's own store of pods,
+// exactly as the idle pass reads the pod's image before its own, and a Sandbox the runtime no
+// longer holds ends the pass here. That order is this rule's own economy, not a nicety: this
+// release changes no claim, so an issue it has released keeps every claim stopped and stands in
+// the candidate answer for ever. Deciding it inside a transaction would cost one
+// store.ReleaseIdleIssue a minute for ever, and that transaction opens by taking the daemon's
+// global fact serializer (treelifecycle.Serialize) — the same lock the intake takes for every
+// fact, which is the very cost the candidate filter exists to avoid. On the INFRA deployment at
+// 2026-11-10 21:23Z, 33 of the project's issues stood in that state.
+//
+// Such a pass still ends an open hold streak of the pod, and reads whether there is one first
+// (store.OpenPodHold): a pod with no streak is left alone, since an update that matches no row
+// costs a write transaction all the same.
+//
+// A pod the rule kept that was quiet for the whole idle period is recorded as a hold
+// (recordIdleHold), as the idle pass records its own: that is a pod release would have taken and
+// something else stopped. Three of this rule's nine holds are such a hold, and recordableHold is
+// what says which. The release itself is recorded where it completes (outbox.releaseIssue).
+func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (workflow.IdleHold, bool) {
+	now := time.Now().UTC()
+	if _, present := w.idleRuntime.IssueSandbox(issue); !present {
+		w.log.Debug("unowned release: the pod is kept", "issue", issue,
+			"hold", workflow.IdleHoldUnownedSandboxGone.String())
+		holding, err := w.idleStore.OpenPodHold(ctx, w.projectID, issue)
+		if err != nil {
+			w.log.Warn("unowned release: could not read whether a hold streak of the pod is running",
+				"issue", issue, "error", err)
+		} else if holding {
+			endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
+		}
+		return workflow.IdleHoldUnownedSandboxGone, false
+	}
+	var decision workflow.IdleDecision
+	var quiet, holding bool
+	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		// The Sandbox is there: the read above is this conjunct's answer, and the rule takes it
+		// rather than reading the runtime again under the transaction's lock.
+		decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)
+		since, found := view.QuietSince()
+		quiet = found && now.Sub(since) >= w.idlePeriod
+		holding = view.Holding
+		if !decision.Release {
+			return store.IdleReleaseMark{}, nil
+		}
+		return unownedReleaseRows(view, now)
+	})
+	if err != nil {
+		w.log.Warn("unowned release: could not decide an issue's pod", "issue", issue, "error", err)
+		return workflow.IdleHoldNone, false
+	}
+	if !marked {
+		w.log.Debug("unowned release: the pod is kept", "issue", issue, "hold", decision.Hold.String())
+		if !quiet || !recordableHold(decision.Hold) {
+			// The pod did something inside the quiet period, or what kept it is nothing a
+			// deployment reads as a hold: either way no hold of it is running, so the streak it
+			// had ends and a later pass that holds it starts a new one. A pod with no streak is
+			// left alone, for the reason the idle pass leaves one alone.
+			if holding {
+				endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
+			}
+			return decision.Hold, false
+		}
+		// This rule names one reason per pass and no kinds beside it, so its holds carry no
+		// detail, as the teardown's do not.
+		recordIdleHold(ctx, w.idleStore, w.projectID, issue, decision.Hold, "", now, w.log)
+		return decision.Hold, false
+	}
+	// The line that ends this release is the teardown's, and it is the one Info line of a
+	// release no role is waiting on; the mark is a Debug line here for that reason.
+	w.log.Debug("unowned release: releasing an issue's pod, which no claim of it can use",
+		"issue", issue, "idle", w.idlePeriod.String())
+	w.wakeOutbox(issue, record.OutboxKindSupervise)
+	return workflow.IdleHoldNone, true
 }
 
 // recordableHold is whether a hold is one a deployment reads as "release would have taken this
@@ -301,4 +445,34 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 	}
 	mark.Rows = rows
 	return mark, nil
+}
+
+// unownedReleaseRows is the release of a pod no claim owns as outbox rows: one act and one row,
+// the teardown (record.IssueRelease), which deletes the pod, its disk and its Sandbox. The two
+// acts the idle release runs before its own teardown have nothing to do here. There is no save,
+// because no shim is left to build a bundle and no role is coming back to a workspace that
+// would need one, and there are no role stops, because every claim of the issue is already
+// failed, retired or suspended.
+//
+// That one row carries the release's boundary flag. The store requires some row of a release to
+// be its boundary (store.ReleaseIdleIssue), and no reader of this release reads it: the
+// boundary's own reader is the cancel that a delivery below the stop of the first role process
+// cancels (store.IssueReleaseStop), which belongs to a release that stops roles. The flag on
+// the teardown is what satisfies the store, and a reader who goes looking for what it means
+// here finds this.
+//
+// The mark says two things about the release beside its rows: SuspendsNoRole, which is what
+// writes issue_releases.kind as `unowned` and leaves the role column empty, so the teardown and
+// the cancel can read what this release did rather than guess it from a missing role; and the
+// generation of the issue the view was read at, as every mark carries.
+func unownedReleaseRows(view pods.IdleView, now time.Time) (store.IdleReleaseMark, error) {
+	payload := record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
+		TreeGeneration: view.Root.Generation}
+	row, err := record.NewOutboxRow(view.Issue, payload, now)
+	if err != nil {
+		return store.IdleReleaseMark{}, fmt.Errorf("encode the %s of %s's release: %w",
+			payload.OutboxKind(), view.Issue, err)
+	}
+	return store.IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true,
+		Rows: []store.IdleReleaseRow{{Kind: string(row.Kind), Payload: row.Payload, Boundary: true}}}, nil
 }
