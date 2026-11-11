@@ -1464,6 +1464,13 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
               # The fixture cmd/listener/api_test.go:191,436,480 reads.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # The two documents outside this module that
+              # internal/dispatch/store/counts_in_documents_test.go reads, this being the job
+              # that runs internal/dispatch/store: it holds the connection counts those
+              # documents state to store.LeasePoolSize and store.ConnectionsPerProcess, so an
+              # edit of either alone must start this job.
+              - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+              - '.dispatch/architecture/dispatch-store.md'
             # The API race job. internal/dispatch/api's lock_level_test.go:120-133 walks every
             # non-test .go file under packages/envoy (event_insert_guard_test.go:32 and
             # review_write_guard_test.go:44 use the same walk), so this filter keeps the wide root

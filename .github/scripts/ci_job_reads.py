@@ -1285,7 +1285,14 @@ GATES = [
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"])],
-         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
+         reads=reads(
+             ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+              "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
+              "states must equal store.LeasePoolSize and store.ConnectionsPerProcess"),
+             (".dispatch/architecture/dispatch-store.md",
+              "internal/dispatch/store/counts_in_documents_test.go reads it, for the same two counts, "
+              "which that document states in words"),
+         ) + setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[race_step(RACE_JOBS["envoy-go-race-api"])],
          reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + CI_SELF),
