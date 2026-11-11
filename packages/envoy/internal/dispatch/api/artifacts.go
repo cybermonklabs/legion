@@ -1054,6 +1054,11 @@ type editArtifactResponse struct {
 	Token        string         `json:"token"`
 	UnchangedOps []int          `json:"unchanged_ops"`
 	Version      *model.Version `json:"version"`
+	// Written is the markdown the batch wrote, read back off the tree it wrote
+	// (docs.EditOutcome.Written): each of the document's own blocks the write added, changed or
+	// moved, in document order, and a line for each one it removed or emptied. It is empty for a
+	// batch that left the document as it was.
+	Written string `json:"written"`
 }
 
 func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
@@ -1189,6 +1194,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		Token:        edit.Token,
 		UnchangedOps: unchanged,
 		Version:      version,
+		Written:      edit.Written,
 	}
 	// The ask blocks the edit added, read from the documents the batch was applied to: whether an
 	// operation's markdown makes a block depends on where it lands and on the parser's reading of

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -593,6 +594,249 @@ func (b editBatch) outcome(applied int) (EditOutcome, pmdoc.ValidDocument, error
 		Token:          after,
 		AddedAskBlocks: addedAskBlocks(b.beforeTree, b.tree),
 	}, valid, nil
+}
+
+// editReadBackBound is how many bytes of UTF-8 an edit's read-back may hold. The bound is the
+// server's, so every caller of the edits route reads a bounded field, rather than each command
+// bounding what it prints for itself.
+const editReadBackBound = 2000
+
+// readBack is what the batch wrote, for the person or agent who reads the edit's answer: the
+// markdown of each of the document's own blocks that the written tree holds and the tree before
+// the batch did not, or holds with other content or in another place, in document order, and one
+// line for each block the batch removed or emptied. A batch that left the document as it was
+// reads back as nothing.
+//
+// written is the validated tree the batch's verdict was taken from (editBatch.outcome), which the
+// caller hands to pmdoc.UpdateDocument: it is rendered once here, for the markdown and for each
+// block's byte range in that markdown together (pmdoc.ValidDocument.RenderWithBlockOffsets). The
+// tree before the batch is read as a tree and never rendered, so a batch pays for one render.
+//
+// The blocks are the document's own, its root's children: a change inside a list or a table reads
+// back as the list or the table the edit left, which is the markdown a caller would read the
+// document for. Every block of both trees carries an id by then - the edit stamps the tree it
+// starts from (stampAskBlockIDs) and the caller stamps the tree it wrote (pmdoc.EnsureBlockIDs) -
+// so the two sides are matched by id.
+func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
+	markdown, offsets, err := written.RenderWithBlockOffsets()
+	if err != nil {
+		return "", err
+	}
+	spans := make(map[string]pmdoc.BlockOffset, len(offsets))
+	for _, offset := range offsets {
+		if _, held := spans[offset.ID]; !held {
+			spans[offset.ID] = offset
+		}
+	}
+	before, after := documentBlockNodes(b.beforeTree), documentBlockNodes(written.Node())
+	held := make(map[string]*pmdoc.Node, len(before))
+	order := make(map[string]int, len(before))
+	for index, block := range before {
+		held[block.id], order[block.id] = block.node, index
+	}
+	standing := make(map[string]struct{}, len(after))
+	for _, block := range after {
+		standing[block.id] = struct{}{}
+	}
+	first, removed := removedDocumentBlocks(before, standing)
+	moved := movedDocumentBlocks(after, order)
+	entries := make([]string, 0, len(after)+len(first))
+	for _, block := range first {
+		entries = append(entries, block.named("removed"))
+	}
+	previous := ""
+	for _, block := range after {
+		prior, kept := held[block.id]
+		switch {
+		case !kept || !block.node.Equal(prior):
+			text := strings.TrimRight(markdown[spans[block.id].From:spans[block.id].To], "\n")
+			if strings.TrimSpace(text) != "" {
+				entries = append(entries, text)
+				break
+			}
+			// A block with nothing left in it renders as nothing, so it is named rather than
+			// printed: emptied where the document held it before, and empty where the batch
+			// wrote it with no content of its own.
+			if kept {
+				entries = append(entries, block.named("emptied"))
+				break
+			}
+			entries = append(entries, block.named("empty"))
+		case moved[block.id]:
+			if previous == "" {
+				entries = append(entries, block.named("moved to the start of the document"))
+				break
+			}
+			entries = append(entries, block.named("moved after "+previous))
+		}
+		for _, gone := range removed[block.id] {
+			entries = append(entries, gone.named("removed"))
+		}
+		previous = block.id
+	}
+	return boundedReadBack(entries), nil
+}
+
+// documentBlock is one of a document's own blocks: the node and the id it carries.
+type documentBlock struct {
+	id   string
+	node *pmdoc.Node
+}
+
+// named is the one line a read-back gives a block it prints no markdown for: the block, its type
+// and what the batch did to it.
+func (b documentBlock) named(did string) string {
+	return b.id + " " + b.node.Type + ": " + did
+}
+
+// documentBlockNodes are the document's own blocks, its root's children, in document order. A
+// child carrying no id is left out: nothing can match it against the other tree.
+func documentBlockNodes(tree *pmdoc.Node) []documentBlock {
+	if tree == nil {
+		return nil
+	}
+	blocks := make([]documentBlock, 0, len(tree.Children))
+	for _, child := range tree.Children {
+		if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
+			blocks = append(blocks, documentBlock{id: id, node: child})
+		}
+	}
+	return blocks
+}
+
+// removedDocumentBlocks are the blocks of before that standing, the written tree's block ids, no
+// longer holds, placed where they stood: first is the run that stood before any block the write
+// kept, and after holds, for each kept block, the run that stood behind it. A read-back names them
+// there, so it reads in document order.
+func removedDocumentBlocks(before []documentBlock, standing map[string]struct{}) (first []documentBlock, after map[string][]documentBlock) {
+	after = map[string][]documentBlock{}
+	anchor := ""
+	for _, block := range before {
+		if _, stands := standing[block.id]; stands {
+			anchor = block.id
+			continue
+		}
+		if anchor == "" {
+			first = append(first, block)
+			continue
+		}
+		after[anchor] = append(after[anchor], block)
+	}
+	return first, after
+}
+
+// movedDocumentBlocks are the blocks of after, the written tree's own, that stand in another
+// place than the tree before the batch had them: the ones left over once the longest run of them
+// that is still in the document's old order is taken out (longestRunInOrder). Taking that run as
+// the blocks that stayed is what makes one block moved past two others one move and not two.
+func movedDocumentBlocks(after []documentBlock, order map[string]int) map[string]bool {
+	places := make([]int, 0, len(after))
+	ids := make([]string, 0, len(after))
+	for _, block := range after {
+		place, kept := order[block.id]
+		if !kept {
+			continue
+		}
+		places = append(places, place)
+		ids = append(ids, block.id)
+	}
+	stayed := longestRunInOrder(places)
+	moved := map[string]bool{}
+	for position, id := range ids {
+		if !stayed[position] {
+			moved[id] = true
+		}
+	}
+	return moved
+}
+
+// longestRunInOrder is which positions of places belong to one longest strictly rising run of it,
+// found by patience sorting: tails holds, for each length of run, the position of the smallest
+// value ending such a run, and back the position each one follows.
+func longestRunInOrder(places []int) map[int]bool {
+	var tails, back []int
+	for position, place := range places {
+		back = append(back, -1)
+		length := sort.Search(len(tails), func(index int) bool { return places[tails[index]] >= place })
+		if length > 0 {
+			back[position] = tails[length-1]
+		}
+		if length == len(tails) {
+			tails = append(tails, position)
+			continue
+		}
+		tails[length] = position
+	}
+	run := make(map[int]bool, len(tails))
+	if len(tails) == 0 {
+		return run
+	}
+	for position := tails[len(tails)-1]; position >= 0; position = back[position] {
+		run[position] = true
+	}
+	return run
+}
+
+// boundedReadBack joins entries, one blank line between them, within editReadBackBound bytes: it
+// writes them in document order until the bound, cuts the entry the bound falls in at a rune
+// boundary, and ends with the line naming what it left out. The room the closing line needs is
+// taken off the bound first, measured at the largest counts it could name, so the whole field
+// holds the bound whatever the cut turns out to be.
+func boundedReadBack(entries []string) string {
+	bytes, characters := 0, 0
+	for index, entry := range entries {
+		if index > 0 {
+			bytes += 2
+		}
+		bytes += len(entry)
+		characters += utf8.RuneCountInString(entry)
+	}
+	if bytes <= editReadBackBound {
+		return strings.Join(entries, "\n\n")
+	}
+	budget := editReadBackBound - 2 - len(readBackCutLine(characters, len(entries)))
+	kept, used, cut := make([]string, 0, len(entries)), 0, len(entries)
+	for index, entry := range entries {
+		separator := 0
+		if index > 0 {
+			separator = 2
+		}
+		if used+separator+len(entry) <= budget {
+			kept = append(kept, entry)
+			used += separator + len(entry)
+			continue
+		}
+		if room := runeBoundaryBelow(entry, budget-used-separator); room > 0 {
+			kept = append(kept, entry[:room])
+			characters -= utf8.RuneCountInString(entry[:room])
+		}
+		cut = index
+		break
+	}
+	for _, entry := range entries[:cut] {
+		characters -= utf8.RuneCountInString(entry)
+	}
+	return strings.Join(append(kept, readBackCutLine(characters, len(entries)-cut)), "\n\n")
+}
+
+// readBackCutLine says what a read-back held back at the bound.
+func readBackCutLine(characters, blocks int) string {
+	return fmt.Sprintf("cut %d characters in %d blocks", characters, blocks)
+}
+
+// runeBoundaryBelow is the largest offset into text at or below bound that opens a rune, so a cut
+// there never splits one.
+func runeBoundaryBelow(text string, bound int) int {
+	if bound >= len(text) {
+		return len(text)
+	}
+	for bound > 0 && !utf8.RuneStart(text[bound]) {
+		bound--
+	}
+	if bound < 0 {
+		return 0
+	}
+	return bound
 }
 
 // batchTree is a tree an edit batch works on, beside the one validation it pays for: the first

@@ -1482,6 +1482,9 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			if outcome, written, mutationErr = batch.outcome(len(ops)); mutationErr != nil {
 				return
 			}
+			if outcome.Written, mutationErr = batch.readBack(written); mutationErr != nil {
+				return
+			}
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
 				if err := pmdoc.UpdateDocument(transaction, fragment, written); err != nil {
 					return err
@@ -1545,6 +1548,9 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		}
 		var written pmdoc.ValidDocument
 		if outcome, written, err = batch.outcome(len(ops)); err != nil {
+			return err
+		}
+		if outcome.Written, err = batch.readBack(written); err != nil {
 			return err
 		}
 		return recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {

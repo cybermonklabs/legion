@@ -9108,6 +9108,7 @@ describe("executeDispatchTool", () => {
           changed: false,
           unchanged_ops: [0, 1],
           token: "sha256:unchanged",
+          written: "",
         });
       }
       throw new Error(`unexpected request: ${path}`);
@@ -9143,6 +9144,56 @@ describe("executeDispatchTool", () => {
       changed: false,
       token: "sha256:unchanged",
     });
+  });
+
+  // `Applied 1 ops (version 3)` reads the same whether the edit wrote a list or a paragraph of
+  // dashes, so the server reads back what it wrote and the command prints it under that line
+  // (INFRA-1520 R6).
+  test("prints the markdown the edit wrote under its Applied line", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+        });
+      }
+      if (path === "/api/v1/artifacts/artifact-42/edits") {
+        return response({
+          applied: 1,
+          version: { number: 3 },
+          changed: true,
+          unchanged_ops: [],
+          lost_ops: [],
+          token: "sha256:after-edit",
+          written: "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed",
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_doc_edit",
+      args: {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "Plan", with: "## Plan\n\n- first\n- second" }],
+      },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      "Applied 1 ops (version 3)\n" +
+        "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed\n" +
+        "Document token: sha256:after-edit"
+    );
   });
 
   // A concurrent browser deletion that lands after the version is written is past undoing, so the
