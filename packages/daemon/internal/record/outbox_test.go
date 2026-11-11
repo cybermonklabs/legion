@@ -48,6 +48,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		AutoMergeDisable{Number: 42},
 		ReadyMerge{Number: 42, Head: "c0de"},
+		ReadyMerge{Number: 42, Head: "c0de", Queued: now, Held: 25 * time.Minute, HeldSince: now.Add(time.Hour), HeldTold: true},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
 		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
@@ -343,6 +344,56 @@ func TestAStartTheReleaseBeforeWroteWithTheRelaunchMarkStillDecodes(t *testing.T
 	}
 	want := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
 		Phase: phase.Implementing, Relaunch: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload = %#v, want %#v", got, want)
+	}
+}
+
+// A READY merge whose submission one of the project's merge holds has held carries its three hold
+// marks through the outbox row and back: the time it has spent held, the moment of the open held
+// stretch and the telling it has spent (ReadyMerge.Held, HeldSince, HeldTold). A submission no
+// hold has caught carries none of the three fields, so the payload every daemon before the holds
+// wrote is the payload still written for it, and the row such a daemon left decodes to the zero
+// value of each: a submission that has never been held.
+func TestAHeldREADYMergeCarriesItsHoldMarksThroughTheRow(t *testing.T) {
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		payload ReadyMerge
+		marks   bool
+	}{
+		{"a submission a hold holds now", ReadyMerge{Number: 42, Head: "c0de", Queued: now, Held: 25 * time.Minute, HeldSince: now.Add(time.Hour), HeldTold: true}, true},
+		{"a submission a hold held and let go", ReadyMerge{Number: 42, Head: "c0de", Queued: now, Held: 25 * time.Minute, HeldTold: true}, true},
+		{"a submission no hold has caught", ReadyMerge{Number: 42, Head: "c0de", Queued: now}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, err := NewOutboxRow("LEGION-208", tc.payload, now)
+			if err != nil {
+				t.Fatalf("NewOutboxRow: %v", err)
+			}
+			marks := strings.Contains(string(row.Payload), `"held"`) || strings.Contains(string(row.Payload), `"heldSince"`) ||
+				strings.Contains(string(row.Payload), `"heldTold"`)
+			if marks != tc.marks {
+				t.Fatalf("payload %s carries a hold mark: %t, want %t", row.Payload, marks, tc.marks)
+			}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.payload) {
+				t.Fatalf("payload = %#v, want %#v", got, tc.payload)
+			}
+		})
+	}
+	// The submission the release before the merge holds queued: its payload carries none of the
+	// three marks, and it decodes to the zero value of each rather than being refused.
+	before := OutboxRow{ID: 43, Kind: OutboxKindReadyMerge, Issue: "LEGION-208",
+		Payload: json.RawMessage(`{"number":42,"head":"c0de","armed":true,"queued":"2026-11-10T09:00:00Z"}`)}
+	got, err := DecodeOutboxPayload(before)
+	if err != nil {
+		t.Fatalf("decoding the submission the release before the merge holds queued = %v, want it accepted", err)
+	}
+	want := ReadyMerge{Number: 42, Head: "c0de", Armed: true, Queued: now}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("payload = %#v, want %#v", got, want)
 	}

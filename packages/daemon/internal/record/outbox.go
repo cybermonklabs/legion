@@ -805,17 +805,34 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // reopen resets the clock, the once-flag and the marks together and they can never disagree, as
 // they would were the wait measured from the row's created_at, which the upsert leaves at the
 // original queueing. A row a daemon before Queued enqueued carries the zero time, and its
-// executor measures that one from created_at, which is what it was measured from then.
+// executor measures that one from created_at, which is what it was measured from then. Held is the
+// total time this submission has spent held by one of the project's merge holds (MergeHold). The
+// daemon takes it off the wait the merge-waiting notice is measured from, so a hold never reads as
+// GitHub being slow. HeldSince is the moment the open held stretch began, and the zero time when
+// the row is not held now: a run that finds a matching hold with HeldSince zero writes the moment,
+// and the first run that finds no matching hold adds now - HeldSince to Held and clears HeldSince.
+// The two are written together, so the open stretch is never counted twice and never lost.
+// HeldTold is the row having told the issue's architect once (merge-held) and posted one line on
+// the Dispatch issue naming the hold that holds it, which keeps it from telling again however many
+// times the row runs while a hold stands. A queue of a new READY replaces the whole payload, so a
+// new submission tells again: that is a new submission and not a repeat. A row a daemon before
+// these three fields wrote carries none of them, which is a row that has never been held, and an
+// older daemon's strict decoder refuses a payload that carries them (DecodeOutboxPayload refuses
+// an unknown field), which is why a rollback needs the SQL that strips them. Nothing here is
+// required: a payload with none of the three is the payload every daemon before them wrote.
 type ReadyMerge struct {
-	Number          int       `json:"number"`
-	Head            string    `json:"head"`
-	Armed           bool      `json:"armed,omitempty"`
-	Warned          bool      `json:"warned,omitempty"`
-	Queued          time.Time `json:"queued,omitzero"`
-	Unmergeable     time.Time `json:"unmergeable,omitzero"`
-	UnmergeableBase string    `json:"unmergeableBase,omitempty"`
-	Resubmitted     bool      `json:"resubmitted,omitempty"`
-	ConflictUnknown time.Time `json:"conflictUnknown,omitzero"`
+	Number          int           `json:"number"`
+	Head            string        `json:"head"`
+	Armed           bool          `json:"armed,omitempty"`
+	Warned          bool          `json:"warned,omitempty"`
+	Queued          time.Time     `json:"queued,omitzero"`
+	Unmergeable     time.Time     `json:"unmergeable,omitzero"`
+	UnmergeableBase string        `json:"unmergeableBase,omitempty"`
+	Resubmitted     bool          `json:"resubmitted,omitempty"`
+	ConflictUnknown time.Time     `json:"conflictUnknown,omitzero"`
+	Held            time.Duration `json:"held,omitempty"`
+	HeldSince       time.Time     `json:"heldSince,omitzero"`
+	HeldTold        bool          `json:"heldTold,omitempty"`
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }

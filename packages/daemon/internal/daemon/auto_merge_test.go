@@ -2095,6 +2095,86 @@ func TestARateLimitStandsUntilTheLatestDeadlineOfTheBudgetsARowSpends(t *testing
 	})
 }
 
+// replacePayload is the one lease-fenced payload write a merge row makes, and a run can owe more
+// than one row beside it: a run a merge hold holds back writes the payload, posts one message on
+// the Dispatch issue naming the hold and enqueues one notice for the architect. Every told row
+// goes into that one transaction, in the order given, so the payload and the rows that tell of it
+// commit together. A replacement whose lease has moved to another worker writes nothing at all:
+// neither the payload nor one told row, since that worker reads GitHub itself and would otherwise
+// find the telling already spent.
+func TestAMergePayloadWriteEnqueuesEveryToldRowUnderTheRowsLease(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+	runner := mergeRunner(pool, records, "", quietLogger(), func() time.Time { return now })
+	row := record.OutboxRow{Issue: "LEGION-208"}
+	if err := pool.QueryRow(ctx, `select id from outbox where kind = 'ready_merge'`).Scan(&row.ID); err != nil {
+		t.Fatalf("read the ready_merge row: %v", err)
+	}
+	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
+
+	held := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now, HeldSince: now, HeldTold: true}
+	message := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "A merge hold holds this merge back."}, now)
+	notice := mustOutboxRow(t, "LEGION-208", record.Notice{Kind: "merge-waiting", Role: claim.RoleArchitect, Reason: "a merge hold holds the merge back"}, now)
+	replaced, err := runner.replacePayload(ctx, row, held, message, notice)
+	if err != nil || !replaced {
+		t.Fatalf("replacePayload = %v, %v; want the replacement to take", replaced, err)
+	}
+	if kinds := toldRowKinds(t, pool); kinds != "dispatch_message,notice" {
+		t.Fatalf("the told rows are %q, want the message and the notice in the order they were given", kinds)
+	}
+	var toldMark bool
+	if err := pool.QueryRow(ctx, `select coalesce((payload->>'heldTold')::boolean, false) from outbox where kind = 'ready_merge'`).Scan(&toldMark); err != nil {
+		t.Fatalf("read the replaced payload: %v", err)
+	}
+	if !toldMark {
+		t.Fatal("the ready_merge payload does not carry the telling the told rows were written for")
+	}
+
+	// The same write under a lease another worker holds now: the payload stands as it was and
+	// neither told row is enqueued.
+	stolen := row
+	stolen.LeaseToken = "another-worker"
+	second := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "A second merge hold holds this merge back."}, now)
+	third := mustOutboxRow(t, "LEGION-208", record.Notice{Kind: "merge-waiting", Role: claim.RoleArchitect, Reason: "a second merge hold holds the merge back"}, now)
+	replaced, err = runner.replacePayload(ctx, stolen, record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, second, third)
+	if err != nil || replaced {
+		t.Fatalf("replacePayload under a lease that moved = %v, %v; want it to take nothing", replaced, err)
+	}
+	if kinds := toldRowKinds(t, pool); kinds != "dispatch_message,notice" {
+		t.Fatalf("the told rows are %q, want the two the owning lease wrote and no more", kinds)
+	}
+	if err := pool.QueryRow(ctx, `select coalesce((payload->>'heldTold')::boolean, false) from outbox where kind = 'ready_merge'`).Scan(&toldMark); err != nil {
+		t.Fatalf("read the payload the replacement left alone: %v", err)
+	}
+	if !toldMark {
+		t.Fatal("the replacement that did not take wrote the payload of the worker that did not hold the lease")
+	}
+}
+
+// toldRowKinds is the kind of every outbox row a merge payload write told, oldest first and comma
+// separated: every row of the issue but the ready_merge row the write replaced.
+func toldRowKinds(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select kind from outbox where kind <> 'ready_merge' order by id`)
+	if err != nil {
+		t.Fatalf("read the told rows: %v", err)
+	}
+	defer rows.Close()
+	var kinds []string
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			t.Fatalf("scan a told row: %v", err)
+		}
+		kinds = append(kinds, kind)
+	}
+	return strings.Join(kinds, ",")
+}
+
 // budgetGitHub is GitHub for TestARateLimitDefersOnlyTheRowsThatSpendItsBudget: acme/widgets' REST
 // API, which answers an issue branch's read of main with restLimit's headers and a 403 when it is
 // set, and GraphQL, where #42 is a READY merge's pull request, mergeable now, whose merge GitHub

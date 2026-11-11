@@ -296,7 +296,7 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 	now := r.now().UTC()
 	if payload.Unmergeable.IsZero() || payload.UnmergeableBase != armed.QueueBase {
 		payload.Unmergeable, payload.UnmergeableBase = now, armed.QueueBase
-		if _, err := r.replacePayload(ctx, row, *payload, nil); err != nil {
+		if _, err := r.replacePayload(ctx, row, *payload); err != nil {
 			return false, fmt.Errorf("record the merge-queue entry outbox row %d found unmergeable: %w", row.ID, err)
 		}
 		return false, nil
@@ -376,7 +376,7 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 		return conflictResubmits, nil
 	case payload.ConflictUnknown.IsZero():
 		payload.ConflictUnknown = now
-		if _, err := r.replacePayload(ctx, row, *payload, nil); err != nil {
+		if _, err := r.replacePayload(ctx, row, *payload); err != nil {
 			return conflictWaits, fmt.Errorf("record the merge state GitHub had not computed when outbox row %d read its conflict removal: %w", row.ID, err)
 		}
 		return conflictWaits, nil
@@ -415,7 +415,7 @@ func (r *outbox) resubmitAfterConflict(ctx context.Context, row record.OutboxRow
 	}
 	// The message is enqueued in the payload's own transaction (replacePayload), so its lane is
 	// woken as the payload commits and a replacement that did not take writes neither.
-	replaced, err := r.replacePayload(ctx, row, *payload, &told)
+	replaced, err := r.replacePayload(ctx, row, *payload, told)
 	if err != nil {
 		return "", fmt.Errorf("record the further submission outbox row %d makes after the merge queue's conflict: %w", row.ID, err)
 	}
@@ -469,28 +469,40 @@ func (r *outbox) readFailures(lane context.Context, logs githubrest.Client, runs
 	return budget, cancel, nil
 }
 
-// replacePayload writes payload back to row under the row's lease, with told enqueued in the same
-// transaction where there is one to enqueue (nil where there is none), and answers whether the
-// replacement took. It is the one lease-guarded payload write a merge row makes: the marks a
-// decision leaves for the row's next run (queueConflict's unmergeable entry, conflictRemoval's
-// uncomputed merge state), the message the further submission is told by
-// (resubmitAfterConflict) and the notice of a wait (rememberWait).
+// replacePayload writes payload back to row under the row's lease, with every row of told enqueued
+// in the same transaction, in the order given, and answers whether the replacement took. It is the
+// one lease-guarded payload write a merge row makes: the marks a decision leaves for the row's
+// next run (queueConflict's unmergeable entry, conflictRemoval's uncomputed merge state), the
+// message the further submission is told by (resubmitAfterConflict) and the notice of a wait
+// (rememberWait).
+//
+// told is variadic because one run can owe more than one row beside the payload write: a run a
+// merge hold holds back writes the payload, posts one message on the Dispatch issue naming the
+// hold, and enqueues one merge-held notice for the architect. "Exactly one message and exactly one
+// notice" holds only while the three are one write, so a caller that owes two rows hands both to
+// the one transaction rather than writing one of them after it. A caller that owes none passes
+// nothing.
 //
 // A replacement that did not take — the row's lease gone to another worker — is no failure, since
-// that worker reads GitHub itself; nothing at all is written then, told included, so a payload
-// never records something as told without the row that tells it. A write that failed is a
+// that worker reads GitHub itself; nothing at all is written then, the told rows included, so a
+// payload never records something as told without the rows that tell it. A write that failed is a
 // failure, and each caller says in its own sentence which write it was. The transaction owns the
-// commit hook write registers (projectRecords, intake.OnCommit), so an enqueued row's lane is
+// commit hook write registers (projectRecords, intake.OnCommit), so each enqueued row's lane is
 // woken as the payload commits.
-func (r *outbox) replacePayload(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge, told *record.OutboxRow) (bool, error) {
+func (r *outbox) replacePayload(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge, told ...record.OutboxRow) (bool, error) {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	var replaced bool
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		var err error
-		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, payload); err != nil || !replaced || told == nil {
+		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, payload); err != nil || !replaced {
 			return err
 		}
-		return r.records.Enqueue(scoped, tx, *told)
+		for _, enqueue := range told {
+			if err := r.records.Enqueue(scoped, tx, enqueue); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return false, err
 	}
@@ -569,15 +581,15 @@ func (r *outbox) rememberWait(ctx context.Context, row record.OutboxRow, payload
 	// The notice is enqueued in the payload's own transaction (replacePayload), so the row is
 	// never recorded as warned without it, a replacement that did not take writes neither, and
 	// the notice's lane is woken as the payload commits.
-	var notice *record.OutboxRow
+	var notice []record.OutboxRow
 	if warn {
 		told, err := record.NewOutboxRow(row.Issue, readyMergeWaiting(payload, waited, cause), now)
 		if err != nil {
 			return err
 		}
-		notice = &told
+		notice = append(notice, told)
 	}
-	replaced, err := r.replacePayload(ctx, row, payload, notice)
+	replaced, err := r.replacePayload(ctx, row, payload, notice...)
 	if err != nil {
 		return fmt.Errorf("record what outbox row %d learned while it waits: %w", row.ID, err)
 	}
