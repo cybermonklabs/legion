@@ -151,7 +151,7 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 	return views
 }
 
-// A plugin one contract behind the daemon reads the state with a schema that knows no
+// A plugin below supervise.PodUpdateContract reads the state with a schema that knows no
 // `updateRound` or `updateHead` and refuses the whole body for either, which is every legion
 // tool call of a worker the update round is still serving (read_record, handoff_complete). The
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod

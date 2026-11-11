@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -61,7 +62,7 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 	}
 
 	foreign := answer
-	foreign.Round = supervise.PluginRound(DaemonAPIVersion)
+	foreign.Round = supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion)
 	wantRefusal(t, h.readyForUpdate(foreign), http.StatusConflict,
 		"ready_for_update refused: the answer names an update round this claim is not in. "+
 			"It answers \""+foreign.Round+"\", and this claim is in \""+testUpdateRound+"\". "+
@@ -106,7 +107,7 @@ func TestReadyForUpdateForAPluginRoundThisBootEndedIsRefusedAndRecordsNothing(t 
 		t.Fatalf("ready: %v", err)
 	}
 	// The round an earlier daemon opened over this claim, and the end this boot posts for it.
-	round := supervise.PluginRound(DaemonAPIVersion)
+	round := supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion)
 	if err := machine.Handle(h.ctx, supervise.PodUpdateOpen{
 		Claim: token, Round: round, Reasons: "plugin", Task: supervise.UpdateTask(round, "plugin"),
 	}); err != nil {

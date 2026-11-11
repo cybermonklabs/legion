@@ -19,19 +19,35 @@ package supervise
 //
 // A credit is taken before a refresh is posted (Admit), given back where the relaunch it was
 // taken for runs or is abandoned (Release), and the whole count is put right at each sweep from a
-// re-read of the wakes the lane actually has waiting (Correct). The correction is there because
-// a credit can be lost to a path that gives none back: a machine that drops a parked wake with
-// the process it was parked over (letGo), a wake a second launch replaces (reserveWake), a post
-// to a claim this daemon no longer supervises (internal/daemon's supervisor.post), a wake whose
-// turn the tree lifecycle refuses the launch of (runWake's checkLaunch, whose retry re-enters
-// the gate without a credit of its own), a wake whose turn cannot take the running turn back
-// (runWake's interrupted, where the store refused the write), and a wake whose turn ends a
-// suspension held over the claim instead of launching (wakeNow, endHeld). The bound a reader
-// derives from this gate is read against that list: each of them costs the lane one credit, and
-// costs it only until the next sweep's correction. Release is the fast path and Correct the
-// backstop — without the correction a lane that lost K credits would admit nothing ever again,
-// and without Release a credit freed inside a minute would sit out the rest of that minute for
-// nothing.
+// re-read of the wakes the lane actually has waiting (Correct).
+//
+// The release is the rule the lane holds to everywhere it can reach: a machine holds a credit
+// only while the refresh wake that credit was taken for is waiting or is having its turn, and
+// every path that drops such a wake gives the credit back where it drops it. releaseRefresh
+// names every one of those paths. A credit that outlived its wake would cost the lane more than
+// the credit: the machine goes on reading it as held, so its next uncredited post skips the
+// gate and parks a wake the gate never granted, which is the one thing this bound promises
+// cannot happen (Machine.refreshCredit, refreshPlugin).
+//
+// The correction is there for what no release can reach: a post to a claim this daemon no longer
+// supervises, which no machine of this daemon decides at all (internal/daemon's supervisor.post),
+// and the turn take-back the store refused, at the wake's own turn and at the relaunch's own
+// decision (runWake's interrupted, replaceNow). Each of those leaves one credit out until the
+// next sweep reads the wakes the lane really has waiting.
+//
+// One window of the lane leans the other way, and the same correction answers it: a launch of
+// this lane the lifecycle recheck refuses gives its credit back at the refusal itself, wherever
+// that refusal came from — the launch path's own pre-check, the recheck a wake's turn makes,
+// the relaunch a failure raises — as the rule above says it must (relaunchRefused,
+// releaseRefresh), and the retry that refusal may arm re-enters the pacing asking this gate
+// nothing — so the wake it parks is one the lane holds with no admission behind it until the
+// next correction counts it.
+//
+// The bound a reader derives from this gate is read against both: each of the paths above costs
+// the lane one credit, the refusal's retry costs it one wake over the bound, and each costs it
+// only until the next sweep's correction. Release is the fast path and Correct the backstop —
+// without the correction a lane that lost K credits would admit nothing ever again, and without
+// Release a credit freed inside a minute would sit out the rest of that minute for nothing.
 //
 // It lives in this package rather than in internal/daemon because Deps already carries the rest
 // of the lane's facts (PluginContract, PluginRelaunchable, NoPluginInstall, WakePace) and because
@@ -135,10 +151,8 @@ var _ RefreshAdmitter = (*RefreshGate)(nil)
 // and answers false once K are held, which is the caller's refresh waiting for a later sweep.
 //
 // A gate with the pacing off grants every request and counts nothing, as its own doc states.
-// There is no nil gate to answer for: a daemon or a harness that holds none leaves the interface
-// field nil, and the two readers of that field test it before they call through it
-// (Machine.admitRefresh, Machine.releaseRefresh, and internal/daemon's own pair) — a nil
-// interface never reaches a method of this type.
+// There is no gate-less caller to answer for: every Deps and every supervision is built with a
+// gate, one of rate 0 where the pacing is off (NewRefreshGate, which states why).
 func (g *RefreshGate) Admit() bool {
 	if g.credits == 0 {
 		return true
@@ -207,19 +221,13 @@ func (g *RefreshGate) Correct(waiting int) {
 	g.granted = 0
 }
 
-// admitRefresh is a machine asking the gate for a credit of its own, which one asker does: the
-// relaunch a turn's end releases, held back until that turn was over (afterTurn,
-// holdStaleRelaunch). The daemon's own pass asks the same gate before it posts, and hands what it
-// was granted to the machine on the event it posts (StalePlugin.Admitted, refreshStalePlugins in
-// internal/daemon).
-//
-// A machine whose Deps carries no gate is granted everything. The field is an interface, and a
-// daemon or a harness that built none leaves it nil, which means exactly what a gate with the
-// pacing off means: the lane is bounded by nothing. That reading is made here and in
-// releaseRefresh and nowhere else, which is why no decision of this package touches
-// Deps.RefreshGate itself.
+// admitRefresh is a machine asking the gate for a credit of its own, which one decision does:
+// the relaunch refreshPlugin reaches with none, its own guard asking there, where the roads
+// that reach it holding none are named (refreshPlugin). The daemon's own pass asks the same
+// gate before it posts, and hands what it was granted to the machine on the event it posts
+// (StalePlugin.Admitted, refreshStalePlugins in internal/daemon).
 func (m *Machine) admitRefresh() bool {
-	return m.deps.RefreshGate == nil || m.deps.RefreshGate.Admit()
+	return m.deps.RefreshGate.Admit()
 }
 
 // releaseRefresh gives back the credit this machine holds, if it holds one, and leaves it holding
@@ -227,22 +235,31 @@ func (m *Machine) admitRefresh() bool {
 // that is abandoned at one step and re-decided at another releases once, and every further call
 // over the same machine is nothing.
 //
-// Where it is called is requirement R1's own list (dispatch://INFRA-2712): every exit of
-// refreshPlugin that raises no gated relaunch, the lifecycle refusal relaunchStale makes before
-// it reserves, and the three places the wake's work is about to run (reserveWake's exempt and
-// straight-through paths, runWake). Every other way a relaunch can be lost — a wake dropped with
-// the process it was parked over (letGo), a wake a second launch replaced, a suspension that
-// ended it (endHeld), a lifecycle refusal or a refused take-back met at the wake's own turn
-// (runWake's checkLaunch, whose retry re-enters the gate as a launch of the lane with no credit
-// of its own, and runWake's interrupted), a post to a claim the daemon no longer supervises —
-// gives nothing back here and is taken back by the sweep's own correction instead (Correct,
-// refreshStalePlugins), which is one rule for all of them rather than a release at each.
+// Where it is called is requirement R1's own list (dispatch://INFRA-2712), and the whole of it,
+// because the rule it keeps is that no credit of this lane outlives the wake it was taken for
+// (RefreshGate). It is called at every exit of refreshPlugin that raises no gated relaunch, at
+// the lifecycle refusal relaunchStale makes before it reserves, at the refusal of every launch
+// there is, which is where a refused launch of this lane gives its credit back wherever the
+// refusal came from and whose retry then re-enters the gate as a launch of the lane with no
+// credit of its own (relaunchRefused, launchAfter, runWake, relaunchAfterFailure), at the three
+// places the wake's work is about to run (reserveWake's exempt and straight-through paths,
+// runWake), at the re-read that overturns a refresh at its own turn (refreshOverturned, R2),
+// and at the three places a wake is dropped with nothing of its refresh left waiting: the
+// machine letting the claim's process go with the wake it was parked over, which every
+// suspension, failure and retirement reaches and which the suspension a wake's turn ends
+// reaches too (letGo, wakeNow's endHeld, suspendedFor); the park of another lane's wake over
+// the one this credit was taken for, a park of this lane's own kind keeping it (parkWake); and
+// the turn of a wake that starts no process, which is spent where it is read and runs nothing
+// (wakeNow).
+//
+// What no call of it reaches is left to the sweep's own correction (Correct,
+// refreshStalePlugins), which is one rule for all of them rather than a release at each: a post
+// to a claim the daemon no longer supervises, and a take-back the store refused at the wake's
+// turn or at the relaunch's own decision (runWake's interrupted, replaceNow).
 func (m *Machine) releaseRefresh() {
 	if !m.refreshCredit {
 		return
 	}
 	m.refreshCredit = false
-	if m.deps.RefreshGate != nil {
-		m.deps.RefreshGate.Release()
-	}
+	m.deps.RefreshGate.Release()
 }

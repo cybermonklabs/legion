@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -380,10 +379,11 @@ type StepRecord struct {
 // the field, because a round is matched in this package and written in internal/daemon's sweep
 // (openPodUpdate), which recognises the rounds it must carry by them.
 //
-// The round's id is the one record of its kind: PodRound and PluginRound are how one is written,
-// InPodRound and InPluginRound how a claim's is read, and IsPluginRound how a round a claim does
-// not hold yet is read. Nothing else carries the kind beside the id, so nothing can disagree
-// with it.
+// The round's id is the one record of its kind: PodRound is how a pod's is written, the prefix
+// above all that is left of how a plugin round was written, since nothing of this release writes
+// one, InPodRound and InPluginRound how a claim's round is read, and IsPodRound and IsPluginRound
+// how a round id is read on its own. Nothing else carries the kind beside the id, so nothing can
+// disagree with it.
 //
 // No daemon on this release writes a plugin round: the stale-plugin lane relaunches a stale
 // process and asks its worker nothing (plugin.go's refreshPlugin). The plugin half of this is
@@ -398,14 +398,6 @@ const (
 // PodRound is the round id of the drift round of the pod with this uid, which every claim of that
 // pod shares.
 func PodRound(pod string) string { return PodRoundPrefix + pod }
-
-// PluginRound is the round id of the per-claim round for a process to be started again on the
-// daemon contract given. Nothing of this release opens such a round, so nothing of it builds one
-// either: it is kept for the tests and fixtures that seed a round an earlier daemon wrote, and it
-// stays while a daemon that writes one is still a daemon this release can restart over. Reading
-// such a round back is InPluginRound, which is what the boot's own de-rounding pass asks
-// (internal/daemon's endPluginRounds).
-func PluginRound(contract int) string { return PluginRoundPrefix + strconv.Itoa(contract) }
 
 // InPodRound and InPluginRound say which kind of round this claim is in; both are false for a
 // claim in no round at all. IsPodRound and IsPluginRound ask the same of a round id on its own,
@@ -614,10 +606,9 @@ type Deps struct {
 	// own refresh pass, which corrects it from the wakes those machines publish
 	// (internal/daemon's run, openSupervision, refreshStalePlugins).
 	//
-	// nil is no gate at all, and every caller that reads this field reads a nil one as every
-	// request granted — the unbounded lane this change replaces — rather than calling through it:
-	// a harness that builds no gate paces its refreshes by nothing, exactly as a nil
-	// WakePace.Reserve paces its launches by nothing.
+	// Every Deps carries one, never nil: a daemon or a harness that paces nothing builds
+	// NewRefreshGate(0), which grants every request, so "the pacing is off" is read at that one
+	// construction rather than at each asker of this field (admitRefresh, releaseRefresh).
 	RefreshGate RefreshAdmitter
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
@@ -1029,8 +1020,9 @@ type Machine struct {
 	// refreshCredit is whether this machine holds a credit of the stale-plugin refresh gate: one
 	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
 	// for was decided — by the daemon's pass, which hands what it took on the event it posts
-	// (StalePlugin.Admitted), or by the turn's end asking for one itself (afterTurn,
-	// admitRefresh) — and given back at the one helper that gives one back (releaseRefresh).
+	// (StalePlugin.Admitted), or inside the decision itself, where a relaunch reached with none
+	// asks for its own (refreshPlugin's guard, admitRefresh) — and given back at the one helper
+	// that gives one back (releaseRefresh).
 	//
 	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
 	// claim that already holds a wake, so a second refresh of the same claim returns before it
@@ -1834,8 +1826,17 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool) error {
 // before this line — refused by the lifecycle recheck, cut off by a take-back the store refused,
 // ended in a suspension, or dropped with the wake a second launch replaced — never reaches it
 // and marks nothing (relaunchMarked, runWake). A try whose own write fails keeps the mark it
-// has already written in memory, which the retry's write then stores (relaunchLater).
+// has already written in memory, which the retry's write then stores (relaunchLater), and the
+// intent that mark came from goes back on the machine where that retry runs, so the relaunch it
+// raises waits under the lane's own kind rather than under the launch kind every other launch
+// takes — the restoration a refused turn's retry takes, from the same wrapper (retryHolding,
+// retryOf, reserveWake, dispatch://INFRA-2712 R4).
 func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
+	// The intent is read before it is committed rather than taken, because committing takes it
+	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
+	// arms must put that same one back where it runs. Reading it without taking it is what the
+	// wake gate does for the kind it reads off it (reserveWake).
+	intent := m.pluginRelaunch
 	m.commitPluginRelaunch()
 	m.letGo()
 	for {
@@ -1852,7 +1853,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			}
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
-			m.relaunchLater(func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt) })
+			m.relaunchLater(m.retryHolding(intent, func(ctx context.Context) error {
+				return m.launchAfter(ctx, charged, exempt)
+			}))
 			return err
 		}
 		if charged {
@@ -2199,7 +2202,11 @@ func (m *Machine) retire(ctx context.Context) error {
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
 // (relaunchLater), no wake of the pacing waits its turn (reserveWake) — the launch it was to
-// make is the one this end replaces — no send talks to it, no suspension is held for its turn,
+// make is the one this end replaces, and the credit of the refresh gate a refresh of the
+// stale-plugin lane held for that wake goes back with it (releaseRefresh,
+// dispatch://INFRA-2712 R1): nothing of that refresh waits in the pacing once the wake is
+// dropped, and a launch that reaches here has given the credit back already, at the gate that
+// let it run (reserveWake, runWake) — no send talks to it, no suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
 // replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
@@ -2219,6 +2226,8 @@ func (m *Machine) letGo() {
 	m.disarmAll()
 	m.relaunch = nil
 	m.wake = nil
+	// The wake went with the process this end lets go, so the credit goes back with it.
+	m.releaseRefresh()
 	m.forgetSend()
 	m.held = nil
 	m.staleRelaunch = nil

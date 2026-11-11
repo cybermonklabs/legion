@@ -1273,7 +1273,7 @@ func TestPodUpdateACurrentRegistrationEndsThePluginRound(t *testing.T) {
 	h.reach(StateIdle)
 	// The walk to idle delivers a phase task and works it, so one prompt is already sent.
 	sent := len(h.prompts())
-	h.openUpdate(PluginRound(PodUpdateContract+1), testReasons)
+	h.openUpdate(PluginRoundPrefix+strconv.Itoa(PodUpdateContract+1), testReasons)
 	h.wantPrompts(sent + 1)
 	// The worker reads the ask, answers it and ends its turn, which retires the round's own task.
 	// The next phase task then arrives while the round holds it back.
@@ -1329,7 +1329,7 @@ func TestPodUpdateACurrentRegistrationEndsThePluginRound(t *testing.T) {
 // answer puts on the claim's task, which both halves of this test read at the prompts.
 func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.T) {
 	const next = "review the pull request"
-	round := PluginRound(PodUpdateContract + 1)
+	round := PluginRoundPrefix + strconv.Itoa(PodUpdateContract+1)
 	for _, tc := range []struct {
 		name    string
 		suspend bool

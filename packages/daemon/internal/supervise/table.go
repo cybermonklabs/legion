@@ -1768,23 +1768,22 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // own.
 //
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
-// the claim took no credit while its turn ran (holdStaleRelaunch), so one is asked for here and
-// the relaunch runs on it. Refused, the relaunch is left to the next sweep, which posts
-// StalePlugin for a claim that is idle by then and relaunches it on the first credit that comes
-// free — a minute at the rate the lane is held to, against the hours a lane with no gate costs
-// every other wake of the daemon. The mark is not re-armed for that: it waits for a turn, and
-// this turn has ended. Nothing else of this function waits on the answer either — the round's
-// slot and the pending send run whichever way the gate answered.
+// the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
+// reaches refreshPlugin with none and asks the gate at that guard, which is where every
+// uncredited relaunch of this lane asks and which states why the ask lives there rather than
+// here. The claim here is never the controller's, which that guard spares: m.staleRelaunch is
+// written by holdStaleRelaunch alone, and that is reached under StateWorking and no controller.
+// Refused, the relaunch is left to the next sweep, which posts StalePlugin for a claim that is
+// idle by then and relaunches it on the first credit that comes free — a minute at the rate the
+// lane is held to, against the hours a lane with no gate costs every other wake of the daemon.
+// The mark is not re-armed for that: it waits for a turn, and this turn has ended. Nothing else
+// of this function waits on the answer either — the round's slot and the pending send run
+// whichever way the gate answered.
 func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
-		if m.admitRefresh() {
-			if err := m.refreshPlugin(ctx, *held, true); err != nil {
-				return err
-			}
-		} else {
-			m.log.Info("supervise: the turn of this claim on another plugin contract has ended, and the refresh gate is full; its relaunch waits for the next sweep",
-				"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", *held)
+		if err := m.refreshPlugin(ctx, *held, false); err != nil {
+			return err
 		}
 	}
 	if err := m.takeSlotForUpdate(ctx, false); err != nil {
@@ -2413,7 +2412,7 @@ func updatesRound(d *Delivery, round string) bool {
 // updateRoundOf is the round whose ask carries delivery id, and false for an id no update round
 // made. An ask's id is updateTaskPrefix, the round, and this ask's own word, so the round is
 // everything between the prefix and the last colon: a round's own id carries one colon (PodRound,
-// PluginRound) and the word none.
+// PluginRoundPrefix) and the word none.
 func updateRoundOf(id string) (string, bool) {
 	rest, ok := strings.CutPrefix(id, updateTaskPrefix)
 	if !ok {

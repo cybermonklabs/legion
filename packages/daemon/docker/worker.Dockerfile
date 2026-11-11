@@ -367,6 +367,10 @@ ENV GOPROXY=https://proxy.golang.org|direct
 # the layer that met it, because every `go` command of this stage reads that same GOPROXY. It
 # stays in this stage: the runtime base is debian:trixie-slim, whose own git is what the workers
 # run (/usr/bin/git, above), and nothing of this stage but the two static binaries is copied out.
+# The package carries no version pin, for the reason the apt packages above carry none (DL3008,
+# the ARG block): Alpine's repository serves only its branch's current version of a package, so a
+# pinned version stops resolving at the next update. The base image's digest is the pin.
+# hadolint ignore=DL3018
 RUN apk add --no-cache git
 # The notices stage's Go part: go-licenses (pinned in go-third-party-notices.sh) is built in a layer of
 # its own, before the module files, so neither a source change nor a dependency bump rebuilds it.

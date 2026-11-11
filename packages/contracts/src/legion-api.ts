@@ -665,19 +665,19 @@ const legionConsumerLag = z.object({
  * null, empty at every moment outside a restart or a refresh wave (contract 53). It is optional
  * here only because a daemon at this contract leaves it off one body: a reader before 53 refuses
  * the key outright, empty as surely as naming a wake, so the route strips it for a caller in a pod
- * whose claims record a contract below 53, and for a caller in a pod whose claims it cannot read
- * at all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). A reader
- * that finds it absent has been served that stripped body and learns nothing about which wakes
- * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
- * refuse. `claimsToRefresh` is how many claims the stale-plugin lane still has to relaunch onto
- * the daemon's plugin, a number and never null, 0 when the lane has nothing left (contract 73).
- * It is what `wakesWaiting` cannot say: that lane holds at most one minute of the pacing at a
- * time, so its waiting wakes are what it has admitted and this is what it has left. It is
- * optional for the same reason `wakesWaiting` is and no other: the route strips it for a caller
- * in a pod below 73 and for one whose pod's claims it cannot read, since a reader before 73
- * refuses the key when it is 0 as surely as when it names a number (`api.stateFor`,
- * `withoutClaimsToRefresh`). The two strips compose on one body: a caller below 53 is below 73
- * too and is served neither key. */
+ * whose claims record a contract below 53, and for that caller alone (`api.stateFor`,
+ * `withoutWakesWaiting`). A reader that finds it absent has been served that stripped body and
+ * learns nothing about which wakes wait; it is never a daemon older than this plugin, whom the
+ * boot gate and `legion probe-image` refuse. `claimsToRefresh` is how many claims the stale-plugin
+ * lane still has to relaunch onto the daemon's plugin, a number and never null, 0 when the lane has
+ * nothing left (contract 73). It is what `wakesWaiting` cannot say: that lane holds at most one
+ * minute of the pacing at a time, so its waiting wakes are what it has admitted and this is what it
+ * has left. It is optional for the same reason `wakesWaiting` is and no other: the route strips it
+ * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
+ * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
+ * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
+ * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
+ * and is served neither key. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   admission: legionAdmission,

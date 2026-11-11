@@ -60,6 +60,27 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // the report that raised the relaunch made it, and the next report of the same process, the
 // one that raises the relaunch again, is what changes it.
 //
+// The credit of the refresh gate a machine may hold goes back here, and here alone for a launch
+// this lane raised (releaseRefresh, dispatch://INFRA-2712 R1). This is the refusal of every
+// launch there is, so a refused launch of the stale-plugin lane gives its credit back wherever
+// the refusal came from — the launch path's own pre-check, the recheck the wake's turn makes
+// and the relaunch a failure raises (launchAfter, runWake, relaunchAfterFailure) — rather than
+// at each of them, and the one shape the reader has to hold is that a refused launch raises no
+// wake, so nothing of that refresh waits in the pacing past this line.
+//
+// No refresh wake can be waiting on the machine when this runs, so the release never takes back
+// a credit a wake still needs. A credit is taken over a claim that holds no wake at all — the
+// lane decides nothing for one that already holds a wake of any kind, giving the credit
+// straight back and returning (refreshPlugin's own guard) — and it is held from there to the
+// park with no wake on the machine, which is every refusal the launch path can make. At the
+// wake's own turn the wake is off the machine before anything is rechecked, taken by the turn
+// that runs it (wakeNow, runParkedLaunchNow). The third window is a wake parked and still
+// waiting, and no decision of this package raises a launch over one at all (parkWake lists
+// them).
+//
+// What the retry such a refusal may arm costs the gate is where the gate states it (retryOf,
+// RefreshGate, Correct).
+//
 // What one refused relaunch leaves behind is put right by the caller that left it, never here.
 // The one such thing is the watch a park took off the process the relaunch was to replace, and
 // it belongs to the launch the wake pacing held: that turn is where it is armed again (runWake,
@@ -82,6 +103,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // retire. Any other failure is not the tree's — a store that did not answer — and ends nothing:
 // the relaunch waits (relaunchLater), as a stop that fails does.
 func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Context) error, err error) error {
+	m.releaseRefresh()
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
 	}

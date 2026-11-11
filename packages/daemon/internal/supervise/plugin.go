@@ -131,20 +131,23 @@ const PodUpdateContract = 46
 //
 // admitted is whether a credit of the refresh gate was taken for this claim before this decision
 // was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
-// claim it posts and hands it over on the event (StalePlugin.Admitted), and the turn's end takes
-// one of its own for the relaunch it held (afterTurn). The machine holds it from here until the
-// relaunch it pays for runs or is abandoned (refreshCredit, releaseRefresh). Every return below
-// that raises no relaunch gives it straight back, because the lane gave up nothing by it and the
-// next sweep will decide this claim again: the contract already current, a wake already held,
-// no process to replace, and the turn this relaunch waits out, whose own end asks the gate anew.
+// claim it posts and hands it over on the event (StalePlugin.Admitted). The machine holds it
+// from here until the relaunch it pays for runs or is abandoned (refreshCredit,
+// releaseRefresh). Every return below that raises no relaunch gives it straight back, because
+// the lane gave up nothing by it and the next sweep will decide this claim again: the contract
+// already current, a wake already held, no process to replace, and the turn this relaunch waits
+// out, whose own end runs the relaunch back through here.
 //
-// Two of the pass's posts carry no credit at all, and a decision reached with none releases
-// nothing, so the same calls stand for every post. The controller's claim is admitted nothing
-// because its wake is outside the pacing (reserveWake). A claim the pass read in a turn is
-// admitted nothing because its relaunch takes no wake now and its turn's end is what asks the
-// gate (holdStaleRelaunch, R2); the credit such a post does carry is the window where the
-// pass's snapshot and this machine disagree — a claim read idle that has started a turn since —
-// and the hold's own return gives it back.
+// A decision reached with no credit asks the gate itself, at the guard below, which is the
+// machine's one ask of it (admitRefresh). Three roads reach that guard holding none, and the
+// last of them is no post at all. The controller's claim is posted uncredited because its wake
+// is outside the pacing (reserveWake), and the guard spares it rather than asking for it. A
+// claim the pass read in a turn is posted uncredited because its relaunch takes no wake now
+// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the pass's
+// snapshot and this machine disagree — a claim read idle that has started a turn since — and
+// the hold's own return gives it back. And the relaunch that hold left waiting comes back
+// through here at the turn's end, with no credit of its own and the claim in whatever state
+// that end left it (afterTurn).
 func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bool) error {
 	if admitted {
 		m.refreshCredit = true
@@ -169,18 +172,18 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		return nil
 	}
 	// Every relaunch of this lane waits under a credit of the gate, so one reached with none asks
-	// for its own here. The pass posts two claims uncredited: the controller's, whose relaunch is
-	// outside the pacing the gate bounds and takes no credit at all, and a claim its snapshot read
-	// in a turn, which takes none because its turn's end asks the gate itself (R2). The second is
-	// the window the imperfect skip leaves: a claim whose turn ended between the pass's read and
-	// this decision is no longer in a turn, and relaunching it on no credit would park a wake the
-	// gate never counted — eight of them at once where a wave's turns end together, which is twice
-	// the rate in the pacing and the one thing R1 promises cannot happen. Refused, it is left to
-	// the next sweep, which reads it idle and admits it like any other.
+	// for its own here, which is the lane's one ask inside a machine; the roads that reach it
+	// holding none are named above. Relaunching on no credit would park a wake the gate never
+	// counted — eight of them at once where a wave's turns end together, which is twice the rate
+	// in the pacing and the one thing R1 promises cannot happen. Refused, the claim is left to
+	// the next sweep, which reads it idle and admits it like any other. The ask is made here
+	// rather than on those roads because it is made after the three guards above: a claim that
+	// is no longer stale, that already holds a wake or that holds no capability burns no credit
+	// it would give back at once.
 	if !controller && !m.refreshCredit {
 		if !m.admitRefresh() {
-			m.log.Info("supervise: this claim left its turn between the pass's read and this decision, and the refresh gate is full; its relaunch waits for the next sweep",
-				"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
+			m.log.Info("supervise: this claim's stale-plugin relaunch reached the refresh gate with no credit of its own and the gate is full; its relaunch waits for the next sweep",
+				"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
 			return nil
 		}
 		m.refreshCredit = true
@@ -197,8 +200,9 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // tick while its turn runs, so only the first of them logs; the rest replace the trigger and say
 // nothing.
 //
-// A claim in a turn takes no admission of the refresh gate, and the turn's end is what asks for
-// one (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and a credit held
+// A claim in a turn takes no admission of the refresh gate, and the relaunch its turn's end
+// runs asks for one where every uncredited relaunch of this lane asks, at refreshPlugin's own
+// guard (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and a credit held
 // through it is one of the K the lane has spent on a claim that raises nothing with it: at a
 // fleet whose stale claims are mostly working, the lane would admit its whole minute of the
 // pacing and relaunch nobody.

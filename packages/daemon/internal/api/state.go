@@ -59,7 +59,7 @@ type State struct {
 	WakesWaiting []WakeWaiting `json:"wakesWaiting"`
 	// ClaimsToRefresh is how many claims the stale-plugin lane still has to relaunch onto this
 	// daemon's plugin: a claim with a recorded session, whose process holds a capability, whose
-	// recorded plugin contract is not DaemonAPIVersion, that is in no update round, and whose
+	// recorded plugin contract is not DaemonAPIVersion, that is in no pod update round, and whose
 	// launch installs a plugin — the set the daemon's own pass walks
 	// (daemon's refreshStalePlugins). Always a number, never null, and 0 when the lane has
 	// nothing left, which is every moment outside a wave (contract 73).

@@ -310,8 +310,8 @@ func awaitFullGate(t *testing.T, d *daemon) bool {
 // staleClaimsListed is how many claims the stale-plugin lane still has to refresh, counted from
 // the operator's own claim list rather than from the state body: the rule requirement R4 states —
 // a recorded session, a process that holds a capability, a recorded contract that is not this
-// daemon's, no update round, and a launch that installs a plugin — read off a surface of its own,
-// so that the count the state serves is checked against something other than itself.
+// daemon's, no pod update round, and a launch that installs a plugin — read off a surface of its
+// own, so that the count the state serves is checked against something other than itself.
 func staleClaimsListed(t *testing.T, d *daemon) int {
 	t.Helper()
 	left := 0
@@ -319,7 +319,7 @@ func staleClaimsListed(t *testing.T, d *daemon) int {
 		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(supervise.ClaimState(c.State)) {
 			continue
 		}
-		if c.UpdateRound != "" || c.Role == refreshNoInstallRole {
+		if supervise.IsPodRound(c.UpdateRound) || c.Role == refreshNoInstallRole {
 			continue
 		}
 		left++
@@ -602,7 +602,8 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// without running it (letGo), and an operator's suspension of such a claim is one of
 		// them: it ends the very process the refresh wake was parked over. That is the credit
 		// the next sweep's correction takes back, which is what requirement R1 promises of every
-		// loss outside the three paths that return a credit directly (correctRefreshGate,
+		// loss outside the three paths that return a credit directly (the correction
+		// refreshStalePlugins makes, supervise.RefreshGate.Correct;
 		// decision P2 of dispatch://INFRA-2712/artifact/plan-md).
 		//
 		// It reads a full gate too, and waits for one in the same way, for the same reason: a
@@ -634,7 +635,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 			// sweeps are counted from the moment the wake is seen gone rather than from the
 			// request that dropped it, because the sweep runs on the wall clock while the drop
 			// and the reading of it are the test's own round trips: what is being measured is
-			// the correction, which is the next pass's first act (correctRefreshGate), not how
+			// the correction, which is the next pass's first act (refreshStalePlugins), not how
 			// long this test took to see the wake go.
 			status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(drained)+"/suspend", nil, true)
 			if status != http.StatusOK {

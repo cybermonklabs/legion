@@ -86,7 +86,7 @@ var contract46Issue = []string{
 // at 53 or 54 the wakes too; a pod at 55 the steps too, and still none of the retired entries,
 // the step records, the places, the counts of the moves back and the refresh count; a pod at 56
 // the retired entries too; a pod at 57 the step records too; a pod from 58 to 61 the places too,
-// and still neither count; a pod from 62 to 68 the counts of the moves back too, and still no
+// and still neither count; a pod from 62 to 72 the counts of the moves back too, and still no
 // refresh count; a pod below 46
 // none of the ten; and a pod at this contract, a pod whose claims record none and a caller in
 // no pod — the operator's `legion state`, whose memory line reads the draws, whose queue line
@@ -117,15 +117,15 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		wakes   bool
 		retired bool
 		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// the contract below this daemon's own, so a pod at 57 is served the record and a pod
+		// the contract sixteen below this daemon's own, so a pod at 57 is served the record and a pod
 		// still running an older plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), the contract eleven below this daemon's own, so a pod at it is
+		// (waitingLineContract), the contract fifteen below this daemon's own, so a pod at it is
 		// served the places and a pod still running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), the contract seven below this daemon's own.
+		// has made (backwardMovesContract), the contract eleven below this daemon's own.
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
 		// stale-plugin lane has left (claimsToRefreshContract), this daemon's own contract, so

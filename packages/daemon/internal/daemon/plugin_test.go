@@ -57,6 +57,7 @@ func newPluginSupervisor(t *testing.T, contract int, relaunchable bool) (*superv
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract:     contract,
 		PluginRelaunchable: relaunchable,
+		RefreshGate:        supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	return sup, rt
@@ -313,7 +314,8 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 	if _, err := sup.restore(context.Background(), []supervise.Claim{c}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true}}
+	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
+		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.refreshStalePlugins(s.claims, "boot")
 
@@ -358,7 +360,7 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 	project, _ := claim.ProjectToken("legion")
 	live, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
 	suspended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
-	round := supervise.PluginRound(24)
+	round := supervise.PluginRoundPrefix + "24"
 	now := time.Now()
 	inRound := func(token claim.Token, role claim.Role, state supervise.ClaimState, loc *runtime.Locator) supervise.Claim {
 		return supervise.Claim{
@@ -380,7 +382,8 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 		t.Fatalf("restore: %v", err)
 	}
 	logs := &syncBuffer{}
-	s := &supervision{log: jsonLogger(logs), supervisor: sup, claims: claims, plan: plan{pluginRelaunchable: true}}
+	s := &supervision{log: jsonLogger(logs), supervisor: sup, claims: claims, plan: plan{pluginRelaunchable: true},
+		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.endPluginRounds(s.claims)
 	s.refreshStalePlugins(s.claims, "boot")
@@ -452,7 +455,8 @@ func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T)
 	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
 		t.Fatalf("suspend mid-turn = %v, want ErrSuspendHeld", err)
 	}
-	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true}}
+	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
+		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.refreshStalePlugins(s.claims, "boot")
 
