@@ -3779,6 +3779,9 @@ jobs:
       - name: Test the tool manifest check
         run: .github/scripts/check-ci-tools.test.sh
 
+      - name: Test the tool fallback rig
+        run: .github/scripts/ci-tools-proof.test.sh
+
       - name: Test the action pin check
         run: .github/scripts/check-action-pins.test.sh
 
