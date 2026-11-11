@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow } from "../../api/types";
+import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
 
@@ -21,11 +22,17 @@ function LocationProbe() {
   );
 }
 
+/** One open ask. The person it waits on is resolved as the server resolves it
+ *  (`coalesce(a.asked_of, i.assignee)`), so an override that moves the issue's assignee, or
+ *  hands the ask to somebody, moves that person with it. */
 function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
     artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-09-11T00:00:00Z",
@@ -58,6 +65,7 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  return withWaitingOnPerson(row);
 }
 
 /** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a
@@ -197,7 +205,7 @@ test("the bare project path opens on Issues with the filter parameters forwarded
     );
     expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Issues" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    expect(await screen.findByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
   } finally {
     page.restore();
   }
@@ -424,35 +432,22 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
   }
 });
 
-test("one filter strip serves both views: chips survive the toggle and only List folds in Status", async () => {
+test("List table and Board strip share the URL's status, labels and search", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
-  const page = renderPage("/projects/CORE?label=frontend&q=core");
+  const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
   try {
-    await screen.findByRole("heading", { name: "Core" });
-    // One strip instance on the List, holding the URL-backed chips.
-    expect(screen.getAllByRole("button", { name: /Filters · \d+ active/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
-    // The List folds the URL's Status filter into the strip's count and chips.
-    await user.click(await screen.findByRole("button", { name: "Status" }));
-    await user.click(screen.getByRole("option", { name: "Todo" }));
-    expect(screen.getByRole("button", { name: "Filters · 3 active" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove Status: Todo filter" })).toBeTruthy();
-
+    await screen.findByRole("table", { name: "Project issues table" });
+    expect(screen.getByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Board" }));
-    // Still one strip; the URL chips survive the toggle; the Board has no Status picker or chip.
-    expect(screen.getAllByRole("button", { name: /Filters · \d+ active/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Status( · \d+)?$/ })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Remove Status: Todo filter" })
-    ).not.toBeInTheDocument();
-
-    // Back on the List the held Status filter counts again.
     await user.click(screen.getByRole("button", { name: "List" }));
-    expect(screen.getByRole("button", { name: "Filters · 3 active" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).toContain("status=todo");
   } finally {
     page.restore();
     window.localStorage.removeItem(viewKey);

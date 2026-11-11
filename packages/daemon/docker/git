@@ -1,0 +1,83 @@
+#!/bin/sh
+# The git first on a pod's PATH, /opt/legion/bin/git (worker.Dockerfile). It runs the real git,
+# /usr/bin/git, with the arguments it was given and nothing else — except for a push, which it
+# runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand and with
+# the push's own `--no-verify` taken out. So git itself computes the update lines, hands them to
+# the root-owned pre-push hook in that directory, and the hook runs Legion's leak guard before a
+# byte reaches the remote; a role can neither write that hook nor name a hooks path that
+# outranks this one.
+#
+# The `-c` goes after the caller's own global options and before the subcommand, rather than
+# ahead of every argument, because git takes the last `-c` of a name: a caller's own
+# `-c core.hooksPath=<anything>` is read first and this one wins over it (measured on the
+# image's git 2.47.3: `git -c core.hooksPath=/opt/legion/githooks -c core.hooksPath=/dev/null
+# config --get core.hooksPath` prints /dev/null, and the two swapped print
+# /opt/legion/githooks). It outranks the runtime's own core.hooksPath=/dev/null for the same
+# reason, which every pod's git carries in GIT_CONFIG_KEY_n (mainEnvironment,
+# packages/daemon/internal/runtime/sandbox/manifest.go): measured on the same git, a
+# `-c core.hooksPath=<dir>` beside that pin reads back as <dir>. The pin still holds for every
+# other command, which is the whole point of leaving them alone.
+#
+# What this does not stop is a role that runs /usr/bin/git itself, PATH unread. Nothing here
+# tries to: the spec's Design says of every layer of this guard that none of them stops somebody
+# who means to publish a name, and that this change does not try to (dispatch://INFRA-1527).
+#
+# `jj git push` shells out to the `git` PATH names (`git -c core.fsmonitor=false … --git-dir <dir>
+# push --porcelain --no-verify …`, measured with jj 0.45.1-sami), so this one wrapper catches a
+# role's own push and jj's, and jj's `--no-verify` is what the removal is for.
+#
+# Only `--no-verify` is removed. `-n` is `--dry-run` for a push, not `--no-verify` (`git push -h`
+# on git 2.47.3: `-n, --[no-]dry-run  dry run` beside `--no-verify  bypass pre-push hook`), and
+# removing it would turn a caller's dry run into a real push.
+set -u
+
+real=/usr/bin/git
+hooks=/opt/legion/githooks
+
+# One pass over the arguments: each is taken from the front and the kept ones are put back at the
+# end, which is how a POSIX shell edits its own positional parameters, so what is left when the
+# loop ends is the list to run, in order. A push's `-c core.hooksPath=<dir>` is put back just
+# before the subcommand is, which is after everything the caller wrote in front of it.
+#
+# The subcommand is the first word that is no global option. The global options whose value is the
+# next argument are git's own (`git --help`, and handle_options in git.c for the two the usage
+# line leaves out): a wrapper that read one of those values as the subcommand would miss a push —
+# jj's own `--git-dir <dir> push` is exactly that shape — or rewrite a command that is none. The
+# `--opt=value` spellings need nothing: they are one word, and this skips over them as it does
+# over any other option. Only what follows the subcommand is read for `--no-verify`, so a
+# `--no-verify` that is some option's value stays that value.
+push=0
+after=0
+value=0
+left=$#
+while [ "$left" -gt 0 ]; do
+  arg=$1
+  shift
+  left=$((left - 1))
+  if [ "$after" -eq 0 ]; then
+    if [ "$value" -eq 1 ]; then
+      value=0
+    else
+      case "$arg" in
+        -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source)
+          value=1
+          ;;
+        -*) ;;
+        *)
+          after=1
+          case "$arg" in
+            push | send-pack)
+              push=1
+              set -- "$@" -c "core.hooksPath=$hooks"
+              ;;
+          esac
+          ;;
+      esac
+    fi
+  elif [ "$push" -eq 1 ] && [ "$arg" = --no-verify ]; then
+    continue
+  fi
+  set -- "$@" "$arg"
+done
+
+exec "$real" "$@"

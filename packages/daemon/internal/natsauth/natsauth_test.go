@@ -32,7 +32,7 @@ func connect(t *testing.T, url string, lookup func(string) (string, bool)) (*nat
 	if err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
-	return natsauth.Connect([]string{url}, seed, nats.Timeout(5*time.Second))
+	return natsauth.Connect([]string{url}, seed, t.Name(), nats.Timeout(5*time.Second))
 }
 
 // usable proves a connection does what the daemon's boot does with it: open JetStream and read the

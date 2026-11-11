@@ -733,6 +733,7 @@ func (s *server) horizon() *events.Horizon {
 		}
 		s.eventHorizon = events.NewHorizon(db)
 		s.eventHorizon.PersistProven()
+		s.eventHorizon.SetStallWarning(s.deps.HorizonStallAfter, s.deps.HorizonWarnEvery)
 	})
 	return s.eventHorizon
 }
