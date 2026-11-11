@@ -76,19 +76,6 @@ const mergeWaitWarn = time.Hour
 // is never held back by a slow read.
 const jumpQueueRead = 5 * time.Second
 
-// markLineUnits is how long any one string the controller's marks put into a Dispatch block
-// stays: GitHub's answer to a jump it refused, a hold's reason, and each of a hold's path
-// patterns. It is ghautomerge's own rule for a string out of GitHub (its cutLine,
-// failureLineUnits), read for the same reason: Dispatch refuses a block over
-// DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units (packages/contracts), and the daemon then tells the
-// architect its message was refused instead of telling the issue what holds its merge. A hold's
-// own words come from the controller rather than from GitHub, and are cut the same way, since
-// nothing between the controller's route and this block bounds them either. Two hundred runes is
-// what ghautomerge gives one such string; a rune outside the BMP is two UTF-16 units, so one cut
-// string costs at most 401 units and the whole of one of these messages stays far inside one
-// block.
-const markLineUnits = 200
-
 // queueConflictBound is how long GitHub's merge queue must keep reporting a ready_merge row's
 // entry UNMERGEABLE, built all that time on the same commit, before the row takes the entry's own
 // head to be what the queue cannot merge and sends the issue back to implementing (queueConflict).
@@ -779,17 +766,17 @@ func (m *readyMergeMarks) Jump(ctx context.Context, branch string) (bool, error)
 // (requirement R4), the issue is told, and the controller's own notice carries the issue, the
 // pull request, the head and GitHub's answer.
 //
-// Every string of GitHub's here is cut once (cutMarkLine), as ghautomerge cuts the strings it
-// renders: a refusal GitHub writes at any length would otherwise reach a Dispatch block whole and
-// could have the block refused, which would tell the architect of a refused message instead of
-// telling anyone of the refused jump. A write the row's lease no longer carries writes nothing
-// and fails nothing: Submit sends the plain submission either way, and the worker that holds the
-// row reads the same submission itself.
+// Every string of GitHub's here is cut once (ghautomerge.CutLine), as ghautomerge cuts the
+// strings it renders: a refusal GitHub writes at any length would otherwise reach a Dispatch
+// block whole and could have the block refused, which would tell the architect of a refused
+// message instead of telling anyone of the refused jump. A write the row's lease no longer
+// carries writes nothing and fails nothing: Submit sends the plain submission either way, and
+// the worker that holds the row reads the same submission itself.
 func (m *readyMergeMarks) JumpRefused(ctx context.Context, answer string) error {
 	r := m.runner
 	now := r.now().UTC()
 	refused := m.jumped
-	refused.Refused, refused.Refusal = true, cutMarkLine(answer)
+	refused.Refused, refused.Refusal = true, ghautomerge.CutLine(answer)
 	post, err := record.NewOutboxRow(m.row.Issue, readyMergeJumpRefusedPost(refused), now)
 	if err != nil {
 		return err
@@ -1140,11 +1127,11 @@ func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.Conf
 // reader: the hold is nobody's to undo on the issue, and the merge goes out when it ends.
 //
 // The hold's own words are the controller's and reach a Dispatch block from an outbox payload, so
-// each of them is cut once here (cutMarkLine, markLineUnits), as GitHub's are everywhere else in
-// the daemon's merge messages.
+// each of them is cut once here (ghautomerge.CutLine), as GitHub's are everywhere else in the
+// daemon's merge messages.
 func readyMergeHeldPost(payload record.ReadyMerge, hold record.MergeHold) record.MessagePost {
 	return record.MessagePost{Body: fmt.Sprintf("Legion has not submitted the merge of pull request #%d at READY's head %s: one of the project's merge holds matches a file this pull request changes. The hold covers %s, %s set it for %q, and it ends at %s. Nothing is anyone's to do: the issue stays in awaiting_merge, and the daemon submits the merge once the hold ends.",
-		payload.Number, payload.Head, heldPathsNamed(hold), markSession(hold.Session), cutMarkLine(hold.Reason), hold.EndsAt.UTC().Format(time.RFC3339))}
+		payload.Number, payload.Head, heldPathsNamed(hold), markSession(hold.Session), ghautomerge.CutLine(hold.Reason), hold.EndsAt.UTC().Format(time.RFC3339))}
 }
 
 // readyMergeHeldReason is the merge-held notice's reason, the architect's one telling that a merge
@@ -1154,19 +1141,15 @@ func readyMergeHeldPost(payload record.ReadyMerge, hold record.MergeHold) record
 // reason on GitHub; the controller set the hold and needs no telling.
 func readyMergeHeldReason(payload record.ReadyMerge, hold record.MergeHold) string {
 	return fmt.Sprintf("Legion has not submitted the merge of pull request #%d at READY's head %s: a merge hold of this project covers %s until %s (%s set it for %q). The issue stays in awaiting_merge and the merge is submitted when the hold ends.",
-		payload.Number, payload.Head, heldPathsNamed(hold), hold.EndsAt.UTC().Format(time.RFC3339), markSession(hold.Session), cutMarkLine(hold.Reason))
+		payload.Number, payload.Head, heldPathsNamed(hold), hold.EndsAt.UTC().Format(time.RFC3339), markSession(hold.Session), ghautomerge.CutLine(hold.Reason))
 }
 
-// heldPathsNamed is a hold's path patterns as a message names them, each cut once and separated by
-// ", ", and a sentence of its own for a hold with no pattern at all, which matches every change
-// the project merges.
+// heldPathsNamed is a hold's path patterns as a message names them, each cut once and separated
+// by ", ".
 func heldPathsNamed(hold record.MergeHold) string {
-	if len(hold.Paths) == 0 {
-		return "every path"
-	}
 	named := make([]string, 0, len(hold.Paths))
 	for _, path := range hold.Paths {
-		named = append(named, cutMarkLine(path))
+		named = append(named, ghautomerge.CutLine(path))
 	}
 	return strings.Join(named, ", ")
 }
@@ -1179,7 +1162,7 @@ func markSession(session string) string {
 	if session == "" {
 		return "the controller"
 	}
-	return cutMarkLine(session)
+	return ghautomerge.CutLine(session)
 }
 
 // readyMergeJumpedPost is the message posted on the issue when the daemon spends its jump mark
@@ -1191,7 +1174,7 @@ func markSession(session string) string {
 // queue it displaced is gone.
 func readyMergeJumpedPost(jumped record.MergeJumpRecord, mark record.MergeJump) record.MessagePost {
 	return record.MessagePost{Body: fmt.Sprintf("Legion sent the merge of pull request #%d at READY's head %s to the head of %s's merge queue on the controller's jump mark: %s marked the issue for %q. %s The mark is spent: the next merge of this issue is submitted as any other.",
-		jumped.Number, jumped.Head, jumped.Repository, markSession(mark.Session), cutMarkLine(jumped.Reason), jumpedQueueNamed(jumped))}
+		jumped.Number, jumped.Head, jumped.Repository, markSession(mark.Session), ghautomerge.CutLine(jumped.Reason), jumpedQueueNamed(jumped))}
 }
 
 // readyMergeJumpRefusedPost is the message posted on the issue when GitHub refused the jump
@@ -1234,20 +1217,6 @@ func jumpedQueueNamed(jumped record.MergeJumpRecord) string {
 		named = fmt.Sprintf("%s and %d more", named, jumped.EntriesTotal-len(jumped.Entries))
 	}
 	return named + ", which this merge now goes ahead of."
-}
-
-// cutMarkLine is one string of a mark's own held to markLineUnits runes, with "…" where it was
-// cut: GitHub's answer to a refused jump, a hold's reason, each of a hold's path patterns and the
-// session that set it. It is ghautomerge's cutLine, by the same rule and for the same reason —
-// every string this daemon did not write itself is cut once, at the one place it is rendered — and
-// it is written here rather than borrowed because that one is unexported, which is what keeps
-// ghautomerge free of every caller's own marks.
-func cutMarkLine(line string) string {
-	runes := []rune(line)
-	if len(runes) <= markLineUnits {
-		return line
-	}
-	return string(runes[:markLineUnits]) + "…"
 }
 
 // graphQL is the GitHub client a merge row calls with, carrying the implement App's token, the

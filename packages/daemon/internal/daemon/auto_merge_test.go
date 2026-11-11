@@ -1649,9 +1649,9 @@ type armableGitHub struct {
 	enqueueRefusal string
 	enqueues       int
 	// requests is every request the fake answered, in order, each named by what it was: "read",
-	// "files", "queue", "enqueue", "enable", "merge", "timeline" and "log". A test that must know
-	// one read happened before one mutation reads it here, since the order is the whole of what
-	// it asserts.
+	// "files", "queue", "enqueue", "enable", "disable" and "timeline". A test that must know one
+	// read happened before one mutation reads it here, since the order is the whole of what it
+	// asserts.
 	requests []string
 }
 
@@ -2233,7 +2233,7 @@ func TestAMergePayloadWriteEnqueuesEveryToldRowUnderTheRowsLease(t *testing.T) {
 
 	held := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now, HeldSince: now, HeldTold: true}
 	message := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "A merge hold holds this merge back."}, now)
-	notice := mustOutboxRow(t, "LEGION-208", record.Notice{Kind: "merge-waiting", Role: claim.RoleArchitect, Reason: "a merge hold holds the merge back"}, now)
+	notice := mustOutboxRow(t, "LEGION-208", record.Notice{Kind: "merge-held", Role: claim.RoleArchitect, Reason: "a merge hold holds the merge back"}, now)
 	replaced, err := runner.replacePayload(ctx, row, held, message, notice)
 	if err != nil || !replaced {
 		t.Fatalf("replacePayload = %v, %v; want the replacement to take", replaced, err)
@@ -2829,10 +2829,9 @@ func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 			t.Fatalf("the controller notice %q, want it to name %q", notices[0].reason, name)
 		}
 	}
-	rows := assertMergeRows(t, pool, 1, "merge-refused", 0)
-	if len(rows) != 0 {
-		t.Fatalf("merge-refused notices %q, want none: a refused jump never ends the row", rows)
-	}
+	// The row still stands and no merge-refused notice was written: a refused jump never ends
+	// the row.
+	assertMergeRows(t, pool, 1, "merge-refused", 0)
 }
 
 // jumpRunner is the common setup of the jump tests: LEGION-208 awaiting its merge at ready-head,
@@ -3059,9 +3058,8 @@ func TestAMergeHoldKeepsTheMergeBackUntilItEnds(t *testing.T) {
 			}
 			nextAt, _, _, _ := readyMergeState(t, pool)
 			if tc.heldUntil == nil {
-				if tc.marked && !mergeJumpStands(t, pool, "LEGION-208") {
-					t.Fatalf("the jump mark of LEGION-208 is gone")
-				}
+				// The row was not held, so there is no next run to check: the one case that
+				// marks the issue is held, and its mark is read below.
 				return
 			}
 			if want := tc.heldUntil(now); !nextAt.Equal(want) {
@@ -3114,7 +3112,7 @@ func TestAMergeHoldTellsTheIssueOnceAndIsNoWaitOnGitHub(t *testing.T) {
 		if !strings.Contains(posts[0], name) {
 			t.Fatalf("the message posted on the issue %q, want it to name %q", posts[0], name)
 		}
-		if !strings.Contains(reasons[0], name) && name != "ses_controller" {
+		if !strings.Contains(reasons[0], name) {
 			t.Fatalf("the merge-held notice %q, want it to name %q", reasons[0], name)
 		}
 	}
@@ -3239,7 +3237,7 @@ func TestAMergeHoldHoldsTheConflictResubmission(t *testing.T) {
 // A live hold changes nothing about what the submission answers for a row GitHub shows armed or
 // queued: the hold is asked only where a mutation would be sent, so an entry GitHub still holds
 // is the wait it always was, a removal still ends the row with its architect told, and a pull
-// request GitHub shows at another head is still the disagreement the row waits on. No mutation is
+// request GitHub shows closed is still the disagreement the row waits on. No mutation is
 // sent on any of the three.
 func TestAMergeHoldLeavesAnArmedRowsOwnPathsAlone(t *testing.T) {
 	for _, tc := range []struct {
@@ -3261,7 +3259,7 @@ func TestAMergeHoldLeavesAnArmedRowsOwnPathsAlone(t *testing.T) {
 			removed: 1,
 		},
 		{
-			name:     "a pull request GitHub shows at another head",
+			name:     "a pull request GitHub shows closed",
 			github:   func(g *armableGitHub) { g.state = "CLOSED" },
 			standing: true,
 		},

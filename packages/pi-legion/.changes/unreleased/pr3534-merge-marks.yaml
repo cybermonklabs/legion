@@ -4,6 +4,9 @@ body: |-
   merge. `set_merge_jump` (issue, reason) marks one issue, so that the next merge the daemon
   submits for it goes in at the head of GitHub's merge queue, ahead of the pull requests already
   in it; the mark is spent at that mutation, and the reason stays in the record of the jump.
+  Only a merge that goes into a merge queue spends the mark, which is a merge whose base branch
+  requires one: where the base requires none there is no queue to jump, the merge goes out as it
+  always did, and the mark stands until it is cleared or the issue leaves the workflow.
   `clear_merge_jump` (issue) takes a mark off before its merge is submitted. `set_merge_holds`
   (holds) replaces the project's whole merge hold list: while a hold stands, the daemon submits
   no merge whose pull request changes a file one of that hold's paths matches, and the issue

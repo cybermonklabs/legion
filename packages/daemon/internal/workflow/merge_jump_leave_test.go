@@ -17,9 +17,10 @@ import (
 // A jump mark is the controller's instruction about one issue's next merge (record.MergeJump),
 // and an issue that has left the workflow submits no merge: every departure takes the mark with
 // it, so that a re-admission weeks later does not spend a decision made about a merge that never
-// happened. The marked issue leaves here two ways, which are the two places that clear it: a
-// close, which goes through leave, and a waiting root taken out while the operator runs a tree
-// under its key, which returns through leaveUnderOperator before leave's other writes.
+// happened. One clear does that for all of them, standing in leave ahead of every branch, and
+// the marked issue leaves here the two ways that reach it from the furthest apart: a close, which
+// runs leave to its end, and a waiting root taken out while the operator runs a tree under its
+// key, which returns through leaveUnderOperator before leave's other writes.
 //
 // The mark of an issue that did not leave is the control: it stands, since each departure clears
 // the mark of the issue departing and of no other.

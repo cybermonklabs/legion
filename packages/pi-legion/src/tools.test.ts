@@ -205,8 +205,11 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "set_merge_jump (issue, reason) marks one issue so that the next merge the daemon submits for it goes in at the " +
   "head of GitHub's merge queue, ahead of the pull requests already in it. The reason stays in the record of the " +
   "jump after the mark is spent, so the account of a pull request that went ahead of the queue names the decision. " +
-  "One issue carries at most one mark, and a second set of the same issue replaces the first. The merge the mark " +
-  "governs spends it, and the mark is then gone. The daemon refuses an issue it does not record " +
+  "One issue carries at most one mark, and a second set of the same issue replaces the first. Only a merge that " +
+  "goes into a merge queue spends the mark, which is a merge whose base branch requires one. Where the base " +
+  "requires no merge queue there is no queue to jump: the daemon submits that merge as it always does, and the " +
+  "mark stands until clear_merge_jump takes it off or the issue leaves the workflow. " +
+  "The daemon refuses an issue it does not record " +
   "(ISSUE_NOT_RECORDED) and a call that leaves the reason out. A jump GitHub refuses does not stop the merge: the " +
   "daemon submits it without the jump and records what GitHub answered. " +
   "clear_merge_jump (issue) takes an issue's mark off before the merge it was about is submitted. It answers the " +

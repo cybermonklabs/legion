@@ -220,16 +220,16 @@ type FailingRun struct {
 // failed in, with what its log said after them where it has been read.
 //
 // Name, Result and URL come out of GitHub's own check list, and this is the one place any of
-// them is written, so all three pass through cutLine here: that is the rule every string of
+// them is written, so all three pass through CutLine here: that is the rule every string of
 // GitHub's this package renders is held to, one cut each at one place (jobFailures). Log
 // arrives cut, by the read that wrote it. The cut costs GitHub's own run link nothing, since
-// cutLine leaves a string of failureLineUnits runes or fewer exactly as it stands and that
+// CutLine leaves a string of failureLineUnits runes or fewer exactly as it stands and that
 // link is of a fixed shape and some seventy characters. What it holds is the link of no fixed
 // shape: a third-party App's check run is named by the details URL that App wrote and a commit
 // status by its target URL (failingRuns), each as long as whoever posted the check made it,
 // and the first run of a removal is named however long its line is (FailingRuns).
 func (f FailingRun) String() string {
-	return fmt.Sprintf("%s (%s, %s)%s", cutLine(f.Name), cutLine(f.Result), cutLine(f.URL), f.Log)
+	return fmt.Sprintf("%s (%s, %s)%s", CutLine(f.Name), CutLine(f.Result), CutLine(f.URL), f.Log)
 }
 
 // failingRunsUnits is how long the runs of one removal are named for before the rest are

@@ -146,8 +146,14 @@ func scanMergeHolds(rows pgx.Rows, project string) ([]MergeHold, error) {
 
 func (s *Postgres) PutMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) error {
 	// A record with no entry read carries an empty array, never null: the column is `not null`,
-	// and an unread queue says so with EntriesUnknown rather than with a missing array.
-	entries, err := json.Marshal(append([]MergeQueueEntryRecord{}, record.Entries...))
+	// and an unread queue says so with EntriesUnknown rather than with a missing array. The nil
+	// is replaced rather than the slice copied, as ReplaceMergeHolds does for a hold's paths:
+	// the copy buys nothing the encoding can see and pays for up to a page of entries.
+	queue := record.Entries
+	if queue == nil {
+		queue = []MergeQueueEntryRecord{}
+	}
+	entries, err := json.Marshal(queue)
 	if err != nil {
 		return fmt.Errorf("put the jump record of %s in %s: encode the queue entries: %w", record.Repository, project, err)
 	}
@@ -247,24 +253,10 @@ func (s *Postgres) MergeHeldIssues(ctx context.Context, tx pgx.Tx, project strin
 // controller just replaced is read again by whichever runs. Making a row due that was waiting on
 // a backoff costs one submission attempt and never a wrong merge, where reading the payload's
 // heldSince instead would leave behind the row a hold caught and then failed on.
+//
+// The read itself is WaitingNotices', one outbox kind apart, so both call the one body that
+// reads a project's rows of a kind that are not due (store.go's waitingRowsOfKind).
 func (s *Postgres) DeferredReadyMerges(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
-	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and next_at > $2 and split_part(issue, '-', 1) = $3 order by id`,
-		string(OutboxKindReadyMerge), now, project)
-	if err != nil {
-		return nil, fmt.Errorf("list the deferred merges of %s: %w", project, err)
-	}
-	defer rows.Close()
-	deferred := []OutboxRow{}
-	for rows.Next() {
-		row, err := scanOutbox(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list the deferred merges of %s: %w", project, err)
-		}
-		deferred = append(deferred, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list the deferred merges of %s: %w", project, err)
-	}
-	return deferred, nil
+	return waitingRowsOfKind(ctx, tx, OutboxKindReadyMerge, project, now,
+		fmt.Sprintf("list the deferred merges of %s", project))
 }

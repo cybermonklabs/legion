@@ -193,7 +193,16 @@ func (s *server) mergeHolds(w http.ResponseWriter, r *http.Request) {
 // before the grant is redeemed and writes nothing, so a list with one bad hold in it leaves the
 // list that stands exactly as it was. Each refusal names the hold by its place in the list the
 // caller sent, since a hold has no identifier the two sides share.
+//
+// The repositories the project serves are read once for the whole list and handed to each hold's
+// check: the read takes a lock and builds the served list anew every time it is called
+// (server.githubRepositories), and a list of fifty holds has no more to learn from fifty reads
+// of it than from one — the served set cannot change inside one request.
 func (s *server) holdList(w http.ResponseWriter, holds []MergeHoldRequest, now time.Time) ([]record.MergeHold, bool) {
+	var served []ghrepo.Repository
+	if s.githubRepositories != nil {
+		served = s.githubRepositories()
+	}
 	taken := make([]record.MergeHold, 0, len(holds))
 	for index, hold := range holds {
 		where := fmt.Sprintf("hold %d of the list", index+1)
@@ -227,7 +236,7 @@ func (s *server) holdList(w http.ResponseWriter, holds []MergeHoldRequest, now t
 				return nil, false
 			}
 		}
-		repository, ok := s.heldRepository(w, hold.Repository, where)
+		repository, ok := heldRepository(w, served, hold.Repository, where)
 		if !ok {
 			return nil, false
 		}
@@ -239,13 +248,18 @@ func (s *server) holdList(w http.ResponseWriter, holds []MergeHoldRequest, now t
 }
 
 // heldRepository is the repository one hold names, as the record is to keep it: "" for a hold of
-// every repository the project serves, and otherwise the name GitHub serves it under. A name this
-// project does not serve is refused, and so is one written in any shape but `owner/name`, by the
-// same code: both are a hold that would hold nothing, and the controller has to be told which of
-// the project's repositories it meant either way. The comparison ignores case (ghrepo.Serves),
-// because GitHub's own owner and repository names are not case-sensitive, so a hold of
-// "Acme/Widgets" must hold "acme/widgets".
-func (s *server) heldRepository(w http.ResponseWriter, named, where string) (string, bool) {
+// every repository the project serves, and otherwise the name as the controller wrote it, in the
+// `owner/name` shape ghrepo.Parse admits and in the controller's own spelling, which Parse keeps.
+// Nothing downcases it, and nothing has to: the submission that asks whether a hold covers its
+// repository compares the two without case (strings.EqualFold, the daemon's holding), as the
+// check here does (ghrepo.Serves), because GitHub's own owner and repository names are not
+// case-sensitive, so a hold of "Acme/Widgets" holds "acme/widgets".
+//
+// A name this project does not serve is refused, and so is one written in any shape but
+// `owner/name`, by the same code: both are a hold that would hold nothing, and the controller
+// has to be told which of the project's repositories it meant either way. served is the
+// project's repositories, read once for the whole list by the caller.
+func heldRepository(w http.ResponseWriter, served []ghrepo.Repository, named, where string) (string, bool) {
 	if strings.TrimSpace(named) == "" {
 		return "", true
 	}
@@ -258,10 +272,6 @@ func (s *server) heldRepository(w http.ResponseWriter, named, where string) (str
 	if err != nil {
 		refuse(err.Error())
 		return "", false
-	}
-	var served []ghrepo.Repository
-	if s.githubRepositories != nil {
-		served = s.githubRepositories()
 	}
 	if !ghrepo.Serves(served, parsed) {
 		refuse("this project serves no repository of that name")

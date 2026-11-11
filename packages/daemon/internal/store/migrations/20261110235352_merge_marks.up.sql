@@ -15,7 +15,7 @@
 -- record of the jump (merge_jump_records) repeats to anybody who asks later why a pull request
 -- went ahead of the queue. A row goes in three ways: the daemon spends it when it submits the
 -- jumping merge (ClearMergeJump), a controller takes the mark off, and the issue's own record is
--- deleted — the `on delete cascade` above, since a mark on an issue the daemon no longer records
+-- deleted — the `on delete cascade` below, since a mark on an issue the daemon no longer records
 -- can govern no submission.
 --
 -- merge_holds is the project's hold list. The list is replaced whole on every write

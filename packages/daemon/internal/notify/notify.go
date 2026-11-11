@@ -149,8 +149,11 @@ const RoleTopicPrefix = "notifications.role."
 // releaseUnslotted), a person's decision on a tree Legion is not running (`parked-decision`, the
 // outbox's parkDecision and workflow's relayParkedDecision), an issue whose pod an update round
 // cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a claim whose turns keep
-// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors),
-// and the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
+// ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
+// jump mark the daemon spent that GitHub would not take (`merge-jump-refused`, the daemon's
+// readyMergeMarks.JumpRefused, which tells the controller because the mark was its instruction
+// and only it decides whether to mark the issue again), and the slot wakes admission sends
+// through wakeController, `slot-free`, `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
 // admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,

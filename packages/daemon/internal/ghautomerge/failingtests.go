@@ -86,7 +86,7 @@ const jobLogReads = 8
 // rather than telling anyone these lines (its readyMerge).
 //
 // The rule this line is held to, rather than a bound on each string in turn: every string it
-// carries that came out of GitHub passes through cutLine exactly once, at one place each, and a
+// carries that came out of GitHub passes through CutLine exactly once, at one place each, and a
 // branch that comes to carry a new one passes it through one of those places too. There are two.
 // Why a read failed goes through the unread closure, which cuts whatever it is given, so the one
 // reason with no length of its own — the error a failed fetch carries, which holds the body
@@ -96,7 +96,7 @@ const jobLogReads = 8
 // line as it reads them, and the branch stating them is not cut again: see it below.
 //
 // At most failingTestsNamed names are stated, with the rest counted after them ("and 12 more"),
-// each cut to failureLineUnits (cutLine) and quoted where it is not plain text (quoteName),
+// each cut to failureLineUnits (CutLine) and quoted where it is not plain text (quoteName),
 // since a name is a log's own bytes on their way into an implementer's prompt and an issue's
 // markdown, and one generated name can be as long as a log line.
 func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
@@ -104,7 +104,7 @@ func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
 	// fixed sentence is far inside failureLineUnits already and is left as it reads, and the one
 	// reason that is unbounded in itself is held here rather than where it is written.
 	unread := func(why string) string {
-		return ": the daemon could not read its failing tests, " + cutLine(why)
+		return ": the daemon could not read its failing tests, " + CutLine(why)
 	}
 	tail, err := logs.JobLog(ctx, id)
 	switch {
@@ -179,7 +179,7 @@ const (
 // failingTestsNamed is how many names one job's line carries, the rest counted after them ("and
 // 12 more"), and failureLineUnits how long any one string out of GitHub stays in a line this
 // package writes — each name, the first failure line it quotes, the reason a read it could not
-// make gives, and the name, result and link of the run itself (cutLine, FailingRun.String): a
+// make gives, and the name, result and link of the run itself (CutLine, FailingRun.String): a
 // name is one word of a log line, and a table-driven subtest named for the sentence its case is
 // runs as long as the line it is printed on.
 //
@@ -192,7 +192,7 @@ const (
 // so a read that kept them all would write hundreds of kilobytes into that one block.
 //
 // What holds one job's line is not the shapes it happens to carry but the rule it is written
-// to: every string of GitHub's in it passes through cutLine exactly once (jobFailures). A line
+// to: every string of GitHub's in it passes through CutLine exactly once (jobFailures). A line
 // that names tests is then at most failingTestsNamed names, one first failure line, the ", "
 // between the names and the fixed prose holding them — some 2,400 units as the read writes
 // them — and a line that could not read the log is one cut reason and one fixed sentence,
@@ -202,7 +202,7 @@ const (
 // makes of it, so the bound is stated as a rule per string rather than as a total that a later
 // cut or a new string would leave wrong: a name is quoted where it is not plain text
 // (quoteName) and the first failure line always (the %q in jobFailures), both of them after
-// the cut, and cutLine returns failureLineUnits runes and the mark of the cut, so a cut string
+// the cut, and CutLine returns failureLineUnits runes and the mark of the cut, so a cut string
 // is failureLineUnits + 1 runes. Go's quoting writes one unprintable rune as an escape of up
 // to ten characters ("\U000e0001") and the mark at one unit, so one quoted string is at most
 // 10 × failureLineUnits + 3 units, and one job's line at most failingTestsNamed + 1 of those
@@ -255,12 +255,22 @@ func quoteName(name string) string {
 	return name
 }
 
-// cutLine is line held to failureLineUnits runes, with "…" where it was cut. One line of a log
+// CutLine is line held to failureLineUnits runes, with "…" where it was cut. One line of a log
 // is as long as whatever printed it made it — a runner that states a whole diff or a stack on
 // the line it fails a test with would otherwise carry that into every message the removal is
 // told in — and so is one name of it, which a generated test name or a browser row of a long
 // title fills on its own.
-func cutLine(line string) string {
+//
+// It is exported because the daemon cuts the controller's merge marks by this same rule:
+// GitHub's answer to a jump it refused, a hold's reason, each of a hold's path patterns and the
+// session that set it (internal/daemon's auto_merge.go). Those words come from a controller
+// rather than from GitHub, and nothing between the controller's route and the Dispatch block
+// they are rendered into bounds them either, so they are cut by this bound rather than one of
+// their own. A rune outside the BMP is two UTF-16 units, so one cut string costs at most
+// 2 × failureLineUnits + 1 of the units Dispatch measures a block in, and a message built of a
+// handful of them stays far inside the 32,000 one block takes. The function reads nothing of
+// this package, so one copy of the rule serves every caller rather than each writing it again.
+func CutLine(line string) string {
 	runes := []rune(line)
 	if len(runes) <= failureLineUnits {
 		return line
@@ -270,7 +280,7 @@ func cutLine(line string) string {
 
 // failingTests is what tail, the end of a failing job's log, states failed: each test it names as
 // failed up to failingTestsNamed, how many it named past that, and the first line naming one,
-// each name and the line cut to failureLineUnits (cutLine). Every line is read with GitHub's
+// each name and the line cut to failureLineUnits (CutLine). Every line is read with GitHub's
 // timestamp prefix taken off it first (logStamp), since the job-log route the tail is read from
 // writes one before every line; a line that carries none is read as it stands, so a log off that
 // route and one off a runner's own output read the same. Two shapes are read, the two the
@@ -307,7 +317,7 @@ func failingTests(tail []byte) ([]string, string, int) {
 	// failures costs this read the cap, not the log.
 	name := func(named string) {
 		if len(names) < failingTestsNamed {
-			names = append(names, cutLine(named))
+			names = append(names, CutLine(named))
 			return
 		}
 		more++
@@ -318,7 +328,7 @@ func failingTests(tail []byte) ([]string, string, int) {
 			continue
 		}
 		if first == "" {
-			first = cutLine(string(bytes.TrimSpace(line)))
+			first = CutLine(string(bytes.TrimSpace(line)))
 		}
 		name(string(failure[1]))
 	}
@@ -340,7 +350,7 @@ func failingTests(tail []byte) ([]string, string, int) {
 			break
 		}
 		if first == "" {
-			first = cutLine(row)
+			first = CutLine(row)
 		}
 		named := row
 		if test, found := strings.CutPrefix(row, browserProject); found {

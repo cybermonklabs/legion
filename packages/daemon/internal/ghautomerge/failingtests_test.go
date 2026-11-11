@@ -409,8 +409,8 @@ func TestARemovalNamesItsRunsUpToABoundAndCountsTheRest(t *testing.T) {
 	// it costs this bound is read below.
 	line := func(i int) FailingRun {
 		return FailingRun{Name: fmt.Sprintf("integration-%02d", i), Result: "failure", URL: failedRun,
-			Log: ": its log names " + strings.Repeat(cutLine(strings.Repeat("x", failureLineUnits+1))+", ", failingTestsNamed) +
-				"as failing, its first failure line " + cutLine(strings.Repeat("y", failureLineUnits+1))}
+			Log: ": its log names " + strings.Repeat(CutLine(strings.Repeat("x", failureLineUnits+1))+", ", failingTestsNamed) +
+				"as failing, its first failure line " + CutLine(strings.Repeat("y", failureLineUnits+1))}
 	}
 	runs := make([]FailingRun, 20)
 	for i := range runs {
@@ -519,8 +519,8 @@ func TestALogsLineIsCutToWhatARunsLineCarries(t *testing.T) {
 		{name: "a line of runes past the bound", line: strings.Repeat("é", failureLineUnits+1), want: strings.Repeat("é", failureLineUnits) + "…"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := cutLine(tc.line); got != tc.want {
-				t.Fatalf("cutLine of %d runes = %d runes, want %d", len([]rune(tc.line)), len([]rune(got)), len([]rune(tc.want)))
+			if got := CutLine(tc.line); got != tc.want {
+				t.Fatalf("CutLine of %d runes = %d runes, want %d", len([]rune(tc.line)), len([]rune(got)), len([]rune(tc.want)))
 			}
 		})
 	}

@@ -1845,6 +1845,11 @@ test("the state golden carries the controller's merge marks", () => {
 // reader of that body loses the marks rather than the whole state. What is refused is a mark the
 // daemon would never write: a jump with no reason, a hold whose path is blank, a held issue with
 // no due time, and a jump record whose queue entry names no state.
+//
+// A queue entry whose number is 0 is taken rather than refused: that is the entry GitHub
+// answered with no pull request of its own, which the daemon keeps for its place in the queue
+// (`ghautomerge.QueueEntries`), and a reader that refused it would lose the whole state body
+// over one such entry in a jump record kept indefinitely.
 test("the merge-mark keys may be absent, and a mark the daemon would not write is refused", () => {
   const stripped = fixture("state.json") as Record<string, unknown>;
   for (const key of ["mergeJumps", "mergeHolds", "mergeHeld", "mergeJumpRecords"]) {
@@ -1886,6 +1891,16 @@ test("the merge-mark keys may be absent, and a mark the daemon would not write i
   }
   entry.state = "";
   expect(LegionStateResponse.safeParse(stateless).success).toBeFalse();
+
+  const unanswered = fixture("state.json") as {
+    mergeJumpRecords: { entries: Record<string, unknown>[] }[];
+  };
+  const unnumbered = unanswered.mergeJumpRecords[0]?.entries[0];
+  if (unnumbered === undefined) {
+    throw new Error("state fixture lacks a jump record's queue entry");
+  }
+  unnumbered.number = 0;
+  expect(LegionStateResponse.safeParse(unanswered).success).toBeTrue();
 });
 
 // The hold list's own value checks, which the daemon makes too: a hold names at least one path,

@@ -677,9 +677,16 @@ const legionMergeHeld = z.object({
  * as it stood before a jump: the pull request's number, its place in the queue as the daemon read
  * it, whether that entry itself jumped, GitHub's own state of it (`QUEUED`, `MERGEABLE` and the
  * rest, in GitHub's spelling, so a state this build does not know is read rather than refused),
- * and when GitHub says it joined the queue. */
+ * and when GitHub says it joined the queue.
+ *
+ * `number` is 0 for an entry whose pull request GitHub did not answer. GitHub's queue read
+ * declares each entry's pull request as nullable, and the daemon keeps such an entry rather than
+ * dropping it, because the entry's place in the queue is the whole of what the record exists to
+ * report (`ghautomerge.QueueEntries`). So the number is nonnegative rather than positive: a jump
+ * record is kept indefinitely, one per repository, and one unanswered entry in one of them must
+ * not make the whole state body unreadable. */
 const legionMergeQueueEntry = z.object({
-  number: z.number().int().positive(),
+  number: z.number().int().nonnegative(),
   position: z.number().int().nonnegative(),
   jump: z.boolean(),
   state: nonEmptyString,

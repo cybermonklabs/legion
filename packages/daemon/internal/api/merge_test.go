@@ -304,15 +304,15 @@ func TestMergeJumpRefusesWhatItCannotMark(t *testing.T) {
 // What the hold list refuses, each by a code of its own and with a sentence naming the hold it
 // refused, and each leaving the list that stands exactly as it was: the list is replaced whole,
 // so one bad hold in a list must leave the whole of the old list in force rather than half of
-// the new one.
+// the new one. Every one is a 400: each is the caller's own request being wrong about a hold,
+// and holdList writes no other status.
 func TestMergeHoldsRefusesAListItCannotKeep(t *testing.T) {
 	ended := mergeNow.Add(-time.Minute)
 	for _, tc := range []struct {
-		name   string
-		holds  []MergeHoldRequest
-		code   string
-		names  string
-		status int
+		name  string
+		holds []MergeHoldRequest
+		code  string
+		names string
 	}{
 		{
 			name:  "a hold with no path",
@@ -373,12 +373,8 @@ func TestMergeHoldsRefusesAListItCannotKeep(t *testing.T) {
 
 			recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID, Holds: tc.holds}, nil)
 
-			status := tc.status
-			if status == 0 {
-				status = http.StatusBadRequest
-			}
 			refusal := recorder.Body.String()
-			assertFailure(t, recorder, status, tc.code)
+			assertFailure(t, recorder, http.StatusBadRequest, tc.code)
 			assertNames(t, refusal, tc.names)
 			holds := holdsAt(t, h, mergeNow)
 			if len(holds) != 1 || holds[0].Reason != "a migration lands by hand" {

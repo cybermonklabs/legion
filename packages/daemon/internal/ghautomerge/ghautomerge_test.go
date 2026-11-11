@@ -46,12 +46,11 @@ import (
 // refuseJump answers the enqueue of a jump with GitHub's refusal, of refuseType as the enable's
 // refusal is, and leaves every other mutation alone: it is how a jump GitHub will not take, and
 // the fallback the same attempt then sends, are driven apart. queueEntries is the merge queue the
-// fake answers for queueOf, oldest entry first, and queueTotal is GitHub's totalCount for it,
+// fake answers for baseBranch, oldest entry first, and queueTotal is GitHub's totalCount for it,
 // which is above the entries answered where the queue is longer than the page the read asks for
-// (queueTotal zero answers as many as the entries themselves). queueOf is the branch the fake has
-// a merge queue for (baseBranch when empty): a read of any other branch answers a null mergeQueue,
-// as GitHub does for a branch with no merge queue at all. queueReads counts the merge queue's
-// reads, so a submission that reads one at all is caught.
+// (queueTotal zero answers as many as the entries themselves). A read of any other branch answers
+// a null mergeQueue, as GitHub does for a branch with no merge queue at all. queueReads counts
+// the merge queue's reads, so a submission that reads one at all is caught.
 // jobLogs is the log of each Actions job by its id, as GET /actions/jobs/{id}/logs answers it,
 // and logReads counts the job logs read: what one such log says failed, and each way a read of
 // one can end, is read of jobFailures itself (failingtests_test.go).
@@ -80,7 +79,6 @@ type github struct {
 	refuseJump                     string
 	queueEntries                   []QueueEntry
 	queueTotal                     int
-	queueOf                        string
 	queueReads                     int
 	jobLogs                        map[int64]string
 	logReads                       int
@@ -376,11 +374,7 @@ func (g *github) serve(t *testing.T) string {
 			if request.Variables["owner"] != "acme" || request.Variables["name"] != "widgets" {
 				t.Errorf("merge queue read of %v, want acme/widgets", request.Variables)
 			}
-			branch := g.queueOf
-			if branch == "" {
-				branch = baseBranch
-			}
-			if request.Variables["branch"] != branch {
+			if request.Variables["branch"] != baseBranch {
 				// GitHub's own answer for a branch with no merge queue: the field is null, and
 				// nothing in it is an error.
 				_, _ = w.Write([]byte(`{"data":{"repository":{"mergeQueue":null}}}`))
@@ -1034,6 +1028,9 @@ func TestAJumpMarkSendsTheEnqueueOnlyWhereTheSubmissionIsAnEnqueue(t *testing.T)
 			defer tc.g.mu.Unlock()
 			if !slices.Equal(tc.g.mutations, tc.mutations) {
 				t.Fatalf("mutations %v, want %v", tc.g.mutations, tc.mutations)
+			}
+			if tc.g.queueReads != 0 {
+				t.Fatalf("merge queue reads %d, want none: Submit hands the caller the base branch (pull.baseName) so that it makes no queue read of its own", tc.g.queueReads)
 			}
 		})
 	}
