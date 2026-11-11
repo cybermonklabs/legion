@@ -204,11 +204,19 @@ test("columns overrides do not persist, while a visibility change saves its view
     await page.getByRole("button", { name: "Columns" }).click();
     await page.getByRole("checkbox", { name: "Closed" }).uncheck();
     await expect(page).not.toHaveURL(/cols=/u);
-    await expect
-      .poll(() => page.evaluate(() => localStorage.getItem("dispatch.project-table.ACME.finished")))
-      .toContain('"closed":false');
     expect(
-      await page.evaluate(() => localStorage.getItem("dispatch.project-table.ACME"))
+      await page.evaluate(() => localStorage.getItem("dispatch.project-table.v2.ACME.finished"))
+    ).toBeNull();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Columns" }).click();
+    await page.getByRole("checkbox", { name: "Closed" }).check();
+    await expect
+      .poll(() =>
+        page.evaluate(() => localStorage.getItem("dispatch.project-table.v2.ACME.finished"))
+      )
+      .toContain('"closed":true');
+    expect(
+      await page.evaluate(() => localStorage.getItem("dispatch.project-table.v2.ACME"))
     ).toBeNull();
   } finally {
     await context.close();
@@ -241,6 +249,12 @@ test("the closed range filter and exclude-tree chip update the URL @legion", asy
   try {
     const page = await context.newPage();
     await page.goto("/projects/ACME/issues?view=finished");
+    await page.getByRole("button", { name: "Columns", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { name: "Closed", exact: true })
+      .check();
+    await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Filter Closed" }).click();
     await page.getByRole("button", { name: "7 days" }).click();
     await expect(page).toHaveURL(/f\.closed=7d/u);

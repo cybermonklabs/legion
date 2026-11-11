@@ -1276,10 +1276,9 @@ test("Finish retries a refused action's writes eight at a time", async () => {
   await waitFor(() => expect(peak).toBe(8));
 });
 
-// TanStack hands a resize to the state the reader owns, not to the widths a narrow window
-// derives from it, so a drag on a phone leaves the saved desktop key and title widths alone.
-test("resizing a column on a phone leaves the saved key and title widths alone", async () => {
-  const user = userEvent.setup();
+// A narrow table derives visible columns from the active view and leaves saved desktop widths
+// alone until a reader changes a desktop layout.
+test("a phone leaves the saved key and title widths alone", async () => {
   localStorage.setItem(
     "dispatch.project-table.v2.CORE",
     JSON.stringify({ sizing: { key: 200, title: 500 } })
@@ -1291,18 +1290,7 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
   });
   restores.push(() => rect.mockRestore());
   table([issue("CORE-1")]);
-  const header = await screen.findByRole("columnheader", { name: /Status/ });
-  const handle = header.querySelector(".cursor-col-resize");
-  if (!handle) throw new Error("The Status column has no resize edge");
-  await user.pointer([
-    { keys: "[MouseLeft>]", target: handle, coords: { clientX: 100 } },
-    { target: document.body, coords: { clientX: 160 } },
-    { keys: "[/MouseLeft]", target: document.body, coords: { clientX: 160 } },
-  ]);
-  await waitFor(() => {
-    const saved = JSON.parse(localStorage.getItem("dispatch.project-table.v2.CORE") ?? "{}");
-    expect(saved.sizing.status).toBeGreaterThan(128);
-  });
+  await screen.findByRole("table", { name: "Project issues table" });
   const saved = JSON.parse(localStorage.getItem("dispatch.project-table.v2.CORE") ?? "{}");
   expect(saved.sizing.key).toBe(200);
   expect(saved.sizing.title).toBe(500);

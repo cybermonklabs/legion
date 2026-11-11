@@ -370,7 +370,7 @@ function IssuesTableContent({
     columnsOverride,
     hiddenByDefault,
     layoutKey,
-    primary: PHONE_PRIMARY[activeView.id],
+    primary: activeView.id === "open" && hasLegion ? ["phase"] : PHONE_PRIMARY[activeView.id],
     listedTotal: viewTotal,
     longestKeyChars: all.reduce((most, issue) => Math.max(most, issue.key.length), 0),
     onOpenFilterChange: setOpenFilter,
@@ -791,7 +791,6 @@ function IssuesTableContent({
                 index={index}
                 measure={measure}
                 moved={moved}
-                onStartNext={model.narrow ? undefined : (key) => startNext([key])}
                 row={row}
               />
             )}

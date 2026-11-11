@@ -76,9 +76,8 @@ export function useTableLayout(
    *  does to the box is move its top edge, which is not a size change the box itself sees. */
   const attachAbove = useCallback((node: HTMLDivElement | null) => setAbove(node), []);
   useEffect(() => {
-    if (columnsOverride === undefined)
-      writeLayout(project, { sizing, order, visibility }, hiddenByDefault);
-  }, [columnsOverride, project, sizing, order, visibility, hiddenByDefault]);
+    writeLayout(project, { sizing, order, visibility }, hiddenByDefault);
+  }, [project, sizing, order, visibility, hiddenByDefault]);
 
   const responsive = useMemo(() => {
     const viewportWidth =
@@ -130,8 +129,18 @@ export function useTableLayout(
     );
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && width() > budget) pinned.pop();
+    // The default view owns a fixed set of visible columns. Give its spare width to Title, the
+    // column whose content benefits most, instead of drawing a headerless trailing gap.
+    const visible = new Set(
+      columnsOverride ?? Object.keys(widths).filter((id) => visibility[id] !== false)
+    );
+    visible.add("select");
+    if (visible.has("title")) {
+      const occupied = [...visible].reduce((sum, id) => sum + (widths[id] ?? 0), 0);
+      widths.title += Math.max(0, availableWidth - BOX_BORDERS - occupied);
+    }
     return { sizing: widths, pinned };
-  }, [boxWidth, sizing, longestKeyChars, primaryColumns]);
+  }, [boxWidth, sizing, longestKeyChars, primaryColumns, columnsOverride, visibility]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;

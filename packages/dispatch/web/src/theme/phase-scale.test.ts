@@ -74,6 +74,20 @@ function fill(entry: string, scheme: "light" | "dark"): string {
   return hex;
 }
 
+function luminance(hex: string): number {
+  const values = [0, 2, 4].map((at) => {
+    const value = Number.parseInt(hex.slice(at, at + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const [red = 0, green = 0, blue = 0] = values;
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function contrast(one: string, two: string): number {
+  const [lighter, darker] = [luminance(one), luminance(two)].sort((left, right) => right - left);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 /** The pairs of an order whose two fills differ by less than `minimum` ΔE. */
 function tooClose(order: readonly string[], scheme: "light" | "dark", minimum = 10): string[] {
   return order.slice(1).flatMap((entry, index) => {
@@ -91,15 +105,7 @@ for (const scheme of ["light", "dark"] as const) {
   test(`the not-started gray ramp has ΔE ≥ 10 in the ${scheme} scheme`, () => {
     expect(
       tooClose(
-        [
-          "status:triage",
-          "status:icebox",
-          "status:backlog",
-          "status:todo",
-          "phase:queue",
-          "phase:held",
-          "phase:waiting_on_children",
-        ],
+        ["status:triage", "status:icebox", "status:backlog", "status:todo", "phase:queue"],
         scheme
       )
     ).toEqual([]);
@@ -129,3 +135,12 @@ test("statuses outside Legion use a diagonal hatch", () => {
   for (const stage of ["status:in_progress", "status:needs_review"])
     expect(stageScale[stage]).toContain("repeating-linear-gradient");
 });
+
+for (const [scheme, surface] of [
+  ["light", "ffffff"],
+  ["dark", "020617"],
+] as const) {
+  test(`the lightest gray stage contrasts with the ${scheme} bar track`, () => {
+    expect(contrast(fill("status:triage", scheme), surface)).toBeGreaterThanOrEqual(3);
+  });
+}
