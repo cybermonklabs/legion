@@ -383,7 +383,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // one at the same moment, and it is a caller and not a lease or a hold that needs one.
 //
 // Exclusive takes its connection before it learns whether the lease is held, so a pass that skips
-// because the other process holds the lease holds a connection for that round trip too. Fifteen
+// because the other process holds the lease holds a connection for that round trip too. Sixteen
 // names are leased - the document compaction, the keyed writes' maintenance sweep
 // (api.RunMaintenanceSweep, which keeps the lease name suggestion-outcomes the suggestion sweep
 // carried that work under), the reference-excerpt reconciliation, the block-index reconciliation,
@@ -408,7 +408,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // the hold's renewal goroutine (duty.Hold's renew, every 5 s, each bounded by the renew interval),
 // and the intake's own goroutine (duty.HoldToken, duty.TryHold, SetToken, Release, one at a time),
 // whose SetToken runs inside the take-over and so needs a connection beside the one its lease is
-// held on. That is four more callers, nineteen in all.
+// held on. That is four more callers, twenty in all.
 //
 // Twenty connections are exactly those twenty: the headroom is zero. A renewal that waited
 // for a connection behind a compaction pass, which holds its lease for minutes, would see its hold
