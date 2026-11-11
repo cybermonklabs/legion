@@ -138,7 +138,7 @@ import {
 import { ownerSubscribeLine } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
 import { humanEditHead } from "./human-edit";
-import { decisionBlockLines, relatedCheckLines } from "./related-check";
+import { decisionBlockLines, declinedAskLines, relatedCheckLines } from "./related-check";
 import { pageSummaryText, searchAnswer } from "./search-answer";
 import { isNoAnswersRoute, renderSessionAnswersList } from "./session-answers";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
@@ -2807,7 +2807,13 @@ function askSummary(
           "Resolution:",
           `- By: ${ask.resolution.actor.id}`,
           `- Kind: ${ask.resolution.kind}`,
-          `- Reason: ${ask.resolution.reason}`,
+          // A decline the person wrote no note with holds no reason, so the line is left out
+          // rather than printed empty; the sentences Dispatch wrote for the asking agent stand
+          // on a line of their own, named, so nobody reads them as the person's words.
+          ...(ask.resolution.reason === "" ? [] : [`- Reason: ${ask.resolution.reason}`]),
+          ...(ask.resolution.dispatch_words === undefined || ask.resolution.dispatch_words === ""
+            ? []
+            : [`- Dispatch's words: ${ask.resolution.dispatch_words}`]),
         ]),
     "Replies:",
     ...(chain.length === 0 ? ["- none"] : chain),
@@ -4700,13 +4706,16 @@ export async function executeDispatchTool(
           : resolved === undefined
             ? issueTopic(issue())
             : documentTopic(resolved.artifact);
-      // The check's form sits right under the line naming the ask; renderAdvice's cadence line
-      // must stay the result's last line.
-      const checkLines = relatedCheckLines(ask.advice?.suggestions, {
+      // The check's form sits right under the line naming the ask, and the issue's declined
+      // asks under that; renderAdvice's cadence line must stay the result's last line.
+      const checkContext = {
         project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
         text: stringArg(args, "question"),
         configUrl: linkBase,
-      });
+        ...(ask.issue_key === null ? {} : { issueKey: ask.issue_key }),
+      };
+      const checkLines = relatedCheckLines(ask.advice?.suggestions, checkContext);
+      const declinedLines = declinedAskLines(ask.advice, checkContext);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
@@ -4714,6 +4723,7 @@ export async function executeDispatchTool(
         text: [
           `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
           ...checkLines,
+          ...declinedLines,
           await followsAsk(askOwner, input.subscriptions),
           ...adviceLines,
         ].join("\n"),
@@ -5043,11 +5053,16 @@ export async function executeDispatchTool(
           .find((text) => text !== undefined) ??
         resolved.issue?.title ??
         "";
-      const checkLines = decisionBlockLines(edited.advice, {
+      const checkContext = {
         project: resolved.artifact.project,
         text: editAskText,
         configUrl: linkBase,
-      });
+        ...(resolved.issue === undefined ? {} : { issueKey: resolved.issue.key }),
+      };
+      const checkLines = decisionBlockLines(edited.advice, checkContext);
+      // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line
+      // must stay the result's last line.
+      const declinedLines = declinedAskLines(edited.advice, checkContext);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
       );
@@ -5059,6 +5074,7 @@ export async function executeDispatchTool(
         text: [
           `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
           ...checkLines,
+          ...declinedLines,
           ...tokenTrailer,
           ...adviceLines,
         ].join("\n"),

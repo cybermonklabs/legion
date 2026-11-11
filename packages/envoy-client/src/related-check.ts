@@ -6,10 +6,12 @@ import {
   type WriteAdvice,
   type WriteSuggestion,
 } from "@legion/contracts";
+import { textHead } from "./ask-answer";
 import { messageFor } from "./errors";
 import { askStateLines } from "./search-answer";
 
-/** What a not-made line needs to name the search to run by hand. */
+/** What a not-made line needs to name the search to run by hand, and what a declined ask's link
+ *  is built from. */
 export interface RelatedCheckContext {
   /** The project the check searched, for `dispatch search --project`. */
   readonly project: string;
@@ -18,6 +20,11 @@ export interface RelatedCheckContext {
   readonly text: string;
   /** The Dispatch URL item links are made absolute against. */
   readonly configUrl: string;
+  /** The issue the write stands on, which a declined ask's link names (`/issues/<key>/asks/<id>`,
+   *  the ask's own `dispatch://KEY/ask/<id>` address as `dispatch-href.ts` pairs the two). A
+   *  write on a project document stands under no issue, and carries no declined ask either, so
+   *  it names none. */
+  readonly issueKey?: string;
 }
 
 /**
@@ -115,6 +122,59 @@ export function decisionBlockLines(
       ),
     ];
   }
+}
+
+/**
+ * What a write that opens a question is told about the asks of its issue a person declined to
+ * answer (`declined_asks`): a line saying how many there are, and for each, oldest first, its
+ * question, that it was declined, the person's note where they wrote one, and a link to the ask
+ * — its `/issues/<key>/asks/<id>` page, which is the ask's own `dispatch://KEY/ask/<id>` address
+ * (`dispatch-href.ts`), made absolute as every other link here is. A write whose context names
+ * no issue prints the ask's id in the link's place.
+ *
+ * No line says the person answered, because they did not: a declined ask holds no answer, and
+ * the reminder is there so the same question is not put to them again unless the facts changed.
+ *
+ * It prints nothing when the server sent no `declined_asks`: a server predating the field, a
+ * read of it that failed, and an issue holding no declined ask all read the same, and none of
+ * them is something to tell the writer about. Never throws, for the reason `relatedCheckLines`
+ * gives in its own doc comment.
+ */
+export function declinedAskLines(
+  advice: WriteAdvice | undefined,
+  context: RelatedCheckContext
+): string[] {
+  try {
+    const declined = advice?.declined_asks;
+    if (declined === undefined || declined === null || declined.length === 0) return [];
+    const count = declined.length;
+    const lines = [
+      count === 1
+        ? "This issue holds a question a person declined to answer. Ask it again only if the facts have changed:"
+        : `This issue holds ${count} questions a person declined to answer. Ask one again only if the facts have changed:`,
+    ];
+    for (const ask of declined) {
+      lines.push(
+        `- Declined: ${textHead(ask.question, DECLINED_QUESTION_MAX)} ${declinedAskWhere(ask.id, context)}`
+      );
+      if (ask.note !== "") lines.push(`  Their note: ${ask.note}`);
+    }
+    return lines;
+  } catch (error) {
+    return [`The issue's declined asks could not be shown: ${messageFor(error)}`];
+  }
+}
+
+/** How much of a declined ask's question the line quotes, as the answers list quotes an ask's
+ *  question: enough to tell it from the one about to be asked. */
+const DECLINED_QUESTION_MAX = 200;
+
+/** Where a declined ask is read: its page where the context names the issue, else its id, which
+ *  is what `dispatch_ask_read` and the ask commands take. */
+function declinedAskWhere(id: string, context: RelatedCheckContext): string {
+  const key = context.issueKey ?? "";
+  if (key === "") return `(ask ${id})`;
+  return `→ ${absoluteHref(`/issues/${encodeURIComponent(key)}/asks/${encodeURIComponent(id)}`, context.configUrl)}`;
 }
 
 /**

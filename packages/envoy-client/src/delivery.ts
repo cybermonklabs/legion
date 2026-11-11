@@ -753,13 +753,20 @@ interface CompactDispatch {
   readonly askId: string | undefined;
 }
 
+// How a closed ask reads on the card: the kind, the person's own reason where the record holds
+// one, and the words Dispatch wrote for the asking agent where it holds those (a decline). The
+// label names whose the sentences are, so nobody reads Dispatch's instruction as the person's
+// note. A decline the person wrote no note with is the ordinary one, so an empty reason leaves
+// no separator behind.
 function askResolutionText(
   resolution: z.infer<typeof AskPayloadSchema>["resolution"]
 ): string | undefined {
   if (resolution === null || resolution === undefined) return undefined;
   const kind = resolution.kind ?? "resolved";
   const reason = resolution.reason ?? "";
-  return reason === "" ? kind : `${kind}: ${reason}`;
+  const words = resolution.dispatch_words ?? "";
+  const closed = reason === "" ? kind : `${kind}: ${reason}`;
+  return words === "" ? closed : `${closed} · Dispatch's words: ${words}`;
 }
 
 function dispatchCompact(

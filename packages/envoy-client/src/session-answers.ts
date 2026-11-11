@@ -48,6 +48,7 @@ export const NO_ANSWERS_ROUTE_REASON = "this Dispatch build has no answers route
 
 const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
   answered_your_ask: "answered your ask",
+  declined_your_ask: "declined to answer your ask",
   replied_on_your_ask: "replied on your ask",
   replied_in_a_comment_thread: "replied in a comment thread",
   commented_on_a_document: "commented on a document",
@@ -83,8 +84,14 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
  * that replaced one, and `edited <time>` on an edited comment); its `dispatch://` reference and
  * its issue or document, or that it is a direct message; the ask's question, cut to 200
- * characters, on an answer and a reply in an ask's thread; on an answer, `Selected:` with the
- * options chosen or `none`; then the person's words in full.
+ * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
+ * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
+ * sentences Dispatch wrote for the asking agent; then the person's words in full.
+ *
+ * The person's own words and Dispatch's stand on lines of their own, the label naming whose
+ * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
+ * wherever an item carries them rather than on the `declined` kind alone, so an item kind a
+ * newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
   const phrase = isSessionAnswerRelation(item.relation)
@@ -110,6 +117,9 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
   if (item.kind === "answer") {
     const selected = item.selected ?? [];
     lines.push(`Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`);
+  }
+  if (item.dispatch_words !== undefined && item.dispatch_words !== "") {
+    lines.push(`Dispatch's words: ${item.dispatch_words}`);
   }
   if (item.text !== "") lines.push(item.text);
   return lines.join("\n");

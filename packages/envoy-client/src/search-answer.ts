@@ -48,9 +48,18 @@ function answerLines(lead: string, answer: AskAnswer): string[] {
   ];
 }
 
-/** Who closed an ask, when and why; the reason is free text and can hold line breaks. */
+/** Who closed an ask, when and why: the person's own reason where the record holds one, and
+ *  where it holds them (a decline), the words Dispatch wrote for the asking agent, labelled so
+ *  nobody reads them as the person's. Both are free text and can hold line breaks. A decline
+ *  the person wrote no note with holds no reason, and leaves no separator behind. */
 function resolutionText(resolution: AskResolution): string {
-  return `${resolution.kind} by ${actorText(resolution.actor)} at ${resolution.at}: ${indentedText(resolution.reason)}`;
+  const closed = `${resolution.kind} by ${actorText(resolution.actor)} at ${resolution.at}`;
+  const parts = [
+    resolution.reason === "" ? closed : `${closed}: ${indentedText(resolution.reason)}`,
+  ];
+  const words = resolution.dispatch_words ?? "";
+  if (words !== "") parts.push(`Dispatch's words: ${indentedText(words)}`);
+  return parts.join(" · ");
 }
 
 /** Where an ask hit stands, as the lines under its hit; `undefined` is a Dispatch that predates
