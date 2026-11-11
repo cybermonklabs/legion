@@ -354,6 +354,15 @@ want_status 200 G5 "route the issue to the session that claims no role"
 comment G5 "a comment on the routed issue" "person:$person" \
   "A note for whoever holds this issue's route."
 readonly loose_comment="$comment"
+# The bus before the store. A delivered_to tuple is written by the outbox publisher when it
+# records what a batch delivered, so a server whose bus is missing, or whose publishes it
+# refuses, records no attempt at all and every delivery check below reads 0 - which looks
+# exactly like the store failing to write a tuple it was given. Measured twice on this check:
+# once against a server started with no NATS_URLS, and once against a NATS without JetStream,
+# whose publishes the server logs as refused. So the attempt is proven first, and its own
+# failure names the bus.
+settles G5 "the delivery was attempted, so the bus carried this comment" 1 \
+  "select count(*) from comment_deliveries where comment_id = '$loose_comment'"
 settles G5 "the store holds one delivered_to tuple of it" 1 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$loose_comment'
      and kind = 'delivered_to' and to_kind = 'session' and to_id = '$loose_session' and asserted"
