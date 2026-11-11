@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// infraSizeTrees is the population these measurements run over: the 42 trees of the facts' own
-// rig, which is 252 issues and 210 of them with Legion phase work. That is INFRA's size today.
-const infraSizeTrees = 42
+// infraSizeTrees is the population these measurements run over: the trees of the facts' own rig
+// (legiontest.DefaultTrees, 42 of them), which is 252 issues and 210 of them with Legion phase
+// work. That is INFRA's size today.
+const infraSizeTrees = legiontest.DefaultTrees
 
 // firstPayloadBound is the size a first payload may reach, compressed: 300 KB, the bound the
 // root states (dispatch://INFRA-979/spec#b-r14, "the first payload is at most 300 KB
@@ -144,4 +146,63 @@ func countBoardCards(board legionBoardResponse) int {
 		cards += len(column.Cards)
 	}
 	return cards
+}
+
+// boardComputeRuns is how many whole board reads TestWhatOneBoardComputeCostsAtInfrasSize
+// measures. Twenty runs give a median a reader can stand on: the first read of a fresh database
+// pays for plans and a cold page cache, and one run after it says nothing about the spread.
+const boardComputeRuns = 20
+
+// TestWhatOneBoardComputeCostsAtInfrasSize measures one whole board read and compute at a
+// population of INFRA's size, which is what a page's first answer and every live recompute of a
+// subscribed board costs.
+//
+// The measured work is the GET route's own: the read of the daemon's observations, the read of
+// the project's stored facts and the cursor's age, the tree walk, the compute of the ten columns
+// and the encoding of the body. The hub's recompute runs the same read and compute
+// (readLegionBoardView) and encodes the same body, so the number here is that recompute's as
+// well, less the delta it takes against what each subscriber holds.
+//
+// The consumer is stopped before the first run (boardAtInfraSize), so every run reads stored
+// rows that nothing is rewriting, and the runs measure the read and not a race with a writer.
+func TestWhatOneBoardComputeCostsAtInfrasSize(t *testing.T) {
+	handler, _, fixture := boardAtInfraSize(t, testServerOptions{})
+	target := "/api/v1/projects/" + fixture.Project + "/legion/board"
+
+	// One read before the measured ones, which is also the read the counts below are taken
+	// from: it pays for the statement plans and the first touch of each page, which a board a
+	// reader opens never pays again.
+	startedFirst := time.Now()
+	first := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+	cold := time.Since(startedFirst)
+	if first.Code != http.StatusOK {
+		t.Fatalf("GET the board of %s: status=%d", fixture.Project, first.Code)
+	}
+	board := decodeBody[legionBoardResponse](t, first)
+	if len(board.Issues) != len(fixture.PhaseWork) {
+		t.Fatalf("the board carries %d issues entries, want the %d issues with Legion phase work: "+
+			"a board of another size is another measurement", len(board.Issues), len(fixture.PhaseWork))
+	}
+
+	taken := make([]time.Duration, 0, boardComputeRuns)
+	var total time.Duration
+	for range boardComputeRuns {
+		started := time.Now()
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		elapsed := time.Since(started)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET the board of %s: status=%d", fixture.Project, response.Code)
+		}
+		taken = append(taken, elapsed)
+		total += elapsed
+	}
+	slices.Sort(taken)
+	median := taken[len(taken)/2]
+
+	t.Logf("one board read and compute over %d issues, %d of them with Legion phase work, answering %d issues entries and %d cards: %d runs, median %s, fastest %s, slowest %s, mean %s",
+		len(fixture.Keys), len(fixture.PhaseWork), len(board.Issues), countBoardCards(board),
+		boardComputeRuns, median.Round(time.Microsecond), taken[0].Round(time.Microsecond),
+		taken[len(taken)-1].Round(time.Microsecond), (total / boardComputeRuns).Round(time.Microsecond))
+	t.Logf("the first read, which pays for the statement plans and the first touch of every page, took %s",
+		cold.Round(time.Microsecond))
 }

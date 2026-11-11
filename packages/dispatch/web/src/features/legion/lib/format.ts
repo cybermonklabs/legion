@@ -15,10 +15,8 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
 }
 
 /** The work time the server stored for the issue, in the same words as the time in its phase.
- *  The hours are the stored row's `work_hours`: the view computes none of them, and writes an em
- *  dash for a value that is not a number. */
+ *  The hours are the stored row's `work_hours`: the view computes none of them. */
 export function formatWorkTime(hours: number): string {
-  if (!Number.isFinite(hours)) return "—";
   return formatSpan(Math.floor(Math.max(0, hours) * 60));
 }
 

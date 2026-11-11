@@ -1,10 +1,10 @@
 -- 20261111090000_issue_facts.up.sql
 --
 -- The per-issue Legion facts as stored rows, one row per project and issue
--- (dispatch://INFRA-2915): what the board, the issue table and every eval read, so a read of
--- them reads rows and computes nothing. A consumer recomputes an issue and upserts its row when
--- that issue's inputs move, and re-runs every open issue on a sweep, because an open issue's
--- hours grow with the clock while no input moves.
+-- (dispatch://INFRA-2915): what the board reads, so a read of them reads rows and computes
+-- nothing. The issue table and the evals read them under dispatch://INFRA-2916. A consumer
+-- recomputes an issue and upserts its row when that issue's inputs move, and re-runs every open
+-- issue on a sweep, because an open issue's hours grow with the clock while no input moves.
 --   project_key     the project the issue belongs to, and issue_key the issue itself. The two
 --                   are the primary key, which is also the board's read of one project.
 --   opened_at       when the issue was created, and closed_at when it closed, or null while it

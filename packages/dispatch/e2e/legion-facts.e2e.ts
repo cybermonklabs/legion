@@ -1,16 +1,20 @@
 // The per-issue Legion facts under an open page (dispatch://INFRA-2915, k7): a write that changes
 // one issue's facts is recomputed by the facts consumer, the write of the stored row logs a
 // `delivery_changes` row of the kind `issue_facts`, and the open Legion view redraws that issue's
-// card from the new row with no reload.
+// card from the new row with no reload. The second row reads the board the fixture seeds and
+// holds every card's slot use and waiting reason to the state the fixture declares for it.
 //
 // It is modelled on `legion.e2e.ts`'s "a live push moves a card between columns with no reload",
 // which proves the same path for a read of the daemon. This one starts from an event instead, so
 // the half it adds is the consumer between the write and the view: nothing here writes an
 // `issue_facts` row, and a spec that wrote one would pass with the consumer stopped.
 //
-// Tagged `@legion-facts`, so `--grep @legion-facts` runs it alone.
+// Tagged `@issue-facts`, so `--grep @issue-facts` runs this file's rows alone. The tag holds no
+// other tag as a substring and no other holds it: `--grep` is a regular expression over the
+// whole title, so `--grep @legion` would run a row tagged `@legion-facts` as well.
 //
 // acme/widgets-shaped placeholders throughout (AGENTS.md: "This repository is public").
+import { getLegionBoard } from "./api";
 import { LEGION_FACTS_PROJECT, seedLegionFactsFixture } from "./legion-facts-seed";
 import { startFakeLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
@@ -42,7 +46,7 @@ async function writeRoleEvent(
 
 // SLOW(>=2s): the row waits out two passes of the facts consumer, which sweeps every 30 s, with a
 // sign-in, a board seed of 24 cards and a live socket either side of them.
-test("a facts write redraws a card's work time with no reload @legion-facts", async ({
+test("a facts write redraws a card's work time with no reload @issue-facts", async ({
   browser,
 }) => {
   // Two consumer passes and the page work around them, against the 60 s every other row is
@@ -102,6 +106,71 @@ test("a facts write redraws a card's work time with no reload @legion-facts", as
          WHERE kind = 'issue_facts' AND ref = '${issue}' ORDER BY seq DESC LIMIT 1`
     );
     expect(change).toBe(`issue_facts ${LEGION_FACTS_PROJECT} ${issue}`);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// SLOW(>=2s): a sign-in and a board of 24 cards drawn, with the route's own answer read beside
+// it.
+test("the board names the slot use and the waiting reason of every card @issue-facts", async ({
+  browser,
+}) => {
+  const daemon = await startFakeLegionDaemon({});
+  const fixture = await seedLegionFactsFixture(daemon.url);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+
+  try {
+    await page.goto(`/projects/${LEGION_FACTS_PROJECT}`);
+    await page.getByRole("button", { name: "Legion" }).click();
+    await expect(page.locator(`[data-legion-card="${fixture.keys[0]}"]`)).toBeVisible();
+
+    const board = await getLegionBoard(LEGION_FACTS_PROJECT);
+    const cards = (board.columns ?? []).flatMap((column) => column.cards ?? []);
+    // The page draws the board the route answers, and the board is the whole fixture: check k5
+    // of dispatch://INFRA-2915 counts these cards and fails below twenty of them.
+    expect(await page.locator("[data-legion-card]").count()).toBe(cards.length);
+    expect(cards.length).toBe(fixture.keys.length);
+    expect(cards.length).toBeGreaterThanOrEqual(20);
+
+    // What the slot a card holds of its own is used for (`legion.SlotUse`): the state the
+    // fixture declares for that card, one of the five, and none at all for a card that holds no
+    // slot of its own.
+    const uses = new Map<string, string>();
+    for (const [use, keys] of Object.entries(fixture.slotUse)) {
+      expect(keys.length, `the cards the fixture declares ${use}`).toBeGreaterThan(0);
+      for (const key of keys) uses.set(key, use);
+    }
+    let held = 0;
+    for (const card of cards) {
+      if (card.slot === null) {
+        expect(card.slot_use, `${card.key} holds no slot of its own`).toBeNull();
+        continue;
+      }
+      held += 1;
+      expect(card.slot_use, `the use of ${card.key}'s own slot`).toBe(uses.get(card.key));
+    }
+    expect(held).toBe(uses.size);
+
+    // Why a card waits (`legion.CardWaiting`): each of the four reasons is reached by a card of
+    // this board, and each card the fixture names waits for the reason it declares.
+    for (const [reason, keys] of Object.entries(fixture.waiting)) {
+      expect(keys.length, `the cards the fixture declares waiting for ${reason}`).toBeGreaterThan(
+        0
+      );
+      for (const key of keys) {
+        const card = cards.find((one) => one.key === key);
+        expect(card?.waiting?.reason, `why ${key} waits`).toBe(reason);
+      }
+    }
+    console.log(
+      `legion facts board: ${cards.length} cards examined, ${held} of them holding a slot of ` +
+        `their own over ${Object.keys(fixture.slotUse).length} slot uses, and ` +
+        `${Object.values(fixture.waiting).flat().length} cards over ` +
+        `${Object.keys(fixture.waiting).length} waiting reasons`
+    );
   } finally {
     await context.close();
     await daemon.close();

@@ -1,6 +1,7 @@
 // Package legionfacts computes one issue's stored Legion facts and writes them to issue_facts
-// (dispatch://INFRA-2915). The facts are computed once and stored as rows, so the board, the
-// issue table and every eval read rows and compute nothing.
+// (dispatch://INFRA-2915). The facts are computed once and stored as rows, so a reader of them
+// reads rows and computes nothing. The board is the one reader of them here; the issue table
+// and the evals read them under dispatch://INFRA-2916.
 //
 // The computation holds no loop and no lease: facts.go answers the rows of a key set (Compute)
 // or of a whole project (ComputeProject), and store.go writes them (Write). Run is the loop

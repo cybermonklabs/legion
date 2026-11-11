@@ -10,13 +10,12 @@ body: |-
   left. It also sweeps every open issue, whose facts grow with the clock while nothing else
   moves, so a stored row stands within a minute of the clock. A project with no row, and a cursor
   whose rows the feed has pruned, are read whole.
-  The board moves to `GET /api/v1/projects/{key}/legion/board`, which replaces
-  `GET /api/v1/legion/board` with its `project` query and its first-project default, so one
-  answer has one address. Its body gains `issues`, a map keyed by issue key of those stored rows,
-  read with one indexed read that computes nothing and adds nothing to a stored value; the live
-  push carries the same map, entry by entry. Its header says how fresh the rows are, with the
-  oldest `updated_at` it served and the age of the consumer's cursor, so a project with no Legion
-  work reads differently from one whose backfill has not run.
+  The board moves to `GET /api/v1/projects/{key}/legion/board`, so one answer has one address.
+  Its body gains `issues`, a map keyed by issue key of those stored rows, read with one indexed
+  read that computes nothing and adds nothing to a stored value; the live push carries the same
+  map, entry by entry. Its header says how fresh the rows are, with the oldest `updated_at` it
+  served and the age of the consumer's cursor, so a project with no Legion work reads
+  differently from one whose backfill has not run.
   Each card now says what the slot it holds is used for (`working`, `between_turns`,
   `held_children`, `held_person` or `held_idle`), why it waits (`ready`, `slot`, `blocked` or
   `person`) with the time since and the issues a blocker link holds it on, its place in the

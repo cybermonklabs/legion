@@ -11,7 +11,8 @@
 // `packages/envoy/internal/dispatch/legion/board_rules.go`. Each card below carries the state
 // those rules answer for it, and the fixture returns the keys grouped by state, so a spec
 // asserts that the board names WIDGETS-4 held for its children rather than that some card
-// somewhere is.
+// somewhere is. `legion-facts.e2e.ts`'s "the board names the slot use and the waiting reason of
+// every card" is the reader of those groups.
 //
 // acme/widgets-shaped placeholders throughout (AGENTS.md: "This repository is public").
 import { sql } from "./psql";

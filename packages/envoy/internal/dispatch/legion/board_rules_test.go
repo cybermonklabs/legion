@@ -6,9 +6,8 @@ import (
 )
 
 // TestSlotUseAnswersOneUsePerSlotState: the five uses a slot an issue holds of its own is put to,
-// one case each, and the empty answer for an issue that holds no slot. The two readers of the
-// rule — the board's cards and the per-issue facts — pass plain values, so a case here is the
-// whole input.
+// one case each, and the empty answer for an issue that holds no slot. The rule's one reader,
+// the board's cards, passes plain values, so a case here is the whole input.
 func TestSlotUseAnswersOneUsePerSlotState(t *testing.T) {
 	slot := 3
 	for _, want := range []struct {

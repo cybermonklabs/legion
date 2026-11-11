@@ -2,10 +2,13 @@ package legion
 
 // board_rules.go holds the two rules a Legion card carries beside the facts the daemon reports —
 // what the slot an issue holds is used for, and why the issue waits — and the column table both
-// of them read. Two readers answer them: the board route, which writes each on a card
-// (internal/dispatch/api/legion_board.go), and the per-issue facts, which are computed for an
-// issue with no card at all. A rule stated in the route alone is a rule the facts state a second
-// time, and one rule stated twice is a card and a fact that disagree about the same issue.
+// of them read. Two readers answer the waiting rule and the column table: the board route, which
+// writes the reason on a card (internal/dispatch/api/legion_board.go), and the per-issue facts,
+// which compute it for an issue with no card at all
+// (internal/dispatch/legionfacts/facts.go). A rule stated in the route alone is a rule the facts
+// state a second time, and one rule stated twice is a card and a fact that disagree about the
+// same issue. The slot rule (SlotUse) has one reader today, the board route, and it stands here
+// beside the other for the same reason: a second reader of it would state nothing of its own.
 //
 // Every rule here takes plain values — a phase, a column, the roles in a turn, a slot — so a
 // reader that builds no card can call it. The two observations a card rule reads are decoded
@@ -151,7 +154,8 @@ var ChildWork = map[string]bool{
 
 // SlotUse is what the slot an issue holds of its own is used for, and "" for an issue that holds
 // no slot of its own. It is the one rule: the Legion tab worked this out itself until
-// dispatch://INFRA-979's contract moved it to the server, and now reads the field.
+// dispatch://INFRA-979's contract moved it to the server. The board route writes the answer on
+// every card as `slot_use`, and the tab draws none of it yet.
 //
 // A worker in a turn (an architect's included) makes the slot working, since a turn is the work
 // the slot was given for. With no worker in a turn, a root waiting on a person holds it for the

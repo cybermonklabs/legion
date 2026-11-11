@@ -17,6 +17,7 @@ import type {
   LegionBoardCard,
   LegionBoardColumnID,
   LegionBoardFacts,
+  LegionBoardHeader,
   LegionBoardResponse,
 } from "../../api/types";
 import { dangerText, successText } from "../../theme/classes";
@@ -74,6 +75,22 @@ function card(overrides: Partial<LegionBoardCard> = {}): LegionBoardCard {
   };
 }
 
+/** The board's header, as a read of a daemon that answered leaves it. */
+function header(overrides: Partial<LegionBoardHeader> = {}): LegionBoardHeader {
+  return {
+    facts_cursor_age_seconds: 12,
+    facts_updated_at: "2026-11-03T05:03:00Z",
+    queue_length: 0,
+    read_at: "2026-11-03T05:03:30Z",
+    read_error: null,
+    read_ok: true,
+    slot_cap: 4,
+    slots_in_use: 2,
+    trees: 2,
+    ...overrides,
+  };
+}
+
 function board(
   cards: Partial<Record<LegionBoardColumnID, LegionBoardCard[]>> = {},
   overrides: Partial<LegionBoardResponse> = {}
@@ -81,17 +98,7 @@ function board(
   return {
     columns: COLUMNS.map((column) => ({ ...column, cards: cards[column.id] ?? [] })),
     computed_at: "2026-11-03T05:04:00Z",
-    header: {
-      facts_cursor_age_seconds: 12,
-      facts_updated_at: "2026-11-03T05:03:00Z",
-      queue_length: 0,
-      read_at: "2026-11-03T05:03:30Z",
-      read_error: null,
-      read_ok: true,
-      slot_cap: 4,
-      slots_in_use: 2,
-      trees: 2,
-    },
+    header: header(),
     issues: {},
     project: "ACME",
     setting_sources: {},
@@ -263,24 +270,7 @@ test("a card whose issue the stored facts hold no row of draws no work time", as
 });
 
 test("the header counts the slots in use against the cap and the queue's length", async () => {
-  await renderView(
-    board(
-      {},
-      {
-        header: {
-          facts_cursor_age_seconds: 12,
-          facts_updated_at: "2026-11-03T05:03:00Z",
-          queue_length: 3,
-          read_at: "2026-11-03T05:03:30Z",
-          read_error: null,
-          read_ok: true,
-          slot_cap: 4,
-          slots_in_use: 2,
-          trees: 2,
-        },
-      }
-    )
-  );
+  await renderView(board({}, { header: header({ queue_length: 3 }) }));
 
   expect(document.querySelector("[data-legion-slots]")?.textContent).toBe("2 of 4 slots in use");
   expect(document.querySelector("[data-legion-queue-length]")?.textContent).toBe(
@@ -293,17 +283,16 @@ test("a daemon that has never answered shows the view with empty columns and the
     board(
       {},
       {
-        header: {
+        header: header({
           facts_cursor_age_seconds: null,
           facts_updated_at: null,
-          queue_length: 0,
           read_at: null,
           read_error: "dial tcp: connection refused",
           read_ok: false,
           slot_cap: null,
           slots_in_use: 0,
           trees: 0,
-        },
+        }),
       }
     )
   );
@@ -324,17 +313,14 @@ test("a read that failed after a good one keeps the board and says why the last 
     board(
       { planning: [card({ key: "ACME-3" })] },
       {
-        header: {
+        header: header({
           facts_cursor_age_seconds: 40,
           facts_updated_at: "2026-11-03T05:00:00Z",
-          queue_length: 0,
-          read_at: "2026-11-03T05:03:30Z",
           read_error: "context deadline exceeded",
           read_ok: false,
-          slot_cap: 4,
           slots_in_use: 1,
           trees: 1,
-        },
+        }),
       }
     )
   );

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 )
 
 // consumer is one test's loop: the seeded history, the Deps a pass reads through, and the clock
@@ -554,40 +555,64 @@ func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 }
 
 // TestTheSweepsPaceHoldsTheFreshnessRequirement: a stored row stands no more than Freshness
-// behind the clock. A row is computed as of the start of the pass that writes it, and the next
-// pass starts SweepEvery after this one, so a row's age when it is rewritten is SweepEvery plus
-// that pass's own length. The two lengths below are what that leaves: one pass over the rig's
-// whole project, and one sweep pass that finds nothing new, which is what the loop does every
-// SweepEvery while nothing moves.
+// behind the clock, at the rig's own population and at four times it. A row is computed as of
+// the start of the pass that writes it, and the next pass starts SweepEvery after this one, so a
+// row's age when it is rewritten is SweepEvery plus that pass's own length. A pass therefore has
+// Freshness less SweepEvery, 30 s, to run in.
+//
+// Each size takes the same two lengths: one pass over the whole project (the backfill's own
+// work), and one sweep pass that finds nothing new, which is what the loop does every SweepEvery
+// while nothing moves. The sweep pass is the one the bound holds, because it is the pass that
+// runs on the pace.
+//
+// INFRA holds about 252 issues today, which is the rig's own size, so the second size covers
+// INFRA at twice its size and leaves room above that: a reader sees how the two costs grow with
+// the population rather than one number at one size.
 func TestTheSweepsPaceHoldsTheFreshnessRequirement(t *testing.T) {
-	run := newConsumer(t, 42)
-	project := run.fixture.Project
+	for _, size := range []struct {
+		what  string
+		trees int
+	}{
+		{"the rig's own population", legiontest.DefaultTrees},
+		{"four times the rig's population", 4 * legiontest.DefaultTrees},
+	} {
+		t.Run(size.what, func(t *testing.T) {
+			run := newConsumer(t, size.trees)
+			project := run.fixture.Project
 
-	started := time.Now()
-	rows, err := ComputeProject(t.Context(), run.database.Pool, project, run.at)
-	if err != nil {
-		t.Fatalf("compute the project's facts: %v", err)
-	}
-	written, err := Write(t.Context(), run.database.Pool, rows)
-	if err != nil {
-		t.Fatalf("write the facts: %v", err)
-	}
-	whole := time.Since(started)
+			started := time.Now()
+			rows, err := ComputeProject(t.Context(), run.database.Pool, project, run.at)
+			if err != nil {
+				t.Fatalf("compute the project's facts: %v", err)
+			}
+			written, err := Write(t.Context(), run.database.Pool, rows)
+			if err != nil {
+				t.Fatalf("write the facts: %v", err)
+			}
+			whole := time.Since(started)
 
-	// The pass that reads the feeds through to their heads, so the sweep pass after it finds
-	// nothing new and measures the sweep alone.
-	run.pass(t)
-	started = time.Now()
-	changed := run.pass(t)
-	sweep := time.Since(started)
+			// The pass that reads the three feeds through to their heads, so the sweep pass
+			// after it finds nothing new and measures the sweep alone.
+			run.pass(t)
+			started = time.Now()
+			changed := run.pass(t)
+			sweep := time.Since(started)
 
-	if sweep >= Freshness-SweepEvery {
-		t.Errorf("a sweep pass takes %s, and a pass has Freshness less SweepEvery, %s, to run in",
-			sweep.Round(time.Millisecond), (Freshness - SweepEvery).Round(time.Millisecond))
+			budget := Freshness - SweepEvery
+			if sweep >= budget {
+				t.Errorf("at %d issues a sweep pass takes %s, and a pass has Freshness less SweepEvery, %s, to run in",
+					len(run.fixture.Keys), sweep.Round(time.Millisecond), budget.Round(time.Millisecond))
+			}
+			if whole >= budget {
+				t.Errorf("at %d issues one ComputeProject and Write pass takes %s, above the %s a pass has to run in",
+					len(run.fixture.Keys), whole.Round(time.Millisecond), budget.Round(time.Millisecond))
+			}
+			t.Logf("over %d issues, %d of them with Legion phase work: one ComputeProject and Write pass took %s and wrote %d rows; one sweep pass that finds nothing new took %s and changed %d rows",
+				len(run.fixture.Keys), len(run.fixture.PhaseWork), whole.Round(time.Millisecond), len(written),
+				sweep.Round(time.Millisecond), len(changed))
+			t.Logf("a stored row therefore stands at most SweepEvery (%s) plus a pass (%s) behind the clock, against the %s Freshness allows: the sweep pass leaves %s of the %s a pass has",
+				SweepEvery, sweep.Round(time.Millisecond), Freshness,
+				(budget - sweep).Round(time.Millisecond), budget)
+		})
 	}
-	t.Logf("over %d issues, %d of them with Legion phase work: one ComputeProject and Write pass took %s and wrote %d rows; one sweep pass that finds nothing new took %s and changed %d rows",
-		len(run.fixture.Keys), len(run.fixture.PhaseWork), whole.Round(time.Millisecond), len(written),
-		sweep.Round(time.Millisecond), len(changed))
-	t.Logf("a stored row therefore stands at most SweepEvery (%s) plus a pass (%s) behind the clock, against the %s Freshness allows",
-		SweepEvery, sweep.Round(time.Millisecond), Freshness)
 }

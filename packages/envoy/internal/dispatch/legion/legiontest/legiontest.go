@@ -27,9 +27,10 @@ import (
 )
 
 const (
-	// DefaultProject is the project a Spec that names none is written under. The key is what
-	// projects.key admits, an upper-case letter and up to nine letters or digits.
-	DefaultProject = "LEGION"
+	// defaultProject is the project a Spec that names none is written under. The key is what
+	// projects.key admits, an upper-case letter and up to nine letters or digits. A caller reads
+	// the project it got back off the Fixture, so the name itself is this package's own.
+	defaultProject = "LEGION"
 
 	// DefaultTrees is how many trees a Spec that asks for no number writes. Each tree holds
 	// issuesPerTree issues and five of them carry Legion phase work, so the default answers
@@ -45,8 +46,10 @@ const (
 	// whole window is treeSpan plus one hour per tree.
 	treeSpan = 60 * time.Hour
 
-	// slotCap is how many admission slots the history shares out. A root takes one of them and
-	// its first child takes another, so two trees of one moment never read as one slot.
+	// slotCap is how many slot numbers the roots share out. A root takes index%slotCap and the
+	// child it files first takes slotCap plus that, so one tree holds two numbers and the
+	// history uses eight. Two roots slotCap trees apart take one number between them, and the
+	// stretches they hold it over overlap, so the number alone never says which issue held it.
 	slotCap = 4
 )
 
@@ -56,7 +59,7 @@ const person = `{"kind":"user","id":"alice"}`
 // Spec is the history Seed writes: the project the issues belong to, how many trees of a root
 // and its children it holds, and the moment the history ends. The caller gives its own Now, so
 // the hours an open issue has run are the hours the caller's own computation measures. A zero
-// field takes its default: DefaultProject, DefaultTrees, and this moment.
+// field takes its default: the package's own project, DefaultTrees, and this moment.
 type Spec struct {
 	Project string
 	Trees   int
@@ -98,7 +101,7 @@ type Fixture struct {
 func Seed(t testing.TB, pool *store.Pool, spec Spec) Fixture {
 	t.Helper()
 	if spec.Project == "" {
-		spec.Project = DefaultProject
+		spec.Project = defaultProject
 	}
 	if spec.Trees <= 0 {
 		spec.Trees = DefaultTrees

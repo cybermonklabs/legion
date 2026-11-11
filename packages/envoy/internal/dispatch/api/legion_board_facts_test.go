@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -142,8 +143,9 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	}
 	// The floor this issue's check k4 counts against: a board of fewer entries proves the rule
 	// and not the check, so the seed above is what must grow when this fails.
-	if len(board.Issues) < 20 {
-		t.Errorf("the board carries %d entries, want the 20 check k4 counts against", len(board.Issues))
+	if len(board.Issues) < boardEntriesFloor {
+		t.Errorf("the board carries %d entries, want the %d check k4 counts against",
+			len(board.Issues), boardEntriesFloor)
 	}
 	t.Logf("project %s: %d issues seeded, %d with Legion phase work, %d with none; the board carries %d entries, %d open, %d closed, %d with no measured hours",
 		fixture.Project, len(fixture.Keys), len(fixture.PhaseWork), len(fixture.NoPhaseWork),
@@ -221,6 +223,7 @@ func TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill(t *testing.T) {
 	// No pass has ever committed: neither project's board knows an age, and the project with
 	// stored rows still names the oldest of them.
 	worked, idle := legionBoardOf(t, handler, "INFRA"), legionBoardOf(t, handler, "LINUX")
+	beforePass := len(worked.Issues)
 	if worked.Header.FactsUpdatedAt == nil || !worked.Header.FactsUpdatedAt.Equal(oldest) {
 		t.Errorf("INFRA's facts_updated_at = %v, want the oldest stored row's %s", worked.Header.FactsUpdatedAt, oldest)
 	}
@@ -248,8 +251,19 @@ func TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill(t *testing.T) {
 	if idle.Header.FactsUpdatedAt != nil {
 		t.Errorf("LINUX's facts_updated_at = %v, want null: it has no stored row", idle.Header.FactsUpdatedAt)
 	}
-	t.Logf("before any pass: INFRA %d rows and no age, LINUX no row and no age — nothing has been computed. After one pass 90 s ago: INFRA %d rows and an age of %d s, LINUX no row and an age of %d s — LINUX has no Legion work, and its facts are as fresh as INFRA's",
-		len(worked.Issues), len(worked.Issues), *worked.Header.FactsCursorAgeSeconds, *idle.Header.FactsCursorAgeSeconds)
+	t.Logf("before any pass: INFRA %d rows and no age, LINUX no row and no age — nothing has been computed. After one pass 90 s ago: INFRA %d rows and an age of %s s, LINUX no row and an age of %s s — LINUX has no Legion work, and its facts are as fresh as INFRA's",
+		beforePass, len(worked.Issues), ageSeconds(worked.Header.FactsCursorAgeSeconds),
+		ageSeconds(idle.Header.FactsCursorAgeSeconds))
+}
+
+// ageSeconds is a header's facts_cursor_age_seconds for a log line: the seconds it holds, or
+// "no" where it holds none. The checks above are not fatal, so a line that dereferenced the
+// pointer would panic on a failure and take the package's whole run with it.
+func ageSeconds(age *int) string {
+	if age == nil {
+		return "no"
+	}
+	return strconv.Itoa(*age)
 }
 
 // TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock: one issue's card and
@@ -359,10 +373,6 @@ func TestTheLegionBoardsOldAddressIsGone(t *testing.T) {
 		t.Fatalf("the project-path board has %d columns, want the %d the view draws",
 			len(board.Columns), len(legionBoardColumnOrder))
 	}
-	cards := 0
-	for _, column := range board.Columns {
-		cards += len(column.Cards)
-	}
 	t.Logf("GET /api/v1/legion/board answers 404 at both of its old spellings; GET /api/v1/projects/INFRA/legion/board answers %d columns holding %d cards",
-		len(board.Columns), cards)
+		len(board.Columns), countBoardCards(board))
 }

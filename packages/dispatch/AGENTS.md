@@ -2981,8 +2981,14 @@ Every spec of `e2e/legion.e2e.ts` carries `@legion`, which no project greps:
 it is how a person runs the Legion view's and the Settings page's Legion
 field's browser work and nothing else,
 `bunx playwright test --config e2e/playwright.config.ts --grep @legion`.
+`e2e/legion-facts.e2e.ts` carries `@issue-facts` the same way, for the stored
+per-issue Legion facts.
 Tag a feature's specs that way when one file is that feature's whole
-browser coverage and a reader will want to run it alone.
+browser coverage and a reader will want to run it alone,
+and pick a tag that holds no other tag and that no other tag holds:
+`--grep` is a regular expression over the whole title, so a tag that reads
+`@legion-facts` is run by `--grep @legion` as well, and neither run is then
+that one file's.
 
 A retracted ask is withdrawn history: the Inbox and the open-ask badges drop it, and the margin folds it into the `Resolved (N)` toggle beside resolved comment threads. The Conversation lists it like every other conversation, under `All` and under `Closed`; the tab has no `Show retracted` or `Show activity` control of its own. Ask event payloads carry `options` as an array (the server never emits `null`), so the Activity tab and the margin's Pinned tab render `event.payload` as the `Ask` it is.
 

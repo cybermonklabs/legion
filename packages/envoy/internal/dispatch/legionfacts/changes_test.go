@@ -125,9 +125,16 @@ func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write the same facts again: %v", err)
 	}
+	if len(rewritten) != 0 {
+		t.Errorf("Write rewrote %v, want nothing: the row's facts already match", rewritten)
+	}
 	moved, err := pool.Exec(t.Context(), `update issue_facts set updated_at = updated_at + interval '1 hour'`)
 	if err != nil {
 		t.Fatalf("move the row's updated_at: %v", err)
+	}
+	if moved.RowsAffected() != 1 {
+		t.Fatalf("the update moved the updated_at of %d rows, want the one row written above: an "+
+			"update that hit no row proves nothing about what the trigger ignores", moved.RowsAffected())
 	}
 	changes := changesLogged(t, pool, head)
 	if len(changes) != 0 {

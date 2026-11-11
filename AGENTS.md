@@ -686,7 +686,7 @@ Each item below names a task and where its code is, then notes on it.
 - Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`, `legion_metrics.go`
 
   A per-project Legion setting names the daemon whose `GET /legion/v1/state` Dispatch reads once a minute, one replica at a time under a lease (`sampler.go`), recording what changed.
-  `GET /api/v1/settings/legion` and `PUT`/`DELETE /api/v1/settings/legion/{project}` are the setting, `PUT /api/v1/legion/{project}/settings` the relay to that daemon, and `GET /api/v1/legion/metrics` and `GET /api/v1/legion/board` what the Delivery page's Legion section and the Issues page's Legion view read.
+  `GET /api/v1/settings/legion` and `PUT`/`DELETE /api/v1/settings/legion/{project}` are the setting, `PUT /api/v1/legion/{project}/settings` the relay to that daemon, and `GET /api/v1/legion/metrics` and `GET /api/v1/projects/{key}/legion/board` what the Delivery page's Legion section and the Issues page's Legion view read.
   The web side is `packages/dispatch/web/src/features/legion/`
 
 - Dispatch's document editor — `packages/proof-editor/`

@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"context"
-	"fmt"
 	"maps"
 	"math"
 	"slices"
@@ -10,7 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -142,103 +140,66 @@ func TestTheFactsNameWhenAnIssueOpenedClosedAndWasWorked(t *testing.T) {
 	}
 }
 
-// twoTrees seeds two Legion trees of one project, each a root its architect opened with one
-// child its implementer worked and closed: enough that a read of one tree's issues covers one
-// tree and leaves the other unread.
-func twoTrees(t *testing.T) *store.Store {
-	t.Helper()
-	database := storetest.Open(t)
-	ctx := context.Background()
-	exec := func(sql string, args ...any) {
-		t.Helper()
-		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatalf("seed (%s): %v", sql, err)
-		}
-	}
-	exec(`insert into projects (key, name) values ('INFRA', 'INFRA')`)
-	session := func(title string) string {
-		return fmt.Sprintf(`{"kind":"session","id":"s-%s","origin":{"session_title":%q}}`, title, title)
-	}
-	event := func(issue string, seq int, kind, actor, payload string, at time.Time) {
-		t.Helper()
-		exec(`insert into events (issue_key, seq, type, actor, payload, notify, created_at)
-			values ($1, $2, $3, $4::jsonb, $5::jsonb, false, $6)`, issue, seq, kind, actor, payload, at)
-	}
-	tree := func(number int, rank string, opened float64) {
-		t.Helper()
-		root := fmt.Sprintf("INFRA-%d", number)
-		child := fmt.Sprintf("INFRA-%d", number+1)
-		exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
-			values ($1, 'INFRA', $2, 'A root', 'in_progress', $3, '{"kind":"user","id":"alice"}'::jsonb, $4)`,
-			root, number, rank+"a", after(opened-1))
-		exec(`insert into issues (key, project_key, number, title, status, rank, parent_key, created_by, created_at, closed_at)
-			values ($1, 'INFRA', $2, 'A child', 'done', $3, $4, '{"kind":"user","id":"alice"}'::jsonb, $5, $6)`,
-			child, number+1, rank+"b", root, after(opened), after(opened+10))
-		event(root, 1, "issue.created", `{"kind":"user","id":"alice"}`, `{"status":"triage"}`, after(opened-1))
-		event(root, 2, "comment.created", session("Legion architect · "+root), `{"status":"in_progress"}`, after(opened))
-		event(child, 1, "issue.created", session("Legion architect · "+root),
-			fmt.Sprintf(`{"status":"triage","parent":%q,"ancestors":[%q]}`, root, root), after(opened))
-		event(child, 2, "comment.created", session("Legion implementer · "+child), `{"status":"in_progress"}`, after(opened+1))
-		event(child, 3, "ask.opened", session("Legion implementer · "+child), `{"id":"ask-`+child+`"}`, after(opened+2))
-		event(child, 4, "ask.answered", `{"kind":"user","id":"alice"}`, `{"id":"ask-`+child+`"}`, after(opened+3))
-		event(child, 5, "issue.updated", `{"kind":"user","id":"alice"}`, `{"status":"needs_review"}`, after(opened+8))
-		event(child, 6, "issue.closed", session("Legion merger · "+child), `{"status":"done"}`, after(opened+10))
-		exec(`insert into handoffs (issue_key, phase, version, body, author, created_at)
-			values ($1, 'implement', 1, 'done', '{"kind":"session","id":"s-impl"}'::jsonb, $2)`, child, after(opened+8))
-		for _, observed := range []struct {
-			value string
-			at    float64
-		}{{legion.PhaseImplementing, opened + 1}, {legion.PhaseReviewing, opened + 8}, {legion.PhaseDone, opened + 10}} {
-			exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
-				values ('INFRA', $1, $2, $3::jsonb, $4)`,
-				child, legion.FieldPhase, fmt.Sprintf("%q", observed.value), after(observed.at))
-		}
-	}
-	tree(1, "m", 0)
-	tree(5, "p", 4)
-	return database
-}
-
 // TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject: ReadIssues reads one tree where
 // ReadProject reads every issue of the project, and the facts of the issues asked for are the
 // same either way, field by field. A consumer can therefore recompute one issue's row without
 // reading a whole project's event history.
 func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
-	database := twoTrees(t)
-	now := after(48)
-	keys := []string{"INFRA-1", "INFRA-2"}
+	database := storetest.Open(t)
+	// Two trees, so a read of one tree's issues covers one tree and leaves the other unread.
+	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2})
+	now := fixture.To
+	// The first tree: Seed writes each tree's root and then that tree's children, so the
+	// history's first issues per tree are the first tree.
+	perTree := len(fixture.Keys) / len(fixture.Roots)
+	keys, otherTree := fixture.Keys[:perTree], fixture.Keys[perTree:]
 
 	startedProject := time.Now()
-	project, err := ReadProject(t.Context(), database.Pool, nil, "INFRA", now)
+	project, err := ReadProject(t.Context(), database.Pool, nil, fixture.Project, now)
 	projectRead := time.Since(startedProject)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}
 	startedIssues := time.Now()
-	named, err := ReadIssues(t.Context(), database.Pool, nil, "INFRA", keys, now)
+	named, err := ReadIssues(t.Context(), database.Pool, nil, fixture.Project, keys, now)
 	issuesRead := time.Since(startedIssues)
 	if err != nil {
 		t.Fatalf("read the named issues: %v", err)
 	}
 
 	whole, part := ProjectFacts(project), ProjectFacts(named)
-	if len(whole) != 4 {
-		t.Fatalf("the project's facts hold %d issues (%v), want the four with Legion work", len(whole), slices.Sorted(maps.Keys(whole)))
+	if len(whole) != len(fixture.PhaseWork) {
+		t.Fatalf("the project's facts hold %d issues (%v), want the %d with Legion phase work",
+			len(whole), slices.Sorted(maps.Keys(whole)), len(fixture.PhaseWork))
 	}
+	compared, worked := 0, 0
 	for _, key := range keys {
-		want, got := whole[key], part[key]
+		want, has := whole[key]
+		if !has {
+			// The follow-up nobody worked, which has facts in neither read.
+			continue
+		}
+		compared++
+		got := part[key]
 		if !maps.Equal(want.PhaseHours, got.PhaseHours) || want.WorkHours != got.WorkHours ||
 			want.ReviewRounds != got.ReviewRounds || want.Root != got.Root || want.Tree != got.Tree {
 			t.Errorf("%s reads %+v from its own tree and %+v from the whole project, want one answer", key, got, want)
 		}
-		if want.WorkHours == 0 {
-			t.Errorf("%s holds no work hours in either read, which proves nothing: %+v", key, want)
+		if want.WorkHours > 0 {
+			worked++
 		}
+	}
+	if compared == 0 || worked == 0 {
+		t.Fatalf("%d of the tree's issues were compared and %d of them hold work hours, which proves nothing",
+			compared, worked)
 	}
 	// The other tree is outside the keys asked for, so its issues carry no Legion work this read
 	// gathered and no facts: that is what makes the two reads different reads.
-	if _, read := part["INFRA-6"]; read {
-		t.Errorf("the facts of the tree nobody asked for are %+v, want none", part["INFRA-6"])
+	for _, key := range otherTree {
+		if got, read := part[key]; read {
+			t.Errorf("the facts of %s, in the tree nobody asked for, are %+v, want none", key, got)
+		}
 	}
-	t.Logf("%d issues compared; ReadProject took %s and ReadIssues took %s", len(keys), projectRead, issuesRead)
+	t.Logf("%d issues compared, %d of them with work hours; ReadProject took %s over %d issues and ReadIssues took %s over %d",
+		compared, worked, projectRead, len(fixture.Keys), issuesRead, len(keys))
 }

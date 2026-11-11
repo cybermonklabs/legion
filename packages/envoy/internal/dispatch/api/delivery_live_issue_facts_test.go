@@ -1,10 +1,13 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -120,8 +123,9 @@ func recomputeOfView(t *testing.T, frame DeliveryLiveView) func(deliveryHubNote)
 // because the board reads no delivery row and judges no verdict. The timeline shows neither issue
 // and is sent nothing at all.
 //
-// It counts the recomputes of the one view the facts name and no others: the hub recomputes every
-// view when its event feed is taken again, which no write of this test caused.
+// It holds the hub to one recompute of the one view the facts name and to none of any other
+// view: the hub recomputes every view when its event feed is taken again, which no write of
+// this test caused, so a second recompute here is a mark this row did not ask for.
 func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
@@ -146,7 +150,6 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	writeIssueFacts(t, rig.database, "INFRA", "INFRA-4", workedAt, workedAt.Add(time.Hour))
 	rig.hub.catchUpNow()
 	rig.waitFor(t, shown, 5*time.Second, "a recompute of the board the issue is on", recomputeOfView(t, boardFrame))
-	boardRecomputes := rig.count(shown, recomputeOfView(t, boardFrame))
 	delta := board.delta(t, 5*time.Second, "b")
 	entry, sent := delta.Maps["issues"]["INFRA-4"]
 	if !sent {
@@ -161,6 +164,113 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	rig.waitNoRecompute(t, viewMaxWait)
 	board.none(t, time.Second, "the facts write of an issue no view shows")
 	timeline.none(t, time.Second, "the facts write of an issue no view shows")
-	t.Logf("INFRA-4's facts: %d board recompute(s), 1 delta carrying its entry (%s) and no freshness frame, 0 frames to the timeline; INFRA-99's facts: the hub went quiet and sent 0 frames",
-		boardRecomputes, entry)
+
+	// The count this row's head says it takes: the one view the facts name was recomputed once,
+	// and no other view at all.
+	boardRecomputes := rig.count(shown, recomputeOfView(t, boardFrame))
+	allRecomputes := rig.count(shown, recomputeBegin(deliveryCauseChange))
+	if boardRecomputes != 1 {
+		t.Errorf("the two facts writes recomputed the board %d times, want the one the first write caused", boardRecomputes)
+	}
+	if allRecomputes != boardRecomputes {
+		t.Errorf("the two facts writes recomputed %d views, of which %d were the board: want the board alone",
+			allRecomputes, boardRecomputes)
+	}
+	t.Logf("INFRA-4's facts: %d board recompute(s) and %d recompute(s) of every view, 1 delta carrying its entry (%s) and no freshness frame, 0 frames to the timeline; INFRA-99's facts: the hub went quiet and sent 0 frames",
+		boardRecomputes, allRecomputes, entry)
+}
+
+// sweepRows is how many stored facts rows one sweep pass of a project of INFRA's size rewrites:
+// the 210 issues of the facts' own rig that carry Legion phase work. An open issue's work hours
+// grow with the clock, so every sweep finds every open issue changed, writes it, and the trigger
+// logs one delivery change for each (migration 20261111093100).
+const sweepRows = 210
+
+// writeFactsSweep writes count rows of the project in one Write, as one sweep pass does, giving
+// every row the work hours named. It answers the keys Write says it changed. The rows are
+// written by hand rather than computed, so the batch a measurement counts is the batch this
+// states.
+func writeFactsSweep(t *testing.T, database *store.Store, project string, count int, hours float64, at time.Time) []string {
+	t.Helper()
+	rows := make([]legionfacts.Row, 0, count)
+	for number := 1; number <= count; number++ {
+		first := at.Add(-time.Duration(number) * time.Minute)
+		last := first.Add(time.Duration(hours * float64(time.Hour)))
+		rows = append(rows, legionfacts.Row{
+			Project: project, Issue: fmt.Sprintf("%s-%d", project, number),
+			OpenedAt: at.Add(-48 * time.Hour), HoursByPhase: map[string]float64{"implementing": hours},
+			WorkHours: hours, RootKey: project + "-1", WorkFirstAt: &first, WorkLastAt: &last,
+			UpdatedAt: at,
+		})
+	}
+	changed, err := legionfacts.Write(t.Context(), database.Pool, rows)
+	if err != nil {
+		t.Fatalf("write %d stored facts rows of %s: %v", count, project, err)
+	}
+	return changed
+}
+
+// TestWhatOneSweepOfChangedFactsRowsCostsAnOpenBoard: what one sweep pass costs a subscribed
+// Legion board. The sweep writes every open issue's row in one pass, the trigger logs a change
+// row for each, and the hub marks the board once per change row it reads.
+//
+// A mark is a flag on the view, not a recompute (markDirtyLocked), and a dirty view is due
+// viewQuiet after its last mark or viewMaxWait after its first (dueAt). The clock stands still,
+// so the whole batch is one instant to the hub however long the writes take: nothing is due
+// until the test moves the clock, and what the hub does then is the measurement.
+//
+// The rows are written once before the subscription, so the board's first answer names every one
+// of them: a facts write of an issue the view's last answer does not name marks nothing
+// (showsIssue), and a batch of such writes would measure the empty case.
+func TestWhatOneSweepOfChangedFactsRowsCostsAnOpenBoard(t *testing.T) {
+	clock := newStillHubClock()
+	rig := newClockedHubRig(t, clock)
+	seedHubSettings(t, rig.database)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	seedLegionBoard(t, rig.database, "INFRA", clock.Now())
+	writeFactsSweep(t, rig.database, "INFRA", sweepRows, 4, clock.Now())
+
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
+	snapshot := conn.snapshot(t, 10*time.Second, "b")
+	var answered struct {
+		Issues map[string]json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(snapshot.Body, &answered); err != nil {
+		t.Fatalf("read the board's first answer: %v", err)
+	}
+	if len(answered.Issues) != sweepRows {
+		t.Fatalf("the board's first answer names %d issues entries, want the %d rows the sweep below rewrites",
+			len(answered.Issues), sweepRows)
+	}
+	rig.settle(t)
+
+	start := rig.mark()
+	before := latestChange(t, rig.database)
+	// One sweep pass: every row's hours have grown, so every row is rewritten.
+	changed := writeFactsSweep(t, rig.database, "INFRA", sweepRows, 5, clock.Now())
+	logged := latestChange(t, rig.database) - before
+	if len(changed) != sweepRows || logged != int64(sweepRows) {
+		t.Fatalf("the sweep rewrote %d rows and logged %d changes, want %d of each: a batch of another size is another measurement",
+			len(changed), logged, sweepRows)
+	}
+	rig.hub.catchUpNow()
+	conn.none(t, 2*viewQuiet, "a batch of facts rows the clock has not moved past")
+	if n := rig.count(start, recomputeBegin(deliveryCauseChange)); n != 0 {
+		t.Fatalf("recomputes before the batch's quiet passed = %d, want 0", n)
+	}
+
+	started := time.Now()
+	clock.Advance(viewQuiet)
+	delta := conn.delta(t, 30*time.Second, "b")
+	took := time.Since(started)
+	conn.none(t, viewMaxWait, "the batch's one delta")
+	recomputes := rig.count(start, recomputeBegin(deliveryCauseChange))
+	if recomputes != 1 {
+		t.Errorf("a sweep of %d changed rows cost the board %d recomputes, want the one its marks coalesce into",
+			sweepRows, recomputes)
+	}
+	t.Logf("one sweep pass: %d rows rewritten in one Write, %d delivery changes logged, %d recompute(s) of the subscribed board and 1 frame to it, carrying %d issues entries; the recompute answered %s after the quiet passed",
+		len(changed), logged, recomputes, len(delta.Maps["issues"]), took.Round(time.Millisecond))
 }
