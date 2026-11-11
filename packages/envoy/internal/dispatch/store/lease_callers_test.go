@@ -22,7 +22,7 @@ func reserveLeaseCallers(t *testing.T, callers *LeaseCallers, count int) []strin
 }
 
 // The lease pool has one connection per caller that can be inside a lease or a hold statement at
-// the same moment, and the reservations are what holds the two together: exactly leasePoolSize
+// the same moment, and the reservations are what holds the two together: exactly LeasePoolSize
 // callers pass, one more (a leased loop added without a connection) and one fewer (a connection
 // added without a caller) fail, so neither can be merged in silently.
 func TestTheLeasePoolIsCompleteOnlyAtOneCallerPerConnection(t *testing.T) {
@@ -32,27 +32,27 @@ func TestTheLeasePoolIsCompleteOnlyAtOneCallerPerConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the lease pool: %v", err)
 	}
-	reserveLeaseCallers(t, short, leasePoolSize-1)
+	reserveLeaseCallers(t, short, LeasePoolSize-1)
 	if err := short.Complete(); err == nil {
-		t.Errorf("%d callers of a lease pool of %d passed the check: a connection nothing reserved is one the process opens and nothing uses", leasePoolSize-1, leasePoolSize)
+		t.Errorf("%d callers of a lease pool of %d passed the check: a connection nothing reserved is one the process opens and nothing uses", LeasePoolSize-1, LeasePoolSize)
 	}
 
 	exact := leaseCallersOfANewPool(t)
-	reserveLeaseCallers(t, exact, leasePoolSize)
+	reserveLeaseCallers(t, exact, LeasePoolSize)
 	if err := exact.Complete(); err != nil {
-		t.Errorf("%d callers of a lease pool of %d failed the check: %v", leasePoolSize, leasePoolSize, err)
+		t.Errorf("%d callers of a lease pool of %d failed the check: %v", LeasePoolSize, LeasePoolSize, err)
 	}
 
 	over := leaseCallersOfANewPool(t)
-	names := reserveLeaseCallers(t, over, leasePoolSize+1)
+	names := reserveLeaseCallers(t, over, LeasePoolSize+1)
 	err = over.Complete()
 	if err == nil {
-		t.Fatalf("%d callers of a lease pool of %d passed the check: the one without a connection waits for one for as long as the longest pass", leasePoolSize+1, leasePoolSize)
+		t.Fatalf("%d callers of a lease pool of %d passed the check: the one without a connection waits for one for as long as the longest pass", LeasePoolSize+1, LeasePoolSize)
 	}
 	// The error says how many callers reserved a connection, how many the pool has, and which
 	// callers they are, so whoever reads it can tell the caller that was added from the ones
 	// the count was taken for.
-	for _, want := range []string{strconv.Itoa(leasePoolSize + 1), strconv.Itoa(leasePoolSize)} {
+	for _, want := range []string{strconv.Itoa(LeasePoolSize + 1), strconv.Itoa(LeasePoolSize)} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal %q does not name %s, the callers reserved and the pool's connections", err, want)
 		}

@@ -1664,6 +1664,39 @@ Address the harness as `127.0.0.1:<port>`, never
 a fixture server. `bun run dispatch:local` runs the same harness by hand,
 seeded and signed in, and leaves it running (below, after the port rules).
 
+Three commands, each copied as it stands and run from this package:
+
+```bash
+bun run e2e -- e2e/claim.e2e.ts --project=chromium
+bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1
+bun run e2e:clock
+```
+
+The first runs one ordinary spec file. The second runs one wall-clock file in one engine: those
+rows are read from the clock and their three projects are out of the default selection (the
+`-alone` projects, below), so a command that names such a file names its project too, and it
+names `--workers=1` beside it, so the command a reader copies says the one worker its reading
+rests on rather than taking it from the configuration. A wider run is refused rather than
+measured: `refuseASharedRun` (`e2e/main-thread-hold.ts`) fails every measuring row of a run of
+more than one worker. The third runs every wall-clock row in all three engines: `e2e:clock` is
+the one script that names the three projects, and it names `--workers=1` beside them, so the
+command the whole wall-clock run is made of says what its readings rest on. Each of `e2e` and
+`e2e:clock` builds `@legion/contracts` and the dashboard first, so a reader running both from an
+unchanged tree can skip the second build by calling what `e2e:clock` calls:
+`bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`.
+CI's alone legs run that same command with one `--project` each, a machine per engine
+(`.github/workflows/dispatch-browser.yaml`).
+
+Write a project as `--project=<name>` and never `--project <name>`. The option is variadic, so
+`--project chromium-alone e2e/heavy-bodies.e2e.ts` reads the file as a second project name and
+the run ends `Project(s) "e2e/heavy-bodies.e2e.ts" not found`. The second command is the one
+that carries a file name after its project, so it is the one that meets this.
+
+An issue pod measures the wall-clock rows in `chromium-alone`: WebKit does not launch in such a
+pod, whose image lacks that engine's host libraries (dispatch://INFRA-1396). Firefox and WebKit
+are measured by CI, where the `alone` job of `.github/workflows/dispatch-browser.yaml` gives
+each engine a machine of its own.
+
 Playwright's UI mode starts this suite's stacks itself. The UI server runs no
 `globalSetup` when it begins listening; it runs one when a client connects
 (`runGlobalSetup`, playwright 1.64.1 `lib/runner/index.js:6896-6915`), so a
@@ -1680,7 +1713,15 @@ held (the UI's own header reads `Projects: all`), so `e2e/global-setup.ts`
 requires every engine Playwright can run here, not the one engine a row needs.
 With `firefox` and `webkit` not downloaded, a UI session stops at its
 `global-setup.ts` node while the same command line without `--ui` runs green.
-`bun run e2e:install` downloads all three.
+`bun run e2e:install` downloads all three. A UI session is also the one run
+that holds the wall-clock projects without naming them — it lists the
+non-default projects so that they can be selected by name — so the
+configuration's refusal of a wall-clock file named with no project yields to a
+user-interface command line: one whose `--ui`, `--ui-host` or `--ui-port`
+Playwright's own parser reads as the mode. It does not yield to a `--ui`
+another option swallowed (`--grep --ui <file>`), nor to one behind the `--`,
+since neither starts a user interface
+(`clockFileOnCommandLine`, `e2e/configurations.ts`).
 
 To point a session at a stack that is already up instead, export that stack's
 variables first, from `packages/dispatch`:
@@ -1781,7 +1822,9 @@ different stacks, and a file whose rows must run in order says so itself, with
 
 Every other mode runs on that default one worker, and so one stack: the deployed
 run (`bun run e2e:deployed`, `PLAYWRIGHT_BASE_URL`), two-process mode
-(`bun run e2e:multiprocess`), a run
+(`bun run e2e:multiprocess`), the wall-clock run (`bun run e2e:clock`, which
+writes that one worker out as `--workers=1` beside its three projects, since a
+reading of the clock rests on it), a run
 against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 `e2e/local-instance.ts` (`bun run dispatch:local`), `docs/site/media/harness.ts`,
 `docs/site/media/broker/seed.ts`,
@@ -1796,7 +1839,7 @@ shard machines, each leg running `--shard=N/4` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
 run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
-projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
+projects each on a machine of its own at one worker, and the two-process job.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
 line rather than in an `env:`, for the reason that step's comment gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
@@ -1871,12 +1914,22 @@ in its own scope, and in the module an import leads to, so a `for`-of `const`,
 a parameter or an import is never read as a same-named function declared
 elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
 the program cannot resolve — leaves its row refused with no fixtures, since
-fixtures the check did not read are not fixtures it saw. It reads the three
-Playwright listings first, to prove it scanned the files the suite runs. A row
-may stand all the same as a named exemption with its reason, written in
-`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
-exemption too — one naming a row the suite no longer holds, or one that drives
-a browser now — so the rule cannot come to lie in the other direction either.
+fixtures the check did not read are not fixtures it saw. It reads four
+Playwright listings first, to prove it scanned the files the suite runs: the
+default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
+`DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
+projects, whose rows a listing naming no project holds none of. The four
+collect at once, and the readings the timing comment above
+`listingTimeout` carries (`e2e/__tests__/no-browser-rows.test.ts`) are of
+the whole file: 13.72, 17.11 and 23.22 seconds in three runs of it, with
+the default listing 3.59 seconds on its own and the wall-clock one 1.25.
+The file allows three minutes,
+which is a ceiling for something being wrong rather than a budget for a
+listing. A row may stand all the same as a named exemption
+with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
+the check refuses a stale exemption too — one naming a row the suite no longer
+holds, or one that drives a browser now — so the rule cannot come to lie in the
+other direction either.
 INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
@@ -2632,18 +2685,26 @@ wall-clock time, with the machine to themselves. `chromium-alone` runs
 holding the main thread for a second, both through `e2e/main-thread-hold.ts`); `firefox-alone`
 and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines before, for the
 reasons given under `webkit` and `firefox` above. No project above them runs those two files,
-so each row runs once. Each of the three names every project before it in `dependencies`, so
-Playwright starts them only once the rest of the run has finished and runs them one after
-another, and each sets `workers: 1`, which caps that project's own workers while the run's own
-`workers` stays at the count the run was given: `dependencies` orders a project but does not
-stop its own
-rows running four at a time. Four workers put four browsers, four Dispatch servers and four
+so each row runs once. Each of the three sets `default: false`, which leaves it out of a run
+that names no project and takes nothing from a run that names one, so the commands at the top
+of this section name them and a bare `bun run e2e` holds none of their 50 rows (a listing of
+the three at this head: 50 tests in 2 files). Until dispatch://INFRA-1280 each named every
+project before it in `dependencies` instead, which ordered the run and also pulled the whole
+suite in behind any command naming one of their two files, because a filter narrows a project
+it selects and never a project selected to run before it.
+What gives these rows the quiet machine is not the order they run in: it is a run one worker
+wide. `e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker rather
+than letting it report a reading of the other workers' work, so a reading that survives was
+taken alone. Each project still caps its own workers at one, which keeps its own rows from
+running four at a time in a run of four workers, while the run's own `workers` stays what it
+was given. Four workers put four browsers, four Dispatch servers and four
 Postgres servers on one machine, and a second of wall clock there holds what the other three
 stacks took as surely as the work the row measured, so these rows are given the machine rather
 than a correction for sharing it (INFRA-317, sjawhar/legion#2612). A row that proves an absence
 over real time - that no request happens within a second - needs no such project: contention
-cannot make that claim false. A project whose dependency has a failing row does not run at all,
-so a red run leaves these rows unrun rather than measured beside a retry.
+cannot make that claim false. Each sets `retries: 0` as well: a wall-clock threshold that a
+regression misses half the time would fail the first attempt, pass the retry and leave the run
+green where it should be red.
 
 ## The stubbed layer
 
@@ -2727,12 +2788,13 @@ The job uploads the re-recorded set, and applying it is a replacement of
 every recording the job named as written by no row any more.
 It finds those too - which it could not while it re-recorded over the committed set - and a
 pull request refuses one before a nightly meets it, in two halves, because no one reading can
-see them all. `bun e2e/tools/row-map.ts` reads the listing: it refuses a recording no listed
-row owns, and a row the listing marks `skipped` owns none, which is every row skipped where it
-is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip`, or a describe-level
-`test.skip(true)` or `test.fixme()` - none of which runs a test-scoped fixture at all. The
-replay refuses what a listing cannot read: a row that skips itself inside its body, and one
-that passed and set no `scene` (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+see them all. `bun e2e/tools/row-map.ts` reads the two listings that are the suite (below): it
+refuses a recording no listed row owns, and a row a listing marks `skipped` owns none, which is
+every row skipped where it is declared - `test.fixme`, `test.skip(title, fn)`, a
+`describe.skip`, or a describe-level `test.skip(true)` or `test.fixme()` - none of which runs a
+test-scoped fixture at all. The replay refuses what a listing cannot read: a row that skips
+itself inside its body, and one that passed and set no `scene` (`deadRecordingGuard`,
+`e2e/stub/stub-test.ts`).
 Neither half sees a describe-level modifier whose condition is a function of a worker fixture,
 such as `test.skip(({ isMobile }) => !isMobile)`: the listing marks its rows `passed`, and
 Playwright decides it before any test-scoped fixture runs. So a stubbed row skips itself
@@ -2760,12 +2822,18 @@ and the pull request needs it.
 `e2e/row-map.md` holds the rows that moved, each with the reason a recording can answer it, and
 every file whose rows stayed, each with the server behaviour those rows depend on.
 `bun e2e/tools/row-map.ts --write` writes it and `e2e/__tests__/row-map.test.ts` fails when the
-committed file and a fresh generation differ. It carries no count and names no `@pr` row,
-deliberately: both are read from a listing of the whole suite, so a map that held them would be
-red on every pull request of every tree that adds or removes a row here. A **new spec file**
-still moves it, since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the
-generation refuses to write a map without one - and refuses a reason there for a file the
-listing does not name.
+committed file and a fresh generation differ. The generation reads two listings and takes the
+rows of both, because one listing is no longer the suite: a listing that names no project holds
+no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
+`nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
+on a two-core pod, the reading the comment above that tool's own `defaultListing` and
+`clockListing` carries (`e2e/tools/row-map.ts`: the default listing about three and a half
+seconds on its own and the wall-clock one about one).
+The map carries no count and names no `@pr` row, deliberately: both are read from those
+listings, which hold the whole suite, so a map that held them would be red on every pull
+request of every tree that adds or removes a row here. A **new spec file** still moves it,
+since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the generation refuses to
+write a map without one - and refuses a reason there for a file the listings do not name.
 
 What the map says of a moved row is that the move touched no line of what it asserts, and that
 sentence is the whole of what a reviewer reads for it, so a row where it is false must say so

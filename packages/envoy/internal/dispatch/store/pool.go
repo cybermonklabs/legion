@@ -378,7 +378,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 	return conn, nil
 }
 
-// leasePoolSize bounds the pool the once-overall leases (duty.Exclusive) and the delivery intakes'
+// LeasePoolSize bounds the pool the once-overall leases (duty.Exclusive) and the delivery intakes'
 // holds (duty.Hold) are taken on. The requirement is one connection per caller that can be using
 // one at the same moment, and it is a caller and not a lease or a hold that needs one.
 //
@@ -392,9 +392,14 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // document settlement resumption (docs.Service.RunSettlementResumption), the repair of closed and
 // reopened issues' asks (api.RunIssueAskRepair), one per delivery durable for the intake's
 // take-over (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the
-// server process registry's prune (processes.RunPrune) - by fifteen callers, since each intake
-// takes its own durable's name from its own goroutine, so fifteen callers can be inside Exclusive
-// at once. The suggestion outcome sweep is not among them: it takes no lease, since the cursor row
+// server process registry's prune (processes.RunPrune) and the embeddings project_key fill
+// (api.RunEmbeddingProjectKeyFill) - by sixteen callers, since each intake
+// takes its own durable's name from its own goroutine, so sixteen callers can be inside Exclusive
+// at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
+// to two hours, holds its connection for the whole of it, tries for its lease again every five
+// minutes while another process makes that pass, and gives the connection back for good once
+// the rows stored before migration 20261109120000 are labelled, so it is counted here like any
+// other caller. The suggestion outcome sweep is not among them: it takes no lease, since the cursor row
 // each of its pages holds for update serialises two processes by itself
 // (api/suggestion_outcomes.go).
 //
@@ -405,7 +410,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // whose SetToken runs inside the take-over and so needs a connection beside the one its lease is
 // held on. That is four more callers, nineteen in all.
 //
-// Nineteen connections are exactly those nineteen: the headroom is zero. A renewal that waited
+// Twenty connections are exactly those twenty: the headroom is zero. A renewal that waited
 // for a connection behind a compaction pass, which holds its lease for minutes, would see its hold
 // reported lost at the loss deadline and the durable's delivery stop, so the next caller added
 // here - a leased loop, or another hold - takes a connection of its own in this count. They
@@ -417,7 +422,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
 // (LeaseCallers.For, cmd/dispatch/main.go), and the server refuses to serve unless the
-// reservations are exactly leasePoolSize (LeaseCallers.Complete). So a leased loop or a hold
+// reservations are exactly LeasePoolSize (LeaseCallers.Complete). So a leased loop or a hold
 // added without a connection here, and a connection added here without a caller, stops the
 // process at its start rather than leaving a renewal to wait behind a pass that runs for
 // minutes.
@@ -426,7 +431,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const leasePoolSize = 19
+const LeasePoolSize = 20
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
@@ -438,11 +443,11 @@ const leasePoolSize = 19
 // behind a request for a shared connection.
 //
 // The pool itself is not handed out: a caller reaches a connection only through the reservation
-// it takes by name (For), which is what ties leasePoolSize to the callers the process really
+// it takes by name (For), which is what ties LeasePoolSize to the callers the process really
 // wires. Every call returns the one registry this pool keeps, so every caller counts in the same
 // place.
 func (p *Pool) Leases() (*LeaseCallers, error) {
-	leases, err := p.separate(&p.leases, leasePoolSize, "loop leases", "")
+	leases, err := p.separate(&p.leases, LeasePoolSize, "loop leases", "")
 	if err != nil {
 		return nil, err
 	}
@@ -458,7 +463,7 @@ func (p *Pool) Leases() (*LeaseCallers, error) {
 }
 
 // LeaseCallers is the lease pool handed out as reservations, one per caller that can be inside a
-// lease or a hold statement at the same moment. leasePoolSize is one connection per such caller,
+// lease or a hold statement at the same moment. LeasePoolSize is one connection per such caller,
 // and a reservation is how a caller says it is one of them.
 //
 // What it counts is the reservations taken, not the goroutines that use them: For hands every
@@ -505,11 +510,11 @@ func (c *LeaseCallers) Reserved() []string {
 func (c *LeaseCallers) Complete() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.reserved) == leasePoolSize {
+	if len(c.reserved) == LeasePoolSize {
 		return nil
 	}
-	return fmt.Errorf("%d callers reserved a connection of the lease pool and it has %d: it holds one connection per caller that can be inside a lease or a hold statement at the same moment, so a caller added here is a connection added in store.leasePoolSize; reserved: %s",
-		len(c.reserved), leasePoolSize, strings.Join(c.reserved, ", "))
+	return fmt.Errorf("%d callers reserved a connection of the lease pool and it has %d: it holds one connection per caller that can be inside a lease or a hold statement at the same moment, so a caller added here is a connection added in store.LeasePoolSize; reserved: %s",
+		len(c.reserved), LeasePoolSize, strings.Join(c.reserved, ", "))
 }
 
 // outboxPoolSize bounds the pool the events outbox reads and records events through, and takes
@@ -545,7 +550,7 @@ const listenerConnections = 5
 // the registry's own pool (processes.Register) and the event horizon's (Horizon) - and one
 // connection per listener it may hold at once, which the listener pool dials and hands off rather
 // than holds.
-const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + leasePoolSize + outboxPoolSize + compactionPoolSize + registryPoolSize + horizonPoolSize + listenerConnections
+const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + registryPoolSize + horizonPoolSize + listenerConnections
 
 // Outbox is the pool the events outbox reads and records events through, reads the
 // followers and authors a publish routes to, and holds its publisher hold on. Under load the API's
