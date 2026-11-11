@@ -1409,7 +1409,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Threads:** 0 resolved, 0 unresolved.
 
 **Checks:**
-- Check k1 (before_merge): pass at ${C1:0:12}, recorded by implementer. \`bun greet.ts <name>\` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.
+- Check k1 (before_merge): pass at ${C1:0:12}, recorded by implementer. Ran \`bun greet.ts '  Ada  '\` and read \`Hello, Ada!\`, so the name is trimmed, and \`bun greet.ts\` with no name exited 2 and printed the usage line.
 
 **Fast-follow:** none.
 

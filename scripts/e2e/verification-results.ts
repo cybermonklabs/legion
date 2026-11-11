@@ -15,7 +15,7 @@
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
 // seed, the delivery settings, the probe issue) exits 2 naming it.
-import type { CheckBlock, CheckResultRecorded } from "@legion/contracts";
+import type { CheckBlock, CheckResult, CheckResultRecorded } from "@legion/contracts";
 import { connect, StringCodec } from "nats";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
@@ -28,11 +28,11 @@ if (dispatchUrl === undefined || natsUrl === undefined || githubUrl === undefine
 }
 const origin = new URL(dispatchUrl).origin;
 
-/** How long a currency a bus event decides may take to settle, and how often it is read again.
- *  The intake binds its durable once the settings cache holds a row, takes the envelope and
- *  writes the pull request's head row; nothing else is waited on, since every other answer is
- *  computed while the results are read. */
-const currencyWaitMs = 30_000;
+/** How long a head a bus event teaches Dispatch may take to settle, and how often the results are
+ *  read again. The intake binds its durable once the settings cache holds a row, takes the
+ *  envelope and writes the pull request's head row; nothing else is waited on, since every other
+ *  answer is computed while the results are read. */
+const headWaitMs = 30_000;
 const pollMs = 250;
 
 const person = "alice";
@@ -164,8 +164,9 @@ function issuePath(key: string, rest = ""): string {
   return `/api/v1/issues/${encodeURIComponent(key)}${rest}`;
 }
 
-/** The checks of an issue's Verification document, each with the results recorded against it and
- *  each result's currency, as `GET /api/v1/issues/{key}/results` answers. */
+/** The checks of an issue's Verification document, each with the commits and branches its results
+ *  are compared with, whether a pass of it stands, and every result recorded against it, as
+ *  `GET /api/v1/issues/{key}/results` answers. */
 async function checksOf(key: string): Promise<readonly CheckBlock[]> {
   const body = (await asSession("GET", issuePath(key, "/results"))) as { checks: CheckBlock[] };
   return body.checks;
@@ -178,25 +179,44 @@ async function checkOf(key: string, blockID: string): Promise<CheckBlock> {
   return found;
 }
 
-/** The currency of the newest result recorded at `commit` against `blockID`, or "absent". */
-async function currencyAt(key: string, blockID: string, commit: string): Promise<string> {
-  const result = (await checkOf(key, blockID)).results.find((row) => row.commit_sha === commit);
-  return result === undefined ? "absent" : (result.currency ?? "unset");
+/** Where one result's commit stands, in one word a case compares with: the `commit_stands`
+ *  answer, with the reason an `unknown` carries after a colon. */
+function standsOf(result: CheckResult): string {
+  const stands = result.commit_stands;
+  if (stands === undefined) return "unset";
+  const reason = stands.reason ?? "";
+  return reason === "" ? stands.answer : `${stands.answer}:${reason}`;
 }
 
-/** Waits, bounded, for the result at `commit` to read `want`, and answers what it last read. A
- *  currency is computed while the results are read, so this writes nothing and polls the read. */
-async function awaitCurrency(
+/** Where the commit of the newest result recorded at `commit` against `blockID` stands, or
+ *  "absent" where that check holds no result at that commit. */
+async function commitStandsAt(key: string, blockID: string, commit: string): Promise<string> {
+  const result = (await checkOf(key, blockID)).results.find((row) => row.commit_sha === commit);
+  return result === undefined ? "absent" : standsOf(result);
+}
+
+/** Whether a pass of `blockID` stands, in one word with the roles it names: the `pass_stands`
+ *  answer the gate reads. */
+async function passStandsOf(key: string, blockID: string): Promise<string> {
+  const pass = (await checkOf(key, blockID)).pass_stands;
+  const roles = pass.roles ?? [];
+  return roles.length === 0 ? pass.answer : `${pass.answer} (${roles.join(", ")})`;
+}
+
+/** Waits, bounded, for the commit of the result at `commit` to stand where `want` says, and
+ *  answers what it last read. Where a commit stands is computed while the results are read, so
+ *  this writes nothing and polls the read. */
+async function awaitCommitStands(
   key: string,
   blockID: string,
   commit: string,
   want: string
 ): Promise<string> {
-  const deadline = Date.now() + currencyWaitMs;
-  let seen = await currencyAt(key, blockID, commit);
+  const deadline = Date.now() + headWaitMs;
+  let seen = await commitStandsAt(key, blockID, commit);
   while (seen !== want && Date.now() < deadline) {
     await Bun.sleep(pollMs);
-    seen = await currencyAt(key, blockID, commit);
+    seen = await commitStandsAt(key, blockID, commit);
   }
   return seen;
 }
@@ -402,7 +422,7 @@ The result read back under this check is the one that was recorded.
     `${a2Issue} check a2 (${check.when}) holds ${check.results.length} result(s): ${check.results
       .map(
         (row) =>
-          `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${row.currency ?? "unset"})`
+          `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${standsOf(row)})`
       )
       .join(", ")}`
   );
@@ -413,6 +433,11 @@ The result read back under this check is the one that was recorded.
   }
   if (recorded.observed !== "the record route answered 201") {
     return `the result's observed reads ${JSON.stringify(recorded.observed)}`;
+  }
+  // The check has not been reworded since, which the read answers on its own: the words the
+  // result proved are the words the check carries now.
+  if (recorded.check_words_moved !== false) {
+    return `the result reads check_words_moved ${JSON.stringify(recorded.check_words_moved)}`;
   }
   // The record's own answer carries the moment the row was stored, not the zero time: a reader
   // of `dispatch result` takes it for when the run happened, and only the later read was ever
@@ -427,9 +452,9 @@ The result read back under this check is the one that was recorded.
   return undefined;
 });
 
-// A4. The head a `before_merge` result is measured against is the one the bus taught Dispatch: a
-// push moves it with no write of anyone's to Dispatch, and the older result says so when it is
-// next read.
+// A4. The head a `before_merge` result is compared with is the one the bus taught Dispatch: a
+// push moves it with no write of anyone's to Dispatch, and the result at the head the push
+// replaced stands at another commit when it is next read.
 await runCase("a4-a-push-moves-the-head", async () => {
   const a4Issue = await seedIssue(
     "VRF",
@@ -462,9 +487,14 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFirstHead = await awaitCurrency(a4Issue, "a4", commits.headOne, "current");
-  note(`the result at ${commits.headOne.slice(0, 12)} reads ${atFirstHead}`);
-  if (atFirstHead !== "current") return `the result at the first head reads ${atFirstHead}`;
+  const atFirstHead = await awaitCommitStands(a4Issue, "a4", commits.headOne, "at_basis");
+  note(`the commit of the result at ${commits.headOne.slice(0, 12)} stands ${atFirstHead}`);
+  if (atFirstHead !== "at_basis") {
+    return `the commit of the result at the first head stands ${atFirstHead}`;
+  }
+  const passAtFirstHead = await passStandsOf(a4Issue, "a4");
+  note(`a pass of a4 stands: ${passAtFirstHead}`);
+  if (passAtFirstHead !== "yes (tester)") return `a pass of a4 stands ${passAtFirstHead}`;
 
   const pushed = await publishPullRequest({
     action: "synchronize",
@@ -482,9 +512,14 @@ A result stands while its commit is the pull request's head.
     url: `https://github.com/${repo}/pull/7`,
   });
   note(`published the synchronize envelope on ${pushed}`);
-  const aged = await awaitCurrency(a4Issue, "a4", commits.headOne, "older");
-  note(`after the push the same result reads ${aged}, with no write of Dispatch's`);
-  if (aged !== "older") return `the result at the first head reads ${aged} after the push`;
+  const moved = await awaitCommitStands(a4Issue, "a4", commits.headOne, "other_commit");
+  note(`after the push the same result stands ${moved}, with no write of Dispatch's`);
+  if (moved !== "other_commit") {
+    return `the commit of the result at the first head stands ${moved} after the push`;
+  }
+  const passAfterPush = await passStandsOf(a4Issue, "a4");
+  note(`after the push a pass of a4 stands: ${passAfterPush}`);
+  if (passAfterPush !== "no") return `after the push a pass of a4 stands ${passAfterPush}`;
 
   await record(a4Issue, {
     check: "a4",
@@ -493,19 +528,24 @@ A result stands while its commit is the pull request's head.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atNewHead = await awaitCurrency(a4Issue, "a4", commits.headTwo, "current");
-  note(`the result at the new head ${commits.headTwo.slice(0, 12)} reads ${atNewHead}`);
-  return atNewHead === "current" ? undefined : `the result at the new head reads ${atNewHead}`;
+  const atNewHead = await awaitCommitStands(a4Issue, "a4", commits.headTwo, "at_basis");
+  note(`the result at the new head ${commits.headTwo.slice(0, 12)} stands ${atNewHead}`);
+  if (atNewHead !== "at_basis") return `the result at the new head stands ${atNewHead}`;
+  const passAtNewHead = await passStandsOf(a4Issue, "a4");
+  note(`at the new head a pass of a4 stands: ${passAtNewHead}`);
+  return passAtNewHead === "yes (tester)"
+    ? undefined
+    : `at the new head a pass of a4 stands ${passAtNewHead}`;
 });
 
-// A fork's pull request makes no result current. Anyone may open one against a public
-// repository, at any commit and with any title, so the head a result is measured against is only
+// A fork's pull request is no basis for a result. Anyone may open one against a public
+// repository, at any commit and with any title, so the head a result is compared with is only
 // a pull request whose head branch lives in this repository. The same pull request reported with
-// its head here, which is the only difference between the two envelopes, does make it current.
-await runCase("a-fork-pull-request-makes-no-result-current", async () => {
+// its head here, which is the only difference between the two envelopes, is a basis.
+await runCase("a-fork-pull-request-is-no-basis", async () => {
   const forkIssue = await seedIssue(
     "VRF",
-    "A fork's pull request makes no result current",
+    "A fork's pull request is no basis for a result",
     `:::check{#fork serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}
 A result stands while its commit is the head of a pull request of this repository.
 :::
@@ -534,12 +574,19 @@ A result stands while its commit is the head of a pull request of this repositor
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const atFork = await awaitCurrency(forkIssue, "fork", commits.fork, "current");
-  note(`the result at the fork's head ${commits.fork.slice(0, 12)} reads ${atFork}`);
-  if (atFork === "current") return "a fork's pull request made the result current";
+  const atFork = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
+  note(`the commit of the result at the fork's head ${commits.fork.slice(0, 12)} stands ${atFork}`);
+  if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
+  const compared = await checkOf(forkIssue, "fork");
+  note(
+    `the check compared with ${compared.compared_with.length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
+  );
+  if (compared.compared_nothing !== "no_pull_request_or_branch") {
+    return `the check compared with nothing for ${JSON.stringify(compared.compared_nothing)}`;
+  }
 
-  // The same pull request, now reported with its head in this repository, does make it current:
-  // the refusal above is the head's repository and nothing else.
+  // The same pull request, now reported with its head in this repository, is a basis: the
+  // refusal above is the head's repository and nothing else.
   const owned = await publishPullRequest({
     action: "synchronize",
     base_ref: "main",
@@ -556,11 +603,11 @@ A result stands while its commit is the head of a pull request of this repositor
     url: `https://github.com/${repo}/pull/9`,
   });
   note(`published the same pull request with its head in ${repo} on ${owned}`);
-  const atOwnHead = await awaitCurrency(forkIssue, "fork", commits.fork, "current");
-  note(`the same result now reads ${atOwnHead}`);
-  return atOwnHead === "current"
+  const atOwnHead = await awaitCommitStands(forkIssue, "fork", commits.fork, "at_basis");
+  note(`the same result now stands ${atOwnHead}`);
+  return atOwnHead === "at_basis"
     ? undefined
-    : `the result at this repository's head reads ${atOwnHead}`;
+    : `the result at this repository's head stands ${atOwnHead}`;
 });
 
 // A5. A closed issue takes an after-merge result, and still refuses a document write.
@@ -626,11 +673,11 @@ The default branch holds the commit this check ran at.
     run: "curl the production route",
     surface: "api",
   });
-  const held = await currencyAt(a10Issue, "branch", commits.behind);
+  const held = await commitStandsAt(a10Issue, "branch", commits.behind);
   note(
-    `the result at ${commits.behind.slice(0, 12)}, which the compare calls behind, reads ${held}`
+    `the result at ${commits.behind.slice(0, 12)}, which the compare calls behind, stands ${held}`
   );
-  if (held !== "current") return `the result at the commit the branch holds reads ${held}`;
+  if (held !== "at_basis") return `the result at the commit the branch holds stands ${held}`;
 
   await record(a10Issue, {
     check: "branch",
@@ -639,11 +686,11 @@ The default branch holds the commit this check ran at.
     run: "curl the production route",
     surface: "api",
   });
-  const apart = await currencyAt(a10Issue, "branch", commits.diverged);
+  const apart = await commitStandsAt(a10Issue, "branch", commits.diverged);
   note(
-    `the result at ${commits.diverged.slice(0, 12)}, which the compare calls diverged, reads ${apart}`
+    `the result at ${commits.diverged.slice(0, 12)}, which the compare calls diverged, stands ${apart}`
   );
-  return apart === "current" ? `the result at the diverged commit reads ${apart}` : undefined;
+  return apart === "other_commit" ? undefined : `the result at the diverged commit stands ${apart}`;
 });
 
 // A commit the repository does not hold: the record route asks GitHub about every result's
@@ -686,11 +733,12 @@ A result is recorded only at a commit the repository holds.
     : `the refused result left ${check.results.length} row(s) under the check`;
 });
 
-// The unreadable repository: Dispatch cannot say, so it marks the result neither way — for a
-// `before_merge` check as well as a `default_branch` one. Nothing can teach Dispatch the pull
-// request heads of a repository it cannot read, so "this commit heads none I know" is no
-// evidence that the work has moved on, and an unmarked pass is what the reviewer reads.
-await runCase("an-unreadable-repository-leaves-the-result-unmarked", async () => {
+// The unreadable repository: Dispatch cannot say where the commit stands, so it answers unknown
+// with the reason — for a `before_merge` check as well as a `default_branch` one. Nothing can
+// teach Dispatch the pull request heads of a repository it cannot read, so "this commit heads
+// none I know" is no evidence that the work has moved on, and a pass the reviewer reads is
+// held open rather than refused.
+await runCase("an-unreadable-repository-answers-unknown", async () => {
   const hiddenIssue = await seedIssue(
     "VRH",
     "A result on a repository Dispatch cannot read",
@@ -710,10 +758,17 @@ The pre-merge check of the same unreadable repository.
     run: "curl the production route",
     surface: "api",
   });
-  const unknown = await currencyAt(hiddenIssue, "hidden", commits.hidden);
+  const unknown = await commitStandsAt(hiddenIssue, "hidden", commits.hidden);
   note(`${hiddenIssue} resolves to ${hiddenRepo}, which the installation lookup does not find`);
-  note(`the default_branch result at ${commits.hidden.slice(0, 12)} reads ${unknown}`);
-  if (unknown !== "unknown") return `the default_branch result reads ${unknown}, want unknown`;
+  note(`the default_branch result at ${commits.hidden.slice(0, 12)} stands ${unknown}`);
+  if (unknown !== "unknown:repository_unreadable") {
+    return `the default_branch result stands ${unknown}, want unknown:repository_unreadable`;
+  }
+  const passUnknown = await passStandsOf(hiddenIssue, "hidden");
+  note(`a pass of the default_branch check stands: ${passUnknown}`);
+  if (passUnknown !== "unknown") {
+    return `a pass of the default_branch check stands ${passUnknown}, want unknown`;
+  }
 
   await record(hiddenIssue, {
     check: "hidden-pre",
@@ -722,11 +777,16 @@ The pre-merge check of the same unreadable repository.
     run: "bash scripts/e2e/verification-results.sh",
     surface: "cli",
   });
-  const beforeMerge = await currencyAt(hiddenIssue, "hidden-pre", commits.hidden);
-  note(`the before_merge result at ${commits.hidden.slice(0, 12)} reads ${beforeMerge}`);
-  return beforeMerge === "unknown"
+  const beforeMerge = await commitStandsAt(hiddenIssue, "hidden-pre", commits.hidden);
+  note(`the before_merge result at ${commits.hidden.slice(0, 12)} stands ${beforeMerge}`);
+  if (beforeMerge !== "unknown:repository_unreadable") {
+    return `the before_merge result stands ${beforeMerge}, want unknown:repository_unreadable`;
+  }
+  const passBeforeMerge = await passStandsOf(hiddenIssue, "hidden-pre");
+  note(`a pass of the before_merge check stands: ${passBeforeMerge}`);
+  return passBeforeMerge === "unknown"
     ? undefined
-    : `the before_merge result reads ${beforeMerge}, want unknown`;
+    : `a pass of the before_merge check stands ${passBeforeMerge}, want unknown`;
 });
 
 summarise();

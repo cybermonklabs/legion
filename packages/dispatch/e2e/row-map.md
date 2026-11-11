@@ -314,7 +314,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/threads.e2e.ts` | replies, resolve and reopen, edits, retractions and suggestion accepts, all server writes |
 | `e2e/typed-block-content-rule.e2e.ts` | pastes into the live document editor |
 | `e2e/typed-blocks.e2e.ts` | asserts inside the live project-document editor |
-| `e2e/verification.e2e.ts` | opens the document's live room; currency is the server's comparison with the PR head |
+| `e2e/verification.e2e.ts` | opens the document's live room; where a result's commit stands is the server's comparison with the PR head |
 | `e2e/visual.e2e.ts` | it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects |
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |

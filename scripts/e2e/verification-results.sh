@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The live proof that a recorded check result says whether it still speaks for the work as it
-# stands (currencyReader, packages/envoy/internal/dispatch/api/results.go), and that the head it is
-# measured against moves with the pull-request events Dispatch takes off the bus
+# The live proof that a recorded check result says where its commit stands against the commits and
+# branches its check compares with (comparisonReader,
+# packages/envoy/internal/dispatch/api/results_currency.go), and that the head it is compared with
+# moves with the pull-request events Dispatch takes off the bus
 # (recordPullRequestHead, packages/envoy/internal/dispatch/delivery/pull_request_heads.go). It runs
 # the real envoy-dispatch binary against a PostgreSQL the caller names, a NATS server of the run's
 # own (internal/testnats/cmd/natsd), the e2e harness's fake Envoy listener
@@ -13,17 +14,18 @@
 #
 # Its cases: the run's first result write, which reaches the record route and is refused 400
 # UNKNOWN_CHECK for a check nobody has; a result recorded and read back under its check (A2); a
-# push that moves the pull request's head, after which the earlier result reads older with no
-# write of Dispatch's and a result at the new head reads current (A4); a result for an
-# `after_merge` check recorded on a closed issue, where a document write is still refused 409
-# ISSUE_CLOSED (A5); a `default_branch` check whose result at a commit the compare calls `behind`
-# reads current, while its result at a commit the compare calls `diverged` does not (A10); a
-# result at a 40-hex commit the fake was seeded with nowhere, refused 400 RESULT_COMMIT_UNKNOWN
-# naming the commit and the `owner/repo`, which leaves the check no row; and an issue whose
-# repository the fake's installation lookup does not find, whose result is marked
-# neither current nor older. Each case prints `== <case>`, what it read, and `ok <case>` or
-# `FAIL <case>`; the first case failing stops the run, since every later case records a result
-# too, and any FAIL exits 1.
+# push that moves the pull request's head, after which the earlier result stands at none of the
+# compared commits with no write of Dispatch's, and no pass of the check stands until a result at
+# the new head is recorded (A4); a fork's pull request taken for no basis, where the same pull
+# request with its head in this repository is one; a result for an `after_merge` check recorded on
+# a closed issue, where a document write is still refused 409 ISSUE_CLOSED (A5); a `default_branch`
+# check whose result at a commit the compare calls `behind` stands at the branch, while its result
+# at a commit the compare calls `diverged` stands at another commit (A10); a result at a 40-hex
+# commit the fake was seeded with nowhere, refused 400 RESULT_COMMIT_UNKNOWN naming the commit and
+# the `owner/repo`, which leaves the check no row; and an issue whose repository the fake's
+# installation lookup does not find, whose results are answered unknown. Each case prints
+# `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; the first case failing stops the
+# run, since every later case records a result too, and any FAIL exits 1.
 #
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/verification-results.sh

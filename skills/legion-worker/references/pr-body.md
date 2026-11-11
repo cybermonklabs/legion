@@ -35,7 +35,7 @@ later phase keeps it current rather than replacing it:
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order, each the line `dispatch result` printed when the result was recorded:
-- Check <block id> (<when>): <pass|fail> at <the commit>, recorded by <role>. <the check's first words>
+- Check <block id> (<when>): <pass|fail> at <the commit>, recorded by <role>. <the reading that role recorded, cut with an ellipsis where it is long>
 - Check <block id> (after_merge): not yet run
 
 **Fast-follow:** "none", or one named cleanup item in a file this pull request does not touch, and where it will land.
@@ -108,7 +108,7 @@ blocks a check is fixed, not skipped (*When no surface reaches the changed path*
 the check's issue holds the commit, and refuses a result at one it does not hold with `400
 RESULT_COMMIT_UNKNOWN`, naming the commit and the repository; a commit that is still only local
 is such a commit. Where Dispatch cannot read the repository at all it stores the result as
-before, and the result reads `unknown`.
+before, and says so when the results are read.
 
 **A check that cannot fail is not a result.** Before a check counts as evidence, show it
 failing: the negative control is that demonstration, run on the same command with a deliberately
@@ -117,24 +117,24 @@ proves nothing about the change. A documented procedure counts only when it ran:
 reading the document that describes it, is not a run, and a procedure no surface available to
 you can run is reported under *When no surface reaches the changed path* below, never passed.
 
-**A result is current** while its commit is still the head of an open pull request of the check's
-issue, or the final head of a merged one, and the check's words have not changed since; an
-`after_merge` result is current at a commit the branch its own issue's pull request merged into
-carries, or the repository's default branch does — that default branch alone where Dispatch knows
-of no merge of that issue — and a `default_branch` result only at a commit the repository's
-default branch carries.
-A push makes every result at the old head older, with no Dispatch write of anyone's, so each
-check is recorded again at the new head. `dispatch results --issue <issue>` prints each check
-with its latest result and whether it is current; `dispatch read --issue <issue>` names each
+**A result proves the head it was recorded at.** A `before_merge` result proves its commit while
+that commit is still the head of an open pull request of the check's issue, or the final head of
+a merged one, and while the check's words have not changed since; an `after_merge` result proves
+a commit the branch its own issue's pull request merged into carries, or the repository's default
+branch does — that default branch alone where Dispatch knows of no merge of that issue — and a
+`default_branch` result only a commit the repository's default branch carries.
+A push moves the head, with no Dispatch write of anyone's, so each check is recorded again at the
+new head. `dispatch results --issue <issue>` prints each check with the results recorded against
+it and the commit each one was recorded at; `dispatch read --issue <issue>` names each
 requirement of the spec no check serves.
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
-own Verification document, read at its own head, so a child's pull request never makes a root
-check's result current and a child never records the result that proves a root's check. A child
-carrying part of a root's requirement proves it with a check on its own Verification document
-whose `serves` names that requirement. A root's own checks are proven at its own head, or, for
-an `after_merge` check, on the branch the root's pull request merged into or on the repository's
-default branch, in its last round.
+own Verification document, read at its own head, so a result a child recorded proves nothing for
+a root — it was recorded at the child's head — and a child never records the result that proves
+a root's check. A child carrying part of a root's requirement proves it with a check on its own
+Verification document whose `serves` names that requirement. A root's own checks are proven at
+its own head, or, for an `after_merge` check, on the branch the root's pull request merged into
+or on the repository's default branch, in its last round.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap
@@ -162,7 +162,7 @@ and decides there, the only gate on such an issue.
   rerun as evidence. A lane GitHub shows `queued` or `in progress` is read as such: the tester
   never waits for it, since a required red that settles sends the work back from `testing` and
   the reviewer reads the head's checks before it approves.
-  A `before_merge` check the implementer left with no current result is a test failure, not a gap
+  A `before_merge` check the implementer left with no passing result at the head is a test failure, not a gap
   for the tester to fill: record it in `failures` (each `{check, evidence}`, `check` the block id)
   with `implementerProof.verdict: "rejected"`, complete the phase with
   `verdict: "fail"`, and the daemon returns the issue to the implementer — the agent that developed the change owns

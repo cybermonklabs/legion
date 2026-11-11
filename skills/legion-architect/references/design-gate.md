@@ -21,7 +21,7 @@ document (`verification.md`) with it: one `check` block per thing that must be p
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`. The human approves both documents in one request (step 4 below), and every
 later role reads the checks: the implementer and the tester record a result against each, and the
-reviewer approves only once every `before_merge` check has a passing result current at the head.
+reviewer approves only once every `before_merge` check has a passing result at the head.
 
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's

@@ -201,8 +201,8 @@ function covers(marker: Marker, row: Row): boolean {
  *  It exists because a row that sits at the bar cannot be judged by one run. Four of the eight
  *  rows of `coverage.e2e.ts`, `plan-tab.e2e.ts` and `verification.e2e.ts` live in the 1.5-2.7 s
  *  band; over 15 one-worker runs of one pod against one unchanged head, the Plan tab row
- *  measured 1893-2639 ms and the currency row of `verification.e2e.ts` 1685-2069 ms, the pod
- *  having drifted some 20 % slower and back inside half an hour. Without the band, such a row
+ *  measured 1893-2639 ms and the Verification tab row of `verification.e2e.ts` 1685-2069 ms, the
+ *  pod having drifted some 20 % slower and back inside half an hour. Without the band, such a row
  *  fails this check whichever way it is written - bare when the run is slow, marked when the run
  *  is fast - so both halves of the verdict report the machine rather than the suite. With it,
  *  the half that catches a lie still does its work: a marker over a row that really became fast,

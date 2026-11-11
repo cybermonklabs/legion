@@ -72,9 +72,9 @@ other change to the head voids it.
   still in progress: wait for it. When no
   run at the head holds the job, or nothing will run it (a check only a commit status reports, a
   workflow another repository defines), tell the architect and do not approve.
-  Approval is refused while any `before_merge` check of the issue's own Verification document has no passing result that is current at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it.
+  Approval is refused while any `before_merge` check of the issue's own Verification document has no passing result at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
-  A result is current at that head while the head is the head of an open pull request, or the final head of a merged one, attributed to the check's own issue. A child's pull request never makes a root check's result current, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, and that result is current at the child's head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
+  A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
   Submit **one review per round** —
@@ -116,7 +116,7 @@ other change to the head voids it.
   `REQUEST_CHANGES` when the code is at fault, and your own commit to fix when your prose broke
   it. The architect reads your prose commits at its acceptance (*The architect's acceptance*,
   below), and that read is no new round. A round after a READY refusal is the one exception. Its
-  approval needs the tester's results to be current at the head, or at an ancestor with only paths
+  approval needs the tester's results to be at the head, or at an ancestor with only paths
   under `.legion/` changed since. So there you fix no prose yourself, and you name each prose
   finding in a `REQUEST_CHANGES`.
 
@@ -204,7 +204,7 @@ reviewing until you finish.
   head (or one line saying the body carries no brief — the packet still goes out), then the
   `--summary` output and the PR body's gate facts. The READY packet names each `before_merge`
   check with its latest result, as `dispatch results --issue <issue>` prints it; a check with no
-  current passing result is reported to the architect instead of completing.
+  passing result at the head is reported to the architect instead of completing.
 - READY is `handoff_complete` with `ready: true` and the packet as its `summary`; the merger runs
   no pre-flight of its own, and its completion reports the commit the workspace stands on. READY's
   checks run in the daemon, which reads the pull request's head on GitHub and refuses, before

@@ -226,12 +226,12 @@ Each item below names a script, then what it proves.
 
 - `verification-results.sh`
 
-  a recorded check result says whether it still speaks for the work as it stands, and the head it is measured against moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:
+  a recorded check result says where its commit stands against the commits and branches its check compares with, and the head it is compared with moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:
   a result is read back under its check;
-  a push that moves the pull request's head, published as the normalized `pull_request` envelope, makes the earlier result read older with no write of Dispatch's, while a result at the new head reads current;
+  a push that moves the pull request's head, published as the normalized `pull_request` envelope, leaves the earlier result at none of the commits the check compares with, and no write of Dispatch's does it, while the result at the new head stands at that head;
   a closed issue takes a result for an `after_merge` check and still refuses a document write 409 `ISSUE_CLOSED`;
-  a `default_branch` result reads current at a commit the compare calls `behind` and not at one it calls `diverged`;
-  and a result whose issue resolves to a repository the installation lookup does not find is marked neither current nor older.
+  a `default_branch` result stands at the branch for a commit the compare calls `behind` and at no basis for one it calls `diverged`;
+  and a result whose issue resolves to a repository the installation lookup does not find is answered unknown, with the unreadable repository as the reason.
   Run against a base binary (`DISPATCH_BIN`), it is the change's negative control
 
 - `child-adoption.sh`
@@ -3986,8 +3986,8 @@ DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 ```
 
 Runs on any Linux host with `go`, `bun`, `curl`, `psql`, `openssl` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker.
-It proves `currencyReader` (`packages/envoy/internal/dispatch/api/results.go`) and `recordPullRequestHead` (`packages/envoy/internal/dispatch/delivery/pull_request_heads.go`) on the wire:
-the real `envoy-dispatch` records each result and judges whether it still speaks for the work as it stands, and the head a `before_merge` result is measured against moves only because a pull-request event reached the bus.
+It proves `comparisonReader` (`packages/envoy/internal/dispatch/api/results_currency.go`) and `recordPullRequestHead` (`packages/envoy/internal/dispatch/delivery/pull_request_heads.go`) on the wire:
+the real `envoy-dispatch` records each result and says where its commit stands against the commits and branches its check compares with, and the head a `before_merge` result is compared with moves only because a pull-request event reached the bus.
 
 Each item below names an input and its default, then what it means.
 
@@ -4036,7 +4036,11 @@ Each item below names a case and how it is driven, then what must hold for it to
 
 - `a4-a-push-moves-the-head` — the pull request's `opened` envelope on `notifications.github.acme.verification-live.pr.7`, a result at that head, then its `synchronize` envelope at a later head, and a result at the new one
 
-  the first result `current` once the envelope has landed, then `older` after the push with no write of Dispatch's — the reads alone — and the result at the new head `current`
+  the first result at that head once the envelope has landed, a pass of the check standing from the tester, then the same result at none of the compared commits after the push and no pass standing — with no write of Dispatch's, the reads alone — and the result at the new head standing there again
+
+- `a-fork-pull-request-is-no-basis` — the same pull request published twice, first with its head branch in `stranger/verification-live` and then with its head in `acme/verification-live`, with one result at that head
+
+  the check comparing with nothing while the head is the fork's, for `no_pull_request_or_branch`, and the result standing at that head once the same pull request names a head of this repository
 
 - `a5-a-closed-issue-takes-the-after-merge-result` — the issue closed, then a result for its `after_merge` check, a result for its `before_merge` check, and a document write
 
@@ -4044,16 +4048,16 @@ Each item below names a case and how it is driven, then what must hold for it to
 
 - `a10-a-default-branch-result-follows-the-branch` — one `default_branch` check with a result at a commit the fake's compare calls `behind` and another at a commit it calls `diverged`
 
-  `current` for the first and not `current` for the second
+  the first at the branch the check compares with, the second at another commit
 
 - `a-result-at-a-commit-the-repository-does-not-hold-is-refused` — a result at a 40-hex commit the fake GitHub was seeded with nowhere, against a `before_merge` check of an issue that resolves to `acme/verification-live`
 
   `400 RESULT_COMMIT_UNKNOWN`, naming the whole commit and `acme/verification-live`, and no result under that check afterwards
 
-- `an-unreadable-repository-leaves-the-result-unmarked` — a `default_branch` result on an issue whose project maps to `acme/verification-hidden`
+- `an-unreadable-repository-answers-unknown` — a `default_branch` result and a `before_merge` result on an issue whose project maps to `acme/verification-hidden`
 
-  `unknown`:
-  Dispatch can reach no installation token for that repository, so it marks the result neither current nor older
+  both unknown, naming the unreadable repository, and whether a pass of either check stands unknown with them:
+  Dispatch can reach no installation token for that repository, so it can say nothing about where either commit stands
 
 Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
