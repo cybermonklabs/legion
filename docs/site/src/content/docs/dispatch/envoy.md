@@ -318,10 +318,16 @@ no per-session secret, and the listener does not check that the session is live.
 call `/v1` and knows a session's id, live or ended, can read that session's stored inbox for the
 last 72 hours. A listener that requires a bearer serves `/v1` only to a holder of its API
 credential (its shared token or an accepted service-account token). A listener with no bearer
-serves it to any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, so where that
-list names the hub's own tailnet name, as the GCP hub's listener does with no bearer, every tailnet
-peer the tailnet's access rules let reach the listener's port can call it. It refuses a wildcard id, another
-session's inbox reached through a registered topic, and every failed-delivery lane.
+serves it to any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`. The route
+refuses a wildcard id, another session's inbox reached through a registered topic, and every
+failed-delivery lane.
+
+Both GCP hubs run their listener with no bearer and name the hub's own tailnet name in that
+list, so on each of them every tailnet peer the tailnet's access rules let reach port 9020 can
+call `/v1`. The one-VM hub's listener is on loopback, and Tailscale Serve forwards the node's
+tailnet port 9020 to it. The clustered hub's listener is a pod of its own. The tailnet hosts
+forward the Tailscale Service's port 9020 to that pod, and its NetworkPolicy admits those hosts'
+pods alone, so no other pod of the cluster reaches it.
 
 ## The session list
 
@@ -514,7 +520,9 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
 
-A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN` or the OIDC pair.
+A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN` or the OIDC pair,
+unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its port, as the
+clustered hub's NetworkPolicy fences its listener's port.
 A listener with neither serves `/v1` only to a request whose `Host` is `localhost`, a loopback
 address or a name in `ENVOY_ALLOWED_HOSTS`, and answers any other `Host` with a JSON `421`, so a
 page that rebinds its own name to the listener's address cannot use the API.
@@ -620,10 +628,11 @@ stream's consumers see.
 The `envoy-infra` Pulumi plugin runs the listener on a Docker host from a Pulumi program in any
 language, as the component `envoy-infra:host:Listener`, and a NATS server for it on Google Cloud,
 as `envoy-infra:gcp:NatsHub` on one VM or as `envoy-infra:gcp:ClusteredNatsHub`, three NATS
-servers on a GKE cluster whose optional tailnet hosts also run the listener. It also deploys
-Dispatch on Google Cloud as `envoy-infra:gcp:Dispatch`, which creates an Autopilot cluster, private
-Cloud SQL, and the tailnet-served Dispatch workloads. A hub user with `dispatchMachineId` renders
-the NATS user `envoy-dispatch` shares with its listener. Its
+servers on a GKE cluster that also runs the session listener as a workload of its own, which the
+component's optional tailnet hosts forward to. It also deploys Dispatch on Google Cloud as
+`envoy-infra:gcp:Dispatch`, which creates an Autopilot cluster, private Cloud SQL, and the
+tailnet-served Dispatch workloads. A hub user with `dispatchMachineId` renders the NATS user
+`envoy-dispatch` shares with its listener. Its
 [README](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/infra/README.md) says how to
 install it, what each component deploys and which settings it sets.
 

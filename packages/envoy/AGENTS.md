@@ -4154,7 +4154,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   NATS refusing the read outright (the listener's user lacks `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, no JetStream, no stream) is `503 {"code":"REPLAY_UNAVAILABLE","error":"<NATS error>"}`, any other failed read a plain 503.
   Trust model: `/v1/replay` trusts `session_id` as every `/v1` route does, with no check beyond `/v1`'s own authentication (`apiAuth`) and no per-session secret, and no check that the session is live, so a caller who can call `/v1` and knows a session's id, live or ended, can read that session's 72 hours of stored inbox:
   with a bearer configured, a holder of the API credential (the shared token or an accepted service-account token);
-  with none, any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, which on the GCP hub, whose listener takes no bearer, includes its tailnet name, so there it is every tailnet peer the tailnet's access rules let reach the port;
+  with none, any request whose `Host` is loopback or a name in `ENVOY_ALLOWED_HOSTS`, which on either GCP hub, whose listener takes no bearer, includes the hub's tailnet name, so there it is every tailnet peer the tailnet's access rules for port 9020 let reach the listener;
+  the VM hub's listener is on loopback and Tailscale Serve forwards the node's tailnet port 9020 to it, and the clustered hub's listener is a pod of its own that the tailnet entry's pods forward the Tailscale Service's port 9020 to, so the same tailnet rules decide and the listener's NetworkPolicy, which admits those pods alone, keeps every other pod of the cluster out;
   what the route refuses is reading any session it does not name (a wildcard, another session's subject through an interest, an exception lane).
   A listener older than the route answers 404 (the `/v1` catch-all), which the client reads as "does not replay".
 
@@ -4846,7 +4847,9 @@ Targeted issue `message.created` skips bound-route and author fan-out because th
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
 — a projected service-account token that issuer signed for that audience.
 The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither.
-`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a non-loopback listener refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is the temporary Fargate transition flag.
+`/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
+That flag is how an operator declares that something else fences the listener's port.
+The clustered hub's session listener is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).
 The boot log names what is on: `shared token`, `oidc <issuer>`, both, or `disabled`.
 
 Beside the two bearers it takes one credential that is not a bearer: an access token the secrets broker issued, presented under RFC 9449's DPoP scheme as `Authorization: DPoP <token>` with a `DPoP:` proof header (`internal/brokertoken`, `cmd/listener/brokerauth.go`).
@@ -4862,7 +4865,8 @@ Four variables configure it, all or none, and any of them set without the rest i
 The account identity is the file or the audience and never both: the broker resolves the calling service from whichever token it is presented (`BROKER_API_ACCOUNTS`, which takes a Kubernetes subject or a Google account's email).
 Configuring the credential opens nothing and closes nothing: a request presenting no token is judged exactly as it was before it existed, so an open listener still serves one, the `Host` and `Content-Type` fences still apply, and the non-loopback fence still counts only the two bearers — a broker token says who is calling, never whether `/v1` may be reached.
 A listener with none of the four variables set takes no such credential and reads `Authorization: DPoP` as it read every header it did not know before this credential existed: the open listener serves the request with no session bound, and a listener that requires a bearer answers the 401 it always answered, with nothing asked of any broker and no refusal logged.
-That is what keeps the loopback, no-bearer listener a GCP VM and the clustered hub run serving its clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
+That is what keeps the no-bearer listeners a GCP VM and the clustered hub run serving their clients, which send `Authorization: DPoP` to whatever listener they are pointed at whenever they have a broker and an identity to trade and no Envoy bearer is set (`packages/envoy-client/src/envoy-settings.ts`).
+The VM's listener is on loopback and the clustered hub's serves off loopback behind its NetworkPolicy, and neither takes a bearer.
 The scheme alone decides the kind, as RFC 9449 Section 7.2 requires, so a `DPoP` presentation is never retried as a bearer and a bearer is never read as one.
 A listener that takes broker tokens records every spent proof in the `envoy_dpop_proofs` KV bucket, whose records expire after the proof's acceptance window and a minute (`spentProofRetention`), so a proof captured from one replica is refused by every other; a bus with no JetStream is a startup refusal naming `ENVOY_AGENT_SECRETS_URL`, never a store in one process's memory.
 The boot log names it beside the bearers: `broker tokens at <url> as projected token <path>` or `as google audience <audience>`.
