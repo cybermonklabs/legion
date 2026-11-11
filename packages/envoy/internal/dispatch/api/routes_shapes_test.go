@@ -14,9 +14,9 @@ import (
 // testdata/routes.txt, which TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the
 // table against.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
-	// 176 production rows, the count testdata/routes.txt pins (routes_table_test.go), plus the
+	// 179 production rows, the count testdata/routes.txt pins (routes_table_test.go), plus the
 	// 20 rows Deps.TestHooksEnabled adds.
-	const shapedRoutes = 196
+	const shapedRoutes = 199
 	if len(routeShapes) != shapedRoutes {
 		t.Fatalf("routeShapes has %d entries, want %d (update the pin when adding a route)", len(routeShapes), shapedRoutes)
 	}
