@@ -1887,10 +1887,11 @@ Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 `DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
 projects, whose rows a listing naming no project holds none of. The four
-collect at once, and the readings that file's own comment carries
-(`e2e/__tests__/no-browser-rows.test.ts:60-66`) are of the whole file: 13.72,
-17.11 and 23.22 seconds in three runs of it, with the default listing 3.59
-seconds on its own and the wall-clock one 1.25. The file allows three minutes,
+collect at once, and the readings the timing comment above
+`listingTimeout` carries (`e2e/__tests__/no-browser-rows.test.ts`) are of
+the whole file: 13.72, 17.11 and 23.22 seconds in three runs of it, with
+the default listing 3.59 seconds on its own and the wall-clock one 1.25.
+The file allows three minutes,
 which is a ceiling for something being wrong rather than a budget for a
 listing. A row may stand all the same as a named exemption
 with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
@@ -2773,8 +2774,9 @@ committed file and a fresh generation differ. The generation reads two listings 
 rows of both, because one listing is no longer the suite: a listing that names no project holds
 no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
 `nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
-on a two-core pod, the reading that tool's own comment carries (`e2e/tools/row-map.ts:75-79`:
-the default listing about three and a half seconds on its own and the wall-clock one about one).
+on a two-core pod, the reading the comment above that tool's own `defaultListing` and
+`clockListing` carries (`e2e/tools/row-map.ts`: the default listing about three and a half
+seconds on its own and the wall-clock one about one).
 The map carries no count and names no `@pr` row, deliberately: both are read from those
 listings, which hold the whole suite, so a map that held them would be red on every pull
 request of every tree that adds or removes a row here. A **new spec file** still moves it,

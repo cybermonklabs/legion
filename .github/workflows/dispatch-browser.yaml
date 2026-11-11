@@ -558,9 +558,9 @@ jobs:
           # node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
           # under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
           # the pull-request lane and ten in the full one. The `default: false` each `-alone`
-          # project carries (e2e/playwright.config.ts:514, :522, :531) is what keeps them out of
-          # a run that names no project, which this is not. The alone job names them, one
-          # machine each.
+          # project carries (the three entries of `aloneProjects` in e2e/playwright.config.ts) is
+          # what keeps them out of a run that names no project, which this is not. The alone job
+          # names them, one machine each.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -894,11 +894,11 @@ jobs:
           # `dependencies` are gone, and that flag with them.
           #
           # `--workers=1` says the thing the measurement rests on instead of leaning on a
-          # default. The configuration's own default is the same one worker (`workers: 1`,
-          # e2e/playwright.config.ts:690), so this leg is green with or without the flag today;
-          # what the flag adds is that the leg stays one worker wide if that default ever moves.
-          # A wider count is refused rather than measured: `refuseASharedRun`
-          # (e2e/main-thread-hold.ts:62) fails every row that calls `measureDraw` when
+          # default. The configuration's own default is the same one worker (the top-level
+          # `workers: 1` of e2e/playwright.config.ts), so this leg is green with or without the
+          # flag today; what the flag adds is that the leg stays one worker wide if that default
+          # ever moves. A wider count is refused rather than measured: `refuseASharedRun` in
+          # e2e/main-thread-hold.ts fails every row that calls `measureDraw` when
           # `config.workers` is above one, printing the one-worker command that fixes it. So the
           # guard is what makes the reading honest, and this line is what says what the run is:
           # one project, one row at a time, on a machine with nothing else on it.

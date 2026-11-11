@@ -184,10 +184,12 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
     argv: ["/usr/local/bin/bun", "e2e/__tests__/heavy-bodies-digests.test.ts"],
   },
   {
-    // The user interface lists the non-default projects so that they can be selected by name
-    // (`playwright/lib/runner/index.js:6971` and its comment, `:6937`), so this command does
-    // select rows and the refusal's premise does not hold for it; the cure it prints would drop
-    // the `--ui` the reader asked for (e2e/configurations.ts).
+    // The user interface lists the non-default projects so that they can be selected by name:
+    // `listTests` sets `includeNonDefaultProjects: true` (`playwright/lib/runner/index.js:6971`)
+    // under the comment that says so (`:6970`), and `listFiles` sets it in its own options
+    // object (`:6937`), so this command does select rows and the refusal's premise does not hold
+    // for it; the cure it prints would drop the `--ui` the reader asked for
+    // (e2e/configurations.ts).
     title: "a wall-clock file in a user-interface run, where that file's rows are selectable",
     argv: playwrightArgv("--ui", "e2e/heavy-bodies.e2e.ts"),
   },

@@ -32,8 +32,8 @@ export interface Measured {
 }
 
 // The row's file as the list reporter prints it, relative to the package rather than to the run's
-// cwd or to Playwright's rootDir, which is this directory (e2e/measure-reporter.ts:43): the
-// command the refusal below prints is run from the package.
+// cwd or to Playwright's rootDir, which is this directory (`packageRoot` in
+// e2e/measure-reporter.ts:43): the command the refusal below prints is run from the package.
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
@@ -66,10 +66,12 @@ function refuseASharedRun(): void {
     return;
   }
   // The runner process's own `process.argv`, snapshotted by the `playwright test` command
-  // (`lib/cli/testActions.js:43`) and carried into every worker inside the serialized config
-  // (`lib/common/index.js:506`), so it reads here (playwright/types/test.d.ts:2105). Playwright
-  // parses none of it and sets it on no other path, so a run started from the test server, the
-  // UI or an editor leaves it empty; then the printed commands are all the reader gets.
+  // (`cliOverrides.argv = process.argv`, `lib/cli/testActions.js:43`) and carried into every
+  // worker inside the serialized config (`argv: configCLIOverrides.argv ?? []`,
+  // `lib/common/index.js:506`), so it reads here as `config.argv`, "Snapshot of `process.argv`
+  // captured in the runner process." (playwright/types/test.d.ts:2105). Playwright parses none of
+  // it and sets it on no other path, so a run started from the test server, the UI or an editor
+  // leaves it empty; then the printed commands are all the reader gets.
   const commandLine = info.config.argv.join(" ");
   // The command comes first and alone, as the wall-clock refusal in `e2e/playwright.config.ts`
   // prints it, so the line a reader is shown beside the failed row is the one that fixes it. It

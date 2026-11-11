@@ -318,10 +318,11 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *
  *  Reading begins after the `test` command word, and a command line with no such word answers
  *  `undefined`. A worker re-evaluates this configuration with Playwright's own argv rather than
- *  the command line (`e2e/stub/selection.ts:48-50`), and `bun test` and the tools that import
- *  this module carry an argv of their own, so none of them can meet the refusal. The scan ends
- *  at the first `--` no option took as its value; a `--` an option DID take is that option's
- *  value, and Playwright reads what follows it as ordinary tokens, so the scan does too.
+ *  the command line (`stubOnlyVariable`'s comment in `e2e/stub/selection.ts`), and `bun test` and
+ *  the tools that import this module carry an argv of their own, so none of them can meet the
+ *  refusal. The scan ends at the first `--` no option took as its value; a `--` an option DID
+ *  take is that option's value, and Playwright reads what follows it as ordinary tokens, so the
+ *  scan does too.
  *
  *  How far each option's value reaches is not asked here: `valuesTakenAt`
  *  (`e2e/playwright-argv.ts`) answers how many tokens the option at an index takes, and that

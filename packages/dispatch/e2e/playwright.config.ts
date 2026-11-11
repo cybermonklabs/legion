@@ -462,8 +462,8 @@ const parallelProjects = [
  * Each sets `default: false`, which leaves all three out of a run that names no project and
  * takes nothing from a run that names one. `filterProjects` answers
  * `projects.filter(p => includeNonDefault || p.default)` where the command line named no
- * project, and ignores `default` altogether where it named any
- * (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2134);
+ * project, and ignores `default` altogether where it named any (`function filterProjects` at
+ * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2134);
  * `default?: boolean` is a field of `TestProject` and is `true` where it is unset
  * (playwright/types/test.d.ts:170). So `--project=chromium-alone` selects this project as it
  * always did, `bun run e2e:clock` selects all three, and a run that names none holds no row of

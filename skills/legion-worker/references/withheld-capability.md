@@ -144,8 +144,8 @@ request. An unlabelled pull request gets the pull-request lane: `chromium`, `iph
 and `stub-phone`, held to the rows tagged `@pr`. The full lane - every project over every row,
 the three `-alone` ones among them - runs on a pull request labelled `full-ci`, on the merge
 queue and nightly, and the `alone` job that holds the wall-clock rows is gated on it
-(`if: inputs.lane == 'full'`, `.github/workflows/dispatch-browser.yaml:684`), so no unlabelled
-pull request runs a wall-clock row at all. One spec needs
+(`if: inputs.lane == 'full'` under `alone:` in `.github/workflows/dispatch-browser.yaml`), so no
+unlabelled pull request runs a wall-clock row at all. One spec needs
 the same stack as all of them: a Postgres with pgvector. On a digest
 carrying `legion-testpg`, use the pod's own server
 (`skill://legion-worker/references/tools.md#the-database-your-tests-use`) and
