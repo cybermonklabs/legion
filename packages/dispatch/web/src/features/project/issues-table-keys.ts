@@ -1,22 +1,21 @@
-import type { Row } from "@tanstack/react-table";
+import type { Row as TanstackRow } from "@tanstack/react-table";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { useKeymap } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
-import type { Item } from "./issues-table-model";
 
 /**
  * The keys a reader walks the table's rows with, the same ids and palette rows the list they
  * replace had: `j` and `k` move between rows, `o` and Enter open the row in hand, `x` selects
  * it. A row the virtualizer has not drawn yet is scrolled to first and focused when it lands.
  */
-export function useRowKeymap({
+export function useRowKeymap<Row>({
   displayRows,
   rowsById,
   scrollRef,
   scrollToIndex,
 }: {
-  displayRows: readonly { row: Row<Item> }[];
-  rowsById: Record<string, Row<Item>>;
+  displayRows: readonly { row: TanstackRow<Row> }[];
+  rowsById: Record<string, TanstackRow<Row>>;
   scrollRef: RefObject<HTMLDivElement | null>;
   scrollToIndex: (index: number) => void;
 }): void {
@@ -26,9 +25,8 @@ export function useRowKeymap({
     scrollRef.current?.querySelector<HTMLElement>(`[data-issue-row="${CSS.escape(key)}"]`);
   const moveFocus = (direction: 1 | -1) => {
     const leaves = displayRows.filter(({ row }) => !row.getIsGrouped());
-    const current = leaves.findIndex(
-      ({ row }) => row.id === focusedRow()?.getAttribute("data-issue-row")
-    );
+    const focusedKey = focusedRow()?.getAttribute("data-issue-row");
+    const current = leaves.findIndex(({ row }) => row.id === focusedKey);
     const target =
       leaves[
         current < 0

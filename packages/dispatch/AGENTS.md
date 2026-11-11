@@ -551,7 +551,7 @@ The `Artifacts` tab carries the number of rows it lists as a `Pill` after the la
 
 Project pages keep their name, linked project key, project tabs, and, on issue routes, the keyboard-reachable List/Board control in a dense responsive header. At `md` and above these controls form one strip; on smaller screens the name, key, and blocker pill form the first row, with tabs and the view control below. When an open ask waits on the viewer, the header's `Blocked on you · N` pill links to the Inbox; it is absent when no asks are waiting.
 
-The List is `features/project/IssuesTable.tsx`, built on TanStack Table, match-sorter-utils and TanStack Virtual. Rows keep `tabIndex={-1}`, `data-issue-row`, their title's `data-issue-link`, and the same `list-next`, `list-previous`, `list-open`, `list-open-enter`, `list-select` project bindings; only the visible view registers them. `j`/`k` follow the sorted, filtered page, skip closed groups and scroll virtual rows into view; `o`/`Enter` open the issue, not its parent or claim-holder link. Rows retain the unread dot, priority editor, open-ask badge, progress, unreachable-route marker, parent link and reference peeks. `ViewportAnchor` holds the row being read across live insertions, but not a deliberate filter, sort or page change. Selection is keyed by issue and survives a refresh.
+The List is `features/project/IssuesTable.tsx`, which supplies its `Item` rows, selection and bulk actions to the generic `features/project/DataTable.tsx`; the core owns TanStack Table, match-sorter-utils, TanStack Virtual, headers, pagination, column layout and phone layout. Rows keep `tabIndex={-1}`, `data-issue-row`, their title's `data-issue-link`, and the same `list-next`, `list-previous`, `list-open`, `list-open-enter`, `list-select` project bindings; only the visible view registers them. `j`/`k` follow the sorted, filtered page, skip closed groups and scroll virtual rows into view; `o`/`Enter` open the issue, not its parent or claim-holder link. Rows retain the unread dot, priority editor, open-ask badge, progress, unreachable-route marker, parent link and reference peeks. `ViewportAnchor` holds the row being read across live insertions, but not a deliberate filter, sort or page change. Selection is keyed by issue and survives a refresh.
 `x` and a row's own checkbox are the two ways to select the row in hand, the Inbox's pattern; `list-select` is no palette row, since selecting walks the list with the row in hand as `j`/`k` do, and it needs a focused row. A key the table no longer lists drops out of the selection, so a row listed again comes back unselected, and what is selected is what the bar says it will act on (`setSelectedIssues`, `features/search/bar-scope.ts`), which leaving the List clears.
 The Key link is named by the issue key; the Title link is named by the key and title.
 The row uses the key and title as its accessible name; its selection checkbox is named `Select <KEY>`.
@@ -1407,8 +1407,8 @@ bun run dispatch:local
 
 `bun run test` runs the suite in two halves, because only the web half wants a DOM:
 `bun run test:web web/src`, which preloads `web/src/__tests__/register-dom.ts` and then
-`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads neither and runs
-as the node processes those harness tests are.
+`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__ scripts/issue-views-check`, which
+preloads neither and runs the harness and acceptance-command tests as node processes.
 The order of that preload list is the one order that holds: `register-dom.ts` puts happy-dom's
 DOM on the globals at the test origin `http://dispatch.test`, and a module that reads a DOM
 global while it is evaluated keeps whatever it found then — `@testing-library/dom` builds

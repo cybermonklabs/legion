@@ -74,7 +74,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await search.fill("searchble work");
     await expect(page.getByText("30 of 32 issues", { exact: true })).toBeVisible();
     await search.fill("searchble impossible");
-    await expect(page.getByText("No issues match these filters.")).toBeVisible();
+    await expect(page.getByText("No matching issues", { exact: true })).toBeVisible();
     await search.fill("searchble work");
     await page.getByRole("combobox", { name: "Group by" }).selectOption("epic");
     await expect(page.getByText(new RegExp(`${epic.key} · Table epic`)).first()).toBeVisible();

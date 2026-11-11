@@ -129,7 +129,7 @@ filterTest(
     await page.goto(`/projects/${scene.project}/issues?q=${scene.query}`);
     const search = page.getByRole("searchbox", { name: "Search issues" });
     await expect(search).toHaveValue(scene.query);
-    await expect(page.getByText("No issues match these filters.")).toBeVisible();
+    await expect(page.getByText("No matching issues", { exact: true })).toBeVisible();
     await assertPageFits(page);
     const box = await search.boundingBox();
     const viewport = page.viewportSize();

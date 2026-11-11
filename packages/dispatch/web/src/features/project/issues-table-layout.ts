@@ -34,9 +34,12 @@ export function useTableLayout(
   project: string,
   longestKeyChars = 0,
   {
+    columnsOverride,
     hiddenByDefault,
     primaryColumns = NO_PRIMARIES,
   }: {
+    /** The columns a URL names for this load. Its layout never reaches browser storage. */
+    columnsOverride?: readonly string[];
     /** Which columns this surface opens with hidden; a reader's own choice still wins. */
     hiddenByDefault?: Readonly<Record<string, boolean>>;
     /** The columns this table keeps below 640 px, in the order it draws them. Where it names
@@ -67,8 +70,8 @@ export function useTableLayout(
   const attachAbove = useCallback((node: HTMLDivElement | null) => setAbove(node), []);
 
   useEffect(() => {
-    writeLayout(project, { sizing, order, visibility });
-  }, [project, sizing, order, visibility]);
+    if (columnsOverride === undefined) writeLayout(project, { sizing, order, visibility });
+  }, [columnsOverride, project, sizing, order, visibility]);
 
   const responsive = useMemo(() => {
     // The Key column never cuts a key: its floor is what the project's longest key needs.
@@ -140,11 +143,16 @@ export function useTableLayout(
     if (!pager) return;
     const padding = (element: Element | null) =>
       element === null ? 0 : Number.parseFloat(getComputedStyle(element).paddingBottom) || 0;
-    const slack =
-      window.innerHeight -
-      padding(box.parentElement) -
-      padding(box.closest("main")) -
-      pager.getBoundingClientRect().bottom;
+    let bottomPadding = 0;
+    const main = box.closest("main");
+    for (
+      let ancestor = box.parentElement;
+      ancestor !== null && ancestor !== main;
+      ancestor = ancestor.parentElement
+    )
+      bottomPadding += padding(ancestor);
+    bottomPadding += padding(main);
+    const slack = window.innerHeight - bottomPadding - pager.getBoundingClientRect().bottom;
     const available = bounds.height + slack;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
   }, []);

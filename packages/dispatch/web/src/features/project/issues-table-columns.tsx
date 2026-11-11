@@ -57,6 +57,8 @@ declare module "@tanstack/react-table" {
     /** The column's own name in words, for a header that draws more than its name: the column
      *  picker and the Group by list read it rather than the header node. */
     label?: string;
+    /** Whether closed rows are loaded, for a Status facet that otherwise says it can load them. */
+    doneLoaded?: boolean;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
@@ -97,8 +99,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   title: "Title",
   updated: "Updated",
 };
-/** What a list of columns calls one: its registry label, else whatever its header says. */
-export const columnLabel = (column: { id: string; columnDef: ColumnDef<Item> }): string =>
+export const columnLabel = <Row,>(column: { id: string; columnDef: ColumnDef<Row> }): string =>
   column.columnDef.meta?.label ?? String(column.columnDef.header ?? column.id);
 
 /** How each column renders and sorts, for the reader `userState` describes. Keyed by the

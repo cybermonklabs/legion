@@ -47,19 +47,20 @@ function FunnelIcon(): ReactNode {
 const filterTrigger = (active: boolean) =>
   `min-h-11 min-w-11 rounded p-1 md:min-h-8 md:min-w-8 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
 
-export function ColumnFilter({
+export function ColumnFilter<Row>({
   column,
   counts,
-  doneLoaded,
+  doneLoaded: doneLoadedOverride,
   open,
   onOpenChange,
 }: {
-  column: Column<Item, unknown>;
+  column: Column<Row, unknown>;
   counts: ReadonlyMap<string, number>;
-  doneLoaded: boolean;
+  doneLoaded?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }): ReactNode {
+  const doneLoaded = doneLoadedOverride ?? column.columnDef.meta?.doneLoaded ?? true;
   const meta = column.columnDef.meta;
   const name = columnLabel(column);
   if (meta?.text) {
@@ -192,7 +193,7 @@ export function Popover({
   );
 }
 
-export function ColumnsMenu({ columns }: { columns: Column<Item, unknown>[] }): ReactNode {
+export function ColumnsMenu<Row>({ columns }: { columns: Column<Row, unknown>[] }): ReactNode {
   return (
     <Popover align="right" label="Columns">
       {() =>
@@ -469,7 +470,6 @@ export function IssueTableToolbar({
               ))}
           </select>
         </label>
-        <ColumnsMenu columns={table.getAllLeafColumns()} />
         <IssueFlagChips />
         {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
           <button
@@ -502,13 +502,13 @@ export function IssueTableToolbar({
   );
 }
 
-export function IssueTablePager({
+export function IssueTablePager<Row>({
   table,
   items,
   pagerRef,
 }: {
-  table: Table<Item>;
-  items: readonly Item[];
+  table: Table<Row>;
+  items: readonly Row[];
   pagerRef: RefObject<HTMLDivElement | null>;
 }): ReactNode {
   const { pageIndex, pageSize } = table.getState().pagination;
