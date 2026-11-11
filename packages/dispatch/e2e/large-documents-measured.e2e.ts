@@ -36,6 +36,12 @@
 // other row of the suite that seeds it reads the reader's place half-way down it, and is in
 // `large-documents-first-screen.e2e.ts`.
 //
+// The decision row seeds that document with its first decision block moved from the
+// twenty-eighth section to the second (`largeDocumentDecidedEarly`): the same 140 sections,
+// the same 406,000 characters and the same build, with the card the reader answers inside the
+// blocks the server draws into the page it sends. Why the row needs it there is in its own
+// comment.
+//
 // Every other row of what was one file reads an order, a place or a count rather than a clock,
 // and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
 // `large-documents-reader.e2e.ts` and `large-documents-first-screen.e2e.ts`, and what the four
@@ -51,6 +57,7 @@ import {
   documentNames,
   documentTitle,
   largeDocument,
+  largeDocumentDecidedEarly,
   smallDocument,
 } from "./large-documents";
 import {
@@ -58,6 +65,7 @@ import {
   measureDocument,
   printMeasurement,
   throttleTheCpu,
+  watchTheBuildsWindow,
   watchTheDocument,
 } from "./large-documents-page";
 import {
@@ -368,6 +376,11 @@ const liveEditorRoot = '.proof-editor[data-write-path="live"]';
  *  its handle - a task after the binding connected - so an editor wearing it is one whose
  *  build is over (`web/src/features/doc/editor.ts`). */
 const namedEditor = '[role="textbox"][aria-label="Document editor"]';
+
+/** The page's own draw of the document's text, which is what a reader has in front of them for
+ *  every block the editor's batches have not reached yet (`web/src/features/doc/DocumentPreview.tsx`),
+ *  as a selector an init script can carry. */
+const theDraw = '[aria-label="Document text"]';
 
 /** How often the probe below hands the browser a timer. Often enough that a build of a few
  *  seconds is covered by a dozen of them, rarely enough that the probe is not itself the thing
@@ -976,37 +989,51 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
 const theAnswerLeavesWithinMs = 500;
 
 /**
- * Has the page itself answer the decision block `block` holds - picking `option` and pressing
- * the card's Answer button as soon as the build has drawn them - and records what it did: the
- * press the page received, how much of the document the editor held then, whether the build
- * was still running, and when the request carrying the answer left the page.
+ * Has the page press the Answer button of the card at `card` in the task the editor's first
+ * batch lands in, and records what it did: the press the page received, how much of the
+ * document the editor held then, whether the build was still running, and when the request
+ * carrying the answer left the page.
  *
  * The press is the page's own rather than this side's, for the reason `readerEditsTheBuild`
  * gives: an action driven from here is a round trip, and on a document this size Playwright's
- * own check of the radio and press of the button cost 10.9 s on this pod and 11 to 17 s on
- * GitHub's runners, where the whole build is 8.2 s. A row that presses from here therefore
- * reads whether two round trips beat the build, which says nothing about the reader. From a
- * frame the press lands inside the build, and the row says so rather than assuming it.
+ * own press of the button cost 10.9 s on this pod and 11 to 17 s on GitHub's runners, where the
+ * whole build is 1.0 s. A row that presses from here therefore reads whether a round trip beats
+ * the build, which says nothing about the reader.
+ *
+ * It is made from the build's own signal rather than at a moment that happens to fall inside
+ * one. The signal is the editor's root taking `data-write-path="live"`, which is the task its
+ * first batch's blocks landed in (`live()` in `packages/proof-editor/src/lib.ts`), and this
+ * `MutationObserver`'s callback runs at that task's own microtask checkpoint - before the timer
+ * the build hands the thread back with, so before every batch after the first
+ * (`endOfTask` in `packages/proof-editor/src/progressive-build.ts`). The press therefore lands
+ * in the first gap of the build whatever the machine costs: a build of a hundred batches on
+ * this pod and one of five on a GitHub runner are the same first gap.
+ *
+ * The card it presses is the reader's own screen while that build runs: the decision stands in
+ * the second section, which the editor's eight-block first batch has not reached, so what holds
+ * it is the page's draw of the document's text (`largeDocumentDecidedEarly`). The option has
+ * been picked before the build began, so the one thing crossing the build is the press and what
+ * the page makes of it, which is what the row times. A card the batch took anyway is said so
+ * rather than pressed, since a row that found no button would otherwise read as a build that
+ * never came.
  *
  * Install before the navigation; read what it recorded off the page afterwards.
  */
-async function readerAnswersTheBuild(
+async function theReaderAnswersAtTheFirstBatch(
   page: Page,
-  { answer, block, option }: { answer: string; block: string; option: string }
+  { answer, card }: { answer: string; card: string }
 ): Promise<void> {
   await page.addInitScript(
     ({
       answered,
-      blockId,
       live,
       named,
-      wanted,
+      pressing,
     }: {
       answered: string;
-      blockId: string;
       live: string;
       named: string;
-      wanted: string;
+      pressing: string;
     }) => {
       // When the answer left the page, read where the page makes the request rather than off
       // the browser's resource timing: the number is then the moment the reader's answer went
@@ -1022,39 +1049,29 @@ async function readerAnswersTheBuild(
           return Reflect.apply(made, that, args);
         },
       });
-      const look = () => {
+      let answeredAlready = false;
+      const press = () => {
         const root = document.querySelector(live);
-        const card =
-          root?.querySelector(
-            `[data-dispatch-ask-block="${blockId}"] article[data-testid^="ask-"]`
-          ) ?? null;
-        if (root === null || card === null) {
-          requestAnimationFrame(look);
+        if (answeredAlready || root === null) {
+          // No batch has landed yet, so there is no build to answer inside.
           return;
         }
-        const radio = [...card.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find(
-          (input) => (input.closest("label")?.textContent ?? "").includes(wanted)
+        answeredAlready = true;
+        const card = document.querySelector(pressing);
+        const button = [...(card?.querySelectorAll("button") ?? [])].find(
+          (candidate) => (candidate.textContent ?? "").trim() === "Answer"
         );
-        if (radio === undefined) {
-          requestAnimationFrame(look);
+        if (card === null) {
+          window.__answerRefused =
+            "the card the reader had picked their option in was off the page by the first batch";
           return;
         }
-        if (!radio.checked) {
-          // The pick in a frame of its own, because what it leaves behind is React's: the lone
-          // Answer button a compact card shows once an option is picked, and the refusal that
-          // button answers a press with while none is.
-          radio.click();
-          requestAnimationFrame(look);
+        if (button === undefined || button.disabled || button.ariaDisabled === "true") {
+          window.__answerRefused =
+            "the card the reader had picked their option in offered no Answer button to press";
           return;
         }
-        const press = [...card.querySelectorAll("button")].find(
-          (button) => (button.textContent ?? "").trim() === "Answer"
-        );
-        if (press === undefined || press.disabled || press.ariaDisabled === "true") {
-          requestAnimationFrame(look);
-          return;
-        }
-        press.addEventListener(
+        button.addEventListener(
           "click",
           (event) => {
             window.__answerPressed = {
@@ -1065,16 +1082,22 @@ async function readerAnswersTheBuild(
           },
           { capture: true, once: true }
         );
-        press.click();
+        button.click();
       };
-      requestAnimationFrame(look);
+      // The document itself, because this script runs before the page has an element to watch.
+      new MutationObserver(press).observe(document, {
+        attributeFilter: ["data-write-path"],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
     },
-    { answered: answer, blockId: block, live: liveEditorRoot, named: namedEditor, wanted: option }
+    { answered: answer, live: liveEditorRoot, named: namedEditor, pressing: card }
   );
 }
 
 // What a reader's answer costs while their editor is being built. The card is React's - the
-// radio is its state, the button's refusal is its state, and the answer is a write the press
+// pick is its state, the button's refusal is its state, and the answer is a write the press
 // makes - so every step between the press and the request is a posted task the build has to
 // let through. The row holds that span to half a second, with the build still running when the
 // page received the press: the build may not starve the answer a reader gives it.
@@ -1083,42 +1106,90 @@ async function readerAnswersTheBuild(
 // stored the answer with the moment the editor opened, and that comparison turned on neither:
 // the answer is stored 30 to 180 ms after the press in every run, so what decided it was
 // whether Playwright's own check and click - 10.9 s on this pod, 11 to 17 s on GitHub's
-// runners - beat the build, which is 41 to 108 s here and 8.2 s there. It passed here and
-// failed there, and neither answer was about the reader. The press is the page's own now
-// (`readerAnswersTheBuild`), so it lands inside the build whatever the machine costs.
+// runners - beat the build. The press is the page's own now, so no round trip is in it.
+//
+// What the row arranges is the overlap, which it used to hope for. The press waited for the
+// editor's own card, and that card is drawn two posted tasks after the batch that built its
+// block - React's render of the host, then the timer one card is drawn in
+// (`useAskCardsDrawnInTasks`) - while the build itself is as few as five tasks: its batches
+// take 8, 32, 128 and then up to 512 blocks, so a document of 986 of them is five batches on a
+// machine fast enough that none of them fills its 120 ms budget. On this pod every batch fills
+// it, the build is about a hundred tasks long and the card was drawn well inside it; on a
+// GitHub runner the card arrived with the swap, 7,885 ms in, when every one of the 986 blocks
+// was built and the editor named, and the guard below refused the run as it should
+// (run 42988104355). Neither machine was wrong about the reader: the row had no window.
+//
+// So the row takes the window the page gives it. The socket is held while the reader picks
+// their option, so nothing of the card's own React is owed when the build starts; the decision
+// stands in the second section, which the server drew into the page it sent and the eight-block
+// first batch has not reached (`largeDocumentDecidedEarly`); and the press is made from the
+// first batch's own signal, in that batch's task
+// (`theReaderAnswersAtTheFirstBatch`). The whole of the build is then still to come, on any
+// machine, and the line the row prints says how much of it was.
 test(`a decision answered while ${documentNames.large}'s editor is built goes out within half a second of the press @phone`, async ({
   browser,
 }) => {
   test.setTimeout(900_000);
   const block = decisionBlockId(1);
-  const { issueKey, path } = await seedDocument("specs-large.md", largeDocument);
+  const { artifactId, issueKey, path } = await seedDocument(
+    "specs-large.md",
+    largeDocumentDecidedEarly
+  );
+  const whole = await topLevelBlocks(artifactId);
   const indexed = (await listIssueAsks(issueKey)).find((ask) => ask.block_id === block);
   expect(
     indexed,
     "the server indexed no ask for the document's first decision block"
   ).toBeDefined();
+  const theCard = `${theDraw} [data-testid="ask-${indexed?.id}"]`;
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await throttleTheCpu(page);
-    await readerAnswersTheBuild(page, {
+    const build = await watchTheBuildsWindow(page);
+    await theReaderAnswersAtTheFirstBatch(page, {
       answer: `/api/v1/asks/${indexed?.id}/answer`,
-      block,
-      option: "The next window",
+      card: theCard,
     });
-    await page.goto(path, { waitUntil: "commit" });
+    // Held, so the reader picks their option with no build running and no sync on its way:
+    // what crosses the build is the press alone.
+    const transport = await documentTransport(page, { holding: true });
+    await page.goto(path);
 
-    // The page has pressed the card and its answer has left. The wait is for the request, not
-    // for the build: what the editor does with the rest of the document after this is the
-    // business of the rows above.
+    const card = page.locator(theCard);
+    await expect(card).toBeVisible({ timeout: 240_000 });
+    await card.getByRole("radio", { name: "The next window" }).check();
+    await expect(card.getByRole("button", { exact: true, name: "Answer" })).toBeEnabled();
+    // And no batch has landed, so nothing below can be read as a press the build had finished
+    // before: the editor's root is in the page from the construction, with none of the document
+    // in it (`large-documents-build.e2e.ts`).
+    expect(await page.locator(`${liveEditorRoot} [data-block-id]`).count()).toBe(0);
+
+    await transport.release();
+    const firstBatchMs = await build.firstBatch(300_000);
+
+    // The page has pressed the card and its answer has left - or it has said why it pressed
+    // nothing, which is read first so a refusal is the failure rather than the wait that
+    // follows it. The wait is for the request, not for the build: what the editor does with
+    // the rest of the document after this is the business of the rows above.
     await expect
-      .poll(async () => (await page.evaluate(() => window.__answerSentMs)) !== undefined, {
-        intervals: [250],
-        message: "the page never answered the decision block its build had drawn",
-        timeout: 300_000,
-      })
+      .poll(
+        async () =>
+          await page.evaluate(
+            () => window.__answerSentMs !== undefined || window.__answerRefused !== undefined
+          ),
+        {
+          intervals: [250],
+          message: "the page never answered the decision block it had been given",
+          timeout: 300_000,
+        }
+      )
       .toBe(true);
+    expect(
+      await page.evaluate(() => window.__answerRefused),
+      "the page refused to press the card it was given"
+    ).toBeUndefined();
     // And the server holds it, which is what the press was for.
     await expect
       .poll(
@@ -1134,14 +1205,27 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
     const pressed = await page.evaluate(() => window.__answerPressed);
     const sentMs = (await page.evaluate(() => window.__answerSentMs)) ?? Number.NaN;
     const leftAfterMs = sentMs - (pressed?.at ?? Number.NaN);
+    // Where the build had got to by the time the server held the answer, which is the margin
+    // the press was made with: read now rather than waited for, since what the build does after
+    // the answer is the business of the rows above.
+    const reachedMs = await page.evaluate(() => performance.now());
+    const window_ = await build.window();
     // Printed before either number is read against anything, as every other number in this
     // file is.
     console.log(
-      `R11 decision during the build · the page received the press at ` +
-        `${Math.round(pressed?.at ?? Number.NaN)} ms with ${pressed?.built ?? 0} block(s) built ` +
-        `and the build ${pressed?.building === true ? "running" : "over"}, and the answer's ` +
-        `request left at ${Math.round(sentMs)} ms, ${Math.round(leftAfterMs)} ms later ` +
-        `(target ${theAnswerLeavesWithinMs} ms), on the page's own clock.`
+      `R11 decision during the build · the editor's first batch landed at ` +
+        `${Math.round(firstBatchMs)} ms and the page received the press at ` +
+        `${Math.round(pressed?.at ?? Number.NaN)} ms, ` +
+        `${Math.round((pressed?.at ?? Number.NaN) - firstBatchMs)} ms into the build, with ` +
+        `${pressed?.built ?? 0} of ${whole} block(s) built and the build ` +
+        `${pressed?.building === true ? "running" : "over"}; the answer's request left at ` +
+        `${Math.round(sentMs)} ms, ${Math.round(leftAfterMs)} ms later (target ` +
+        `${theAnswerLeavesWithinMs} ms); and at ${Math.round(reachedMs)} ms, with the server ` +
+        `holding the answer, the editor was ${
+          window_.namedMs === undefined
+            ? "still being built"
+            : `named at ${Math.round(window_.namedMs)} ms`
+        }. Every number is the page's own clock.`
     );
 
     expect(pressed, "the page never pressed the card's Answer button").toBeDefined();

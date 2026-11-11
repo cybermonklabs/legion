@@ -50,7 +50,7 @@ import {
   sectionHeading,
   smallDocument,
 } from "./large-documents";
-import { throttleTheCpu } from "./large-documents-page";
+import { throttleTheCpu, watchTheBuildsWindow } from "./large-documents-page";
 import {
   agent,
   blocksBuilt,
@@ -323,6 +323,67 @@ test(`typing in ${documentNames.small}'s first block while it is built reaches t
   }
 });
 
+/**
+ * Records, in every animation frame of `page` until its editor is named, how much of the
+ * document that editor holds and whether it is open, each frame stamped with the wall clock
+ * the frame ran at (`performance.timeOrigin` plus `performance.now()`, which is the clock this
+ * side's `Date.now()` reads too, so another page's writes and these frames can be put in one
+ * order).
+ *
+ * The reading is the page's own rather than a poll from here, as `framesOfTheBuild` in
+ * `large-documents-rows.ts` gives the reason for, and for one more: a `page.evaluate` into a
+ * throttled renderer is served between the batches of the build it is asking about, so a row
+ * that reads this page four times spends four of those gaps - a reading that costs the window
+ * it is reading. A frame costs it nothing, and a frame is the reading a reader gets.
+ *
+ * Install before the navigation; read what it recorded once the editor is open.
+ */
+async function framesOfHerBuild(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const frames: { at: number; built: number; open: boolean }[] = [];
+    window.__herBuildFrames = frames;
+    const look = () => {
+      const open =
+        document.querySelector('[role="textbox"][aria-label="Document editor"]') !== null;
+      frames.push({
+        at: performance.timeOrigin + performance.now(),
+        built: document.querySelectorAll(".proof-editor [data-block-id]").length,
+        open,
+      });
+      // The last frame worth recording is the first one the finished editor is named in: the
+      // row reads where a build was, and after this there is no build.
+      if (open) {
+        return;
+      }
+      requestAnimationFrame(look);
+    };
+    requestAnimationFrame(look);
+  });
+}
+
+// What the row below needs of a build, and what it throttles the reader's renderer by to get
+// it. The window his four writes have to fall inside is her build: from its first batch to the
+// naming of her editor. At the measurement's 4x that window is about as long as the writes
+// themselves - 471 ms on a GitHub runner, a couple of seconds on this pod - and a row whose
+// writes are as long as the window it writes into fails at whichever end the machine moves:
+// the run of 2026-11-11 on this pod had her whole build pass by inside his writes (her editor
+// held all 1,437 blocks at the last of them) and the run on that runner had none of it begin
+// until after them (it held none, run 42988104355).
+//
+// So the build is made longer than the writes rather than hoped to be. A batch takes the
+// blocks it can convert inside its 120 ms budget (`BATCH_BUDGET_MS`), so a renderer four times
+// slower again is a build about four times longer, while his writes stay what they are: seven
+// round trips into a page that is not throttled, with nothing of hers read between them
+// (`framesOfHerBuild`). What the rate costs is the processor the throttled renderer spins
+// while it waits, which this pod has two of, so what it bought is read back from the line the
+// row prints - her build's two ends and where in them each of his writes fell - rather than
+// assumed. Measured here at this rate, his four writes were 3.4 s of a 43 s build, and his
+// last of them fell at 262 of her 1,437 blocks.
+//
+// The rate times nothing: this row reads where in a build each write fell, never how long
+// anything took (`throttleTheCpu`).
+const aBuildFourWritesFitInside = 16;
+
 test(`two people write in ${documentNames.small} while its editor is built @phone`, async ({
   browser,
 }) => {
@@ -356,46 +417,68 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     await placeCaret(bobPage, "after", title);
 
     const page = await alice.newPage();
-    await throttleTheCpu(page);
+    await throttleTheCpu(page, aBuildFourWritesFitInside);
     await readerEditsTheBuild(page, reading);
+    await framesOfHerBuild(page);
+    const build = await watchTheBuildsWindow(page);
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
       { timeout: 240_000 }
     );
 
-    // Bob writes from the moment Alice's socket is let through: a word in a block her batches
-    // have built, a block inserted inside that built run, and that block taken out of it again
-    // over the prose it was inserted above.
+    // Bob writes from inside her build: a word in a block her batches have built, a block
+    // inserted inside that built run, and that block taken out of it again over the prose it
+    // was inserted above.
     //
-    // Where in her build each of his writes falls is read from her page as he makes them,
-    // because nothing else in this row can say that he wrote during one at all: that some frame
-    // of hers held part of the document is true of any batched build wherever his keystrokes
-    // landed, and he could have written every word of this after her editor opened. The reading
-    // is taken after each write, which is the order that cannot flatter him - a build still
-    // running then was running when he wrote - and it is two selectors of her page rather than
-    // a reading she has to compute.
-    const herBuild: { built: number; open: boolean }[] = [];
-    const whereHerBuildWas = async () => {
-      herBuild.push(
-        await page.evaluate(() => ({
-          built: document.querySelectorAll(".proof-editor [data-block-id]").length,
-          open: document.querySelector('[role="textbox"][aria-label="Document editor"]') !== null,
-        }))
-      );
+    // From her build's own start, never from the moment her socket was let through. What
+    // stands between the two is the sync, the apply and the editor's first batch, and that is
+    // a wait of the machine's own length: on a GitHub runner it outlasted all four of his
+    // writes, so her editor held none of the document at the last of them and the run said
+    // nothing about two people writing into one build (run 42988104355). Her page says when
+    // its first batch landed, in the task it landed in (`watchTheBuildsWindow`), and his first
+    // keystroke follows that.
+    //
+    // Where in her build each of his writes falls is her page's own frames, paired with the
+    // moment each write was made, because nothing else in this row can say that he wrote
+    // during one at all: that some frame of hers held part of the document is true of any
+    // batched build wherever his keystrokes landed, and he could have written every word of
+    // this after her editor opened. The frame taken for a write is the first one at or after
+    // it, which is the order that cannot flatter him - a build still running in that frame was
+    // running when he wrote, and the blocks it holds are the ones it had reached by then or
+    // more.
+    //
+    // Her frames rather than a reading taken from here after each write. A `page.evaluate` into
+    // a renderer this throttled waits for a gap between the batches of the very build it is
+    // asking about, and four of them were most of the 19.6 s his writes took in the run of
+    // 2026-11-11 on this pod, against a build of 59 s: the reading cost the window it was
+    // reading. A frame costs that window nothing, and it is what a reader is shown
+    // (`framesOfHerBuild`, and `framesOfTheBuild` in `large-documents-rows.ts` for the same
+    // reason).
+    const hisWrites: number[] = [];
+    const heWrote = (): void => {
+      hisWrites.push(Date.now());
     };
     await transport.release();
+    const firstBatchMs = await build.firstBatch(300_000);
+    // His two words go in as one `Input.insertText` each rather than as one round trip per
+    // character: a word typed key by key is ten or sixteen of them, and a round trip on a pod
+    // whose other processor is a throttled renderer cost a second apiece in the run of
+    // 2026-11-11 - thirty of them were 34 s of a 43 s build, which is her whole build spent
+    // inside his four writes. What ProseMirror reads a word by is the DOM mutation its
+    // observer picks up, which is the same here as under a keystroke; Enter and Backspace stay
+    // key presses, since those two are what its keymaps answer.
     await placeCaret(bobPage, "after", title);
-    await bobPage.keyboard.type(" Pangolin.");
-    await whereHerBuildWas();
+    await bobPage.keyboard.insertText(" Pangolin.");
+    heWrote();
     await placeCaret(bobPage, "after", sectionHeading(0));
     await bobPage.keyboard.press("Enter");
-    await whereHerBuildWas();
-    await bobPage.keyboard.type("Otter paragraph.");
-    await whereHerBuildWas();
+    heWrote();
+    await bobPage.keyboard.insertText("Otter paragraph.");
+    heWrote();
     await selectTextIn(bobPage, documentEditor(bobPage), `Otter paragraph.${proseOpening(0)}`);
     await bobPage.keyboard.press("Backspace");
-    await whereHerBuildWas();
+    heWrote();
 
     await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
     const whole = await blocksBuilt(page);
@@ -413,11 +496,28 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     expect(made.map((edit) => edit.after - edit.built)).toEqual([0, 1, -1, 1]);
     // And Bob's writing crossed that build: her editor had not been named at any of his four
     // writes, and it held part of the document - some of its blocks, and not all of them - at
-    // the last of them, so what he wrote he wrote into a document still being built.
+    // the last of them, so what he wrote he wrote into a document still being built. Each of
+    // his writes is read in the first frame of hers at or after it; a write her recorder has
+    // no frame after is read in its last, which is the frame her editor was named in, so a
+    // write made past the end of her build is refused by the first guard below rather than
+    // quietly matched to a frame before it.
+    const herFrames = await page.evaluate(() => window.__herBuildFrames ?? []);
+    const herClockBegan = await page.evaluate(() => performance.timeOrigin);
+    const herBuild = hisWrites.map(
+      (at) =>
+        herFrames.find((frame) => frame.at >= at) ??
+        herFrames.at(-1) ?? { at: Number.NaN, built: 0, open: true }
+    );
+    const window_ = await build.window();
     console.log(
-      `R11 two people write · Alice's editor held ${herBuild
-        .map((at) => `${at.built}${at.open ? " open" : ""}`)
-        .join(", ")} of ${whole} block(s) at Bob's four writes.`
+      `R11 two people write · Alice's build ran from its first batch at ` +
+        `${Math.round(firstBatchMs)} ms to her editor at ` +
+        `${Math.round(window_.namedMs ?? Number.NaN)} ms, and Bob's four writes were made at ` +
+        `${hisWrites.map((at) => Math.round(at - herClockBegan)).join(", ")} ms of it, read in ` +
+        `her frames at ${herBuild.map((at) => Math.round(at.at - herClockBegan)).join(", ")} ms ` +
+        `with her editor holding ${herBuild
+          .map((at) => `${at.built}${at.open ? " open" : ""}`)
+          .join(", ")} of ${whole} block(s). Every number is her page's own clock.`
     );
     expect(
       herBuild.map((at) => at.open),

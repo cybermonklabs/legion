@@ -100,6 +100,12 @@ declare global {
       stateFrameMs?: number;
       editorRootMs?: number;
     };
+    /** What `watchTheBuildsWindow` recorded of the build: `performance.now()` at the editor's
+     *  first batch and at the naming of the finished editor, each undefined until it happened. */
+    __theBuildsWindow?: { firstBatchMs: number | undefined; namedMs: number | undefined };
+    /** What the page says the moment its first batch lands, so a row that acts inside the
+     *  build is told rather than asking (`watchTheBuildsWindow`). */
+    __theFirstBatchLanded?: (at: number) => void;
   }
 }
 
@@ -360,10 +366,16 @@ export interface DocumentMeasurement {
  * (`page.context().newCDPSession(page)`, as `e2e/touch.ts` opens one). The session stays attached
  * for the page's life: detaching it would drop the override the measurement is taken under.
  * Chromium only, which is the engine the `iphone` project runs.
+ *
+ * The rate is the set-up's own unless the caller names another. A row that times nothing may:
+ * what a heavier rate buys is a longer build, since a batch takes the blocks it can convert
+ * inside its budget (`BATCH_BUDGET_MS` in `packages/proof-editor/src/progressive-build.ts`)
+ * and a slower renderer converts fewer of them. A row that reads a clock may not: every number
+ * R11 is held to is read under the rate the spec names.
  */
-export async function throttleTheCpu(page: Page): Promise<void> {
+export async function throttleTheCpu(page: Page, rate = cpuThrottlingRate): Promise<void> {
   const session = await page.context().newCDPSession(page);
-  await session.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottlingRate });
+  await session.send("Emulation.setCPUThrottlingRate", { rate });
 }
 
 /**
@@ -614,6 +626,91 @@ export async function readTheReads(page: Page): Promise<ReadsOfThePage> {
     firstBatchMs: window.__largeDocumentFirstBatchAt,
     reads: window.__largeDocumentReads ?? [],
   }));
+}
+
+/** The two ends of a build, on the page's own clock: when its first batch landed and when the
+ *  finished editor was named. A row that has to act inside a build acts between them. */
+export interface TheBuildsWindow {
+  /** `performance.now()` when the editor's root was first given `data-write-path="live"`,
+   *  which is the task the first batch's blocks landed in; undefined until one has. */
+  readonly firstBatchMs: number | undefined;
+  /** `performance.now()` when the finished editor was first named, which is the end of the
+   *  build (`namedEditorSelector`); undefined while it is still running. */
+  readonly namedMs: number | undefined;
+}
+
+/** What `watchTheBuildsWindow` answers: a wait for the build's own start, and a reading of the
+ *  window as the page has it. */
+export interface TheBuildWatched {
+  /** Resolves with `performance.now()` at the editor's first batch, which the page announces
+   *  in the task that batch landed in. A wait rather than a poll, for the reason
+   *  `theMomentThePageReached` gives: between the batches of a build a poll can only say the
+   *  page had reached it by the time the poll ran, and a row that has to act inside the build
+   *  has the whole of that lateness taken off its window. Fails where no batch lands inside
+   *  `timeoutMs`, naming what never came. */
+  readonly firstBatch: (timeoutMs: number) => Promise<number>;
+  /** Both ends as the page has them now: read once the row has acted, so the window it acted
+   *  in is printed rather than asserted. */
+  readonly window: () => Promise<TheBuildsWindow>;
+}
+
+/**
+ * Watches the build of `page`'s editor: the first batch, which the page announces as it lands,
+ * and the naming of the finished editor, which it records.
+ *
+ * Both are read through one `MutationObserver` over the whole document, whose callback the
+ * browser runs at the microtask checkpoint of the task that made the change, so each moment is
+ * the page's own task rather than the next reading's. The first batch is the editor's root
+ * taking `data-write-path="live"` (`live()` in `packages/proof-editor/src/lib.ts`, in the
+ * batch's own task) and the naming is the host writing the editor's name onto the view's DOM
+ * once the binding has answered its handle (`web/src/features/doc/editor.ts`), which is three
+ * tasks past the last batch.
+ *
+ * Install before the navigation whose build the row acts inside.
+ */
+export async function watchTheBuildsWindow(page: Page): Promise<TheBuildWatched> {
+  const landed = Promise.withResolvers<number>();
+  await page.exposeFunction("__theFirstBatchLanded", (at: number) => landed.resolve(at));
+  await page.addInitScript(
+    ({ live, named }: { live: string; named: string }) => {
+      const window_ = { firstBatchMs: undefined, namedMs: undefined } as {
+        firstBatchMs: number | undefined;
+        namedMs: number | undefined;
+      };
+      window.__theBuildsWindow = window_;
+      const look = () => {
+        if (window_.firstBatchMs === undefined && document.querySelector(live) !== null) {
+          window_.firstBatchMs = performance.now();
+          // Said in the task the batch landed in, so the run is told rather than asking.
+          window.__theFirstBatchLanded?.(window_.firstBatchMs);
+        }
+        if (window_.namedMs === undefined && document.querySelector(named) !== null) {
+          window_.namedMs = performance.now();
+        }
+      };
+      // The document itself, because this script runs before the page has an element to watch.
+      new MutationObserver(look).observe(document, {
+        attributeFilter: ["aria-label", "data-write-path"],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    },
+    { live: liveEditorSelector, named: editorSelector }
+  );
+  return {
+    firstBatch: (timeoutMs) =>
+      theMomentThePageReached(
+        landed.promise,
+        timeoutMs,
+        "the editor's first batch never landed, so the page never began the build this row acts inside"
+      ),
+    window: async () =>
+      await page.evaluate(() => ({
+        firstBatchMs: window.__theBuildsWindow?.firstBatchMs,
+        namedMs: window.__theBuildsWindow?.namedMs,
+      })),
+  };
 }
 
 /**

@@ -108,11 +108,18 @@ declare global {
     /** What each animation frame of the build held, which `framesOfTheBlocks` records and the
      *  count row reads. */
     __blockFrames?: BlockFrame[];
+    /** What each animation frame of one reader's build held while another person wrote into
+     *  the same document: how many blocks her editor held, whether it was open, and the wall
+     *  clock the frame ran at, which is the clock the other page's writes are stamped on
+     *  (`framesOfHerBuild` in `large-documents-reader.e2e.ts`). */
+    __herBuildFrames?: { at: number; built: number; open: boolean }[];
     /** What the row that answers a decision inside a build recorded: the press the page made
-     *  in a frame of the build, and `performance.now()` when the request carrying the answer
-     *  left the page. */
+     *  in the task the build's first batch landed in, `performance.now()` when the request
+     *  carrying the answer left the page, and why the page pressed nothing where the card it
+     *  was given was no longer there to press. */
     __answerPressed?: TheAnswerPressed;
     __answerSentMs?: number;
+    __answerRefused?: string;
     /** What each task of the build drew, which `drawsOfEachTask` records and the decision-card
      *  row reads. */
     __drawnInTasks?: DrawnInATask[];

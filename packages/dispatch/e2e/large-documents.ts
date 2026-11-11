@@ -212,11 +212,23 @@ function sectionText(index: number, decision: number | undefined, drawings: bool
  *  `decisions` it holds none at all: a decision block the reader has on their screen before
  *  any editor exists is a card that reads the document's asks to answer from, so a row about
  *  what the page reads while it waits for an editor needs a document with nothing on it for a
- *  reader to answer (`web/src/features/doc/first-batch.ts`). */
-export function syntheticDocument(sections: number, drawings = true, decisions = true): string {
+ *  reader to answer (`web/src/features/doc/first-batch.ts`). Given `{ first }`, the first of
+ *  them sits in that section instead of the one it is spread to, and the four after it stay
+ *  where they were: a row that needs the card in front of the reader before any editor exists
+ *  names the section the server's own draw reaches (`largeDocumentDecidedEarly`). */
+export function syntheticDocument(
+  sections: number,
+  drawings = true,
+  decisions: boolean | { readonly first: number } = true
+): string {
   const sectionDecisions = new Map<number, number>();
-  for (let decision = 1; decisions && decision <= decisionBlocks; decision += 1) {
-    sectionDecisions.set(decisionSection(decision, sections), decision);
+  for (let decision = 1; decisions !== false && decision <= decisionBlocks; decision += 1) {
+    sectionDecisions.set(
+      decision === 1 && typeof decisions === "object"
+        ? decisions.first
+        : decisionSection(decision, sections),
+      decision
+    );
   }
   const written: string[] = [`# ${documentTitle(sections)}`];
   for (let index = 0; index < sections; index += 1) {
@@ -258,6 +270,21 @@ export const smallDocument = syntheticDocument(smallSections);
 
 /** The same document five times over: about 406,000 characters and 140 diagrams. */
 export const largeDocument = syntheticDocument(largeSections);
+
+/** The same document again, with its first decision block in its second section rather than its
+ *  twenty-eighth: the same 140 sections, the same diagrams, the same build.
+ *
+ *  Where the decision sits is what one row turns on. The blocks the server draws into the page
+ *  it sends are the document's first 30 top-level blocks or 16 KB
+ *  (`internal/dispatch/pmdoc/first_screen.go`), which is the title and four sections, and the
+ *  page's own draw takes them over: a decision inside them is a card the reader can answer
+ *  before any editor exists. The build's first batch is eight blocks
+ *  (`FIRST_BATCH_BLOCKS` in `packages/proof-editor/src/progressive-build.ts`), the title and
+ *  the first section, so a decision in the second section is still the draw's when that batch
+ *  lands and the editor has not reached it. The row that answers a decision while the editor
+ *  is built needs both of those, whatever the machine costs
+ *  (`large-documents-measured.e2e.ts`). */
+export const largeDocumentDecidedEarly = syntheticDocument(largeSections, true, { first: 1 });
 
 /** What each document is called, in a row's title and in the numbers it prints. */
 export const documentNames = {
