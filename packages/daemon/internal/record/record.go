@@ -168,6 +168,19 @@ type Issue struct {
 	// otherwise write that movement away, and every one of the write sites holds a copy read
 	// before its own fact.
 	MovedAt time.Time
+	// TreeStalledToldAt is the movement the daemon has already told this tree's controller the
+	// tree stopped for: the newest movement of anything in the tree (TreeQuiet.MovedAt) at the
+	// moment the stalled-tree notice went into the outbox, nil for a tree no stall of which has
+	// been told. It is written on the tree's root alone, since the stall is the tree's and the
+	// notice names its root, and a child's row never carries one.
+	//
+	// It is what holds the daemon to one notice per stall: the rule tells a quiet tree only
+	// where its newest movement stands after this mark, so a tree that has stopped is told once
+	// however many passes read it, and a tree that moves and stops again is told anew
+	// (admit's tellStalledTrees). Only Store.MarkTreeStalledTold writes it, in the transaction
+	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
+	// pass that records an issue holds a copy read before its own telling.
+	TreeStalledToldAt *time.Time
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -1174,6 +1187,16 @@ type Store interface {
 	// unrecorded key matches no row and writes nothing, which is what a fact of an issue the
 	// daemon does not run must do.
 	MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error
+	// MarkTreeStalledTold records at as the movement the daemon has told root's tree stopped
+	// for (Issue.TreeStalledToldAt), the one writer of that column: the admission pass hands it
+	// the tree's newest movement in the transaction that queues the notice, and PutIssue names
+	// the column nowhere, so no stale copy of a root can write the mark away.
+	//
+	// It is not monotone, because it is not a movement of its own: it is the movement that was
+	// told about. The rule only ever tells a tree whose newest movement stands after the mark
+	// (admit's tellStalledTrees), so each write carries the row forwards anyway, and a key with
+	// no record matches no row and writes nothing.
+	MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root string, at time.Time) error
 	// UnfilledIssues is every record of the Dispatch project key project written before the record
 	// carried its repository, by key; FillIssueRepository fills one such record, once.
 	UnfilledIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
@@ -1240,6 +1263,13 @@ type Store interface {
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
 	// OpenPullRequests is every open pull request of the Dispatch project key project's issues.
 	OpenPullRequests(ctx context.Context, tx pgx.Tx, project string) ([]PullRequest, error)
+	// PullRequestsOf is the pull request of each of issues, by issue key; an issue the record
+	// holds no pull request for has no entry, and no issues reads nothing. It is one query
+	// whatever the number of issues, for a caller that must name the pull request of every
+	// issue of a tree and may make no read per issue (admit's tellStalledTrees). It answers a
+	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot:
+	// a tree that has stopped with its work merged is exactly the tree such a caller reports.
+	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.

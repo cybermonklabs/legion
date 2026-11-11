@@ -184,8 +184,9 @@ type Config struct {
 	// less the newest movement of its root, of the issues under it the workflow still runs and of
 	// those issues' claims' steps — and it is the one measure both the admission pass and the
 	// state read, so a notice and a reported quiet time can never disagree. The pass that sends
-	// the notice is the next change of dispatch://INFRA-2560; this key is the bound that pass
-	// reads, and nothing sends a notice yet.
+	// the notice is the admission pass (admit's tellStalledTrees), which reads this key on every
+	// pass it makes and tells the controller once for each stall: the root it names carries the
+	// movement it was told for, and the tree is told again only once it moves past that mark.
 	//
 	// No value turns the notice off: readHours refuses zero here as it does for every key in
 	// hours, and a deployment told about more trees than it wants to read raises the number, to

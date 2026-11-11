@@ -382,6 +382,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The project's `memory` block decides what each tree admission opens is drawn: a project the
 	// file names no entry for is the zero block, which is off.
 	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
+	// has stopped at: the loader gives six hours to a file that names no key, so the pass
+	// always runs under a number somebody chose.
+	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written

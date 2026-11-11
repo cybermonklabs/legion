@@ -52,7 +52,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at, moved_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -242,7 +242,9 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// records the issue through this statement in that same transaction. memory_carried, the
 	// hand-over's own answer, is named here no more than it is on Issue: CarryMemory writes it and
 	// DrawMemory reads it, and no other statement touches it. An insert names moved_at nowhere
-	// either, so a newly recorded issue takes the column's default, the moment of its own write.
+	// either, so a newly recorded issue takes the column's default, the moment of its own write,
+	// and tree_stalled_told_at, which is MarkTreeStalledTold's alone, is named in neither half,
+	// so a root recorded again carries the stall it was already told about with it.
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, ready_pending_step)
@@ -298,6 +300,26 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 func (s *Postgres) MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error {
 	if _, err := tx.Exec(ctx, "update issues set moved_at = $2 where key = $1 and moved_at <= $2", key, at); err != nil {
 		return fmt.Errorf("mark issue %s moved at %s: %w", key, at, err)
+	}
+	return nil
+}
+
+// MarkTreeStalledTold records at as the movement the daemon told root's tree stopped for. It is
+// the one writer of tree_stalled_told_at: PutIssue names the column nowhere, so the pass can
+// hold a copy of the root read before the telling and still mark it.
+//
+// The write is not monotone, unlike MarkIssueMoved's, because the column is not a movement of
+// the tree but the movement a notice was written for. The rule writes it only where it has
+// just told the controller of a tree whose newest movement stands after the mark (admit's
+// tellStalledTrees), so every write carries the row forwards; a statement that compared the
+// two would say the same thing in SQL and hide the rule's own condition.
+//
+// A key with no record matches no row and writes nothing. The write is the caller's own
+// transaction, so the mark commits with the notice it was written for or with neither: a stall
+// told to nobody is a stall the next pass tells.
+func (s *Postgres) MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root string, at time.Time) error {
+	if _, err := tx.Exec(ctx, "update issues set tree_stalled_told_at = $2 where key = $1", root, at); err != nil {
+		return fmt.Errorf("mark the tree of %s told stalled at %s: %w", root, at, err)
 	}
 	return nil
 }
@@ -455,12 +477,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	var sinceSeq *int64
 	var readyPendingStep *string
 	var readyPendingVersion *int
-	var since, declaredAt, memoryDrawnAt *time.Time
+	var since, declaredAt, memoryDrawnAt, treeStalledToldAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &readyPendingVersion, &readyPendingStep, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt); err != nil {
+		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt); err != nil {
 		return nil, err
 	}
 	if readyPendingStep != nil && readyPendingVersion != nil {
@@ -476,6 +498,10 @@ func scanIssue(row scanner) (*Issue, error) {
 	// The column is not null, so the movement is scanned straight into the record; it is read in
 	// UTC as every other time the record answers is.
 	issue.MovedAt = issue.MovedAt.UTC()
+	if treeStalledToldAt != nil {
+		utc := treeStalledToldAt.UTC()
+		issue.TreeStalledToldAt = &utc
+	}
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)
 	}
@@ -662,6 +688,38 @@ func (s *Postgres) OpenPullRequests(ctx context.Context, tx pgx.Tx, project stri
 		return nil, fmt.Errorf("list the open pull requests of %s: %w", project, err)
 	}
 	return open, nil
+}
+
+// PullRequestsOf is the pull request of each of issues, by issue key, in one query whatever the
+// number of issues: a caller that must name the pull request of every issue of a tree makes no
+// read per issue (admit's tellStalledTrees). An issue the record holds no pull request for has
+// no entry, and no issues at all reads nothing — the query is not made.
+//
+// It reads the state the record holds, whichever it is. OpenPullRequests, the other read of
+// several of this table, answers the open ones alone and could not serve this caller: a tree
+// that has stopped with its work already merged is exactly the tree that caller reports, and a
+// merged pull request is the fact its controller most needs to read.
+func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = any($1)", issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+	}
+	defer rows.Close()
+	requests := make(map[string]PullRequest, len(issues))
+	for rows.Next() {
+		pr, err := scanPullRequest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+		}
+		requests[pr.Issue] = *pr
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+	}
+	return requests, nil
 }
 
 func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
