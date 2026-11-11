@@ -16,11 +16,13 @@ import { readUrl, type View, writeUrl } from "./issues-table-model";
  * first page: a filter that leaves fewer rows than the page the reader was on would otherwise
  * show nothing.
  */
-export function useTableView() {
+export function useTableView(hasLegion = false) {
   const [params, setParams] = useSearchParams();
-  const view = useMemo(() => readUrl(params), [params]);
+  const view = useMemo(() => readUrl(params, hasLegion), [params, hasLegion]);
   const updateView = (update: (current: View) => View) =>
-    setParams((current) => writeUrl(current, update(readUrl(current))), { replace: true });
+    setParams((current) => writeUrl(current, update(readUrl(current, hasLegion)), hasLegion), {
+      replace: true,
+    });
   return {
     params,
     setParams,

@@ -2,11 +2,14 @@ import { expect, test } from "bun:test";
 import type { IssueSummary, LegionBoardCard, LegionBoardResponse } from "../../api/types";
 import {
   buildItems,
+  closedWindow,
   columnFilterSpec,
   compareGroups,
   countIssueStates,
   defaultView,
+  effectiveFilters,
   facetCounts,
+  facets,
   formatPhaseTime,
   isEpic,
   isQueued,
@@ -14,12 +17,14 @@ import {
   matchesSearch,
   mergeMembers,
   queuedInOrder,
+  readExcludedTrees,
   readUrl,
   reorder,
   startNextWrites,
   UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
+import { boardWithFacts } from "./legion-board.fixture";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -345,7 +350,10 @@ const legionBoard: LegionBoardResponse = {
     {
       id: "queue",
       label: "Queue",
-      cards: [card("CORE-3", "admitted"), card("CORE-1", "admitted")],
+      cards: [
+        { ...card("CORE-3", "admitted"), waiting_place: 1 },
+        { ...card("CORE-1", "admitted"), waiting_place: 2 },
+      ],
     },
     { id: "planning", label: "Planning", cards: [card("CORE-4", "planning")] },
     {
@@ -566,4 +574,136 @@ test("time in phase preserves elapsed units and unknown or future entry times", 
   expect(formatPhaseTime(null, now)).toBe("—");
   expect(formatPhaseTime("not a date", now)).toBe("—");
   expect(formatPhaseTime(new Date(now + 60_000).toISOString(), now)).toBe("0 m");
+});
+
+test("closedWindow accepts the documented presets and rejects invalid ranges", () => {
+  expect(closedWindow("2026-11-03..2026-11-04", Date.parse("2026-11-11T01:06:30Z"))).toEqual({
+    since: "2026-11-03T00:00:00Z",
+    before: "2026-11-04T00:00:00Z",
+  });
+  expect(closedWindow("28d", Date.parse("2026-11-11T01:06:30Z"))).toEqual({
+    since: "2026-10-14T01:06:00.000Z",
+  });
+  expect(closedWindow("all", Date.parse("2026-11-11T01:06:30Z"))).toEqual({});
+  expect(closedWindow("2026-11-05..2026-11-01", Date.parse("2026-11-11T01:06:30Z"))).toBeNull();
+  expect(closedWindow("7x", Date.parse("2026-11-11T01:06:30Z"))).toBeNull();
+  expect(closedWindow("0d", Date.parse("2026-11-11T01:06:30Z"))).toBeNull();
+});
+
+test("the closed range excludes its upper boundary and open issues", () => {
+  const [inside, boundary, open] = buildItems(
+    [
+      issue("ACME-1", { closed_at: "2026-11-03T05:00:00Z", status: "done" }),
+      issue("ACME-2", { closed_at: "2026-11-04T00:00:00Z", status: "done" }),
+      issue("ACME-3"),
+    ],
+    (actor) => actor.id
+  );
+  const closed = [{ id: "closed", value: "2026-11-03..2026-11-04" }];
+  if (inside === undefined || boundary === undefined || open === undefined)
+    throw new Error("closed-range fixture has no rows");
+  expect(matchesFilters(inside, closed)).toBe(true);
+  expect(matchesFilters(boundary, closed)).toBe(false);
+  expect(matchesFilters(open, closed)).toBe(false);
+});
+
+test("the daemon's waiting_place sets Place rather than card order", () => {
+  const board = boardWithFacts();
+  const rows = buildItems(
+    [3, 4, 5, 6].map((number) => issue(`ACME-${number}`)),
+    (actor) => actor.id,
+    [],
+    undefined,
+    board
+  );
+  expect(Object.fromEntries(rows.map((row) => [row.issue.key, row.queue]))).toEqual({
+    "ACME-3": 3,
+    "ACME-4": 1,
+    "ACME-5": 2,
+    "ACME-6": undefined,
+  });
+});
+
+test("tree and phase-hour facets read facts from the board", () => {
+  const rows = buildItems(
+    [1, 2, 6].map((number) => issue(`ACME-${number}`)),
+    (actor) => actor.id,
+    [],
+    undefined,
+    boardWithFacts()
+  );
+  const root = rows.find((row) => row.issue.key === "ACME-1");
+  const child = rows.find((row) => row.issue.key === "ACME-2");
+  const withoutFacts = rows.find((row) => row.issue.key === "ACME-6");
+  if (root === undefined || child === undefined || withoutFacts === undefined)
+    throw new Error("fact fixture has no rows");
+  expect(facets(root, "legion")).toEqual(["worked", "roots"]);
+  expect(facets(child, "legion")).toEqual(["worked", "children"]);
+  expect(facets(withoutFacts, "legion")).toEqual(["none"]);
+  expect(facets(root, "phase_hours")).toEqual(["planning", "implementing"]);
+});
+
+test("@me follows the actor id, not the rendered author name", () => {
+  const rows = buildItems(
+    [
+      issue("ACME-1", { created_by: { kind: "user", id: "alice" } }),
+      issue("ACME-2", { created_by: { kind: "user", id: "bob" } }),
+    ],
+    (actor) => (actor.id === "bob" ? "alice" : actor.id),
+    [],
+    undefined,
+    undefined,
+    "alice"
+  );
+  const byId = rows.find((row) => row.issue.key === "ACME-1");
+  const sameName = rows.find((row) => row.issue.key === "ACME-2");
+  if (byId === undefined || sameName === undefined) throw new Error("author fixture has no rows");
+  expect(facets(byId, "author")).toContain("@me");
+  expect(facets(sameName, "author")).not.toContain("@me");
+});
+
+test("exclude_tree removes every row in the named Legion tree", () => {
+  const rows = buildItems(
+    [1, 2, 3].map((number) => issue(`ACME-${number}`)),
+    (actor) => actor.id,
+    [],
+    undefined,
+    boardWithFacts()
+  );
+  const excluded = readExcludedTrees(
+    new URLSearchParams("exclude_tree=ACME-1&exclude_tree=ACME-9")
+  );
+  expect(
+    rows.filter((row) => !excluded.has(row.facts?.tree ?? "")).map((row) => row.issue.key)
+  ).toEqual(["ACME-3"]);
+});
+
+test("pending Legion data holds back only Legion filters", () => {
+  const pending = buildItems([issue("ACME-8", { status: "todo" })], (actor) => actor.id)[0];
+  if (pending === undefined) throw new Error("pending fixture has no row");
+  const legionFilters = [
+    { id: "legion", value: ["worked"] },
+    { id: "slot_use", value: ["working"] },
+    { id: "waiting_reason", value: ["ready"] },
+    { id: "phase_hours", value: ["reviewing"] },
+    { id: "phase", value: ["implementing"] },
+    { id: "stage", value: ["phase:implementing", "status:in_progress"] },
+  ];
+  for (const filter of legionFilters) {
+    expect(matchesFilters(pending, [filter], undefined, false)).toBe(true);
+    expect(matchesFilters(pending, [filter], undefined, true)).toBe(false);
+  }
+  expect(matchesFilters(pending, [{ id: "status", value: ["triage"] }], undefined, false)).toBe(
+    false
+  );
+  expect(
+    matchesFilters(pending, [{ id: "stage", value: ["status:triage"] }], undefined, false)
+  ).toBe(false);
+  const heldBack = effectiveFilters(
+    readUrl(new URLSearchParams("view=finished"), true).filters,
+    false
+  );
+  expect(heldBack).toContainEqual({ id: "status", value: ["done"] });
+  expect(heldBack).toContainEqual({ id: "closed", value: "28d" });
+  expect(heldBack.some((filter) => filter.id === "legion")).toBe(false);
 });

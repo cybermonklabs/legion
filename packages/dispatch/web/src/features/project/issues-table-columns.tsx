@@ -37,6 +37,7 @@ import {
   legionSlotValue,
   matchesFilters,
   NO_PHASE,
+  stageOf,
 } from "./issues-table-model";
 import { PhaseHoursBar, phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
@@ -63,7 +64,7 @@ declare module "@tanstack/react-table" {
     value?: [TData, TValue];
   }
 }
-const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
+const matchesColumn: FilterFn<Item> = (row, id, value) =>
   matchesFilters(row.original, [{ id, value }]);
 
 /** A header that says what the column is, with what it means behind an (i). */
@@ -83,21 +84,30 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   assignee: "Assignee",
   author: "Created by",
   ci: "CI",
-  phase_hours: "Time per phase",
   claim: "Claimed by",
+  closed: "Closed",
   created: "Created",
   epic: "Epic",
   key: "Key",
   labels: "Labels",
+  legion: "Tree",
   phase: "Phase",
+  phase_hours: "Time per phase",
   priority: "Priority",
-  queue: "Queue",
+  queue: "Place",
+  review_rounds: "Rounds",
   roles: "Roles",
   select: "Select",
   slot: "Slot",
+  slot_use: "Slot use",
+  stage: "Stage",
   status: "Status",
+  time_in_phase: "In phase",
   title: "Title",
   updated: "Updated",
+  waited: "Waited",
+  waiting_reason: "Waiting",
+  work_hours: "Work time",
 };
 export const columnLabel = <Row,>(column: { id: string; columnDef: ColumnDef<Row> }): string =>
   column.columnDef.meta?.label ?? String(column.columnDef.header ?? column.id);
@@ -135,7 +145,7 @@ const renderings = (
     enableHiding: false,
   },
   priority: {
-    header: "Priority",
+    header: COLUMN_LABELS.priority,
     accessorFn: (item) => item.issue.priority ?? undefined,
     sortUndefined: "last",
     sortDescFirst: false,
@@ -148,7 +158,7 @@ const renderings = (
     ),
   },
   queue: {
-    header: "Queue",
+    header: COLUMN_LABELS.queue,
     accessorFn: (item) => item.queue,
     sortUndefined: "last",
     sortDescFirst: false,
@@ -162,7 +172,7 @@ const renderings = (
     },
   },
   key: {
-    header: "Key",
+    header: COLUMN_LABELS.key,
     accessorFn: (item) => item.issue.key,
     sortingFn: (a, b) =>
       Number(a.original.issue.key.split("-")[1]) - Number(b.original.issue.key.split("-")[1]),
@@ -185,7 +195,7 @@ const renderings = (
     ),
   },
   title: {
-    header: "Title",
+    header: COLUMN_LABELS.title,
     accessorFn: (item) => item.issue.title,
     cell: ({ row }) => (
       <div className="min-w-0 space-y-1">
@@ -220,7 +230,7 @@ const renderings = (
     ),
   },
   status: {
-    header: "Status",
+    header: COLUMN_LABELS.status,
     accessorFn: (item) => item.issue.status,
     sortingFn: (a, b) =>
       issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
@@ -326,22 +336,64 @@ const renderings = (
         <PhaseHoursBar hours={row.original.phaseHours} max={phaseHoursMax} mode={phaseMode} />
       ),
   },
+  closed: {
+    header: COLUMN_LABELS.closed,
+    accessorFn: (item) => item.closedAt ?? undefined,
+  },
+  work_hours: {
+    header: COLUMN_LABELS.work_hours,
+    accessorFn: (item) => item.facts?.work_hours,
+  },
+  review_rounds: {
+    header: COLUMN_LABELS.review_rounds,
+    accessorFn: (item) => item.facts?.review_rounds,
+  },
+  slot_use: {
+    header: COLUMN_LABELS.slot_use,
+    accessorFn: (item) => item.legion?.card.slot_use ?? undefined,
+  },
+  waited: {
+    header: COLUMN_LABELS.waited,
+    accessorFn: (item) => {
+      const since = item.legion?.card.waiting?.since;
+      return since === null || since === undefined ? undefined : Date.now() - Date.parse(since);
+    },
+  },
+  waiting_reason: {
+    header: COLUMN_LABELS.waiting_reason,
+    accessorFn: (item) => item.legion?.card.waiting?.reason ?? undefined,
+  },
+  time_in_phase: {
+    header: COLUMN_LABELS.time_in_phase,
+    accessorFn: (item) => {
+      const since = item.legion?.card.phase_since;
+      return since === null || since === undefined ? undefined : Date.now() - Date.parse(since);
+    },
+  },
+  legion: {
+    header: COLUMN_LABELS.legion,
+    accessorFn: (item) => item.facts?.tree,
+  },
+  stage: {
+    header: COLUMN_LABELS.stage,
+    accessorFn: (item) => stageOf(item),
+  },
   epic: {
-    header: "Epic",
+    header: COLUMN_LABELS.epic,
     accessorFn: (item) => item.epic,
     cell: ({ getValue }) => (
       <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
     ),
   },
   assignee: {
-    header: "Assignee",
+    header: COLUMN_LABELS.assignee,
     accessorFn: (item) => item.issue.assignee ?? "Unassigned",
     cell: ({ getValue }) => (
       <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
     ),
   },
   author: {
-    header: "Created by",
+    header: COLUMN_LABELS.author,
     accessorFn: (item) => item.author,
     cell: ({ row }) =>
       row.original.issue.created_by === null ? (
@@ -351,7 +403,7 @@ const renderings = (
       ),
   },
   labels: {
-    header: "Labels",
+    header: COLUMN_LABELS.labels,
     accessorFn: (item) => (item.issue.labels ?? []).join(", "),
     cell: ({ row }) => (
       <span className="flex flex-wrap gap-1">
@@ -362,19 +414,19 @@ const renderings = (
     ),
   },
   claim: {
-    header: "Claimed by",
+    header: COLUMN_LABELS.claim,
     accessorFn: (item) => item.claimedBy,
     cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} />,
   },
   asks: {
-    header: "Open asks",
+    header: COLUMN_LABELS.asks,
     accessorFn: (item) => item.issue.open_asks,
     sortDescFirst: true,
     cell: ({ getValue }) =>
       getValue<number>() === 0 ? null : <AttentionBadge count={getValue<number>()} />,
   },
   created: {
-    header: "Created",
+    header: COLUMN_LABELS.created,
     accessorFn: (item) => item.issue.created_at,
     sortingFn: (a, b) =>
       compareTimestamps(a.original.issue.created_at, b.original.issue.created_at),
@@ -386,7 +438,7 @@ const renderings = (
     ),
   },
   updated: {
-    header: "Updated",
+    header: COLUMN_LABELS.updated,
     accessorFn: (item) => item.issue.updated_at,
     sortingFn: (a, b) =>
       compareTimestamps(a.original.issue.updated_at, b.original.issue.updated_at),
@@ -400,7 +452,20 @@ const renderings = (
 });
 
 /** The columns only a project a Legion daemon serves has. */
-export const LEGION_COLUMNS: readonly ColumnId[] = ["phase", "slot", "roles", "ci"];
+export const LEGION_COLUMNS: readonly ColumnId[] = [
+  "phase",
+  "slot",
+  "roles",
+  "ci",
+  "work_hours",
+  "review_rounds",
+  "slot_use",
+  "waited",
+  "waiting_reason",
+  "time_in_phase",
+  "legion",
+  "phase_hours",
+];
 
 export function useIssueTableColumns(
   userState: UserState | undefined,
@@ -426,7 +491,9 @@ export function useIssueTableColumns(
         enableColumnFilter: column.filter !== undefined,
         enableGrouping: picks?.group !== undefined,
         ...(picks?.group === undefined ? {} : { getGroupingValue: picks.group }),
-        ...(column.filter === undefined ? {} : { filterFn: picks ? inPicks : "includesString" }),
+        ...(column.filter === undefined
+          ? {}
+          : { filterFn: column.filter.kind === "text" ? "includesString" : matchesColumn }),
         meta: {
           label: COLUMN_LABELS[column.id],
           ...rendering[column.id]?.meta,

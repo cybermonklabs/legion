@@ -100,6 +100,8 @@ function stubItem(key: string): Item {
       title: key,
       updated_at: "",
     },
+    closedAt: null,
+    mine: false,
     epic: "No epic",
     author: "Unknown",
     claimedBy: "Nobody",
@@ -195,7 +197,7 @@ export function IssueGrid<Row extends { key: string }>({
   const narrow = boxWidth < 640 && primaryColumns.length > 0;
   const userState = useQuery(userStateQuery());
   const registry = useAgentRegistry(false);
-  const { allItems, hasLegion } = useProjectIssueItems(project, { wantsDone: true, registry });
+  const { allItems } = useProjectIssueItems(project, { wantsDone: true, registry });
   const [openFilter, setOpenFilter] = useState<string>();
   const [dragColumn, setDragColumn] = useState<string>();
 
@@ -209,7 +211,7 @@ export function IssueGrid<Row extends { key: string }>({
   const items = useMemo(() => data.map((entry) => entry.item ?? stubItem(entry.key)), [data]);
   const rowFor = useMemo(() => new Map(data.map((entry) => [entry.key, entry])), [data]);
 
-  const registryColumns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion);
+  const registryColumns = useIssueTableColumns(userState.data, boxWidth < 640, true);
   const tableColumns = useMemo<ColumnDef<Item>[]>(() => {
     const byId = new Map(registryColumns.map((column) => [column.id, column]));
     /** A column beside the key on a phone: it may be drawn as narrow as the share it was given,

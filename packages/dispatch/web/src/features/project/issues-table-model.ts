@@ -9,7 +9,15 @@ import type {
 } from "../../api/types";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
+import { DAY_MS } from "../delivery/lib/window";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
+import { LIFECYCLE_ORDER } from "./issues-table-lifecycle";
+import { expandView, viewOf } from "./issues-table-view-spec";
+import { PHASE_ORDER } from "./PhaseHoursBar";
+
+export { LIFECYCLE_ORDER } from "./issues-table-lifecycle";
+
+export type LegionIssueFacts = NonNullable<LegionBoardResponse["issues"]>[string];
 
 export interface Item {
   readonly issue: IssueSummary;
@@ -22,8 +30,12 @@ export interface Item {
     readonly label: string;
     readonly order: number;
   };
-  /** The issue's hours by Legion phase, from the board's own `issues` facts; absent for an
-   *  issue with no phase work and for every issue of a project with no daemon. */
+  /** The issue's facts from the board's one per-issue computation. */
+  readonly facts?: LegionIssueFacts;
+  /** The closed timestamp the list response supplies, null while the issue remains open. */
+  readonly closedAt: string | null;
+  /** Whether the signed-in reader created this issue. */
+  readonly mine: boolean;
   readonly phaseHours?: Readonly<Record<string, number>>;
   readonly queue?: number;
   readonly epic: string;
@@ -81,7 +93,8 @@ export type ColumnFilterSpec =
       /** A value out of the URL as this column keeps it. */
       readonly normalize?: (value: string) => string;
     }
-  | { readonly kind: "text"; readonly value: (item: Item) => string };
+  | { readonly kind: "text"; readonly value: (item: Item) => string }
+  | { readonly kind: "range"; readonly value: (item: Item) => string | null };
 
 /** Every column the table has. Narrow enough that a rendering, a width or a minimum keyed by
  *  an id no column carries fails to compile. */
@@ -97,6 +110,15 @@ export type ColumnId =
   | "roles"
   | "ci"
   | "phase_hours"
+  | "closed"
+  | "work_hours"
+  | "review_rounds"
+  | "slot_use"
+  | "waited"
+  | "waiting_reason"
+  | "time_in_phase"
+  | "legion"
+  | "stage"
   | "epic"
   | "assignee"
   | "author"
@@ -169,30 +191,6 @@ export const LEGION_PHASE_LABELS: Readonly<Record<string, string>> = {
   waiting_on_children: "Waiting on children",
   other: "Other",
 };
-/** The segments in lifecycle order, each `phase:<id>` or `status:<id>`; a segment both a phase
- *  and a status file under is named once, by its phase. */
-export const LIFECYCLE_ORDER: readonly string[] = [
-  "status:triage",
-  "status:icebox",
-  "status:backlog",
-  "status:todo",
-  "phase:queue",
-  "status:in_progress",
-  "phase:design",
-  "phase:planning",
-  "phase:implementing",
-  "phase:testing",
-  "status:needs_review",
-  "phase:reviewing",
-  "phase:accepting",
-  "phase:merging",
-  "phase:awaiting_person",
-  "phase:held",
-  "phase:waiting_on_children",
-  "phase:other",
-  "status:retro",
-  "status:done",
-];
 /** The Phase column's own order: the phases of the lifecycle, then the rows with no phase. */
 export const LEGION_PHASE_ORDER: readonly string[] = [
   ...LIFECYCLE_ORDER.flatMap((entry) =>
@@ -346,8 +344,84 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 164,
     filter: one((item) => item.legion?.card.checks_verdict ?? "No verdict", { groups: false }),
   },
-  // Sorted by the hours it draws and filtered by nothing: a bar is read, not picked from.
-  { id: "phase_hours", size: 220, min: 160 },
+  {
+    id: "phase_hours",
+    size: 300,
+    min: 160,
+    filter: {
+      kind: "picks",
+      values: (item) =>
+        Object.entries(item.facts?.phase_hours ?? {})
+          .filter(([, hours]) => hours > 0)
+          .map(([phase]) => phase),
+      order: PHASE_ORDER.map((phase) => phase.id),
+    },
+  },
+  {
+    id: "closed",
+    size: 120,
+    min: 120,
+    filter: { kind: "range", value: (item) => item.closedAt },
+  },
+  { id: "work_hours", size: 112, min: 112 },
+  { id: "review_rounds", size: 96, min: 96 },
+  {
+    id: "slot_use",
+    size: 140,
+    min: 140,
+    filter: {
+      kind: "picks",
+      values: (item) => (item.legion?.card.slot_use ? [item.legion.card.slot_use] : []),
+      order: ["working", "between_turns", "held_children", "held_person", "held_idle"],
+      show: (value) =>
+        ({
+          working: "Working",
+          between_turns: "Between turns",
+          held_children: "Held: children",
+          held_person: "Held: person",
+          held_idle: "Held: idle",
+        })[value] ?? value,
+    },
+  },
+  { id: "waited", size: 112, min: 112 },
+  {
+    id: "waiting_reason",
+    size: 160,
+    min: 160,
+    filter: {
+      kind: "picks",
+      values: (item) => (item.legion?.card.waiting ? [item.legion.card.waiting.reason] : []),
+      order: ["ready", "slot", "blocked", "person"],
+      show: (value) =>
+        ({ ready: "Ready", slot: "For a slot", blocked: "Blocked", person: "On a person" })[
+          value
+        ] ?? value,
+    },
+  },
+  { id: "time_in_phase", size: 112, min: 112 },
+  {
+    id: "legion",
+    size: 140,
+    min: 140,
+    filter: {
+      kind: "picks",
+      values: (item) =>
+        item.facts ? ["worked", item.facts.root ? "roots" : "children"] : ["none"],
+      order: ["worked", "roots", "children", "none"],
+    },
+  },
+  {
+    id: "stage",
+    size: 160,
+    min: 160,
+    filter: one(stageOf, {
+      order: LIFECYCLE_ORDER,
+      show: (value) => {
+        const [kind, id] = value.split(":");
+        return kind === "status" ? statusText(id ?? value) : legionPhaseText(id ?? value);
+      },
+    }),
+  },
   { id: "epic", size: 220, min: 116, filter: one((item) => item.epic) },
   {
     id: "assignee",
@@ -355,7 +429,16 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 148,
     filter: one((item) => item.issue.assignee ?? "Unassigned"),
   },
-  { id: "author", size: 200, min: 164, filter: one((item) => item.author) },
+  {
+    id: "author",
+    size: 200,
+    min: 164,
+    filter: {
+      kind: "picks",
+      values: (item) => (item.mine ? [item.author, "@me"] : [item.author]),
+      group: (item) => item.author,
+    },
+  },
   {
     id: "labels",
     size: 200,
@@ -493,7 +576,8 @@ export function buildItems(
   ancestors: readonly EpicAncestor[] = [],
   isFree: (issue: IssueSummary) => boolean = (issue) => issue.claim === null,
   // undefined: no Legion setting; null: configured, and its board has not answered yet.
-  board?: LegionBoardResponse | null
+  board?: LegionBoardResponse | null,
+  viewer?: string
 ): Item[] {
   const byKey = new Map<string, EpicAncestor>(
     [...ancestors, ...issues].map((issue) => [issue.key, issue])
@@ -515,13 +599,13 @@ export function buildItems(
         positions.set(issue.key, index + 1);
       });
   } else {
-    // The daemon's own waiting line, with no derived fallback: a configured project whose
-    // board has not answered has no queue to show.
-    board?.columns
-      .find((column) => column.id === "queue")
-      ?.cards.forEach((card, index) => {
-        positions.set(card.key, index + 1);
+    // The daemon's waiting places are the only queue order for a configured project; a card
+    // may retain its phase while it waits, so read every column rather than Queue alone.
+    board?.columns.forEach((column) => {
+      column.cards.forEach((card) => {
+        if (card.waiting_place !== null) positions.set(card.key, card.waiting_place);
       });
+    });
   }
   return issues.map((issue) => {
     let root: EpicAncestor | undefined = issue;
@@ -533,6 +617,7 @@ export function buildItems(
     const epic = root && isEpic(root) ? root : undefined;
     const author = issue.created_by ? label(issue.created_by) : "Unknown";
     const claimedBy = issue.claim ? label(issue.claim.actor) : "Nobody";
+    const facts = board?.issues?.[issue.key];
     const epicName = epic
       ? `${epic.key} · ${epic.title}`
       : root === undefined || root.parent !== null
@@ -541,7 +626,10 @@ export function buildItems(
     return {
       issue,
       legion: legion.get(issue.key),
-      phaseHours: board?.issues?.[issue.key]?.phase_hours,
+      facts,
+      closedAt: issue.closed_at,
+      mine: viewer !== undefined && issue.created_by?.id === viewer,
+      phaseHours: facts?.phase_hours,
       queue: positions.get(issue.key),
       epic: epicName,
       epicKey: epic?.key,
@@ -624,12 +712,85 @@ export function facets(item: Item, id: string): string[] {
   const filter = columnFilterSpec(id);
   return filter?.kind === "picks" ? filter.values(item) : [];
 }
-export function matchesFilters(item: Item, filters: ColumnFiltersState, except?: string): boolean {
-  return filters.every(({ id, value }) => {
-    if (id === except) return true;
+
+export const LEGION_FILTER_IDS: readonly string[] = [
+  "legion",
+  "slot_use",
+  "waiting_reason",
+  "phase_hours",
+  "phase",
+  "slot",
+  "roles",
+  "ci",
+];
+
+export function isLegionFilter(filter: ColumnFiltersState[number]): boolean {
+  return (
+    LEGION_FILTER_IDS.includes(filter.id) ||
+    (filter.id === "stage" &&
+      Array.isArray(filter.value) &&
+      filter.value.some((value) => String(value).startsWith("phase:")))
+  );
+}
+
+/** Keeps listing rows visible until the board has supplied the facts a Legion filter needs. */
+export function effectiveFilters(
+  filters: ColumnFiltersState,
+  boardReady: boolean
+): ColumnFiltersState {
+  return boardReady ? filters : filters.filter((filter) => !isLegionFilter(filter));
+}
+
+/** Resolves the closed-issue window a URL filter names, or rejects malformed input. */
+export function closedWindow(
+  value: string,
+  nowMs: number
+): { since?: string; before?: string } | null {
+  if (value === "all") return {};
+  const range = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(value);
+  if (range) {
+    const [, from, to] = range;
+    const since = `${from}T00:00:00Z`;
+    const before = `${to}T00:00:00Z`;
+    if (
+      new Date(since).toISOString().slice(0, 10) !== from ||
+      new Date(before).toISOString().slice(0, 10) !== to ||
+      before <= since
+    )
+      return null;
+    return { since, before };
+  }
+  const preset = /^([1-9]\d*)d$/.exec(value);
+  if (!preset) return null;
+  return {
+    since: new Date(Math.floor(nowMs / 60_000) * 60_000 - Number(preset[1]) * DAY_MS).toISOString(),
+  };
+}
+
+export function matchesFilters(
+  item: Item,
+  filters: ColumnFiltersState,
+  except?: string,
+  boardReady = true,
+  nowMs = Date.now()
+): boolean {
+  return filters.every((entry) => {
+    if (entry.id === except || (!boardReady && isLegionFilter(entry))) return true;
+    const { id, value } = entry;
     const filter = columnFilterSpec(id);
     if (filter?.kind === "text")
       return filter.value(item).toLowerCase().includes(String(value).toLowerCase());
+    if (filter?.kind === "range") {
+      const window = closedWindow(String(value), nowMs);
+      const at = filter.value(item);
+      return (
+        window !== null &&
+        at !== null &&
+        !Number.isNaN(Date.parse(at)) &&
+        (window.since === undefined || at >= window.since) &&
+        (window.before === undefined || at < window.before)
+      );
+    }
     if (!Array.isArray(value) || value.length === 0) return true;
     return filter?.kind === "picks" && filter.match === "all"
       ? value.every((picked: string) =>
@@ -668,11 +829,12 @@ export function facetCounts(
   items: readonly Item[],
   id: string,
   filters: ColumnFiltersState,
-  search: string
+  search: string,
+  boardReady = true
 ): Map<string, number> {
   const counts = new Map<string, number>();
   for (const item of items)
-    if (matchesFilters(item, filters, id) && matchesSearch(item, search)) {
+    if (matchesFilters(item, filters, id, boardReady) && matchesSearch(item, search)) {
       for (const value of new Set(facets(item, id)))
         counts.set(value, (counts.get(value) ?? 0) + 1);
     }
@@ -686,31 +848,31 @@ const paramFor = (id: string) => {
 const columnForParam: ReadonlyMap<string, string> = new Map(
   COLUMNS.map((column) => [paramFor(column.id), column.id])
 );
-const defaultSort = defaultView.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
-export function readUrl(params: URLSearchParams): View {
+
+function readExpandedUrl(params: URLSearchParams): View {
   const sorting = (params.get("sort") ?? "")
     .split(",")
     .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }))
     .filter(({ id }) => columnIds.includes(id));
   const grouping = params.get("group") ?? "";
-  const filters: ColumnFiltersState = [...new Set(params.keys())].flatMap((key) => {
+  const filters: ColumnFiltersState = [...new Set(params.keys())].flatMap<
+    ColumnFiltersState[number]
+  >((key) => {
     const id = columnForParam.get(key) ?? "";
+    if (!columnIds.includes(id)) return [];
     const filter = columnFilterSpec(id);
-    return columnIds.includes(id)
-      ? [
-          {
-            id,
-            value:
-              filter?.kind === "text"
-                ? params.get(key)
-                : params
-                    .getAll(key)
-                    .map((value) =>
-                      filter?.kind === "picks" && filter.normalize ? filter.normalize(value) : value
-                    ),
-          },
-        ]
-      : [];
+    if (filter?.kind === "text" || filter?.kind === "range")
+      return [{ id, value: params.get(key) ?? "" }];
+    return [
+      {
+        id,
+        value: params
+          .getAll(key)
+          .map((value) =>
+            filter?.kind === "picks" && filter.normalize ? filter.normalize(value) : value
+          ),
+      },
+    ];
   });
   // `?unclaimed=1` is the Board strip's own parameter and what shared List links carry: it picks
   // the Claimed by filter's "Nobody or lapsed", so both views read one URL.
@@ -739,13 +901,48 @@ export function readUrl(params: URLSearchParams): View {
     pageSize: PAGE_SIZES.includes(size) ? size : defaultView.pageSize,
   };
 }
-/** Whether a status pick is exactly the set the table opens with. */
-function isDefaultStatus(value: unknown): boolean {
-  const picked = Array.isArray(value) ? value.map(String) : [];
-  const fallback = (defaultView.filters[0]?.value ?? []) as string[];
-  return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
+
+/** Reads URL controls after a selected built-in view supplies its defaults. */
+export function readUrl(params: URLSearchParams, hasLegion = false): View {
+  return readExpandedUrl(expandView(params, hasLegion));
 }
-export function writeUrl(params: URLSearchParams, state: View): URLSearchParams {
+
+/** The Legion trees a shared URL removes from its listing. */
+export function readExcludedTrees(params: URLSearchParams): ReadonlySet<string> {
+  return new Set(params.getAll("exclude_tree").filter((key) => key !== ""));
+}
+
+function serializeViewState(state: View): URLSearchParams {
+  const serialized = new URLSearchParams();
+  serialized.set("sort", state.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(","));
+  if (state.grouping[0]) serialized.set("group", state.grouping[0]);
+  const hasStatus = state.filters.some(
+    (filter) => filter.id === "status" && Array.isArray(filter.value) && filter.value.length > 0
+  );
+  if (!hasStatus) serialized.set("nofilter", "1");
+  for (const filter of state.filters) {
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    for (const value of values) {
+      if (filter.id === "claim" && value === UNCLAIMED_FACET) serialized.set("unclaimed", "1");
+      else serialized.append(paramFor(filter.id), String(value));
+    }
+  }
+  if (state.search) serialized.set("q", state.search);
+  if (state.page) serialized.set("page", String(state.page + 1));
+  if (state.pageSize !== defaultView.pageSize) serialized.set("size", String(state.pageSize));
+  return serialized;
+}
+
+function sameValues(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** Writes only the table controls that differ from the selected built-in view. */
+export function writeUrl(params: URLSearchParams, state: View, hasLegion = false): URLSearchParams {
+  const selected = viewOf(params);
+  const view = selected.legionOnly && !hasLegion ? viewOf(new URLSearchParams()) : selected;
+  const base = serializeViewState(readExpandedUrl(view.params(hasLegion)));
+  const nextState = serializeViewState(state);
   const next = new URLSearchParams(params);
   for (const key of [...next.keys()])
     if (
@@ -754,25 +951,25 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
       ["sort", "group", "q", "page", "size", "nofilter", "unclaimed"].includes(key)
     )
       next.delete(key);
-  // A control left at its default says nothing, so a shared link carries only what was changed.
-  const sort = state.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
-  if (sort !== defaultSort) next.set("sort", sort);
-  if (state.grouping[0]) next.set("group", state.grouping[0]);
-  if (!state.filters.some(({ id }) => id === "status")) next.set("nofilter", "1");
-  for (const filter of state.filters) {
-    // The open statuses are what the table shows when nothing says otherwise, so a link that
-    // carries them says nothing; `readUrl` puts them back, and `nofilter=1` is how an empty
-    // selection stays expressible.
-    if (filter.id === "status" && isDefaultStatus(filter.value)) continue;
-    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
-    for (const value of values) {
-      if (filter.id === "claim" && value === UNCLAIMED_FACET) next.set("unclaimed", "1");
-      else next.append(paramFor(filter.id), String(value));
+  if (view.id === "open") next.delete("view");
+  else next.set("view", view.id);
+
+  const keys = new Set([...base.keys(), ...nextState.keys()]);
+  for (const key of keys) {
+    const original = base.getAll(key);
+    const changed = nextState.getAll(key);
+    if (sameValues(original, changed)) continue;
+    if (key === "nofilter") {
+      const value = changed[0];
+      if (value !== undefined) next.set(key, value);
+      continue;
+    }
+    if (changed.length) {
+      for (const value of changed) next.append(key, value);
+    } else if (key !== "status" && original.length) {
+      next.append(key, "");
     }
   }
-  if (state.search) next.set("q", state.search);
-  if (state.page) next.set("page", String(state.page + 1));
-  if (state.pageSize !== defaultView.pageSize) next.set("size", String(state.pageSize));
   return next;
 }
 
@@ -798,10 +995,10 @@ export interface IssueStateCount {
   picks: { phase?: readonly string[]; status?: readonly string[] };
 }
 
-/** Which segment an issue stands in: its Legion phase where the board holds it, else its
+/** Which lifecycle stage an issue stands in: its Legion phase where the board holds it, else its
  *  Dispatch status — and, for a Legion issue the board does not hold, the phase its status
  *  stands for, because an issue Legion works is never under In progress or Needs review. */
-function segmentOf(item: Item): string {
+export function stageOf(item: Item): string {
   if (item.legion !== undefined) {
     const id = item.legion.id;
     return LIFECYCLE_ORDER.includes(`phase:${id}`) ? `phase:${id}` : "phase:other";
@@ -837,7 +1034,7 @@ export const NOT_IN_LEGION = "not in Legion";
 export function countIssueStates(items: readonly Item[], legion = false): IssueStateCount[] {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const segment = segmentOf(item);
+    const segment = stageOf(item);
     counts.set(segment, (counts.get(segment) ?? 0) + 1);
   }
   return LIFECYCLE_ORDER.flatMap<IssueStateCount>((segment) => {
