@@ -93,9 +93,14 @@ type RefreshGate struct {
 	// holding more of the pacing than K and is refused every further admission until the next
 	// correction.
 	held int
-	// granted is how many admissions have been granted since the last correction, the floor that
-	// correction takes. It is reset there and nowhere else: a release does not lower it, because
-	// what it counts is what was handed out rather than what is still held.
+	// granted is how many of the admissions granted since the last correction are still out: the
+	// floor that correction takes, and the whole of what keeps it from handing one credit out
+	// twice. It rises with each admission and falls with each release, because what it answers is
+	// "how many credits of this window has the sweep's own reading not caught up with yet", and a
+	// credit already given back is one whose wake demonstrably ran or was never parked. Counting
+	// every admission of the window instead, releases included, would floor each correction at the
+	// whole of the batch the sweep before it admitted and so admit a batch only every other sweep,
+	// which halves the rate the operator set and doubles the drain this gate exists to shorten.
 	granted int
 }
 
@@ -123,12 +128,13 @@ var _ RefreshAdmitter = (*RefreshGate)(nil)
 // Admit grants a credit while fewer than K are held and counts it against the next correction,
 // and answers false once K are held, which is the caller's refresh waiting for a later sweep.
 //
-// A gate with the pacing off grants every request and counts nothing, as its own doc states. A
-// nil gate does the same: Deps.RefreshGate is nil for a daemon or a harness that built none, and
-// a nil gate reached through a typed field answers exactly as that nil field means — every
-// request granted — rather than panicking.
+// A gate with the pacing off grants every request and counts nothing, as its own doc states.
+// There is no nil gate to answer for: a daemon or a harness that holds none leaves the interface
+// field nil, and the two readers of that field test it before they call through it
+// (Machine.admitRefresh, Machine.releaseRefresh, and internal/daemon's own pair) — a nil
+// interface never reaches a method of this type.
 func (g *RefreshGate) Admit() bool {
-	if g == nil || g.credits == 0 {
+	if g.credits == 0 {
 		return true
 	}
 	g.mu.Lock()
@@ -146,18 +152,23 @@ func (g *RefreshGate) Admit() bool {
 // credit given back twice — which a lane whose relaunch has several exits can do — grants nobody
 // an admission that was never taken.
 //
-// It does not lower the admissions counted since the last correction, because that count is of
-// what the gate handed out rather than of what is still out: a wake granted and released inside
-// one sweep is a wake the sweep's own re-read may have seen either way, and the floor at granted
-// is what keeps a correction from handing its credit out twice (RefreshGate).
+// It lowers the admissions counted since the last correction with it, never below zero: that
+// count is of the credits of this window the sweep's reading may not have caught up with, and a
+// credit given back is one it need not hold a place for. A release of a credit admitted before
+// the last correction finds that count already at zero and lowers the held count alone, which is
+// right: the correction that reset it read that credit in the wakes waiting and took it into the
+// count it set (Correct).
 func (g *RefreshGate) Release() {
-	if g == nil || g.credits == 0 {
+	if g.credits == 0 {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.held > 0 {
 		g.held--
+	}
+	if g.granted > 0 {
+		g.granted--
 	}
 }
 
@@ -174,7 +185,7 @@ func (g *RefreshGate) Release() {
 //
 // A gate with the pacing off corrects nothing: it holds no count to put right.
 func (g *RefreshGate) Correct(waiting int) {
-	if g == nil || g.credits == 0 {
+	if g.credits == 0 {
 		return
 	}
 	g.mu.Lock()

@@ -268,7 +268,7 @@ func (w *waveTurn) endTurn() {
 // the machines publish their views at the end of each decision (supervise's publish, read by the
 // daemon's waitingWakes), so a single reading taken while a decision is in flight can hold the
 // wake of a claim whose credit is already free and would read K+1 for a gate that never granted
-// more than K. what names the moment of the run, for the failure.
+// more than K. what is the moment of the run this reading is of, named in the failure.
 func settledRefreshes(t *testing.T, d *daemon, what string) []api.WakeWaiting {
 	t.Helper()
 	var waiting, settled []api.WakeWaiting
@@ -293,7 +293,14 @@ func settledRefreshes(t *testing.T, d *daemon, what string) []api.WakeWaiting {
 // that timed out.
 func awaitFullGate(t *testing.T, d *daemon) bool {
 	t.Helper()
-	return testwait.Holds(4*refreshWaveSweep+time.Second, testwait.Poll, func() bool {
+	// The bound is generous rather than a few sweeps, because what it waits on is a pass over
+	// every machine of the rig and then each admitted machine's own park, published through each
+	// machine's view: a run of this package whole, with the race detector on and every other
+	// test's goroutines beside it, takes that longer than a run of this test alone. A tight
+	// bound read a gate the pass had not finished filling and reported a run that never filled
+	// one, which left assertions 2 and 5 unread and failed the case at its end for a fault of
+	// the wait rather than of the lane.
+	return testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 		return len(refreshWakesWaiting(t, d)) == testWakeRate
 	})
 }
@@ -639,7 +646,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 			})
 			creditBackIn = len(rt.fake().CallsOf("ReconcileOrphans")) - sweptAt
 			if creditBackIn > 2 {
-				t.Fatalf("the credit the suspension of %s took away came back %d sweeps after the wake was seen gone, want one: the pass that follows the drop corrects the gate from the wakes the machines hold and admits another claim on it",
+				t.Fatalf("the credit the suspension of %s took away came back %d sweeps after the wake was seen gone, want the next sweep and no later than the one after it: the pass that follows the drop corrects the gate from the wakes the machines hold and admits another claim on it",
 					drained, creditBackIn)
 			}
 			if left := claimsLeftToRefresh(t, d, "the credit coming back"); left == 0 {

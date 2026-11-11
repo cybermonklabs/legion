@@ -1728,11 +1728,18 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 //
 // The set is the one refreshStalePlugins walks, read from the same four facts: a recorded
 // session, a process that holds a capability, a recorded contract that is not this daemon's,
-// and no update round — the pass skips a pod round and the boot ends every plugin round it
-// finds (endPluginRounds), so either round left on a claim is a claim the lane passes over at
-// this read — with noPluginInstall for the fifth, the one term the claim does not carry. It is
-// computed here, where the lane's own rule lives, rather than in internal/api, which does not
-// own that rule and which cuts the body to its caller only after it is built (api's stateFor).
+// and no update round, with noPluginInstall for the fifth, the one term the claim does not
+// carry. It is computed here, where the lane's own rule lives, rather than in internal/api,
+// which does not own that rule and which cuts the body to its caller only after it is built
+// (api's stateFor).
+//
+// The round term is the one place the two readings differ, deliberately. The pass passes over a
+// pod round alone (InPodRound), because a claim an earlier daemon left in a plugin round is one
+// this boot takes out of that round and refreshes in the same pass (endPluginRounds). This count
+// passes over either round, so between the boot's post and the machine's answer it names one
+// claim fewer than the lane will refresh. That window is the length of one event in one machine's
+// inbox, and the alternative reads worse: a count naming a claim whose round still stands tells
+// an operator the lane has work the lane itself would pass over if it read that claim now.
 //
 // Whether this daemon can relaunch onto a plugin at all is deliberately not a term of it
 // (plan.pluginRelaunchable). On a daemon that cannot, the pass posts nothing and writes one

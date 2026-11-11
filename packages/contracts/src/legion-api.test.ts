@@ -1719,8 +1719,8 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
   expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
 });
 
-// The count of claims the stale-plugin lane has left (contract 60): the golden names it beside
-// the wakes that lane already holds, which is the pair a reader of a running wave needs, and a
+// The count of claims the stale-plugin lane has left (contract 60): the golden names everything
+// that lane has left to do, the claim whose wake it already holds among them, and a
 // state whose lane has nothing left carries 0 rather than no key. The key is not required for
 // the same reason `wakesWaiting` is not: a daemon at this contract leaves it off the state it
 // serves a caller whose pod's plugin is older than 60, and the one it serves a caller whose
@@ -1728,19 +1728,19 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 // without the key parses and a reader of it learns nothing about what the lane has left, rather
 // than losing the whole state; what is refused is a count that is not a whole number of claims.
 test("the state golden counts the claims the stale-plugin lane has left, and the key may be absent", () => {
-  expect(LegionStateResponse.parse(fixture("state.json")).claimsToRefresh).toBe(4);
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).claimsToRefresh).toBe(4);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).claimsToRefresh).toBe(0);
 
-  const stripped = fixture("state.json") as Record<string, unknown>;
-  delete stripped.claimsToRefresh;
+  const { claimsToRefresh: _withoutTheCount, ...stripped } = state;
   const served = LegionStateResponse.safeParse(stripped);
   expect(served.success).toBeTrue();
   expect(served.data?.claimsToRefresh).toBeUndefined();
 
   for (const refused of [-1, 1.5, "4", null]) {
-    const wrong = fixture("state.json") as Record<string, unknown>;
-    wrong.claimsToRefresh = refused;
-    expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
+    expect(
+      LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
+    ).toBeFalse();
   }
 });
 

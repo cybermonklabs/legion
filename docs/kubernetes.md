@@ -1883,9 +1883,9 @@ The annotation lives on the Sandbox, so a daemon restarted mid-replacement reads
 
 A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no pod replacement and no runbook step:
 the boot pass ("Contract discipline" below) brings every registered claim whose recorded contract differs from the daemon's onto the current plugin, and the relaunched role loads the release's published plugins installed in its pod:
-a worker that can answer `ready_for_update` is asked to push its work first and has its process replaced once it has, and one that cannot is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim.
+every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps the pod and the disk, so a worker loses only the turn it was in.
 What the text above keeps is the release that changes what the pod's own `legion` binary speaks (the launcher, the shim, `workspace-init`):
-an install refreshes no binary, so only a new image carries that change, and the update round above is what carries it
+an install refreshes no binary, so only a new image carries that change, and the pod's own update round is what carries it
 — each issue pod is replaced once every worker in it has pushed and answered.
 
 **Moving from one container per role to one `roles` container (daemon API contract 39).**

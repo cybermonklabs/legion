@@ -508,9 +508,10 @@ func populatedState(t *testing.T) State {
 			{Claim: "legion-legion-legion-208-planner", Issue: "LEGION-208", Role: claim.RolePlanner,
 				Kind: "launch", DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 		},
-		// The lane has four claims left to relaunch onto this daemon's plugin beside the one
-		// whose wake is already waiting above: the count is what it has left, and the wakes are
-		// what it has admitted, which is the pair a reader of a running wave needs (contract 60).
+		// Four claims are still on an earlier plugin, the one whose refresh wake waits above among
+		// them: the count is everything the lane has left to do and the wakes are the share of it
+		// the pacing is holding now, which is the pair a reader of a running wave needs
+		// (contract 60).
 		ClaimsToRefresh: 4,
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",

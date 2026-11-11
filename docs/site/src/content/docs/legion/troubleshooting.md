@@ -619,9 +619,14 @@ legion state --config legion.yaml --json | jq '.claimsToRefresh'
 
 That is how many sessions are still on an earlier plugin and waiting for the lane to relaunch
 them, one paced wake each.
-It falls to 0 as the wave drains, and a number that stands still over several minutes while no
-`plugin-refresh` wake waits is the one reading worth acting on: the daemon can relaunch no
-session onto a plugin at all, and its log says so once per claim at boot
+It falls to 0 as the wave drains.
+A number that stands still over several minutes while no `plugin-refresh` wake waits is most often
+a stale claim whose relaunch waits for a turn to end: the lane cuts no turn, so such a claim keeps
+its place in the count and takes its one wake at the turn's end.
+Read the claim the count still names (`legion state --json | jq '.issues'`): a claim in `working`
+is that wait, and nothing is owed of you.
+Only a count that stands still while every claim it names is idle is the reading worth acting on:
+the daemon can relaunch no session onto a plugin at all, and its log says so once per claim at boot
 (`this daemon knows no plugin versions to relaunch it onto`), which under Kubernetes means
 `runtime.kubernetes.plugins` names no plugin pair.
 

@@ -1084,8 +1084,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
   does: `legion state --json | jq .claimsToRefresh` is how many sessions the lane still has to
   relaunch onto this daemon's plugin.
-  The lane holds at most one minute of the pacing at a time, so its `plugin-refresh` wakes are
-  the claims it has already reserved and that count is the claims still to come.
+  The lane holds at most one minute of the pacing at a time, so its `plugin-refresh` wakes are the
+  share of that count the pacing holds now, not a second number beside it: a claim keeps its place
+  in the count until the wake it is reserved for has run.
   It is 0 whenever no session is on an earlier plugin, which is every moment but the minutes
   after a boot onto a new plugin contract.
 

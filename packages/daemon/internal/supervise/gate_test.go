@@ -90,13 +90,14 @@ func TestWithNoPacingTheRefreshGateGrantsEveryRefresh(t *testing.T) {
 	}
 }
 
-// The sweep's correction sets the count from the wakes it re-read, floored at the admissions
-// granted since the correction before it. Both halves are the view lagging the decision that
-// published it: a refresh admitted a moment before the sweep counted is a wake the count misses,
-// and the floor is what keeps the gate from handing that credit out twice; a wake the re-read
-// still shows after its credit came back is a credit held one sweep longer, which the floor case
-// below pins as the cost it is. A reading above the admissions since is taken as it stands, which
-// is how a credit lost to a path that returns none is taken back.
+// The sweep's correction sets the count from the wakes it re-read, floored at the admissions of
+// the window that are still out. The floor is the view lagging the decision that published it: a
+// refresh admitted a moment before the sweep counted is a wake the count misses, and the floor is
+// what keeps the gate from handing that credit out twice. A credit already given back is out of
+// that floor, because its wake has run or was never parked, and a gate that floored each
+// correction at the whole batch before it would admit one batch every other sweep and halve the
+// rate the operator set. A reading above the admissions still out is taken as it stands, which is
+// how a credit lost to a path that returns none is taken back.
 func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -109,7 +110,8 @@ func TestTheRefreshGateCorrectsTheHeldCountFromTheWakesWaiting(t *testing.T) {
 	}{
 		{name: "a reading that sees every admitted wake is the count", admit: 5, waiting: 5, held: 5},
 		{name: "a reading the published views lag is floored at the admissions since", admit: 5, waiting: 0, held: 5},
-		{name: "a credit already given back is held one sweep longer", admit: 5, release: 5, waiting: 0, held: 5},
+		{name: "a credit already given back is no floor of the next correction", admit: 5, release: 5, waiting: 0, held: 0},
+		{name: "the floor is the admissions still out, not the batch", admit: 5, release: 2, waiting: 0, held: 3},
 		{name: "a reading above the admissions since is taken as it stands", admit: 3, waiting: 6, held: 6},
 		{name: "a credit lost to a path that returns none is taken back", admit: 0, release: 0, waiting: 2, held: 2},
 		{name: "a lane whose wakes have all run is given its whole share again", admit: 0, waiting: 0, held: 0},
@@ -155,9 +157,6 @@ func TestTheRefreshGateCountsAdmissionsOnlySinceTheLastCorrection(t *testing.T) 
 	if !g.Admit() {
 		t.Fatal("the admission after the first correction was refused, want 4 of the rate held and the rest free")
 	}
-	for range 5 {
-		g.Release()
-	}
 	g.Correct(0)
 	if g.held != 1 {
 		t.Fatalf("the gate holds %d after a correction reading nothing with one admission since, want 1: the four before the previous correction are not counted again",
@@ -165,5 +164,31 @@ func TestTheRefreshGateCountsAdmissionsOnlySinceTheLastCorrection(t *testing.T) 
 	}
 	if granted := admissions(t, g, gateRate+1); granted != gateRate-1 {
 		t.Fatalf("the gate granted %d admissions after that correction, want %d", granted, gateRate-1)
+	}
+}
+
+// A lane whose whole batch has run gets its whole share again at the very next sweep, not at the
+// one after it. This is the cadence the drain rests on: the gate grants the rate, the limiter
+// gives those wakes their turns inside the minute, each turn gives its credit back, and the sweep
+// a minute later reads a lane holding nothing and grants the rate again — so a fleet of N stale
+// sessions drains in about N ÷ rate minutes, which is what requirement R1 and the sizing in
+// dispatch://INFRA-2712's design both state.
+//
+// It is pinned on its own because the shape that breaks it is invisible in a single correction: a
+// floor counting every admission of the window, releases included, reads correctly at the first
+// sweep and refuses the whole of the second, which halves the rate and doubles the drain. The
+// daemon's own wave test counts rounds of the gate rather than sweeps, so it reads the same
+// either way; this is where that cadence is held.
+func TestTheRefreshGateGivesItsWholeShareBackAtTheNextSweep(t *testing.T) {
+	g := NewRefreshGate(gateRate)
+	for sweep := 1; sweep <= 3; sweep++ {
+		g.Correct(0)
+		if granted := admissions(t, g, gateRate+1); granted != gateRate {
+			t.Fatalf("the gate granted %d admissions at sweep %d, want the rate, %d: a lane whose batch has run holds nothing for the next sweep to work around",
+				granted, sweep, gateRate)
+		}
+		for range gateRate {
+			g.Release()
+		}
 	}
 }

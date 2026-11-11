@@ -400,16 +400,20 @@ const (
 func PodRound(pod string) string { return PodRoundPrefix + pod }
 
 // PluginRound is the round id of the per-claim round for a process to be started again on the
-// daemon contract given. Nothing of this release opens such a round; it is how one an earlier
-// daemon wrote is read back, which is what a restart onto this release needs to take a claim
-// out of it.
+// daemon contract given. Nothing of this release opens such a round, so nothing of it builds one
+// either: it is kept for the tests and fixtures that seed a round an earlier daemon wrote, and it
+// stays while a daemon that writes one is still a daemon this release can restart over. Reading
+// such a round back is InPluginRound, which is what the boot's own de-rounding pass asks
+// (internal/daemon's endPluginRounds).
 func PluginRound(contract int) string { return PluginRoundPrefix + strconv.Itoa(contract) }
 
 // InPodRound and InPluginRound say which kind of round this claim is in; both are false for a
 // claim in no round at all. IsPodRound and IsPluginRound ask the same of a round id on its own,
-// for the callers that have the round before any claim holds it (LeftPodRound, asked about a
-// round the claim may not record; the workflow's idle rule, reading a round it was handed), so
-// the words and the claim's own reading can never part company.
+// so the words and the claim's own reading can never part company. IsPodRound is the one with
+// callers that have a round before any claim holds it (LeftPodRound, asked about a round the
+// claim may not record; the workflow's idle rule, reading a round it was handed); IsPluginRound
+// is reached through InPluginRound alone, since the deletion of the plugin round left no caller
+// holding such an id on its own.
 func (c Claim) InPodRound() bool { return IsPodRound(c.UpdateRound) }
 
 func (c Claim) InPluginRound() bool { return IsPluginRound(c.UpdateRound) }
