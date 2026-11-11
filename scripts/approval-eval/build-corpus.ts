@@ -1,6 +1,17 @@
-import { mkdir, realpath, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
+import {
+  listOf,
+  numberOf,
+  OutputPathError,
+  optionsOf,
+  outDirectory,
+  recordOf,
+  stringOf,
+  UsageError,
+  verdictOf,
+} from "./corpus-io";
 import {
   DispatchConfigError,
   type DispatchEvent,
@@ -58,16 +69,6 @@ const PACIFIC_HOUR = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   hourCycle: "h23",
 });
-
-/** The flags were wrong, and the usage says how. */
-class UsageError extends Error {
-  override readonly name = "UsageError";
-}
-
-/** `--out` names a path inside the repository's workspace, which no byte of a corpus may touch. */
-class OutputPathError extends Error {
-  override readonly name = "OutputPathError";
-}
 
 /** What an ask asked, as the answered event holds it. */
 export interface AskOption {
@@ -189,67 +190,6 @@ function readFlags(argv: readonly string[]): Flags {
   return { person, out, through };
 }
 
-/**
- * The directory the three files are written to. It must be absolute and outside this repository's
- * workspace: the workspace is snapshotted whole into the working copy, so a corpus written there
- * would be committed.
- */
-async function outDirectory(out: string): Promise<string> {
-  if (!isAbsolute(out)) {
-    throw new OutputPathError(`--out takes an absolute path, and ${out} is relative`);
-  }
-  const wanted = resolve(out);
-  const workspaces = new Set<string>();
-  const named = process.env.LEGION_WORKSPACE?.trim();
-  if (named) workspaces.add(resolve(named));
-  workspaces.add(resolve(import.meta.dir, "..", ".."));
-  for (const workspace of [...workspaces]) {
-    try {
-      workspaces.add(await realpath(workspace));
-    } catch {
-      // A workspace that is not there cannot hold the output either.
-    }
-  }
-  for (const workspace of workspaces) {
-    const prefix = workspace.endsWith(sep) ? workspace : workspace + sep;
-    if (wanted === workspace || wanted.startsWith(prefix)) {
-      throw new OutputPathError(
-        `--out must name a path outside the repository workspace, and ${wanted} is under ${workspace}`
-      );
-    }
-  }
-  return wanted;
-}
-
-function recordOf(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function stringOf(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function numberOf(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function listOf(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function optionsOf(value: unknown): AskOption[] {
-  return listOf(value).map((entry) => {
-    const option = recordOf(entry);
-    return {
-      id: stringOf(option?.id),
-      label: stringOf(option?.label),
-      description: stringOf(option?.description),
-    };
-  });
-}
-
 function documentOf(value: Record<string, unknown>): ApprovalDocument {
   return {
     artifactId: stringOf(value.artifact_id),
@@ -276,20 +216,6 @@ function approvalOf(payload: Record<string, unknown>): CaseApproval {
     artifactSlug: stringOf(artifact?.slug),
     artifactPrimary: typeof artifact?.primary === "boolean" ? artifact.primary : null,
   };
-}
-
-/**
- * What the person decided on an approval ask, read from the option they chose. An answer names
- * the labels, but an answer naming an option's id is read back through the options it was
- * offered.
- */
-function verdictOf(selected: readonly string[], options: readonly AskOption[]): CaseVerdict {
-  const first = selected[0];
-  const chosen = options.find((option) => option.id === first)?.label ?? first ?? "";
-  const label = chosen.trim().toLowerCase();
-  if (label.startsWith("approve")) return "approve";
-  if (label.startsWith("request")) return "request_changes";
-  return "other";
 }
 
 /**
