@@ -2083,13 +2083,11 @@ func TestApplyOperationReplaceWritesBlocksInsideTheBlockThatHoldsThem(t *testing
 			want:     "Intro.\n\n:::callout{#c1 kind=\"note\" title=\"T\"}\n- a\n- b\n:::\n",
 		},
 		{
-			// The `&#32;` is the space left where the requirement's `**R1.**` ran into the match.
-			// The settlement of R3, a later task of INFRA-1520, writes that half away.
 			name:     "two paragraphs inside a requirement",
 			markdown: requirement,
 			find:     "The rule.",
 			with:     "one\n\ntwo",
-			want:     ":::requirement{#r1}\n**R1.**&#32;\n\none\n\ntwo\n:::\n",
+			want:     ":::requirement{#r1}\n**R1.**\n\none\n\ntwo\n:::\n",
 		},
 		{
 			name:     "a list as an ask's options, under its question",
@@ -2123,6 +2121,240 @@ func TestApplyOperationReplaceWritesBlocksInsideTheBlockThatHoldsThem(t *testing
 				t.Fatalf("replace with %q = %q, want %q", test.with, markdown, test.want)
 			}
 		})
+	}
+}
+
+// A `replace` that writes blocks settles what it wrote before anything stores it (INFRA-1520):
+// the whitespace the split left at the inner edge of each half of the textblock the match lay in
+// goes, since no text is left there to continue, and the blocks hold what their own markdown
+// reads back as - an empty half the renderer does not write is dropped, and a list and its items
+// take the spread they are written with. Each case prints the markdown it read.
+func TestApplyOperationReplaceSettlesTheBlocksItWrote(t *testing.T) {
+	const requirement = ":::requirement{#r1}\n**R1.** The rule.\n:::\n"
+	const callout = "Intro.\n\n:::callout{#c1 kind=\"note\" title=\"T\"}\nBody.\n:::\n"
+	for _, test := range []struct{ name, markdown, find, with, want string }{
+		{
+			// The trim alone, which is what repairs the spaces: the splice leaves the halves
+			// ending and opening with the space around the match, stored as `Alpha&#32;` and
+			// `&#32;gamma.`, and a reader of the document reads neither word as it was written.
+			name:     "the spaces the split left at the match's own edges",
+			markdown: "Alpha beta gamma.\n",
+			find:     "beta",
+			with:     "beta\n\n- a\n- b",
+			want:     "Alpha\n\nbeta\n\n- a\n- b\n\ngamma.\n",
+		},
+		{
+			name:     "the space a requirement's marker left where it ran into the match",
+			markdown: requirement,
+			find:     "The rule.",
+			with:     "one\n\ntwo",
+			want:     ":::requirement{#r1}\n**R1.**\n\none\n\ntwo\n:::\n",
+		},
+		{
+			name:     "no empty half where the blocks take a paragraph's whole text",
+			markdown: "Intro.\n\nBody.\n\nAfter.\n",
+			find:     "Body.",
+			with:     "- first\n- second",
+			want:     "Intro.\n\n- first\n- second\n\nAfter.\n",
+		},
+		{
+			name:     "no empty half where the blocks take a callout's whole text",
+			markdown: callout,
+			find:     "Body.",
+			with:     "- a\n- b",
+			want:     "Intro.\n\n:::callout{#c1 kind=\"note\" title=\"T\"}\n- a\n- b\n:::\n",
+		},
+		{
+			// The item the write splits holds blocks with a blank line between them, so its
+			// list is written loose, and the list and its items take that spread rather than
+			// the tight one the splice left them with.
+			name:     "the spread a list written inside a list item reads back with",
+			markdown: "- foo one bar\n- two\n",
+			find:     "one",
+			with:     "- a\n- b",
+			want:     "- foo\n\n  - a\n  - b\n\n  bar\n- two\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := applyAlone(tree, model.EditOp{Op: "replace", Find: test.find, With: test.with})
+			if err != nil {
+				t.Fatalf("replace with %q: %v", test.with, err)
+			}
+			markdown, err := renderTree(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("replace with %q wrote %q", test.with, markdown)
+			if markdown != test.want {
+				t.Fatalf("replace with %q = %q, want %q", test.with, markdown, test.want)
+			}
+			// No markdown writes an empty half, so the text above says nothing about one: the
+			// tree is where it would stand, taking an id and reaching the next write.
+			if empty := emptyParagraphCount(next); empty > 0 {
+				t.Fatalf("replace with %q left %d empty paragraphs behind %q, want none", test.with, empty, markdown)
+			}
+		})
+	}
+}
+
+// emptyParagraphCount is how many paragraphs of tree hold nothing.
+func emptyParagraphCount(tree *pmdoc.Node) (empty int) {
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "paragraph" && len(node.Children) == 0 {
+			empty++
+		}
+		return true
+	})
+	return empty
+}
+
+// The block ids a `replace` that writes blocks carries (INFRA-1520): the id of the paragraph the
+// match lay in goes to the first block, in document order, that still holds that paragraph's
+// text, so an ask, a comment or a reference keyed on it still names the block its reader sees.
+// Every other block the write wrote or split off carries an id of its own, so no id names two
+// blocks, and where no block holds that text any more the paragraph is gone and its id with it.
+// Each case prints the ids it read before and after.
+func TestApplyOperationReplaceCarriesTheBlockIDOfTheParagraphItWroteOver(t *testing.T) {
+	for _, test := range []struct {
+		name, markdown, find, with string
+		// holds is the index among the result's document-level blocks of the one that keeps the
+		// paragraph's id, or -1 where no block keeps it.
+		holds int
+	}{
+		{
+			name:     "the block holding the text before a match inside the paragraph",
+			markdown: "Alpha beta gamma.\n",
+			find:     "beta",
+			with:     "beta\n\n- a\n- b",
+			holds:    0,
+		},
+		{
+			name:     "the block holding the text after a match at the first character",
+			markdown: "Alpha beta gamma.\n",
+			find:     "Alpha ",
+			with:     "- a\n- b",
+			holds:    1,
+		},
+		{
+			name:     "the paragraph written first over the paragraph's whole text",
+			markdown: "Here is the plan.\n",
+			find:     "Here is the plan.",
+			with:     "Here is the plan:\n\n- first\n- second",
+			holds:    0,
+		},
+		{
+			name:     "no block where a list alone took the paragraph's whole text",
+			markdown: "Here is the plan.\n",
+			find:     "Here is the plan.",
+			with:     "- first\n- second",
+			holds:    -1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held := blockID(tree.Children[0])
+			next, err := applyAlone(tree, model.EditOp{Op: "replace", Find: test.find, With: test.with})
+			if err != nil {
+				t.Fatalf("replace with %q: %v", test.with, err)
+			}
+			t.Logf("the document held %v; replace with %q left %v", writtenBlockIDs(tree), test.with, writtenBlockIDs(next))
+			if test.holds >= 0 {
+				if keeper := blockID(next.Children[test.holds]); keeper != held {
+					t.Fatalf("block %d of %v carries %q, want the paragraph's %q", test.holds, writtenBlockIDs(next), keeper, held)
+				}
+			}
+			carriers, minted := 0, map[string]bool{}
+			pmdoc.Walk(next, func(node *pmdoc.Node) bool {
+				if node.Type == "doc" || node.Type == "text" || isInlineLeaf(node) {
+					return true
+				}
+				id := blockID(node)
+				if id == "" {
+					t.Fatalf("a %s of %v carries no id, want every block the write left to carry one", node.Type, writtenBlockIDs(next))
+				}
+				if minted[id] {
+					t.Fatalf("%v names %q twice, want every block under an id of its own", writtenBlockIDs(next), id)
+				}
+				minted[id] = true
+				if id == held {
+					carriers++
+				}
+				return true
+			})
+			want := 1
+			if test.holds < 0 {
+				want = 0
+			}
+			if carriers != want {
+				t.Fatalf("%d blocks of %v carry the paragraph's %q, want %d", carriers, writtenBlockIDs(next), held, want)
+			}
+		})
+	}
+}
+
+// writtenBlockIDs is the kind and the id of each block of tree, in document order.
+func writtenBlockIDs(tree *pmdoc.Node) []string {
+	var ids []string
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "doc" || node.Type == "text" || isInlineLeaf(node) {
+			return true
+		}
+		ids = append(ids, node.Type+":"+blockID(node))
+		return true
+	})
+	return ids
+}
+
+// A comment pinned to a paragraph by its block id still points at that block after a replacement
+// that writes blocks inside it: the half holding the text before the match keeps the paragraph's
+// own id, and no other block takes it, so the row still names one block, the one holding the
+// words the comment was written about.
+func TestApplyOperationReplaceKeepsTheBlockIDAPinnedCommentNames(t *testing.T) {
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, "Alpha beta gamma.\n")
+	commentID := insertAnchoredComment(t, service, artifactID, "Alpha")
+	if _, err := service.BackfillAnchorBlocks(context.Background()); err != nil {
+		t.Fatalf("pin the comment to its block: %v", err)
+	}
+	var encoded []byte
+	if err := service.store.Pool.QueryRow(context.Background(),
+		"select anchor from comments where id = $1", commentID).Scan(&encoded); err != nil {
+		t.Fatalf("load the comment's anchor: %v", err)
+	}
+	var anchor model.Anchor
+	if err := json.Unmarshal(encoded, &anchor); err != nil {
+		t.Fatalf("decode the comment's anchor: %v", err)
+	}
+	if anchor.BlockID == nil || *anchor.BlockID == "" {
+		t.Fatalf("the comment's anchor is %+v, want it pinned to a block", anchor)
+	}
+	pinned := *anchor.BlockID
+
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{
+		{Op: "replace", Find: "beta", With: "beta\n\n- a\n- b"},
+	}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil); err != nil {
+		t.Fatalf("write the blocks over the match: %v", err)
+	}
+	waitForDocumentText(t, service, artifactID, "Alpha\n\nbeta\n\n- a\n- b\n\ngamma.\n")
+
+	live := liveTree(t, service, artifactID)
+	t.Logf("the comment is pinned to %q; the document holds %v", pinned, writtenBlockIDs(live))
+	var holders []string
+	pmdoc.Walk(live, func(node *pmdoc.Node) bool {
+		if blockID(node) == pinned {
+			holders = append(holders, pmdoc.TextContent(node))
+		}
+		return true
+	})
+	if len(holders) != 1 || holders[0] != "Alpha" {
+		t.Fatalf("the blocks under %q read %q, want the one holding %q", pinned, holders, "Alpha")
 	}
 }
 

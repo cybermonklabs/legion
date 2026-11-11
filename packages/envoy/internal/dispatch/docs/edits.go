@@ -1136,10 +1136,17 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			}
 		}
 		// The document-level blocks the replace changed, found once over the tree it started from
-		// and read by every refusal below, each of which found them for itself before.
+		// and read by the settlement and by every refusal below, each of which found them for
+		// itself before.
 		found, err := matchedBlocks(valid, r)
 		if err != nil {
 			return nil, err
+		}
+		// What the block path wrote is settled and its block ids carried, on the tree the task
+		// box was set on: the settlement removes children and moves every position after them,
+		// so nothing that reads a position may run after it.
+		if blocks {
+			next = settleBlockReplacement(valid, next, found, at, r, with, op.With)
 		}
 		// Both checks below read the blocks this replace changed, and the block it lands in can
 		// hold the whole document's text: each block is rendered and parsed once for the two
@@ -1931,6 +1938,140 @@ func blockReplacement(valid pmdoc.ValidDocument, at pmdoc.TextblockAt, r pmdoc.R
 		)}
 	}
 	return next, nil
+}
+
+// settleBlockReplacement settles what the block path wrote over the match and carries the block
+// ids of the textblock it split, over the tree the splice made.
+//
+// The settlement is the accepted suggestion's (settleAccepted), with the whitespace run the split
+// left at the inner edge of each half taken off first (trimSplitEdges). Measured on 2026-11-11
+// over `Alpha beta gamma.`, a `with` of "beta\n\n- a\n- b" splices to
+// "Alpha&#32;\n\nbeta\n\n- a\n- b\n\n&#32;gamma.\n" and pmdoc.AgreeWithReadBack leaves that
+// string exactly as it is: it drops a changed child the renderer does not write that carries no
+// block id, copies the spread of lists and items from their read-back, and never changes text.
+// The inline path drops that same whitespace for itself (continueText), so this is the block path
+// taking the rule it already follows.
+//
+// The ids follow the settlement, which drops an unwritten half only while that half carries no id
+// of its own (carryReplacedBlockIDs).
+func settleBlockReplacement(valid pmdoc.ValidDocument, next *pmdoc.Node, found matchBlocks, at pmdoc.TextblockAt, r pmdoc.Range, fragment *pmdoc.Node, with string) *pmdoc.Node {
+	held := blockID(at.Node)
+	trimSplitEdges(splitHalves(next, found, held), at, r)
+	next = settleAccepted(valid, next, found, with)
+	carryReplacedBlockIDs(next, found, held, fragment)
+	return next
+}
+
+// splitHalves are the parts of the textblock the match lay in that the write left, in document
+// order: the blocks carrying held, that textblock's own id, among the document-level blocks the
+// write changed (matchBlocks). The splice gives each half that one id - measured on 2026-11-11,
+// where `Alpha beta gamma.` split over `beta` left it on the first block and on the last - so a
+// match inside the text leaves two halves and one at an edge of it leaves one. Only the blocks
+// the write changed are read, so a repeat of that id the document already carried elsewhere is
+// left alone.
+func splitHalves(next *pmdoc.Node, found matchBlocks, held string) []*pmdoc.Node {
+	if held == "" {
+		return nil
+	}
+	var halves []*pmdoc.Node
+	last := min(found.lastAfter(next), len(next.Children)-1)
+	for index := found.first; index <= last; index++ {
+		pmdoc.Walk(next.Children[index], func(node *pmdoc.Node) bool {
+			if blockID(node) == held {
+				halves = append(halves, node)
+			}
+			return true
+		})
+	}
+	return halves
+}
+
+// trimSplitEdges drops the whitespace run the split left at the inner edge of each half: the end
+// of the part before the match, and the start of the part after it. A match stays inside one
+// textblock, since a quote reaching across blocks is refused (ErrQuoteSpansBlocks), so one that
+// opens that text leaves no part before it and one that runs to the end of it leaves no part
+// after it, and the one half there is belongs to the other edge.
+func trimSplitEdges(halves []*pmdoc.Node, at pmdoc.TextblockAt, r pmdoc.Range) {
+	if len(halves) == 0 {
+		return
+	}
+	if r.From > at.Content.From {
+		trimTextEnd(halves[0])
+	}
+	if r.To < at.Content.To {
+		trimTextStart(halves[len(halves)-1])
+	}
+}
+
+// trimTextEnd takes the whitespace off the end of a textblock's last text run, and the run itself
+// where nothing is left of it. The run is the splice's own, written from the text it kept
+// (pmdoc's inlineRange), so changing it changes no node of the tree the write started from.
+func trimTextEnd(textblock *pmdoc.Node) {
+	children := textblock.Children
+	if len(children) == 0 {
+		return
+	}
+	last := children[len(children)-1]
+	if last.Type != "text" {
+		return
+	}
+	if last.Text = strings.TrimRight(last.Text, markdownSpace); last.Text == "" {
+		textblock.Children = children[:len(children)-1]
+	}
+}
+
+// trimTextStart is trimTextEnd at a textblock's start.
+func trimTextStart(textblock *pmdoc.Node) {
+	children := textblock.Children
+	if len(children) == 0 {
+		return
+	}
+	first := children[0]
+	if first.Type != "text" {
+		return
+	}
+	if first.Text = strings.TrimLeft(first.Text, markdownSpace); first.Text == "" {
+		textblock.Children = children[1:]
+	}
+}
+
+// carryReplacedBlockIDs gives held, the id of the textblock the match lay in, to the first block
+// in document order that still holds that textblock's text: the part before the match where one
+// is left, the part after it where the match opened the text, and the block the write wrote first
+// where it replaced the whole text and that block is a paragraph. Every other block the write
+// left under held takes a fresh id, so no id names two blocks; the blocks the write wrote carry
+// the ids their own parse minted. Where no block holds that text any more the textblock is gone,
+// and its id with it.
+//
+// Both halves of a split carry held until this runs, and a paragraph written over a whole
+// textblock's text comes with an id of its own: over `Here is the plan.`, a `with` of
+// "Here is the plan:\n\n- first\n- second" left a minted id where the document held the
+// paragraph's, measured on 2026-11-11.
+func carryReplacedBlockIDs(next *pmdoc.Node, found matchBlocks, held string, fragment *pmdoc.Node) {
+	if held == "" {
+		return
+	}
+	halves := splitHalves(next, found, held)
+	if len(halves) > 0 {
+		for _, half := range halves[1:] {
+			mintFreshBlockID(half)
+		}
+		return
+	}
+	if len(fragment.Children) == 0 || fragment.Children[0].Type != "paragraph" {
+		return
+	}
+	if written := blockWithID(next, blockID(fragment.Children[0]), "paragraph"); written != nil {
+		written.Attrs[pmdoc.BlockIDAttr] = held
+	}
+}
+
+// mintFreshBlockID gives block the id pmdoc mints for a block carrying none (EnsureBlockIDs). It
+// stamps that block alone, so the rest of the document is left as it is: a repeat the document
+// already carried is settlement's to repair, not a write's.
+func mintFreshBlockID(block *pmdoc.Node) {
+	delete(block.Attrs, pmdoc.BlockIDAttr)
+	pmdoc.EnsureBlockIDs(block)
 }
 
 // blockSpliceRefusal words the refusal of a `with` whose blocks the fit cannot write where the
