@@ -44,12 +44,9 @@
 --                   REST listing rather than from a query and cursor_counted that its heads are
 --                   already among the heads the cycle knows the repository has. A pass that
 --                   reached the end of the order leaves the zero cursor, which is the start of
---                   the order. The page's position in the repository is recorded nowhere: a
---                   pull request merged below it moves that position and moves no number, so a
---                   reader taking the position for the address would name a page the pass never
---                   stopped at. GitHub's own opaque page token is not stored either: it is
---                   valid only to the process that was handed it, and it says nothing to a
---                   person reading the row.
+--                   the order. GitHub's own opaque page token is not stored: it is valid only
+--                   to the process that was handed it, and it says nothing to a person reading
+--                   the row.
 --
 -- A new table nothing before this release names: the release before this one neither reads nor
 -- writes it, so the two roll side by side (cmd/dispatch/README.md, "Database migrations"), and

@@ -54,9 +54,10 @@ const (
 // collateMappingsAsADeploymentDoes holds the mapping's names under a collation that sorts
 // `owner/legionabc` before `owner/legion-x`, which is what a deployment's database does: its
 // collation is the one the cluster's Postgres was created with, glibc's en_US on the measured
-// one. The database a test runs against is collated C, where a name sorts as its bytes do and
-// so exactly as Go compares it, so no pair of names a test writes can tell the two rules apart
-// there; this is the one place the difference can be put back.
+// one. The default collation of the database a test runs against is whatever its server was
+// created with (ICU en-US on the pod's test server, and other servers may differ), so the test
+// cannot rely on it to tell the two rules apart; it puts the names under one known collation of
+// its own.
 func (h *harness) collateMappingsAsADeploymentDoes() {
 	h.t.Helper()
 	// A PostgreSQL built with ICU carries ICU collations of its own and one built without ICU
@@ -68,7 +69,7 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 		h.t.Fatalf("ask whether this Postgres was built with ICU: %v", err)
 	}
 	if !icu {
-		h.t.Skip("a PostgreSQL built with ICU must serve these tests: ICU is what holds the mapping under a collation weighing punctuation last, which is the only order a test can tell apart from the Go comparison that seeks into it")
+		h.t.Skip("a PostgreSQL built with ICU must serve these tests: ICU is what holds the mapping under one known collation weighing punctuation last, an order the Go comparison that seeks into it does not follow")
 	}
 	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
 	// glibc's en_US was measured to follow. Both name columns take it: the canonical name of a

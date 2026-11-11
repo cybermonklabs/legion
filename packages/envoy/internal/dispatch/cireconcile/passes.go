@@ -235,12 +235,10 @@ type PassCounts struct {
 // repository has, so the pass taking the cursor up neither queries for a page it holds no
 // cursor for nor counts those heads a second time.
 //
-// The page's position in the repository is recorded nowhere, because it is not what the next
-// pass reads by: a pull request merged below the page moves the position and moves no number,
-// so the number names the same page in any later listing and the position names a page the
-// cursor never stood at (cursor, walk.window). GitHub's own opaque page token is recorded
-// nowhere either -- it is valid only to the process that was handed it, and it says nothing to
-// a person reading the row.
+// The row records the address the next pass cuts its window by, which is From (cursor,
+// walk.window); the page's ordinal, which the walk keeps for its count and its log line, is not
+// part of it. GitHub's own opaque page token is not recorded either: it is valid only to the
+// process that was handed it, and it says nothing to a person reading the row.
 type PassCursor struct {
 	Repository string `json:"repository"`
 	From       int64  `json:"from"`

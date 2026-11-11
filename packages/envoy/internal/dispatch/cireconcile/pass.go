@@ -39,10 +39,6 @@ import (
 // listing. The stand-in answers a cursor keyed the same way, so the suite cannot pass an
 // offset off as one (graphql_test.go, queryAfter).
 //
-// Nothing checks that a page begins where from says, for the same reason: under a keyset
-// cursor a page whose heads have all merged legitimately begins above it, and a check would
-// fire on ordinary traffic.
-//
 // rest says the page comes from the repository's REST listing rather than from a query: GitHub
 // gave the pass that fell back to the listing no cursor for the pages after the one it refused,
 // so the pass taking this cursor up reads the repository on from the listing rather than asking
@@ -61,6 +57,10 @@ import (
 // has closed below it, and the page a query was refused for is named like any other: the page
 // before it was answered, and every head a query answers carries a number, so the refused page
 // begins above the last of them.
+//
+// Nothing checks that a page begins where from says: under GitHub's keyset cursor (above), a
+// page whose heads have all merged legitimately begins above it, and a check would fire on
+// ordinary traffic.
 //
 // number is the first head of the page the pass did not finish, and zero is the whole page: a
 // head below it was read by the pass that left the cursor. counted says the heads of that page

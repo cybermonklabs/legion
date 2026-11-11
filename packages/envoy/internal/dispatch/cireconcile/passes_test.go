@@ -264,8 +264,7 @@ func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 // before it -- with the first pull request of the page the pass did not finish, whether the page
 // is read from the repository's REST listing, and whether its heads are already counted among
 // the repository's. An operator reading GET /api/v1/ci-reconcile/passes has to see what decides
-// where the next pass cuts its window, and the page's position in the repository decides
-// nothing: a pull request merged below moves it.
+// where the next pass cuts its window.
 //
 // The pass here reads the first page from a query, is refused the query for the second, falls
 // back to the listing, and is cut short at the second head of that page. The pass after it
