@@ -42,11 +42,28 @@ type IdleReleaseRow struct {
 
 // IdleReleaseMark is what a decision to release writes: the rows above and the role whose shim
 // the bundle is asked of. Rows empty means the pod is not released, and nothing is written.
+//
+// SuspendsNoRole is the release of a pod no role can use (workflow.UnownedPodRelease), whose
+// every claim is already failed, retired or suspended: it suspends no role and saves no bundle,
+// so it names no role and queues the teardown alone. The mark records which of the two rules
+// wrote it (issue_releases.kind), because what a release did is what its teardown and its
+// cancel must read: a release that suspended nothing has nothing to resume and no roles to
+// record. A mark that suspends a role names it, and one that suspends none leaves Role empty.
 type IdleReleaseMark struct {
-	Generation uint64
-	Role       claim.Role
-	Rows       []IdleReleaseRow
+	Generation     uint64
+	Role           claim.Role
+	SuspendsNoRole bool
+	Rows           []IdleReleaseRow
 }
+
+// releaseKindIdle and releaseKindUnowned are the two release rules as issue_releases.kind spells
+// them: the release of a pod whose roles are all quiet, and the release of a pod no role can use
+// any more. Every reader of a mark reads the kind rather than guessing the rule from the role,
+// which is empty for the second and for nothing else.
+const (
+	releaseKindIdle    = "idle"
+	releaseKindUnowned = "unowned"
+)
 
 // IdlePods is every issue of project whose pod has a live claim — one neither failed, retired nor
 // already suspended — in key order: the issues the idle tick decides. An issue whose claims are
@@ -140,6 +157,11 @@ func (s *Store) UnownedPods(ctx context.Context, project string, outOfWorkflow [
 // It answers whether a release was marked. decide answering no rows writes nothing, which is the
 // ordinary case: nearly every tick finds a pod that is working, or one whose idle period has not
 // passed.
+//
+// A mark that names no role and does not say it suspends none is refused before anything is
+// written, as a fault of the rule that decided it rather than of the database: the save of the
+// workspace is asked of the role the mark names, so a release without one and without the
+// second rule's kind is a release nobody can carry out.
 func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
@@ -156,6 +178,9 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		mark, err := decide(view)
 		if err != nil || len(mark.Rows) == 0 {
 			return err
+		}
+		if mark.Role == "" && !mark.SuspendsNoRole {
+			return fmt.Errorf("the release of %s names no role and is not a release that suspends none", issue)
 		}
 		if view.Releasing {
 			return nil
@@ -188,10 +213,17 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			project, issue).Scan(&wake); err != nil {
 			return fmt.Errorf("read the newest wake of %s: %w", issue, err)
 		}
+		// The kind is the rule that decided this release, and the role is the one whose shim the
+		// save is asked of: a release that suspends no role has none, and leaves the column
+		// empty, which is the one spelling the table's check takes beside that kind.
+		kind, role := releaseKindIdle, string(mark.Role)
+		if mark.SuspendsNoRole {
+			kind, role = releaseKindUnowned, ""
+		}
 		if _, err := tx.Exec(ctx, `insert into issue_releases
-			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, marked_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
-			project, issue, int64(mark.Generation), first, boundary, last, started, wake, string(mark.Role)); err != nil {
+			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, kind, marked_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())`,
+			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind); err != nil {
 			return fmt.Errorf("mark the release of %s: %w", issue, err)
 		}
 		marked = true
@@ -240,6 +272,13 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // left `released` is no business of this release, which is why the mark's own set is read and
 // never every released claim of the issue.
 //
+// Beside them it answers whether the release it ended was one that suspends no role
+// (IdleReleaseMark.SuspendsNoRole, issue_releases.kind): the mark's kind, read in the same
+// transaction that reads its id and its suspended set, since the cancel reads the mark itself
+// and its caller holds none. The caller needs it to say what it cancelled — a release that
+// suspended no role resumes none, so an empty answer there is the whole story rather than a
+// release whose claims another path took over.
+//
 // An issue the record no longer holds, one that has left the workflow, and one whose tree
 // lingers are given no resume at all, and the mark goes all the same: those claims are a close's
 // to end. The gate is the one every path that acts on a released pod reads
@@ -261,26 +300,29 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // that runs first queues its resume below the close's rows, which supersede it, and one that runs
 // after reads the issue as left and queues nothing.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
-	outOfWorkflow func(status string) bool) ([]claim.Role, error) {
+	outOfWorkflow func(status string) bool) ([]claim.Role, bool, error) {
 	if project == "" || issue == "" || resume == nil || outOfWorkflow == nil {
-		return nil, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
+		return nil, false, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
 	}
 	var resumed []claim.Role
+	var suspendsNoRole bool
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
-		resumed = nil
+		resumed, suspendsNoRole = nil, false
 		var release int64
 		var suspended []string
-		err := tx.QueryRow(ctx, `select id, suspended from issue_releases where project = $1 and issue = $2`,
-			project, issue).Scan(&release, &suspended)
+		var kind string
+		err := tx.QueryRow(ctx, `select id, suspended, kind from issue_releases where project = $1 and issue = $2`,
+			project, issue).Scan(&release, &suspended, &kind)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		suspendsNoRole = kind == releaseKindUnowned
 		// The bundle this release saved goes with the mark, in this transaction. The pod it was
 		// taken off is the pod the roles resume in, with that work in its own workspace, so the
 		// row holds a copy of work a live disk has; left behind it would hold the issue's pod
@@ -320,9 +362,9 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		return deleteIssueRelease(ctx, tx, project, issue)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("cancel the release of %s: %w", issue, err)
+		return nil, false, fmt.Errorf("cancel the release of %s: %w", issue, err)
 	}
-	return resumed, nil
+	return resumed, suspendsNoRole, nil
 }
 
 // resumeStanding is what a cancel reads of issue before it queues a resume: the generation the

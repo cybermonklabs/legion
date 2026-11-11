@@ -286,6 +286,65 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	}
 }
 
+// The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and saves
+// no bundle, so its mark names no role and records the rule that wrote it instead: every row of
+// that release, and the cancel that ends it, read the kind to know what the release did. A mark
+// that names no role and is not that release is the rule's own fault, and is refused before
+// anything is written.
+func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	teardown := IdleReleaseRow{Kind: "issue_release",
+		Payload:  []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`),
+		Boundary: true}
+
+	refused, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+		return IdleReleaseMark{Generation: view.Generation, Rows: []IdleReleaseRow{teardown}}, nil
+	})
+	if err == nil || refused {
+		t.Fatalf("a mark naming neither a role nor the second rule = %t, %v; want it refused before anything is written", refused, err)
+	}
+	var rows int
+	if err := st.Pool().QueryRow(ctx, `select count(*) from outbox where issue = $1`, rootIssue).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("outbox rows = %d, want none written by a mark the store refused", rows)
+	}
+
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+		return IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true, Rows: []IdleReleaseRow{teardown}}, nil
+	})
+	if err != nil || !marked {
+		t.Fatalf("ReleaseIdleIssue = %t, %v; want the release of the pod no role can use marked", marked, err)
+	}
+	var kind, role string
+	var last int64
+	if err := st.Pool().QueryRow(ctx, `select kind, role, last_row from issue_releases
+		where project = 'legion' and issue = $1`, rootIssue).Scan(&kind, &role, &last); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "unowned" || role != "" {
+		t.Fatalf("mark = kind %q role %q, want the unowned kind and no role: that release suspends none", kind, role)
+	}
+
+	// Every row of the release reads the kind back out of the mark, whatever the fences then
+	// decide for the row itself.
+	decision, err := st.IssueRelease(ctx, "legion",
+		IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last},
+		record.OutOfWorkflow)
+	if err != nil || !decision.SuspendsNoRole {
+		t.Fatalf("the teardown's decision = %+v, %v; want it to carry the release that suspends no role", decision, err)
+	}
+
+	resumed, suspendsNoRole, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	if err != nil || !suspendsNoRole || len(resumed) != 0 {
+		t.Fatalf("the cancel = %v, %t, %v; want no role resumed and the release named as the one that suspends none",
+			resumed, suspendsNoRole, err)
+	}
+}
+
 // IdlePods is the tick's candidate list: every issue of the project with a live claim, and no
 // issue whose roles have all stopped — there is no role there to ask for a bundle and no claim to
 // suspend.
@@ -412,7 +471,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	}
 	done := make(chan cancelled, 1)
 	go func() {
-		roles, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+		roles, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
 		done <- cancelled{roles: roles, err: err}
 	}()
 
