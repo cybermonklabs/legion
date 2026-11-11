@@ -187,7 +187,10 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// is what makes this exact count sound: a handling here is a decode and, for a Legion event, one
 	// transaction against a Postgres drainRoundTrip - 3 ms - away, so the window is a hang guard far
 	// above the work each message does, and a redelivery the count would see needs the whole
-	// 30 seconds to pass with one handler still running.
+	// 30 seconds to pass before that handling's acknowledgement reaches the server. This consumer
+	// is intake.OpenConsumers' own, with the fetch batch of one every intake consumer takes
+	// (consumerFetchBatch, consume.go), so it would take such a redelivery at the pull that
+	// follows the handler's return, not while the handler runs.
 	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
 	if err != nil {
 		t.Fatalf("read the GitHub consumer: %v", err)

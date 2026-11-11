@@ -1407,8 +1407,9 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 
 // assertAcknowledgedThrough waits for consumer to have acknowledged every message of its filter up
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
-// deliveries: JetStream delivers a message again once its AckWait passes unacknowledged, which is
-// at-least-once delivery the consumer deduplicates, and which a delivery count would read as more.
+// deliveries: a message whose AckWait passes unacknowledged is due again at the server, and this
+// consumer takes it at the pull that follows its handler's return, which is at-least-once
+// delivery the consumer deduplicates and which a delivery count would read as more.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
 	testwait.Eventually(t, fmt.Sprintf("%s has acknowledged through stream sequence %d", consumer, last.Sequence), func() bool {
@@ -1963,12 +1964,20 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// handler makes (resolveReviewPermission), and consumerSpec's 200 ms is the length of
 			// this handler's own work on a loaded runner - two pool reads and the fact's
 			// transaction - so this row sets it as a hang guard far above that work, leaving the
-			// failed read and its retry as the only two reads. That guard is what makes the count
-			// of two sound: a redelivery the count would see needs the whole minute to pass with
-			// the handler still running. The progress keeper makes a redelivery unlikely while a
-			// handler runs and promises none: a report, or the acknowledgement, that reaches the
-			// server after the window has lapsed still has the message delivered again
-			// (keepInProgress, ackprogress.go).
+			// failed read and its retry as the only two reads. The margin is what makes the count
+			// of two sound: a third read needs the whole minute to pass before a handling's nak
+			// or acknowledgement reaches the server. The campaign of dispatch://INFRA-1113
+			// measured that trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and
+			// the handler's own work and that trip together, about 717 ms, are a factor of about
+			// 80 below this window. The progress keeper reports nothing here: it ticks
+			// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and each
+			// handling of this row ends, in a nak or in an acknowledgement, in about 200 ms, long
+			// before the first tick is due (keepInProgress, ackprogress.go). Where the margin
+			// closes the keeper defers a third read and prevents none: a report, or the
+			// acknowledgement, that reaches the server after the window has lapsed makes the
+			// message due again at the server, and this consumer takes it at the pull that
+			// follows the handler's return, since a fetch batch of consumerFetchBatch leaves no
+			// pull outstanding while the handler runs. The third read is made there.
 			spec.AckWait = time.Minute
 			var mu sync.Mutex
 			var asks []time.Time

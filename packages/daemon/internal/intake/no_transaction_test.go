@@ -90,8 +90,8 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	// a redelivery the counts would see needs the whole minute to pass before the handling's
 	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
 	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
-	// and that trip together are a factor of about 300 below this window, 200 ms against a
-	// minute. The progress keeper reports nothing here: it ticks at a third of the window
+	// and that trip together, about 717 ms, are a factor of about 80 below this window.
+	// The progress keeper reports nothing here: it ticks at a third of the window
 	// (spec.AckWait/3 in consume.go), so at 20 s, and each handling of this row acknowledges in
 	// about 200 ms, long before the first tick is due (keepInProgress, ackprogress.go).
 	spec.AckWait = time.Minute

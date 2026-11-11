@@ -701,10 +701,12 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	took := time.Since(started)
 	stop()
 
-	// A fact outliving its acknowledgement window is what the progress signal makes harmless, as
-	// long as every report reaches the server inside the window, so the daemon says when one did:
-	// this is the only line that reports how long a fact took, nothing else times one, and the
-	// consumer-lag warning (lagWatch) speaks only five minutes late.
+	// A fact outliving its acknowledgement window is what the progress signal makes harmless,
+	// as long as every signal of it reaches the server in time: each report inside the window
+	// running then, and the acknowledgement that ends the handling inside the window the last
+	// report started. So the daemon says when one did: this is the only line that reports how
+	// long a fact took, nothing else times one, and the consumer-lag warning (lagWatch) speaks
+	// only five minutes late.
 	outlived := !outcome.nak && took > spec.AckWait
 	// A handler the limit cut is otherwise hard to see: with a batch of one this consumer takes no
 	// second delivery while a handler runs, a reconnect excepted, so the cut handler shows neither

@@ -530,8 +530,8 @@ Two kinds of row keep an exact count.
   (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait = time.Minute`
   over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin
   is what this carve-out rests on: that work, and the acknowledgement's trip to the server, which
-  the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, both stay far below
-  the window, a factor of about 300 at a minute against 200 ms. The progress keeper is no part of
+  the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms
+  together, a factor of about 80 below a minute. The progress keeper is no part of
   it. At a minute its period is 20 s (`spec.AckWait/3` in `consume.go`) and that handler
   acknowledges in about 200 ms, so the keeper never reports for that message at all. The
   carve-out ends where the margin closes, and a reader finds that out by measuring the handler's
