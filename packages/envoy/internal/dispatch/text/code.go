@@ -58,10 +58,12 @@ const (
 //     indented lines that follow, blank lines between them included, and ends at the last of
 //     them.
 //   - A code span, as CommonMark reads one: a run of N backticks opens one and the next run of
-//     exactly N closes it, the search ending where the paragraph does, at a blank line, so a run
-//     nothing closes there is literal text. A backslash takes the backtick after it as a literal
-//     character, which opens no span, while a run that closes one is read as written, escaped or
-//     not, which is where CommonMark puts the escape too. Spans are read in the text the
+//     exactly N closes it, the search ending where the paragraph does - at a blank line, at a
+//     line blank past the containers it carries such as a bare `>` inside a quote, at a list
+//     item's marker, at an ATX heading, at a thematic break - so a run nothing closes inside
+//     that paragraph is literal text. A backslash takes the backtick after it as a literal
+//     character, which opens no span, while a run that closes one is read as written, escaped
+//     or not, which is where CommonMark puts the escape too. Spans are read in the text the
 //     blocks leave, so a backtick inside a fenced block opens nothing and no span reaches across
 //     a block.
 //
@@ -77,10 +79,11 @@ const (
 // What it deliberately does not read, because the dashboard's reader must agree with it on every
 // row of DISPATCH_TEXT_REFERENCES and each of these would cost both readers a markdown parse:
 //
-//   - A line that is no paragraph's and opens none: an ATX or setext heading, a table's rows, a
-//     block of HTML, a link reference definition. An indented line right under one is read as
-//     that paragraph's text, so a code block opening there is read as prose and the party it
-//     holds is delivered to, where no reader of the record sees one named.
+//   - A line that is no paragraph's and opens none: a setext heading's underline, a table's
+//     rows, a block of HTML, a link reference definition. An indented line right under one is
+//     read as that paragraph's text, so a code block opening there is read as prose and the
+//     party it holds is delivered to, where no reader of the record sees one named. An ATX
+//     heading is not one of them: it is read, and ends the paragraph above it.
 //   - A footnote definition's container. Its content, four columns in, is read as an indented
 //     code block where a blank line stands between it and the `[^id]:` line - a party written
 //     there is delivered to nobody, which is the silent half of being wrong.
@@ -88,23 +91,22 @@ const (
 //     one straddling a container's own content column is taken whole by that container, so a tab
 //     after a list marker is the item's indentation rather than indented code inside it: code
 //     read as prose again.
-//   - A paragraph that ends at something other than a blank line: a `>` alone inside a block
-//     quote, a list item's marker interrupting one. A span's search ends at a line blank of
-//     everything, so one opened in such a paragraph can be closed by a run past the paragraph's
-//     end.
+//   - A code span crossing a construct only a real parse resolves. The paragraph a line of the
+//     first kind ends carries on for this reader, so a run opened before a setext heading's
+//     underline, a table's rows or a block of HTML can be closed by a run after it.
 func codeRanges(body string) []codeRange {
-	blocks := codeBlocks(body)
+	blocks, breaks := codeBlocks(body)
 	if len(blocks) == 0 {
-		return codeSpans(body, 0)
+		return appendCodeSpans(nil, body, 0, len(body), breaks)
 	}
 	ranges := make([]codeRange, 0, 2*len(blocks)+1)
 	at := 0
 	for _, block := range blocks {
-		ranges = append(ranges, codeSpans(body[at:block.start], at)...)
+		ranges = appendCodeSpans(ranges, body, at, block.start, breaks)
 		ranges = append(ranges, block)
 		at = block.end
 	}
-	return append(ranges, codeSpans(body[at:], at)...)
+	return appendCodeSpans(ranges, body, at, len(body), breaks)
 }
 
 // inCode reports whether the byte at offset is inside one of ranges, which codeRanges wrote in
@@ -123,13 +125,15 @@ func inCode(ranges []codeRange, offset int) bool {
 }
 
 // codeBlocks is the fenced and indented code blocks of body, in order, each from the first byte
-// of its opening line to the end of its last line, read in one walk of the body's lines. The
-// walk holds the containers open at the line (stack), whether the line before it was a
-// paragraph's - which is what an indented line needs not to be to open a block of its own - and
-// the code block the line stands in, if any. A block's range runs from the start of its opening
-// line, containers' markers included, since nothing of a line before the code is a reference.
-func codeBlocks(body string) []codeRange {
-	var blocks []codeRange
+// of its opening line to the end of its last line, and the offsets where a paragraph ends, in
+// order too: both are read in the one walk of the body's lines. The walk holds the containers
+// open at the line (stack), whether the line before it was a paragraph's - which is what an
+// indented line needs not to be to open a block of its own - and the code block the line stands
+// in, if any. A block's range runs from the start of its opening line, containers' markers
+// included, since nothing of a line before the code is a reference. A break is the start of a
+// line that ends the paragraph above it, which is where a code span's search for its closing
+// run ends too (appendCodeSpans).
+func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 	var stack []container
 	paragraph := false
 	leaf := noLeaf
@@ -202,21 +206,40 @@ func codeBlocks(body string) []codeRange {
 			indent, column = indentEnd(body, content, end, col)
 		}
 
+		// A line opening a container of its own - a list item's marker, a `>` - interrupts the
+		// paragraph above it.
+		ends := depth > matched
+		heading := false
 		prose := false
 		switch {
 		case indent >= end || thematic:
-			// A blank line and a thematic break open nothing and end the paragraph above them.
+			// A line blank past the containers it carries - a bare `>` among them - and a
+			// thematic break open nothing and end the paragraph above them.
+			ends = true
 		case column-col >= 4 && !paragraph:
 			leaf, start, last = indentedLeaf, at, next
 		case column-col <= 3:
-			if char, width, ok := fenceOpener(body, indent, end); ok {
+			char, width, ok := fenceOpener(body, indent, end)
+			switch {
+			case ok:
 				leaf, start, fenceChar, fenceWidth = fencedLeaf, at, char, width
-			} else {
+			case isATXHeading(body, indent, end):
+				// An ATX heading is no paragraph's line and opens none: it ends the paragraph
+				// above it, and a break on the line under it leaves the heading's own text to
+				// itself, where a span of its own may stand.
+				ends, heading = true, true
+			default:
 				prose = true
 			}
 		default:
 			// Four columns or more under a paragraph are that paragraph's own text.
 			prose = true
+		}
+		if ends {
+			breaks = append(breaks, at)
+		}
+		if heading {
+			breaks = append(breaks, next)
 		}
 		// A line that carries none of the containers it stands in, opens nothing and continues
 		// the paragraph above it is that paragraph's own text: the containers stay open for the
@@ -234,7 +257,7 @@ func codeBlocks(body string) []codeRange {
 	case indentedLeaf:
 		blocks = append(blocks, codeRange{start: start, end: last})
 	}
-	return blocks
+	return blocks, breaks
 }
 
 // matchContainers reads the line [at, end) through the containers of stack: how many of them, in
@@ -349,6 +372,21 @@ func isThematicBreak(body string, from, end int) bool {
 	return count >= 3
 }
 
+// isATXHeading reports whether the content of a line at from, past its containers and its own
+// indentation, is an ATX heading: one to six `#` and then a space, a tab or the end of the line.
+// It is no paragraph's line and opens none, so it ends the paragraph above it and an indented
+// line right under it opens a code block, as CommonMark opens one there.
+func isATXHeading(body string, from, end int) bool {
+	at := from
+	for at < end && body[at] == '#' {
+		at++
+	}
+	if at == from || at-from > 6 {
+		return false
+	}
+	return at >= end || body[at] == ' ' || body[at] == '\t'
+}
+
 // indentEnd is past the spaces and tabs starting at at, within [at, end), and the column there,
 // read from column col: a tab advances to the next four-column stop. It lands on end where the
 // rest of the line is blank.
@@ -385,49 +423,47 @@ func indentTo(body string, at, end, col, want int) (int, int) {
 	return at, col
 }
 
-// codeSpans is the code spans of text, each range shifted by base, which is where text starts in
-// the body it was cut from. A span is read inside the paragraph that holds it: the search for
-// its closing run ends at the blank line that ends the paragraph, as CommonMark ends it, so an
-// unmatched backtick mutes nothing after that line. The dashboard's codeSpans reads the same
-// rule (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
-func codeSpans(text string, base int) []codeRange {
-	var spans []codeRange
-	paragraph := 0
-	for at := 0; at < len(text); {
-		end, next := lineBounds(text, at)
-		if isBlank(text, at, end) {
-			spans = appendParagraphSpans(spans, text, paragraph, at, base)
-			paragraph = next
-		}
-		at = next
+// appendCodeSpans appends the code spans of body[from:to] to spans, in order, each read inside
+// the paragraph that holds it: the search for a span's closing run ends where that paragraph
+// ends, at the first of breaks past where the search began, so an unmatched backtick mutes
+// nothing written past its own paragraph. The breaks are the ones codeBlocks read, in order
+// (a blank line, a line blank past its containers, a list item's marker, an ATX heading, a
+// thematic break), and the dashboard's codeSpans reads the same rule
+// (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
+func appendCodeSpans(spans []codeRange, body string, from, to int, breaks []int) []codeRange {
+	// A break on from itself cuts nothing, the paragraph starting there.
+	index, _ := slices.BinarySearch(breaks, from+1)
+	start := from
+	for ; index < len(breaks) && breaks[index] < to; index++ {
+		spans = appendParagraphSpans(spans, body, start, breaks[index])
+		start = breaks[index]
 	}
-	return appendParagraphSpans(spans, text, paragraph, len(text), base)
+	return appendParagraphSpans(spans, body, start, to)
 }
 
-// appendParagraphSpans appends the code spans of [from, to), a stretch of text no blank line
-// breaks, each range shifted by base: the run of backticks at a span's start is closed by the
-// next run of exactly that length, a longer run being no closer, and a run with no closer is
-// literal text that the next character is read on from. A backslash takes the character after
-// it, so an escaped backtick opens no span; a run that closes one is read as written, as
-// CommonMark reads a closer.
-func appendParagraphSpans(spans []codeRange, text string, from, to, base int) []codeRange {
+// appendParagraphSpans appends the code spans of [from, to), a stretch of body no paragraph
+// break cuts: the run of backticks at a span's start is closed by the next run of exactly that
+// length, a longer run being no closer, and a run with no closer is literal text that the next
+// character is read on from. A backslash takes the character after it, so an escaped backtick
+// opens no span; a run that closes one is read as written, as CommonMark reads a closer.
+func appendParagraphSpans(spans []codeRange, body string, from, to int) []codeRange {
 	for at := from; at < to; {
-		if text[at] == '\\' {
+		if body[at] == '\\' {
 			at += 2
 			continue
 		}
-		if text[at] != '`' {
+		if body[at] != '`' {
 			at++
 			continue
 		}
-		opener := backtickRunEnd(text, at, to)
+		opener := backtickRunEnd(body, at, to)
 		width := opener - at
-		closer := nextBacktickRun(text, opener, to, width)
+		closer := nextBacktickRun(body, opener, to, width)
 		if closer < 0 {
 			at = opener
 			continue
 		}
-		spans = append(spans, codeRange{start: base + at, end: base + closer + width})
+		spans = append(spans, codeRange{start: at, end: closer + width})
 		at = closer + width
 	}
 	return spans
