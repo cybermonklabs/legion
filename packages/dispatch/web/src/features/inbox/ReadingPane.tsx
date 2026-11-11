@@ -186,7 +186,16 @@ function ApprovalBody({
   });
 
   const artifact = artifactQuery.data;
-  const changeBaseline = isText(baselineQuery.data) ? baselineQuery.data.markdown_tree : undefined;
+  // The baseline the version is marked against, as the answer carried it: Go's reading where it
+  // sent one, and the stored text itself where it did not - a pod of the build before this one,
+  // or a version whose text is empty, for which the server builds no tree. The marks are drawn
+  // from whichever of the two arrived (`changeMarksAgainst`), so a rolling deploy leaves the
+  // approver reading an unmarked document for no longer than it takes to answer.
+  const baselineText = isText(baselineQuery.data) ? baselineQuery.data : undefined;
+  const changeBaseline =
+    baselineText === undefined
+      ? undefined
+      : { markdown: baselineText.markdown, tree: baselineText.markdown_tree };
   const latestVersion =
     artifact === undefined ? undefined : versionsNewestFirst(artifact.versions)[0]?.number;
   // A document the column cannot read, and a request on a document that holds no version to

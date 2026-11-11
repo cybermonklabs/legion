@@ -9,7 +9,7 @@ import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtim
 import { realClock, tick } from "../../__tests__/fake-clock";
 import type { AuthenticatedUser, DisplayTree } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
-import { changeMarksAgainst } from "./change-marks";
+import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import type { CreateEditor, EditorHandle } from "./editor";
 import { embedHighlight } from "./highlight";
 import { DocumentRuntime } from "./runtime";
@@ -39,7 +39,7 @@ function renderVersionView({
   markdownTree,
   whoAmI = signedIn,
 }: {
-  changeBaseline?: DisplayTree;
+  changeBaseline?: ChangeBaseline;
   createEditor?: (inner: CreateEditor) => CreateEditor;
   highlight: { by: string; id: string; quote: string } | undefined;
   markdown: string;
@@ -288,6 +288,44 @@ test("VersionView draws a version whose answer carried no reading from its markd
   }
 });
 
+// The reader who followed a comment's deep link into such a version must still be taken to the
+// quote: the highlight is embedded in a tree, and where the answer carried none it is embedded
+// in the editor's own reading of the markdown the view has just drawn. Telling that reader the
+// range is gone, with the quote right there in the text, is the one reading this view must not
+// make.
+test("VersionView marks the highlighted quote of a version drawn from its markdown", async () => {
+  const markdown = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const { editors, view } = renderVersionView({
+    createEditor: (inner) => async (root, options) => {
+      const handle: EditorHandle = await inner(root, options);
+      const state = handle.view.state as unknown as { doc: ProseMirrorNode };
+      // What `setMarkdown` leaves the real editor reading, which the fake's own state carries
+      // nothing of: the document the quote is embedded in.
+      state.doc = renderedDocument(markdown);
+      return handle;
+    },
+    highlight: { by: "user:alice", id: "comment-1", quote: "canary" },
+    markdown,
+    markdownTree: null,
+  });
+
+  try {
+    await waitFor(() => expect(editors[0]?.documentJSON).toBeDefined());
+    // Drawn from its markdown first, then redrawn with the quote marked in what that drew.
+    expect(editors[0]?.markdown).toBe(markdown);
+    expect(markedText(editors[0]?.documentJSON, "proofComment")).toEqual(["canary"]);
+    expect(editors[0]?.focused).toEqual(["comment-1"]);
+    expect(
+      within(view.container).queryByText(
+        "Text changed. The selected range no longer exists in this document."
+      )
+    ).toBeNull();
+    expect(within(view.container).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The document the editor builds for `markdown`, which the component marks against its
  *  baseline: the fake editor holds no ProseMirror document of its own. */
 function renderedDocument(markdown: string): ProseMirrorNode {
@@ -301,6 +339,12 @@ function renderedDocument(markdown: string): ProseMirrorNode {
  *  marks against. */
 function treeOf(markdown: string): DisplayTree {
   return renderedDocument(markdown).toJSON() as DisplayTree;
+}
+
+/** The baseline a version is marked against, as the reading pane carries it: the approved
+ *  version's own stored text, with the reading the server sent of it. */
+function baselineOf(markdown: string): ChangeBaseline {
+  return { markdown, tree: treeOf(markdown) };
 }
 
 /** Records what the host draws over the rendered document, and gives the handle `doc`, the
@@ -326,7 +370,7 @@ test("VersionView draws the marks its baseline computes over the version it rend
   const baseline = "# Plan\n\nThe plan ships behind a flag today.\n\nThe old note.\n\nThe end.\n";
   const drawn: ChangeDecorations[] = [];
   const { view } = renderVersionView({
-    changeBaseline: treeOf(baseline),
+    changeBaseline: baselineOf(baseline),
     createEditor: recordMarks(renderedDocument(markdown), drawn),
     highlight: undefined,
     markdown,
@@ -334,7 +378,7 @@ test("VersionView draws the marks its baseline computes over the version it rend
 
   try {
     await waitFor(() => expect(drawn).toHaveLength(1));
-    const marks = changeMarksAgainst(treeOf(baseline), renderedDocument(markdown));
+    const marks = changeMarksAgainst(baselineOf(baseline), renderedDocument(markdown));
     // The baseline changed one paragraph and lost another, so there is something to draw.
     expect(marks.text.length).toBeGreaterThan(0);
     expect(marks.widgets.length).toBeGreaterThan(0);
@@ -381,7 +425,7 @@ test("VersionView draws the version's tree and parses nothing, on either engine"
   const baseline = "# Plan\n\nThe plan ships behind a flag today.\n";
   // Everything the test itself reads is read before the counting starts.
   const markdownTree = treeOf(markdown);
-  const changeBaseline = treeOf(baseline);
+  const changeBaseline = baselineOf(baseline);
   const rendered = renderedDocument(markdown);
   const drawn: ChangeDecorations[] = [];
   const parses: string[] = [];

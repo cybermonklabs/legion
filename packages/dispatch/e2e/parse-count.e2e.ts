@@ -27,7 +27,12 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { countParses, readParseCounts, rewrittenParseCallSites } from "./parse-counting";
+import {
+  countParses,
+  type ParseCounts,
+  readParseCounts,
+  rewrittenParseCallSites,
+} from "./parse-counting";
 import { resetDatabase } from "./seed";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { asUser } from "./users";
@@ -318,26 +323,38 @@ function surfaces(seeded: Seeded): Surface[] {
   ];
 }
 
-/** Opens a page of `context`, shows `surface` on it and answers what it parsed. */
-async function parsesOf(context: BrowserContext, surface: Surface): Promise<unknown> {
+/** One surface's counts, under its own name: a walk compares whole objects, so the page that
+ *  parsed is named in the comparison rather than found by its place in the list. */
+interface SurfaceParses extends ParseCounts {
+  readonly surface: string;
+}
+
+/**
+ * Opens a page of `context`, shows `surface` on it and answers what it parsed.
+ *
+ * The surface names itself in whatever showing it fails with: each walk below is one test over
+ * fourteen pages, so the surface that drew nothing has to be in the failure itself and not only
+ * in the line number under it. And the stored text has to stand in place of the document rather
+ * than beside an apology for it: a view that gave up and drew its error can still leave the word
+ * the walk waits for somewhere else on the page. Both readings hold wherever a surface is
+ * opened, with the trees served or stripped, so both are read here.
+ */
+async function parsesOf(context: BrowserContext, surface: Surface): Promise<SurfaceParses> {
   const page = await context.newPage();
   try {
-    await surface.show(page);
+    try {
+      await surface.show(page);
+    } catch (cause) {
+      const said = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(`${surface.name} drew no stored text: ${said}`, { cause });
+    }
+    await expect(
+      page.getByText(/Could not load/),
+      `${surface.name} drew an error in place of its document`
+    ).toHaveCount(0);
     return { ...(await readParseCounts(page)), surface: surface.name };
   } finally {
     await page.close();
-  }
-}
-
-/** Shows `surface` on `page` and names it in whatever that fails with: the walk below is one
- *  test over fourteen pages, so the surface that drew nothing has to be in the failure itself
- *  and not only in the line number under it. */
-async function showNamed(page: Page, surface: Surface): Promise<void> {
-  try {
-    await surface.show(page);
-  } catch (cause) {
-    const said = cause instanceof Error ? cause.message : String(cause);
-    throw new Error(`${surface.name} drew no stored text: ${said}`, { cause });
   }
 }
 
@@ -396,25 +413,10 @@ test("the counter sees the parse a text served with no reading costs", async ({
     // from both.
     expect(pages).toHaveLength(14);
     const counted = [];
-    for (const surface of pages) {
-      const page = await alice.newPage();
-      try {
-        // `show` waits for the surface's own text, so a view that refuses an answer carrying no
-        // tree, or draws nothing from one, fails here under that surface's name: the fallback
-        // is a rule of the whole list rather than of the views someone has fixed so far.
-        await showNamed(page, surface);
-        // And the text stands in place of the document rather than beside an apology for it: a
-        // view that gave up and drew its error can still leave the word the row waits for
-        // somewhere else on the page.
-        await expect(
-          page.getByText(/Could not load/),
-          `${surface.name} drew an error in place of its document`
-        ).toHaveCount(0);
-        counted.push({ display: (await readParseCounts(page)).display, surface: surface.name });
-      } finally {
-        await page.close();
-      }
-    }
+    // The same walk the row above makes, so a view that refuses an answer carrying no tree, or
+    // draws nothing from one, fails under its own surface's name here too: the fallback is a
+    // rule of the whole list rather than of the views someone has fixed so far.
+    for (const surface of pages) counted.push(await parsesOf(alice, surface));
     // And the counter sees the parse a page with no reading has to make: the issue page holds
     // the spec's markdown alone and reads it itself, which is what says the zeros the row above
     // counts are pages that could have parsed and did not.

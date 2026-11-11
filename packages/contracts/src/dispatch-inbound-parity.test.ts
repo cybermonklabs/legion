@@ -134,6 +134,12 @@ const oldAskEventPayloadFields = {
     .optional(),
   resolution: z
     .object({
+      // The three kinds the server wrote the day this copy was taken. No sample in this file
+      // resolves an ask with `declined`, and none carries the `dispatch_words` Dispatch writes
+      // beside one: this copy refuses that kind and strips those words, today's parser takes
+      // both, and a sample is only a sample here where the two read it alike. A person's
+      // decline is covered against today's parser in `dispatch-api.test.ts` ("parses an ask a
+      // person declined to answer, note and Dispatch's words apart").
       kind: z.enum(["retracted", "resolved", "withdrawn"]).optional(),
       reason: z.string().optional(),
       actor: z
@@ -936,9 +942,15 @@ const RECORDED: readonly Sample[] = [
 ];
 
 /**
- * One whole frame per parser: every field the parser declares, filled with a value it accepts.
- * The generated samples below are read off these, so a field added to a parser without a value
- * here is a field no generated sample covers.
+ * One whole frame per parser: every field both parsers declare, filled with a value each
+ * accepts. The generated samples below are read off these, so a field added to a parser without
+ * a value here is a field no generated sample covers.
+ *
+ * A field today's parser keeps and the copy above does not declare cannot take a value here at
+ * all: the copy strips it, so the one frame would read two ways and every sample built from it
+ * would be a disagreement. Those fields are covered where today's parser is read on its own, in
+ * `dispatch-api.test.ts`; `resolution.dispatch_words` and the hand-on's `asked_of`,
+ * `asked_of_by` and `asked_of_at` are the ask's fields that stand so today.
  */
 const WHOLE: Readonly<Record<ParserName, Frame>> = {
   artifactCreated: { artifact: { id: "artifact-1", slug: "spec", name: "spec.md" } },

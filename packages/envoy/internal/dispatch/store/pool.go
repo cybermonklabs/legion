@@ -386,7 +386,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // (duty.Exclusive). One connection per caller that can be inside Exclusive at the same moment is
 // the whole requirement, and it is a caller and not a lease that needs one: Exclusive takes its
 // connection before it learns whether the lease is held, so a pass that skips because the other
-// process holds the lease holds a connection for that round trip too. Sixteen names are leased -
+// process holds the lease holds a connection for that round trip too. Seventeen names are leased -
 // the document compaction, the keyed writes' maintenance sweep (api.RunMaintenanceSweep, which
 // keeps the lease name suggestion-outcomes the suggestion sweep carried that work under), the
 // reference-excerpt reconciliation, the block-index reconciliation, the term-statistics refresh,
