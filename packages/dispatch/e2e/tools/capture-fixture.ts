@@ -378,12 +378,24 @@ async function capturePremortem(
   console.log(`${out}: ${issue}/${slug} v${document.version}, ${fixture.risks.length} risks`);
 }
 
-/** One compared field. A difference is the last line printed: the status says which file is
- *  stale, and nothing after it would be read anyway. */
+/** One compared field that gates. A difference is the last line printed: the status says which
+ *  file is stale, and nothing after it would be read anyway. */
 function compare(field: string, captured: unknown, live: unknown): void {
   const same = JSON.stringify(captured) === JSON.stringify(live);
   console.log(`${field}: ${same ? "same" : "differs"}`);
   if (!same) process.exit(1);
+}
+
+/** One reading that does not gate. What a capture records of an unversioned thing - the issue's
+ *  title, its asks - is true of the moment it was captured and of no moment after it: a person
+ *  may open an ask, answer one or rename the issue at any time, and none of that makes the file
+ *  a wrong record of its capture. So drift is printed and counted, and the run still passes.
+ *  Gating on it would turn this check red for every live issue as the days pass, and a reader
+ *  who meets a red that always means nothing stops reading it. */
+function drift(field: string, captured: unknown, live: unknown): boolean {
+  const same = JSON.stringify(captured) === JSON.stringify(live);
+  console.log(`${field}: ${same ? "same" : "drifted since the capture"}`);
+  return same;
 }
 
 function compareDocument(field: string, captured: CapturedDocument, live: CapturedDocument): void {
@@ -402,13 +414,38 @@ async function verifyIssue(server: Server, fixture: IssueFixture): Promise<void>
     ),
     readAsks(server, fixture.issue),
   ]);
-  compare("title", fixture.title, read.title);
+  // The documents gate, because a document read back at the version the file records is
+  // reproducible by construction: a difference there means the capture is a false record.
   compareDocument("documents.spec", fixture.documents.spec, spec);
   compareDocument("documents.decisions", fixture.documents.decisions, decisions);
-  compare("asks.count", fixture.asks.length, asks.length);
-  for (const [index, ask] of fixture.asks.entries()) {
-    compare(`asks[${index}] ${ask.id}`, ask, asks[index]);
+
+  // Everything unversioned is read by identity rather than by position. Matching asks by their
+  // order in the live answer would make one ask opened in the middle report every ask after it
+  // as different, which is a false alarm about this file rather than a fact about Dispatch.
+  let drifted = drift("title", fixture.title, read.title);
+  const live = new Map(asks.map((ask) => [ask.id, ask]));
+  for (const ask of fixture.asks) {
+    const now = live.get(ask.id);
+    if (now === undefined) {
+      console.log(`asks[${ask.id}]: gone from the issue since the capture`);
+      drifted = false;
+      continue;
+    }
+    drifted = drift(`asks[${ask.id}]`, ask, now) && drifted;
   }
+  const added = asks.filter((ask) => !fixture.asks.some((held) => held.id === ask.id));
+  console.log(
+    `asks: ${fixture.asks.length} captured, ${asks.length} on the issue now` +
+      (added.length === 0 ? "" : `, ${added.length} opened since the capture`)
+  );
+  for (const ask of added) {
+    console.log(`asks[${ask.id}]: opened since the capture, not in this file`);
+  }
+  console.log(
+    drifted
+      ? "the issue still reads as this file captured it"
+      : "the documents are unchanged at their recorded versions; the unversioned parts have moved"
+  );
 }
 
 async function verifyPremortem(server: Server, fixture: PremortemFixture): Promise<void> {

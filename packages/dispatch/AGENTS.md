@@ -2179,10 +2179,17 @@ worker over that worker's rows.
 documents at their highest version, with every ask and its answer, and
 `--premortem <slug>` captures a pre-mortem document with its verdict and its
 risks instead. `--verify <path>` re-reads every source of a captured file at
-the version that file records, never by slug, and exits non-zero on the first
-field that differs, so a fixture states what it was captured from and proves
-it. It reads `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, and never prints the
-token.
+the version that file records, never by slug. It gates on the documents
+alone, exiting non-zero on the first one that differs, because a document
+read back at a recorded version is reproducible by construction and a
+difference there means the file is a false record. What the capture holds of
+an unversioned thing, the issue's title and its asks, it reads by identity
+rather than by position and reports as drift without failing: a person may
+open an ask, answer one or rename the issue at any time, and none of that
+makes the file a wrong record of its capture. Gating on that would turn the
+check red for every live issue as the days pass, and a red that always means
+nothing stops being read. It reads `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`,
+and never prints the token.
 
 `DISPATCH_E2E_PROCESSES` picks how many Dispatch servers the harness runs
 (`e2e/harness-processes.ts`): unset or `1` is the one server above, `2` is two-process mode, and
