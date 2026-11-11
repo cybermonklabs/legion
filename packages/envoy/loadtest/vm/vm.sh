@@ -37,9 +37,9 @@
 #       One step: the reset, the VM sampler, Postgres's own collectors, loadgen run at FACTOR,
 #       cgroup-merge, cloudsql-cpu and tables. Every profile of the window -- its CPU profile
 #       and the three state snapshots at its end -- is `loadgen run`'s own, taken from inside
-#       the run through the step's tunnel, and this driver asks Dispatch for nothing. A step
-#       that ends before its window is out -- a refusal, a failure, an operator's interrupt --
-#       takes its remote work with it.
+#       the run through the step's tunnel, and once the load has started this driver reads
+#       nothing of Dispatch's profiling port. A step that ends before its window is out -- a
+#       refusal, a failure, an operator's interrupt -- takes its remote work with it.
 #   vm.sh series --config FILE [--run ID] [--duration 10m] [--long 60m] [--long-warmup 5m]
 #       The baseline, 1x and 2x steps at --long after a --long-warmup warm-up, then the grid 3,
 #       4, 6, 8, 12, 16 and 20 at --duration, stopping at the first failing step, then the
@@ -80,18 +80,16 @@
 #
 # Dispatch runs with host networking because its profiling port binds 127.0.0.1 only
 # (cmd/dispatch/pprof.go), so that port answers on its own machine's loopback and nowhere else.
-# One reader reaches it, `loadgen run` on the load machine, and everything a step keeps of that
-# port is what it reads through the tunnel: the CPU profile of the window and the three state
-# snapshots at that window's end (run.go step.profile), and the 5 s sampler's goroutines, pool
-# acquire waiters and heap while the step runs (sample.go:325, :453 and :508). This driver asks
-# that port for nothing at all, which is what leaves the window one owner: the driver's clock
-# starts when it forks the load's ssh and loadgen opens its window seconds later, after its own
-# checks and its registrations, so a driver reading "at the window's end" read inside the window
-# it was measuring -- a stop-the-world goroutine dump and a 500 MB heap?debug=1 render inside
-# loadgen's own CPU profile, and three files a healthy step then dropped for loadgen's own
-# (dispatch://INFRA-988). So step
-# opens a tunnel for the life of the load -- `ssh -N -L <ports.pprof_tunnel>:127.0.0.1:<ports.
-# pprof> <the machine Dispatch runs on>`, run on the load machine -- and gives loadgen
+# Once a step's load has started, one reader reaches it, `loadgen run` on the load machine, and
+# everything a step keeps of that port is what it reads through the tunnel: the CPU profile of
+# the window and the three state snapshots at that window's end (run.go step.profile), and the
+# 5 s sampler's goroutines, pool acquire waiters and heap while the step runs (sample.go:325,
+# :453 and :508). This driver reads nothing of that port from the load's start to its end,
+# which leaves the window one owner (README.md, "The profiling tunnel", says what a reader of
+# the driver's own cost). Its one read of the port is the tunnel's probe below, made before any
+# load is sent. So step opens a tunnel for the life of the load --
+# `ssh -N -L <ports.pprof_tunnel>:127.0.0.1:<ports.pprof> <the machine Dispatch runs on>`, run
+# on the load machine -- and gives loadgen
 # `-pprof http://127.0.0.1:<ports.pprof_tunnel>`. The step proves that tunnel answers
 # /debug/pprof/goroutine?debug=1 before it sends any load and refuses itself by name when it does
 # not: pass criterion (e), "Dispatch's pool acquire waiters p50 = 0", is FAIL for want of a
@@ -383,14 +381,9 @@ SECRET_VARS=" DISPATCH_AGENT_TOKEN ENVOY_TOKEN ENVOY_API_TOKEN DISPATCH_AZURE_EM
 # Every profile of a step's window is `loadgen run`'s own, in the order it writes them (run.go
 # step.profile): the CPU profile of the window itself, then the three state snapshots it reads
 # at that window's end, heap?debug=1 last because with a heap of tens of GiB it is over 500 MB
-# (README.md, the step directory's table). This driver asks Dispatch's machine for none of
-# them. For the CPU profile it never could: Go serves one at a time ("cpu profiling already in
-# use", runtime/pprof), so a second request beside loadgen's is answered 500, and a driver that
-# got in first took the profiler and left loadgen's window-exact one refused instead. For the
-# other three it should not: each is what the process holds at the moment it is read, and the
-# moment worth reading is the end of the window, which only the run inside knows (the paragraph
-# on the tunnel above). The names are here so that profiles.txt can say of each file whether
-# loadgen wrote it (profiles_keep).
+# (README.md, the step directory's table). This driver reads none of them: README.md, "The
+# profiling tunnel", says why. The names are here so that profiles.txt can say of each file
+# whether loadgen wrote it (profiles_keep).
 PPROF_CPU_FILE=cpu.pprof
 PPROF_FILES=("$PPROF_CPU_FILE" goroutines.txt heap.pprof heap.txt)
 
@@ -1037,7 +1030,7 @@ container_run_args() {
   case $role in
     dispatch)
       # Host networking, because DISPATCH_PPROF_PORT binds 127.0.0.1 only: on the host's loopback
-      # the profile is reachable from its own machine, which is where step fetches it.
+      # the profile is reachable from its own machine, which is the far end of the step's tunnel.
       printf '%s\n' --network host
       printf '%s\n' --volume "$(cert_path):$CERT_IN_CONTAINER:ro"
       printf '%s\n' --env-file "$(container_env_file "$role")"
@@ -2472,8 +2465,8 @@ loop_listener_urls() {
 # `loadgen run` wrote of the window is already here. Every profile of a step is loadgen's own:
 # it takes the CPU profile of the window and the three state snapshots at that window's end
 # from inside the run that knows when the window began and ended (run.go step.profile), and the
-# copy back brings them. This driver reads nothing of Dispatch's profiling port, so there is no
-# second copy of any file to choose between and nothing to rename here.
+# copy back brings them. This driver reads nothing of Dispatch's profiling port while the load
+# is on, so there is no second copy of any file to choose between and nothing to rename here.
 #
 # What a reader needs is where each file came from, and that is DIR/profiles.txt: one line per
 # profile -- the file, the process that wrote it, and what it covers -- naming `none` with the
@@ -2488,7 +2481,7 @@ profiles_keep() {
     if [ -e "$dir/$file" ]; then
       rows+=("$file	loadgen run	$covers")
     else
-      rows+=("$file	none	loadgen run wrote none and vm.sh asks Dispatch's machine for nothing; the step is whole without it")
+      rows+=("$file	none	loadgen run wrote none and vm.sh reads none of Dispatch's profiles; the step is whole without it")
     fi
   done
   printf '%s\n' "${rows[@]}" >"$dir/profiles.txt"
@@ -2510,7 +2503,7 @@ run_step() {
   [ -f "$RUN_DIR/seed.json" ] || die "no $RUN_DIR/seed.json: vm.sh seed first"
   # The run's OS Login key, good for the whole of this step before any of it starts: a series
   # runs a dozen steps in one process and the twelfth is days after the import that process
-  # began with, so every ssh of this step -- the reset, the tunnel, the load, the profiles and
+  # began with, so every ssh of this step -- the reset, the tunnel, the load and
   # the copy back -- is refused `publickey` unless the key is imported again here
   # (oslogin_ready, which does that only when little of its life is left).
   oslogin_ready

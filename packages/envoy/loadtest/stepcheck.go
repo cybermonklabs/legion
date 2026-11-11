@@ -881,8 +881,8 @@ func (sc *stepCheck) statementsAndLocksClause() stepClause {
 	return okClause(name, reading)
 }
 
-// profileClause: a CPU profile of Dispatch over the window, which vm.sh fetches from the machine
-// Dispatch runs on. An empty file is no profile.
+// profileClause: a CPU profile of Dispatch over the window, which `loadgen run` writes through
+// the step's tunnel (cpuProfileFileName). An empty file is no profile.
 func (sc *stepCheck) profileClause() stepClause {
 	const name = "R6 Dispatch's CPU profile"
 	if sc.profileB == 0 {

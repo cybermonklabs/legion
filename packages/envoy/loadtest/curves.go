@@ -299,10 +299,11 @@ const seriesPGCPUs = 16
 // from the step's name: the hour is the phase soak, or a window of an hour or more; the 4 vCPU
 // database is a copy whose Postgres has fewer than seriesPGCPUs vCPUs; the control is a step
 // the run marked reads-only, or one that drove none of the series' load (droveNoSeriesLoad);
-// every other step is in the knee series. Without such a copy (a local stack run, or a run
-// from before cluster.sh recorded the phase, whose copy names the series' Postgres tier for
-// every step) the name says it, as it always did: a window of an hour or more or -hour, -db4,
-// -reads. The name is the row's label either way.
+// every other step is in the knee series. Without such a copy (a local stack run, a VM
+// series run, or a run from before cluster.sh recorded the phase, whose copy names the series'
+// Postgres tier for every step) the name says it, as it always did: a window of an hour or more
+// or -hour, -db4, -reads; and a step that drove none of the series' load is the control there
+// too (droveNoSeriesLoad). The name is the row's label either way.
 func (s *curveStep) classify() curveKind {
 	if c, ok := readStepCopy(s.meta); ok && c.Phase != "" {
 		cpus, haveCPUs := c.pgCPUs()

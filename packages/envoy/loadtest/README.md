@@ -3302,10 +3302,11 @@ its cores and working set from `cgroup.json`. It also holds:
   one that offered no event, or one that drove none of this series' load — for a series whose
   steps each offer their own rates (the loop series), a step whose summary carries no
   `config.loop_factor`, which reads factor 0 (`droveNoSeriesLoad`); every other step is in the
-  knee series. Without such a copy (a
-  `run-step.sh` run on the local stack, or a run from before `cluster.sh` recorded the phase,
-  whose `copy` names the series' tier for every step) the step's name says it: `-hour`, `-db4`,
-  `-reads`. The name is the row's label either way.
+  knee series. Without such a copy (a `run-step.sh` run on the local stack, a `vm.sh series`
+  run, which passes no copy, or a run from before `cluster.sh` recorded the phase, whose `copy`
+  names the series' tier for every step) the step's name says it: `-hour`, `-db4`, `-reads`; and
+  a step that drove none of the series' load is the control there too (`droveNoSeriesLoad`).
+  The name is the row's label either way.
 
 ### Differences from production
 

@@ -50,11 +50,11 @@
 # -loop-listeners, -driver-topics, -receipt-deadline, -event-mix and -loop-event-mix), with the
 # rates the factor gives, gives -route-mix a file it has itself put on the load machine and that
 # holds the loop's routes there, read off the step's own argument rather than off the deployment
-# file's setting, reads nothing of Dispatch's profiling port -- every profile of the window is
-# `loadgen run`'s own, taken from inside the run through the step's tunnel -- and names in the
-# step's profiles.txt the writer of each of the four files, keeping what loadgen wrote and
-# naming none, with the reason, for each file a step whose loadgen wrote none holds, and runs
-# cgroup-merge,
+# file's setting, reads nothing of Dispatch's profiling port on Dispatch's own machine -- every
+# profile of the window is `loadgen run`'s own, taken from inside the run through the step's
+# tunnel -- and names in the step's profiles.txt the writer of each of the four files, keeping
+# what loadgen wrote and naming none, with the reason, for each file a step whose loadgen wrote
+# none holds, and runs cgroup-merge,
 # cloudsql-cpu and tables, and is refused -- naming the setting and the path it resolved to,
 # with no load sent -- when the route_mix names no file on this pod;
 # (h) a step at factor 0 carries both seeds and both mixes just as a loop step does, its loop
@@ -687,7 +687,7 @@ case $cmd in
     # reach the profiling port through the step's tunnel (run.go step.profile) and which the
     # copy back then brings to this pod with the rest of the step. With
     # FAKE_DIR/run-writes-profiles this run wrote them, and each says so in its bytes, so a
-    # case can tell a profile of loadgen's from one the driver fetched.
+    # case can tell the file loadgen wrote from anything else.
     if [ -f "$FAKE_DIR/run-writes-profiles" ]; then
       for profile in cpu.pprof goroutines.txt heap.pprof heap.txt; do
         printf 'fake loadgen window %s of %s\n' "$profile" "$(flag name)" >"$out/$profile"
@@ -1518,10 +1518,10 @@ pass "step runs loadgen run with both seeds, both event mixes, and the totals an
 
 step=$(run_dir)/steps/2x
 
-# The step asks the machine Dispatch runs on for nothing at all. Every profile of a step's
-# window is `loadgen run`'s own: it takes the CPU profile of the window and, at that window's
-# end, the three state snapshots, from inside the run through the step's tunnel (run.go
-# step.profile). A driver that reads that port of its own cannot read the window it is
+# The step reads nothing of Dispatch's profiling port on Dispatch's own machine. Every profile
+# of a step's window is `loadgen run`'s own: it takes the CPU profile of the window and, at
+# that window's end, the three state snapshots, from inside the run through the step's tunnel
+# (run.go step.profile). A driver that reads that port of its own cannot read the window it is
 # measuring. For the CPU profile Go refuses it -- one profile at a time, so one of the two
 # requests is answered 500 and the window's profile is the one that may be lost. For the three
 # snapshots the clock is wrong: the driver's window starts when it forks the load's ssh, and
@@ -1531,9 +1531,11 @@ step=$(run_dir)/steps/2x
 # render inside loadgen's own CPU profile -- and a healthy step then drops the three files
 # that cost, because loadgen's own are the ones kept (dispatch://INFRA-988).
 #
-# So the question this case asks is not when the driver read Dispatch but whether it read it at
-# all, which the action log answers without any clock: it holds every command the step ran, and
-# the fake curl records every read of that port in FAKE_DIR/pprof-reads besides.
+# So the question this case asks is not when the driver read Dispatch's port on that machine but
+# whether it read it there at all, which the action log answers without any clock: it holds every
+# command the step ran, and the fake curl records every read of that port in FAKE_DIR/pprof-reads
+# besides. The tunnel's probe before the load is a read through the tunnel on the load machine,
+# which neither of the two records.
 read_lines=$(grep -- "^ssh	$app_target	curl .*debug/pprof/" "$fake/actions.log" | tr '\n' ';' || true)
 [ -z "$read_lines" ] ||
   fail "the step read Dispatch's profiling port on its own machine: $read_lines. Every profile of the window is loadgen run's, taken from inside the run through the step's tunnel; a read of the driver's falls inside the window it measures and inside loadgen's CPU profile, and a healthy step drops what it cost"
@@ -3233,10 +3235,10 @@ pass "both collectors read the step database over a file of mode 600 under the r
 # window and reads both machines afterwards.
 #
 # The load is the one wait a step makes of its own, so the signal comes during it. The driver
-# reads nothing of Dispatch's profiling port any more -- every profile of the window is
-# `loadgen run`'s, taken from inside the run (vm.sh profiles_keep) -- so there is no fetch of
-# the driver's left to stop, and what a stop has to take with it is the load on the load
-# machine, the tunnel, the sampler and Postgres's collector.
+# reads nothing of Dispatch's profiling port while the load is on -- every profile of the
+# window is `loadgen run`'s, taken from inside the run (vm.sh profiles_keep) -- so there is no
+# fetch of the driver's left to stop, and what a stop has to take with it is the load on the
+# load machine, the tunnel, the sampler and Postgres's collector.
 
 reset_fake
 run_vm up --config "$config"
