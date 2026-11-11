@@ -212,9 +212,9 @@
 #       holds the one measurement this job keeps.
 #       Every run that reads the log through, whether that reading passes or refuses, also
 #       prints the count of the fetches that carried CI_TOOLS_PROOF_FULL_LADDER, beside the
-#       LADDER_RECORDS below that bounds it. The two refusals that stop before the count is
-#       taken are the absent log and the line of another shape, each of which ends the verb
-#       where it stands.
+#       LADDER_RECORDS below that bounds it. Three refusals stop before the count is taken:
+#       an argument handed to the verb, an absent or empty log, and a line of another shape,
+#       each of which ends the verb where it stands.
 #       It takes no argument, as `shorten-ladder` does.
 #       It refuses the job where the log is absent or empty, which is what a stand-in that
 #       never reached PATH leaves behind, so that refusal is also the reading that says the
@@ -224,12 +224,12 @@
 #       fetch carrying that name is outside LADDER_FLOOR..LADDER_CEILING below, the floor being
 #       the reading that catches a kept case which stopped driving the real ladder; where more
 #       fetches carried that variable, whatever name they carried it under, than the
-#       LADDER_RECORDS below, the reading that catches it set wider than the one step's `env:`
-#       which carries it, since at job scope and at workflow scope the stand-in shortens
-#       nothing; where a fetch the stand-in left on the pinned ladder spent one and then
-#       failed, which is a fault shape its rule did not recognise; where a fetch the stand-in
-#       shortened exited 0, which is a fetch this job means to succeed and not one it arranged
-#       to fail; and where a line of the log is not the five-field line the stand-in writes.
+#       LADDER_RECORDS below, which is a second step's `env:` carrying that variable, or a
+#       kept case that makes more requests than it did; where a fetch the stand-in left on the
+#       pinned ladder spent one and then failed, which is a fault shape its rule did not
+#       recognise; where a fetch the stand-in shortened exited 0, which is a fetch this job
+#       means to succeed and not one it arranged to fail; and where a line of the log is not
+#       the five-field line the stand-in writes.
 #       A fetch that spent a ladder and served the bytes is the ladder doing the work it is
 #       kept for, and it is printed as a warning that refuses nothing.
 #
@@ -1749,7 +1749,7 @@ ladder_report() {
   # measurement is also out of window would otherwise take one of those arms and say nothing
   # of the records at all.
   if [ "$bypass_records" -gt "$LADDER_RECORDS" ]; then
-    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the $LADDER_RECORDS this rig holds that count to, and the names they carried it under are: $kept. The variable belongs at one step's env: in .github/workflows/ci.yaml and nowhere else, so a second env: that carries it is what to read that file for. At job scope or at workflow scope the stand-in shortens nothing, and this job then rides a full ladder for every refusal it arranges, which is the sleep this rig exists to take out. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script. Move .github/scripts/ci-tools-proof.test.sh with it: that file writes this number in the text of every case that reads the count and builds its fixture on a kept case of three records, so a bound moved alone reddens it, which is the reading that asks for the measurement." >&2
+    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the $LADDER_RECORDS this rig holds that count to, and the names they carried it under are: $kept. The variable belongs at one step's env: in .github/workflows/ci.yaml and nowhere else, so a second step's env: that carries it is what to read that file for. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script. Move .github/scripts/ci-tools-proof.test.sh with it: that file writes this number in the text of every case that reads the count and builds its fixture on a kept case of three records, so a bound moved alone reddens it, which is the reading that asks for the measurement." >&2
     problems=$((problems + 1))
   fi
   if [ -n "$unrecognised" ]; then
