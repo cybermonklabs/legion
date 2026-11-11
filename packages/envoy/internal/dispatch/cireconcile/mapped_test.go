@@ -59,6 +59,17 @@ const (
 // there; this is the one place the difference can be put back.
 func (h *harness) collateMappingsAsADeploymentDoes() {
 	h.t.Helper()
+	// A PostgreSQL built with ICU carries ICU collations of its own and one built without ICU
+	// carries none, so this count is the server's own answer to whether the collation below can
+	// be made. A server that will not answer the question is not a server without ICU, so an
+	// error from the read itself ends the test.
+	var icu bool
+	if err := h.pool.QueryRow(h.ctx, `select count(*) > 0 from pg_collation where collprovider = 'i'`).Scan(&icu); err != nil {
+		h.t.Fatalf("ask whether this Postgres was built with ICU: %v", err)
+	}
+	if !icu {
+		h.t.Skip("a PostgreSQL built with ICU must serve these tests: ICU is what holds the mapping under a collation weighing punctuation last, which is the only order a test can tell apart from the Go comparison that seeks into it")
+	}
 	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
 	// glibc's en_US was measured to follow. Both name columns take it: the canonical name of a
 	// row is a coalesce of the two (refs.CanonicalRepoSQL), and Postgres derives no collation at
@@ -69,6 +80,8 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 			alter column repo type text collate punctuation_last,
 			alter column renamed_to type text collate punctuation_last`,
 	} {
+		// The server has ICU, so a statement it refuses here is a permission or a schema
+		// problem rather than an absence to pass over, and the test says so rather than skips.
 		if _, err := h.pool.Exec(h.ctx, statement); err != nil {
 			h.t.Fatalf("hold the mapping under a deployment's own collation (%s): %v", statement, err)
 		}
