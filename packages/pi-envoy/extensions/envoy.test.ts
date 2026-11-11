@@ -83,7 +83,6 @@ import { version as packageVersion } from "../package.json" with { type: "json" 
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import {
   REPLAY_DELIVERED_ENTRY,
-  REPLAY_NOTICE_ENTRY,
   REPLAY_STATE_ENTRY,
 } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
@@ -16144,8 +16143,11 @@ console.log(JSON.stringify(args));
       };
 
       // The switch event reaches this instance at last: it restores from that conversation's own
-      // entries, and each follow below sweeps. The first sweep of a subject with no cursor starts
-      // it where the stream ends and reads nothing; the next reads the comments stored there.
+      // entries, and each follow below sweeps. The fake answers `next_after: 0` for every
+      // subject, so a cursor with no stored position starts at the stream's oldest message,
+      // standing in for a cursor this conversation held before those comments were stored, and
+      // the sweeps read them from there. A real listener answers its watermark instead
+      // (`StreamModel.answer`).
       await fixture.handlers.get("session_switch")?.({ reason: "new" }, restored);
       const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
       if (subscribe === undefined) throw new Error("the subscription tool was not registered");
@@ -22135,19 +22137,18 @@ describe("messages missed while the subscription was down", () => {
       }
     });
 
-    // The same move with no session event, for the replay state itself. This session was told of
-    // a retention gap, which it holds as a notice of its own, and a later sweep moved its cursors
-    // and nothing else: a change of nothing but the `after`s is held for an hour
-    // (`REPLAY_STATE_REFRESH_MS`), so state the engine has not written is the ordinary case. The
-    // host then moves, with no handler fired for it, and a card handed from here on is the
-    // moved-to conversation's, which the host writes into that conversation's file. Nothing of
-    // this session may go with it: a state entry carries the whole of this session's state - its
-    // cursors, the topics it follows, the notices it holds - and a session restores the newest
-    // state its file holds as its own, whatever session wrote it (`replaySnapshot`). That
-    // conversation would follow this session's topics, be told its notices, and lose its own
-    // agent-subject cursor, which then restarts at the stream's end, so what the stream stored
-    // for it while it was closed is never swept (dispatch://INFRA-812).
-    test("appends no state of this session to the conversation the host moved to: cursors, followed topics and held notices alike", async () => {
+    // The same move with no session event, for the replay state itself. A sweep that moves this
+    // session's cursors and nothing else is held for an hour (`REPLAY_STATE_REFRESH_MS`), so
+    // state the engine has not written is the ordinary case. The host then moves, with no handler
+    // fired for it, and a card handed from here on is the moved-to conversation's, which the host
+    // writes into that conversation's file. Nothing of this session may go with it: a state entry
+    // carries the whole of this session's state - its cursors, the topics it follows, the notices
+    // still pending - and a session restores the newest state its file holds as its own, whatever
+    // session wrote it (`replaySnapshot`). That conversation would follow this session's topics,
+    // be told the notices still pending here, and lose its own agent-subject cursor, which then
+    // restarts at the stream's end, so what the stream stored for it while it was closed is never
+    // swept (dispatch://INFRA-812).
+    test("appends no state of this session to the conversation the host moved to: cursors and followed topics alike", async () => {
       const model = new StreamModel();
       model.id = "stream-state-move";
       let live = "ses_state";
@@ -22158,14 +22159,6 @@ describe("messages missed while the subscription was down", () => {
       });
       // The topic this session follows, which its state names beside its own agent subject.
       await session.follow(ISSUE_TOPIC);
-
-      // Retention drops what the stream held: this sweep moves the cursors past the gap and
-      // tells the session of it, the notice it holds from here on. Its state is written here,
-      // gap and all, which is what leaves the next change held rather than written at once.
-      const expired = model.store(ISSUE_SUBJECT, issueEvent(ISSUE_SUBJECT, 77));
-      model.expireThrough(expired);
-      await session.reconnect();
-      expect(JSON.stringify(session.entries())).toContain("no longer holds");
 
       // A message of another session moves the stream's end: this sweep moves this session's
       // cursors and changes nothing else, so the engine holds the change unwritten.
@@ -22191,12 +22184,17 @@ describe("messages missed while the subscription was down", () => {
       const appended = session.fixture.entries.slice(mark);
       expect(appended.filter((entry) => entry.customType === REPLAY_STATE_ENTRY)).toEqual([]);
       const written = JSON.stringify(appended);
-      // The three a state entry carries, each named: this session's own agent-subject cursor,
-      // the topic it follows, and the notice it was told, which its own file records as held.
+      // Two of the three fields a state entry carries, each named: this session's own
+      // agent-subject cursor and the topic it follows. The third, the notices, is not measured
+      // here: `tell` drops a notice from `pending` as it raises it (`replay.ts:514-517`), and
+      // nothing in this row leaves one pending, so an assertion on notices could only pass. The
+      // engine does write state with notices pending (`replay.ts:882-883`, `:957-959`), so a
+      // leak would carry them too. The leak was measured: with the write bound to the host's
+      // live id rather than `transcriptSessionID`, the assertion above failed on one appended
+      // state entry, which held this session's agent-subject cursor and both subjects of the
+      // topic it follows.
       expect(written).not.toContain(session.agentSubject);
       expect(written).not.toContain(ISSUE_TOPIC);
-      expect(written).not.toContain("retention_gap");
-      expect(written).not.toContain(REPLAY_NOTICE_ENTRY);
     });
 
     test("a live frame still pending while its stored copy is swept, then failing, is shown once later", async () => {

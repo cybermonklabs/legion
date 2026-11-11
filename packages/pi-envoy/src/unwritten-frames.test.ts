@@ -224,9 +224,12 @@ describe("a card handed to the host", () => {
   // The window `hostIsOn` admits a card in: the host moved to s2 and the switch event has not
   // reached this instance, whose own id still reads s1. A frame that is no Dispatch delivery
   // names no session, so its card goes to the conversation the host has (`cardSession` in
-  // `../extensions/envoy.ts`) - s2, which is the session it was shown in and the session its
-  // record belongs to. Recorded nowhere, s2's resume shows the stream's copy of it again.
-  test("carded into the session the host moved to is recorded for that session, switch event or not", async () => {
+  // `../extensions/envoy.ts`) - s2, the session it was shown in. What this module decides is the
+  // session it asks the record under, which is that one. The engine refuses that record until
+  // the switch event: `recordDeliveredFor` binds to `transcriptSessionID`, which answers
+  // undefined while the host and this instance disagree, and the card the host wrote is what the
+  // moved-to conversation's restore reads.
+  test("carded into the session the host moved to asks for its record under that session", async () => {
     const { frames, state, recorded, handed, claim, claimState } = harness();
     const frame: DedupeIdentity = { event_id: "event-1", dedupe_key: "relay-1", source: "github" };
     state.hostSession = "s2";
