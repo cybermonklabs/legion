@@ -6563,6 +6563,16 @@ jobs:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        # A service container dies with its job, so it need not survive a crash: these are the
+        # lane's disposable settings (dispatch://INFRA-1075), read back by the step of that name
+        # below, which fails the job when the server reports anything else.
+        command: >-
+          postgres
+          -c fsync=off
+          -c full_page_writes=off
+          -c synchronous_commit=off
+          -c max_connections=500
+          -c max_prepared_transactions=20
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
@@ -6579,6 +6589,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the disposable service's settings back
+        run: |
+          id="${{ job.services.postgres.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - id: setup-go
