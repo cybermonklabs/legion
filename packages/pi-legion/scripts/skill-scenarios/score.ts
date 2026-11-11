@@ -871,8 +871,15 @@ const REVIEW_FLAGS: Record<string, string> = {
   "--comment": "COMMENT",
 };
 /** One review a run submitted, as the score reads it: the verdict, the head it names, "" for a
- * route that carries none, and the file of each inline comment on it. */
-type Submission = { at: string; event: string; head: string; comments: string[] };
+ * route that carries none, the file of each inline comment on it, and whether the call that
+ * carried it submitted a pending review the round had already created (`submitRoute`). */
+type Submission = {
+  at: string;
+  event: string;
+  head: string;
+  comments: string[];
+  submits: boolean;
+};
 /** Whether `arg` is the reviews route of `repo`'s pull request: `repos/<owner>/<repo>/pulls/<n>/
  * reviews`, with or without the leading slash `gh api` takes either way, and of that repository
  * alone. A route read without the repository counts a review submitted anywhere as this round's
@@ -886,20 +893,37 @@ type Submission = { at: string; event: string; head: string; comments: string[] 
 function reviewsRoute(arg: string, repo: string): boolean {
   return /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/.exec(arg)?.[1] === repo;
 }
+/** Whether `arg` submits a pending review of `repo`'s pull request:
+ * `repos/<owner>/<repo>/pulls/<n>/reviews/<id>/events`, the second call of the two-step route
+ * GitHub documents beside the one-step one — a POST to `…/reviews` whose body names no event
+ * creates a pending review, and this call submits it with the verdict. The rig serves both,
+ * since its POST route matches the `…/pulls/<n>/reviews` prefix of the path and answers this
+ * call as it answers the create (rig.sh's review_world), so a round can take that route and be
+ * told nothing. A reader of the create alone scored such a round `event=""`, which prints as
+ * `event=none`: the row of a round that submitted nothing, which is the one thing that round
+ * did not do. None of the 40 runs recorded on 2026-11-10 took it; the reviewer's prompt
+ * prescribes the one-step POST. */
+function submitRoute(arg: string, repo: string): boolean {
+  return /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/\d+\/events$/.exec(arg)?.[1] === repo;
+}
 /** The review `call` submitted, or undefined when it submitted none: the
  * `gh api --method POST repos/{owner}/{repo}/pulls/{n}/reviews` the reviewer's prompt prescribes,
  * on the run's own repository and no other (`reviewsRoute`),
  * whose JSON body comes from `--input <file>` (the stand-in records the file it read),
  * `--input -` (its stdin) or `-f`/`--raw-field` fields; or a `gh pr review`, which carries its
- * event as a flag and can name neither the head nor an inline comment. A call on that route that
- * carries no body submits nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews
- * already there, which a round often makes after it submitted. */
+ * event as a flag and can name neither the head nor an inline comment; or the call that submits
+ * a pending review (`submitRoute`), whose body carries the verdict and whose create carries the
+ * rest (`reviewsIn`). A call on the reviews route that carries no body submits nothing:
+ * `gh api repos/…/pulls/<n>/reviews` is the read of the reviews already there, which a round
+ * often makes after it submitted. */
 function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefined {
   if (call.argv[0] === "pr" && call.argv[1] === "review") {
     const flag = call.argv.find((arg) => REVIEW_FLAGS[arg] !== undefined) ?? "";
-    return { at: call.at, event: REVIEW_FLAGS[flag] ?? "", head: "", comments: [] };
+    return { at: call.at, event: REVIEW_FLAGS[flag] ?? "", head: "", comments: [], submits: false };
   }
-  if (call.argv[0] !== "api" || !call.argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
+  if (call.argv[0] !== "api") return undefined;
+  const submits = call.argv.some((arg) => submitRoute(arg, repo));
+  if (!submits && !call.argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
   const fields = new Map<string, string>();
   let text: string | undefined;
   for (const [index, arg] of call.argv.entries()) {
@@ -927,17 +951,42 @@ function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefi
     event: review.event ?? fields.get("event") ?? "",
     head: review.commit_id ?? fields.get("commit_id") ?? "",
     comments: (review.comments ?? []).map((comment) => comment.path ?? ""),
+    submits,
   };
 }
 
 /** Every review `calls` submitted on `repo`'s pull request, in the order the gh stand-in recorded
  * them: a call that submitted none, and one that submitted to another repository, is no review of
- * this run (reviewOf). */
+ * this run (reviewOf).
+ *
+ * A call that submits a pending review and the create it submits are one submission and not two:
+ * the create carries the head and the inline comments, the submit call carries the verdict, and
+ * the pair takes the submit call's own place in the order, which is when the verdict was made.
+ * The create it folds in is the last one before it that named no event, which is the only
+ * pending review a run of this rig can have: the stand-in answers every create with review id
+ * 5002 (rig.sh's review_world), so an id names no particular review here. A create no submit
+ * call follows stays as it is — a pending review is no verdict, and it scores as the empty event
+ * it carries. */
 function reviewsIn(calls: z.infer<typeof Call>[], repo: string): Submission[] {
-  return calls.flatMap((call) => {
+  const found: Submission[] = [];
+  for (const call of calls) {
     const review = reviewOf(call, repo);
-    return review === undefined ? [] : [review];
-  });
+    if (review === undefined) continue;
+    const pending = review.submits
+      ? found.findLastIndex((earlier) => !earlier.submits && earlier.event === "")
+      : -1;
+    if (pending < 0) {
+      found.push(review);
+      continue;
+    }
+    const created = found.splice(pending, 1)[0];
+    found.push({
+      ...review,
+      head: review.head === "" ? (created?.head ?? "") : review.head,
+      comments: review.comments.length > 0 ? review.comments : (created?.comments ?? []),
+    });
+  }
+  return found;
 }
 
 /** Everything one recorded gh call could carry a thread id or a reply in: its arguments, its
