@@ -742,6 +742,7 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 	// The slow browser drains at its own rate until it holds everything the room does.
 	want := canonicalState(t, typing.state(t))
 	drainFrom := server.output.len()
+	drainBegan := time.Now()
 	deadline := time.Now().Add(2 * time.Minute)
 	for !bytes.Equal(canonicalState(t, slow.state()), want) {
 		read, frames, _, ended := slow.taken()
@@ -752,9 +753,14 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 		// evidence, so it is quoted and the drive stops there rather than failing a bound that
 		// refused nothing (dispatch://INFRA-179, measured 2026-11-11: 95 frames and 1,570,084
 		// bytes read, the window carrying one `write to peer failed; closing … i/o timeout`).
-		if ended != nil && hostDroppedTheSocket(server, drainFrom) {
-			t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes, within ygo's %s message deadline and no refusal of this change's: %v",
-				frames, read, 10*time.Second, ended)
+		if ended != nil {
+			starved := hostStarved(server, drainFrom, frames, time.Since(drainBegan))
+			if starved.hostDroppedIt() {
+				t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes, within ygo's %s message deadline and no refusal of this change's - %s: %v",
+					frames, read, 10*time.Second, starved, ended)
+			}
+			t.Fatalf("the browser on a slow link stopped reading after %d frames and %d bytes while this machine was keeping it fed - %s: %v:\n%s",
+				frames, read, starved, ended, server.output.tail())
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the browser on a slow link did not hold the room's whole document after 2m: it had read %d frames and %d bytes, and its reading ended with %v:\n%s",
@@ -769,12 +775,14 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 		_, before, _, _ := slow.taken()
 		time.Sleep(throttledReadInterval)
 		readSoFar, after, _, ended := slow.taken()
-		if ended != nil && hostDroppedTheSocket(server, drainFrom) {
-			t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes as its stream drained, within ygo's %s message deadline: %v",
-				after, readSoFar, 10*time.Second, ended)
-		}
 		if ended != nil {
-			t.Fatalf("the browser on a slow link stopped reading while its stream drained: %v", ended)
+			starved := hostStarved(server, drainFrom, after, time.Since(drainBegan))
+			if starved.hostDroppedIt() {
+				t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes as its stream drained, within ygo's %s message deadline - %s: %v",
+					after, readSoFar, 10*time.Second, starved, ended)
+			}
+			t.Fatalf("the browser on a slow link stopped reading while its stream drained, with this machine keeping it fed - %s: %v:\n%s",
+				starved, ended, server.output.tail())
 		}
 		if after == before {
 			quiet++
@@ -853,14 +861,50 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 	}
 }
 
-// hostDroppedTheSocket reports whether the server's own log, over the window this drive has run
-// in, says the host could not put bytes on a socket within the ten seconds ygo's writer allows a
-// message (writeTimeout, provider/websocket/server.go), which drops the connection with no close
-// frame and leaves the reader with a 1006. That is the host and no bound of this change's: every
-// refusal this change makes carries its own code and reason, and the write-queue budget closes
-// only a socket whose own queue is over it, which the server names when it does
-// (writeQueueCloses). The drive reads the line rather than counting the close, as the burst
-// drive's own keystroke arm does (browser_memory_test.go, "write to peer failed; closing").
-func hostDroppedTheSocket(server *memoryServer, from int) bool {
-	return strings.Contains(server.output.from(from), "write to peer failed; closing")
+// starvedHost is what a drive of this file needs before it may read a dropped socket as the
+// host's rather than as a defect of this change: the server's own line AND a reading that this
+// machine could not keep the drive itself running. Without the second, a socket a person's
+// browser lost under ordinary load would be recorded as weather, which is the one thing this
+// drive exists to catch (dispatch://INFRA-179, the architect's condition of 2026-11-11).
+//
+// The line is ygo's: the host could not put a message on the wire within the ten seconds its
+// writer allows one (writeTimeout, provider/websocket/server.go), so it dropped the connection
+// with no close frame and the reader read 1006. Every refusal this change makes carries its own
+// code and reason instead, and the write-queue budget closes only a socket whose own queue is
+// over it, which the server names when it does (writeQueueCloses).
+//
+// The reading is the drive's own scheduling. The slow reader asks for one frame every
+// throttledReadInterval, and a machine with a processor to spare gives it one: what it actually
+// managed over the window, against what the window allowed, is this process's own share of the
+// host. A run whose reader kept 80 per cent of its ticks was not starved, whatever ygo's writer
+// met, and such a drop is this change's to answer.
+type starvedHost struct {
+	line     bool
+	ticks    int
+	possible int
+	share    float64
+}
+
+func hostStarved(server *memoryServer, from int, frames int, over time.Duration) starvedHost {
+	possible := int(over / throttledReadInterval)
+	starved := starvedHost{
+		line:     strings.Contains(server.output.from(from), "write to peer failed; closing"),
+		ticks:    frames,
+		possible: possible,
+	}
+	if possible > 0 {
+		starved.share = float64(frames) / float64(possible)
+	}
+	return starved
+}
+
+// hostDroppedIt reports whether both readings hold: the server's line, and a reader that got
+// under four fifths of the frames its own interval allowed it over the window.
+func (s starvedHost) hostDroppedIt() bool {
+	return s.line && s.possible > 0 && s.share < 0.8
+}
+
+func (s starvedHost) String() string {
+	return fmt.Sprintf("the server's write deadline line: %t; the slow reader took %d of the %d frames its %s interval allowed over the window (%.0f%%)",
+		s.line, s.ticks, s.possible, throttledReadInterval, 100*s.share)
 }
