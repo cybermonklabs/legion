@@ -2847,7 +2847,7 @@ jobs:
           fi
           # Each install's own window: from its own mark to the mark of the install after it,
           # and for the last of them to this step's own time. No install here may reach the
-          # seconds .github/scripts/ci-tools-proof.sh holds every install of this job to, which
+          # seconds .github/scripts/ci-tools-proof.sh holds every timed install to, which
           # this step reads from that script rather than writing the number again: the rig holds
           # the sixteen corrupted cases below to that same bound, and a bound written in two
           # places is a bound that drifts, with the job then refusing two different things.
@@ -2872,7 +2872,7 @@ jobs:
               exit 1
               ;;
           esac
-          echo "no install with nowhere to go may reach the ${bound}s .github/scripts/ci-tools-proof.sh holds every install of this job to"
+          echo "no install with nowhere to go may reach the ${bound}s .github/scripts/ci-tools-proof.sh holds every timed install to"
           previous=""
           slow=""
           unreadable=""
@@ -2894,7 +2894,7 @@ jobs:
             previous=$pair
           done
           if [ -n "$slow" ]; then
-            echo "::error::the install with nowhere to go for$slow took ${bound} seconds or more, which no install of this job does, so the runner ended that step at its own timeout-minutes rather than the step failing for the reason this control names: a step the runner ends leaves outcome=failure behind it, which the test above accepts, so the wall time is the only reading that tells the two apart; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and its log for 'The action has timed out.'" >&2
+            echo "::error::the install with nowhere to go for$slow took ${bound} seconds or more, which no timed install does, so the runner ended that step at its own timeout-minutes rather than the step failing for the reason this control names: a step the runner ends leaves outcome=failure behind it, which the test above accepts, so the wall time is the only reading that tells the two apart; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and its log for 'The action has timed out.'" >&2
             exit 1
           fi
 
