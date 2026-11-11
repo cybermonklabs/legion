@@ -45,6 +45,14 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 // the walk up visited, the replied-to comment's among them. The thread's document is the root's
 // anchor's artifact, or the root's own artifact for a comment on a whole project artifact, since
 // a reply carries no anchor.
+//
+// Each row says, beside the key and the session's id, where the read found that session: a
+// member of the thread ranks array[0, ...] and a credit of the document array[1, ...], and the
+// group's min(rank) decides, so a session that is both comes out a member. A Postgres array is
+// 1-indexed, so that first element is (min(rank))[1], which the row carries as from_thread. The
+// caller keeps a member of the thread whatever the issue's claim is and leaves a credit out on an
+// issue a session claims (addAuthorRoutes), since the credits of a document are
+// not a second reason to deliver what that issue's claimant already hears on its own topic.
 const commentRecipientsQuery = `
 	with recursive
 	up as (
@@ -86,27 +94,39 @@ const commentRecipientsQuery = `
 		union all
 		` + documentCreditsSQL + `
 	)
-	select key::text, author->>'id'
+	select key::text, author->>'id', (min(rank))[1] = 0 as from_thread
 	from credited
 	where ` + sessionCreditSQL + `
 	group by key, author->>'id'
 	order by key, min(rank)
 `
 
+// threadRecipient is one session a person's reply under a comment reaches, and where the read
+// found it: fromThread for a session that wrote a comment in the thread, false for one the
+// thread's document credits alone (commentRecipientsQuery, addAuthorRoutes).
+type threadRecipient struct {
+	sessionID  string
+	fromThread bool
+}
+
 // loadCommentRecipients reads, in one query for a whole batch (or for half of a refused one's ids,
 // when loadRecipients runs it again in halves), the sessions a person's reply under each comment
 // of commentIDs reaches on their own topics, keyed by that comment's id. commentIDs are canonical
 // uuids (validIDs): a reply_to that is no uuid names no comment and is never read. They are every
 // session that wrote a comment in the comment's thread (its root first, then each reply in the
-// order it was written), then every session the thread's document credits (documentCreditsSQL;
-// none when the thread is on no document), each once. People are left out, since a person has no
-// Envoy topic. A comment that has no row has no entry. The actor and the sessions the reply's
-// mentions reach are skipped by the caller (addAuthorRoutes).
-func loadCommentRecipients(ctx context.Context, db queryer, commentIDs []string) (map[string][]string, error) {
+// order it was written), marked fromThread, then every session the thread's document credits
+// (documentCreditsSQL; none when the thread is on no document), each once and marked fromThread
+// only where the thread names it too. A session the thread's document credits alone is left out
+// by the caller where the comment is a person's on an issue a session claims (addAuthorRoutes):
+// the credits of a document are not a second reason to deliver what that claimant already hears
+// on its own topic. People are left out, since a person has no Envoy topic. A comment that has no
+// row has no entry. The actor and the sessions the reply's mentions reach are skipped by the
+// caller too.
+func loadCommentRecipients(ctx context.Context, db queryer, commentIDs []string) (map[string][]threadRecipient, error) {
 	if len(commentIDs) == 0 {
-		return map[string][]string{}, nil
+		return map[string][]threadRecipient{}, nil
 	}
-	return loadKeyedSessions(ctx, db, "load comment recipients", commentRecipientsQuery, commentIDs, maxCommentThreadDepth)
+	return loadThreadRecipients(ctx, db, "load comment recipients", commentRecipientsQuery, commentIDs, maxCommentThreadDepth)
 }
 
 // primaryDocumentAuthorsQuery is loadPrimaryDocumentAuthors' one statement. $1 is the issue keys.
@@ -153,6 +173,27 @@ func loadKeyedSessions(ctx context.Context, db queryer, what, query string, args
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	return sessions, nil
+}
+
+// loadThreadRecipients runs query, loadCommentRecipients' one statement for a whole batch, whose
+// every row is a key, a session id and whether the read found that session in the thread, and
+// returns each key's recipients in the order of its rows. The other two recipient reads carry no
+// such mark and run through loadKeyedSessions. what names the load in its error.
+func loadThreadRecipients(ctx context.Context, db queryer, what, query string, args ...any) (map[string][]threadRecipient, error) {
+	rows, err := db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	recipients := map[string][]threadRecipient{}
+	var key, sessionID string
+	var fromThread bool
+	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread}, func() error {
+		recipients[key] = append(recipients[key], threadRecipient{sessionID: sessionID, fromThread: fromThread})
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	return recipients, nil
 }
 
 // takesPrimaryAuthors reports whether a person's comment event reaches the sessions of its issue's

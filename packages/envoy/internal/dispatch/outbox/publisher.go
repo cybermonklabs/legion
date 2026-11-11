@@ -1078,7 +1078,7 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 		if err := addPrimaryDocumentAuthors(event, routing, look, d); err != nil {
 			return d.list, d.mentionPending, d.err(err)
 		}
-		if err := addAuthorRoutes(event, look, d); err != nil {
+		if err := addAuthorRoutes(event, routing, look, d); err != nil {
 			return d.list, d.mentionPending, d.err(err)
 		}
 	}
@@ -1266,21 +1266,45 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // document never learns of a new comment on it or of a person's edit to it.
 //
 // A reply (reply_to set), and its edit, reach every session that wrote a comment in the thread,
-// its root and each reply, then every session the thread's document credits, which the batch reads
-// for all its replies in one query (loadLookups, loadCommentRecipients); when that query failed,
-// its error ends the event's destinations here. A new comment on a document (no reply_to and no
-// ask_id), and its edit, reach every session that document credits (loadDocumentSessionAuthors,
-// whose failed query ends the event's destinations here too); a new comment on an issue's
-// conversation names no document and reaches no author. A resolution or a reopening reaches the
-// thread root's author only, so the reopening a reply makes tells no new session twice.
+// its root and each reply, and, where the claim below does not leave them out, every session the
+// thread's document credits, which the batch reads for all its replies in one query (loadLookups,
+// loadCommentRecipients); when that query failed, its error ends the event's destinations here. A
+// new comment on a document (no reply_to and no ask_id), and its edit, reach every session that
+// document credits under that same claim (loadDocumentSessionAuthors, whose failed query ends the
+// event's destinations here too); a new comment on an issue's conversation names no document and
+// reaches no author. A resolution or a reopening reaches the thread root's author only, so the
+// reopening a reply makes tells no new session twice.
 // artifact.human_edited, which the notice sweep appends once a person's quiet window on a document
 // ends (docs.sendEditNotice), reaches every session the document its payload's artifact_id names
 // credits, read the same way. Ask threads are not walked here: their asker and repliers are the
 // ask's followers (addFollowerRoutes). The event's own actor is skipped (recipientFilter), and a
 // session whose own mention of the comment delivers it is left to that mention
 // (destinations.addSession, the mention rule); an author whose mention failed is added instead.
-func addAuthorRoutes(event model.Event, look lookup, d *destinations) error {
+//
+// A session the read names as a credit of a document alone is left out where a person's comment,
+// or its edit, is on an issue a session claims: the credits of a document are
+// not a second reason to deliver what the claimant already hears on its own topic. The conditions
+// are exactly those under which that claimant was added (addClaimantRoute) - the event names an
+// issue, its actor is a person, and routing holds a session claimant - so no comment loses every
+// destination. Those credits are the rows of the thread read the thread itself does not name
+// (threadRecipient.fromThread) and the whole of a document's credits under a comment at the head
+// of a thread anchored on it. The read is made all the same, so a credit read that failed still
+// ends the event's destinations and backs it off.
+//
+// Kept whatever the claim: a comment on a project document, which names no issue; a comment on an
+// issue a person claims, which leaves routing.claimant empty; a comment on an unclaimed issue,
+// routed or not; a session that wrote in the thread, which keeps the person's later replies; a
+// session the comment names and whose mention of it never reached it, which takes this copy under
+// that mention's key, for a new comment (mentionDeliveries.fallbackKeys) and for its edit
+// (lookup.mentionFallbackKeys) alike; and artifact.human_edited, a person's edit of the document
+// itself.
+func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destinations) error {
 	filter := newRecipientFilter(event)
+	// claimed is whether the claimant of this event's issue was added above (addClaimantRoute),
+	// which is where the credits of a document are left out.
+	claimed := event.IssueKey != nil && event.Actor.Kind == "user" && routing.claimant != ""
+	var failedMentions map[string]string
+	asked := false
 	var targets []string
 	consider := func(sessionID string) {
 		if filter.keep(sessionID) {
@@ -1296,12 +1320,83 @@ func addAuthorRoutes(event model.Event, look lookup, d *destinations) error {
 		}
 		return nil
 	}
+	// askFailedMentions reads, once per event and only where claimed leaves credits out, the
+	// sessions this comment names and no mention of it reached: a new comment's are the reading
+	// the destination build already holds (eventDestinations), and an edit's are read of its
+	// comment alone (lookup.mentionFallbackKeys), which adds no reading of it anywhere else. An
+	// edit whose payload names no mention can exempt nobody, so it asks nothing. A read that
+	// failed ends the event's destinations, as every other lookup here does.
+	askFailedMentions := func() error {
+		if asked {
+			return nil
+		}
+		asked = true
+		switch {
+		case event.Type == "comment.created":
+			failedMentions = d.mentions.fallbackKeys
+		case event.Type == "comment.edited" && payloadHasMentions(event.Payload):
+			keys, err := look.mentionFallbackKeys(payloadString(event.Payload, "id"))
+			if err != nil {
+				return err
+			}
+			failedMentions = keys
+		}
+		return nil
+	}
+	// considerCredit adds a session a document credits, unless claimed leaves it out; a session
+	// whose mention of the comment failed is added all the same, since that mention's copy never
+	// reached it.
+	considerCredit := func(sessionID string) {
+		if claimed {
+			if _, failed := failedMentions[sessionID]; !failed {
+				return
+			}
+		}
+		consider(sessionID)
+	}
 	considerSessions := func(sessionIDs []string, err error) error {
 		if err != nil {
 			return err
 		}
 		for _, sessionID := range sessionIDs {
 			consider(sessionID)
+		}
+		return nil
+	}
+	// considerCredits adds the sessions a document credits, the whole of a read's answer, through
+	// considerCredit.
+	considerCredits := func(sessionIDs []string, err error) error {
+		if err != nil {
+			return err
+		}
+		if claimed {
+			if err := askFailedMentions(); err != nil {
+				return err
+			}
+		}
+		for _, sessionID := range sessionIDs {
+			considerCredit(sessionID)
+		}
+		return nil
+	}
+	// considerRecipients adds the sessions a reply under a comment reaches: a member of the
+	// comment's thread whatever the issue's claim is, and a session the thread's document credits
+	// alone through considerCredit (loadCommentRecipients, threadRecipient).
+	considerRecipients := func(recipients []threadRecipient, err error) error {
+		if err != nil {
+			return err
+		}
+		if claimed {
+			if err := askFailedMentions(); err != nil {
+				return err
+			}
+		}
+		for _, recipient := range recipients {
+			if recipient.fromThread {
+				consider(recipient.sessionID)
+				continue
+			}
+			considerCredit(recipient.sessionID)
 		}
 		return nil
 	}
@@ -1312,12 +1407,12 @@ func addAuthorRoutes(event model.Event, look lookup, d *destinations) error {
 		case payloadString(event.Payload, "ask_id") != "":
 			// An ask's thread reaches the ask's followers (addFollowerRoutes).
 		case replyTo != "":
-			if err := considerSessions(look.commentRecipients(replyTo)); err != nil {
+			if err := considerRecipients(look.commentRecipients(replyTo)); err != nil {
 				return err
 			}
 		default:
 			if document := commentedDocument(event); document != "" {
-				if err := considerSessions(look.documentAuthors(document)); err != nil {
+				if err := considerCredits(look.documentAuthors(document)); err != nil {
 					return err
 				}
 			}
