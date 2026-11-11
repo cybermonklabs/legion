@@ -1125,9 +1125,49 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		if err := a.store.ReleaseSlot(ctx, tx, issue.Key); err != nil {
 			return nil, fmt.Errorf("release the slot of %s: %w", issue.Key, err)
 		}
+		// The row goes because the issue needs none at all, which is not a wait: a parked issue,
+		// a tree that left the workflow, an issue done. The mark of a release for a wait goes
+		// with it, so a record can never say an issue stands in the line waiting for its slot
+		// back when nothing of it is waiting (record.Issue.ReleasedForWaitAt).
+		if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+			return nil, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+		}
 		inUse--
 		released = append(released, issue.Key)
 		a.logSlot(ctx, "released", issue.Key, inUse)
+	}
+	return released, nil
+}
+
+// releaseSlotsForWaits takes back the row of every issue of this project that holds one and
+// waits on another issue (record.LineFacts.Waits, the pass's own judgement), and reports the
+// issues it took one from. An issue the daemon has started and that now waits holds none of the
+// cap's slots: the cap counts the issues Legion is working on, and an issue waiting for another
+// issue to finish is not one of them, so its row goes to the line and it stands there for a row
+// of its own again. Nothing else of it moves — no claim is suspended, no phase changes, no
+// Dispatch status is written — and the issue takes a row again by itself when the wait ends.
+//
+// The release is one statement an issue (record.Store.ReleaseSlotForWait): the delete of the row
+// and the mark that says why are written together, so no pass can read one without the other.
+// The rows it frees are reported to the caller with the rows the ordinary release frees, because
+// the controller's free-slot wake is about the capacity of the project and not about the reason
+// a row came free.
+func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
+	slots []record.Slot, facts record.LineFacts,
+) ([]string, error) {
+	own := ownSlots(issues, slots)
+	inUse := len(own)
+	var released []string
+	for _, slot := range own {
+		if _, waits := facts.Waits[slot.Issue]; !waits {
+			continue
+		}
+		if err := a.store.ReleaseSlotForWait(ctx, tx, slot.Issue, a.now()); err != nil {
+			return released, fmt.Errorf("release the slot of %s for what it waits on: %w", slot.Issue, err)
+		}
+		inUse--
+		released = append(released, slot.Issue)
+		a.logSlot(ctx, "released", slot.Issue, inUse)
 	}
 	return released, nil
 }
@@ -1228,11 +1268,22 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil {
 		return 0, released, err
 	}
+	// The issues this judgement finds waiting give their rows back before the line is promoted,
+	// so this pass's own line and its ownSlots read the state after the release: an issue that
+	// waits holds none of the cap's slots, and the slot it gives back is offered to the line on
+	// this very pass rather than the next one.
+	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts)
+	if err != nil {
+		return 0, append(released, waiting...), err
+	}
+	released = append(released, waiting...)
 	unslotted, err := a.releaseUnslotted(ctx, tx, issues, record.LiveRoots(issues, facts), facts.ChildWaits, respectHolds)
 	if err != nil {
 		return 0, released, err
 	}
-	if unslotted {
+	// One re-read and one second judgement answer for both releases: each took rows away, and
+	// what the promotion loop and ownSlots must read is the state after the last of them.
+	if len(waiting) > 0 || unslotted {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
@@ -1249,7 +1300,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	admitted := 0
 	for {
 		own := ownSlots(issues, slots)
-		stopped, opened := false, false
+		stopped, opened, resumed := false, false, false
 		for _, candidate := range line {
 			issue := candidate.Issue
 			// A hold stops the whole pass, the candidates behind this one included. Every
@@ -1363,6 +1414,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
 				}
+				// The mark of a release for a wait goes with the row's return, whether the wait
+				// was this issue's reason for standing here or it never waited at all: an issue
+				// holding a row has its place against the cap back, and a mark left standing
+				// would say it gave that place up (record.Issue.ReleasedForWaitAt).
+				if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+					return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+				}
 				slots, own = append(slots, slot), append(own, slot)
 				a.logSlot(ctx, "taken", issue.Key, len(own))
 			}
@@ -1375,6 +1433,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// lifecycle lane (the daemon's projectRecords.PutSlot), so the task is delivered
 				// in the same second rather than at the next sweep.
 				a.log.Info("admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
+			case record.LineWaitingOnIssue:
+				// The wait is over — a candidate still waiting never reaches here, the skip
+				// above passes over it — and the row granted above is the whole of this
+				// promotion: nothing of the issue's work ever stopped, so there is nothing to
+				// start again. What its phase needs next, a first phase at admitted among it,
+				// the line offers from the record this grant leaves, the mark cleared, which is
+				// why this round is read again below (record.Waiting).
+				a.log.Info("admission gives a slot back to an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase)
+				resumed = true
 			case record.LineAnswered:
 				awaiting := issue.Awaiting
 				// An answered root keeps the status it ran with, so its resume writes none,
@@ -1459,10 +1526,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		}
 		// A resume, or a tree opened above whose design gate already stands open, releases
 		// members of its own tree that stood at admitted on the snapshot this round read and
-		// would otherwise wait a whole fact for their first phase. The records are read again
-		// and the line rebuilt so they are promoted in this pass; a pass a hold stopped goes no
-		// further, since the hold is the answer for everything behind it too.
-		if stopped || !opened {
+		// would otherwise wait a whole fact for their first phase. An issue whose wait ended
+		// and took its row back is read again for the same reason and with the same reach: the
+		// row is all its own promotion gave it, and what its record needs next — the first
+		// phase of an issue standing at admitted — is the line's to offer, from the record the
+		// grant leaves. The records are read again and the line rebuilt so they are promoted in
+		// this pass; a pass a hold stopped goes no further, since the hold is the answer for
+		// everything behind it too.
+		if stopped || (!opened && !resumed) {
 			break
 		}
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {

@@ -156,6 +156,16 @@ type Issue struct {
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
+	// ReleasedForWaitAt is when the daemon took the issue's admission slot away because the issue
+	// waits on another issue — a Dispatch blocker of it that is not done, or an open child its own
+	// first phase waits for — and nil for every other record. It is the one mark that tells the
+	// waiting line an issue the daemon started and that gave its row back for a wait from one that
+	// never started, and it is the moment that issue stands at in the line (Waiting). The row and
+	// the mark are written and cleared together, so neither can stand without the other: only
+	// Store.ReleaseSlotForWait writes it, with the delete of the row in one statement, and the
+	// grant of a slot and the ordinary release of a row each clear it
+	// (Store.ClearReleasedForWait); PutIssue keeps the stored value.
+	ReleasedForWaitAt *time.Time
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -1412,6 +1422,14 @@ type Store interface {
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error
+	// ReleaseSlotForWait takes issue's slot away because it waits on another issue and records
+	// that it did, in one statement: the row is deleted and Issue.ReleasedForWaitAt set to at, so
+	// no pass can ever read a row gone with no mark, which would say the issue never started, or
+	// a mark beside a row, which would say it waits while it holds its place against the cap.
+	ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error
+	// ClearReleasedForWait sets Issue.ReleasedForWaitAt back to null: the issue holds a slot
+	// again, or holds none for a reason that is not a wait.
+	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
 	// OpenTreeLifecycle binds an admission fact's root start rows to one durable tree epoch before
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.

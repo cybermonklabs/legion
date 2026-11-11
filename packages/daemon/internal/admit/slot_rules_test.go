@@ -200,7 +200,9 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 // phase is awaiting_merge. No other phase deletes a row, so an issue keeps its place against
 // the cap while it waits — in awaiting_person, in accepting, in held, in merging while a closed
 // design gate holds its merge request, and as a root standing at admitted whose design gate has
-// opened.
+// opened. What the phase rule does not decide is a wait on another issue: an issue the daemon
+// started that waits on one gives its row back whatever phase it stands in (INFRA-3036), which
+// is the root of the first tree here.
 //
 // The first reading gives one started issue each of the phases that keep a row and reads the
 // rows one admission pass leaves. The one exception the rule keeps is read beside them: a
@@ -228,10 +230,12 @@ func TestSlotPerPhase(t *testing.T) {
 	root.Phase, root.Status, root.DispatchStatus = phase.Admitted, "in_progress", "in_progress"
 	putIssue(t, pool, root)
 	takeSlot(t, pool, "LEGION-1")
-	// The root's own first phase could start on this very pass — its gate is open and it holds
-	// its row, so no cap can hold it back — which would move it out of the phase this case is
-	// about. An open Dispatch child holds it at admitted instead (record.LineFacts.ChildWaits),
-	// and the state names it under admission.blocked, read below beside its row.
+	// The root's own first phase could start on this very pass — its gate is open, so no cap can
+	// hold it back — which would move it out of the phase this case is about. An open Dispatch
+	// child holds it at admitted instead (record.LineFacts.ChildWaits). That wait is also why it
+	// is the one started issue here holding no row: an issue the daemon started and that waits
+	// on another issue gives its row back (INFRA-3036), and the state names it under
+	// admission.blocked, read below beside the rows.
 	seedMirror(t, pool, "LEGION-1", "in_progress")
 	seedMirrorChild(t, pool, "LEGION-99", "backlog", "LEGION-1")
 
@@ -318,10 +322,10 @@ func TestSlotPerPhase(t *testing.T) {
 
 	pass("the first reading", "rows-per-phase")
 
-	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-7",
+	assertRowHolders(t, pool, "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-7",
 		"LEGION-8", "LEGION-9", "LEGION-20", "LEGION-30", "LEGION-32")
 	if want := []record.BlockedIssue{{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
-		t.Fatalf("blocked = %#v, want %#v: the root keeps its row at admitted because an open Dispatch child holds it there",
+		t.Fatalf("blocked = %#v, want %#v: the root waits at admitted for an open Dispatch child, which is why it holds no row",
 			blockedNow(t, pool, admission), want)
 	}
 
@@ -339,7 +343,7 @@ func TestSlotPerPhase(t *testing.T) {
 
 	pass("the second reading", "rows-after-the-three-deletions")
 
-	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-5", "LEGION-6", "LEGION-8", "LEGION-9",
+	assertRowHolders(t, pool, "LEGION-2", "LEGION-3", "LEGION-5", "LEGION-6", "LEGION-8", "LEGION-9",
 		"LEGION-30", "LEGION-32")
 
 	t.Run("a re-entered child keeps its row and an unstarted child at admitted holds none", func(t *testing.T) {

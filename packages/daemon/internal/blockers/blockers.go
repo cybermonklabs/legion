@@ -115,8 +115,12 @@ func UnfinishedOf(rows map[string]Row, blockedBy []string) []string {
 // phase would start is judged by Holds, which exempts nothing and answers nothing at all for a
 // root: a root at admitted inside a running tree starts whatever its links say, since they were
 // read when its own tree was opened and a blocker added to a tree already running never
-// re-checks it. An issue whose work is already under way — a return, an answered root's resume
-// — waits on nothing here, for that same reason.
+// re-checks it. An issue the daemon started and released because it waits on another issue
+// carries that judgement with it (record.LineEntry.Waits, StartedWaits), which is read back
+// here rather than made again: it was made over the rows and the children-first facts of the
+// pass that took its slot away, and the line's entry is where the pass that promotes it reads
+// it. An issue whose work is already under way — a return, an answered root's resume — waits on
+// nothing here, for that same reason.
 //
 // It is the one statement of the rule, and both the promotion that skips a candidate (admit's
 // promoteHolds) and the state's own report of what Legion waits for (Blocked) read it, so no
@@ -127,6 +131,8 @@ func LineWaitsOn(rows map[string]Row, entry record.LineEntry) []string {
 		return WaitsOn(rows, entry.Issue)
 	case record.LineFirstPhase:
 		return Holds(rows, entry.Issue)
+	case record.LineWaitingOnIssue:
+		return entry.Waits
 	default:
 		return nil
 	}
@@ -255,6 +261,75 @@ func HeldIssues(rows map[string]Row, issues []record.Issue) map[string]struct{} 
 	return held
 }
 
+// Started is the set of issues among issues the daemon has started, by key: one holding a slot
+// row now, and one whose row the daemon has already taken away because it waits
+// (record.Issue.ReleasedForWaitAt). The two are one question — has this issue's work begun —
+// asked of the two states a started issue can be in, and the second is why the mark exists: a
+// released issue is told from a child at admitted that never started by nothing else.
+func Started(issues []record.Issue, slots []record.Slot) map[string]struct{} {
+	slotted := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		slotted[slot.Issue] = struct{}{}
+	}
+	started := make(map[string]struct{}, len(slots))
+	for _, issue := range issues {
+		if _, holds := slotted[issue.Key]; holds || issue.ReleasedForWaitAt != nil {
+			started[issue.Key] = struct{}{}
+		}
+	}
+	return started
+}
+
+// Waits is what an issue the daemon has started waits on, and nothing at all for an issue it has
+// not (started, Started): an issue holding no admission slot and no mark has not begun, and what
+// it waits on is the line's own question, judged by the rule of its kind (LineWaitsOn).
+//
+// Two waits count. The Dispatch issues it is blocked by that are not done (Unfinished, which
+// counts a blocker the daemon has no row of as not done), and the open children its own first
+// phase waits for (record.LineFacts.ChildWaits, in that judgement's order), each named once. The
+// second is the same judgement the line holds an unstarted parent by: a started parent waits for
+// its children exactly as one that never started does, and only the slot it holds differs.
+//
+// Two started issues wait on neither, though a rule names them. A root waiting on a person
+// (awaiting_person, answered or not) is waiting on that person and nothing else, and the slot it
+// holds is what its resume takes back. And a tree's own root whose design gate has never opened
+// is its architect writing the design, which is the whole of that tree's work (record.AtWork at
+// phase.Admitted): releasing it would take the slot of the one issue of the tree that is working.
+// Exempt is not read here: that rule is the promotion's, about what a candidate may start in
+// spite of its links, and this one is about what a started issue holds a slot for, so an issue
+// carrying a run gives its row back like any other.
+func Waits(rows map[string]Row, issue record.Issue, facts record.LineFacts, started bool) []string {
+	if !started || issue.AwaitingPerson() {
+		return nil
+	}
+	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
+		return nil
+	}
+	waits := Unfinished(rows, issue.Key)
+	for _, child := range facts.ChildWaits[issue.Key].Open {
+		if !slices.Contains(waits, child.Key) {
+			waits = append(waits, child.Key)
+		}
+	}
+	return waits
+}
+
+// StartedWaits is what each started issue among issues waits on (Waits), by key, with no entry
+// for an issue that waits on nothing and none for an issue the daemon has not started: what the
+// waiting line takes as record.LineFacts.Waits, filled by the caller for the reason HeldIssues
+// gives. slots is the caller's own read of the slots table, which says which issues hold a row.
+func StartedWaits(rows map[string]Row, issues []record.Issue, slots []record.Slot, facts record.LineFacts) map[string][]string {
+	started := Started(issues, slots)
+	waits := make(map[string][]string)
+	for _, issue := range issues {
+		_, begun := started[issue.Key]
+		if what := Waits(rows, issue, facts, begun); len(what) > 0 {
+			waits[issue.Key] = what
+		}
+	}
+	return waits
+}
+
 // JudgeLine reads what the issues of project wait on and builds the waiting line from it, in the
 // one order the two allow. First the mirror rows of every issue a blocker can hold (Judged with
 // no line), because the line must leave out every issue whose first phase one of them holds and
@@ -264,13 +339,17 @@ func HeldIssues(rows map[string]Row, issues []record.Issue) map[string]struct{} 
 // that judgement reads the Dispatch mirror against the daemon's own records
 // (record.LineFacts.ChildWaits, record.ChildWaitsOf) — and is read again on each judgement
 // rather than stored anywhere, so a mirror row that has gone stale holds a parent for one pass
-// and no longer. Then the line. Then the rows of the issues the line itself names, which only the
+// and no longer. The waits of the issues the daemon has started are judged there too
+// (record.LineFacts.Waits, StartedWaits), from those same rows and child waits, because the
+// line stands a started issue that waits in its first part and must be told which issues those
+// are. Then the line. Then the rows of the issues the line itself names, which only the
 // line can say.
 //
 // rows is whatever the caller has already read, nil on its first judgement; judgeAgain reads only
 // the keys it does not hold, so a pass that reads the line twice makes one mirror read in all.
-// The facts come back with the held set and the child waits filled, so the release, the
-// promotion, the architect's notice and the state's `blocked` all answer from the one judgement.
+// The facts come back with the held set, the child waits and the started issues' waits filled,
+// so the release, the promotion, the architect's notice and the state's `blocked` all answer
+// from the one judgement.
 // slots is the caller's own read of the slots table, which record.Waiting reads as the set of
 // issues already holding one.
 //
@@ -284,7 +363,7 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	if rows == nil {
 		rows = map[string]Row{}
 	}
-	rows, err := judgeAgain(ctx, tx, store, project, issues, nil, rows)
+	rows, err := judgeAgain(ctx, tx, store, project, issues, nil, Started(issues, slots), rows)
 	if err != nil {
 		return rows, facts, nil, err
 	}
@@ -292,21 +371,31 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	if facts.ChildWaits, err = record.ChildWaitsOf(ctx, tx, store, project, issues, facts); err != nil {
 		return rows, facts, nil, fmt.Errorf("read what the unstarted issues of %s wait on under them: %w", project, err)
 	}
+	facts.Waits = StartedWaits(rows, issues, slots, facts)
 	line := record.Waiting(issues, slots, facts)
-	rows, err = judgeAgain(ctx, tx, store, project, issues, line, rows)
+	rows, err = judgeAgain(ctx, tx, store, project, issues, line, nil, rows)
 	return rows, facts, line, err
 }
 
 // judgeAgain adds to rows the mirror rows of every key the rebuilt line judges that the first
-// judgement did not name. The rows already read stand — no Dispatch issue finishes inside one
+// judgement did not name, and of every issue started, the issues whose own wait is judged
+// (Waits), names. The rows already read stand — no Dispatch issue finishes inside one
 // transaction — so only the new keys cost a read, and a round that names none costs nothing.
 func judgeAgain(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
-	line []record.LineEntry, rows map[string]Row,
+	line []record.LineEntry, started map[string]struct{}, rows map[string]Row,
 ) (map[string]Row, error) {
 	var fresh []string
 	for _, key := range Judged(issues, record.WaitingIssues(line)) {
 		if _, known := rows[key]; !known && !slices.Contains(fresh, key) {
 			fresh = append(fresh, key)
+		}
+	}
+	for _, issue := range issues {
+		if _, begun := started[issue.Key]; !begun {
+			continue
+		}
+		if _, known := rows[issue.Key]; !known && !slices.Contains(fresh, issue.Key) {
+			fresh = append(fresh, issue.Key)
 		}
 	}
 	if len(fresh) == 0 {

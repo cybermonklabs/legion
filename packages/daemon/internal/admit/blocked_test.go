@@ -708,11 +708,13 @@ func TestATreeThatRanAndCameBackIsAdmittedOnTheMarkItsRunEarned(t *testing.T) {
 
 // No issue is both unstarted and unreported. Every issue Legion is waiting to start that its links
 // hold is named in `admission.blocked` (the tick notice and the state read the same judgement), and
-// one nothing holds any longer is started. A root's links are read once, when promotion admits it
-// into a slot, so a slotted root at phase.Admitted whose mirror row names an unfinished blocker is
-// held by nothing: `blocked` does not name it, and the opening of its tree's design gate starts it.
-// A waiting root and a held child with exactly the same links are still held, and both are named,
-// before the gate opens and after.
+// one nothing holds any longer is started. A slotted root at phase.Admitted whose design gate has
+// never opened is its architect writing the design, the whole of that tree's work, so its links
+// hold it at nothing: `blocked` does not name it and it keeps its row. Once that gate opens its
+// own first phase is what waits, and an unfinished blocker holds that phase like any other
+// (INFRA-3036): the root gives its row back, `blocked` names it, and it starts when the blocker
+// is done. A waiting root and a held child with exactly the same links are held throughout, and
+// both are named, before the gate opens and after.
 func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	const slotted, waiting, child, blocker = "LEGION-208", "LEGION-ROOT", "LEGION-209", "LEGION-BLOCKER"
 	pool := migratedPool(t)
@@ -732,8 +734,8 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 			t.Fatalf("seed the slotted root's gate: %v", err)
 		}
 	})
-	want := []record.BlockedIssue{{Issue: child, BlockedBy: []string{blocker}}, {Issue: waiting, BlockedBy: []string{blocker}}}
-	assertBlocked := func(when string) {
+	held := []record.BlockedIssue{{Issue: child, BlockedBy: []string{blocker}}, {Issue: waiting, BlockedBy: []string{blocker}}}
+	assertBlocked := func(when string, want []record.BlockedIssue) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
 			got, err := admission.blocked(context.Background(), tx)
@@ -741,28 +743,31 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("blocked %s = %#v, want %#v: the waiting root and the held child, never the slotted root", when, got, want)
+				t.Fatalf("blocked %s = %#v, want %#v", when, got, want)
 			}
 		})
 	}
 
-	assertBlocked("before the gate opens")
+	assertBlocked("before the gate opens", held)
 
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "approved", intake.DispatchArtifact{
 		Key: slotted, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2}, admission.engine, admission); err != nil {
 		t.Fatalf("approve the slotted root's design: %v", err)
 	}
 
-	if got := issue(t, pool, slotted); got.Phase != phase.Planning {
-		t.Fatalf("the slotted root = %s once its gate opened, want planning: nothing holds it, so it starts", got.Phase)
+	// The root's own first phase is what the gate's opening offers, and its unfinished blocker
+	// holds that phase: it stands where it stood, holding no row, named with the issue it waits
+	// on. Its tree runs on, and the issues its links never touched are untouched.
+	if got := issue(t, pool, slotted); got.Phase != phase.Admitted {
+		t.Fatalf("the slotted root = %s once its gate opened, want it still at admitted: its first phase waits on its unfinished blocker", got.Phase)
 	}
 	for _, held := range []string{waiting, child} {
 		if got := issue(t, pool, held); got.Phase != phase.Admitted {
 			t.Fatalf("%s = %s, want it held at admitted by its unfinished blocker", held, got.Phase)
 		}
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: slotted, Index: 0, AdmittedAt: fixedNow}})
-	assertBlocked("after the gate opened")
+	assertSlots(t, pool, nil)
+	assertBlocked("after the gate opened", append([]record.BlockedIssue{{Issue: slotted, BlockedBy: []string{blocker}}}, held...))
 }
 
 // countingStore counts the mirror reads of the calls under test; every other read and write is

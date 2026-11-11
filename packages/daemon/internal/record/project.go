@@ -214,7 +214,7 @@ func HeldUnderAccepted(issue Issue, byKey map[string]Issue) bool {
 
 // LineKind is why an issue stands in the waiting line, which is also what its promotion does with
 // it: the line is a line of issues now that the admission cap counts issues rather than trees, and
-// the three reasons an issue can be in it are promoted three different ways (admit's promoteHolds).
+// each reason an issue can be in it is promoted its own way (admit's promoteHolds).
 type LineKind int
 
 const (
@@ -236,6 +236,13 @@ const (
 	// once its own work comes round. Its promotion starts that phase as the gate's opening used
 	// to (workflow's gateOpened).
 	LineFirstPhase
+	// LineWaitingOnIssue is an issue the daemon has started that gave its slot back because it
+	// waits on another issue: a Dispatch blocker of it that is not done, or an open child its own
+	// first phase waits for (Issue.ReleasedForWaitAt, which is the mark of that release and the
+	// moment the entry stands at). Nothing of its work stopped, so its promotion grants it a row
+	// again and clears the mark; while the wait lasts the entry says what it waits on (Waits) and
+	// the promotion passes over it, as it passes over every candidate that waits on an issue.
+	LineWaitingOnIssue
 )
 
 // LineEntry is one issue of the waiting line with the reason it waits there and whether it
@@ -252,6 +259,13 @@ type LineEntry struct {
 	// them in the daemon's code: its other comments on a holder in the line point here, and the
 	// line carries the fact rather than making each reader read the slots again.
 	Holds bool
+	// Waits is what the issue waits on, by issue key, for an issue the daemon started and
+	// released for that wait (LineWaitingOnIssue, LineFacts.Waits), and empty for every other
+	// entry: a candidate of another kind is judged against the mirror rows by the rule of its
+	// kind (blockers.LineWaitsOn). The line carries the fact as Holds is carried, so that the
+	// promotion that passes over a candidate and the state's own report of what Legion waits for
+	// answer from one judgement.
+	Waits []string
 }
 
 // LineFacts is everything the waiting line and the set of live trees are read from beyond the
@@ -293,6 +307,15 @@ type LineFacts struct {
 	// waits for its children. It is never stored: each admission pass computes it again, so a
 	// mirror row that has gone stale costs one pass and no more.
 	ChildWaits map[string]ChildWait
+	// Waits is what each issue the daemon has started waits on, by issue key, for the started
+	// issues that wait on another issue and for no other: the two waits are the unfinished
+	// Dispatch blockers of the issue and the open children its own first phase waits for, and an
+	// issue with no entry waits on neither. Such an issue holds no admission slot — the pass
+	// takes its row away and marks it (Issue.ReleasedForWaitAt, admit's promoteHolds) — and
+	// stands in the line as LineWaitingOnIssue until the wait ends. Only the caller can fill it,
+	// for the reason Held gives, and it is read again on every pass as ChildWaits is
+	// (blockers.StartedWaits).
+	Waits map[string][]string
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
@@ -632,7 +655,7 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // waits in this line as a root does, and the line has two parts.
 //
 // First, by when their work came back, oldest first: the issues the daemon has already started
-// whose work has come back to them. Three kinds of record say that work came back, and each
+// whose work has come back to them. Four kinds of record say that work came back, and each
 // gives the moment it did:
 //
 //   - an issue that owes its worker a start takes that row's own creation time and id
@@ -644,9 +667,14 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 //     takes the moment that gate opened (gateReturn). It holds its row throughout — an issue
 //     the daemon has started keeps one (KeepsSlot) — so its first phase is work coming back
 //     rather than work that never started, and its promotion takes no further slot.
+//   - an issue the daemon started and released because it waits on another issue takes the
+//     moment its row was taken away (Issue.ReleasedForWaitAt, LineWaitingOnIssue). It holds no
+//     row while it waits, which is the whole of the rule: a started issue that waits holds none
+//     of the cap's slots and stands in this line for one again, and until its wait ends its
+//     entry's own answer passes it over (LineEntry.Waits).
 //
 // Where a root has both an answer and an open gate, the later of the two is when its work came
-// back. The three are merged on the one time axis, and ties are broken by the owed row's id and
+// back. The four are merged on the one time axis, and ties are broken by the owed row's id and
 // then the issue key. A limit on work in progress works by finishing started work first, so work
 // that was in progress goes before work that never started.
 //
@@ -733,6 +761,10 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		id    int64
 	}
 	var returned []timed
+	// The issues this first loop puts in the line as LineWaitingOnIssue, which the branches
+	// below skip so that the line carries each issue once: an issue released for a wait stands
+	// at admitted as often as not, where the first-phase branch would reach it again.
+	releasedForWait := make(map[string]struct{})
 	for _, issue := range issues {
 		if issue.Answered() {
 			// An answered root belongs to this part whether or not its tree lifecycle still
@@ -764,6 +796,19 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		root, recorded := byKey[issue.Tree]
 		_, running := live[issue.Tree]
 		if !recorded || !NeedsSlot(issue, root, running) {
+			continue
+		}
+		// An issue the daemon started and then released because it waits on another issue stands
+		// here, at the moment its row was taken away (Issue.ReleasedForWaitAt), with what it
+		// waits on. The mark is what tells it from an issue that never started and holds no row
+		// for that reason — a child at admitted waiting for its first phase — which never had a
+		// row to give back. Its promotion grants the row again and clears the mark, and until
+		// the wait ends the entry's own answer passes it over (LineEntry.Waits), so it keeps its
+		// place in the line and nothing of its work stops meanwhile.
+		if issue.ReleasedForWaitAt != nil {
+			releasedForWait[issue.Key] = struct{}{}
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineWaitingOnIssue, Waits: facts.Waits[issue.Key]},
+				at: *issue.ReleasedForWaitAt})
 			continue
 		}
 		owed, owes := facts.Owed[issue.Key]
@@ -809,6 +854,13 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 	}
 	for _, issue := range issues {
 		if issue.Phase != phase.Admitted || issue.AwaitingPerson() || OutOfWorkflow(issue.Status) {
+			continue
+		}
+		// An issue the first loop has already put in the line, released for what it waits on,
+		// stands there once: its wait ends and its promotion starts the very phase this branch
+		// would, on the row that promotion grants it back. A queued root never reaches that
+		// branch (the first loop's own skip above), so this is the one place it can double.
+		if _, waits := releasedForWait[issue.Key]; waits {
 			continue
 		}
 		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) {
