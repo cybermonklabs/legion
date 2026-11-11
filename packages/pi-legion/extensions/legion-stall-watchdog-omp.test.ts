@@ -3,6 +3,7 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
 import { call } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ARCHITECT_TOPIC,
   BOUND_MS,
@@ -11,6 +12,7 @@ import {
   conversation,
   DEADLINE_MS,
   exitsFile,
+  gone,
   ISSUE,
   kernelOf,
   lastMessage,
@@ -22,7 +24,6 @@ import {
   STEER_TEXT,
   STEP_MS,
   type StallPane,
-  scratchDir,
   skip,
   startPane,
   stepOf,
@@ -103,11 +104,17 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 }, CLEANUP_MS);
 
+/** A directory of one case's own: the claim's state directory, or where a cell writes the pid of
+ * the child it started. The maker is made here rather than in `stall-watchdog-pane.ts`, because
+ * it registers its own `afterEach` where it is called and Bun evaluates an imported module once
+ * per process (`packages/test-fixtures/src/temporary-directories.ts`). */
+const scratchDir = temporaryDirectories("legion-watch");
+
 test.skipIf(skip)(
   "a cell that ends when its child dies: the call is judged from its execution start, the evidence names the child, the owner is told, and the first step ends the child with no abort sent",
   async () => {
-    const state = await scratchDir("child-state");
-    const pidFile = path.join(await scratchDir("child-pid"), "child.pid");
+    const state = scratchDir("child-state");
+    const pidFile = path.join(scratchDir("child-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-child",
       stateDir: state,
@@ -159,7 +166,7 @@ test.skipIf(skip)(
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
 
     // The cell was waiting on that child, so the call came back on its own: the next turn carries
@@ -168,6 +175,11 @@ test.skipIf(skip)(
       pane.turns().find((turn) => conversation(turn).includes("the child is gone"))
     );
     expect(conversation(after)).toContain("the child is gone");
+    // An absence read taken while the pane is mid-write would be the absence of a line still
+    // being written, not of the record: `records()` withholds an unfinished last line while the
+    // pane runs (test/transcript-entries.ts, dispatch://INFRA-2188), so this waits for the
+    // transcript to end on a newline before it reads one.
+    await pane.settled();
     const records = await pane.records();
     expect(ofKind(records, "step").map((record) => record.step)).toEqual(["end-processes"]);
     expect(ofKind(records, "stopped")).toEqual([]);
@@ -180,8 +192,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a cell that goes on after its child dies: the abort ends the turn, the session lives, and the worker takes a turn again on the message it sent itself",
   async () => {
-    const state = await scratchDir("abort-state");
-    const pidFile = path.join(await scratchDir("abort-pid"), "child.pid");
+    const state = scratchDir("abort-state");
+    const pidFile = path.join(scratchDir("abort-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-abort",
       stateDir: state,
@@ -203,7 +215,7 @@ test.skipIf(skip)(
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
     expect(pane.publishes().map((publish) => publish.topic)).toEqual([ARCHITECT_TOPIC]);
 
@@ -223,6 +235,7 @@ test.skipIf(skip)(
     );
     expect(lastMessage(again)).toContain("`eval` call");
     expect(lastMessage(again)).toContain("Decide whether that call is still worth making");
+    await pane.settled();
     const restarts = await pane.restarts();
     expect(restarts).toHaveLength(1);
     expect(restarts[0]).toContain("Your turn was ended because its `eval` call");
@@ -231,6 +244,7 @@ test.skipIf(skip)(
     // The ladder stopped at the abort: the turn it ended closed the call's record, so the step
     // that ends this process never ran, nothing was told that the ladder had stopped, and no
     // exit was counted.
+    await pane.settled();
     const records = await pane.records();
     expect(ofKind(records, "step").map((record) => record.step)).toEqual([
       "end-processes",
@@ -245,10 +259,10 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a call the abort does not end: the worker ends its own process, the count survives in the state directory, and the launch that reaches the cap ends nothing and tells its owner",
   async () => {
-    const state = await scratchDir("exit-state");
+    const state = scratchDir("exit-state");
     /** One launch of the same claim on that state directory, whose host has no `abort()`. */
     const launch = async (name: string): Promise<StallPane> => {
-      const pidFile = path.join(await scratchDir(`${name}-pid`), "child.pid");
+      const pidFile = path.join(scratchDir(`${name}-pid`), "child.pid");
       const pane = await startPane({
         name,
         stateDir: state,
@@ -322,7 +336,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a counter file the worker cannot read ends no process: the ladder stops at its last step and tells its owner instead",
   async () => {
-    const state = await scratchDir("unreadable-state");
+    const state = scratchDir("unreadable-state");
     // A counter file this worker may not read: a count it cannot trust is one it will not end its
     // own process on.
     const file = exitsFile(state);
@@ -331,7 +345,7 @@ test.skipIf(skip)(
       `${JSON.stringify({ exits: 0, at: "2026-11-07T00:00:00Z", who: "x" })}\n`
     );
     await chmod(file, 0o000);
-    const pidFile = path.join(await scratchDir("unreadable-pid"), "child.pid");
+    const pidFile = path.join(scratchDir("unreadable-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-unreadable",
       stateDir: state,
@@ -360,8 +374,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a cell that finishes inside its bound is left alone: no record, no notice, no process ended, and its result comes back as usual",
   async () => {
-    const state = await scratchDir("control-state");
-    const pidFile = path.join(await scratchDir("control-pid"), "child.pid");
+    const state = scratchDir("control-state");
+    const pidFile = path.join(scratchDir("control-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-control",
       stateDir: state,
@@ -392,6 +406,7 @@ test.skipIf(skip)(
     // Past the bound and two sweeps. A real clock, deliberately: the proposition is that the watch
     // did nothing at all, and a watch that does nothing emits no signal to await.
     await Bun.sleep(QUIET_MS);
+    await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(await pane.restarts()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
@@ -407,7 +422,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a cell with no child, on a kernel older than its call: the first step ends this session's own `eval` runner, which is the rule that needs the runner's real command",
   async () => {
-    const state = await scratchDir("runner-state");
+    const state = scratchDir("runner-state");
     const pane = await startPane({
       name: "stall-runner",
       stateDir: state,
@@ -444,7 +459,7 @@ test.skipIf(skip)(
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.outcome).toBe("ended 1 process of the call");
-    expect(await runs(runner.pid)).toBe(false);
+    await gone(pane, runner.pid);
 
     // Ending the runner ends the call: the host hands back a dead kernel, so the ladder takes no
     // second step and this worker goes on with its work.
@@ -452,6 +467,7 @@ test.skipIf(skip)(
       pane.turns().find((turn) => conversation(turn).includes("Kernel died"))
     );
     expect(conversation(after)).toContain("Kernel died");
+    await pane.settled();
     expect(ofKind(await pane.records(), "step").map((record) => record.step)).toEqual([
       "end-processes",
     ]);
@@ -463,8 +479,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a steering delivery into the turn a wedged cell holds open takes nothing out of the watch's book, and the entry closes the run's calls at an end an extension could have told apart",
   async () => {
-    const state = await scratchDir("steer-state");
-    const pidFile = path.join(await scratchDir("steer-pid"), "child.pid");
+    const state = scratchDir("steer-state");
+    const pidFile = path.join(scratchDir("steer-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-steer",
       stateDir: state,
@@ -488,7 +504,7 @@ test.skipIf(skip)(
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
-    expect(await runs(child)).toBe(false);
+    await gone(pane, child);
 
     // Then the turn the abort ended settles, and the host has the steered message to go on with:
     // the run's own end says so — `isTerminal` false on the RPC frame — and the host starts
@@ -525,8 +541,8 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a shell call the host backgrounds leaves the watch's book with the host's own end, past the moment its own deadline would have had it judged, while the process it started runs on",
   async () => {
-    const state = await scratchDir("background-state");
-    const pidFile = path.join(await scratchDir("background-pid"), "child.pid");
+    const state = scratchDir("background-state");
+    const pidFile = path.join(scratchDir("background-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-background",
       stateDir: state,
@@ -591,6 +607,7 @@ test.skipIf(skip)(
     // turn immediately after it backgrounds the call, so the turn's own close takes the record
     // either way. No live case can hold one of these four alone.
     await Bun.sleep(SHELL_DEADLINE_MS + QUIET_MS);
+    await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
     expect(pane.running()).toBe(true);

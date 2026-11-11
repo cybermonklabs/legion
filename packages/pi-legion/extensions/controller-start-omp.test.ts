@@ -23,6 +23,12 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import {
+  completeLines,
+  endsWhole,
+  type Writer,
+  writtenLines,
+} from "@legion/test-fixtures/transcript-lines";
 import { connect, headers as natsHeaders, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -44,7 +50,9 @@ import { z } from "zod";
 // stand-in (`startDaemonController`). LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the
 // NATS server, as in pi-envoy's real-binary tests. A run without both skips, except on GitHub
 // Actions, where the pi-legion job supplies both (`ompNatsGuard`).
-const { skip, setup } = ompNatsGuard();
+const { skip, setup, onActions } = ompNatsGuard();
+/** The NATS server alone, for the one case below that needs no Oh My Pi binary. */
+const natsUrl = process.env.LEGION_TEST_NATS_URL;
 
 /**
  * The start message `legion controller start` hands the controller as
@@ -149,19 +157,33 @@ const MessageEntrySchema = z.object({
 });
 type MessageEntry = z.infer<typeof MessageEntrySchema>;
 
-/** The one transcript Oh My Pi wrote under `sessions`, line by line; none until the file exists. */
-async function transcriptLines(sessions: string): Promise<string[]> {
+/** The one transcript Oh My Pi wrote under `sessions`, as text; `""` until the file exists. */
+async function transcriptText(sessions: string): Promise<string> {
   const files = (await readdir(sessions, { recursive: true })).filter((file) =>
     file.endsWith(".jsonl")
   );
-  if (files.length === 0) return [];
+  if (files.length === 0) return "";
   if (files.length !== 1) throw new Error(`want one transcript under ${sessions}, found ${files}`);
-  return (await readFile(path.join(sessions, files[0] ?? ""), "utf8")).split("\n").filter(Boolean);
+  return await readFile(path.join(sessions, files[0] ?? ""), "utf8");
+}
+
+/**
+ * Its lines, raw; none until the file exists. A pane appends to its transcript as a case polls
+ * it, so a read can land between a line's bytes and its newline; `writtenLines` withholds that
+ * fragment until the write has finished it, rather than handing `JSON.parse` half an object
+ * (dispatch://INFRA-2188). Once Oh My Pi has exited nothing will finish it, so `writer` is
+ * `"gone"` from then on, every line is parsed and a fragment throws. A caller reads which of the
+ * two holds before this reads the file and never after, or a read that caught half a line while
+ * Oh My Pi then exited would be parsed and its error would stand in for the real failure, which
+ * is that omp exited.
+ */
+async function transcriptLines(sessions: string, writer: Writer): Promise<string[]> {
+  return writtenLines(await transcriptText(sessions), writer);
 }
 
 /** Its message entries, in order. */
-async function transcriptMessages(sessions: string): Promise<MessageEntry[]> {
-  return (await transcriptLines(sessions)).flatMap((line) => {
+async function transcriptMessages(sessions: string, writer: Writer): Promise<MessageEntry[]> {
+  return (await transcriptLines(sessions, writer)).flatMap((line) => {
     const entry = MessageEntrySchema.safeParse(JSON.parse(line));
     return entry.success ? [entry.data] : [];
   });
@@ -176,6 +198,10 @@ interface ControllerSession {
   nextTurn(what: string): Promise<Turn>;
   /** The one transcript's lines, raw; none until Oh My Pi writes the file. */
   transcriptLines(): Promise<string[]>;
+  /** Waits until the transcript ends on a finished line, which a read that proves an absence
+   * does first: `transcriptLines` withholds a line the host has not finished, so an empty
+   * result taken mid-write would be the absence of that line and not of the record. */
+  transcriptWhole(): Promise<void>;
   /** The transcript's message entries, in order. */
   messages(): Promise<MessageEntry[]>;
   /**
@@ -529,6 +555,19 @@ async function startController(
     }
   };
 
+  // Which of the two states the transcript's writer is in, sampled before each read of the file
+  // and never after (`transcriptLines`): the pane appends to its transcript until Oh My Pi has
+  // exited, and nothing finishes a half-written line after that.
+  const writer = (): Writer => (exitCode === undefined ? "alive" : "gone");
+
+  // What a read that proves an absence waits for: with the transcript ending on a finished line,
+  // an empty result is the absence of the record rather than of a line still being written.
+  const transcriptWhole = async (): Promise<void> => {
+    await until("the transcript to end on a finished line", async () =>
+      endsWhole(await transcriptText(sessions)) ? true : undefined
+    );
+  };
+
   let taken = 0;
   return {
     terminal,
@@ -538,8 +577,9 @@ async function startController(
       taken += 1;
       return turn;
     },
-    transcriptLines: () => transcriptLines(sessions),
-    messages: () => transcriptMessages(sessions),
+    transcriptLines: () => transcriptLines(sessions, writer()),
+    transcriptWhole,
+    messages: () => transcriptMessages(sessions, writer()),
     until,
     async shows(what, ...texts) {
       await until(what, () => {
@@ -676,7 +716,9 @@ async function startDaemonController(
     async abort() {
       await command({ type: "abort" });
     },
-    transcriptLines: () => transcriptLines(sessions),
+    // As in `startController`, the writer's state is read before the file: the RPC stream closes
+    // when Oh My Pi exits, so an error on `closed` is a transcript nothing appends to any more.
+    transcriptLines: () => transcriptLines(sessions, closed.error === undefined ? "alive" : "gone"),
     until,
   };
 }
@@ -887,6 +929,59 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
   };
 }
 
+// The control for every `await taken` above: that promise is what a case reads as "the session
+// took the frame", so it has to fail when the session took nothing. Both ways of taking nothing
+// are held here - an id nothing subscribes at all, which NATS answers at once with no responders,
+// and a subscriber that takes the frame and never replies, which runs each request's own 1 s
+// timeout out. The relay retries either until its bound and then refuses by name
+// (`sendRelayFrame`, packages/pi-shared/test/omp-harness.ts), naming the session and the subject,
+// and this case gives it a bound of its own rather than the 30 s a card is allowed, since one
+// retry is all it has to outlast. It needs the NATS server and not the binary, so it runs
+// wherever one is configured, and its name holds no "card", so the `-t card` measurement does not
+// count its two deliberate failures.
+const RELAY_REFUSAL_MS = 3_000;
+test.skipIf(natsUrl === undefined && !onActions)(
+  "a relay frame nobody takes is refused by name, so awaiting one proves the session took it",
+  async () => {
+    const connection = await connect({ servers: natsUrl ?? "" });
+    cleanup.push(() => connection.close());
+    const codec = StringCodec();
+    const send = (sid: string): Promise<unknown> =>
+      sendRelayFrame({
+        connection,
+        newHeaders: natsHeaders,
+        sessionID: sid,
+        subject: `${ROLE_TOPIC_PREFIX}${controllerToken(PROJECT)}`,
+        payload: codec.encode(JSON.stringify({ event_id: `evt-${randomUUID()}` })),
+        seq: 1,
+        storedAt: new Date().toISOString(),
+        delivered: 1,
+        withinMs: RELAY_REFUSAL_MS,
+      });
+
+    const unheard = `nobody-${randomUUID()}`;
+    await expect(send(unheard)).rejects.toThrow(`${unheard} took no relay frame`);
+
+    const silent = await connect({ servers: natsUrl ?? "" });
+    cleanup.push(() => silent.close());
+    const sid = `silent-${randomUUID()}`;
+    // The subject a frame travels is the session's own deliver subject (`deliverSubject`), which
+    // is where a session that answers nothing has to be listening for this half to be the second
+    // way of taking nothing rather than the first again.
+    const subscription = silent.subscribe(`notifications.envoy.deliver.${sid}`);
+    void (async () => {
+      for await (const _message of subscription) {
+        // Taken and never answered, which is the shape the bound exists for.
+      }
+    })();
+    await silent.flush();
+    const started = Date.now();
+    await expect(send(sid)).rejects.toThrow(`${sid} took no relay frame`);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(RELAY_REFUSAL_MS);
+  },
+  RELAY_REFUSAL_MS * 2 + 60_000
+);
+
 test.skipIf(skip)(
   "the start turn runs after startup and the TUI shows it",
   async () => {
@@ -972,6 +1067,10 @@ test.skipIf(skip)(
     for (const turn of session.turns) {
       expect(JSON.stringify(turn.request.body)).not.toContain(START_COMMAND);
     }
+    // An absence read: the start command's word must be nowhere in the transcript. It waits for
+    // the transcript to end on a finished line first, since a line the host had not finished
+    // would be withheld and read as the absence this asserts.
+    await session.transcriptWhole();
     const lines = await session.transcriptLines();
     expect(lines.filter((line) => line.includes(START_COMMAND))).toEqual([]);
     const userMessages = (await session.messages())
@@ -1052,6 +1151,9 @@ test.skipIf(skip)(
         }
       }
     }
+    // An exact count read through a reader that withholds a line the host has not finished, so
+    // the transcript has to end on a finished line first or the count could be one short.
+    await session.transcriptWhole();
     const userMessages = (await session.messages())
       .filter(({ message }) => message.role === "user")
       .map((entry) => JSON.stringify(entry));
@@ -1190,20 +1292,19 @@ test.skipIf(skip)(
     await session.shows("the start turn's reply", "Start procedure done.");
 
     // The start message is the new session's first user message, and the replaced session has none.
+    // Both files belong to the one live process, so an unfinished last line is withheld
+    // (`completeLines`, dispatch://INFRA-2188) rather than parsed half-written.
     const [replacedUsers, newUsers] = await session.until(
       "the new session's transcript to hold the start message",
       async () => {
         const users = await Promise.all(
           [first.ompSessionFile, reclaimed.ompSessionFile].map(async (file) =>
-            (await readFile(String(file), "utf8"))
-              .split("\n")
-              .filter(Boolean)
-              .flatMap((line) => {
-                const entry = MessageEntrySchema.safeParse(JSON.parse(line));
-                return entry.success && entry.data.message.role === "user"
-                  ? [JSON.stringify(entry.data)]
-                  : [];
-              })
+            completeLines(await readFile(String(file), "utf8")).flatMap((line) => {
+              const entry = MessageEntrySchema.safeParse(JSON.parse(line));
+              return entry.success && entry.data.message.role === "user"
+                ? [JSON.stringify(entry.data)]
+                : [];
+            })
           )
         );
         return (users[1]?.length ?? 0) > 0 ? users : undefined;
@@ -1561,6 +1662,7 @@ test.skipIf(skip)(
     wake.reply("Read the startup card.");
     await settledOn(session, "Read the startup card.");
     expect(session.turns).toHaveLength(2);
+    await session.transcriptWhole();
     const delivered = (await session.transcriptLines()).filter(
       (line) => line.includes('"custom_message"') && line.includes(card.summary)
     );
