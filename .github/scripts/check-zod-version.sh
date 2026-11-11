@@ -132,3 +132,5 @@ if problems:
 (version, sites), = declared.items()
 print(f"every zod declaration names {version} ({len(sites)} across {len(manifests)} manifests)")
 PY
+
+# INFRA-1413 selection probe, never merged.
