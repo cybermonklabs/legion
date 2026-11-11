@@ -864,6 +864,38 @@ package api
 // this entry was first written. As
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+// 68: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
+// (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
+// any other — rather than answer it, so nobody will answer that question. The daemon then starts
+// the root's architect again, as a person's answer starts it, with a task that names the declined
+// ask and carries the four sentences Dispatch writes for the asking agent and the person's own
+// note. The value is the whole of the wire change: no field is added, no field is removed, and a
+// root nobody declined an ask of is served exactly as before.
+// `packages/contracts/src/legion-api.ts` lists the nine values in `LEGION_WAIT_ANSWERS`, and
+// that list is a `z.enum`, which refuses a value it does not name rather than stripping it like
+// an unknown key: a plugin at any earlier contract reading a declined root's state would refuse
+// the whole body, so the bump keeps the two apart from here on. It does not keep them apart on the way back: the
+// migration is forward-only and the answer stands on the root's own row, so an older daemon
+// binary put back on this schema serves `answeredBy: "declined"` from the rows this release
+// wrote, and the plugin at the earlier contract it is gated to then refuses the whole
+// `GET /legion/v1/state` body and not the one root that declined. The daemon ships store migration
+// `20261111021610_ask_declined.up.sql` with it, which adds the three columns the decline is kept
+// on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
+// the ninth value; an older daemon binary reads that schema without them and resumes such a root
+// through `resumeTask`'s default arm, so the root still starts and only Dispatch's words are
+// lost. (This entry first took 60, when the base carried 59, then 65 at the forward merge of
+// 2026-11-11 that brought main in, and 68 here. main declares 64, the entry right above this
+// one, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 126 open
+// pull requests of this repository on 2026-11-11 gives 64 (#2404, #2461, #2603, #3577), 65
+// (#2731, #3519 and this one), 66 (#3534) and 70 (#3573), so this change takes 68, which no open
+// head declares and which this tree published as its own. That reading is of this file at
+// refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds answers without
+// this path. Read the base's own number and every open pull request again at the next merge
+// rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
 //
 // 69: dispatch://INFRA-714 -- the daemon is an event-driven state machine, and its strictly parsed
 // shapes change with it. The phase enum loses `awaiting_merge` (both places it is spelled: the
@@ -897,13 +929,13 @@ package api
 // says. main's #2958 then landed INFRA-1274's claim step record at 57 as well, which took this
 // branch to 58; main's #2989 landed INFRA-1100's waiting line at 58, which took it to 59; main's
 // #2780 landed INFRA-956's end of fix-attempt counting at 59, which took it to 60; and main's
-// #3522 has since landed INFRA-2551's counts of the moves back at 62, and #3447 INFRA-312's
-// launch spend attributes at 64. The number has to be above every number main declares and clear
-// of every number an open branch has claimed, and the entries below carry those releases' shapes
-// with this one. Read at the forward merge of 2026-11-11 that brought main e10aef57e7 in: main
-// declares 64, and the deployment's contract ledger (dispatch://INFRA-2560) records 66 claimed by
-// cybermonklabs/legion#3534, 67 by #3519, 68 by #3511 and 70 by #3573, with 69 free, so this
-// change takes 69. This branch lands second every time, so it takes the free number at the merge
+// #3522 has since landed INFRA-2551's counts of the moves back at 62, #3447 INFRA-312's launch
+// spend attributes at 64, and #3518 INFRA-1282's declined ask at 68. The number has to be above
+// every number main declares and clear of every number an open branch has claimed, and the
+// entries below carry those releases' shapes with this one. Read at the forward merge of
+// 2026-11-11 that brought main 287919e791 in: main declares 68, and the deployment's contract
+// ledger (dispatch://INFRA-2560) records 66, 67 and 70 claimed by open pull requests of this
+// repository, with 69 free, so this change takes 69. This branch lands second every time, so it takes the free number at the merge
 // that lands it, written in each of the six sites that hold the number — this file,
 // `stallRecordContract` and `waitingLineContract` in api/server.go, the contracts fixture and the
 // `pi-legion` and `claude-envoy` manifests — since

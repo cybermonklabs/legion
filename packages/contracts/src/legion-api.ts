@@ -352,14 +352,16 @@ const legionCheckView = z.object({
 
 /** `record.Answer` — the act that ended a root's wait on a person: a person's answer on the awaited
  * ask (`ask`), its retraction by Dispatch's settlement (`retracted`) or its close by someone who is
- * not a person (`closed`), a person's act on another ask (`reply`), a session handing the last
- * question back to the agent's turn (`turn`), a person's review of the spec (`approved`,
+ * not a person (`closed`), a person's act on another ask (`reply`), a person's decline to answer an
+ * ask of the root, the awaited one or any other (`declined`, contract 68), a session handing the
+ * last question back to the agent's turn (`turn`), a person's review of the spec (`approved`,
  * `changes_requested`), or a spec version newer than the one waited on (`version`). */
 export const LEGION_WAIT_ANSWERS = [
   "ask",
   "retracted",
   "closed",
   "reply",
+  "declined",
   "turn",
   "approved",
   "changes_requested",
