@@ -279,23 +279,34 @@ func askTheModel(t *testing.T, url string) string {
 }
 
 // TestTheGitHubStandsAnswerIsSetWhileItRuns is the command's own half of the GitHub stand's
-// three answers: the route the report names sets what the stand answers each token request from
-// then on, which is how one check drives the ordinary mint, the refusal and the widened token
-// against one running stack, and a mode outside the three is refused rather than quietly leaving
-// the last answer in place. What each answer holds is the stand-in package's own rows.
+// five answers: the route the report names sets what the stand answers each token request from
+// then on, which is how one check drives the ordinary mint, each refusal and the widened token
+// against one running stack. The two answers that refuse one part of a request are read by what
+// the request names - the repository the answer named, and any permissions at all - so each is
+// driven with a request it refuses and one it mints. A mode outside the five, and a
+// refuse-repository naming no repository, are refused rather than quietly leaving the last
+// answer in place. What each answer holds is the stand-in package's own rows.
 func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	out := startStands(t, "--dir", t.TempDir())
 	if out.GitHubAnswerURL != out.RecordsURL+"/answers/github" {
 		t.Fatalf("the report names the answer route %q; want it on the recording server at %s", out.GitHubAnswerURL, out.RecordsURL)
 	}
 	for _, c := range []struct {
-		name, mode string
-		want       int
+		name, mode, asked string
+		want              int
+		all               bool
 	}{
 		{name: "the answer it starts on", want: http.StatusCreated},
 		{name: "the refusal", mode: `{"mode":"refuse"}`, want: http.StatusUnprocessableEntity},
-		{name: "the token wider than asked", mode: `{"mode":"widen"}`, want: http.StatusCreated},
+		{name: "the token wider than asked", mode: `{"mode":"widen"}`, want: http.StatusCreated, all: true},
 		{name: "the ordinary answer again", mode: `{"mode":"ordinary"}`, want: http.StatusCreated},
+		{name: "the repository the refusing answer names", mode: `{"mode":"refuse-repository","repository":"missing"}`,
+			asked: `{"repositories":["missing"]}`, want: http.StatusUnprocessableEntity},
+		{name: "another repository, under that same answer", want: http.StatusCreated},
+		{name: "no repository at all, under that same answer", asked: `{}`, want: http.StatusCreated, all: true},
+		{name: "the permissions a body names", mode: `{"mode":"refuse-permissions"}`,
+			asked: `{"repositories":["proofs"],"permissions":{"contents":"read"}}`, want: http.StatusUnprocessableEntity},
+		{name: "the repositories a body names alone, under that same answer", want: http.StatusCreated},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.mode != "" {
@@ -303,31 +314,43 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 					t.Fatalf("setting %s answered %d %s; want 200", c.mode, status, body)
 				}
 			}
-			status, body := askForAToken(t, out.Stands[standGitHub].URL)
+			status, body := askForAToken(t, out.Stands[standGitHub].URL, c.asked)
 			if status != c.want {
 				t.Fatalf("the token request answered %d %s; want %d", status, body, c.want)
 			}
 			if c.want != http.StatusCreated {
 				return
 			}
-			wider := strings.Contains(body, `"repository_selection":"all"`)
-			if wider != (c.mode == `{"mode":"widen"}`) {
-				t.Errorf("the token is %s; want one of the %s answer", body, c.name)
+			// The widened answer and a request that named no repository are the two that reach
+			// every repository of the account; every other row's token is a selection of the
+			// ones its request named.
+			if all := strings.Contains(body, `"repository_selection":"all"`); all != c.all {
+				t.Errorf("the token of %s is %s; want one reaching every repository: %t", c.name, body, c.all)
 			}
 		})
 	}
 	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"sometimes"}`); status != http.StatusBadRequest ||
-		!strings.Contains(body, "ordinary") || !strings.Contains(body, "refuse") || !strings.Contains(body, "widen") {
-		t.Errorf("a mode outside the three was answered %d %s; want 400 naming the three", status, body)
+		!strings.Contains(body, "ordinary") || !strings.Contains(body, "refuse-repository") ||
+		!strings.Contains(body, "refuse-permissions") || !strings.Contains(body, "widen") {
+		t.Errorf("a mode outside the five was answered %d %s; want 400 naming the five", status, body)
+	}
+	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"refuse-repository"}`); status != http.StatusBadRequest ||
+		!strings.Contains(body, "repository") {
+		t.Errorf("refuse-repository naming no repository was answered %d %s; want 400 naming what it is missing", status, body)
 	}
 }
 
 // askForAToken makes one access_tokens request against the GitHub stand, the call the broker's
-// minter makes, and answers its status and body.
-func askForAToken(t *testing.T, url string) (int, string) {
+// minter makes, and answers its status and body. asked is the body it sends, and "" the
+// repository narrowing most rows drive, so a row names one only where it refuses or mints by
+// what the body holds.
+func askForAToken(t *testing.T, url, asked string) (int, string) {
 	t.Helper()
+	if asked == "" {
+		asked = `{"repositories":["proofs"]}`
+	}
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		url+"/app/installations/7/access_tokens", strings.NewReader(`{"repositories":["proofs"]}`))
+		url+"/app/installations/7/access_tokens", strings.NewReader(asked))
 	if err != nil {
 		t.Fatal(err)
 	}

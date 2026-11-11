@@ -9,7 +9,7 @@
 # tagged owner=APPROVER_LOGIN tier=agent, so APPROVER_LOGIN's sessions get it without asking,
 # DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, DEMO_SERVICE_TOKEN, tagged
 # owner=SERVICE tier=agent, which every pod session of that registered service gets without
-# asking and no person's session sees, and the two github-app secrets below), then starts
+# asking and no person's session sees, and the three github-app secrets below), then starts
 # cmd/broker against
 # it. Prints the exports a second shell needs to drive the clients against it.
 #
@@ -18,12 +18,13 @@
 # (BROKER_AIRLOCK_TEST_GITHUB_API_BASE names it). It records every call it was sent, at the
 # recording route the banner names, and the answer it gives a token request is set while it runs,
 # at the answer route the banner names too: the ordinary mint, the HTTP 422 that mints nothing,
-# and a token wider than the body asked for. The App is installed on three accounts, each with
-# an installation id of its own.
+# the two refusals that answer that same 422 to one part of a request and mint every other - the
+# repository the answer names, and any permissions at all - and a token wider than the body
+# asked for. The App is installed on three accounts, each with an installation id of its own.
 #
-# Two github-app secrets are written for it, both holding that stand's App id and private key as
-# their stored value and both owned by the registered service, as DEMO_SERVICE_TOKEN is, so a pod
-# session of that service gets each without asking. DEMO_GITHUB_APP's github-owners tag names
+# Three github-app secrets are written for it, each holding that stand's App id and private key
+# as its stored value. Two are owned by the registered service, as DEMO_SERVICE_TOKEN is, so a
+# pod session of that service gets them without asking. DEMO_GITHUB_APP's github-owners tag names
 # the one account acme-org. DEMO_GITHUB_APP_CASE_PAIR's names ada, on which the App has two
 # installations whose logins differ only in case (ada and Ada): GitHubApp.Mint keys the released
 # object by the login GitHub answered with and compares a narrowing's owner without regard to
@@ -31,6 +32,12 @@
 # released object holds two installations, which is the release a client that hands one token
 # over must refuse. GitHub itself allows no two accounts whose logins differ only in case: this
 # pair exists to drive that refusal and stands for nothing real.
+#
+# The third, DEMO_GITHUB_APP_HUMAN, is APPROVER_LOGIN's own at human tier, and its github-owners
+# tag names acme-org as well. It is the one github-app secret of this stack a request for reaches
+# a person: policy.Set.Evaluate answers a service's own secret Automatic for that service's own
+# session and Deny for every other, never Approval, so a secret a service owns is approved by
+# nobody. A narrowed request put to a person is driven against this one.
 #
 # The broker's approval routes, and its introspection route, take the calling service's own
 # Kubernetes ServiceAccount token (BROKER_API_ACCOUNTS, verified against BROKER_K8S_OIDC_ISSUER),
@@ -140,9 +147,11 @@ GITHUB_CASE_OWNER="ada"
 GITHUB_CASE_INSTALLATION=8
 GITHUB_CASE_OTHER_OWNER="Ada"
 GITHUB_CASE_OTHER_INSTALLATION=9
-# The two github-app secrets, named for the account each one's github-owners tag names.
+# The three github-app secrets, named for the account each one's github-owners tag names. The
+# human one is the approver's own, and the only one whose release a person decides.
 GITHUB_SECRET="DEMO_GITHUB_APP"
 GITHUB_CASE_SECRET="DEMO_GITHUB_APP_CASE_PAIR"
+GITHUB_HUMAN_SECRET="DEMO_GITHUB_APP_HUMAN"
 # The local issuer and what it mints for (above): the audience every enrolment and listed caller's
 # token carries, the exchange's own audience, and the four accounts, as internal/broker/brokertest's
 # rig names them. The exchange entry fixes no session, so a pod names its own — and a pod of such
@@ -284,7 +293,7 @@ await() {
   exit 1
 }
 
-# --- The stand-in GitHub the two github-app secrets are minted against. dev-airlock-stands
+# --- The stand-in GitHub the three github-app secrets are minted against. dev-airlock-stands
 # serves nine stands and this stack uses the GitHub one; the others cost a loopback port each and
 # nothing points at them. It writes this run's App key and prints one JSON report naming that
 # file, the App id and every address, which is where the secrets below and the banner get theirs.
@@ -310,10 +319,11 @@ GITHUB_ANSWER_URL="$(stand .github_answer_url)"
 GITHUB_APP_ID="$(stand .github_app_id)"
 GITHUB_APP_KEY_FILE="$(stand .github_app_key_file)"
 
-# --- Fake Secrets Manager: one agent-tier secret its owner's sessions get without asking, one
-# human-tier secret its owner approves, one agent-tier secret the registered service owns, which
-# every pod session of that service gets without asking and no person's session sees, and the two
-# github-app secrets, which that same service owns for the same reason. The service-owned ones
+# --- Fake Secrets Manager: one agent-tier secret its owner's sessions get without asking, two
+# human-tier secrets its owner approves, one of them a github-app secret, one agent-tier secret
+# the registered service owns, which every pod session of that service gets without asking and
+# no person's session sees, and the two other github-app secrets, which that same service owns
+# for the same reason. The service-owned ones
 # are what BROKER_SERVICES makes servable: a secret owned by a service the deployment never
 # registered is refused owner-tag-malformed by the policy and reaches nobody. Written with jq, so
 # the App's PEM is escaped once and correctly. ---
@@ -334,6 +344,9 @@ jq -n \
       value: ({app_id: $appid, private_key: $appkey} | tojson)},
      {name: ($prefix + "demo-github-app-case-pair"), kms_key_id: $kms,
       tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $casepair},
+      value: ({app_id: $appid, private_key: $appkey} | tojson)},
+     {name: ($prefix + "demo-github-app-human"), kms_key_id: $kms,
+      tags: {owner: $approver, tier: "human", kind: "github-app", "github-owners": $owner},
       value: ({app_id: $appid, private_key: $appkey} | tojson)}
    ]}' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
@@ -510,6 +523,7 @@ dev-broker: ready.
   export DEV_BROKER_GITHUB_OWNER=$GITHUB_OWNER
   export DEV_BROKER_GITHUB_CASE_SECRET=$GITHUB_CASE_SECRET
   export DEV_BROKER_GITHUB_CASE_OWNER=$GITHUB_CASE_OWNER
+  export DEV_BROKER_GITHUB_HUMAN_SECRET=$GITHUB_HUMAN_SECRET
   export PATH=$BIN_DIR:\$PATH
 
   binaries:            $BIN_DIR  (broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper, agent-secrets-devrelay)
@@ -526,19 +540,23 @@ dev-broker: ready.
   registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
   github stand:        $GITHUB_URL  (BROKER_AIRLOCK_TEST_GITHUB_API_BASE; plain http, since the broker's minter trusts this host's own roots and nothing else)
   github records:      $GITHUB_RECORDS_URL  (GET: every call that stand was sent, as JSON)
-  github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"widen"}: what each token request is answered from then on)
+  github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen", "repository": "<name>"}: what each token request is answered from then on; the repository is refuse-repository's own)
   stand-in files:      $STANDS_DIR  (this run's GitHub App key and the stands' certificate authority; the whole report in $STANDS_JSON, its log in $STANDS_LOG)
 
-  One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and one human-tier secret
-  (DEMO_API_KEY, approver: $APPROVER_LOGIN), both owned by $APPROVER_LOGIN, whose sessions ask
-  for them, and three agent-tier secrets owned by the registered service
-  $SERVICE, which a pod session enrolled under that service gets without asking and a person's
-  session never sees: DEMO_SERVICE_TOKEN, a stored value, and the two github-app secrets
-  $GITHUB_SECRET, whose github-owners tag names $GITHUB_OWNER, and $GITHUB_CASE_SECRET, whose
+  One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and two human-tier secrets
+  (DEMO_API_KEY, and the github-app secret $GITHUB_HUMAN_SECRET, whose github-owners tag names
+  $GITHUB_OWNER), all three owned by $APPROVER_LOGIN, whose sessions ask for them and who
+  approves each release of the two human-tier ones, and three agent-tier secrets owned by the
+  registered service $SERVICE, which a pod session enrolled under that service gets without
+  asking and a person's session never sees: DEMO_SERVICE_TOKEN, a stored value, and the two
+  github-app secrets $GITHUB_SECRET, whose github-owners tag names $GITHUB_OWNER, and
+  $GITHUB_CASE_SECRET, whose
   tag names $GITHUB_CASE_OWNER, on which the App is installed twice under logins that differ
   only in case ($GITHUB_CASE_OWNER and $GITHUB_CASE_OTHER_OWNER), so a release of it holds two
-  installations. A grant lasts for the --ttl its request names, else 15 minutes for
-  DEMO_API_KEY and 12 hours for the agent-tier ones.
+  installations. A github-app request reaches a person only through $GITHUB_HUMAN_SECRET: a
+  secret the service owns is granted to that service's own sessions and denied to every other,
+  and put to nobody. A grant lasts for the --ttl its request names, else 15 minutes for
+  the human-tier ones and 12 hours for the agent-tier ones.
   Drive it with agent-secrets and agent-secrets-helper in another shell;
   press Ctrl-C here to stop the broker, its issuer and the stand-ins.
 
