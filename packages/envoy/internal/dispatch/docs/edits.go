@@ -1104,8 +1104,17 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			)}
 		}
 		// The text written over the match stays inside every ask and comment anchor the match lay
-		// wholly inside, so each anchor's quote is still the whole text it covers.
-		pmdoc.AddMarks(with, pmdoc.AnchorMarksCovering(tree.node, r))
+		// wholly inside, so each anchor's quote is still the whole text it covers. The inline path
+		// writes one textblock's text and carries the marks over all of it; the block path writes
+		// blocks, and carries them on one block of what it writes (markBlockReplacement).
+		covering := pmdoc.AnchorMarksCovering(tree.node, r)
+		if blocks {
+			if err := markBlockReplacement(with, covering, op.With); err != nil {
+				return nil, err
+			}
+		} else {
+			pmdoc.AddMarks(with, covering)
+		}
 		valid, err := tree.validated("Splice")
 		if err != nil {
 			return nil, err
@@ -1148,9 +1157,10 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if blocks {
 			next = settleBlockReplacement(valid, next, found, at, r, with, op.With)
 		}
-		// Both checks below read the blocks this replace changed, and the block it lands in can
-		// hold the whole document's text: each block is rendered and parsed once for the two
-		// (blockReadBacks).
+		// The two read-back checks below read the blocks this replace changed, and the block it
+		// lands in can hold the whole document's text: each block is rendered and parsed once for
+		// the two (blockReadBacks). What the block path wrote is judged after them, over the
+		// document as a whole (refuseWrittenBlocks).
 		backs := blockReadBacks{}
 		if code {
 			return next, refuseCodeThatReshapesItsBlock(valid, next, found, at, "with", op.With, backs)
@@ -1161,7 +1171,13 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if err := refuseUnreadableReplacement(valid, next, found, op.With, backs); err != nil {
 			return nil, err
 		}
-		return next, refuseReshapedReplacement(valid, next, found, op.With, backs)
+		if err := refuseReshapedReplacement(valid, next, found, op.With, backs); err != nil {
+			return nil, err
+		}
+		if !blocks {
+			return next, nil
+		}
+		return next, refuseWrittenBlocks(tree.node, next, with)
 	case "delete":
 		if op.Block != "" {
 			if op.Find != "" {
@@ -1938,6 +1954,88 @@ func blockReplacement(valid pmdoc.ValidDocument, at pmdoc.TextblockAt, r pmdoc.R
 		)}
 	}
 	return next, nil
+}
+
+// markBlockReplacement carries the anchor marks covering the match onto the blocks a `with`
+// names, before the fit writes them, as an accepted suggestion marks its replacement before its
+// splice (applySuggestion). One block of what is written carries every mark: the first paragraph
+// or heading the fragment holds (anchoredBlock). An anchor's mark covers a run of text, so marking
+// every block would make one anchor out of a paragraph and the list beside it, and a code block
+// holds text an ask's mark cannot cover.
+//
+// Where the match lies inside an anchor and the fragment holds no paragraph and no heading - a
+// rule alone, a table alone - the operation is refused and the document is left as it was: the
+// anchor quotes the words being rewritten, and the write would leave it nothing to quote. The
+// same `with` where no anchor covers the match writes its rule or its table.
+func markBlockReplacement(fragment *pmdoc.Node, covering []pmdoc.Mark, with string) error {
+	if len(covering) == 0 {
+		return nil
+	}
+	anchored := anchoredBlock(fragment)
+	if anchored == nil {
+		written := pmdoc.BlockNames(fragment.Children)
+		return &ErrInvalidOp{Field: "with", Reason: fmt.Sprintf(
+			"with %q writes %s, and the match is inside an open comment or ask, which quotes the words being rewritten; %s holds no line of text to carry that quote; write a line of text with the blocks, or insert the blocks beside this block and leave the quoted text alone",
+			with, written, written,
+		)}
+	}
+	pmdoc.AddMarks(anchored, covering)
+	return nil
+}
+
+// anchoredBlock is the first paragraph or heading of a parsed `with` holding a run of text, in
+// document order and at any depth, which for a list is its first item's paragraph. Where the
+// fragment holds no such block it is nil.
+//
+// A block inside a table is passed over: a mark there covers one cell of a row, so the anchor
+// would quote that cell's text rather than the words the write puts in the anchor's place. One
+// holding no run of text is passed over as well, since the marks go on the runs of text under the
+// block (pmdoc.AddMarks) and there are none, so the anchor would be lost without a word.
+// Measured on 2026-11-11, a `with` of "#\n\n- a" writes a heading with no text and a list, and
+// one of ":::callout{kind=\"note\" title=\"T\"}\n\n:::" a callout holding an empty paragraph.
+func anchoredBlock(node *pmdoc.Node) *pmdoc.Node {
+	for _, child := range node.Children {
+		if child.Type == "table" {
+			continue
+		}
+		if (child.Type == "paragraph" || child.Type == "heading") && holdsTextRun(child) {
+			return child
+		}
+		if found := anchoredBlock(child); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// holdsTextRun reports whether node holds a run of text, which is what a mark covers.
+func holdsTextRun(node *pmdoc.Node) bool {
+	held := false
+	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
+		if child.Type != "text" {
+			return true
+		}
+		held = true
+		return false
+	})
+	return held
+}
+
+// refuseWrittenBlocks runs over what the block path wrote the two guards every other path that
+// writes blocks runs (the insert arm, an accepted suggestion). `with` reaches the document through
+// the parse an insert's markdown reaches it through, so it can name a typed block's id, and it
+// lands blocks beside blocks they are rendered and read back with.
+//
+// A `with` that rewrites the typed block it lands in under that block's own id names one block of
+// the document still, so it passes both, as the fit and the third refusal of blockReplacement
+// leave it standing.
+func refuseWrittenBlocks(before, next, fragment *pmdoc.Node) error {
+	if err := pmdoc.RepeatedBlockID(before, next, fragment); err != nil {
+		return &ErrInvalidOp{Field: "with", Reason: err.Error()}
+	}
+	// What is stored is the document's rendering, so a write that leaves it reading back
+	// otherwise would store another document than the one it wrote.
+	return invalidSchemaOp("with", pmdoc.RefuseMisreadWrite(before, next))
 }
 
 // settleBlockReplacement settles what the block path wrote over the match and carries the block

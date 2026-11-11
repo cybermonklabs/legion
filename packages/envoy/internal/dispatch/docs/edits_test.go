@@ -2358,6 +2358,319 @@ func TestApplyOperationReplaceKeepsTheBlockIDAPinnedCommentNames(t *testing.T) {
 	}
 }
 
+// A `with` that writes blocks is judged by the two guards an insert's markdown is judged by
+// (INFRA-1520). The id a typed block's markdown names must name one block of the document, so a
+// `with` naming an id the document holds outside the text being replaced is refused as the same
+// markdown through an insert is, and one naming an id twice is refused by the parse of the
+// fragment, before it reaches the document. A `with` that rewrites the typed block the match
+// lands in under that block's own id names one block still, and is written. Each case prints what
+// it read.
+func TestApplyOperationReplaceRefusesABlockIDThatWouldNameTwoBlocks(t *testing.T) {
+	const id = "11111111-1111-4111-8111-111111111111"
+	const callout = ":::callout{#" + id + " kind=\"note\" title=\"T\"}\n"
+	for _, test := range []struct {
+		name, markdown, find, with, want, refusal string
+		// throughInsert asks for the same markdown inserted at the document's end, which must be
+		// refused for the same reason on the field that carried it.
+		throughInsert bool
+	}{
+		{
+			name:          "an id the document holds outside the match",
+			markdown:      "Intro.\n\nBody.\n\n" + callout + "Held.\n:::\n",
+			find:          "Body.",
+			with:          callout + "New.\n:::",
+			refusal:       `block id "` + id + `" would name two blocks; give one of them another id, or omit {#` + id + `} to have one minted`,
+			throughInsert: true,
+		},
+		{
+			name:     "an id the markdown names twice",
+			markdown: "Intro.\n\nBody.\n",
+			find:     "Body.",
+			with:     callout + "One.\n:::\n\n" + callout + "Two.\n:::",
+			refusal:  `markdown is not a Proof document: outside Proof schema: block id "` + id + `" would name two blocks`,
+		},
+		{
+			name:     "the typed block the match lands in, rewritten under its own id",
+			markdown: "Intro.\n\n" + callout + "Body.\n:::\n",
+			find:     "Body.",
+			with:     callout + "New.\n\nMore.\n:::",
+			want:     "Intro.\n\n" + callout + "New.\n\nMore.\n:::\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := applyAlone(tree, model.EditOp{Op: "replace", Find: test.find, With: test.with})
+			if test.refusal == "" {
+				if err != nil {
+					t.Fatalf("replace with %q: %v", test.with, err)
+				}
+				markdown, err := renderTree(next)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("replace with %q wrote %q", test.with, markdown)
+				if markdown != test.want {
+					t.Fatalf("replace with %q = %q, want %q", test.with, markdown, test.want)
+				}
+				return
+			}
+			var invalid *ErrInvalidOp
+			if !errors.As(err, &invalid) || invalid.Field != "with" || !strings.Contains(invalid.Reason, test.refusal) {
+				t.Fatalf("replace with %q = %v, want with refused saying %q", test.with, err, test.refusal)
+			}
+			t.Logf("replace with %q was refused: %v", test.with, err)
+			if !test.throughInsert {
+				return
+			}
+			inserted, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = applyAlone(inserted, model.EditOp{Op: "insert", After: "end", Markdown: test.with})
+			var insertRefusal *ErrInvalidOp
+			if !errors.As(err, &insertRefusal) || insertRefusal.Field != "markdown" {
+				t.Fatalf("insert of %q = %v, want markdown refused", test.with, err)
+			}
+			t.Logf("the same markdown inserted was refused: %v", err)
+			if insertRefusal.Reason != invalid.Reason {
+				t.Fatalf("insert says %q, want what the replace says, %q", insertRefusal.Reason, invalid.Reason)
+			}
+		})
+	}
+}
+
+// What a replace stores is the document's rendering, so one whose rendering reads back otherwise
+// is refused with the document unchanged (pmdoc.RefuseMisreadWrite), as an insert's markdown is.
+// A write beside a stored table whose spans would pad more cells than one read-back may is such a
+// write: the read-backs of each block the replace changed read that table nowhere, and the document
+// read back as a whole cannot be read at all. Measured on 2026-11-11, the same replace beside a
+// table whose spans pad the whole budget (wholeBudgetTable, 100,000 cells) is written, and no
+// other shape tried reached this refusal: the renderer writes a list beside a list with the kind's
+// other marker, a rule opening the document as `***`, and block syntax inside a line escaped, so
+// each of those reads back as it was written.
+func TestApplyOperationReplaceRefusesAWriteTheDocumentReadsBackOtherwise(t *testing.T) {
+	tree := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{
+		{Type: "paragraph", Children: []*pmdoc.Node{{Type: "text", Text: "Before."}}},
+		spannedTable(1000, 101),
+	}}
+	pmdoc.EnsureBlockIDs(tree)
+	_, err := applyAlone(tree, model.EditOp{Op: "replace", Find: "Before.", With: "- first\n- second"})
+	var invalid *ErrInvalidOp
+	if !errors.As(err, &invalid) || invalid.Field != "with" || !strings.Contains(invalid.Reason, "reads back otherwise") {
+		t.Fatalf("a list written beside a table spanning 100,899 cells = %v, want with refused as reading back otherwise", err)
+	}
+	t.Logf("the write was refused: %v", err)
+	if !strings.Contains(invalid.Reason, "limit 100000") {
+		t.Fatalf("the refusal says %q, want it to name the read-back limit", invalid.Reason)
+	}
+}
+
+// A replace that writes blocks under an open comment or ask carries that anchor onto one block of
+// what it writes (INFRA-1520): the first paragraph or heading holding a run of text, which for a
+// list is its first item's paragraph. The anchor quotes the words being rewritten, so it holds a
+// line of the new text, and no other block of the replacement carries the mark - not a code block
+// and not a table cell, which an anchor's quote cannot be read from. Each case prints what it
+// wrote and what the anchor covers.
+func TestApplyOperationReplaceKeepsAnOpenAnchorOnOneBlockOfWhatItWrote(t *testing.T) {
+	for _, test := range []struct{ name, with, want, carries string }{
+		{
+			name:    "a list, on its first item's paragraph",
+			with:    "- first\n- second",
+			want:    "Intro.\n\n- first\n- second\n\nAfter.\n",
+			carries: "paragraph:first",
+		},
+		{
+			name:    "a paragraph and a list, on the paragraph",
+			with:    "Plan:\n\n- first\n- second",
+			want:    "Intro.\n\nPlan:\n\n- first\n- second\n\nAfter.\n",
+			carries: "paragraph:Plan:",
+		},
+		{
+			name:    "a paragraph and a code block, never on the code",
+			with:    "Plan:\n\n```\ncode\n```",
+			want:    "Intro.\n\nPlan:\n\n```\ncode\n```\n\nAfter.\n",
+			carries: "paragraph:Plan:",
+		},
+		{
+			name:    "a table and a paragraph, never on a cell",
+			with:    "| a | b |\n| --- | --- |\n| c | d |\n\nTail.",
+			want:    "Intro.\n\n| a | b |\n| --- | --- |\n| c | d |\n\nTail.\n\nAfter.\n",
+			carries: "paragraph:Tail.",
+		},
+		{
+			name:    "a heading and a list, on the heading",
+			with:    "# Title\n\n- first",
+			want:    "Intro.\n\n# Title\n\n- first\n\nAfter.\n",
+			carries: "heading:Title",
+		},
+		{
+			// A heading with no text holds no run for the mark to cover, so the anchor would be
+			// lost there; the list item under it holds the first run of text the write makes.
+			name:    "a heading with no text and a list, on the item's paragraph",
+			with:    "#\n\n- first",
+			want:    "Intro.\n\n# \n\n- first\n\nAfter.\n",
+			carries: "paragraph:first",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree := anchoredDocument(t, "Intro.\n\nBody.\n\nAfter.\n", "Body.")
+			next, err := applyAlone(tree, model.EditOp{Op: "replace", Find: "Body.", With: test.with})
+			if err != nil {
+				t.Fatalf("replace with %q: %v", test.with, err)
+			}
+			markdown, err := renderTree(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			carrying := blocksCarryingComment(next, anchoredCommentID)
+			t.Logf("replace with %q wrote %q; the comment covers %v", test.with, markdown, carrying)
+			if markdown != test.want {
+				t.Fatalf("replace with %q = %q, want %q", test.with, markdown, test.want)
+			}
+			if len(carrying) != 1 || carrying[0] != test.carries {
+				t.Fatalf("the comment covers %v, want the one block %q", carrying, test.carries)
+			}
+		})
+	}
+}
+
+// A `with` that names blocks holding no line of text - a rule alone, a table alone, a heading with
+// no text - is refused where an open anchor covers the match, since the anchor quotes the words
+// being rewritten and nothing the write leaves could hold that quote. The same `with` where no
+// anchor covers the match writes what it names, as it did before. Each case prints what it read.
+func TestApplyOperationReplaceRefusesBlocksAnOpenAnchorCannotQuote(t *testing.T) {
+	const document = "Intro.\n\nBody.\n\nAfter.\n"
+	for _, test := range []struct{ name, with, want string }{
+		{name: "a rule alone", with: "---", want: "Intro.\n\n---\n\nAfter.\n"},
+		{
+			name: "a table alone",
+			with: "| a | b |\n| --- | --- |\n| c | d |",
+			want: "Intro.\n\n| a | b |\n| --- | --- |\n| c | d |\n\nAfter.\n",
+		},
+		{name: "a heading with no text", with: "#", want: "Intro.\n\n# \n\nAfter.\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			op := model.EditOp{Op: "replace", Find: "Body.", With: test.with}
+			_, err := applyAlone(anchoredDocument(t, document, "Body."), op)
+			var invalid *ErrInvalidOp
+			if !errors.As(err, &invalid) || invalid.Field != "with" {
+				t.Fatalf("replace with %q under an anchor = %v, want with refused", test.with, err)
+			}
+			t.Logf("under an open comment, replace with %q was refused: %v", test.with, err)
+			for _, says := range []string{"open comment or ask", "no line of text"} {
+				if !strings.Contains(invalid.Reason, says) {
+					t.Fatalf("the refusal says %q, want it to say %q", invalid.Reason, says)
+				}
+			}
+			plain, err := parseInput(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := applyAlone(plain, op)
+			if err != nil {
+				t.Fatalf("replace with %q where no anchor covers the match: %v", test.with, err)
+			}
+			markdown, err := renderTree(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("with no anchor over the match, replace with %q wrote %q", test.with, markdown)
+			if markdown != test.want {
+				t.Fatalf("replace with %q = %q, want %q", test.with, markdown, test.want)
+			}
+		})
+	}
+}
+
+// anchoredCommentID is the comment the documents of the anchor tests above are marked with.
+const anchoredCommentID = "comment-anchor-1"
+
+// anchoredDocument parses markdown and marks quote, a whole paragraph's text, as an open comment's
+// anchor covers it: one mark over every run of that text, which is what a comment written through
+// the API leaves (MarkQuote).
+func anchoredDocument(t *testing.T, markdown, quote string) *pmdoc.Node {
+	t.Helper()
+	tree, err := parseInput(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "text" && node.Text == quote {
+			node.Marks = append(node.Marks, pmdoc.Mark{
+				Type: string(MarkComment), Attrs: pmdoc.Attrs{"id": anchoredCommentID, "by": "user:alice"},
+			})
+			marked = true
+		}
+		return true
+	})
+	if !marked {
+		t.Fatalf("%q holds no text run reading %q to anchor a comment on", markdown, quote)
+	}
+	return tree
+}
+
+// blocksCarryingComment is the kind and the text of each block of tree holding a run that carries
+// the comment mark id, in document order and each block once.
+func blocksCarryingComment(tree *pmdoc.Node, id string) []string {
+	var carrying []string
+	seen := map[*pmdoc.Node]bool{}
+	var visit func(node, block *pmdoc.Node)
+	visit = func(node, block *pmdoc.Node) {
+		if node.Type == "text" {
+			for _, mark := range node.Marks {
+				if mark.Type == string(MarkComment) && mark.Attrs["id"] == id && !seen[block] {
+					seen[block] = true
+					carrying = append(carrying, block.Type+":"+pmdoc.TextContent(block))
+				}
+			}
+			return
+		}
+		if node.Type != "doc" && !isInlineLeaf(node) {
+			block = node
+		}
+		for _, child := range node.Children {
+			visit(child, block)
+		}
+	}
+	visit(tree, tree)
+	return carrying
+}
+
+// A comment anchored on a whole paragraph's text still quotes the document after a replace that
+// writes a list in that paragraph's place: the anchor holds the first item's text, which is the
+// line a reader sees where the words it was written about stood, rather than being orphaned.
+func TestApplyOpsReplaceWithAListKeepsAnOpenCommentsQuote(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "Intro.\n\nBody text here.\n")
+	commentID := insertAnchoredComment(t, service, artifactID, "Body text here.")
+
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{
+		{Op: "replace", Find: "Body text here.", With: "- first\n- second"},
+	}, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
+		t.Fatalf("write the list over the paragraph's text: %v", err)
+	}
+
+	live := liveTree(t, service, artifactID)
+	_, quote, found := pmdoc.FindMark(live, string(MarkComment), commentID)
+	stored := loadCommentAnchor(t, service, commentID)
+	markdown, err := renderTree(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("the document reads %q; the comment covers %q (found=%t) and its row quotes %q", markdown, quote, found, stored.Quote)
+	if !found || quote != "first" {
+		t.Fatalf("the comment covers %q found=%t, want the first item's %q", quote, found, "first")
+	}
+	if stored.Orphaned || stored.Quote != "first" {
+		t.Fatalf("the comment's anchor = %#v, want it holding %q", stored, "first")
+	}
+}
+
 // backtickedSuggestion is the single backtick-quoted example a refusal carries.
 func backtickedSuggestion(t *testing.T, reason string) string {
 	t.Helper()
