@@ -245,39 +245,7 @@ jobs:
       # plugin pair" refuses to release this legion unless npm then carries exactly this pair.
       - name: Resolve plugin versions for the smoke test and worker image
         id: plugin_versions
-        run: |
-          # pair_member <version output> <tag prefix>: the version npm carries for the plugin in
-          # this run. This step's own dispatch is which that is: the version the plugin releases,
-          # or, when it skips, nothing, and release-push.sh pair-version then reads the version of
-          # its newest tag, which is what npm carries. A newest tag whose name is not <tag
-          # prefix>X.Y.Z, and no such tag at all, print nothing, which the guards below refuse.
-          pair_member() {
-            local released=''
-            if [ "$(sed -n 's/^skip=//p' <<<"$1")" != true ]; then
-              released=$(sed -n 's/^version=//p' <<<"$1")
-            fi
-            .github/scripts/release-push.sh pair-version "$2" "$released"
-          }
-          # The plugins' own build jobs write their "No release published" summary lines; with
-          # GITHUB_STEP_SUMMARY empty these two calls write none into this job's summary.
-          # shellcheck disable=SC2086 # $PI_ENVOY_VERSION_ARGS is the argument list, split on purpose
-          envoy=$(GITHUB_STEP_SUMMARY='' .github/scripts/release-push.sh version pi-envoy-v $PI_ENVOY_VERSION_ARGS)
-          # shellcheck disable=SC2086 # $PI_LEGION_VERSION_ARGS is the argument list, split on purpose
-          legion=$(GITHUB_STEP_SUMMARY='' .github/scripts/release-push.sh version pi-legion-v $PI_LEGION_VERSION_ARGS)
-          envoy_version=$(pair_member "$envoy" pi-envoy-v)
-          legion_version=$(pair_member "$legion" pi-legion-v)
-          if [ -z "$legion_version" ]; then
-            echo "::error::Could not resolve @sjawhar/pi-legion version"
-            exit 1
-          fi
-          if [ -z "$envoy_version" ]; then
-            echo "::error::Could not resolve @sjawhar/pi-envoy version"
-            exit 1
-          fi
-          {
-            echo "pi_legion_version=$legion_version"
-            echo "pi_envoy_version=$envoy_version"
-          } >> "$GITHUB_OUTPUT"
+        run: .github/scripts/release-plugin-versions.sh
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: steps.version.outputs.skip != 'true'
@@ -308,20 +276,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PI_LEGION_VERSION: ${{ steps.plugin_versions.outputs.pi_legion_version }}
           PI_ENVOY_VERSION: ${{ steps.plugin_versions.outputs.pi_envoy_version }}
-        run: |
-          mkdir -p out assets
-          for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
-            os=${target%/*}
-            arch=${target#*/}
-            dir="legion-$os-$arch"
-            mkdir -p "out/$dir"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go -C packages/daemon build -buildvcs=false \
-              -ldflags "-X main.revision=$GITHUB_SHA -X main.release=v$VERSION -X main.piLegionVersion=$PI_LEGION_VERSION -X main.piEnvoyVersion=$PI_ENVOY_VERSION" \
-              -o "$GITHUB_WORKSPACE/out/$dir/legion" ./cmd/legion
-            (cd packages/daemon && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              ../../scripts/go-third-party-notices.sh "$GITHUB_WORKSPACE/out/$dir/THIRD_PARTY_NOTICES" ./cmd/legion)
-            tar czf "assets/$dir.tar.gz" -C out "$dir"
-          done
+        run: .github/scripts/release-build-legion.sh
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
@@ -440,22 +395,7 @@ jobs:
 
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
-        run: |
-          # npm matches a package's repository.url against the repository publishing it, case for
-          # case, and refuses a publish with provenance whose url is not that repository's (npm
-          # docs, "Generating provenance statements", Prerequisites; the registry answers E422
-          # "Error verifying sigstore provenance bundle: Failed to validate repository
-          # information"). The publish job hands npm this job's tarball exactly as packed and
-          # never repacks it, so the field has to be right here, before the pack below.
-          #
-          # The committed manifest is left alone: it holds today's repository, which is true
-          # today, and this step writes whichever repository the job runs in, so moving the
-          # repository to another owner or name needs no commit. Nothing restores it, as with the
-          # rewrites above: this job's tree is discarded.
-          url=$(.github/scripts/repo-paths.sh repository_url)
-          jq --arg u "$url" '.repository.url = $u' \
-            packages/pi-envoy/package.json > tmp.json \
-            && mv tmp.json packages/pi-envoy/package.json
+        run: .github/scripts/release-pi-envoy-manifest-repository.sh
 
       - name: Pack extension
         if: steps.version.outputs.skip != 'true'
@@ -555,18 +495,7 @@ jobs:
 
       - name: Point extensions at the packed bundle
         if: steps.version.outputs.skip != 'true'
-        run: |
-          # The committed manifest keeps the source path (extensions/legion.ts) so repo checkouts
-          # (dev sessions) load the source without a build. The published tarball ships only the
-          # self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
-          # omp.extensions. legion.ts is inert without LEGION_TREE/LEGION_ROLE/LEGION_CONTROLLER in
-          # the environment, so every installed session loading it is safe; the Legion daemon
-          # relies on this single installed copy instead of a repo checkout. Nothing restores the
-          # manifest: this job's tree is discarded, and no job commits a version, so the committed
-          # manifest keeps whatever it last held.
-          jq '.omp.extensions = ["dist/legion.js"]' \
-            packages/pi-legion/package.json > tmp.json \
-            && mv tmp.json packages/pi-legion/package.json
+        run: .github/scripts/release-pi-legion-extensions.sh
 
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
@@ -676,23 +605,7 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          # All three manifests, and for different readers. package.json's version is what npm
-          # publishes and what the MCP server reports. .claude-plugin/plugin.json's is what Claude
-          # Code calls the installed plugin's version: it reads the manifest, never the registry,
-          # and an install whose manifest declares none lands in a plugin-cache directory named
-          # `unknown` and never updates, since one `unknown` is indistinguishable from the next
-          # (measured on Claude Code 2.1.311). .omp-plugin/plugin.json's is what Oh My Pi reports,
-          # and tests/envoy-channel-server.test.ts holds it equal to package.json's, so a release
-          # that rewrote the first two alone would publish a plugin naming two versions. The
-          # committed .claude-plugin manifest declares none, which is what keeps a checkout from
-          # pinning every install at one string, and this job's tree is discarded, as with the
-          # rewrites below.
-          for manifest in packages/claude-envoy/package.json \
-            packages/claude-envoy/.claude-plugin/plugin.json \
-            packages/claude-envoy/.omp-plugin/plugin.json; do
-            jq --arg v "$VERSION" '.version = $v' "$manifest" > tmp.json && mv tmp.json "$manifest"
-          done
+        run: .github/scripts/release-claude-envoy-version.sh
 
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
@@ -736,36 +649,7 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          # pi_envoy_build's check, over this package's tarball, and four more: the version
-          # Claude Code reads off .claude-plugin/plugin.json, without which every install is
-          # `unknown` and no update is ever seen; the version Oh My Pi reads off
-          # .omp-plugin/plugin.json, which tests/envoy-channel-server.test.ts holds equal to
-          # package.json's; the two generated directories, which the plugin runs from and
-          # .gitignore names, so a packer that started honouring git would publish a plugin that
-          # cannot start; and the skills, which only the pack's prepack turns into files. All of
-          # them are read out of the tarball the publish job will hand npm, never out of the
-          # working tree.
-          url=$(.github/scripts/repo-paths.sh repository_url)
-          tar -xzOf packages/claude-envoy/*.tgz package/package.json \
-            | jq -e --arg u "$url" '.repository.url == $u'
-          for manifest in package/package.json package/.claude-plugin/plugin.json \
-            package/.omp-plugin/plugin.json; do
-            tar -xzOf packages/claude-envoy/*.tgz "$manifest" \
-              | jq -e --arg v "$VERSION" '.version == $v'
-          done
-          members=$(tar -tzf packages/claude-envoy/*.tgz)
-          for member in package/dist/envoy-channel.js package/legion/.claude-plugin/plugin.json; do
-            if ! printf '%s\n' "$members" | grep -qxF "$member"; then
-              echo "::error::the packed tarball holds no $member, which the installed plugin runs from"
-              exit 1
-            fi
-          done
-          # The skills, read back out of the same tarball: the rules are in
-          # packages/claude-envoy/scripts/check-packed-skills.sh, which tests/packed-skills.test.ts
-          # runs over tarballs of its own. Without them every install loses all ten skills and
-          # the dispatch-first hook hooks/hooks.json runs on every session throws.
-          packages/claude-envoy/scripts/check-packed-skills.sh packages/claude-envoy/*.tgz
+        run: .github/scripts/release-claude-envoy-check-packed.sh
 
       # The tarball, exactly as packed, for publish.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
