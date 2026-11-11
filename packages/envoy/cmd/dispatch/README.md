@@ -678,21 +678,35 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 ```
 
 - `resident_rooms`: the rooms held in memory, which with the rooms sockets being admitted reserved are what `DISPATCH_MAX_LIVE_ROOMS` caps.
+
 - `room_records`: the room records the document service keeps.
+
 - `connections`: the browsers connected to rooms and the sockets being admitted to one, the count `DISPATCH_MAX_DOC_CONNECTIONS` caps.
+
 - `pending_updates`: the browser updates the rooms' persistence has yet to take.
+
 - `pending_update_bytes`: the bytes of the updates the rooms' queues hold.
+
 - `durable_appends`: the updates whose append has not landed.
+
 - `append_batches`: the append transactions of browser updates committed since the process started, an update stored alone included.
+
 - `appended_updates`: the browser updates those transactions stored.
+
 - `append_round_trips`: the round trips those transactions sent from the document's lock to its release, failed ones included.
+
 - `batch_sizes`: how many committed batches stored how many updates, by bucket (`1`, `2`, `3-4`, … `129-256`).
+
 - `pools.room_appends`, `pools.rooms`: each pool's connections held (`acquired`) and idle (`idle`), the acquires that found no idle connection (`empty_acquires`), and the time acquires waited in all (`acquire_duration_ns`); zeros for a pool not opened yet.
+
 - `read_cache`: the cold reads' cache's weight in bytes (`bytes`), its entries (`entries`) and its budget (`budget`).
+
 - `preloads`: the cold sockets' loaded states waiting for their room's load.
+
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
   It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received; parked rows already stored are part of the history a load decodes, so they count.
   ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`): a count of parked items and, separately, of parked delete ranges, not bytes.
+
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
 ## The live socket behind a proxy
@@ -900,6 +914,7 @@ What the two processes share, and what each keeps to itself:
 
 - A sign-in started on one process completes on the other:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
+
 - `server.started` names the build every live process serves, once each time that build changes.
   A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
@@ -1234,7 +1249,7 @@ the contracting migration — one that drops, renames or narrows — ships no ea
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
 A migration that cannot be written that way is a stop-the-world migration:
-it is deployed with no server of the earlier release running, and that is an exception named in the pull request, not a default (`0113` and `0117` below are the two).
+it is deployed with no server of the earlier release running, and that is an exception named in the pull request, not a default (`0113`, `0117` and `20261111210103` below are the three).
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -2072,6 +2087,65 @@ Its census answers `0`: the trigger runs only on versions written after it.
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
 On success it backfills each artifact's project and generated `ref_key`.
+
+Migration `20261111210103_projects_default_assignee_not_null` fills every project's `default_assignee` and then makes the column not null, so the last step of the chain that decides who a question reaches — the person the ask was handed to, then the issue's assignee, then the project's default — always lands on a person (INFRA-3090).
+`0116_project_default_assignee` added the column nullable and nothing ever filled it, so an ask on an unassigned issue of a project nobody had set a default on reached nobody's Inbox, which is the defect this change ends.
+The fill reads two sources and takes the first that names somebody who has signed in:
+the login holding most of that project's issues (`issues.project_key`, `issues.assignee`), a tie broken by the most recent issue among the tied logins (`issues.created_at`, then `issues.key`);
+then the person who created the project, read from its `project.created` event (`events.actor`, the jsonb of `model.Actor`: the `id` of an actor of kind `user`, else any actor's `owner`).
+Both sources are held to `people`, because a login no `people` row holds reaches nobody, which is the defect itself, so a stale assignee is passed over rather than stored.
+A project an agent session created with the shared bearer names nobody in its event (`api/projects_test.go`, `TestASessionBearerCreatesAProject`), so it is filled from its issues or not at all.
+A project neither source names stops the migration with its key in the message, raised from a `DO` block, since a `select` cannot raise.
+It locks `projects` alone, in `ACCESS EXCLUSIVE`, taken before the fill reads anything and held to commit, so no project created between the fill and the `ALTER` escapes with a null default;
+`issues`, `events` and `people` are read under `ACCESS SHARE`, which no write waits behind, so the census's one-gigabyte table limit reaches none of them.
+Its census counts the projects naming no default, which is every project the fill writes, so it refuses the deploy of a database nobody has filled.
+That is the point of it: run the fill on the release still serving, which is the migration's own two statements, and then take the census again, so that whoever deploys types no login at all.
+
+```sql
+-- 1. The login holding most of the project's issues, the most recent issue breaking a tie.
+with assigned as (
+	select i.project_key, i.assignee, i.created_at, i.key
+	from issues i
+	join people p on p.email = i.assignee
+), counted as (
+	select project_key, assignee, count(*) as held
+	from assigned
+	group by project_key, assignee
+), majority as (
+	select distinct on (a.project_key) a.project_key, a.assignee
+	from assigned a
+	join counted c on c.project_key = a.project_key and c.assignee = a.assignee
+	order by a.project_key, c.held desc, a.created_at desc, a.key desc
+)
+update projects p
+set default_assignee = m.assignee
+from majority m
+where p.key = m.project_key and p.default_assignee is null;
+
+-- 2. The person who created the project, where the first step named nobody.
+update projects p
+set default_assignee = creator.login
+from (
+	select distinct on (e.project_key)
+		e.project_key,
+		coalesce(
+			case when e.actor->>'kind' = 'user' then lower(e.actor->>'id') end,
+			lower(e.actor->>'owner')) as login
+	from events e
+	where e.type = 'project.created' and e.project_key is not null
+	order by e.project_key, e.id
+) creator
+join people person on person.email = creator.login
+where p.key = creator.project_key and p.default_assignee is null;
+```
+
+A project left with no default after both statements is one to name a person on by hand, `PUT /api/v1/projects/<key>/default-assignee` with `{"assignee": "<the person's email>"}`, which is what the migration's refusal says too.
+
+**`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
+The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
+no server of the earlier release serves while the migration runs, and the release that boots over it names a default on every project it creates.
+An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
+recover a failed deploy forward, as `0113` and `0117` require.
 
 A migration runs while the build before it is still serving.
 The app Deployment of `envoy-infra:gcp:Dispatch` rolls above one replica (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
@@ -3067,7 +3141,9 @@ Each item below names a path with its method and identity, then its purpose.
   `{id, instance, started_at, ended_at, state, counts, cursor}`.
   `instance` is the `server_processes` id of the process that ran the pass, which may be long gone — the rows are kept for 48 hours and a process is not.
   `ended_at`, `counts` and `cursor` are `null` until the pass ends;
-  `counts` is then the eight numbers the pass's one log line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`) and `cursor` is `{repository, from, number, rest, counted}`, where the pass left the order for the pass after it and so the address that pass takes it up at: `from` names the page of the repository's open pull requests, one above the last head of the page before it; `number` is the first pull request of that page the pass did not finish, `0` for the whole page; `rest` says the page is read from the repository's REST listing rather than from a query; and `counted` that its heads are already among the heads the cycle knows the repository has. All of them are zero and false for a pass that reached the end of the order. The page's position in the repository is recorded nowhere: a pull request merged below moves the position and moves no number.
+  `counts` is then the eight numbers the pass's one log line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`) and `cursor` is `{repository, from, number, rest, counted}`, where the pass left the order for the pass after it and so the address that pass takes it up at: `from` names the page of the repository's open pull requests, one above the last head of the page before it; `number` is the first pull request of that page the pass did not finish, `0` for the whole page; `rest` says the page is read from the repository's REST listing rather than from a query; and `counted` that its heads are already among the heads the cycle knows the repository has.
+  All of them are zero and false for a pass that reached the end of the order.
+  The page's position in the repository is recorded nowhere: a pull request merged below moves the position and moves no number.
   `state` is `running`, `complete`, `deadline`, `rate_limit`, `cancelled` (its process shut down under the pass) or `ended_without_completing`, the last being a process killed between a pass's start and its end.
   A deployment that has run no pass answers `[]`.
 
