@@ -1,8 +1,9 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the window focus events below have no user-event form - the deployment check runs on the tab regaining focus, not on any element.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "../../api/client";
 import * as markdownEngine from "../refs/markdown-engine";
 import {
@@ -558,13 +559,10 @@ function serverAnswering(
   return respond;
 }
 
-/** Lets the check a focus started run to its end: its request, its body and its state update. */
+/** Lets the check a focus started run to its end: its request, its body and its state update.
+ *  Each round is a task of the fake clock the test installed. */
 async function settleCheck(): Promise<void> {
-  for (let round = 0; round < 5; round++) {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 10);
-    await promise;
-  }
+  await tick(50, 10);
 }
 
 test("shows a reloadable update notice when one build other than the tab's is live", async () => {
@@ -630,6 +628,7 @@ const noNotice: [string, { status: number; body: unknown } | "network failure"][
 
 for (const [when, builds] of noNotice) {
   test(`shows no update notice when ${when}, from one request`, async () => {
+    jest.useFakeTimers();
     const currentScript = runningPage("/assets/index-current.js");
     const fetch = spyOn(globalThis, "fetch").mockImplementation(serverAnswering(builds));
     const view = render(<DeploymentResilience />);
@@ -649,6 +648,7 @@ for (const [when, builds] of noNotice) {
         signal: expect.any(AbortSignal),
       });
     } finally {
+      realClock();
       fetch.mockRestore();
       currentScript.remove();
       view.unmount();
@@ -657,6 +657,7 @@ for (const [when, builds] of noNotice) {
 }
 
 test("shows no update notice on a page that names no entry chunk, as Vite's dev server's does", async () => {
+  jest.useFakeTimers();
   // Vite defines the build ID in its dev server as in a build; bun's test runner defines nothing.
   const globals = globalThis as { __DISPATCH_BUILD__?: string };
   globals.__DISPATCH_BUILD__ = "dev-build";
@@ -683,6 +684,7 @@ test("shows no update notice on a page that names no entry chunk, as Vite's dev 
       signal: expect.any(AbortSignal),
     });
   } finally {
+    realClock();
     fetch.mockRestore();
     devScript.remove();
     view.unmount();
@@ -730,6 +732,7 @@ test("waits one minute before checking for another deployment on focus", async (
 // as an unbounded read did (INFRA-258): its request is given up at the read deadline, its body
 // included, and the check then reports nothing.
 test("a deployment check Dispatch does not answer is given up at the read deadline", async () => {
+  jest.useFakeTimers();
   const currentScript = runningPage("/assets/index-current.js");
   let now = 100_000;
   const dateNow = spyOn(Date, "now").mockImplementation(() => now);
@@ -805,6 +808,7 @@ test("a deployment check Dispatch does not answer is given up at the read deadli
       screen.queryByRole("status", { name: "A new version is available" })
     ).not.toBeInTheDocument();
   } finally {
+    realClock();
     fetch.mockRestore();
     timeout.mockRestore();
     dateNow.mockRestore();

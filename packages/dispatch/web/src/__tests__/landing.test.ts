@@ -34,6 +34,7 @@ import type {
   Artifact,
   AuthenticatedUser,
   IssueCoverage,
+  IssueDetails,
   LandingResponse,
   LandingShell,
   MyRepliesResponse,
@@ -635,7 +636,7 @@ test("the landing is the cold read alone: a refetch that holds a viewer reads wh
     expect(first).toEqual({ event_head: "41", kind: "user", login: "alice" });
     expect(getLanding).toHaveBeenCalledTimes(1);
     expect(whoAmI).not.toHaveBeenCalled();
-    expect(client.getQueryData(issueQuery("CORE-1").queryKey)).toEqual(issue);
+    expect(client.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey)).toEqual(issue);
 
     // Warm: the page has moved on from what that landing seeded - a write landed, an event came
     // in - and then something asks whether the session still stands. The invalidation is what
@@ -650,7 +651,7 @@ test("the landing is the cold read alone: a refetch that holds a viewer reads wh
     expect(getLanding).toHaveBeenCalledTimes(1);
     // Nothing was seeded: the issue the page holds is the one the page put there, not the one
     // the landing's answer carries, and no other key was written either.
-    expect(client.getQueryData(issueQuery("CORE-1").queryKey)).toEqual({
+    expect(client.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey)).toEqual({
       ...issue,
       title: "Moved on",
     });
@@ -665,7 +666,7 @@ test("the landing is the cold read alone: a refetch that holds a viewer reads wh
     expect(afterSignOut).toEqual({ event_head: "41", kind: "user", login: "alice" });
     expect(getLanding).toHaveBeenCalledTimes(2);
     expect(whoAmI).toHaveBeenCalledTimes(1);
-    expect(client.getQueryData(issueQuery("CORE-1").queryKey)).toEqual(issue);
+    expect(client.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey)).toEqual(issue);
   } finally {
     window.history.pushState({}, "", "/");
     getLanding.mockRestore();
