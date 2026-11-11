@@ -11,11 +11,11 @@
 //
 // Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
 // `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
-// `runtime.kubernetes.kubeconfig`) is resolved
+// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, and the runtime's client, so a configuration loads
-// on a machine that has none of the files it names; `legion start --check-config` then reads them
-// as boot does (daemon.CheckStart).
+// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
+// configuration loads on a machine that has none of the files it names; `legion start
+// --check-config` then reads them as boot does (daemon.CheckStart).
 package config
 
 import (
@@ -222,6 +222,11 @@ type Config struct {
 	// the settings route admits a projected ServiceAccount token from, beside the operator
 	// bearer. The zero value, which admits none, while the file configures none.
 	SettingsRoute SettingsRoute
+	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
+	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
+	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
+	// this file's directory and kept as a path: boot reads the words (ReadHookPrompt).
+	Hooks []Hook
 	// Warnings are what the loader has to say to the operator and nothing the daemon runs on, in
 	// file order; empty for a file that raises none. One line names each key the file carries that
 	// this daemon accepts and reads nothing from (warnedKeys, readKeys), and one each place
@@ -379,6 +384,9 @@ type fileConfig struct {
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	SettingsRoute            *SettingsRoute
+	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
+	// DefaultHooks(), from one that writes the empty list, which runs no hook.
+	Hooks *[]Hook
 	// Warnings are the lines the file's keys raise, in file order (warnedKeys, readProjects).
 	Warnings []string
 }
@@ -554,6 +562,8 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.WorkerStallBackstops, err = readStallBackstops(value, key)
 		case repositoryRenamesKey:
 			file.RepositoryRenames, err = readRepositoryRenames(value, key)
+		case hooksKey:
+			file.Hooks, err = readHooks(value, key)
 		default:
 			switch {
 			case isDurationKey(key) || isCountKey(key):
@@ -819,6 +829,13 @@ var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // envNameRule is the refusal's words for a name envVarName does not match.
 const envNameRule = "must be an environment variable name (letters, digits, and underscores, not starting with a digit)"
+
+// spendAttributesRule is the refusal's words for an operator value of
+// runtime.SpendAttributesVariable that runtime.SpendAttributesRefusal refuses: one malformed
+// member is caught by the detector's caller with an empty hand, so it costs the launch the whole
+// variable. The two readers of that value (readPodEnv, readPaneEnv) share this clause and keep
+// their own verb before it, so each refusal reads as its own configuration key's sentence.
+const spendAttributesRule = "a value the agent's OpenTelemetry detector would throw on, which costs the launch every attribute of the variable, the operator's own among them"
 
 // ProviderKey is one `provider_keys` entry: Env, the variable Oh My Pi reads (GEMINI_API_KEY), and
 // where its value is held in this deployment, named apart because a deployment names its secrets per
@@ -1123,6 +1140,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
 		return Config{}, err
 	}
+	cfg.Hooks = settleHooks(file.Hooks, configDir)
 	if cfg.Runtime.Name == "kubernetes" {
 		if err := checkPodReachable(cfg); err != nil {
 			return Config{}, err

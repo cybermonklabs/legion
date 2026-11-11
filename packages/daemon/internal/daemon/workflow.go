@@ -104,13 +104,14 @@ type workflowRuntime struct {
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
 	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
-	// daemon's store, which holds the idle view and the release's mark, and idleImages the
-	// runtime's reading of an issue pod's image; both nil when release is off. idleTick is the
-	// tick's period, zero being idleTickInterval; a test shortens it.
-	idlePeriod time.Duration
-	idleStore  *store.Store
-	idleImages issuePodImages
-	idleTick   time.Duration
+	// daemon's store, which holds the idle view and the release's mark, and idleRuntime the
+	// runtime the pass asks about the pod itself — its image, its Sandbox (issuePods); both nil
+	// when release is off. idleTick is the tick's period, zero being idleTickInterval; a test
+	// shortens it.
+	idlePeriod  time.Duration
+	idleStore   *store.Store
+	idleRuntime issuePods
+	idleTick    time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -307,13 +308,16 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 // its directories from, the Apps' logins, the App tokens minted for every served repository, the
 // fill of any record written before the record carried its repository, then the deployment's
 // design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish).
+// hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
+// name (readBoot): the engine is given each hook's words, never a path, and the list it runs is
+// built from them once, here, since `hooks` is fixed for the process (engineHooks, engineConfig).
 //
 // reserve is the daemon's one wake limiter as the engine reaches it (run builds it, before this
 // and before supervision, which reserves its launches from the same one): the moment the one
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, rebuild *rebuilder, st *store.Store, projectID, dispatchToken string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, rebuild *rebuilder, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -400,6 +404,15 @@ func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, reb
 	if err != nil {
 		return nil, err
 	}
+	// The hook list is no decision-class value either, and it is built once, here, from the
+	// configuration the daemon booted on, as the project's memory block below is read once
+	// (admission's UseMemory). `hooks` is fixed for the process (config's whyHooks), and the
+	// words of a hook that names a `prompt_file` are in no configuration at all: boot read them
+	// into hookPrompts, keyed by hook name, and nothing reads such a file again. Built at every
+	// decision from the settings holder instead, a file reload that added, renamed or repointed
+	// a hook would put that hook in front of the roles it names with no words at all — which is
+	// what the loader refuses a hook written that way at boot (config's readHook).
+	hooks := engineHooks(cfg.Hooks, hookPrompts)
 	// Every decision-class value the engine and admission read — the review round cap, the fix
 	// attempts, the linger, the production-check bound, the design gate, the admission cap — is
 	// read as the decision is made, from the settings holder, and never copied into either:
@@ -407,7 +420,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, reb
 	// the one limiter run built for both lanes, before this, so the engine is handed it as it
 	// is.
 	w.engine = workflow.NewReading(w.records, func() workflow.Config {
-		settings := engineConfig(live.Snapshot(), reviewAppLogin)
+		settings := engineConfig(live.Snapshot(), reviewAppLogin, hooks)
 		settings.Repositories, settings.NoteUnread = w, w.noteUnread
 		settings.Pods = pods
 		// The one wake the engine causes is the catch-up a start writes in place of a launch
@@ -483,16 +496,46 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's merge_queue_role is the role the merger's READY is
 // published to, and its own project's production_check is the role that works the checks a merge
-// opens (empty, it opens none).
-func engineConfig(cfg *config.Config, reviewAppLogin string) workflow.Config {
+// opens (empty, it opens none). The daemon composes it at every decision, from the settings
+// holder's configuration as it stands then, so a live change of any key it reads here reaches
+// the next decision.
+//
+// hooks is the exception, and it is the caller's rather than cfg's: `hooks` is fixed for the
+// process, and the words of a hook that names a `prompt_file` live only in the map boot read them
+// into, so the list the engine runs is built once, from the configuration the daemon booted on
+// (openWorkflow, engineHooks). Reading it from cfg here would hand a daemon whose file was
+// reloaded a hook with no words at all.
+func engineConfig(cfg *config.Config, reviewAppLogin string, hooks []workflow.Hook) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
 		ReviewAppLogin:      reviewAppLogin, MergeQueueRole: project.MergeQueueRole,
-		RepositoryRenames: cfg.RepositoryRenames,
+		RepositoryRenames: cfg.RepositoryRenames, Hooks: hooks,
 	}
+}
+
+// engineHooks is the deployment's hooks as the engine runs them (workflow.Hook): each hook's own
+// words, from the key where it wrote them and from prompts where it named a file instead, so the
+// engine reads no file and holds no path. A deployment that configures no hook gets none. Boot
+// calls it once, on the configuration the daemon booted on and the words boot read (openWorkflow).
+func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook {
+	if len(hooks) == 0 {
+		return nil
+	}
+	running := make([]workflow.Hook, 0, len(hooks))
+	for _, hook := range hooks {
+		words := hook.Prompt
+		if hook.PromptFile != "" {
+			words = prompts[hook.Name]
+		}
+		running = append(running, workflow.Hook{
+			Name: hook.Name, On: hook.On, Moves: hook.Moves, Every: hook.Every,
+			Roles: hook.Roles, Prompt: words,
+		})
+	}
+	return running
 }
 
 // connect opens Envoy's JetStream and this project's durable consumers, so a missing
@@ -998,18 +1041,19 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
-// issue's pod runs the image the configuration names.
+// issue's pod runs the image the configuration names and whether it still holds the issue's
+// Sandbox (issuePods).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	k := supervision.cfg.Runtime.Kubernetes
 	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
 		return
 	}
-	images, ok := supervision.supervisor.deps.Runtime.(issuePodImages)
+	podRuntime, ok := supervision.supervisor.deps.Runtime.(issuePods)
 	if !ok {
-		w.log.Warn("idle release: the runtime reads no pod image, so no pod is released")
+		w.log.Warn("idle release: the runtime reads no issue pod, so no pod is released")
 		return
 	}
-	w.idlePeriod, w.idleStore, w.idleImages = k.IdleRelease.Idle(), supervision.supervisor.store, images
+	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 

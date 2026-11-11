@@ -172,7 +172,7 @@ func loaderTopLevelKeys() []string {
 		"dispatch_token_file", "projects", "gates", "github_apps", "linger_hours",
 		"production_check_hours", "pod_update_retask_hours", "pod_update_notice_hours",
 		"review_round_cap", "controller", "capabilities", "worker_backends",
-		"role_config_files", repositoryRenamesKey,
+		"role_config_files", repositoryRenamesKey, hooksKey,
 	}
 	for _, duration := range durationKeys {
 		keys = append(keys, duration.key)
@@ -232,7 +232,9 @@ func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 	}
 	slices.Sort(fixed)
 	want := []string{
-		"bind", "pod_update_max_open_rounds", "pod_update_rounds_per_minute", "port",
+		"bind", "hooks", "hooks[].every", "hooks[].moves", "hooks[].name", "hooks[].on",
+		"hooks[].prompt", "hooks[].prompt_file", "hooks[].roles",
+		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "port",
 		"postgres_dsn", "project", "projects.<KEY>.memory",
 		"projects.<KEY>.memory.instructions", "projects.<KEY>.memory.mode", "runtime",
 		"runtime.kubernetes", "runtime.kubernetes.idle_release",

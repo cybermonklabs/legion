@@ -375,6 +375,25 @@ provider_keys:
   every process of the host, so a secret reaches a pane as a file. The loader refuses these at load
   and the runtime again at boot, naming the variable and never its value. A launch whose own
   variable or secret pointer collides with a `pane_env` name is refused.
+  `OTEL_RESOURCE_ATTRIBUTES` is the one composed name `pane_env` accepts: the runtime composes
+  `PI_CONFIG_FILES` from `pi_config_files` and so refuses that name in the list above, while the
+  attributes are the operator's to begin and the runtime's to finish.
+  The operator sets the attributes this deployment's spend is billed
+  under, and each pane carries them with its own `legion.issue` and `legion.role` after them,
+  so a pane's own attributes name the issue it serves. The agent keeps the last value a key is
+  given, so the daemon's two pairs come last. Both keys reach the spend collector today, and
+  its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an
+  issue yet. A row grouped by issue follows when the collector keeps them, which
+  dispatch://INFRA-1835 adds to that list. A controller pane serves no issue and carries the
+  role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
+  trailing commas and whitespace dropped and nothing added.
+  The loader reads this one value for its content as well as its name: it
+  refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
+  `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
+  than 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the
+  runtime writes itself — and names that member and what is wrong with it, never the rest of the
+  value. One such member costs the pane every attribute of the variable, the operator's own among
+  them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
   Legion adds no overlay of its own to the list: it writes none, so the operator's are the whole of
   it, with a role's own (`role_config_files`) after them. The
@@ -638,6 +657,14 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `github_apps.<app>.token_command` | rebuild | `github-apps` |
 | `github_apps.implement` | rebuild | `github-apps` |
 | `github_apps.review` | rebuild | `github-apps` |
+| `hooks` | fixed | — |
+| `hooks[].every` | fixed | — |
+| `hooks[].moves` | fixed | — |
+| `hooks[].name` | fixed | — |
+| `hooks[].on` | fixed | — |
+| `hooks[].prompt` | fixed | — |
+| `hooks[].prompt_file` | fixed | — |
+| `hooks[].roles` | fixed | — |
 | `instructions` | launch | `launch-specs` |
 | `launch_failure_limit` | decision | — |
 | `linger_hours` | decision | — |
@@ -775,3 +802,5 @@ Each line below is the reason the route answers with, for the keys it names.
 - `worker_wakes_per_minute`, `worker_wake_burst` — the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it.
 
 - `worker_stall_backstop_hours` — the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it.
+
+- `hooks` and every key under it — the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a `prompt_file` (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it.

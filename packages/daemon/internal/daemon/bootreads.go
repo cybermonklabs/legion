@@ -18,11 +18,12 @@ import (
 type bootReads struct {
 	project, operatorToken, dispatchToken string
 	secrets                               map[string]string
-	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
-	instructions                          []byte         // nil when the configuration names none
-	memoryInstructions                    []byte         // nil when the project's memory block names no instructions file
-	tmux                                  tmuxReads      // runtime: tmux
-	sandbox                               sandboxReads   // runtime: kubernetes
+	nats                                  natsConnection    // the user the daemon's own NATS connection authenticates as
+	instructions                          []byte            // nil when the configuration names none
+	memoryInstructions                    []byte            // nil when the project's memory block names no instructions file
+	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
+	tmux                                  tmuxReads         // runtime: tmux
+	sandbox                               sandboxReads      // runtime: kubernetes
 }
 
 // The credential files the configuration names, each read through internal/config's own reader
@@ -99,8 +100,9 @@ func readNATSConnection(cfg config.Config, lookup func(string) (string, bool)) (
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, the project's memory instructions file, the
-// Dispatch bearer's file, and the runtime's own reads (readTmux, readSandbox).
+// (natsauth.DaemonSeed), the instructions file, the project's memory instructions file, the file
+// of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
+// file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
@@ -127,6 +129,23 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	}
 	if r.instructions, err = readInstructions(cfg); err != nil {
 		return bootReads{}, err
+	}
+	// Every hook that reads its words from a file rather than writing them in the key, read as
+	// the deployment's instructions are and refused the same way. The engine is given words and
+	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
+	// missing one refuses boot, and `legion start --check-config` with it.
+	for _, hook := range cfg.Hooks {
+		if hook.PromptFile == "" {
+			continue
+		}
+		words, err := config.ReadHookPrompt(hook.Name, hook.PromptFile)
+		if err != nil {
+			return bootReads{}, err
+		}
+		if r.hookPrompts == nil {
+			r.hookPrompts = map[string]string{}
+		}
+		r.hookPrompts[hook.Name] = words
 	}
 	// The project's memory instructions, read as the deployment's are and refused the same way.
 	// The mode does not decide it: a tree already drawn into the memory group is given them

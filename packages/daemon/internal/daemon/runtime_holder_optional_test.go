@@ -13,7 +13,7 @@ import (
 // holderOptionalRuntime is a runtime that answers every optional interface the daemon asks
 // `deps.Runtime` for by a type assertion. The Sandbox runtime answers all three
 // (runtime/sandbox: SuspendIssue, BundleWorkspace, podimage.go's
-// IssuePodRunsConfiguredImage), so a holder in front of it must answer them too.
+// IssuePodRunsConfiguredImage and IssueSandbox), so a holder in front of it must answer them too.
 type holderOptionalRuntime struct {
 	*fake.Runtime
 }
@@ -28,6 +28,8 @@ func (r *holderOptionalRuntime) BundleWorkspace(context.Context, string, claim.R
 
 func (r *holderOptionalRuntime) IssuePodRunsConfiguredImage(string) bool { return true }
 
+func (r *holderOptionalRuntime) IssueSandbox(string) (string, bool) { return "sandbox", true }
+
 // TestTheRuntimeHolderAnswersEveryOptionalInterfaceItsRuntimeDoes: `deps.Runtime` is the runtime
 // holder (daemon.go: `rt := newRuntimeHolder(...)`, then `supervise.Deps{Runtime: rt}`), and
 // three places ask it for an interface the core runtime.Runtime does not carry:
@@ -38,8 +40,8 @@ func (r *holderOptionalRuntime) IssuePodRunsConfiguredImage(string) bool { retur
 //   - outbox.go:1397 and :1410, runtime.IssueSuspender then runtime.WorkspaceBundler — the
 //     unpushed work of a released issue's workspace. The first miss returns nil as "a runtime
 //     with no shared issue resources", so the release saves nothing.
-//   - workflow.go:857, issuePodImages — attachIdleRelease, which logs "idle release: the runtime
-//     reads no pod image, so no pod is released" and leaves the idle tick off.
+//   - workflow.go:1035, issuePods — attachIdleRelease, which logs "idle release: the runtime
+//     reads no issue pod, so no pod is released" and leaves the idle tick off.
 //
 // Two of the three fail silently, which is why only the idle rig caught it. A holder that
 // forwards the core interface alone passes every other test in this package and takes those
@@ -56,8 +58,8 @@ func TestTheRuntimeHolderAnswersEveryOptionalInterfaceItsRuntimeDoes(t *testing.
 	if _, ok := runtime.Runtime(inner).(runtime.WorkspaceBundler); !ok {
 		t.Fatal("the fixture runtime is no WorkspaceBundler")
 	}
-	if _, ok := runtime.Runtime(inner).(issuePodImages); !ok {
-		t.Fatal("the fixture runtime reads no pod image")
+	if _, ok := runtime.Runtime(inner).(issuePods); !ok {
+		t.Fatal("the fixture runtime reads no issue pod")
 	}
 
 	held := runtime.Runtime(newRuntimeHolder(inner, func() {}, nil,
@@ -73,8 +75,8 @@ func TestTheRuntimeHolderAnswersEveryOptionalInterfaceItsRuntimeDoes(t *testing.
 		t.Error("the runtime holder is no WorkspaceBundler, so outbox.go:1410 cancels the release " +
 			"save and the unpushed work of a released workspace is never bundled")
 	}
-	if _, ok := held.(issuePodImages); !ok {
-		t.Error("the runtime holder reads no pod image, so attachIdleRelease leaves the idle tick " +
+	if _, ok := held.(issuePods); !ok {
+		t.Error("the runtime holder reads no issue pod, so attachIdleRelease leaves the idle tick " +
 			"off and no pod is ever released (TestIdleReleaseAndWake's own failure)")
 	}
 }

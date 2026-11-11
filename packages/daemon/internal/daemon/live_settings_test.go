@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -569,6 +570,54 @@ func TestTheProjectsBlockChangedThroughTheRouteReachesTheNextMergersLaunch(t *te
 	}
 	if addressing := merger("LEGION-3").Prompt.Addressing; !strings.Contains(addressing, "`^docs/`") {
 		t.Fatalf("the merger started after the change is addressed %q, want the rules the operator set", addressing)
+	}
+}
+
+// A fixed key is settled at boot, and `hooks` is the one whose words live nowhere else: boot
+// reads the file of every hook that names a `prompt_file` into a map of its own (readBoot), and
+// the list the engine fires is built from the two together, once, from the configuration the
+// daemon booted on (openWorkflow, engineHooks). The file arm reads the whole file again
+// (internal/settings' Keeper.File), so an operator who renames a file-backed hook, adds one or
+// repoints one moves nothing under the running engine, which goes on firing what boot read.
+//
+// Built from the settings holder at every decision instead, the engine would stand the file's
+// new hook in front of every role it names with no words at all — a hook the loader refuses at
+// boot (config's readHook) — and `whyHooks` is the reason the route refuses the key.
+func TestAFileReloadLeavesTheEnginesHooksAsBootReadThem(t *testing.T) {
+	live := liveSettings(t, "hooks: [{name: nudge, on: work_back, every: 2, roles: [implementer], prompt_file: nudge.md}]")
+	words := "Say what the round missed."
+	if err := os.WriteFile(filepath.Join(filepath.Dir(live.Path()), "nudge.md"), []byte(words+"\n"), 0o600); err != nil {
+		t.Fatalf("write the hook's prompt_file: %v", err)
+	}
+	boot := live.Snapshot()
+	prompts := map[string]string{}
+	for _, hook := range boot.Hooks {
+		read, err := config.ReadHookPrompt(hook.Name, hook.PromptFile)
+		if err != nil {
+			t.Fatalf("read the hook's words as boot reads them: %v", err)
+		}
+		prompts[hook.Name] = read
+	}
+	hooks := engineHooks(boot.Hooks, prompts)
+	if len(hooks) != 1 || hooks[0].Name != "nudge" || hooks[0].Prompt != words {
+		t.Fatalf("the hook list boot built = %+v, want the file's one hook carrying the words of its prompt_file %q", hooks, words)
+	}
+
+	// The operator renames the hook and points it at a file of its own, which is the edit this
+	// test is about: nothing reads that file, since nothing reads a hook's file after boot.
+	setInConfig(t, live, "hooks", "[{name: shove, on: work_back, every: 2, roles: [implementer], prompt_file: shove.md}]")
+	if _, _, err := live.Apply(config.SourceFile, "", map[string]any{}); err != nil {
+		t.Fatalf("the file arm of the settings route: %v", err)
+	}
+	if reloaded := live.Snapshot().Hooks; len(reloaded) != 1 || reloaded[0].Name != "shove" {
+		t.Fatalf("the settled configuration's hooks = %+v, want the file's renamed hook: the reload this test is about did not happen", reloaded)
+	}
+
+	if settings := engineConfig(live.Snapshot(), "", hooks); !reflect.DeepEqual(settings.Hooks, hooks) {
+		t.Fatalf("the engine's hooks after the reload = %+v, want the %+v boot built", settings.Hooks, hooks)
+	}
+	if took := engineConfig(live.Snapshot(), "", nil).Hooks; len(took) != 0 {
+		t.Fatalf("the engine's configuration took %+v from the settings holder, want no hook of its own: the words of a hook that names a prompt_file are in no configuration at all, and the engine would fire that one saying nothing", took)
 	}
 }
 

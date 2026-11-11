@@ -169,11 +169,10 @@ func secretChecksum(secret *corev1.Secret) pulumi.StringOutput {
 
 // answersProbe is a startup or liveness probe of the HTTP server on the container's loopback port:
 // it fails only when the process does not answer at all. It asks /livez, which runs no dependency
-// check: envoy-dispatch answers it 204 with no I/O, and envoy-listener, which has no such route,
-// answers it 404 from its mux, outside the /v1 routes its bearer guards, with no I/O either. curl
-// without -f exits 0 whatever the status, so any HTTP answer passes, and neither a dependency
-// outage nor a slow Postgres or NATS restarts every pod; --max-time 8 makes curl give up inside the
-// probe's 9 s timeout.
+// check: envoy-dispatch and envoy-listener each answer it 204 with no I/O. curl without -f exits 0
+// whatever the status, so any HTTP answer passes, and neither a dependency outage nor a slow
+// Postgres or NATS restarts every pod; --max-time 8 makes curl give up inside the probe's 9 s
+// timeout.
 func answersProbe(port, periodSeconds, failureThreshold int) *corev1.ProbeArgs {
 	return &corev1.ProbeArgs{
 		Exec: &corev1.ExecActionArgs{Command: pulumi.StringArray{

@@ -175,6 +175,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/activity.e2e.ts` | pins/unpins and asserts the refetched margin; pins first, then asserts on the server's stored body |
 | `e2e/address-links.e2e.ts` | asserts in the live spec editor (`/ws/doc`) as well as the Conversation |
 | `e2e/agent-list-refilling.e2e.ts` | drives the fake Envoy listener's refusal states and asserts the page's reading of them |
+| `e2e/agent-name-band.e2e.ts` | writes the session's two replies, one carrying a title and one carrying none, and then reads the name the server resolves from them (`delivery.ResolveSessionTitles`); the fake registry must drop the session before the page loads, or the roster names it and the read proves nothing |
 | `e2e/agent-name.e2e.ts` | margin comment on the live document, plus the fake registry; lands on the live view, whose frames come from the relay; a registry change after load must reach the open page |
 | `e2e/agent-tokens.e2e.ts` | token mint, attribution, privacy between two contexts, revoke |
 | `e2e/agent-view-settings.e2e.ts` | live session settings frames, switch round trips through fake Envoy, `page.reload()` after writes |
@@ -266,6 +267,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/keyed-writes.e2e.ts` | idempotency keys, 409 KEY_IN_FLIGHT, reload resumption, sign-out races |
 | `e2e/labels-escape-focus.e2e.ts` | the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again |
 | `e2e/labels.e2e.ts` | label writes and a server-filtered list; writes labels, then reloads and measures |
+| `e2e/legion.e2e.ts` | every metric and every column is the server's aggregation over the daemon's recorded observations; the settings rows write a setting and read the daemon's own verdict back; a card moves between columns on a live `/ws/live` frame with no reload |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |
 | `e2e/machine-login.e2e.ts` | device grants decided on the real broker |

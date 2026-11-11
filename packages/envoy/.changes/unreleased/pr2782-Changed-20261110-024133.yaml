@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  The CI reconcile pass now reads GitHub in batched GraphQL queries: one query answers twenty
+  open pull requests of a repository with every check suite and every check run of each one's
+  head commit, where the pass used to send two requests for every head. Reading 833 heads of 16
+  repositories took 1,720 requests and 26 minutes 25 seconds; the same read is about 53 queries
+  and about 318 points, so one pass covers every open head of every mapped repository inside its
+  five-minute interval. What a query cannot answer whole is still read over REST, paged and
+  conditional on the ETags the pass kept: a head with more than 30 check suites, a head one of
+  whose suites has more than 60 check runs, a head whose Checks fields GitHub refuses, and every
+  head of a page GitHub will not answer. A GraphQL rate limit, which GitHub answers in shapes
+  none of which is a REST limit, ends the pass where it stands, and which of GitHub's two
+  limits it is says what it holds: the App's GraphQL points spent is recorded under a GraphQL
+  scope of its own, which leaves every REST read of every process going, and a secondary limit,
+  which GitHub shares between an installation's REST calls and its queries, is recorded under
+  that installation's scope with a doubling wait and holds that installation's REST reads too.
+  A pass now ends at the last page of the last repository rather than beginning the order
+  again, and its one line adds graphql_queries, graphql_points, rest_requests,
+  rest_not_modified, heads_over_rest and heads_unchanged.

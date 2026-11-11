@@ -132,6 +132,7 @@ const (
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
 	whyStallBst = "the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it"
+	whyHooks    = "the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a prompt_file (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it"
 )
 
 // Caller is which arm asked for a change through the settings route: what that caller may set.
@@ -282,6 +283,22 @@ var Classes = []Row{
 	// Also.
 	{Field: "Config.Gates", Path: "gates", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs, HolderGatedSteps}, Block: true},
 	{Field: "Gates.Design", Path: "gates.design", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs, HolderGatedSteps}},
+	// The deployment's own hooks. The engine is handed the list boot built — the file's hooks,
+	// each carrying the words it wrote in its key or, for a hook that names a `prompt_file`,
+	// the words boot read into a map of its own keyed by hook name (internal/daemon's readBoot
+	// and engineHooks) — and the daemon builds that list again at no later moment, since a hook
+	// whose words live only in that map would otherwise stand in front of its roles with none.
+	// So the whole key is settled at boot: a change of it reaches the next boot. The list is one
+	// value the walk compares whole, as `projects.<KEY>.merge.by_hand` is, and the rows of one
+	// entry's members below it are what ClassOf answers a caller that names one.
+	{Field: "Config.Hooks", Path: "hooks", Class: ClassFixed, Why: whyHooks},
+	{Field: "Hook.Name", Path: "hooks[].name", Class: ClassFixed, Why: whyHooks},
+	{Field: "Hook.On", Path: "hooks[].on", Class: ClassFixed, Why: whyHooks},
+	{Field: "Hook.Moves", Path: "hooks[].moves", Class: ClassFixed, Why: whyHooks},
+	{Field: "Hook.Every", Path: "hooks[].every", Class: ClassFixed, Why: whyHooks},
+	{Field: "Hook.Roles", Path: "hooks[].roles", Class: ClassFixed, Why: whyHooks},
+	{Field: "Hook.Prompt", Path: "hooks[].prompt", Class: ClassFixed, Why: whyHooks},
+	{Field: "Hook.PromptFile", Path: "hooks[].prompt_file", Class: ClassFixed, Why: whyHooks},
 
 	// Held by a client, a listener or a connection.
 	// The worker stream holds it as the bound on every hello and every request, and intake

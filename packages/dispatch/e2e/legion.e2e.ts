@@ -6,8 +6,6 @@
 // The board reads only what Dispatch recorded of the project's daemon, so the fixture writes those
 // rows (`legion-seed.ts`); the settings control is the one place that does call the daemon, through
 // Dispatch's relay, so that spec stands a fake daemon up and reads what reached it.
-import { expect, test } from "@playwright/test";
-
 import { baseUrl, userHeaders } from "./api";
 import { PIPELINE_SECTION_URL, seedPipelineFixture } from "./delivery-seed";
 import {
@@ -18,12 +16,8 @@ import {
   seedLegionProject,
   startFakeLegionDaemon,
 } from "./legion-seed";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The ten columns, in the order the server sends them and the view draws them. */
 const COLUMNS = [
