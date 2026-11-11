@@ -486,6 +486,22 @@ cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
+INFRA_LIVE_TOOLS_STEP = "Download the tools envoy-infra's live tests run"
+# The four tools those live tests run, each a `go install module@version`: that form builds
+# from the named module's own go.mod and compiles nothing of this repository, so the entry
+# claims the step's every go line and gives the job no read of its own. The step is pinned as
+# text, so an edit of it comes back here.
+INFRA_LIVE_TOOLS_SCRIPT = """\
+. .github/scripts/ci-retry.sh
+mkdir -p "$RUNNER_TEMP/live-tools"
+cd packages/envoy/infra
+export GOBIN="$RUNNER_TEMP/live-tools" GOWORK=off
+retry_fetch "helm v3.20.2" 180 -- go install helm.sh/helm/v3/cmd/helm@v3.20.2
+retry_fetch "nats-server v2.15.1" 180 -- go install github.com/nats-io/nats-server/v2@v2.15.1
+retry_fetch "the config reloader v0.24.0" 180 -- \
+  go install github.com/nats-io/nack/cmd/nats-server-config-reloader@v0.24.0
+retry_fetch "the nats exporter v0.20.2" 180 -- \
+  go install github.com/nats-io/prometheus-nats-exporter@v0.20.2"""
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
@@ -1284,6 +1300,7 @@ GATES = [
                  tags="pulumilive,natslive", mode="vet"),
         step_run("envoy-infra-go", "Unit test envoy-infra", "go test -count=1 ./...", INFRA, ["./..."]),
     ], exact=[
+        pinned_step("envoy-infra-go", INFRA_LIVE_TOOLS_STEP, ".", INFRA_LIVE_TOOLS_SCRIPT, []),
         # One go test per package, each running only what the natslive tag adds to it.
         pinned_step("envoy-infra-go", INFRA_NATSLIVE_STEP, INFRA, INFRA_NATSLIVE_SCRIPT, [
             (INFRA, [pkg], f"go test -tags natslive {pkg}", {"tags": "natslive"})

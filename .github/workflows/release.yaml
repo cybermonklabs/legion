@@ -208,10 +208,12 @@ jobs:
     # Only main releases, as above; a workflow_dispatch on main runs it as a push does.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the 15 minutes
-    # this job carried, plus its slowest retried step alone — the Go module download,
-    # 5 x 180 + 150 = 1050 s. 900 + 1050 = 1950 s -> 33 min.
-    timeout-minutes: 181
+    # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the measured 15 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 24 call sites of one 450 s fetch = 10800 s, above every other retried step here.
+    # 900 + 10800 = 11700 s -> 196 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (181 min here).
+    timeout-minutes: 196
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -380,11 +382,12 @@ jobs:
     # main"). A workflow_dispatch on main runs it as a push does.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
-    # calls, 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # install-changie's one `ci_tools_fetch` of 741 s. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -537,11 +540,12 @@ jobs:
     # Only main publishes, as pi_envoy_build says.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
-    # calls, 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # install-changie's one `ci_tools_fetch` of 741 s. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -684,11 +688,12 @@ jobs:
     # Only main publishes, as pi_envoy_build says.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the 15 minutes
-    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
-    # calls, 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # install-changie's one `ci_tools_fetch` of 741 s. 900 + 1482 = 2382 s -> 40 min.
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the measured 15 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 900 + 2700 = 3600 s -> 61 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 61
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -891,7 +896,12 @@ jobs:
     needs: [pi_envoy_build, pi_legion_build, claude_envoy_build, legion_build]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 91
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 12 call sites of one 450 s fetch = 5400 s, above every other retried step here.
+    # 600 + 5400 = 6000 s -> 101 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (91 min here).
+    timeout-minutes: 101
     # contents: write creates the GitHub releases (`release-push.sh release`, below); id-token: write
     # is the OIDC token npm trusted publishing exchanges for the publish credential (the registry
     # records `trustedPublisher: github` for each plugin; no NPM_TOKEN is set), which also signs npm
@@ -1467,7 +1477,12 @@ jobs:
       (needs.publish.result == 'success' || needs.publish.result == 'failure') &&
       needs.publish.outputs.tag != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     permissions:
       contents: write # gh release edit
       packages: write # the legion version tag on ghcr.io

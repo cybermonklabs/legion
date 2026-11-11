@@ -4824,12 +4824,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.claude_envoy == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 99 s
-    # measured maximum, plus its slowest retried step alone — the setup-bun step's two
-    # `ci_tools_fetch` calls, 1482 s, above install-claude-code's `bun add` and the workspace
-    # install at 5 x 180 + 150 = 1050 s each and the ci-ok report's 600 s.
-    # 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes this job carried, above its 99 s measured maximum,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5237,10 +5237,11 @@ jobs:
     if: needs.changes.outputs.envoy_infra_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job carried, above its
-    # 509 s measured maximum, plus its slowest retried step alone — packages/envoy/infra's
-    # `go mod download`, 5 x 180 + 150 = 1050 s, above the ci-ok report's 600 s.
-    # 900 + 1050 = 1950 s -> 33 min.
-    timeout-minutes: 33
+    # 509 s measured maximum, plus its slowest retried step alone — the four `go install`s of
+    # the live tests' tools, each 5 x 180 + 150 = 1050 s, so 4200 s, above both
+    # packages/envoy/infra's own `go mod download` at 1050 s and the ci-ok report's 600 s.
+    # 900 + 4200 = 5100 s -> 85 min.
+    timeout-minutes: 85
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
@@ -5295,9 +5296,32 @@ jobs:
       - name: Unit test envoy-infra
         run: go test -count=1 ./...
         working-directory: packages/envoy/infra
+      # gcp's live tests install helm, nats-server, the config reloader and the exporter with
+      # `go install module@version`, which builds from each module's own go.mod and reads no
+      # go.work, so the workspace download above covers none of it: four download sites inside a
+      # `go test`. They come down here instead, through the one helper, and the test takes them
+      # from LEGION_LIVE_TOOL_DIR rather than installing its own (dispatch://INFRA-1545).
+      # One call per tool and no loop, because a loop's passes are what this repository's
+      # download check cannot count, and a figure nobody can read is a budget nobody can check.
+      - name: Download the tools envoy-infra's live tests run
+        # Its own retry arithmetic: four installs, each 5 x 180 + 150 = 1050 s, so 4200 s, and
+        # the budget stands strictly above it rather than level with it -> 71 min.
+        timeout-minutes: 71
+        run: |
+          . .github/scripts/ci-retry.sh
+          mkdir -p "$RUNNER_TEMP/live-tools"
+          cd packages/envoy/infra
+          export GOBIN="$RUNNER_TEMP/live-tools" GOWORK=off
+          retry_fetch "helm v3.20.2" 180 -- go install helm.sh/helm/v3/cmd/helm@v3.20.2
+          retry_fetch "nats-server v2.15.1" 180 -- go install github.com/nats-io/nats-server/v2@v2.15.1
+          retry_fetch "the config reloader v0.24.0" 180 -- \
+            go install github.com/nats-io/nack/cmd/nats-server-config-reloader@v0.24.0
+          retry_fetch "the nats exporter v0.20.2" 180 -- \
+            go install github.com/nats-io/prometheus-nats-exporter@v0.20.2
       - name: Live tests of envoy-infra against nats-server (natslive)
-        # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
-        # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
+        env:
+          LEGION_LIVE_TOOL_DIR: ${{ runner.temp }}/live-tools
+        # The tools come down in the step above, so this step holds no retried call of its own.
         # One call per package, never one union -run over the three: a name an untagged test of
         # one package shares with a natslive test of another would then run a second time with
         # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or

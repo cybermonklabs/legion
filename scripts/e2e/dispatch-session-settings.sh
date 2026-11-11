@@ -168,8 +168,13 @@ if [ -z "$nats_bin" ]; then
     # go.set_gobin is true, and, on mise before 2026.9.0, in any shell `mise activate` set up.
     # Separately, an activated shell exports mise's Go's GOROOT, whose compiler a newer toolchain's
     # go refuses.
+    # `go install module@version` reads no go.work, so no workspace download covers this: it is
+    # its own download site and retries like one (dispatch://INFRA-1545).
+    # shellcheck source=.github/scripts/ci-retry.sh
+    . "$root/.github/scripts/ci-retry.sh"
     nats_goroot=$(go env GOROOT) &&
-      GOBIN=$nats_gobin GOROOT=$nats_goroot "$nats_goroot/bin/go" install "github.com/nats-io/nats-server/v2@$nats_version" ||
+      GOBIN=$nats_gobin GOROOT=$nats_goroot retry_fetch "nats-server $nats_version" 180 -- \
+        "$nats_goroot/bin/go" install "github.com/nats-io/nats-server/v2@$nats_version" ||
       fail "could not install nats-server $nats_version; name a binary in LEGION_E2E_NATS_BIN instead"
   fi
 fi

@@ -299,7 +299,12 @@ jobs:
     # says; a skipped build gives `result == 'skipped'`, false.
     if: always() && needs.build.result == 'success' && needs.build.outputs.skip != 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 91
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 12 call sites of one 450 s fetch = 5400 s, above every other retried step here.
+    # 600 + 5400 = 6000 s -> 101 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (91 min here).
+    timeout-minutes: 101
     # contents: write creates the GitHub release (`release-push.sh release`, below); id-token and
     # attestations: write are for the archives' provenance attestation (id-token is the Sigstore
     # signing certificate's OIDC token). The tag push uses the deploy key, not either scope.

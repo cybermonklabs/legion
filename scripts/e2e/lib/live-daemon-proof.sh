@@ -110,8 +110,14 @@ live_daemon_proof() {
     # Separately, an activated shell exports mise's Go's GOROOT, whose compiler a newer toolchain's
     # go refuses.
     local goroot
+    # `go install module@version` reads no go.work, so the job's workspace `go mod download`
+    # covers nothing of this: it is its own download site and retries like one
+    # (dispatch://INFRA-1545, review round 18).
+    # shellcheck source=.github/scripts/ci-retry.sh
+    . "$root/.github/scripts/ci-retry.sh"
     goroot=$(go env GOROOT) &&
-      GOBIN="$work/bin" GOROOT=$goroot "$goroot/bin/go" install "github.com/nats-io/nats-server/v2@$nats_version" ||
+      GOBIN="$work/bin" GOROOT=$goroot retry_fetch "nats-server $nats_version" 180 -- \
+        "$goroot/bin/go" install "github.com/nats-io/nats-server/v2@$nats_version" ||
       fail "could not install nats-server $nats_version; name a binary in LEGION_E2E_NATS_BIN instead"
     nats_bin=$work/bin/nats-server
   fi

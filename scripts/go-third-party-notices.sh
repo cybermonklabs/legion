@@ -37,8 +37,15 @@ go_version="$("$go_cmd" env GOVERSION)"
 tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version"
 tool="$tool_dir/go-licenses"
 if [ ! -x "$tool" ]; then
+  # `go install module@version` builds from that module's own go.mod and reads no go.work, so no
+  # workspace `go mod download` of the calling job covers this fetch: it is its own download site
+  # and retries like one (dispatch://INFRA-1545, review round 18). The worker image wraps this
+  # same install in its own retry (packages/daemon/docker/worker.Dockerfile).
+  # shellcheck source=.github/scripts/ci-retry.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.github/scripts" && pwd)/ci-retry.sh"
   (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
-    "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
+    retry_fetch "go-licenses $GO_LICENSES_VERSION" 180 -- \
+      "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
 fi
 if [ "$1" = --install ]; then
   exit 0

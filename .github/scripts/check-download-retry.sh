@@ -125,16 +125,26 @@
 #     head in packages/envoy with an empty module cache and GOPROXY=off, `go generate -n ./...`
 #     exits 0, while `go list -deps ./cmd/dispatch` fails `module lookup disabled by
 #     GOPROXY=off`. Only a command a `//go:generate` directive runs can fetch.
-# What holds in the tree is a reading rather than a count: every live job that reaches one of
-# those holes also holds its module's retried download, audited at this head by reading each
-# workflow job that compiles Go, through a called script, a composite action or a verb above as
-# well as directly. The ones in a hole: ci.yaml's lint (go-release-notices.sh), test
-# (stage1-skeleton.sh), envoy-go-checks and envoy-session-stall, release-envoy-infra.yaml's and
-# release-envoy-listener.yaml's builds and release.yaml's legion_build (go-third-party-notices.sh,
-# and `go -C "$infra" list -deps`), e2e.yaml's proof, and dispatch-browser.yaml's visual - the
-# last two added by review round 17 of dispatch://INFRA-1545, which found them where this
-# paragraph had claimed no live job stood. Emptying GO_BUILD_EXEMPT is no evidence for that
-# sentence: it shows what rule 11 reads and never what its holes hide. dispatch://INFRA-2648 owns
+#   - `go install` and `go run` of a `module@version`, which build from THAT module's own go.mod
+#     and read no go.work at all, so a job's workspace `go mod download` covers none of what
+#     they fetch: each such call is a download site of its own. They are retried where they are
+#     written - scripts/go-third-party-notices.sh (go-licenses), scripts/e2e/lib/
+#     live-daemon-proof.sh and scripts/e2e/dispatch-session-settings.sh (nats-server),
+#     packages/envoy/loadtest/cluster/render-nats.sh (helm), and ci.yaml's own step for the four
+#     tools packages/envoy/infra's live tests run.
+# THIS PARAGRAPH CLAIMS NO SET OF JOBS, because three rounds of dispatch://INFRA-1545 falsified
+# that sentence in the same direction each time: it named a set its reader cannot enumerate.
+# What it states instead is what was audited and how. The audit, at each head where it is
+# rewritten, reads every workflow job that compiles Go or installs a tool - directly, through a
+# script it names by a literal path, through a script that one names, or through a composite
+# action - and holds each to its module's retried download. What that method does not reach, and
+# a reader must read for themselves: a script whose path a step builds at run time (e2e.yaml's
+# proof names its own by a matrix value), a build inside another tool's own script
+# (dispatch-browser.yaml's visual, through Playwright's server script), a third-party action's
+# own build (codeql.yaml's Go row, inside github/codeql-action/autobuild, which no rule here can
+# reach and which the exceptions name), and a script this check does not read at all, which is
+# every one outside .github/scripts/. Emptying GO_BUILD_EXEMPT is no evidence for any of it: it
+# shows what rule 11 reads and never what its holes hide. dispatch://INFRA-2648 owns
 # the reach and the measurement that would widen it. Four times the shape was a real defect that
 # every other rule passed: dispatch-browser.yaml's embedder (round 12),
 # dispatch-browser-nightly.yaml's re-record (round 14), and e2e.yaml's proof and

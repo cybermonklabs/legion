@@ -62,9 +62,24 @@ const (
 	clusteredHubChartSHA256 = "b209c62784b1b24c714d5ff6503b4c7dd948ec187d4222beee16b579f1258cc1"
 )
 
-// installTool installs module, a main package at a pinned version, with go install into dir, and
-// returns the path of its binary, named binary, or why it did not install.
+// liveToolDirEnv names a directory of binaries this test uses in place of installing its own.
+// `go install module@version` builds from that module's own go.mod and reads no go.work, so no
+// workspace download covers it and each install is a download site of its own. A CI job fills
+// this directory in a step that fetches through the one retry helper, which keeps that retry in
+// one place rather than putting a second copy of the floor in Go (dispatch://INFRA-1545, review
+// round 18). Unset, as on a developer's machine, each tool installs here as before.
+const liveToolDirEnv = "LEGION_LIVE_TOOL_DIR"
+
+// installTool returns the path of binary, from the directory liveToolDirEnv names where that
+// directory holds it, and otherwise installs module, a main package at a pinned version, with
+// go install into dir. It returns why it did not install when it could not.
 func installTool(dir, module, binary string) (string, error) {
+	if prepared := os.Getenv(liveToolDirEnv); prepared != "" {
+		path := filepath.Join(prepared, binary)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return path, nil
+		}
+	}
 	cmd := exec.Command("go", "install", module)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOBIN="+dir, "GOWORK=off")

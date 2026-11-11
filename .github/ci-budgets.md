@@ -73,7 +73,9 @@ a job's Go modules come down in a `go mod download` step of its own, so no `go b
 Write that step after the job's cache restore and before its first Go step, which is where it does the work;
 rule 11 of `.github/scripts/check-download-retry.sh` asks a job whose own `run:` body compiles Go for such a step, by presence and reading no order.
 A job that compiles Go only through a script it calls, a composite action or a verb that rule does not read is outside it, and carries the step because a reader put it there:
-that rule's reach paragraph lists each such job audited at this head, and review round 17 of dispatch://INFRA-1545 found two that lacked it.
+that rule's reach paragraph says what was audited and by what method, and review round 17 of dispatch://INFRA-1545 found two jobs that lacked the step.
+A `go install` or `go run` of a `module@version` is not covered by that step at all, whatever the job downloaded first:
+it builds from that module's own go.mod and reads no go.work, so it is a download site of its own and retries where it is written (review round 18 of the same issue).
 Four bounds are the same wherever that kind of fetch is made, because the kind rather than the step decides them (dispatch://INFRA-1545):
 a `gh api` read is bounded at 30 s an attempt, which is ten times the about 3 s one takes;
 a release asset or release archive at 60 s, a download of tens of megabytes, the Bun release zip measured at 51,794,595 bytes;

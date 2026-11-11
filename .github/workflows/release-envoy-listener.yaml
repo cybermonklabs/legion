@@ -130,7 +130,12 @@ jobs:
   # tripwire last, as in build, docker and release_build.
   targets:
     runs-on: ubuntu-24.04
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     permissions:
       contents: read
     outputs:
@@ -159,11 +164,12 @@ jobs:
   build:
     needs: targets
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
-    # calls, 1482 s, above the Go module download and the workspace install at
-    # 5 x 180 + 150 = 1050 s each. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     # Checks out and uploads; nothing here writes to the repository or a registry.
     permissions:
       contents: read
@@ -541,11 +547,12 @@ jobs:
   release_build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — packages/envoy's
-    # `go mod download`, 5 x 180 + 150 = 1050 s, above install-changie's one `ci_tools_fetch`
-    # of 741 s. 600 + 1050 = 1650 s -> 28 min.
-    timeout-minutes: 46
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     permissions:
       contents: read
     outputs:
@@ -732,7 +739,12 @@ jobs:
       cancel-in-progress: false
       queue: max
     runs-on: ubuntu-24.04
-    timeout-minutes: 91
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 12 call sites of one 450 s fetch = 5400 s, above every other retried step here.
+    # 600 + 5400 = 6000 s -> 101 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (91 min here).
+    timeout-minutes: 101
     # packages: write moves the `latest` tag to the newest already-published image (`docker
     # buildx imagetools create`, below); contents: write creates and uploads the GitHub release
     # (`release-push.sh release`); id-token and attestations: write are for the agent-secrets
