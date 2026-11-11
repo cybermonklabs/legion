@@ -251,6 +251,11 @@ const (
 	// AnsweredByVersion is a spec version newer than the one waited on, which hands the approval
 	// request back to the architect.
 	AnsweredByVersion Answer = "version"
+	// AnsweredByDecline is a person's decline to answer an ask of the root, the one the wait
+	// names or any other: they closed the question with no answer, so nobody will answer it, and
+	// the detail is that ask. The resume prints what Dispatch wrote for the asking agent and the
+	// person's own note, both kept on the ask's mirror row (RootAsk.DeclinedWords, DeclinedNote).
+	AnsweredByDecline Answer = "declined"
 )
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
@@ -975,6 +980,14 @@ func SpecGate(gates map[DesignStep]DesignGate) *DesignGate {
 // gate's document: the mirror needs no binding to know it. PersonAnswerSeq is the newest answer of
 // the ask by a person, and PersonSeq the newest other act of a person that would answer a root
 // waiting on that person (workflow's personAct); PersonActSeq is the newest of the two that does.
+//
+// Declined says a person closed the ask rather than answer it, with DeclinedNote their own note
+// ("" where they wrote none) and DeclinedWords the sentences Dispatch wrote beside it for the
+// asking agent, both as Dispatch recorded them: they are the words the resume prints
+// (workflow's resumeTask), so the daemon keeps no copy of its own and the two packages cannot
+// drift apart. A decline is a fact of the ask, kept whatever order its events arrive in, and
+// nothing takes it off the row: the question was closed with no answer, and a restoration brings
+// back that same close.
 type RootAsk struct {
 	Issue           string
 	Ask             string
@@ -989,6 +1002,9 @@ type RootAsk struct {
 	ByTree          bool
 	PersonSeq       int64
 	PersonAnswerSeq int64
+	Declined        bool
+	DeclinedNote    string
+	DeclinedWords   string
 }
 
 // The ask kinds the mirror knows (RootAsk.Kind): an ordinary question, and the approval request

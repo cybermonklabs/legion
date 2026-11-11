@@ -453,19 +453,34 @@ func owed(run record.RoleRun) (string, bool) {
 // from the acts the ask handlers record under one rule, personAct). A review of one of those
 // documents is not read here: the architect is already live, and the daemon's own
 // design-changes-requested notice is the work that reaches it (a handout of its own).
+//
+// An act on an ask the mirror records as declined is named a decline, whichever ask it is, as the
+// live path names it from that same row (personAnswered): the person closed the question with no
+// answer, and the resume says so in Dispatch's own words. This is the path a decline takes when
+// it falls between the architect's hand-back and the pass that would put the root in the wait, so
+// the row is all there is to read — there is no event in hand here.
 func answeredSince(waiting record.Awaiting, asks []record.RootAsk, gateArtifacts []string) (record.Answer, string, bool) {
 	since := waiting.Since.Seq
 	for _, ask := range asks {
 		if ask.Ask == waiting.Ask && ask.PersonActSeq(gateArtifacts...) > since {
-			return record.AnsweredByAsk, ask.Ask, true
+			return answerOfAct(ask, record.AnsweredByAsk), ask.Ask, true
 		}
 	}
 	for _, ask := range asks {
 		if ask.PersonActSeq(gateArtifacts...) > since {
-			return record.AnsweredByReply, ask.Ask, true
+			return answerOfAct(ask, record.AnsweredByReply), ask.Ask, true
 		}
 	}
 	return "", "", false
+}
+
+// answerOfAct is how a person's act on ask answered the wait: their decline of it where the
+// mirror records one, else otherwise, which is whether the ask is the one the wait names.
+func answerOfAct(ask record.RootAsk, otherwise record.Answer) record.Answer {
+	if ask.Declined {
+		return record.AnsweredByDecline
+	}
+	return otherwise
 }
 
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
@@ -617,6 +632,20 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case record.AnsweredByTurn:
 		fmt.Fprintf(&task, "A session's reply handed your question %s on %s to your turn, so no person is asked anything there; read its thread.",
 			waiting.AnsweredDetail, key)
+	case record.AnsweredByDecline:
+		// The sentences and the note are Dispatch's record of the decline, printed as the mirror
+		// row holds them (record.RootAsk.DeclinedWords, DeclinedNote): the daemon writes neither,
+		// so the architect reads the person's words and not the daemon's paraphrase of them. A
+		// decline the person wrote no note with ends after the sentences.
+		fmt.Fprintf(&task, "A person declined to answer your ask %s on %s.", waiting.AnsweredDetail, key)
+		if declined := declinedRow(asks, waiting.AnsweredDetail); declined != nil {
+			if declined.DeclinedWords != "" {
+				fmt.Fprintf(&task, " %s", declined.DeclinedWords)
+			}
+			if declined.DeclinedNote != "" {
+				fmt.Fprintf(&task, " Their note: %s", declined.DeclinedNote)
+			}
+		}
 	default:
 		fmt.Fprintf(&task, "A person acted on %s; read the issue's asks and its spec.", key)
 	}
@@ -688,4 +717,17 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		task.WriteString(" Continue.")
 	}
 	return task.String()
+}
+
+// declinedRow is the mirror row of ask when a person declined to answer it, nil otherwise: it
+// carries the sentences Dispatch wrote for the asking agent and the person's own note, which the
+// resume prints. A record holding no such row — a decline mirrored by a release before this one,
+// or a row a later read has not reached — leaves the resume naming the ask alone.
+func declinedRow(asks []record.RootAsk, ask string) *record.RootAsk {
+	for i := range asks {
+		if asks[i].Ask == ask && asks[i].Declined {
+			return &asks[i]
+		}
+	}
+	return nil
 }

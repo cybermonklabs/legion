@@ -54,18 +54,21 @@ const (
 // at the event's place in the issue's event log (seq). Each part is applied behind its own fence on
 // the row (apply): state when seq is newer than the row's Seq, turn ("" for none) when newer than
 // its WaitingOnSeq, and closer ("" when the event is no close) when newer than its ClosedSeq. The
-// facts of the ask (kind, artifact, byTree) and a person's acts (personAct's answer and other) are
-// kept from any event that carries them, however old.
+// facts of the ask (kind, artifact, byTree, a person's decline) and a person's acts (personAct's
+// answer and other) are kept from any event that carries them, however old.
 type askChange struct {
-	seq      int64
-	kind     string
-	artifact string
-	byTree   bool
-	state    askState
-	turn     string
-	closer   string
-	answer   bool
-	other    bool
+	seq           int64
+	kind          string
+	artifact      string
+	byTree        bool
+	state         askState
+	turn          string
+	closer        string
+	answer        bool
+	other         bool
+	declined      bool
+	declinedNote  string
+	declinedWords string
 }
 
 // apply merges the change into row.
@@ -75,6 +78,12 @@ func (c askChange) apply(row *record.RootAsk) {
 		row.Artifact = c.artifact
 	}
 	row.ByTree = row.ByTree || c.byTree
+	// A person's decline is the ask's own fact, kept like its kind: the question was closed with
+	// no answer, and nothing later takes that back. Its note and Dispatch's words come with it,
+	// so a row only ever carries the two that belong to the decline it records.
+	if c.declined {
+		row.Declined, row.DeclinedNote, row.DeclinedWords = true, c.declinedNote, c.declinedWords
+	}
 	if c.answer {
 		row.PersonAnswerSeq = max(row.PersonAnswerSeq, c.seq)
 	}
@@ -239,10 +248,16 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 }
 
 // closeAsk closes the ask's mirror row, keeping the turn it last had, records who closed it
-// (closer), and records a person's act personAct names, which answers the root's wait when it
+// (closer), records a person's decline on the row with Dispatch's own words and the person's note,
+// and records a person's act personAct names, which answers the root's wait when it
 // would answer one (answersWait, personAnswered). A close by anyone else moves the wait when it
 // takes an ask of the wait away from the person (itemLeft): settlement's is a retraction, any other
 // a close the resume names.
+//
+// A decline is a resolution by a person, so personAct already counts it among the acts that
+// answer a wait, and the row it leaves is what both resume paths read to say so: personAnswered
+// here, and admission's answeredSince for a decline that falls before the pass that would put the
+// root in the wait.
 func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) error {
 	root, err := e.recordedRoot(ctx, tx, fact.Key)
 	if err != nil || root == nil {
@@ -253,8 +268,10 @@ func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAs
 		return err
 	}
 	answer, other := personAct(fact)
+	declined := fact.Resolution == intake.ResolutionDeclined
 	before, after, err := e.mirrorAsk(ctx, tx, *root, fact.Ask, askChange{seq: fact.Mark.Seq, kind: fact.Kind, artifact: fact.Artifact,
-		state: askClosed, closer: closer, answer: answer, other: other})
+		state: askClosed, closer: closer, answer: answer, other: other,
+		declined: declined, declinedNote: fact.Reason, declinedWords: fact.DispatchWords})
 	if err != nil {
 		return err
 	}

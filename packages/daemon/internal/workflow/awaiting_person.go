@@ -70,6 +70,12 @@ func (e *Engine) declare(ctx context.Context, tx pgx.Tx, root record.Issue, mark
 // them. The act answers only a wait it follows: one Dispatch recorded at or before the wait's
 // start (record.EventMark.After against Awaiting.Since) is an answer the person gave before the
 // architect handed the work back to them, and the root waits on their next act.
+//
+// An ask the person declined to answer is read from the ask's own mirror row rather than from the
+// act in hand, and is the answer whichever ask it is: the mirror is what admission's own pass
+// reads for a decline that reaches the record before the wait begins (answeredSince), so one read
+// decides both paths alike. The detail is the declined ask, so the resume names the question the
+// person would not answer even where the wait names another.
 func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issue, ask string, mark record.EventMark) error {
 	if !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
 		return nil
@@ -77,6 +83,13 @@ func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issu
 	answer, by := "workflow: a person acted on an ask of a root waiting on them", record.AnsweredByReply
 	if root.Awaiting.Ask == ask {
 		answer, by = "workflow: an architect ask was answered", record.AnsweredByAsk
+	}
+	row, err := e.store.RootAsk(ctx, tx, root.Key, ask)
+	if err != nil {
+		return err
+	}
+	if row != nil && row.Declined {
+		answer, by = "workflow: a person declined to answer an ask of a root waiting on them", record.AnsweredByDecline
 	}
 	if !placedAfter(root, mark) {
 		e.logOnCommit(ctx, "workflow: a person's act recorded before the wait began answers no wait", "issue", root.Key,

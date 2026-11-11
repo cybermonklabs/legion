@@ -845,4 +845,24 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 60: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
+// (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
+// any other — rather than answer it, so nobody will answer that question. The daemon then starts
+// the root's architect again, as a person's answer starts it, with a task that names the declined
+// ask and carries the four sentences Dispatch writes for the asking agent and the person's own
+// note. The value is the whole of the wire change: no field is added, no field is removed, and a
+// root nobody declined an ask of is served exactly as before.
+// `packages/contracts/src/legion-api.ts` lists the nine values in `LEGION_WAIT_ANSWERS`, and
+// that list is a `z.enum`, which refuses a value it does not name rather than stripping it like
+// an unknown key: a plugin at 59 reading a declined root's state would refuse the whole body, so
+// the bump is what keeps the two from ever meeting. The daemon ships store migration
+// `20261111021610_ask_declined.up.sql` with it, which adds the three columns the decline is kept
+// on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
+// the ninth value; an older daemon binary reads that schema without them and resumes such a root
+// through `resumeTask`'s default arm, so the root still starts and only Dispatch's words are
+// lost. (The base carries 59, so this change takes 60, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says; read the base's own number again at the next merge rather than from this line.)
+const DaemonAPIVersion = 60
