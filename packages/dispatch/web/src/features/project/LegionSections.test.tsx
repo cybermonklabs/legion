@@ -502,7 +502,7 @@ test("the finished issues are the Issues tab's table, with a phase bar on one sc
     table.querySelector('[data-issue-row="ACME-6"] [data-issue-link]')?.getAttribute("href")
   ).toBe("/projects/ACME/legion/ACME-6");
   const bar = (key: string) =>
-    table.querySelector(`[data-issue-row="${key}"] [data-phase-hours-bar] > span`) as HTMLElement;
+    table.querySelector(`[data-issue-row="${key}"] [data-phase-hours-length]`) as HTMLElement;
   // Hours: one scale, the longest issue full length.
   expect(bar("ACME-6").style.width).toBe("100%");
   expect(bar("ACME-7").style.width).toBe("80%");

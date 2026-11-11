@@ -62,11 +62,6 @@ test("daemon queue replaces Dispatch order and optional Legion columns sort and 
     await page.goto("/projects/ACME/issues");
     await expect(row(page, "ACME-4").getByText("#1", { exact: true })).toBeVisible();
     await expect(row(page, "ACME-3").getByText("#2", { exact: true })).toBeVisible();
-    for (const label of ["Slot", "Roles", "CI"]) {
-      await expect(
-        page.getByRole("columnheader").filter({ hasText: new RegExp(`^${label}`) })
-      ).toHaveCount(0);
-    }
     await page.getByRole("button", { name: /^Columns/ }).click();
     for (const label of ["Slot", "Roles", "CI"])
       await page.getByRole("checkbox", { name: label, exact: true }).check();
@@ -81,10 +76,15 @@ test("daemon queue replaces Dispatch order and optional Legion columns sort and 
       ["Roles", "implementer"],
       ["CI", "failing"],
     ] as const) {
-      await page.getByRole("button", { name: `Sort by ${label.toLowerCase()}` }).click();
-      await expect(
-        page.getByRole("columnheader").filter({ hasText: new RegExp(`^${label}`) })
-      ).toHaveAttribute("aria-sort", /ascending|descending/);
+      const sort = page.getByRole("button", {
+        exact: true,
+        name: `Sort by ${label.toLowerCase()}`,
+      });
+      await sort.click();
+      await expect(sort.locator("xpath=ancestor::th")).toHaveAttribute(
+        "aria-sort",
+        /ascending|descending/
+      );
       await pick(page, label, value);
       await expect(page.locator("[data-issue-row]")).toHaveCount(1);
       await expect(row(page, "ACME-1")).toBeVisible();

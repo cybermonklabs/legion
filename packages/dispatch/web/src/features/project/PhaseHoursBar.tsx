@@ -49,23 +49,27 @@ export function PhaseHoursBar({
       .map((id) => ({ id, label: id })),
   ].filter((phase) => (hours[phase.id] ?? 0) > 0);
   return (
-    <span className="flex h-3 w-full" data-phase-hours-bar={mode}>
-      <span
-        className={`flex h-3 overflow-hidden rounded-sm ${surfaceMutedBg}`}
-        style={{ width: `${length * 100}%` }}
-      >
-        {parts.map((phase) => {
-          const spent = hours[phase.id] ?? 0;
-          return (
-            <span
-              className={legionPhaseScale[phase.id] ?? legionPhaseScale.other ?? ""}
-              data-phase-hours-part={phase.id}
-              key={phase.id}
-              style={{ width: `${(100 * spent) / total}%` }}
-              title={`${phase.label}: ${formatHours(spent)}, ${Math.round((100 * spent) / total)}%`}
-            />
-          );
-        })}
+    <span className="flex items-center gap-1" data-phase-hours-bar={mode}>
+      {mode === "hours" ? <span data-phase-hours-total>{formatHours(total)}</span> : null}
+      <span className={`flex h-3 ${mode === "hours" ? "min-w-0 flex-1" : "w-full"}`}>
+        <span
+          className={`flex h-3 overflow-hidden rounded-sm ${surfaceMutedBg}`}
+          data-phase-hours-length={String(length * 100)}
+          style={{ width: `${length * 100}%` }}
+        >
+          {parts.map((phase) => {
+            const spent = hours[phase.id] ?? 0;
+            return (
+              <span
+                className={legionPhaseScale[phase.id] ?? legionPhaseScale.other ?? ""}
+                data-phase-hours-part={phase.id}
+                key={phase.id}
+                style={{ width: `${(100 * spent) / total}%` }}
+                title={`${phase.label}: ${formatHours(spent)}, ${Math.round((100 * spent) / total)}%`}
+              />
+            );
+          })}
+        </span>
       </span>
     </span>
   );

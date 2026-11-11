@@ -125,6 +125,10 @@ export const realStackReasons: Record<string, string> = {
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
   "issues-table-legion.e2e.ts":
     "the table's Legion columns and its phase-or-status bar read the board the fake daemon serves, which the server reads over its own socket and relays",
+  "issue-views-loading.e2e.ts":
+    "the open and closed-window issue listings and the board snapshot are served by Dispatch; the test delays that live snapshot while it reads the rows",
+  "issue-columns-legion.e2e.ts":
+    "the table's Legion cells are compared with the board the fake daemon serves, then the phase link opens the server timeline",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue.e2e.ts":

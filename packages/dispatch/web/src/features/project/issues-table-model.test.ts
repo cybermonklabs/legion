@@ -383,7 +383,7 @@ const legionBoard: LegionBoardResponse = {
   computed_at: "2026-09-10T00:00:00Z",
 };
 
-test("an issue's hours by phase come from the board, and an issue without them has none", () => {
+test("an issue's facts come from the board, and an issue without them has none", () => {
   const rows = buildItems(
     [1, 2].map((n) => issue(`CORE-${n}`)),
     (actor) => actor.id,
@@ -391,7 +391,10 @@ test("an issue's hours by phase come from the board, and an issue without them h
     undefined,
     legionBoard
   );
-  expect(rows.map((row) => row.phaseHours)).toEqual([undefined, { implementing: 6, planning: 2 }]);
+  expect(rows.map((row) => row.facts?.phase_hours)).toEqual([
+    undefined,
+    { implementing: 6, planning: 2 },
+  ]);
 });
 
 test("the daemon queue replaces Dispatch rank, including membership, without a derived fallback", () => {

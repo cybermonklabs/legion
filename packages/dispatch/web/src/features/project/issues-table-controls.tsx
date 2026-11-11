@@ -288,7 +288,9 @@ export function IssueTableStatus({
   const counted = shown.reduce((sum, { count }) => sum + count, 0);
   const widths = segmentWidths(shown.map(({ count }) => count));
   const filterOf = (column: string) =>
-    (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
+    column === "phase" && !hasLegion
+      ? []
+      : ((table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? []);
   /** This state is among those the table lists: every one, while nothing is picked. */
   const isLit = (column: string, id: string) => {
     const current = filterOf(column);

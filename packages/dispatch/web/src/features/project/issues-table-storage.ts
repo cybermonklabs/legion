@@ -113,6 +113,14 @@ export function writeLayout(project: string, { sizing, order, visibility }: Tabl
   writeStore(project, { sizing, order, visibility });
 }
 
+export function readPhaseMode(layoutKey: string): "share" | "hours" {
+  return readStore(layoutKey).phaseMode === "hours" ? "hours" : "share";
+}
+
+export function writePhaseMode(layoutKey: string, mode: "share" | "hours"): void {
+  writeStore(layoutKey, { phaseMode: mode });
+}
+
 export function readTableAction(project: string): TableAction | undefined {
   const action = readStore(project).action as TableAction | undefined;
   if (

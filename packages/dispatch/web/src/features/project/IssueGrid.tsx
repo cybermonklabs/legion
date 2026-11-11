@@ -23,6 +23,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
+import { buildProjectPath } from "../refs/routes";
 import { COLUMN_LABELS, useIssueTableColumns } from "./issues-table-columns";
 import { ColumnsMenu, IssueTablePager } from "./issues-table-controls";
 import { useProjectIssueItems } from "./issues-table-data";
@@ -197,7 +198,11 @@ export function IssueGrid<Row extends { key: string }>({
   const narrow = boxWidth < 640 && primaryColumns.length > 0;
   const userState = useQuery(userStateQuery());
   const registry = useAgentRegistry(false);
-  const { allItems } = useProjectIssueItems(project, { wantsDone: true, registry });
+  const { allItems } = useProjectIssueItems(project, {
+    done: "all",
+    registry,
+    viewer: undefined,
+  });
   const [openFilter, setOpenFilter] = useState<string>();
   const [dragColumn, setDragColumn] = useState<string>();
 
@@ -211,7 +216,22 @@ export function IssueGrid<Row extends { key: string }>({
   const items = useMemo(() => data.map((entry) => entry.item ?? stubItem(entry.key)), [data]);
   const rowFor = useMemo(() => new Map(data.map((entry) => [entry.key, entry])), [data]);
 
-  const registryColumns = useIssueTableColumns(userState.data, boxWidth < 640, true);
+  const [phaseMode, setPhaseMode] = useState<"share" | "hours">("share");
+  const phase = useMemo(
+    () => ({ max: undefined, mode: phaseMode, setMode: setPhaseMode }),
+    [phaseMode]
+  );
+  const timelineHref = useMemo(
+    () => (key: string) => buildProjectPath({ issue: key, kind: "legion", project }),
+    [project]
+  );
+  const registryColumns = useIssueTableColumns(
+    userState.data,
+    boxWidth < 640,
+    true,
+    phase,
+    timelineHref
+  );
   const tableColumns = useMemo<ColumnDef<Item>[]>(() => {
     const byId = new Map(registryColumns.map((column) => [column.id, column]));
     /** A column beside the key on a phone: it may be drawn as narrow as the share it was given,

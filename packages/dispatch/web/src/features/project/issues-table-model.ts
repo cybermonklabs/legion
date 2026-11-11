@@ -36,7 +36,6 @@ export interface Item {
   readonly closedAt: string | null;
   /** Whether the signed-in reader created this issue. */
   readonly mine: boolean;
-  readonly phaseHours?: Readonly<Record<string, number>>;
   readonly queue?: number;
   readonly epic: string;
   readonly epicKey?: string;
@@ -253,6 +252,43 @@ export function legionPhases(
   return legion;
 }
 
+export function slotUseText(value: string): string {
+  switch (value) {
+    case "working":
+      return "Working";
+    case "between_turns":
+      return "Between turns";
+    case "held_children":
+      return "Held: children";
+    case "held_person":
+      return "Held: person";
+    case "held_idle":
+      return "Held: idle";
+    default:
+      return value;
+  }
+}
+
+export function waitingReasonText(value: string): string {
+  switch (value) {
+    case "ready":
+      return "Ready";
+    case "slot":
+      return "For a slot";
+    case "blocked":
+      return "Blocked";
+    case "person":
+      return "On a person";
+    default:
+      return value;
+  }
+}
+
+export function stageText(value: string): string {
+  const [kind, id] = value.split(":");
+  return kind === "status" ? statusText(id ?? value) : legionPhaseText(id ?? value);
+}
+
 export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
@@ -373,14 +409,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
       kind: "picks",
       values: (item) => (item.legion?.card.slot_use ? [item.legion.card.slot_use] : []),
       order: ["working", "between_turns", "held_children", "held_person", "held_idle"],
-      show: (value) =>
-        ({
-          working: "Working",
-          between_turns: "Between turns",
-          held_children: "Held: children",
-          held_person: "Held: person",
-          held_idle: "Held: idle",
-        })[value] ?? value,
+      show: slotUseText,
     },
   },
   { id: "waited", size: 112, min: 112 },
@@ -392,10 +421,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
       kind: "picks",
       values: (item) => (item.legion?.card.waiting ? [item.legion.card.waiting.reason] : []),
       order: ["ready", "slot", "blocked", "person"],
-      show: (value) =>
-        ({ ready: "Ready", slot: "For a slot", blocked: "Blocked", person: "On a person" })[
-          value
-        ] ?? value,
+      show: waitingReasonText,
     },
   },
   { id: "time_in_phase", size: 112, min: 112 },
@@ -416,10 +442,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 160,
     filter: one(stageOf, {
       order: LIFECYCLE_ORDER,
-      show: (value) => {
-        const [kind, id] = value.split(":");
-        return kind === "status" ? statusText(id ?? value) : legionPhaseText(id ?? value);
-      },
+      show: stageText,
     }),
   },
   { id: "epic", size: 220, min: 116, filter: one((item) => item.epic) },
@@ -629,7 +652,6 @@ export function buildItems(
       facts,
       closedAt: issue.closed_at,
       mine: viewer !== undefined && issue.created_by?.id === viewer,
-      phaseHours: facts?.phase_hours,
       queue: positions.get(issue.key),
       epic: epicName,
       epicKey: epic?.key,

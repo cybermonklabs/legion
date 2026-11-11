@@ -1,5 +1,5 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
@@ -37,8 +37,12 @@ import {
   legionSlotValue,
   matchesFilters,
   NO_PHASE,
+  slotUseText,
   stageOf,
+  stageText,
+  waitingReasonText,
 } from "./issues-table-model";
+import { formatHours } from "./LegionMetrics";
 import { PhaseHoursBar, phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
@@ -75,6 +79,12 @@ function HeaderWithHint({ children, hint }: { children: string; hint: string }):
       <InfoHint label={`About ${children}`}>{hint}</InfoHint>
     </span>
   );
+}
+
+export interface PhaseHoursDisplay {
+  readonly mode: "share" | "hours";
+  readonly setMode: (mode: "share" | "hours") => void;
+  readonly max: number | undefined;
 }
 
 /** Each column's name in words: the column picker, the Group by list and a header's hint read
@@ -119,9 +129,8 @@ export const columnLabel = <Row,>(column: { id: string; columnDef: ColumnDef<Row
  *  never disagree. */
 const renderings = (
   userState: UserState | undefined,
-  phaseMode: "hours" | "share",
-  setPhaseMode: (mode: "hours" | "share") => void,
-  phaseHoursMax: number | undefined
+  phase: PhaseHoursDisplay,
+  timelineHref: (key: string) => string
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -158,15 +167,24 @@ const renderings = (
     ),
   },
   queue: {
-    header: COLUMN_LABELS.queue,
+    header: () => (
+      <HeaderWithHint hint="The daemon's place in its waiting line.">
+        {COLUMN_LABELS.queue}
+      </HeaderWithHint>
+    ),
     accessorFn: (item) => item.queue,
     sortUndefined: "last",
     sortDescFirst: false,
+    meta: { control: true },
     cell: ({ getValue }) => {
       const place = getValue<number | undefined>();
-      return place === undefined ? null : (
-        <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
-          #{place}
+      return (
+        <span
+          className="font-semibold tabular-nums"
+          data-cell="queue"
+          data-value={place === undefined ? "" : String(place)}
+        >
+          {place === undefined ? null : `#${place}`}
         </span>
       );
     },
@@ -252,9 +270,11 @@ const renderings = (
     meta: { control: true },
     cell: ({ row }) =>
       row.original.legion ? (
-        <LegionPhaseCell phase={row.original.legion} />
+        <LegionPhaseCell href={timelineHref(row.original.issue.key)} phase={row.original.legion} />
       ) : (
-        <span className={textMutedOnCanvas}>{NO_PHASE}</span>
+        <span className={textMutedOnCanvas} data-cell="phase" data-value="">
+          {NO_PHASE}
+        </span>
       ),
   },
   slot: {
@@ -307,61 +327,149 @@ const renderings = (
   },
   phase_hours: {
     header: () => (
-      <span className="flex items-center gap-1">
-        Time per phase
-        <InfoHint label="About time per phase">
-          The hours Legion spent on the issue, by phase. Hours draws every bar against the longest
-          on the page. Share draws every bar full length, each block its own share.
-        </InfoHint>
-        <button
-          aria-label={`Show ${phaseMode === "hours" ? "shares" : "hours"}`}
-          className={`rounded border px-1 text-[0.625rem] ${borderDefault}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            setPhaseMode(phaseMode === "hours" ? "share" : "hours");
-          }}
-          type="button"
-        >
-          {phaseMode === "hours" ? "Hours" : "Share"}
-        </button>
+      <span className="flex flex-wrap items-center gap-1">
+        <HeaderWithHint hint="The hours Legion spent on the issue, by phase. Hours compares totals on this page.">
+          Time per phase
+        </HeaderWithHint>
+        {
+          // biome-ignore lint/a11y/useSemanticElements: C5 requires this explicit labelled group.
+          <div aria-label="Time per phase mode" className="flex rounded border" role="group">
+            {(["share", "hours"] as const).map((mode) => (
+              <button
+                aria-pressed={phase.mode === mode}
+                className={`px-1 text-[0.625rem] ${phase.mode === mode ? borderDefault : ""}`}
+                key={mode}
+                onClick={() => phase.setMode(mode)}
+                type="button"
+              >
+                {mode === "share" ? "Share" : "Hours"}
+              </button>
+            ))}
+          </div>
+        }
       </span>
     ),
-    accessorFn: (item) => (item.phaseHours ? phaseHoursTotal(item.phaseHours) : undefined),
+    accessorFn: (item) =>
+      item.facts === undefined ? undefined : phaseHoursTotal(item.facts.phase_hours),
     sortUndefined: "last",
     sortDescFirst: true,
-    enableColumnFilter: false,
     meta: { control: true },
-    cell: ({ row }) =>
-      row.original.phaseHours === undefined ? null : (
-        <PhaseHoursBar hours={row.original.phaseHours} max={phaseHoursMax} mode={phaseMode} />
-      ),
+    cell: ({ row }) => {
+      const hours = row.original.facts?.phase_hours;
+      if (hours === undefined) return <span data-cell="phase_hours" data-value="" />;
+      const total = phaseHoursTotal(hours);
+      const bar = <PhaseHoursBar hours={hours} max={phase.max} mode={phase.mode} />;
+      return (
+        <span data-cell="phase_hours" data-value={String(total)}>
+          {total > 0 ? (
+            <Link
+              className={`${linkText} ${linkHoverText}`}
+              data-timeline-link
+              to={timelineHref(row.original.issue.key)}
+            >
+              {bar}
+            </Link>
+          ) : (
+            bar
+          )}
+        </span>
+      );
+    },
   },
   closed: {
     header: COLUMN_LABELS.closed,
     accessorFn: (item) => item.closedAt ?? undefined,
+    cell: ({ getValue }) => {
+      const closedAt = getValue<string | undefined>();
+      return (
+        <span data-cell="closed" data-value={closedAt ?? ""}>
+          {closedAt === undefined ? null : (
+            <Timestamp at={closedAt} className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`} />
+          )}
+        </span>
+      );
+    },
   },
   work_hours: {
     header: COLUMN_LABELS.work_hours,
     accessorFn: (item) => item.facts?.work_hours,
+    sortUndefined: "last",
+    cell: ({ getValue }) => {
+      const hours = getValue<number | undefined>();
+      return (
+        <span data-cell="work_hours" data-value={hours === undefined ? "" : String(hours)}>
+          {hours === undefined ? null : formatHours(hours)}
+        </span>
+      );
+    },
   },
   review_rounds: {
     header: COLUMN_LABELS.review_rounds,
     accessorFn: (item) => item.facts?.review_rounds,
+    sortUndefined: "last",
+    cell: ({ getValue }) => {
+      const rounds = getValue<number | undefined>();
+      return (
+        <span data-cell="review_rounds" data-value={rounds === undefined ? "" : String(rounds)}>
+          {rounds}
+        </span>
+      );
+    },
   },
   slot_use: {
-    header: COLUMN_LABELS.slot_use,
+    header: () => (
+      <HeaderWithHint hint="What the issue's own slot is used for.">Slot use</HeaderWithHint>
+    ),
     accessorFn: (item) => item.legion?.card.slot_use ?? undefined,
+    sortUndefined: "last",
+    meta: { control: true },
+    cell: ({ getValue }) => {
+      const use = getValue<string | undefined>();
+      return (
+        <span data-cell="slot_use" data-value={use ?? ""}>
+          {use === undefined ? null : slotUseText(use)}
+        </span>
+      );
+    },
   },
   waited: {
-    header: COLUMN_LABELS.waited,
+    header: () => (
+      <HeaderWithHint hint="Time since the wait began.">{COLUMN_LABELS.waited}</HeaderWithHint>
+    ),
     accessorFn: (item) => {
       const since = item.legion?.card.waiting?.since;
       return since === null || since === undefined ? undefined : Date.now() - Date.parse(since);
+    },
+    sortUndefined: "last",
+    meta: { control: true },
+    cell: ({ row }) => {
+      const since = row.original.legion?.card.waiting?.since ?? undefined;
+      return (
+        <span data-cell="waited" data-value={since ?? ""}>
+          {since === undefined ? null : formatPhaseTime(since, Date.now())}
+        </span>
+      );
     },
   },
   waiting_reason: {
     header: COLUMN_LABELS.waiting_reason,
     accessorFn: (item) => item.legion?.card.waiting?.reason ?? undefined,
+    sortUndefined: "last",
+    cell: ({ row, getValue }) => {
+      const reason = getValue<string | undefined>();
+      const blockedBy = row.original.legion?.card.waiting?.blocked_by ?? [];
+      const text =
+        reason === "blocked" && blockedBy.length > 0
+          ? `Blocked by ${blockedBy.join(", ")}`
+          : reason === undefined
+            ? null
+            : waitingReasonText(reason);
+      return (
+        <span data-cell="waiting_reason" data-value={reason ?? ""}>
+          {text}
+        </span>
+      );
+    },
   },
   time_in_phase: {
     header: COLUMN_LABELS.time_in_phase,
@@ -369,14 +477,41 @@ const renderings = (
       const since = item.legion?.card.phase_since;
       return since === null || since === undefined ? undefined : Date.now() - Date.parse(since);
     },
+    sortUndefined: "last",
+    cell: ({ row }) => {
+      const since = row.original.legion?.card.phase_since ?? undefined;
+      return (
+        <span data-cell="time_in_phase" data-value={since ?? ""}>
+          {since === undefined ? null : formatPhaseTime(since, Date.now())}
+        </span>
+      );
+    },
   },
   legion: {
-    header: COLUMN_LABELS.legion,
+    header: () => <HeaderWithHint hint="Root, or the key of the tree's root.">Tree</HeaderWithHint>,
     accessorFn: (item) => item.facts?.tree,
+    sortUndefined: "last",
+    meta: { control: true },
+    cell: ({ row }) => {
+      const facts = row.original.facts;
+      return (
+        <span data-cell="legion" data-value={facts?.tree ?? ""}>
+          {facts === undefined ? null : facts.root ? "Root" : facts.tree}
+        </span>
+      );
+    },
   },
   stage: {
     header: COLUMN_LABELS.stage,
     accessorFn: (item) => stageOf(item),
+    cell: ({ getValue }) => {
+      const stage = getValue<string>();
+      return (
+        <span data-cell="stage" data-value={stage}>
+          {stageText(stage)}
+        </span>
+      );
+    },
   },
   epic: {
     header: COLUMN_LABELS.epic,
@@ -470,14 +605,12 @@ export const LEGION_COLUMNS: readonly ColumnId[] = [
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
-  hasLegion = false,
-  /** The largest total of the rows on the page, so every bar of the Time per phase column is
-   *  drawn against one scale. */
-  phaseHoursMax?: number
+  hasLegion: boolean,
+  phase: PhaseHoursDisplay,
+  timelineHref: (key: string) => string
 ): ColumnDef<Item>[] {
-  const [phaseMode, setPhaseMode] = useState<"hours" | "share">("hours");
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState, phaseMode, setPhaseMode, phaseHoursMax);
+    const rendering = renderings(userState, phase, timelineHref);
     const shown = hasLegion ? COLUMNS : COLUMNS.filter((c) => !LEGION_COLUMNS.includes(c.id));
     return shown.map((column) => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
@@ -504,16 +637,31 @@ export function useIssueTableColumns(
         },
       };
     });
-  }, [userState, compact, hasLegion, phaseMode, phaseHoursMax]);
+  }, [userState, compact, hasLegion, phase, timelineHref]);
 }
 
-/** A Legion phase as the issues table writes it: the board column's label, the time in phase,
- *  what blocks it and what it waits on. The table's Phase column, the project board's cards and
- *  the Legion tab all draw a phase through this one cell. */
-export function LegionPhaseCell({ phase }: { phase: NonNullable<Item["legion"]> }): ReactNode {
+export function LegionPhaseCell({
+  href,
+  phase,
+}: {
+  href?: string;
+  phase: NonNullable<Item["legion"]>;
+}): ReactNode {
+  const label = legionPhaseLabel(phase.label, phase.card.phase);
   return (
-    <span className="flex flex-col gap-1" data-legion-phase={phase.id}>
-      <span>{legionPhaseLabel(phase.label, phase.card.phase)}</span>
+    <span
+      className="flex flex-col gap-1"
+      data-cell="phase"
+      data-legion-phase={phase.id}
+      data-value={phase.card.phase}
+    >
+      {href === undefined ? (
+        <span>{label}</span>
+      ) : (
+        <Link className={`${linkText} ${linkHoverText}`} data-timeline-link to={href}>
+          {label}
+        </Link>
+      )}
       <span
         className={`text-xs ${textMutedOnCanvas}`}
         data-legion-fact="phase-time"

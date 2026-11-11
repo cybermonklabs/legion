@@ -202,40 +202,49 @@ test("the column sorts by an issue's total hours", async () => {
   expect(keys()).toEqual(["ACME-2", "ACME-1", "ACME-3"]);
 });
 
-test("Hours draws each bar against the longest row; Share draws every bar full length", async () => {
+test("Share draws every Time per phase bar full width; Hours compares totals", async () => {
   const user = userEvent.setup();
   await table();
   await showTimePerPhase(user);
   const width = (key: string) =>
     (
       document.querySelector(
-        `[data-issue-row="${key}"] [data-phase-hours-bar] > span`
+        `[data-issue-row="${key}"] [data-phase-hours-length]`
       ) as HTMLElement | null
     )?.style.width;
+
+  expect(width("ACME-1")).toBe("100%");
+  expect(width("ACME-2")).toBe("100%");
+
+  await user.click(
+    within(screen.getByRole("group", { name: "Time per phase mode" })).getByRole("button", {
+      name: "Hours",
+    })
+  );
   // 8 hours against 8, and 2 against the same 8.
   expect(width("ACME-1")).toBe("100%");
   expect(width("ACME-2")).toBe("25%");
-
-  await user.click(screen.getByRole("button", { name: "Show shares" }));
-  expect(width("ACME-1")).toBe("100%");
-  expect(width("ACME-2")).toBe("100%");
 });
 
-test("the header's hours/share switch changes the bars and leaves the sort alone", async () => {
+test("the Time per phase mode control changes the bars and leaves the sort alone", async () => {
   const user = userEvent.setup();
   await table();
   const grid = await showTimePerPhase(user);
   const keys = () =>
     [...grid.querySelectorAll("[data-issue-row]")].map((row) => row.getAttribute("data-issue-row"));
   const before = keys();
-  await user.click(screen.getByRole("button", { name: "Show shares" }));
-  expect(
-    document.querySelector("[data-phase-hours-bar]")?.getAttribute("data-phase-hours-bar")
-  ).toBe("share");
-  expect(keys()).toEqual(before);
-  await user.click(screen.getByRole("button", { name: "Show hours" }));
+  const mode = () => screen.getByRole("group", { name: "Time per phase mode" });
+  expect(within(mode()).getByRole("button", { name: "Share" }).getAttribute("aria-pressed")).toBe(
+    "true"
+  );
+  await user.click(within(mode()).getByRole("button", { name: "Hours" }));
   expect(
     document.querySelector("[data-phase-hours-bar]")?.getAttribute("data-phase-hours-bar")
   ).toBe("hours");
+  expect(keys()).toEqual(before);
+  await user.click(within(mode()).getByRole("button", { name: "Share" }));
+  expect(
+    document.querySelector("[data-phase-hours-bar]")?.getAttribute("data-phase-hours-bar")
+  ).toBe("share");
   expect(keys()).toEqual(before);
 });

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { userStateQuery } from "../../api/queries";
+import type { ColumnFiltersState, FilterFn, RowSelectionState } from "@tanstack/react-table";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { userStateQuery, whoAmIQuery } from "../../api/queries";
 import { InfoHint } from "../../components/InfoHint";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
@@ -16,6 +16,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
+import { buildProjectPath } from "../refs/routes";
 import { setSelectedIssues } from "../search/bar-scope";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -23,23 +24,26 @@ import { DataTable, useDataTable } from "./DataTable";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
-import { useIssueTableColumns } from "./issues-table-columns";
+import { type PhaseHoursDisplay, useIssueTableColumns } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
-import { useProjectIssueItems } from "./issues-table-data";
+import { doneWindowOf, useHasLegion, useProjectIssueItems } from "./issues-table-data";
 import {
   clearPicked,
   compareGroups,
+  effectiveFilters,
   facetCounts,
   groupValue,
   ISSUES_TAB_HIDDEN,
   type Item,
   isEpic,
+  isLegionFilter,
   matchesFilters,
   matchesSearch,
   readSelection,
   UNCLAIMED_FACET,
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
+import { readPhaseMode, writePhaseMode } from "./issues-table-storage";
 import { useTableView } from "./issues-table-view";
 import { phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread } from "./UnreadDot";
@@ -49,17 +53,55 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 const ACTION_WIDTH = 104;
 
 export function IssuesTable({ project }: { project: string }): ReactNode {
+  const { hasLegion, pending } = useHasLegion(project);
+  if (pending) return <LoadingSkeleton label="Loading issues" />;
+  return <IssuesTableContent hasLegion={hasLegion} project={project} />;
+}
+
+function IssuesTableContent({
+  hasLegion,
+  project,
+}: {
+  hasLegion: boolean;
+  project: string;
+}): ReactNode {
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView();
+    useTableView(hasLegion);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
+  const viewer = useQuery(whoAmIQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
+  const [phaseMode, setStoredPhaseMode] = useState(() => readPhaseMode(project));
+  const [phaseMax, setPhaseMax] = useState<number>();
+  useEffect(() => {
+    setStoredPhaseMode(readPhaseMode(project));
+    setPhaseMax(undefined);
+  }, [project]);
+  const setPhaseMode = useCallback(
+    (mode: "share" | "hours") => {
+      setStoredPhaseMode(mode);
+      writePhaseMode(project, mode);
+    },
+    [project]
+  );
+  const phase = useMemo<PhaseHoursDisplay>(
+    () => ({ max: phaseMax, mode: phaseMode, setMode: setPhaseMode }),
+    [phaseMax, phaseMode, setPhaseMode]
+  );
+  const timelineHref = useCallback(
+    (key: string) => buildProjectPath({ issue: key, kind: "legion", project }),
+    [project]
+  );
 
-  const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
-  const wantsDone = statusPicked.length === 0 || statusPicked.includes("done");
+  const statusValue = filters.find((filter) => filter.id === "status")?.value;
+  const statusPicked = Array.isArray(statusValue) ? statusValue.map(String) : [];
+  const done = doneWindowOf(filters);
+  const doneOnly =
+    done !== null && statusPicked.length > 0 && statusPicked.every((status) => status === "done");
+  const doneDefaulted = done !== null && !filters.some((filter) => filter.id === "closed");
   const claimPicked = (filters.find((filter) => filter.id === "claim")?.value ?? []) as string[];
   // Which claims have lapsed is the agent registry's answer, read only while the Claimed by
   // filter asks for it: because it is picked, or because its panel is open and counting.
@@ -70,14 +112,20 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     allItems,
     ancestry,
     doneLoaded,
+    doneRead,
     epics,
-    everyIssue,
-    hasLegion,
     issues,
     legion,
     listingError,
     missingParents,
-  } = useProjectIssueItems(project, { wantsDone, registry });
+  } = useProjectIssueItems(project, {
+    done,
+    doneDefaulted,
+    doneOnly,
+    registry,
+    viewer: viewer.data?.login,
+  });
+  const boardReady = !hasLegion || legion.data !== undefined;
   // The issues behind a number the reader clicked on the Legion tab, if they arrived by one.
   const picked = useMemo(() => readSelection(params), [params]);
   const items = useMemo(() => {
@@ -96,23 +144,26 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       shown
         .filter(
           (item) =>
-            !isEpic(item.issue) && matchesFilters(item, filters) && matchesSearch(item, search)
+            !isEpic(item.issue) &&
+            matchesFilters(item, filters, undefined, boardReady) &&
+            matchesSearch(item, search)
         )
         .map(({ epicKey }) => epicKey)
     );
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
-  }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
+  }, [
+    allItems,
+    boardReady,
+    filters,
+    flags.needsYou,
+    flags.unread,
+    grouping,
+    picked,
+    search,
+    userState.data,
+  ]);
 
-  // One scale for the Time per phase bars: the largest total among the rows the table lists.
-  const phaseHoursMax = useMemo(
-    () =>
-      items.reduce(
-        (most, item) => Math.max(most, item.phaseHours ? phaseHoursTotal(item.phaseHours) : 0),
-        0
-      ) || undefined,
-    [items]
-  );
-  const columns = useIssueTableColumns(userState.data, true, hasLegion, phaseHoursMax);
+  const columns = useIssueTableColumns(userState.data, true, hasLegion, phase, timelineHref);
   const tableColumns = useMemo(
     () =>
       columns.map((column) =>
@@ -120,16 +171,31 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       ),
     [columns, doneLoaded]
   );
+  const tableFilters = effectiveFilters(filters, boardReady);
+  const onFiltersChange = useCallback(
+    (update: ColumnFiltersState | ((current: ColumnFiltersState) => ColumnFiltersState)) => {
+      const next = typeof update === "function" ? update(tableFilters) : update;
+      if (boardReady) {
+        setFilters(next);
+        return;
+      }
+      setFilters([
+        ...next.filter((filter) => !isLegionFilter(filter)),
+        ...filters.filter((filter) => isLegionFilter(filter)),
+      ]);
+    },
+    [boardReady, filters, setFilters, tableFilters]
+  );
   const facets = useCallback(
-    (id: string) => facetCounts(items, id, filters, search),
-    [items, filters, search]
+    (id: string) => facetCounts(items, id, filters, search, boardReady),
+    [boardReady, items, filters, search]
   );
   const model = useDataTable<Item>({
     columns: tableColumns,
     controlled: {
-      filters,
+      filters: tableFilters,
       grouping,
-      onFiltersChange: setFilters,
+      onFiltersChange,
       onGroupingChange: setGrouping,
       onPaginationChange: setPagination,
       onSearchChange: setSearch,
@@ -151,9 +217,18 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     searchColumn: "title",
     selection: { onChange: setSelection, state: selection },
   });
+  const pagePhaseHoursMax =
+    phaseMode === "hours"
+      ? model.pageLeaves.reduce(
+          (most, item) => Math.max(most, phaseHoursTotal(item.facts?.phase_hours ?? {})),
+          0
+        ) || undefined
+      : undefined;
+  useLayoutEffect(() => {
+    if (phaseMode === "hours") setPhaseMax(pagePhaseHoursMax);
+  }, [pagePhaseHoursMax, phaseMode]);
   const { layout, table } = model;
   const { attachAbove } = layout;
-
   // The keys the table lists under the filters and the search it is showing, in row order. A key
   // it no longer lists drops out of the selection - another filter, another project - so a row
   // that is listed again comes back unselected; this is the rule `hooks/useMarkedKeys.ts` holds
@@ -162,7 +237,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   // than on every render that rebuilds the rows, and `undefined` while the listing is still out,
   // which prunes nothing.
   const listedKeys =
-    issues.data === undefined
+    issues.data === undefined || (done !== null && !doneLoaded)
       ? undefined
       : table
           .getFilteredRowModel()
@@ -232,12 +307,12 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const pageCount = table.getPageCount();
   useEffect(() => {
     if (
-      (!wantsDone || everyIssue.data !== undefined) &&
+      (done === null || doneLoaded) &&
       issues.data &&
       pagination.pageIndex >= Math.max(pageCount, 1)
     )
       table.setPageIndex(Math.max(pageCount - 1, 0));
-  }, [wantsDone, everyIssue.data, issues.data, pagination.pageIndex, pageCount, table]);
+  }, [done, doneLoaded, issues.data, pagination.pageIndex, pageCount, table]);
 
   if (issues.isPending || userState.isPending) return <LoadingSkeleton label="Loading issues" />;
   if ((issues.isError && issues.data === undefined) || userState.isError)
@@ -262,10 +337,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       <div className="space-y-3" ref={attachAbove}>
         {listingError ? (
           <p className={dangerText} role="alert">
-            Could not load {wantsDone ? "closed " : ""}issues.{" "}
+            Could not load {done !== null ? "closed " : ""}issues.{" "}
             <button
               type="button"
-              aria-label={wantsDone ? "Retry loading closed issues" : "Retry loading issues"}
+              aria-label={done !== null ? "Retry loading closed issues" : "Retry loading issues"}
               onClick={() => void listingError.refetch()}
             >
               Retry
@@ -283,9 +358,14 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
             </button>
           </p>
         ) : null}
-        {wantsDone && everyIssue.isPending ? (
+        {doneRead?.isPending ? (
           <p aria-live="polite" className={textMutedOnCanvas}>
             Loading closed issues…
+          </p>
+        ) : null}
+        {filters.some(isLegionFilter) && !boardReady ? (
+          <p data-legion-pending-chip className={textMutedOnCanvas}>
+            Waiting for Legion data
           </p>
         ) : null}
         {hasLegion && legion.isError ? (
