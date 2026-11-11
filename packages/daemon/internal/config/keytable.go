@@ -190,6 +190,11 @@ var topLevelKeys = []keyDescriptor{
 		Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
 	},
 	{
+		Name: hooksKey, Default: "one hook: every fifth move back of any kind puts the daemon's own words in front of the implementer, the tester and the reviewer", RequiredBy: "no",
+		Description: "The deployment's own prompts, each naming the event it stands on, the moves back it counts, how many of them fire it, the roles its words are put in front of and those words; `hooks: []` runs none, and a file that names the key runs what it names and no default.",
+		Read:        reads(readHooks, func(f *fileConfig, v *[]Hook) { f.Hooks = v }),
+	},
+	{
 		Name: "gates", Default: "`design: [spec]`, the root issue's primary document", RequiredBy: "no",
 		Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or the merger's `READY` is accepted.",
 		Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
@@ -380,6 +385,22 @@ var nestedKeys = []memberGroup{
 			Description: "The repository as it was, which every record Legion already holds names; compared without case."},
 		{Name: "to", Default: "none: a pair that names no `to` is refused", RequiredBy: "yes",
 			Description: "The repository it moved to, which GitHub's events name and which the daemon calls GitHub under; compared without case."},
+	}},
+	{Path: hooksKey + "[]", Members: []member{
+		{Name: "name", Default: "none: a hook that names no `name` is refused", RequiredBy: "yes",
+			Description: "The hook's own name, which every prompt it publishes carries and which is named once in the file."},
+		{Name: "on", Default: "none: a hook that names no `on` is refused", RequiredBy: "yes",
+			Description: "The event the hook stands on: `work_back`, a move to an earlier phase, is the one event the daemon has."},
+		{Name: "moves", Default: "`any`, every move back", RequiredBy: "no",
+			Description: "The moves back the hook counts, each written `<from>-<to>` of two workflow phases, or the word `any`; the empty list is refused, since it selects nothing."},
+		{Name: "every", Default: "none: a hook that names no `every` is refused", RequiredBy: "yes",
+			Description: "How many of the moves it counts fire the hook: it fires when those counts, added up, are a whole multiple of this number."},
+		{Name: "roles", Default: "none: a hook that names no `roles` is refused", RequiredBy: "yes",
+			Description: "The roles its words are put in front of, at least one of implementer, tester, reviewer, planner and merger; the architect is refused, since the daemon's own wake to an architect is a notice."},
+		{Name: "prompt", Default: "the words come from `prompt_file`", RequiredBy: "when the hook names no `prompt_file`: a hook carries the words it puts in front of its roles",
+			Description: "The words themselves, written in the file."},
+		{Name: "prompt_file", Default: "the words come from `prompt`", RequiredBy: "when the hook names no `prompt`: a hook carries the words it puts in front of its roles",
+			Description: "A file the words are read from at boot, resolved against the directory of the file that set it, as `instructions` is; a missing, unreadable or empty one refuses the boot."},
 	}},
 	{Path: "capabilities", Members: []member{
 		{Name: "decided", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
@@ -703,7 +724,7 @@ var nestedByPath = func() map[string]*memberGroup {
 // reference unfinished rather than with a red build or a weakened guard:
 // TestNoKeyBypassesTheKeyTable refuses a name passed to members(...) that is in neither
 // nestedKeys nor this list, so no nested key is ever forgotten; it refuses a top-level key the
-// loader dispatches with no descriptor whatever this list holds, because those 51 are what makes
+// loader dispatches with no descriptor whatever this list holds, because those 52 are what makes
 // the configuration reference true; and `legion config-reference --json` prints no entry for a
 // name on this list, so the reference never carries a key with no description. A name is on this
 // list for every mapping that still reaches it through plain members(...), whether or not another

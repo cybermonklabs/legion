@@ -395,6 +395,9 @@ export type ArtifactOwner = { issue: string } | { project: string } | { session:
 
 export type CreateArtifactReviewInput = Body<"/api/v1/artifacts/{id}/reviews", "post">;
 
+/** What a decline carries: the person's own note, which is optional. */
+export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
+
 /** Every write verb, as the document names a route's operation; the request carries the method
  *  it uppercases to, which is `WRITE_METHODS`' member of the same name. */
 type WriteVerb = Lowercase<WriteMethod>;
@@ -1134,6 +1137,15 @@ export class DispatchApiClient {
     await this.remove("/api/v1/me/asks/{id}/snooze", { id }, bounds);
   }
 
+  /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
+   *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
+   *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
+   *  back to whoever holds that issue. Needs the `person` scope: handing a question on is one
+   *  person asking another. */
+  handAskTo(id: string, askedOf: string, bounds: WriteBounds) {
+    return this.put("/api/v1/asks/{id}/asked-of", { id }, { asked_of: askedOf }, bounds);
+  }
+
   listAgents() {
     return this.read("/api/v1/agents", {});
   }
@@ -1163,6 +1175,13 @@ export class DispatchApiClient {
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/asks/{id}/answer", { id }, input, bounds);
+  }
+
+  /** `POST /api/v1/asks/{id}/decline`: close an open question with no answer, keeping the
+   *  person's note. Needs the `person` scope, as the answer route does; an approval request is
+   *  refused `409 ASK_NOT_DECLINABLE`. */
+  declineAsk(id: string, input: DeclineAskInput, bounds: WriteBounds) {
+    return this.post("/api/v1/asks/{id}/decline", { id }, input, bounds);
   }
 
   getAsk(id: string) {

@@ -1,6 +1,7 @@
 package record
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -468,7 +469,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff, decision, completed_at, merge_note, assignment from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, merge_note, assignment from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -496,16 +497,27 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the review decision: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff,
+	// backward_moves is not null and defaults to the empty object, so a row with no move counted
+	// yet holds '{}' rather than null: a nil or empty map is written as that same empty object,
+	// which is what scanPhase reads back as nil.
+	backwardMoves := []byte("{}")
+	if len(phase.BackwardMoves) > 0 {
+		var err error
+		if backwardMoves, err = json.Marshal(phase.BackwardMoves); err != nil {
+			return fmt.Errorf("put %s phase on %s: encode the backward move counts: %w", phase.Role, phase.Issue, err)
+		}
+	}
+	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
 		decision, completed_at, merge_note, assignment)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
-		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, verdict = excluded.verdict,
+		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
+		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at, merge_note = excluded.merge_note, assignment = excluded.assignment`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
-		phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.MergeNote, phase.Assignment,
+		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.MergeNote, phase.Assignment,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -516,9 +528,9 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
-	var decision []byte
+	var decision, backwardMoves []byte
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
-		&phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.MergeNote, &phase.Assignment); err != nil {
+		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.MergeNote, &phase.Assignment); err != nil {
 		return PhaseRow{}, err
 	}
 	phase.CompletedAt = phase.CompletedAt.UTC()
@@ -526,6 +538,22 @@ func scanPhase(row scanner) (PhaseRow, error) {
 		phase.Decision = &ReviewDecision{}
 		if err := json.Unmarshal(decision, phase.Decision); err != nil {
 			return PhaseRow{}, fmt.Errorf("decode the review decision: %w", err)
+		}
+	}
+	// A row that counted no backward move reads as a nil map and never as an empty one: the
+	// column holds the empty object for it, and a scanned row of a phase nothing went back from
+	// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
+	// row holds, and this scan runs on every phase row of every state read, so those bytes answer
+	// the nil map without a decode of their own, as the decision column above answers nil without
+	// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
+	// its error.
+	if !bytes.Equal(backwardMoves, []byte("{}")) {
+		moves := map[string]int{}
+		if err := json.Unmarshal(backwardMoves, &moves); err != nil {
+			return PhaseRow{}, fmt.Errorf("decode the backward move counts: %w", err)
+		}
+		if len(moves) > 0 {
+			phase.BackwardMoves = moves
 		}
 	}
 	phase.Role, phase.Claim = claim.Role(role), claim.Token(token)
@@ -1067,23 +1095,24 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
 // the counters of one still open, its design gate, its recorded handoffs and a READY the gate
-// refused.
-func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error {
-	return clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue))
+// refused. now is when the publication a cleared gate queues is due.
+func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last — and a
 // child's READY the old gate refused would wait on a packet cleared with those handoffs.
-func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error {
-	return clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree))
+func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
+		fmt.Sprintf("clear the generation of tree %s", tree), now)
 }
 
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table.
-func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string) error {
+// their issue column, and issues selects the same issues in the issues table. The design gates go
+// with them, in a statement of their own (clearGates).
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
@@ -1100,17 +1129,48 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb where " + where,
-		"delete from design_gates where " + where,
 		// The assignment goes with the run too: the start that re-enters the phase mints the next
 		// one, and until it does the cleared row names none, which the completion route reads as
-		// nothing to compare rather than as a mismatch to refuse.
-		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, verdict = '', summary = '', decision = null, merge_note = '', " +
+		// nothing to compare rather than as a mismatch to refuse. The counts go with the rounds:
+		// the new generation counts its moves back from nothing, and the cap mark goes with them,
+		// so the architect is told again at the new generation's own first crossing of the cap.
+		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
+			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, merge_note = '', " +
 			"assignment = '' where " + where,
 		// A READY the gate refused waits on the merger's packet, which the statement above clears.
 		// The step goes with the version: the stored shape holds both or neither.
 		"update issues set ready_pending_version = null, ready_pending_step = null where " + issues,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
+			return fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	return s.clearGates(ctx, tx, where, key, describe, now)
+}
+
+// clearGates deletes the design gates of every issue the clear covers and queues one publication
+// of the empty set for each issue it emptied: those gates recorded a document until this
+// statement, and Dispatch holds the set they recorded until something tells it otherwise. The
+// delete names the issues it emptied rather than the clear naming every issue it covers, so an
+// issue that held no gate row — the ordinary child of a re-entry, and every member of a
+// re-admitted tree whose architect registered nothing — costs no Dispatch write. A row comes back
+// for each step, so an issue gated on several steps is published once.
+//
+// The publication is queued through this store, which knows nothing of the lanes beside it, so no
+// lane is woken for it: the row waits on its issue's board lane for the next sweep, among the
+// status writes the clearing pass queues with it.
+func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string, now time.Time) error {
+	rows, err := tx.Query(ctx, "delete from design_gates where "+where+" returning issue", key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	emptied, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	slices.Sort(emptied)
+	for _, issue := range slices.Compact(emptied) {
+		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil)}, now); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
@@ -1336,6 +1396,29 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 	return gates, nil
 }
 
+// GatedIssues is the key of each issue of project that holds at least one design gate and that
+// Dispatch does not show as done, in key order. It is the boot's look over every recorded gate
+// (the daemon's queueRecordedGatesPublish), which publishes the gates of these issues (Gates):
+// two queries whatever the number of issues the project has recorded, rather than a read per
+// record. The done ones are left out here rather than by the caller, since the rows nobody
+// publishes are rows nobody need read, and the key is the whole of what the caller carries on
+// with. The status read is dispatch_status, what Dispatch last showed (DoneStatus), rather than
+// status, which is what the daemon means by the issue.
+func (s *Postgres) GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]string, error) {
+	rows, err := tx.Query(ctx, `select key from issues
+		where project = $1 and dispatch_status <> 'done'
+		and exists (select 1 from design_gates where design_gates.issue = issues.key)
+		order by key`, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	return keys, nil
+}
+
 // GatesForArtifact is every gate registered on artifactID, in issue and then step order: one row
 // for each step of the document's owner that names it, and each copy a hand-over carried to a
 // child of its tree. Each row carries its own step.
@@ -1405,13 +1488,22 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	return nil
 }
 
+// A row keeps a decline as three columns and Go as one optional value (RootAsk.Decline): declined
+// is the column that says there is one, and the note and the words are its two parts, each null
+// where Dispatch recorded none. The scan below builds the value from the three, and the write
+// takes it apart again.
 const rootAskColumns = `issue, ask, coalesce(kind, ''), coalesce(artifact, ''), open, seq, coalesce(waiting_on, ''), waiting_on_seq,
-	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq`
+	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq, declined, coalesce(declined_note, ''), coalesce(declined_words, '')`
 
 func scanRootAsk(row scanner) (RootAsk, error) {
 	var ask RootAsk
+	var declined bool
+	var decline AskDecline
 	err := row.Scan(&ask.Issue, &ask.Ask, &ask.Kind, &ask.Artifact, &ask.Open, &ask.Seq, &ask.WaitingOn, &ask.WaitingOnSeq, &ask.ClosedBy,
-		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq)
+		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq, &declined, &decline.Note, &decline.Words)
+	if err == nil && declined {
+		ask.Decline = &decline
+	}
 	return ask, err
 }
 
@@ -1427,18 +1519,24 @@ func (s *Postgres) RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*
 }
 
 func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error {
+	declined, note, words := false, "", ""
+	if ask.Decline != nil {
+		declined, note, words = true, ask.Decline.Note, ask.Decline.Words
+	}
 	if _, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
-		by_tree, person_seq, person_answer_seq)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		by_tree, person_seq, person_answer_seq, declined, declined_note, declined_words)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		on conflict (issue, ask) do update set kind = excluded.kind, artifact = excluded.artifact, open = excluded.open, seq = excluded.seq,
 		waiting_on = excluded.waiting_on, waiting_on_seq = excluded.waiting_on_seq, closed_by = excluded.closed_by,
 		closed_seq = excluded.closed_seq, by_tree = excluded.by_tree,
-		person_seq = excluded.person_seq, person_answer_seq = excluded.person_answer_seq
+		person_seq = excluded.person_seq, person_answer_seq = excluded.person_answer_seq,
+		declined = excluded.declined, declined_note = excluded.declined_note, declined_words = excluded.declined_words
 		where root_asks.seq <= excluded.seq and root_asks.waiting_on_seq <= excluded.waiting_on_seq
 		and root_asks.closed_seq <= excluded.closed_seq and root_asks.person_seq <= excluded.person_seq
 		and root_asks.person_answer_seq <= excluded.person_answer_seq`,
 		ask.Issue, ask.Ask, nullableText(ask.Kind), nullableText(ask.Artifact), ask.Open, ask.Seq, nullableText(ask.WaitingOn), ask.WaitingOnSeq,
-		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq); err != nil {
+		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq,
+		declined, nullableText(note), nullableText(words)); err != nil {
 		return fmt.Errorf("put ask %s of %s: %w", ask.Ask, ask.Issue, err)
 	}
 	return nil
@@ -1827,6 +1925,44 @@ func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish Gat
 		values ($1, $2, $3::jsonb, 0, $4, '')
 		on conflict (issue) where kind = 'gated_steps_publish'
 		do update set payload = excluded.payload where outbox.payload is distinct from excluded.payload`,
+		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
+		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
+	}
+	return nil
+}
+
+// EnqueueDesignGates writes the one design_gates_publish row of publish's issue: it replaces the
+// payload of the row the outbox still holds for that issue, and inserts one when it holds none.
+// The unique partial index of 20261110235320_design_gates_publish makes that rule the table's, so
+// no path can leave an issue with two, and the upsert is one statement, so two gate changes in
+// flight at once never queue beside each other.
+//
+// A replacement is what keeps the queued set the latest one. The row waits on its issue's board
+// lane until Dispatch takes it, and every gate change inside that window writes the whole set
+// again; queueing beside the pending row would send Dispatch the older set after the newer one.
+// Replacing the payload keeps the row's attempts and its next_at, because the row is the same
+// publish waiting on the same lane and only the set it carries is newer, and a payload that
+// already says this set is left alone.
+//
+// The lease rotation is what the project's gated-steps publish needs none of: that one is written
+// at boot, before any lane claims a row, while an issue's gates change under a running daemon,
+// whose board lane may hold this very row and be inside the PUT. That worker read the older set,
+// so its finish, its retry and its payload replacement, each matched on its lease token, must
+// touch nothing — a finish that deleted the row would leave Dispatch holding the older set until
+// something changed a gate again. The row decides again on the newer payload once the lease
+// expires. Enqueue's statement already carries readyMergeConflict's one `on conflict` clause and
+// PostgreSQL takes one per statement, so this is a statement of its own.
+func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error {
+	row, err := NewOutboxRow(publish.Issue, publish, nextAt)
+	if err != nil {
+		return fmt.Errorf("enqueue the design-gates publish of %s: %w", publish.Issue, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ($1, $2, $3::jsonb, 0, $4, '')
+		on conflict (issue) where kind = 'design_gates_publish'
+		do update set payload = excluded.payload,
+			lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end
+		where outbox.payload is distinct from excluded.payload`,
 		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}

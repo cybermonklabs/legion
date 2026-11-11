@@ -276,7 +276,7 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 
 	// Clearing the generation's rows is not the tree's experiments' business either.
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().ClearTreeGeneration(ctx, tx, root); err != nil {
+		if err := record.NewStore().ClearTreeGeneration(ctx, tx, root, fixedNow); err != nil {
 			t.Fatalf("clear the tree's generation: %v", err)
 		}
 	})

@@ -295,10 +295,12 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	ask.OpenedEventID = &event.ID
 	appended = append(appended, event)
+	// This write opens a question, so it hears about the asks of this issue a person declined to
+	// answer, and the same question is not put to them again.
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/asks", *owner.IssueKey, actor, rowID, *status,
+			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, rowID, *status, true,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -601,6 +603,9 @@ type openAsk struct {
 	HumanReplied bool                `json:"human_replied"`
 	LastReply    *model.AskLastReply `json:"last_reply"`
 	WaitingOn    string              `json:"waiting_on"`
+	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression), empty when
+	// nobody does: an ask on a project document or an unassigned issue that nobody was handed.
+	WaitingOnPerson string `json:"waiting_on_person"`
 }
 
 type openAsksResponse struct {
@@ -680,7 +685,8 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 					'author', lr.author,
 					'created_at', lr.created_at
 				) end as last_reply,
-				`+waitingOnExpression+` as waiting_on
+				`+waitingOnExpression+` as waiting_on,
+				`+askedOfPersonExpression+` as waiting_on_person
 			from mine a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id`+lastReplyJoin+`

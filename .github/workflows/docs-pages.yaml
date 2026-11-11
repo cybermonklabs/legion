@@ -88,6 +88,7 @@ on:
       - 'packages/daemon/internal/githubrest/*'
       - 'packages/daemon/internal/intake/*'
       - 'packages/daemon/internal/launcher/*'
+      - 'packages/daemon/internal/leakguard/*'
       - 'packages/daemon/internal/lookpath/*'
       - 'packages/daemon/internal/modeltoken/*'
       - 'packages/daemon/internal/natsauth/*'

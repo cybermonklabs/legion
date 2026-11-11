@@ -3,9 +3,11 @@ package duty
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,6 +40,48 @@ const (
 	takeLease = `select pg_try_advisory_lock($1, hashtext($2))`
 	freeLease = `select pg_advisory_unlock($1, hashtext($2))`
 )
+
+// LeaseReader is what LeaseHeld reads through: the shared pool, or a transaction its caller
+// already holds. It is named here, as Leases is and for the same reason, so this package depends
+// on no store; *store.Pool satisfies it.
+type LeaseReader interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// leaseHeld answers whether any session of this database holds the lease named $1, this process's
+// own session included. A lease is a session-level two-key advisory lock (takeLease), and
+// Postgres shows the two keys of such a lock as classid and objid with objsubid 2, where a
+// single-key lock's one key spans both and reads objsubid 1. hashtext answers an int4, which can
+// be negative, while objid is an oid: the cast is the same reinterpretation Postgres makes of the
+// key itself, so a name whose hash is negative is found rather than missed.
+//
+// pg_locks holds every lock of every database of the server, so the read is kept to this
+// database's own, as every other advisory-lock read of this repository is: an advisory lock is
+// taken within one database, and two deployments on one server -- a test's database beside the
+// one the tests of another package run on -- would otherwise each read the other's lease as its
+// own.
+const leaseHeld = `
+	select exists (
+		select 1 from pg_locks
+		where locktype = 'advisory' and granted and objsubid = 2
+		  and database = (select oid from pg_database where datname = current_database())
+		  and classid = $1::oid and objid = hashtext($2)::oid)`
+
+// LeaseHeld reports whether some session of the database holds name's lease right now. It is the
+// read a diagnostic makes of a loop that holds its lease for as long as its pass runs: the CI
+// reconcile's record of its passes reads a row with no end time as a pass still running only
+// while this answers true, among other things (cireconcile.RecentPasses).
+//
+// It is a snapshot and never a guard. The lease can be taken or given back the moment after the
+// read, and nothing here reserves it: a caller that needs the lease takes it with Exclusive,
+// which is the only way two processes are kept out of one pass.
+func LeaseHeld(ctx context.Context, db LeaseReader, name string) (bool, error) {
+	var held bool
+	if err := db.QueryRow(ctx, leaseHeld, leaseNamespace, name).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether the lease %s is held: %w", name, err)
+	}
+	return held, nil
+}
 
 // readPeriod answers whether a pass has already served the period the tick about to run was due
 // in, given that period's aligned start, its boundary (periodBoundary). recordPass stores that

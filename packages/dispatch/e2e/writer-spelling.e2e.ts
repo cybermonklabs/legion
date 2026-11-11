@@ -1,9 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createProject, createProjectDocument } from "./api";
 import { connectedDot, documentEditor, expectParagraphReadings } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { withAlice } from "./users";
 
 // A letter right after a literal backslash, beside an emphasis run, is one the writer spells as a
@@ -23,10 +21,6 @@ const agentSession = {
 };
 
 const entry = fixture("writer-spells-a-flanked-letter-after-a-backslash");
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: The stored-markdown family's one row on the lane: escapes beside emphasis around a tilde are stored and drawn as the engine reads them.
 test("a document with escapes beside emphasis around a tilde is stored, and its page draws the runs the engine reads @pr", async ({

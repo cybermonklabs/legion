@@ -167,6 +167,13 @@ var settingsEmitted = map[string]string{
 	"GitHubApp.AppID":                                "github_apps.<app>.app_id",
 	"GitHubApp.Installations":                        "github_apps.<app>.installations",
 	"Capabilities.Decided":                           "capabilities.decided",
+	"Config.Hooks":                                   "hooks",
+	"Hook.Name":                                      "hooks[].name",
+	"Hook.On":                                        "hooks[].on",
+	"Hook.Moves":                                     "hooks[].moves (`any` for a hook that selects every move back)",
+	"Hook.Every":                                     "hooks[].every",
+	"Hook.Roles":                                     "hooks[].roles",
+	"Hook.PromptFile":                                "hooks[].prompt_file (the path alone, never the words the file holds)",
 }
 
 // settingsExcluded is every config field SettingsOf leaves out, by `<Type>.<Field>`, and why: a
@@ -201,6 +208,7 @@ var settingsExcluded = map[string]string{
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
+	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -277,6 +285,19 @@ var settingsFixturePlanted = []string{
 var settingsForbiddenKeys = []string{
 	"postgres_dsn", "private_key", "private_key_command", "private_key_secret", "token_command",
 	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account",
+	// A hook's own words, which the settings leave out whichever key the file writes them in.
+	"prompt",
+}
+
+// settingsPathKeys are the `*_file` keys the settings do carry, each by the whole path it stands
+// under: a `_file` key is a credential's file by the loader's own naming everywhere else, and the
+// rule below reads the suffix, so each key that is a path of something else is named here with
+// the reason it is no credential. The path and not the key alone, so the exemption covers the one
+// block that earned it and a `prompt_file` grown anywhere else is still refused. The fixture
+// carries each of these paths, which the rule below holds it to: an exemption no document
+// exercises is an exemption nobody has read.
+var settingsPathKeys = map[string]string{
+	"settings.hooks[].prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
 }
 
 // The maximal kubernetes file resolves to a settings block whose top-level, runtime.kubernetes and
@@ -303,6 +324,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
 		"pod_update_rounds_per_minute", "review_round_cap",
 		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"hooks",
 	}
 	top := keysOf(t, encoded)
 	assertKeys(t, "settings", top, wantTop)
@@ -327,7 +349,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
 	// `experiments` always rides the wire, `[]` for the fixture's projects, which declare none
-	// (contract 60); what a project that declares one carries is
+	// (contract 74); what a project that declares one carries is
 	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
 		"merge_queue_role", "merge", "slack_channels", "memory", "experiments", "production_check", "deploys",
@@ -346,10 +368,20 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if err := json.Unmarshal(encoded, &document); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	exercised := map[string]bool{}
 	for _, key := range everyKey(document, "settings") {
+		if _, path := settingsPathKeys[key]; path {
+			exercised[key] = true
+			continue
+		}
 		name := key[strings.LastIndex(key, ".")+1:]
 		if slices.Contains(settingsForbiddenKeys, name) || strings.HasSuffix(name, "_file") {
 			t.Errorf("settings carry the key %s", key)
+		}
+	}
+	for path := range settingsPathKeys {
+		if !exercised[path] {
+			t.Errorf("the fixture carries no %s, so the exemption for it is never read: set the key in settingsFixtureFile or drop the exemption", path)
 		}
 	}
 
@@ -597,7 +629,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 		"merge_queue_role", "merge", "slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
-		t.Errorf("a project that declares no experiment carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 60)", got)
+		t.Errorf("a project that declares no experiment carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 74)", got)
 	}
 	var document any
 	if err := json.Unmarshal(encoded, &document); err != nil {
@@ -646,6 +678,76 @@ func TestSettingsPodUpdateRounds(t *testing.T) {
 		raw, present := top[key]
 		if !present || string(raw) != "null" {
 			t.Errorf("%s = %s (present: %v), want null, the limit no file named", key, raw, present)
+		}
+	}
+}
+
+// The settings name every hook the daemon runs and no hook's words. A file that writes no
+// `hooks:` key — the minimal one, since the maximal file names a hook of its own — runs the one
+// default hook, which selects every move back: its `moves` is the one-element list `["any"]`,
+// the word the operator writes for that, never the empty list and never a null, and it carries
+// no `prompt_file`, since its words are the daemon's own. A file that names hooks carries each
+// as it wrote it, with `prompt_file` as the path the loader resolved and never the words of
+// either form.
+func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
+	byDefault := SettingsOf(minimalSettingsConfig(t))
+	want := []HookSettings{{
+		Name:  "work-back",
+		On:    config.HookEventWorkBack,
+		Moves: []string{"any"},
+		Every: 5,
+		Roles: []string{"implementer", "tester", "reviewer"},
+	}}
+	if !reflect.DeepEqual(byDefault.Hooks, want) {
+		t.Errorf("the hooks of a file naming none = %+v, want the one default hook %+v", byDefault.Hooks, want)
+	}
+
+	const promptFile = "/etc/legion/hooks/back-to-implementing.md"
+	const inline = "Read the reviewer's thread before you write anything."
+	named := SettingsOf(loadSettingsFile(t, minimalSettingsFile+`hooks:
+  - name: back-to-implementing
+    on: work_back
+    moves: [reviewing-implementing, testing-implementing]
+    every: 2
+    roles: [implementer]
+    prompt_file: `+promptFile+`
+  - name: stuck
+    on: work_back
+    every: 3
+    roles: [implementer, tester]
+    prompt: `+inline+`
+`))
+	wantNamed := []HookSettings{
+		{
+			Name: "back-to-implementing", On: config.HookEventWorkBack,
+			Moves: []string{"reviewing-implementing", "testing-implementing"}, Every: 2,
+			Roles: []string{"implementer"}, PromptFile: promptFile,
+		},
+		{
+			Name: "stuck", On: config.HookEventWorkBack, Moves: []string{"any"}, Every: 3,
+			Roles: []string{"implementer", "tester"},
+		},
+	}
+	if !reflect.DeepEqual(named.Hooks, wantNamed) {
+		t.Errorf("the hooks of the file = %+v, want %+v", named.Hooks, wantNamed)
+	}
+
+	encoded, err := json.Marshal(named)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	hooks := []json.RawMessage{}
+	if err := json.Unmarshal(keysOf(t, encoded)["hooks"], &hooks); err != nil {
+		t.Fatalf("read the hooks of %s: %v", encoded, err)
+	}
+	if len(hooks) != 2 {
+		t.Fatalf("the wire carries %d hooks, want the file's 2: %s", len(hooks), encoded)
+	}
+	assertKeys(t, "settings.hooks[0]", keysOf(t, hooks[0]), []string{"name", "on", "moves", "every", "roles", "prompt_file"})
+	assertKeys(t, "settings.hooks[1]", keysOf(t, hooks[1]), []string{"name", "on", "moves", "every", "roles"})
+	for _, words := range []string{inline, config.DefaultWorkBackPrompt} {
+		if bytes.Contains(encoded, []byte(words)) {
+			t.Errorf("settings carry a hook's words %q: %s", words, encoded)
 		}
 	}
 }

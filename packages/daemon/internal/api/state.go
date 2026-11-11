@@ -441,12 +441,12 @@ type Issue struct {
 	// and only where that row records a draw: `memory` for a tree whose roles run with the
 	// project's memory overlays and instructions, and `none` for one that runs without them —
 	// the control arm `none` as much as the empty arm an experiment at mode off draws, which the
-	// memory draw before contract 60 wrote as the word `none`. MemoryDrawMode is the mode in
+	// memory draw before contract 74 wrote as the word `none`. MemoryDrawMode is the mode in
 	// force at that draw (config.ExperimentMode's words, which are config.MemoryMode's) and
 	// MemoryDrawnAt the instant of it. All three are absent together for an issue no `memory`
 	// answer applies to — a tree first opened before the setting existed, or one the draw never
 	// reached — and for one whose only `memory` answer records no draw, which is a hand-over
-	// settling a unit at no arm: that tree answered none of the three before contract 60 and
+	// settling a unit at no arm: that tree answered none of the three before contract 74 and
 	// answers none of them now, so a reader counting the trees a group reached counts the same
 	// trees it did. The draw is made once, for the unit, and every issue of a tree shows its
 	// tree's: an issue's memory group is its tree's (contract 49). They are the one experiment's
@@ -459,9 +459,9 @@ type Issue struct {
 	// arm its tree was drawn into for an experiment whose unit is the tree, and the arm the issue
 	// itself was drawn into for one whose unit is the issue, in the order the project declares
 	// the experiments — the order `settings.projects.<KEY>.experiments` names them in, which is
-	// the project's file's order (contract 60). Absent for an issue no experiment holds an answer
+	// the project's file's order (contract 74). Absent for an issue no experiment holds an answer
 	// for, so the wire never carries an empty list, and absent from every issue of the body the
-	// route serves a caller below 60 (stateFor, withoutAssignments).
+	// route serves a caller below 74 (stateFor, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
 }
 
@@ -488,7 +488,9 @@ type AssignmentView struct {
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
 // wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it.
+// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
+// of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
+// (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`
@@ -620,12 +622,23 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its
-// completion reported, the Dispatch handoff record it named — and the rounds the phase has run.
+// completion reported, the Dispatch handoff record it named — and the rounds the phase has run,
+// with the counts of the moves back that made those rounds.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
 	HandoffRecord *HandoffRecordView `json:"handoffRecord,omitempty"`
 	Rounds        int                `json:"rounds"`
+	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
+	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. It is absent, and
+	// never `{}`, for an issue that has had no move back, so a reader tells an issue that carries
+	// no counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
+	// exactly: it rises on every move back, a conflict round included, where no pair counts a
+	// conflict round, since nobody sent the work back. The counts start empty at the migration
+	// that added them and are never filled in from the past, so an issue already in flight reads
+	// counts that add up to less than its `rounds`.
+	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 }
 
 // HandoffRecordView is the Dispatch handoff record a worker's completion of its current

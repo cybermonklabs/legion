@@ -22,8 +22,9 @@ type bootReads struct {
 	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
 	instructions                          []byte         // nil when the configuration names none
 	variantInstructions                   []variantInstructions
-	tmux                                  tmuxReads    // runtime: tmux
-	sandbox                               sandboxReads // runtime: kubernetes
+	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
+	tmux                                  tmuxReads         // runtime: tmux
+	sandbox                               sandboxReads      // runtime: kubernetes
 }
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
@@ -40,7 +41,8 @@ type variantInstructions struct {
 // the operator bearer's file, operator configuration colliding with Legion's own
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
 // (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
-// Dispatch bearer's file, and the runtime's own reads (readTmux, readSandbox).
+// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
+// file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
@@ -81,6 +83,23 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		if r.instructions, err = config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
 			return bootReads{}, err
 		}
+	}
+	// Every hook that reads its words from a file rather than writing them in the key, read as
+	// the deployment's instructions are and refused the same way. The engine is given words and
+	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
+	// missing one refuses boot, and `legion start --check-config` with it.
+	for _, hook := range cfg.Hooks {
+		if hook.PromptFile == "" {
+			continue
+		}
+		words, err := config.ReadHookPrompt(hook.Name, hook.PromptFile)
+		if err != nil {
+			return bootReads{}, err
+		}
+		if r.hookPrompts == nil {
+			r.hookPrompts = map[string]string{}
+		}
+		r.hookPrompts[hook.Name] = words
 	}
 	// Every declared variant's instructions, read as the deployment's are and refused the same
 	// way, in the order the project's file declares the experiments

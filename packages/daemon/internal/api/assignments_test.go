@@ -103,7 +103,7 @@ func TestTheStateServedBelowTheAssignmentsContractKeepsTheMemoryFields(t *testin
 // assignmentsContract is the contract whose entry in version.go added the field, and this
 // daemon's own contract is never below it: a caller at this contract is served the assignments.
 func TestTheAssignmentsContractIsTheContractThatAddedTheField(t *testing.T) {
-	const addedAssignments = 60
+	const addedAssignments = 74
 	if assignmentsContract != addedAssignments {
 		t.Fatalf("assignmentsContract = %d, want %d, the contract whose entry in version.go added each issue's experiment assignments",
 			assignmentsContract, addedAssignments)

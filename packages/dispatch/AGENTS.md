@@ -674,21 +674,21 @@ Reading a thread on screen marks its row read, and the row stays in the list, dr
 
 A thread the reader has read stays in the list, drawn as read; only **Dismiss** takes it out. Each shape marks itself from inside `ThreadBody`: a Reply row runs the dwell mark its own pages run (`useThreadRead` over `useMarkThreadRead`, `PUT /api/v1/me/threads/{id}/read` through the row's newest write), and an Agent row marks the unread replies the row names by their ids (`useAgentThreadRead` over `useMarkShownRepliesRead`, `read_replies` on the session's state), never by moving that session's own read mark, so a reply in its live conversation or in another of its threads stays unread. The mark tells the list nothing and holds nothing: the next list read answers with the same row, now read, so there is nothing to hold a row the reader has read on screen. **Mark all read** (`features/inbox/mark-all.ts`) is one `POST /api/v1/me/inbox/read` carrying the read mark of the list read the page is showing (`as_of`) and the list's own narrowing: the kinds the Type filter shows, and the priorities, urgencies and projects the other three show, each absent field meaning every value, and the assignee filter deliberately absent, since a thread row is the reader's own and a selection naming anybody else leaves no thread row to mark. `marksThread` is the server's own scope rule (`inboxReadScope`) read here as well, so the press redraws exactly the rows the request marks: a thread written in since the read mark stays unread, and the button is offered only while the list holds a row this would mark. The press is applied before the server answers - every row it marks stays where it stands and is redrawn as read (`applyMarkAll`) - and the shared unread count drops by what it marked, clamped at zero, so the sidebar's Inbox number and the compact header's Inbox link are both at zero at once; a refusal puts the list read and the count back as they were and the bar says `Nothing was marked read.`
 
-What moves a thread row is `movesInboxThreads` (`api/event-refresh.ts`), over `["me", "replies"]` - the Inbox's own unpaged read, the paged Dismissed read, the unread count and every owner's unread set: a write the server counts (`comment.created`, `comment.answered`, `message.created`, `message.answered`, `ask.opened`, `ask.answered`, `ask.resolved`, an issue-less message among them, which is how an Agent row opens and how it becomes unread), or an issue closing, reopening or being reassigned, each of which moves its open asks' threads into or out of the Reply rows. `thread_logins` names whose rows the write moved - for an issue-less message the thread root's author, whose Agent row it is - so only theirs and the writer's own refresh; without it every such write refreshes, except an `issue.updated` whose `changed` says it moved neither status nor assignee. The viewer's own `user_thread_state.updated` and `user_agent_state.updated` refresh them too, so a thread read in another tab, on the Agents page or in the live view is drawn as read in this list as well, and a thread somebody else writes in comes back out of the Dismissed view. Beside that rule, a conditional target (`inboxThreadRowsOf`) refreshes the listed reads when a listed row's issue moved its title, priority or assignee; it tests the rows it holds and needs no field of the event, so an older server's event reaches it. **The known limit:** a new page against an old server gets no `thread_logins` on a reassignment, so a Reply row that should appear - an open ask on an issue assigned away from the viewer - does not until the next list read, the conditional target covering only the other direction, where a listed row carries the issue's key.
+What moves a thread row is `movesInboxThreads` (`api/event-refresh.ts`), over `["me", "replies"]` - the Inbox's own unpaged read, the paged Dismissed read, the unread count and every owner's unread set: a write the server counts (`comment.created`, `comment.answered`, `message.created`, `message.answered`, `ask.opened`, `ask.answered`, `ask.resolved`, `ask.asked_of`, an issue-less message among them, which is how an Agent row opens and how it becomes unread), or an issue closing, reopening or being reassigned, each of which moves its open asks' threads into or out of the Reply rows. A hand-on is there for the reason a reassignment is: whom an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee)`, and the Reply rows leave out an ask the Inbox already lists for the viewer, so moving that person moves the ask's thread into one person's Reply rows and out of the other's. `thread_logins` names whose rows the write moved - for an issue-less message the thread root's author, whose Agent row it is, and for a hand-on the two people it moved the ask between - so only theirs and the writer's own refresh; without it every such write refreshes, except an `issue.updated` whose `changed` says it moved neither status nor assignee. The viewer's own `user_thread_state.updated` and `user_agent_state.updated` refresh them too, so a thread read in another tab, on the Agents page or in the live view is drawn as read in this list as well, and a thread somebody else writes in comes back out of the Dismissed view. Beside that rule, a conditional target (`inboxThreadRowsOf`) refreshes the listed reads when a listed row's issue moved its title, priority or assignee; it tests the rows it holds and needs no field of the event, so an older server's event reaches it. **The known limit:** a new page against an old server gets no `thread_logins` on a reassignment, so a Reply row that should appear - an open ask on an issue assigned away from the viewer - does not until the next list read, the conditional target covering only the other direction, where a listed row carries the issue's key.
 
-**Waiting on** is one of the Inbox's groupings rather than the shape of the list (`features/inbox/sections.ts` holds it whole: the band list, their titles, which fold, and `sectionOf`). Under it a row sits in the band whose turn it is — the server's `waiting_on` on every open ask (`human` → `Waiting on you`, or `Waiting on a person` wherever the assignee filter names anybody but the reader alone (`sectionTitles`), `agent` → `Waiting on agents`; `waitingOnHuman` in `features/inbox/BlockedOnYou.tsx`), never who replied last — and a thread row is a write nobody but the reader can deal with, so it waits on them: `human`. Nothing snoozes a thread, so no thread is ever in **Later**. A moved approval request is `agent` while its `requested_version` is below its document version; a hand-back (`ask.handed_back`, which refreshes the Inbox like any `ask.*` event and leaves the question's `edited_at` and edit history alone) then returns the same request to `human` until a reply newer than the one it answered takes the turn. After that, an agent's progress note (a reply posted with `turn: "agent"`) leaves its ask under `Waiting on agents` while a human's reply always moves the ask there. The order WITHIN a band is the list's own sort (`sortRows`, above), not the server's: the SPA re-sorts every read it draws, so `listInbox`'s `order by` (`packages/envoy/internal/dispatch/api/inbox.go`) decides only what a tie falls back to. No row appears in more than one band. Each open ask card carries a status line, `Waiting on you` or `Waiting on <agent>` (`askTurnHolder` in `features/inbox/ask-turn.ts` returns who holds the turn - the agent whose progress note is the newest reply, else the asker - and the card draws that agent through `AgentName`), and an Inbox ask row whose turn is the human's shows a `<agent> replied` chip when an agent spoke last. With `?agent=<session id>` the Inbox shows only that agent's asks (and only those waiting on the viewer with `section=needs-you`) under a clearable `Asks from <title> · clear` link (`Clear agent filter`), which is `AgentName`'s `control` variant, so the agent's live link sits beside it: the title is the registry's while Envoy lists the session, else the one its asks stamped, else its short id. Both of those narrowings are about asks - one is what an agent asked, the other what waits on the reader now - so neither lists a thread row at all (`asksOnly` in `Inbox.tsx`), and **Mark all read** is not offered under either. Every count of work waiting on the reader is one rule, `needsYou` beside `waitingOnHuman`: open asks whose turn is a person's, on issues assigned to that reader (`isMine`), that they have not snoozed, plus every pending credential request they may decide (below). The Inbox's `Blocked on you` banner reports exactly that count with the oldest of them, a project page's `Blocked on you · N` pill reports it over that project's rows and no credential request (a request belongs to no project), and each Agents card reports it as the first of its two numbers, over that session's asks; the sidebar's Inbox entry and the compact top bar add the unread threads to it, which is `useInboxCount()` (`features/inbox/useInboxCount.ts`, the module the shell already reads, so neither site loads the Inbox to count), since both kinds of row are in the one list now - the badge each of them draws around that number is its own. None of them reads the assignee filter, so a reader who widens it sees a list longer than the count beside it — the price of one meaning everywhere. Each issue header applies the ask predicate to its own open asks — `GET /issues/{key}` carries `waiting_on` and `last_reply` on every `open_asks` row exactly as the inbox does — and shows `Waiting on you (N)` or `Waiting on agents (N)` immediately, at every width. A response whose open asks carry no `waiting_on` (an older server) shows no indicator rather than a wrong one. The reply composer for a session author is not in the SPA: humans reply from the card, and a human's reply is always `turn: agent`, so the SPA offers no turn control.
+**Waiting on** is one of the Inbox's groupings rather than the shape of the list (`features/inbox/sections.ts` holds it whole: the band list, their titles, which fold, and `sectionOf`). Under it a row sits in the band whose turn it is — the server's `waiting_on` on every open ask (`human` → `Waiting on you`, or `Waiting on a person` wherever the assignee filter names anybody but the reader alone (`sectionTitles`), `agent` → `Waiting on agents`; `waitingOnHuman` in `features/inbox/BlockedOnYou.tsx`), never who replied last — and a thread row is a write nobody but the reader can deal with, so it waits on them: `human`. Nothing snoozes a thread, so no thread is ever in **Later**. A moved approval request is `agent` while its `requested_version` is below its document version; a hand-back (`ask.handed_back`, which refreshes the Inbox like any `ask.*` event and leaves the question's `edited_at` and edit history alone) then returns the same request to `human` until a reply newer than the one it answered takes the turn. After that, an agent's progress note (a reply posted with `turn: "agent"`) leaves its ask under `Waiting on agents` while a human's reply always moves the ask there. The order WITHIN a band is the list's own sort (`sortRows`, above), not the server's: the SPA re-sorts every read it draws, so `listInbox`'s `order by` (`packages/envoy/internal/dispatch/api/inbox.go`) decides only what a tie falls back to. No row appears in more than one band. Each open ask card carries a status line, `Waiting on you` or `Waiting on <agent>` (`askTurnHolder` in `features/inbox/ask-turn.ts` returns who holds the turn - the agent whose progress note is the newest reply, else the asker - and the card draws that agent through `AgentName`), and an Inbox ask row whose turn is the human's shows a `<agent> replied` chip when an agent spoke last. With `?agent=<session id>` the Inbox shows only that agent's asks (and only those waiting on the viewer with `section=needs-you`) under a clearable `Asks from <title> · clear` link (`Clear agent filter`), which is `AgentName`'s `control` variant, so the agent's live link sits beside it: the title is the registry's while Envoy lists the session, else the one its asks stamped, else its short id. Both of those narrowings are about asks - one is what an agent asked, the other what waits on the reader now - so neither lists a thread row at all (`asksOnly` in `Inbox.tsx`), and **Mark all read** is not offered under either. Every count of work waiting on the reader is one rule, `needsYou` beside `waitingOnHuman`: open asks whose turn is a person's, waiting on that reader (`isMine`, over the server's `waiting_on_person`), that they have not snoozed, plus every pending credential request they may decide (below). The Inbox's `Blocked on you` banner reports exactly that count with the oldest of them, a project page's `Blocked on you · N` pill reports it over that project's rows and no credential request (a request belongs to no project), and each Agents card reports it as the first of its two numbers, over that session's asks; the sidebar's Inbox entry and the compact top bar add the unread threads to it, which is `useInboxCount()` (`features/inbox/useInboxCount.ts`, the module the shell already reads, so neither site loads the Inbox to count), since both kinds of row are in the one list now - the badge each of them draws around that number is its own. None of them reads the assignee filter, so a reader who widens it sees a list longer than the count beside it — the price of one meaning everywhere. Each issue header applies the ask predicate to its own open asks — `GET /issues/{key}` carries `waiting_on` and `last_reply` on every `open_asks` row exactly as the inbox does — and shows `Waiting on you (N)` or `Waiting on agents (N)` immediately, at every width. A response whose open asks carry no `waiting_on` (an older server) shows no indicator rather than a wrong one. The reply composer for a session author is not in the SPA: humans reply from the card, and a human's reply is always `turn: agent`, so the SPA offers no turn control.
 
 A reader defers a row instead of answering it: every Inbox ask row carries a **Snooze** picker (the same invisible-`<select>`-over-a-badge control as priority and assignee), and the picks are `Later today` (three hours, clamped to the last instant of the reader's own day so it never names tomorrow, and falling through to the next morning in the last few seconds where that clamp would land inside the request's own latency), `Tomorrow` and `Next week` (09:00 in the reader's own timezone, next week meaning the coming Monday), and `Until I clear it` — `SNOOZE_INDEFINITE`, a far-future sentinel the server stores like any other moment, so one nullable `snoozed_until` column carries both kinds. A thread row has none of this: it is read or it is not. `features/inbox/snooze.ts` owns the presets and `isSnoozed`; `useAskSnooze.ts` is the one write (optimistic on the shared `["inbox"]` key, rolled back on refusal, refetched on settle). The reader's other tabs and devices follow it: a snooze or an un-snooze that moves the row appends the reader's `user_state.updated` with `changed: ["snoozed"]` and nothing but the reader's `login` - every signed-in feed carries it, so it names no ask - which refreshes every Inbox read there and `["user-state"]` (`api/event-refresh.ts`). Several at once is the same write repeated: `x` (or a row's checkbox) marks rows, and a bar above the bands - and in the empty state a pick can leave behind, which has no bands - reads `N selected` with the same presets and a Clear, over `useAskSnoozeMany` (which `Inbox` owns, since the optimistic move can unmount a bar that held its own write mid-flight) - one `PUT` per ask, the same optimistic move and a rollback per refused id, the ids the server took leaving the selection while a refused one stays marked under the server's own reason (`Could not snooze K of N: <reason>`, plus how many other reasons there were when they differ). While a pick is in the air the bar counts that pick (`Snoozing 2…`) rather than a selection the move has emptied, and its picker takes no second pick until the first settles - `aria-disabled` and an ignored change rather than `disabled`, which would take focus off the control under the reader and leave them on the document with nothing to Escape from; Escape with no row focused clears the selection and any refusal showing. A row inside its window sits in the collapsed **Later** band, under whichever grouping the list is on, showing when it comes back and the one control that ends the snooze early. **The snooze outranks whose turn it is**, and every other banding with it: `group` puts a snoozed ask in **Later** before it reads any field, `sectionOf` routes it there before it reads `waiting_on`, and `waitingOnHuman` excludes it, so an agent replying to a deferred ask does not pull it back onto the list or into the sidebar's Inbox count or the `Blocked on you` banner — only the moment passing or the reader's own un-snooze does.
 
-Every issue has an assigned human — `assignee`, the lowercase email of who answers its asks, or null — and the Inbox opens on the reader's own work every visit, remembering nothing between them. The page makes two reads and splits both on the client: ONE `api.getInbox()` under the shared `["inbox"]` query (`app.tsx`'s needs-you count, `Sidebar.tsx`, `AgentsPage.tsx`, `useMarginItems.ts`, and `useAskAnswerForm.ts` — which removes answered rows from exactly that key — all read it; a second key would leave answered rows visible until refetch), and the one unpaged thread read above. Every filter, the sort and the grouping are splits of those two answers, the assignee filter among them, which is why an unknown value matches no row rather than being refused. `features/inbox/AssigneeFilter.tsx` is the shared searchable `MultiSelect` over `Unassigned` and everyone who has signed in (`GET /api/v1/users`, fetched on the filter's first open so a reader who never filters costs no request), takes several at once, and its trigger reads `Assignee · you` / `· everyone` / `· Unassigned` / `· <email>` / `· N`; it sits inside the bar's **Filter** control beside the other four fields, and carries the same per-value counts they do. `inAssigneeFilter` (`features/inbox/sections.ts`) is the one rule for what a filtered list holds: an empty selection is the cleared filter and keeps every row; otherwise a row is kept when its issue's assignee is one of the selected, or when nobody holds it (`isUnassigned`: an unassigned issue, and every project-document ask, a document having no assignee) and `unassigned` is selected. A thread row is the reader's own, so it survives their own selection and no other. The selection is the address and nothing else — repeated `?assignee=` values, each a lowercase email or the literal `unassigned`, no parameter at all meaning the reader's own work and `?assignee=everyone` the cleared filter (`parseInboxSearch`/`buildInboxPath`, written with `replace` rather than a push, so a reader trying people out has no history to walk back through) — so a link carries the list and nothing is remembered behind the reader's back; the drawer keeps its own selection in state (above). The search box beside that filter is the second client-side narrowing of the same one response, never a read of its own: `shown` in `Inbox.tsx` is where both are applied, so the band counts, the row ordinals, the keys that walk the list and the selection all speak for the narrowed list, and the one exception the assignee filter already makes covers the typed text too - a row whose `Assign to me` write is in flight stays listed. `features/inbox/inbox-search.ts` is the rule: `inboxSearchHaystack` joins the row's issue key, its issue's title, the name of the document a row standing on a document alone belongs to (guarded on the row having no issue, since the server fills `document` on issue-owned rows as well), the question - where an approval request's generated prefix lives, so the words of that prefix match - and the author as the ask carries it (`author.id`, and a session author's `origin.session_title` and `owner`, never the agent label a card resolves from a later registry read, which only some widths draw), lowercased once per row; `matchesInboxSearch` keeps a row holding every word of `searchWords(query)` and keeps every row for an empty query. The text is one `?q=` (`InboxRoute.q`, `parseInboxSearch`/`buildInboxPath`, written with `replace` for the assignee values' reason and kept by the `Clear agent filter` chip), cut by `capSearchQuery` (`lib/query-param.ts`, shared with `useCappedSearchParam`) in the box's change handler rather than by a `maxLength` on the box, so what is written and what is filtered by are the one rule and the cut is provable from a browser; the box itself is `<input type="search" aria-label="Search asks" placeholder="Issue, title, question or author">` beside the filter in the header, and the drawer passes `onQueryChange` to keep its own text (above). A row the text hides leaves the bulk bar's count and its write like a row the assignee filter hides, and keeps its mark, which is pruned only against the rows the server still sends. The credential requests section and `BlockedOnYou` read the unnarrowed answer and are untouched. The motion hold is told which rows the text excluded (`matchesInboxSearch` beside `presented.current` in `Inbox.tsx`) rather than handed the narrowed list, so a row the reader's own typing drops goes at once even under a resting pointer, while a row the server stopped sending is held as before. No banding but the Assignee one has an `Unassigned` band: a row nobody holds sits in its band like any other and is reached by selecting `Unassigned` in the filter, and every listed ask row whose issue has no assignee carries an `Assign to me` button (`AssignToMe`, one PATCH `{assignee: <viewer>}` through `useIssueAssignee`, so the row is the reader's at once and rolls back with the server's reason if refused) while a document row, having no issue, has none. A row whose assign write is in flight or failed stays listed even once it no longer matches the filter (`assigning` in `Inbox.tsx`): taking a question under `Unassigned` is exactly that case, and unmounting the control would take `Assigning…`, a refusal and its Retry off the screen with it. `sectionTitles` heads the **Waiting on** grouping's first band `Waiting on you` only for the reader's own list and `Waiting on a person` under every other selection, cleared and `unassigned` included, since another person's question is not waiting on this reader. The empty state reads `Nothing needs you` on the reader's own list, `Nothing needs anyone` with the filter cleared and `Nothing matches this filter` under any other selection, and only when every section the Inbox renders is empty: no band has a row and the credential-request list (below) has come back empty. Under it one more line says where the threads are (`emptyThreadLine`): with the switch off, that the ones already read are behind it, and only while there are any; with it on, that there is no thread at all; and neither under `?agent=` or `?section=needs-you`, which list no thread row for either sentence to be true of. While the credential list is still loading no empty state shows, and after it fails the section says so and none follows, since the Inbox cannot then say nothing is waiting (`emptyStateMessage`). The Inbox reads that list once (`useCredentialRequests`) and hands the one answer to the section, the banner and the empty state, everything above the bands being one `header` whether or not a band has a row. With a word in the search box the line is `Nothing matches this text` ahead of all of that: `emptyStateMessage` answers on the typed words first, before the agent line below and before the credential rule that otherwise leaves the list silent, since what the reader typed is the nearest cause of the empty list and the credential requests are not what they searched. With `?agent=` the empty line is about that agent's asks alone (`No open asks from <title>`). A document ask with no issue is titled `Document ask`, so `Unassigned` means one thing wherever it is offered. `features/issue/AssigneeControl.tsx` is the single assignee editor, a sibling of `PriorityControl` built the same way — the email (or a muted `Unassigned`) as a badge with a native `<select>` laid invisibly over it, labelled `Assignee of <KEY>`, options `Unassigned` first then everyone who has signed in, from `GET /api/v1/users` (`["users"]`), the same picker on desktop and iPhone — mounted on the issue header beside Priority and disabled on closed issues; anyone signed in may reassign. Every assignee write goes through `features/issue/useIssueAssignee.ts` (`useIssuePriority`'s shape: useMutation + `useSubmitGuard`, the new value landing optimistically in the issue detail, every `["issues", "project", ...]` list and every `["inbox", ...]` query, rolled back together on failure with the server's message — `ASSIGNEE_NOT_ALLOWED` names the email — and `mergeIssue` applying the PATCH response on success).
+Every issue has an assigned human — `assignee`, the lowercase email of who an ask on it waits on until somebody hands that ask to another person, or null — and the Inbox opens on the reader's own work every visit, remembering nothing between them. The page makes two reads and splits both on the client: ONE `api.getInbox()` under the shared `["inbox"]` query (`app.tsx`'s needs-you count, `Sidebar.tsx`, `AgentsPage.tsx`, `useMarginItems.ts`, and `useAskAnswerForm.ts` — which removes answered rows from exactly that key — all read it; a second key would leave answered rows visible until refetch), and the one unpaged thread read above. Every filter, the sort and the grouping are splits of those two answers, the assignee filter among them, which is why an unknown value matches no row rather than being refused. `features/inbox/AssigneeFilter.tsx` is the shared searchable `MultiSelect` over `Unassigned` and everyone who has signed in (`GET /api/v1/users`, fetched on the filter's first open so a reader who never filters costs no request), takes several at once, and its trigger reads `Assignee · you` / `· everyone` / `· Unassigned` / `· <email>` / `· N`; it sits inside the bar's **Filter** control beside the other four fields, and carries the same per-value counts they do. `inAssigneeFilter` (`features/inbox/sections.ts`) is the one rule for what a filtered list holds: an empty selection is the cleared filter and keeps every row; otherwise a row is kept when the person the server says the ask waits on (`waiting_on_person`, the server's `coalesce(a.asked_of, i.assignee)`) is one of the selected, or when nobody waits on it (`isUnassigned`: an ask nobody was handed on an issue nobody holds, and a project-document ask nobody was handed, a document having no assignee to fall back to) and `unassigned` is selected. A thread row is the reader's own, so it survives their own selection and no other. The selection is the address and nothing else — repeated `?assignee=` values, each a lowercase email or the literal `unassigned`, no parameter at all meaning the reader's own work and `?assignee=everyone` the cleared filter (`parseInboxSearch`/`buildInboxPath`, written with `replace` rather than a push, so a reader trying people out has no history to walk back through) — so a link carries the list and nothing is remembered behind the reader's back; the drawer keeps its own selection in state (above). The search box beside that filter is the second client-side narrowing of the same one response, never a read of its own: `shown` in `Inbox.tsx` is where both are applied, so the band counts, the row ordinals, the keys that walk the list and the selection all speak for the narrowed list, and the one exception the assignee filter already makes covers the typed text too - a row whose `Assign to me` write is in flight stays listed. `features/inbox/inbox-search.ts` is the rule: `inboxSearchHaystack` joins the row's issue key, its issue's title, the name of the document a row standing on a document alone belongs to (guarded on the row having no issue, since the server fills `document` on issue-owned rows as well), the question - where an approval request's generated prefix lives, so the words of that prefix match - and the author as the ask carries it (`author.id`, and a session author's `origin.session_title` and `owner`, never the agent label a card resolves from a later registry read, which only some widths draw), lowercased once per row; `matchesInboxSearch` keeps a row holding every word of `searchWords(query)` and keeps every row for an empty query. The text is one `?q=` (`InboxRoute.q`, `parseInboxSearch`/`buildInboxPath`, written with `replace` for the assignee values' reason and kept by the `Clear agent filter` chip), cut by `capSearchQuery` (`lib/query-param.ts`, shared with `useCappedSearchParam`) in the box's change handler rather than by a `maxLength` on the box, so what is written and what is filtered by are the one rule and the cut is provable from a browser; the box itself is `<input type="search" aria-label="Search asks" placeholder="Issue, title, question or author">` beside the filter in the header, and the drawer passes `onQueryChange` to keep its own text (above). A row the text hides leaves the bulk bar's count and its write like a row the assignee filter hides, and keeps its mark, which is pruned only against the rows the server still sends. The credential requests section and `BlockedOnYou` read the unnarrowed answer and are untouched. The motion hold is told which rows the text excluded (`matchesInboxSearch` beside `presented.current` in `Inbox.tsx`) rather than handed the narrowed list, so a row the reader's own typing drops goes at once even under a resting pointer, while a row the server stopped sending is held as before. No banding but the Assignee one has an `Unassigned` band: a row nobody waits on sits in its band like any other and is reached by selecting `Unassigned` in the filter, and every listed ask row nobody waits on carries an `Assign to me` button (`AssignToMe`, one PATCH `{assignee: <viewer>}` through `useIssueAssignee`, so the row is the reader's at once and rolls back with the server's reason if refused) while a document row, having no issue, has none. A row whose assign write is in flight or failed stays listed even once it no longer matches the filter (`assigning` in `Inbox.tsx`): taking a question under `Unassigned` is exactly that case, and unmounting the control would take `Assigning…`, a refusal and its Retry off the screen with it. `sectionTitles` heads the **Waiting on** grouping's first band `Waiting on you` only for the reader's own list and `Waiting on a person` under every other selection, cleared and `unassigned` included, since another person's question is not waiting on this reader. The empty state reads `Nothing needs you` on the reader's own list, `Nothing needs anyone` with the filter cleared and `Nothing matches this filter` under any other selection, and only when every section the Inbox renders is empty: no band has a row and the credential-request list (below) has come back empty. Under it one more line says where the threads are (`emptyThreadLine`): with the switch off, that the ones already read are behind it, and only while there are any; with it on, that there is no thread at all; and neither under `?agent=` or `?section=needs-you`, which list no thread row for either sentence to be true of. While the credential list is still loading no empty state shows, and after it fails the section says so and none follows, since the Inbox cannot then say nothing is waiting (`emptyStateMessage`). The Inbox reads that list once (`useCredentialRequests`) and hands the one answer to the section, the banner and the empty state, everything above the bands being one `header` whether or not a band has a row. With a word in the search box the line is `Nothing matches this text` ahead of all of that: `emptyStateMessage` answers on the typed words first, before the agent line below and before the credential rule that otherwise leaves the list silent, since what the reader typed is the nearest cause of the empty list and the credential requests are not what they searched. With `?agent=` the empty line is about that agent's asks alone (`No open asks from <title>`). A document ask with no issue is titled `Document ask`, so `Unassigned` means one thing wherever it is offered. `features/issue/AssigneeControl.tsx` is the single assignee editor, a sibling of `PriorityControl` built the same way — the email (or a muted `Unassigned`) as a badge with a native `<select>` laid invisibly over it, labelled `Assignee of <KEY>`, options `Unassigned` first then everyone who has signed in, from `GET /api/v1/users` (`["users"]`), the same picker on desktop and iPhone — mounted on the issue header beside Priority and disabled on closed issues; anyone signed in may reassign. Every assignee write goes through `features/issue/useIssueAssignee.ts` (`useIssuePriority`'s shape: useMutation + `useSubmitGuard`, the new value landing optimistically in the issue detail, every `["issues", "project", ...]` list and every `["inbox", ...]` query, rolled back together on failure with the server's message — `ASSIGNEE_NOT_ALLOWED` names the email — and `mergeIssue` applying the PATCH response on success).
 
-An ask row's card opens with one line: the issue or document it belongs to on the left, truncating, and the controls that defer or reroute it - priority, `Assign to me`, `Snooze` - grouped at the right, so a phone reader sees the same shape a desktop reader does. The line wraps rather than overlapping: the owner link holds a `basis-48` minimum so its title survives beside the reply chip (which truncates at `max-w-[40%]`), and a refusal from `Snooze` or `Assign to me` is `basis-full` inside the right group, so the retry never draws over the issue key. `BlockedOnYou`'s banner is a full-width neutral strip (`w-full` is load-bearing: below 1280 px an unlayered `a:not(.prose a) { display: inline-flex }` in `styles.css` beats Tailwind's `block`, and the strip would otherwise sit beside the bar above it); it counts every ask waiting on the reader whatever its urgency, and every pending credential request, so it carries no urgency hue. The Inbox is one `<ul>` keyed by row id, with each band's heading drawn as a label - an `<h2>` holding that band's `DisclosureToggle`, `<label> (<count>)`, `text-xs` semibold uppercase, quieter than the rows beneath it - in a `role="presentation"` item between the rows, and the band's **Show more** in another; each row is `<li data-inbox-row=<id> data-inbox-group=<band key> data-inbox-section=human|agent|later>`, and the row the reading column is showing adds `aria-current="true"` and `data-inbox-selected="true"`. A row whose band changes - a `waiting_on` that flips, a priority somebody moved, a thread the reader read - moves within the same parent, so React moves its node instead of remounting it and the draft, chosen option, disclosures, and focus inside its `AskCard` survive; rows reorder freely and a new ask appears at once, never behind a click. Drafts therefore live where they always did - in the card's `useAskAnswerForm` state - not in an Inbox-level store. What keeps the reader's place is `features/shell/ViewportAnchor.tsx` (`<ViewportAnchor item="data-inbox-row" group? enabled? rootRef?>`), the one viewport-stability mechanism, shared with the Conversation (`item="data-turn"`, `enabled={() => !follow.pinnedToTop()}`): in `getSnapshotBeforeUpdate` - the commit phase, immediately before React mutates the DOM; a class because no hook runs there, and a render-phase measurement is stale whenever React yields between render and commit (it undid the Conversation's Jump to latest) - it picks the *current* row: the row with focus within, else the row under the pointer (tracked from `pointerover`/`pointerout`), else, only once the reader has scrolled, the row nearest the list's visible centre (`elementFromPoint` probe); records its viewport top; and in `componentDidUpdate` `window.scrollBy`s the delta so the same id sits where it was, wherever content around it moved. A row that itself left for another `group` (the Inbox passes `group="data-inbox-section"`) was relocated, not shifted, and is not followed: the reader's place is where the row was, not where it went. The browser's own scroll anchoring handles what no React commit sees (a card's thread loading, Markdown rendering); it only works because the desktop sidebar `<aside>` carries `[overflow-anchor:none]` - first in the document and viewport-tall, it would otherwise be the anchor node and nothing would ever be compensated. The Inbox reads the focus/pointer choice during render through the instance (`viewport.current?.interacted()`, which does no layout reads; `current()` adds the centre probe and is what the commit uses): when the reader's hand is on a row and the server drops it (answered or resolved elsewhere) or hands its turn the other way (their own ask-back, an agent's progress note or reply), the Inbox keeps it where they last saw it - `held`, in the band it was in, placed after the nearest still-listed row above it - so neither the row nor the view moves under them; a dropped row shows the thread's recorded outcome through `useAskAnswerForm` once `GET /asks/{id}` says the ask is no longer open, and `AskCard` hands focus to the row from a vanishing form (`handOffFocusOnRemoval`) and from a control that disables itself under focus - Ask back while sending and once its text is sent - before the browser would drop it to the document body (`handOffFocus`, in a layout effect). The row is released - leaves, or takes its new band - when focus and the pointer have both left it. The reader's own answer is the same hold while in flight (the card shows Answering…, or the error if the server refuses it, under their draft); once the server records it (`AskCard`'s `onAnswered`) the row is released and leaves. Assign to me is not a hold either: the row becoming the reader's at once is the feedback for that click, and what keeps it listed while that write is in flight is the filter's own exception (above), not this one. A thread row the reader read is held by its own rule, the read-hold above, rather than by this one.
+An ask row's card opens with one line: the issue or document it belongs to on the left, truncating, and the controls that defer or reroute it - priority, `Assign to me`, `Snooze` - grouped at the right, so a phone reader sees the same shape a desktop reader does. The line wraps rather than overlapping: the owner link holds a `basis-48` minimum so its title survives beside the reply chip (which truncates at `max-w-[40%]`), and a refusal from `Snooze` or `Assign to me` is `basis-full` inside the right group, so the retry never draws over the issue key. Under the question the card carries `AskHandOn` (`features/inbox/AskCard.tsx`): a badge reading `Asked of <person>`, or `Asked of nobody`, with the same invisible `<select>` over it, which hands an open question to anybody who has signed in; the assignee of its own issue is offered first, since picking them empties `asked_of` and the question follows the issue again, and under the badge is who handed it on and when. That control is in the card rather than in the Inbox row, so every surface drawing an open question has it, and a question that is not open has none. `BlockedOnYou`'s banner is a full-width neutral strip (`w-full` is load-bearing: below 1280 px an unlayered `a:not(.prose a) { display: inline-flex }` in `styles.css` beats Tailwind's `block`, and the strip would otherwise sit beside the bar above it); it counts every ask waiting on the reader whatever its urgency, and every pending credential request, so it carries no urgency hue. The Inbox is one `<ul>` keyed by row id, with each band's heading drawn as a label - an `<h2>` holding that band's `DisclosureToggle`, `<label> (<count>)`, `text-xs` semibold uppercase, quieter than the rows beneath it - in a `role="presentation"` item between the rows, and the band's **Show more** in another; each row is `<li data-inbox-row=<id> data-inbox-group=<band key> data-inbox-section=human|agent|later>`, and the row the reading column is showing adds `aria-current="true"` and `data-inbox-selected="true"`. A row whose band changes - a `waiting_on` that flips, a priority somebody moved, a thread the reader read - moves within the same parent, so React moves its node instead of remounting it and the draft, chosen option, disclosures, and focus inside its `AskCard` survive; rows reorder freely and a new ask appears at once, never behind a click. Drafts therefore live where they always did - in the card's `useAskAnswerForm` state - not in an Inbox-level store. What keeps the reader's place is `features/shell/ViewportAnchor.tsx` (`<ViewportAnchor item="data-inbox-row" group? enabled? rootRef?>`), the one viewport-stability mechanism, shared with the Conversation (`item="data-turn"`, `enabled={() => !follow.pinnedToTop()}`): in `getSnapshotBeforeUpdate` - the commit phase, immediately before React mutates the DOM; a class because no hook runs there, and a render-phase measurement is stale whenever React yields between render and commit (it undid the Conversation's Jump to latest) - it picks the *current* row: the row with focus within, else the row under the pointer (tracked from `pointerover`/`pointerout`), else, only once the reader has scrolled, the row nearest the list's visible centre (`elementFromPoint` probe); records its viewport top; and in `componentDidUpdate` `window.scrollBy`s the delta so the same id sits where it was, wherever content around it moved. A row that itself left for another `group` (the Inbox passes `group="data-inbox-section"`) was relocated, not shifted, and is not followed: the reader's place is where the row was, not where it went. The browser's own scroll anchoring handles what no React commit sees (a card's thread loading, Markdown rendering); it only works because the desktop sidebar `<aside>` carries `[overflow-anchor:none]` - first in the document and viewport-tall, it would otherwise be the anchor node and nothing would ever be compensated. The Inbox reads the focus/pointer choice during render through the instance (`viewport.current?.interacted()`, which does no layout reads; `current()` adds the centre probe and is what the commit uses): when the reader's hand is on a row and the server drops it (answered or resolved elsewhere) or hands its turn the other way (their own ask-back, an agent's progress note or reply), the Inbox keeps it where they last saw it - `held`, in the band it was in, placed after the nearest still-listed row above it - so neither the row nor the view moves under them; a dropped row shows the thread's recorded outcome through `useAskAnswerForm` once `GET /asks/{id}` says the ask is no longer open, and `AskCard` hands focus to the row from a vanishing form (`handOffFocusOnRemoval`) and from a control that disables itself under focus - Ask back while sending and once its text is sent - before the browser would drop it to the document body (`handOffFocus`, in a layout effect). The row is released - leaves, or takes its new band - when focus and the pointer have both left it. The reader's own answer is the same hold while in flight (the card shows Answering…, or the error if the server refuses it, under their draft); once the server records it (`AskCard`'s `onAnswered`) the row is released and leaves. Assign to me is not a hold either: the row becoming the reader's at once is the feedback for that click, and what keeps it listed while that write is in flight is the filter's own exception (above), not this one. A thread row the reader read is held by its own rule, the read-hold above, rather than by this one.
 
 A row's owner is `InboxOwnerLink` (`features/inbox/AskOwnerLink.tsx`), which opens the ask inside its issue or document, and a thread row's is `AskOwnerLink` over the thread's own issue or project document; an `/answers` row renders the same `AskOwnerLink` without an ask, so it opens the issue or document itself, since that row's **Open** already goes to the ask. A refetch never moves a row under a travelling pointer: the Inbox renders `useMotionHold`'s copy of each of its two reads (`features/inbox/motion-hold.ts`, over the `["inbox"]` rows and over the thread rows alike), which holds what it last adopted while the pointer moves across the list and adopts the newest once the pointer has been still for 400 ms, leaves the list, or presses inside it. `ViewportAnchor` keeps the reader's row where it was; the hold keeps the rows around a moving pointer from sliding under it before it settles. The pointer moving onto the hover card a row's own owner link opened is not leaving the list, in either of them: the card is `fixed` over the page and portaled out of the list, so the list hears `pointerleave` and the row hears `pointerout` for a reader who moved onto what their row drew. `features/refs/ref-preview-card.ts` is the whole tie - the card's id, and the `aria-describedby` `RefPreview` writes on the reference whose card is open - so a list recognises its own card without importing the card. The hold then ends at its settle, as it does for any pointer that stopped, and `ViewportAnchor` keeps that row the reader's place for as long as the card is open: the pointer leaving the card closes it (`REF_PREVIEW_CLOSE_DELAY_MS`), and the row is let go with it.
 
 From 1280 px wide the Inbox page is a reading pane: the rows in a left column and the selected row's own surface in a right one (INFRA-575, `dispatch://INFRA-575/spec`). `Inbox` takes `pane?: boolean`, default true, and shows the pane while that prop holds and the viewport matches `READING_PANE_QUERY` (`(min-width: 80rem)`, `features/shell/useDialog.ts`); `InboxDrawer` is the one call site passing `pane={false}`, so the drawer keeps the cards at every width, as does every width below the query. The gate is a prop rather than a width alone because the drawer mounts the same component at 1440 px. `InboxProps` is that prop beside the four a host that embeds the Inbox passes instead of the URL: `filter`, `keymapScope`, `onAssigneesChange` and `onQueryChange`, the last of them the drawer's search text (above). With the pane on, `app.tsx` makes the Inbox page fill the viewport, each column scrolls in itself, the list column (`data-testid="inbox-list"`) is what `ViewportAnchor` is given as its `scroller`, and each row renders short in place of its card: two lines, the mark checkbox, the row kind's icon, what the row is about - a question's first line (`features/inbox/question-line.ts`), or a thread's subject as a link to the thread itself, bold with a dot while it holds a write the reader has not read (`ThreadTitle`, which the card below this width draws too, as plain text under its own **Open**) - and the time of the last write; then, under them, the priority tag, an ask's urgency mark, the owner link (an Agent row has none, so it names its session) and the Copy ref control where the row has a reference of its own. The layouts are four components, one per kind of row on each side of that width - `AskShortRow` and `ThreadShortRow` beside the column, `InboxCardRow` and `ThreadCardRow` without it - chosen by the row's own kind under the same `paneShown` the rest of the Inbox reads, so no layout reads `row.kind` again inside itself; the two short rows share the two-line frame they draw in (`ShortRowFrame`), and all four share the `<li>` that `InboxRowShell` draws (where the row is, the click that selects it, the release when the reader's hand leaves it) and the mark checkbox. The reader's own threads are the list's other half, and `useInboxThreadRows` is where that half lives: whichever of the two reads is showing - the Inbox's own unpaged one or the Dismissed view's paged one - the pointer hold over it, and the **Show more** that follows the dismissed read's cursor. The page is one root whether or not a row is selected: the pane column is what appears and disappears beside the list, never the list itself, so a selection that empties for a commit - which the reader's own bulk snooze of the selected row does, until the settling effect hands the selection on - never unmounts the list, the keyboard's place in it or the bulk bar. The selection is one hook's, `usePaneSelection` in `features/inbox/pane-selection.ts`, which owns the selected id, `select`, the `j`/`k` step, `paneRow`, `nextAfterSelected` and the two effects below - the one that settles `?item=` against the rows the list holds and the one that keeps the selected row on screen - so `Inbox` chooses its step function and its label noun once, and a binding reads `paneShown` itself only where the column changes what its key does: Enter's `when` and `run` (the compact card whose note disclosure Enter presses is the column's alone), `h`'s `when` (it stands down inside the column's own card), `l`'s `when` and the step out of the column that `move` takes first (without a column there is nothing to step into or out of), and Escape's way back from the column to the row `l` was pressed on, else the row the column is showing. It is React state written to `?item=<row id>` with `replace`, not focus: the first visible row is selected when the Inbox opens, a click or `j`/`k`/the arrow keys select another, an `?item=` the list does not hold selects the first visible row and rewrites the URL, one in the folded `Later` band opens that band, and every way the selected row leaves the bands hands the selection on - the reader's own answer once the server records it, their own snooze, their own dismiss, and the server withdrawing, resolving or answering that question elsewhere, which takes its row out of the list at once, since a withdrawn question with a live answer form invites an answer the server refuses and the row was selected for the reader rather than by them (`handId` is the row the reader's hand is on, as it is without the column, so the selection holds nothing listed) - to the next row they can see, else the one above it (`nextAfterSelected`, read on every commit, held while a snooze of that row is out, since the optimistic snooze folds the row into `Later` on the pick, and held on the commit that drops the row, which is the commit the settling effect reads it on), and to no row at all when none is left, which clears `?item=` so a reload never opens the folded band in front of them. `j` and `k` from a question the column is holding past its row step from where that row stood, which is the row `nextAfterSelected` already names, rather than from either end of the list. Two things outlive the row, and both are the reader's own answer to the question it carried. The first is an answer they have not sent: while the reader has typed into the selected question's answer box, the row the server drops leaves the list like any other, but the column keeps that question and the selection with it until they select another row - the card's closed state in place of the answer form, with what they typed under it (`ask-unsent-answer`, `unsentAnswer` in `useAskAnswerForm.ts`) where they can read and copy it - because an answer somebody is in the middle of writing is not something to take off the screen under their hands (`paneRow` in `pane-selection.ts`; the draft is the ask's own, held by ask id in `features/inbox/answer-drafts.ts` as a reply's is in `reply-drafts.ts`, each of them one `createDraftStore()` of `features/inbox/draft-store.ts` so a fix to the subscription or the updater reaches both, so it outlives the form and the `["inbox"]` read alike, and the server recording the answer drops it; the text of a recorded answer the reader is changing is this form's own state, never that draft, so a change they cancel or walk away from leaves nothing there to be shown back to them as unsent). The second is one they have sent and the server has not decided: `useAskAnswerForm`'s own optimistic update drops the answered row from the `["inbox"]` read the moment the answer goes out, so the form registers the ask in `features/inbox/outstanding-answers.ts` from inside that `onMutate` - before the removal, and from wherever the card is hosted, the document's own decision block included, which takes no prop of the Inbox's - and `paneRow` keeps the question in the column while it is registered. That hold is the write's own liveness, in flight or refused, the `pending || failed` a snooze reports by (`SnoozeControl`), so an answer the server accepts behaves exactly as it always has - `AskCard`'s `onAnswered` hands the selection on and the row leaves - and one it refuses leaves the question in the column under the card's own refusal and its Retry, beside what the reader answered, as it does below this column's width where their hand holds the row; that card is the only surface the refusal is shown on, `useKeyedWrite({inline: true})` letting a refused write go from the store. It is `snoozing`'s rule for the one write whose optimism takes a row out of the Inbox read rather than out of this view, which is why no filter exception can keep that row listed while the answer is in flight; the refusal's rollback lists it again. A row the reader defers keeps the selection while its write is out or refused: the head's Snooze reports through the Inbox's own `onSnoozeLive`, as a row's own control does, so `snoozing` (beside `assigning`) keeps the row listed inside the fold and the column stays on it with the reason and its Retry. Today's other keys keep their meaning against the selected row and the pane: `1`-`9` pick an option of the selected question, and Enter opens its compact card's note disclosure (`[data-ask-note-disclosure]` while it is still shut, the card's own handle as `data-ask-answer` and `data-ask-option` are) and focuses the textarea behind it - both of them against that question's own card in the column (`[data-ask-card="<id>"]`, the card's own handle, matched with `CSS.escape` by `answerHand` in `Inbox.tsx`) rather than the column as a whole, since the column of a decision draws the whole document and hosts an answerable card for every open block of it; a thread row has no card of its own, so both keys stand down on one. Enter fires from a row itself, and with the focus on nothing (`document.body`), and nowhere else: the registry's handler calls `preventDefault` for every binding that fires, and everywhere else the key belongs to the control holding it - a row's owner link, a band's fold, `Show more`, the bulk bar, a filter control, an option or `Ask back instead` inside the column - as `h` stands down inside an ask card (`outsideAskCard`). `x` marks the row and `h` snoozes it, `h` only on an ask; `e` dismisses a thread row, `o` opens the row's issue, document or thread, and `y` copies its reference where it has one, each acting on the pane head's own control while the column is on.
 
-`features/inbox/ReadingPane.tsx` is the right column (`data-testid="inbox-pane"`), and every flow in it draws under the frame they share (`PaneFrame`, in `features/inbox/PaneDocument.tsx` beside the one live-document read, placement and section bar every body that shows a document beside the list runs on, `useDocumentAtBlock`) with only its own reads and its own effects: a question under `ReadingPaneHead` - the issue or document, **Open page**, the priority, **Assign to me**, Snooze and Copy ref, which is where `h`, `o` and `y` find their controls while the column is on - and a thread under `ThreadPaneHead`, which carries the thread's owner, **Open page** (the thread's own page, which the server names in the row's `ref`: the document with the thread open, the issue's conversation, or `/agents/<id>/live` for an Agent row) and **Copy ref**, and no Snooze, priority or **Assign to me** at all. `PaneFrame` draws `<section aria-label="Selected question" data-testid="inbox-pane">` around the head and the one scroller every body draws in, and that scroller is the column's own focus stop: `<section aria-label="Question body" data-testid="inbox-pane-scroller" tabIndex={0}>`, a named region (a labelled `<section>` is `role="region"`, and neither name holds the other, since Playwright matches an accessible name by substring) that `l` moves the focus into (above) and that the browser itself scrolls on the arrow keys, Page Up, Page Down, Space, Home and End, so the column writes no scrolling code for them. An Agent row has no **Copy ref** either: Dispatch's reference grammar has no form for an issue-less message, which is why `y` does nothing on one. A question is one of three bodies. `DecisionBody` draws a decision block as the document itself (`ProofDocument` with `surface="pane"`, its text read through the page's own `liveTextQueryOptions`, scrolled by `scrollBlockToTop` so the heading of the block's section sits at the top, a bar from that heading down to the block, `data-testid="pane-section-bar"`, positioned from `blockOffsets` and drawn beside the editor). `ApprovalBody` draws an approval as `VersionView` of the artifact's latest version with `changeBaseline` holding the markdown of `ask.approval.approved?.version`, and offers `Next change` to step the marked blocks only while the drawn version carries any: the marks are the headless engine's, which may never warm, and a button with nothing to step did nothing. It draws the request's own question above that document - `MarkdownBody` of `ask.question` in a block of its own, `data-testid="pane-approval-question"`, the renderer `AskCard` draws a question with, so a message carrying a list or a link reads as it was written and a rule tells it from the document's first paragraph - in every state but the fallback: the block stands while the document's skeleton does, waiting on none of the document's reads, and where the column falls back to the question's card it is not drawn at all, that card drawing the whole question itself, so the question is on screen exactly once. `CardBody` draws an anchored question or one in no document as today's `AskCard`. A thread is one of four, in a module of its own beside the thread body (`features/inbox/ThreadPane.tsx`, each body marked `data-inbox-pane-body`): `document` is a comment thread anchored in a project document, drawn as the live document opened at the anchored block's section with the quote highlighted and the thread itself inside the document column directly below that block, through the node view's own slot; `ask` is a decision block's ask, whose block draws the question, its answer and its exchange itself (`AskBlockCard`); and `issue` and `agent` are the threads that need no document - a comment thread on an issue, an issue message conversation, an ask that is no decision block, and a one-off message to a session - each drawn whole under its subject line. The first two are one component (`ThreadDocumentBody`): both open the document at the thread's own block, and they differ only in the thread the block carries - the anchored one, drawn in the slot, against the block's own - and in whose issue the document belongs to. A document body that cannot place its thread falls back to the thread alone with the text it is anchored to (`data-inbox-pane-fallback`): the document failed to open, the anchor is orphaned, or it names a block the document no longer holds - the last of those being the thread the pane must place itself, since a decision block that draws its own needs nothing placed. Every one of them draws the thread through one component, `features/inbox/ThreadBody.tsx`: the four shapes a thread comes in, read when it is shown, every message rendered whole with `MarkdownBody`, each message the reader has not read marked **New** from the row's own record (a Reply row's `read_through`, an Agent row's `unread_reply_ids`), and ending in the composer of the thread's own page, so a reply sent from here goes where one sent there goes, under a send name of the thread's own (`inbox-thread-reply`) so a reply still out or refused is shown by whichever surface mounts the composer again. What a thread draws and in what order is one rule, `features/threads/thread-layout.ts`, and the reader chooses it once in the View menu for every thread in Dispatch - the Inbox's pane and its cards, an ask's thread, a document block's thread, a document page's margin thread and the Conversation tab's threads all lay their replies out by it, and none of them offers a control of its own (the choice itself is `features/threads/thread-order.ts`, kept for the reader's browser under `inbox.thread-order`). A collapsing surface shows the root and the two newest replies and folds the rest behind **Show N earlier replies** (`EarlierReplies`, the one fold control the Inbox's thread body and an ask's thread both draw), except that an unread reply is never folded; **Oldest first** draws the fold control under the root, then the replies oldest first, then the reply box, and **Newest first** draws the reply box under the root, then the replies newest first, then the fold control - either way the box, and an ask's options and answer box with it, sits next to the newest message, which is `composerFirst` in that same module, read by the surfaces that draw no replies of their own rather than worked out again. The pane opens a thread at its first unread message under **Oldest first**; a card never does. The column mounts one document room per artifact, 200 ms after the last selection change, and falls back to the card or the thread with `Open page` on a load failure or a refused admission - which `ProofDocument` reports through `onUnavailable` in pane mode rather than drawing the document page's repair or rebuild prompt. A document the column opened at a section is held there (`features/inbox/pane-placement.ts`, `holdSection`): one scroll is never enough, since the editor draws its blocks in pieces and every block that lands above the heading pushes it down again, so the placement is applied on every change of the drawn document until the reader presses, scrolls, touches or types in the column, which ends it. The line between the two columns is `features/inbox/PaneDivider.tsx`, an `hr` carrying a slider's own attributes, as the document margin's resizer is: the pane starts at `DEFAULT_PANE_WIDTH` (0.6) of the width the two columns share, an arrow key moves the line `PANE_WIDTH_STEP` (0.02) while it has the focus, a drag moves it under pointer capture, a double-click puts it back, and the share is clamped between 0.3 and 0.8 and kept for the reader's browser (`inbox.pane-width`). The width is a share rather than a number of pixels because the two columns are a grid of two fractions with the divider as its own column between them, so what the reader dragged to is exactly what the grid takes at any viewport width; the grid is one row of `minmax(0, 1fr)`, since an implicit `auto` row would be as tall as the taller column and neither column would then scroll in itself.
+`features/inbox/ReadingPane.tsx` is the right column (`data-testid="inbox-pane"`), and every flow in it draws under the frame they share (`PaneFrame`, in `features/inbox/PaneDocument.tsx` beside the one live-document read, placement and section bar every body that shows a document beside the list runs on, `useDocumentAtBlock`) with only its own reads and its own effects: a question under `ReadingPaneHead` - the issue or document, **Open page**, the priority, **Assign to me**, Snooze and Copy ref, which is where `h`, `o` and `y` find their controls while the column is on - and a thread under `ThreadPaneHead`, which carries the thread's owner, **Open page** (the thread's own page, which the server names in the row's `ref`: the document with the thread open, the issue's conversation, or `/agents/<id>/live` for an Agent row) and **Copy ref**, and no Snooze, priority or **Assign to me** at all. `PaneFrame` draws `<section aria-label="Selected question" data-testid="inbox-pane">` around the head and the one scroller every body draws in, and that scroller is the column's own focus stop: `<section aria-label="Question body" data-testid="inbox-pane-scroller" tabIndex={0}>`, a named region (a labelled `<section>` is `role="region"`, and neither name holds the other, since Playwright matches an accessible name by substring) that `l` moves the focus into (above) and that the browser itself scrolls on the arrow keys, Page Up, Page Down, Space, Home and End, so the column writes no scrolling code for them. An Agent row has no **Copy ref** either: Dispatch's reference grammar has no form for an issue-less message, which is why `y` does nothing on one. A question is one of three bodies. `DecisionBody` draws a decision block as the document itself (`ProofDocument` with `surface="pane"`, its text read through the page's own `liveTextQueryOptions`, scrolled by `scrollElementToTop` so the heading of the block's section sits at the top, a placement bounded and armed once for each row the reader opens, a bar from that heading down to the block, `data-testid="pane-section-bar"`, read as two rects by `sectionBarOf` rather than from the margin's `blockOffsets`, which measures every block of the document, and drawn beside the editor). `ApprovalBody` draws an approval as `VersionView` of the artifact's latest version with `changeBaseline` holding the markdown of `ask.approval.approved?.version`, and offers `Next change` to step the marked blocks only while the drawn version carries any: the marks are the headless engine's, which may never warm, and a button with nothing to step did nothing. It draws the request's own question above that document - `MarkdownBody` of `ask.question` in a block of its own, `data-testid="pane-approval-question"`, the renderer `AskCard` draws a question with, so a message carrying a list or a link reads as it was written and a rule tells it from the document's first paragraph - in every state but the fallback: the block stands while the document's skeleton does, waiting on none of the document's reads, and where the column falls back to the question's card it is not drawn at all, that card drawing the whole question itself, so the question is on screen exactly once. It sends the column to its own start once for each approval request whose drawn version has been read, so the request's question stands above the version it asks about rather than where the request before it left the one scroller the column keeps; that write is the reader's to end like every other placement of this pane (`holdSection`, armed on the scroller for each request), so a reader who presses, scrolls, touches or types in the column while the request is still opening keeps the place they moved to. `CardBody` draws an anchored question or one in no document as today's `AskCard`. A thread is one of four, in a module of its own beside the thread body (`features/inbox/ThreadPane.tsx`, each body marked `data-inbox-pane-body`): `document` is a comment thread anchored in a project document, drawn as the live document opened at the anchored block's section with the quote highlighted and the thread itself inside the document column directly below that block, through the node view's own slot; `ask` is a decision block's ask, whose block draws the question, its answer and its exchange itself (`AskBlockCard`); and `issue` and `agent` are the threads that need no document - a comment thread on an issue, an issue message conversation, an ask that is no decision block, and a one-off message to a session - each drawn whole under its subject line. The first two are one component (`ThreadDocumentBody`): both open the document at the thread's own block, and they differ only in the thread the block carries - the anchored one, drawn in the slot, against the block's own - and in whose issue the document belongs to. A document body that cannot place its thread falls back to the thread alone with the text it is anchored to (`data-inbox-pane-fallback`): the document failed to open, the anchor is orphaned, or it names a block the document no longer holds - the last of those being the thread the pane must place itself, since a decision block that draws its own needs nothing placed. Every one of them draws the thread through one component, `features/inbox/ThreadBody.tsx`: the four shapes a thread comes in, read when it is shown, every message rendered whole with `MarkdownBody`, each message the reader has not read marked **New** from the row's own record (a Reply row's `read_through`, an Agent row's `unread_reply_ids`), and ending in the composer of the thread's own page, so a reply sent from here goes where one sent there goes, under a send name of the thread's own (`inbox-thread-reply`) so a reply still out or refused is shown by whichever surface mounts the composer again. What a thread draws and in what order is one rule, `features/threads/thread-layout.ts`, and the reader chooses it once in the View menu for every thread in Dispatch - the Inbox's pane and its cards, an ask's thread, a document block's thread, a document page's margin thread and the Conversation tab's threads all lay their replies out by it, and none of them offers a control of its own (the choice itself is `features/threads/thread-order.ts`, kept for the reader's browser under `inbox.thread-order`). A collapsing surface shows the root and the two newest replies and folds the rest behind **Show N earlier replies** (`EarlierReplies`, the one fold control the Inbox's thread body and an ask's thread both draw), except that an unread reply is never folded; **Oldest first** draws the fold control under the root, then the replies oldest first, then the reply box, and **Newest first** draws the reply box under the root, then the replies newest first, then the fold control - either way the box, and an ask's options and answer box with it, sits next to the newest message, which is `composerFirst` in that same module, read by the surfaces that draw no replies of their own rather than worked out again. The pane's own thread body and its fall-backs open a thread at its first unread message under **Oldest first** (`ThreadBodyContent` in `ThreadPane.tsx`); a thread drawn inside a document the pane has placed does not, that column being the placement's, and a card never does. The column mounts one document room per artifact, 200 ms after the last selection change, and falls back to the card or the thread with `Open page` on a load failure or a refused admission - which `ProofDocument` reports through `onUnavailable` in pane mode rather than drawing the document page's repair or rebuild prompt. A document the column opened at a section is held there while it is still drawing (`features/inbox/pane-placement.ts`, `holdSection`): one scroll is never enough, since the editor draws its blocks in pieces and every block that lands above the heading pushes it down again, so the placement is applied on every change of the drawn document until that drawing has been quiet for 200 ms with no diagram still waiting, and never past 3 s from the first drawing pass, or sooner where the reader presses, scrolls, touches or types in the column, which ends it. One placement is armed for each row the reader opens - keyed on the row, not on the document and block - so a read of the document that fails and recovers arms no second one, and the bound holds back only the two lines that write the column: the section bar, the section's own block and the thread fall-back are read for as long as the document is drawn. The line between the two columns is `features/inbox/PaneDivider.tsx`, an `hr` carrying a slider's own attributes, as the document margin's resizer is: the pane starts at `DEFAULT_PANE_WIDTH` (0.6) of the width the two columns share, an arrow key moves the line `PANE_WIDTH_STEP` (0.02) while it has the focus, a drag moves it under pointer capture, a double-click puts it back, and the share is clamped between 0.3 and 0.8 and kept for the reader's browser (`inbox.pane-width`). The width is a share rather than a number of pixels because the two columns are a grid of two fractions with the divider as its own column between them, so what the reader dragged to is exactly what the grid takes at any viewport width; the grid is one row of `minmax(0, 1fr)`, since an implicit `auto` row would be as tall as the taller column and neither column would then scroll in itself.
 
 `web/src/components/` owns the shared status, label, approval, attention-count, empty, and loading primitives, plus `CopyButton.tsx` (the copy glyph behind every copy control, including `features/refs/CopyRefButton.tsx`), `PinButton.tsx`, `Chip.tsx`, `MultiSelect.tsx`, and `RefusableButton.tsx`. `PinButton` is the one pin glyph (outline, filled once pinned, `aria-pressed`) behind the issue header, agent rows, and every Conversation turn's top-right pin (`quiet`, borderless at rest so a list is not a column of boxes). `RefusableButton` is the button that says why it cannot be pressed, behind both Send buttons (the broadcast's and `MentionComposer`'s) and the Sends strip's Restore draft: given a `refusal` it is `aria-disabled` rather than `disabled`, so it stays in the tab order, carries the reason on `title` and through `aria-describedby` on the line that shows it (`refusalShownBy`), or on a hidden line of its own where none does, and does nothing when clicked, a submit button included; only `busy`, a press in flight its label names, renders `disabled`. Its `look` is one entry of a map of whole static strings: the filled primary (`primaryButton` in `classes.ts`) or the compact outlined secondary (`secondary-compact`, `secondaryButtonCompact`). Neither restates its cannot-press look for `aria-disabled`: the `refused` custom variant in `styles.css` matches `:disabled` and `[aria-disabled="true"]` alike, and `primaryButtonDisabled`, `primaryButtonEnabledHoverBg`, `secondaryButtonHoverBorder` and `secondaryButtonDisabledText` are written in it (`refused:`, `not-refused:hover:`), so every button wearing them, refusable or not, skips its hover and shows its cannot-press look for either attribute. Every primary button that cannot be pressed reads slate-700 on slate-300 (slate-300 on slate-700 in dark), 6.97:1, registered as a contrast check, because its label may be the only thing on screen saying why; a secondary that cannot be pressed keeps the dimmed label secondary buttons already had (`secondaryButtonDisabledText`), and the refused Restore draft has its reason on the line under it. `Chip` is the one interactive chip — a single `<button>` carrying the border, the fill, and the 44 px hit area, so the outline is always the shaded shape (never a border on a tall button wrapped around a smaller `Pill`); `selected` renders `aria-pressed` and the selected fill (`tone` picks the neutral strong surface or an ask urgency's badge, as the margin composer's Urgency row does), `removable` appends the `×` glyph and the whole chip is the remove control. A chip is never wider than its row (`max-w-full`): its text is a `TruncatedText` that ends in an ellipsis where it does not fit, and a host whose text can run that long passes it whole as `title` (the filter strip's active-filter chips). A non-button host that must look like a pill stays one element through `pillClassName` (the List's parent link). `MultiSelect` is the one searchable multi-select: a trigger (`aria-haspopup="listbox"`, `<label> · N`), a portalled popover with a `combobox` search over an `aria-multiselectable` listbox of checkbox rows, arrows/Enter/Escape/Tab from the input, outside-press close, focus returned to the trigger; the host owns `open` (so the issue header stages and saves) and `onCreate` adds the `Create "…"` row. Project lists and boards, Inbox, the margin, and Agents use the same icon-less empty state and card-shaped skeleton, so every loading or empty result preserves the surface's hierarchy.
 
@@ -1592,22 +1592,30 @@ import each other under `web/src`, confirm `bun run lint` fails naming both, and
 
 ## End-to-end tests
 
-`bun run e2e` drives Playwright against the real Go Dispatch server and
-Postgres. It runs Playwright through `e2e/run.ts`, which builds
-`packages/contracts` and starts the harness
-(`e2e/run-server.sh` and its fakes) unless `PLAYWRIGHT_BASE_URL` selects an
-already deployed server. That build is what Playwright's own runner reads: it
-loads the specs under Node, which takes the package's `default` export
-condition, its gitignored `dist/`, where a `bun` run takes the source, so a
-workspace that never built it would fail at the first spec that imports
-`@legion/contracts`. Every harness server serves on a port the OS chooses
+`bun run e2e` builds `@legion/contracts` and the SPA and drives Playwright
+against the real Go Dispatch server and Postgres. Playwright starts the harness
+itself: `e2e/global-setup.ts`, the config's `globalSetup`, starts one stack per
+worker (`e2e/harness-pool.ts`) unless `PLAYWRIGHT_BASE_URL` selects an already
+deployed server, and `e2e/global-teardown.ts` stops them, keeping the stacks'
+logs unless the run showed that it passed. That hook does not build
+`packages/contracts`, and cannot: Playwright loads `e2e/playwright.config.ts`
+before it runs any hook, that config imports the package, and Playwright's own
+runner loads the specs under Node, which takes the package's `default` export
+condition, its gitignored `dist/`, where a `bun` run takes the source. A
+workspace that never built it dies as the config loads, before the hook. So
+whoever starts Playwright builds it: `bun run e2e` and the package's other e2e
+scripts run `build:contracts` first, every CI job that runs the suite carries a
+`Build contracts for dispatch e2e` step
+(`.github/workflows/dispatch-browser.yaml`), and a Playwright command typed by
+hand needs `bun run build:contracts` once.
+Every harness server serves on a port the OS chooses
 unless its variable sets one (below), so the temporary server never meets the
-production listener on port 8766. A run of one lane takes `DATABASE_URL`, unless
+production listener on port 8766. A run of one stack takes `DATABASE_URL`, unless
 it names a Postgres provider instead (below): the
 database must be isolated because `e2e/seed.ts` empties it before every
-scenario and never falls back to `dispatch_c`. A run of more than one lane
-starts a Postgres per lane instead and refuses a `DATABASE_URL` the caller set
-(the lanes, below). It runs the server in cookie
+scenario and never falls back to `dispatch_c`. A run of more than one stack
+starts a Postgres per stack and reads no `DATABASE_URL` at all
+(the stacks, below). It runs the server in cookie
 identity, the production mode, and signs `alice` and `bob` in through the
 server's dev sign-in route (`DISPATCH_DEV_SIGNIN=1`, fenced to a loopback
 origin, listener and database, with a per-process signing key, or one key per run
@@ -1624,33 +1632,112 @@ Address the harness as `127.0.0.1:<port>`, never
 a fixture server. `bun run dispatch:local` runs the same harness by hand,
 seeded and signed in, and leaves it running (below, after the port rules).
 
-`DISPATCH_E2E_WORKERS` is how many Playwright workers the run has — unset or
-empty is one — and `e2e/run.ts` starts one lane per worker, all at once, before
-Playwright starts. A lane is one whole harness as `e2e/harness-start.ts` starts
-it (a Dispatch server, the fake Envoy, the fake GitHub, the fake broker, the
-plain-HTTP proxy, a file-store bucket of its own and ports the OS chose for it)
-and a Postgres server of its own. A lane owns every piece of state a row
-writes, because `e2e/seed.ts` empties its lane's database before every row and
-clears that lane's fakes with it: two workers on one harness would empty each
-other's state mid-row. The run exports `DISPATCH_E2E_LANES=<n>` and every
-harness variable of every lane under `DISPATCH_E2E_LANE_<i>_<V>`, that lane's
-`DATABASE_URL` and file-store bucket included, and keeps the plain names
-pointing at lane 0, so every one-lane consumer reads what it read before lanes
-existed.
+Three commands, each copied as it stands and run from this package:
 
-A worker finds its lane by `TEST_PARALLEL_INDEX`, which Playwright sets in each
+```bash
+bun run e2e -- e2e/claim.e2e.ts --project=chromium
+bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1
+bun run e2e:clock
+```
+
+The first runs one ordinary spec file. The second runs one wall-clock file in one engine: those
+rows are read from the clock and their three projects are out of the default selection (the
+`-alone` projects, below), so a command that names such a file names its project too, and it
+names `--workers=1` beside it, so the command a reader copies says the one worker its reading
+rests on rather than taking it from the configuration. A wider run is refused rather than
+measured: `refuseASharedRun` (`e2e/main-thread-hold.ts`) fails every measuring row of a run of
+more than one worker. The third runs every wall-clock row in all three engines: `e2e:clock` is
+the one script that names the three projects, and it names `--workers=1` beside them, so the
+command the whole wall-clock run is made of says what its readings rest on. Each of `e2e` and
+`e2e:clock` builds `@legion/contracts` and the dashboard first, so a reader running both from an
+unchanged tree can skip the second build by calling what `e2e:clock` calls:
+`bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`.
+CI's alone legs run that same command with one `--project` each, a machine per engine
+(`.github/workflows/dispatch-browser.yaml`).
+
+Write a project as `--project=<name>` and never `--project <name>`. The option is variadic, so
+`--project chromium-alone e2e/heavy-bodies.e2e.ts` reads the file as a second project name and
+the run ends `Project(s) "e2e/heavy-bodies.e2e.ts" not found`. The second command is the one
+that carries a file name after its project, so it is the one that meets this.
+
+An issue pod measures the wall-clock rows in `chromium-alone`: WebKit does not launch in such a
+pod, whose image lacks that engine's host libraries (dispatch://INFRA-1396). Firefox and WebKit
+are measured by CI, where the `alone` job of `.github/workflows/dispatch-browser.yaml` gives
+each engine a machine of its own.
+
+Playwright's UI mode starts this suite's stacks itself. The UI server runs no
+`globalSetup` when it begins listening; it runs one when a client connects
+(`runGlobalSetup`, playwright 1.64.1 `lib/runner/index.js:6896-6915`), so a
+session opened on the listening URL starts its own stacks, runs rows against
+them, and stops them when the session ends. Measured on playwright 1.64.1
+(dispatch://INFRA-1410): with nothing
+up, the UI listened and started nothing; a browser opened on that URL made one
+run directory and listed the file's rows; Run all passed the row; a second Run
+all passed it again and made no second set of stacks; closing the session left
+no run directory and no process behind.
+
+Every project is in play in a UI session, whatever `--project` the command line
+held (the UI's own header reads `Projects: all`), so `e2e/global-setup.ts`
+requires every engine Playwright can run here, not the one engine a row needs.
+With `firefox` and `webkit` not downloaded, a UI session stops at its
+`global-setup.ts` node while the same command line without `--ui` runs green.
+`bun run e2e:install` downloads all three. A UI session is also the one run
+that holds the wall-clock projects without naming them — it lists the
+non-default projects so that they can be selected by name — so the
+configuration's refusal of a wall-clock file named with no project yields to a
+user-interface command line: one whose `--ui`, `--ui-host` or `--ui-port`
+Playwright's own parser reads as the mode. It does not yield to a `--ui`
+another option swallowed (`--grep --ui <file>`), nor to one behind the `--`,
+since neither starts a user interface
+(`clockFileOnCommandLine`, `e2e/configurations.ts`).
+
+To point a session at a stack that is already up instead, export that stack's
+variables first, from `packages/dispatch`:
+
+```bash
+bun e2e/harness-up.ts > exports.sh &
+# wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then
+. ./exports.sh
+bunx playwright test --config e2e/playwright.config.ts --ui
+```
+
+`kill` that harness when the session ends. `e2e/visual-run.sh` is the same
+recipe written as a script, for the container it runs Playwright in: it reads
+the same `export` lines through a fifo and applies them. A session of the
+stubbed layer alone needs no stack at all, since it addresses none
+(`--project=stub --ui`).
+
+Playwright's own `--workers <n>` is how many workers the run has — the config's
+default is 1 — and `e2e/global-setup.ts` starts one stack per worker, all at
+once, before the first row. A stack is one whole harness as
+`e2e/harness-start.ts` starts it (a Dispatch server, the fake Envoy, the fake
+GitHub, the fake broker, the plain-HTTP proxy, a file-store bucket of its own
+and ports the OS chose for it) and a Postgres server of its own. A stack owns
+every piece of state a row writes, because `e2e/seed.ts` empties its stack's
+database before every row and clears that stack's fakes with it: two workers on
+one harness would empty each other's state mid-row. The hook writes the whole
+pool into `DISPATCH_E2E_STACKS`, one JSON record per stack holding that stack's
+own variables — its ports, its `DATABASE_URL` and its file-store bucket — and
+writes nothing else. The plain names are left exactly as the caller had them,
+so a second `globalSetup` in the one process, which is how Playwright's UI mode
+re-runs, cannot read a stopped stack's `DATABASE_URL` as a caller's own.
+`e2e/global-teardown.ts` takes the manifest back out again. Playwright hands
+every worker process that environment.
+
+A worker finds its stack by `TEST_PARALLEL_INDEX`, which Playwright sets in each
 worker process and a restarted worker keeps, so a worker Playwright restarts
-comes back on the lane it had. `e2e/harness-ports.ts` resolves it, the one
-place: `laneValue` reads a variable under the lane's name and falls back to the
-plain one, which is how the harness ports resolve and how `e2e/psql.ts` finds
-the database every `sql()` statement runs against. A process that is no worker
-has no `TEST_PARALLEL_INDEX` and so reads lane 0 — the config itself,
-`e2e/preflight.ts` (which checks every lane in turn, resolving each through
-`asLane`) and each harness listener `e2e/run.ts` started, which was handed its
-own lane's values under the plain names.
+comes back on the stack it had. `e2e/harness-ports.ts` resolves it, the one
+place: `stackValue` reads the manifest's record for that index and falls back to
+the plain name, which is how the harness ports resolve and how `e2e/psql.ts`
+finds the database every `sql()` statement runs against. A process that is no
+worker has no `TEST_PARALLEL_INDEX` and so reads the manifest's first record:
+the config itself and `e2e/global-setup.ts`, which checks every stack in turn,
+reading each stack's own record. The plain names answer where no manifest does
+— each harness listener the pool started, which was handed its own stack's
+values under them, a harness a person left listening, and a deployed run.
 
-A lane's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
-and a run of more than one lane that names neither is refused naming both.
+A stack's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
+and a run of more than one stack that names neither is refused naming both.
 `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
 a developer's path on a machine with Docker and no Postgres binaries, and the
 visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
@@ -1660,32 +1747,52 @@ the shard and alone jobs' path and an issue pod's: those two jobs of
 `.github/workflows/dispatch-browser.yaml` run in a container that carries
 PostgreSQL 18 with `vector`, where there are Postgres binaries and no Docker
 socket, and they name that installation's directory. That provider runs
-`initdb` once per run and copies the data directory it made per lane, since
-`initdb` is the cost that grows with the lanes. Both keep the lane's data under
-the run's own temporary directory,
-which `e2e/run.ts` removes when it ends, and both answer on 127.0.0.1, which
+`initdb` once per run and copies the data directory it made per stack, since
+`initdb` is the cost that grows with the stacks. Both keep the stack's data
+under the run's own temporary directory, one `worker-<i>` directory per stack
+beside that stack's `worker-<i>/log`, which `e2e/harness-pool.ts` makes and
+removes, and both answer on 127.0.0.1, which
 the server's dev sign-in requires of its database. With one worker and
-`DATABASE_URL` set, the run uses that database as lane 0 and starts no
+`DATABASE_URL` set, the run uses that database as stack 0's and starts no
 Postgres, exactly as it always has.
 
-With more than one worker the run refuses, before a directory is made or a
-server starts and naming the variable, a caller-set `DATABASE_URL`,
-`PLAYWRIGHT_BASE_URL`, `DISPATCH_E2E_PROCESSES=2`, `DISPATCH_E2E_REUSE_SERVERS`
-or any harness port variable (`refuseLaneConflicts`, `e2e/harness-ports.ts`).
-Each names one database, one set of servers or one port that every lane would
-share, and a shared one is one lane emptying another's rows. The Playwright
-config refuses a `--workers` or `-j` on the command line that differs from the
-lane count, naming `DISPATCH_E2E_WORKERS` as the way to ask for that many: the
-lanes were started before Playwright, so another worker count would leave a
-lane unused or put two workers on one. Its `workers` is the lane count and
-`fullyParallel` is on, since a row empties its own lane before it runs: rows of
-one file may run in different lanes, and a file whose rows must run in order
-says so itself, with `test.describe.configure({ mode: "serial" })` and the
-reason.
+A run of more than one worker is one stack per worker, and each stack has a
+Postgres, a file-store bucket and ports of its own, so five variables that name
+one of those are refused before anything starts. `DATABASE_URL` is refused
+because each stack runs its own Postgres, whose URL the harness hands its
+servers and its psql. `PLAYWRIGHT_BASE_URL` is refused because a deployed run
+has one server every stack would share. `DISPATCH_E2E_REUSE_SERVERS` is refused
+because the servers a person started are one set. `DISPATCH_E2E_PROCESSES=2` is
+refused because two-process mode is two servers on one stack's database. Any
+harness port variable is refused because a port is one listener's: a shared one
+of these is one stack emptying another's rows mid-row, and that failure reads
+as the product's rather than the run's.
 
-Every other mode is one lane and one worker, none of them setting
-`DISPATCH_E2E_WORKERS`: the deployed run (`bun run e2e:deployed`,
-`PLAYWRIGHT_BASE_URL`), two-process mode (`bun run e2e:multiprocess`), a run
+`e2e/global-setup.ts` makes that refusal before it starts anything and before
+its own return on `DISPATCH_E2E_REUSE_SERVERS=1`, naming the first such
+variable and what one stack owns it for (`refuseStackConflicts`,
+`e2e/harness-ports.ts`). A person meets that sentence rather than an
+`EADDRINUSE`. The refusal is the harness's own rule, not one caller's habit: a
+run of more than one worker meets it however it was started, because one stack
+owns each of the five. CI's shard leg sets `DISPATCH_E2E_PG_BIN` and none of
+the five, so the rule reaches no job of this repository and only a run by
+hand. A run of the stubbed layer alone is out of the rule, since it addresses
+no stack.
+
+Run instead a Postgres provider with those five unset: `DISPATCH_E2E_PG_BIN`, a
+directory holding `initdb` and `pg_ctl`, or `DISPATCH_E2E_PG_IMAGE`, each of
+which is a Postgres per stack. The other way is one worker, which is this
+config's own `workers` default and the one case that takes a `DATABASE_URL`. A
+run asks for more with Playwright's own `--workers <n>`. `fullyParallel` is on,
+since a row empties its own stack before it runs: rows of one file may run in
+different stacks, and a file whose rows must run in order says so itself, with
+`test.describe.configure({ mode: "serial" })` and the reason.
+
+Every other mode runs on that default one worker, and so one stack: the deployed
+run (`bun run e2e:deployed`, `PLAYWRIGHT_BASE_URL`), two-process mode
+(`bun run e2e:multiprocess`), the wall-clock run (`bun run e2e:clock`, which
+writes that one worker out as `--workers=1` beside its three projects, since a
+reading of the clock rests on it), a run
 against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 `e2e/local-instance.ts` (`bun run dispatch:local`), `docs/site/media/harness.ts`,
 `docs/site/media/broker/seed.ts`,
@@ -1700,7 +1807,7 @@ shard machines, each leg running `--shard=N/4` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
 run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
-projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
+projects each on a machine of its own at one worker, and the two-process job.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
 line rather than in an `env:`, for the reason that step's comment gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
@@ -1715,8 +1822,8 @@ A role does not run the whole suite in an issue pod — two CPUs do not carry it
 it is working on.
 
 One shard leg by hand is that leg's own command without CI's blob reporter and its memory and CPU
-samplers, run from `packages/dispatch` with a Postgres provider the lanes above name:
-`DISPATCH_E2E_WORKERS=4 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4`.
+samplers, run from `packages/dispatch` with a Postgres provider the stacks above name:
+`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4 --workers 4`.
 The `full` lane's leg names all eight parallel projects in place of those two.
 A local run retries nothing; CI retries a failed row once
 (`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
@@ -1775,12 +1882,22 @@ in its own scope, and in the module an import leads to, so a `for`-of `const`,
 a parameter or an import is never read as a same-named function declared
 elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
 the program cannot resolve — leaves its row refused with no fixtures, since
-fixtures the check did not read are not fixtures it saw. It reads the three
-Playwright listings first, to prove it scanned the files the suite runs. A row
-may stand all the same as a named exemption with its reason, written in
-`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
-exemption too — one naming a row the suite no longer holds, or one that drives
-a browser now — so the rule cannot come to lie in the other direction either.
+fixtures the check did not read are not fixtures it saw. It reads four
+Playwright listings first, to prove it scanned the files the suite runs: the
+default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
+`DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
+projects, whose rows a listing naming no project holds none of. The four
+collect at once, and the readings the timing comment above
+`listingTimeout` carries (`e2e/__tests__/no-browser-rows.test.ts`) are of
+the whole file: 13.72, 17.11 and 23.22 seconds in three runs of it, with
+the default listing 3.59 seconds on its own and the wall-clock one 1.25.
+The file allows three minutes,
+which is a ceiling for something being wrong rather than a budget for a
+listing. A row may stand all the same as a named exemption
+with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
+the check refuses a stale exemption too — one naming a row the suite no longer
+holds, or one that drives a browser now — so the rule cannot come to lie in the
+other direction either.
 INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
@@ -1941,7 +2058,7 @@ post-update text selection; Yjs document transport and local editing remain acti
 `e2e/failed-room.e2e.ts` is opt-in and skipped without `DISPATCH_FAILED_ROOM_PROBE=1`: it holds
 the room's next durable append for 20 s with a `doc_updates` trigger and cancels that backend, so
 it costs about 40 s and does not belong in the suite CI runs. Run it as
-`DISPATCH_FAILED_ROOM_PROBE=1 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts`,
+`DISPATCH_FAILED_ROOM_PROBE=1 bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts`,
 which starts a harness of its own on ports the OS chooses.
 It is the end-to-end check for a failed document room: the writer inside the docs layer when the
 room fails is answered `503 DOC_SERVICE_UNAVAILABLE` rather than waiting for a recovery that
@@ -1957,11 +2074,11 @@ paths move; the two runs' `FAILED-ROOM` lines are the comparison.
 harness server talks to: `run-server.sh` builds `ENVOY_URL` from that port alone. The harness
 starts the same listener for a deployed run; `deploy/compose/dispatch.acceptance.compose.yml`
 requires `FAKE_ENVOY_PORT` and derives the target's Envoy URL from it, so a deployed run sets it.
-Before any row runs, `e2e/preflight.ts` (the config's `globalSetup`) puts a session in this run's
-fake and
-requires the target's `GET /api/v1/agents` to list it, then clears the fake: a target that reads
-another Envoy listener refuses the run naming the fake's port, rather than answering every row
-from sessions none of them seeded. Tests seed live sessions and their capabilities with
+Before any row runs, `e2e/global-setup.ts` (the config's `globalSetup`) puts a session in each
+stack's fake and
+requires that stack's server's `GET /api/v1/agents` to list it, then clears the fake: a server
+that reads another Envoy listener refuses the run naming the fake's port, rather than answering
+every row from sessions none of them seeded. Tests seed live sessions and their capabilities with
 `setLiveSessions`, change their scripted 200/404 send response with `setSessionSendStatus`, hold
 every send to a session before it is answered with `setSessionSendDelay` (a listener slow to take
 it; Dispatch's listener client gives up on an answer at 5 s, so a hold meant to end in a delivery
@@ -2073,6 +2190,19 @@ reaches, `/agents` with both folds, the broadcast page, an issue's Conversation)
 `seedWorkspace()` expects an empty database and returns the ids it made;
 it waits for the spec's decision block to be indexed, so `inboxRows` is exact when it resolves.
 
+Every real-stack spec takes its `test` from `e2e/test.ts`: it is
+Playwright's own `test` with an automatic fixture that empties the database before each row
+(`resetDatabase`, below) and a default `context` signed in as `alice`. A file opts out of the
+sign-in with `test.use({ signedIn: false })`, or changes it with
+`test.use({ signedIn: "bob" })`, read where Playwright reads any option: at file scope, or
+inside a `test.describe`. A row that opens a context of its own (`asUser`, `withAlice` in
+`e2e/users.ts`) signs that one in itself, as it always has. The module re-exports `expect`,
+`devices` and the Playwright types the specs name, so a converted file has one import line, and
+a file whose setup does more than the reset writes a `beforeEach` for that extra work alone.
+Two sets of rows take no part in it: the stubbed layer, which declares its `test` with
+`stubbed(seed)` (`e2e/stub/stub-test.ts`), and the containerised visual review
+(`e2e/visual.e2e.ts`), which seeds outside Playwright.
+
 `e2e/seed.ts` empties the test database before each scenario. It first quiesces the server
 (`POST /api/v1/artifacts/_test/quiesce`, mounted by `DISPATCH_TEST_HOOKS=1`), which closes every
 live document and waits for the settlements in flight, so the documents the previous scenario had
@@ -2094,7 +2224,7 @@ each holder's query. For a deployed server, set `PLAYWRIGHT_DATABASE_URL` for th
 and `E2E_AGENT_TOKEN` for bearer-seeded API calls. Every SQL statement the harness runs,
 `seed.ts`'s and `failed-room.e2e.ts`'s, goes through `sql()` in `e2e/psql.ts`, which resolves that
 database (`PLAYWRIGHT_DATABASE_URL` for a deployed server, else this process's
-lane's `DATABASE_URL`, never a default)
+stack's `DATABASE_URL`, never a default)
 and runs psql without `~/.psqlrc` and without `PGHOSTADDR`: libpq reads it and connects there in
 place of the URL's host, and the server's pgx does not read it, so with it set in a shell psql
 would empty a database the server's own loopback check never saw. `PGHOST` and `PGSERVICE` stay,
@@ -2114,11 +2244,13 @@ passed fires, which `e2e/local-instance.ts` uses to create its database through 
 That reset is also the one rig failure that presents as a code failure. A transaction that holds
 one of the emptied tables for 5 s, such as a session left idle in a transaction, a long query, or
 a Dispatch server from an earlier run still listening on `DISPATCH_E2E_PORT`, makes
-`resetDatabase` throw in `beforeEach`. Because it throws in the hook, **every** spec in the file
-reports failed, each carrying the `DO $$` lock step's own error and the holders it names in its
+`resetDatabase` throw in the fixture every row of the file takes (`e2e/test.ts`). Because it
+throws in that setup, **every** row of the file reports failed, each carrying the `DO $$` lock
+step's own error and the holders it names in its
 message, which reads as a catastrophic regression in the change under test. Recognise that shape
-as the rig: stop whatever holds those tables and run again. A run through `e2e/run.ts` cannot reach
-that shape through a port at all, since its servers serve on ports the OS chose for it alone, and
+as the rig: stop whatever holds those tables and run again. A run that starts its own stacks
+cannot reach that shape through a port at all, since their servers serve on ports the OS chose
+for that run alone, and
 this paragraph is where the harness-port rule lives — `README.md` and the `docs/solutions`
 learnings point here rather than restating it.
 
@@ -2141,18 +2273,16 @@ consumer would otherwise fail in its own words — the second Bun listener dying
 Because the check lives with the resolution, those listeners refuse it too, not only the
 Playwright config. A's and B's ports take part in it only in two-process mode, the one mode that
 listens on them, and the issuer's only under `DISPATCH_E2E_SIGNIN=oidc`.
-It resolves the lane too: `workerCount` reads `DISPATCH_E2E_WORKERS`,
-`laneCount` the `DISPATCH_E2E_LANES` the run exported, `laneIndex` the
-`TEST_PARALLEL_INDEX` of this process, and `laneValue` a variable under that
-lane's name with the plain name as its fallback, which is how `harnessPorts()`
-reads a port and `e2e/psql.ts` its database. `refuseLaneConflicts` holds the
-refusals a run of more than one lane makes, so the message names the variable
-and says which thing one lane owns. `withoutHarnessPort` is the other side of
+It resolves the stack too: `stackIndex` reads the `TEST_PARALLEL_INDEX` of this
+process, and `stackValue` reads a variable out of that stack's record in
+`DISPATCH_E2E_STACKS`, falling back to the plain name, which is how
+`harnessPorts()` reads a port and `e2e/psql.ts` its database.
+`withoutHarnessPort` is the other side of
 that lookup: a spec that starts a second listener of its own and wants the OS to
 choose its port (`e2e/__tests__/fake-envoy.test.ts`,
 `e2e/__tests__/plain-http-proxy.test.ts`, `e2e/plain-http-proxy.e2e.ts`) must
 clear the port under both names, since dropping the plain one alone still leaves
-the lane's own, and the child would die on `EADDRINUSE` before it printed its
+the stack's own, and the child would die on `EADDRINUSE` before it printed its
 listening line.
 
 `e2e/harness-start.ts` is the harness's one starter. It starts the rows of
@@ -2162,36 +2292,46 @@ origin) — each as the leader of a process group of its own, reads each row's r
 port, waits for the server's `/healthz`, and returns the ports by variable with a stop function.
 A row that exits before it reports fails the start with its last lines, naming the variable when
 its set port was taken. A deployed run (`PLAYWRIGHT_BASE_URL`) starts only the rows marked
-`deployed`, the fake Envoy and the plain-HTTP proxy. `e2e/run.ts`
-(`bun e2e/run.ts -- <command>`) starts it, exports the ports and
-`DISPATCH_E2E_REUSE_SERVERS=1`, runs the command, stops the harness when the command exits (a
-Ctrl-C reaches the command, a SIGTERM to the wrapper is passed on), and exits with the command's
-status; `bun run e2e`, `bun run e2e:multiprocess`, `bun run e2e:deployed` and CI's browser steps
-run Playwright through it, so the config, every worker that re-imports it and every helper that
+`deployed`, the fake Envoy and the plain-HTTP proxy. `e2e/harness-pool.ts` starts one such
+harness per worker, each with a Postgres, a file-store bucket and a log directory of its own,
+and `e2e/global-setup.ts` runs the pool before the first row and writes every stack into the
+environment each worker inherits, so the config, every worker that re-evaluates it and every
+helper that
 reads a port at import (`e2e/api.ts`'s `baseUrl`, `e2e/plain-http-origin.ts`'s
-`plainHttpOrigin`) see the real ports. Before any of that, a command that runs Playwright's test
-runner is refused when Playwright has not downloaded a browser the run's projects launch, naming
-`bun run e2e:install` and how large that download is: Playwright's own message comes at the first
-browser launch, with every lane's harness and Postgres already up. A `--project` on the command
-line narrows which browsers the check requires; `--list` and a command that is no Playwright run
-are exempt.
+`plainHttpOrigin`) see the real ports. `e2e/global-teardown.ts` stops them, on a Ctrl-C as much
+as at the end of a run.
 
-`e2e/playwright.config.ts` starts no server. It refuses, before a single spec runs, a run whose
-targeted ports are not all set — all five for a local run (with `DISPATCH_E2E_PORT_A` and
-`DISPATCH_E2E_PORT_B` in two-process mode), `FAKE_ENVOY_PORT` and
-`PLAIN_HTTP_PORT` for a deployed run — naming the unset variables and `e2e/run.ts`, and a run
-without `DISPATCH_E2E_REUSE_SERVERS=1`, whose only accepted value is `1` (any other is refused
-naming the variable and the value). Every port set by hand plus that flag runs against a harness
-a person started and left listening; pair it with that harness's own `DATABASE_URL`, since
+A signal stops the stacks this suite starts, and a SIGTERM stops no more than those. A run that
+holds a stubbed row also starts Playwright's own `webServer` (`e2e/stub/static-server.ts`,
+`e2e/playwright.config.ts`), which Playwright stops on a SIGINT and leaves running on a SIGTERM:
+measured on playwright 1.64.1 (dispatch://INFRA-1410), a mixed run signalled mid-row exited 143
+with every stack of this suite
+gone - no Postgres, no server, no run directory - and the static server still serving on its
+fixed port, so the next run holding a stubbed row was refused by name
+(`http://127.0.0.1:4319/index.html is already used, make sure that nothing is running on the
+port/url or set reuseExistingServer:true`). It is Playwright's own, not this suite's: a run of
+the stubbed layer alone, where this suite installs no signal handler at all, leaks the same
+server. `kill` that process, or use a Ctrl-C, which stops everything.
+
+Before any of that, the hook refuses a run when Playwright has not
+downloaded a browser the run's projects launch, naming
+`bun run e2e:install` and how large that download is: Playwright's own message comes at the first
+browser launch, with every stack's harness and Postgres already up. A `--project` on the command
+line narrows which browsers the check requires; a listing (`--list`) runs no `globalSetup` at
+all, so it needs none of them. A UI session narrows nothing: every project is in play there,
+whatever the command line held, so it requires every engine (the end-to-end section above).
+
+`e2e/playwright.config.ts` starts no server: `globalSetup` does. It makes one refusal of its
+own, before a single spec runs: a `DISPATCH_E2E_REUSE_SERVERS` whose value is neither `1` nor
+empty, named with the value it holds.
+`DISPATCH_E2E_REUSE_SERVERS=1` says the harness ports name servers that are already running — a
+harness a person started and left listening, or the stack `e2e/harness-up.ts` printed — and the
+hook then returns before a directory is made or a server starts. Pair it with that harness's own
+`DATABASE_URL`, since
 `e2e/seed.ts` empties the database the server holds. `CI` takes no part in that decision. A
 deployed run passes `FAKE_ENVOY_PORT` to the acceptance Compose file, which derives the target's
 `ENVOY_URL` from that same value; the README's acceptance recipe wires the pair. A listing
-(`--list`, with no `--ui`) with every harness port unset is the one exception: it targets nothing,
-so the config lets it evaluate with no harness. The argv test is loose, and Playwright reads the
-`--list` of `--grep --list` as `--grep`'s value, a real run; with no port set that run fails at
-`e2e/preflight.ts`, and with any port set a listing meets the reuse refusal like any other run, so
-it asks for `DISPATCH_E2E_REUSE_SERVERS=1` or the ports unset.
-It also refuses a `--workers` or `-j` that differs from the lane count, as the lanes above say.
+(`--list`) targets nothing and starts nothing, so it needs no port set and no flag.
 
 A spec writes every file it makes under its own row's `testInfo.outputPath()`,
 the per-row directory beneath `e2e/test-results` the workflow uploads on a
@@ -2257,7 +2397,7 @@ two. A path containing `/_proxy/` is the proxy's own and never forwarded: `GET /
 (`[{path, method, upstream}]`), `GET /_proxy/sockets` (`[{id, path, upstream, open, openedAt}]` in
 open order, `openedAt` in epoch milliseconds) and `POST /_proxy/reset`, which empties both lists
 and starts both turns over at A. `e2e/api.ts`'s calls take `process: "a" | "b"` to pin, and
-`pinnedTo` in `e2e/harness-processes.ts` builds the header for a plain fetch. `e2e/preflight.ts`
+`pinnedTo` in `e2e/harness-processes.ts` builds the header for a plain fetch. `e2e/global-setup.ts`
 asks each process, pinned, for this run's fake Envoy session, then signs a person in on A and
 requires B to know them. The proxy shares its relay with the plain-HTTP proxy
 (`e2e/http-relay.ts`, which passes a websocket close code on wherever the other side may send it),
@@ -2267,7 +2407,7 @@ mode runs them alone (the sign-in spec only under `DISPATCH_E2E_SIGNIN=oidc`, be
 `chromium` project. `bun run e2e:multiprocess` builds the dashboard
 twice (`web/dist`, then `web/dist-b` with `DISPATCH_BUILD=e2e-b`, so its entry chunk differs from
 A's even where CI sets `GITHUB_SHA`; `web/vite.config.ts` takes `DISPATCH_BUILD` first) and runs
-Playwright through `e2e/run.ts` in two-process mode with B on `dist-b`, passing on extra arguments
+Playwright in two-process mode with B on `dist-b`, passing on extra arguments
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`).
 The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs it, on the full lane
 alone.
@@ -2292,7 +2432,7 @@ and `DISPATCH_E2E_SIGNING_KEY` (one per run, in place of the dev shared key) as 
 `DISPATCH_SIGNIN_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_GROUP` and `DISPATCH_SIGNING_KEY`,
 requires them all, and sets no `DISPATCH_DEV_SIGNIN`. The Playwright config runs
 `e2e/signin.multiprocess.e2e.ts` alone under `oidc` and leaves it out otherwise, and
-`e2e/preflight.ts` skips its dev sign-in check there. The spec pins `/auth/start` to A and
+`e2e/global-setup.ts` skips its dev sign-in check there. The spec pins `/auth/start` to A and
 `/auth/callback` to B with two `dispatch-e2e-process` cookies, each with that path, since a route's
 header reaches only a navigation's first request and the callback is the issuer's redirect, and
 checks that the browser lands on the page `next` named, signed in on both processes, and that
@@ -2493,17 +2633,26 @@ wall-clock time, with the machine to themselves. `chromium-alone` runs
 holding the main thread for a second, both through `e2e/main-thread-hold.ts`); `firefox-alone`
 and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines before, for the
 reasons given under `webkit` and `firefox` above. No project above them runs those two files,
-so each row runs once. Each of the three names every project before it in `dependencies`, so
-Playwright starts them only once the rest of the run has finished and runs them one after
-another, and each sets `workers: 1`, which caps that project's own workers while the run's own
-`workers` stays at the lane count: `dependencies` orders a project but does not stop its own
-rows running four at a time. Four lanes put four browsers, four Dispatch servers and four
+so each row runs once. Each of the three sets `default: false`, which leaves it out of a run
+that names no project and takes nothing from a run that names one, so the commands at the top
+of this section name them and a bare `bun run e2e` holds none of their 50 rows (a listing of
+the three at this head: 50 tests in 2 files). Until dispatch://INFRA-1280 each named every
+project before it in `dependencies` instead, which ordered the run and also pulled the whole
+suite in behind any command naming one of their two files, because a filter narrows a project
+it selects and never a project selected to run before it.
+What gives these rows the quiet machine is not the order they run in: it is a run one worker
+wide. `e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker rather
+than letting it report a reading of the other workers' work, so a reading that survives was
+taken alone. Each project still caps its own workers at one, which keeps its own rows from
+running four at a time in a run of four workers, while the run's own `workers` stays what it
+was given. Four workers put four browsers, four Dispatch servers and four
 Postgres servers on one machine, and a second of wall clock there holds what the other three
-lanes took as surely as the work the row measured, so these rows are given the machine rather
+stacks took as surely as the work the row measured, so these rows are given the machine rather
 than a correction for sharing it (INFRA-317, sjawhar/legion#2612). A row that proves an absence
 over real time - that no request happens within a second - needs no such project: contention
-cannot make that claim false. A project whose dependency has a failing row does not run at all,
-so a red run leaves these rows unrun rather than measured beside a retry.
+cannot make that claim false. Each sets `retries: 0` as well: a wall-clock threshold that a
+regression misses half the time would fail the first attempt, pass the retry and leave the run
+green where it should be red.
 
 ## The stubbed layer
 
@@ -2539,14 +2688,15 @@ is anything the server decides. Four shapes, and a row of any of them stays wher
   `web/src/features/agents/AgentsPage.tsx`). That is why no row of `agents.e2e.ts`,
   `keyboard-agents.e2e.ts` or `keyboard-agents-pin.e2e.ts` is here.
 
-A row moves by moving its file, never by an annotation: 150 spec files reset the database in a
-`beforeEach` and most of them sign in and seed through the API, so a stubbed row left among them
-would still run its file's hooks. A moved row lives in a `*.stub.e2e.ts` file, keeps every
+A row moves by moving its file, never by an annotation: a real-stack spec takes its `test` from
+`e2e/test.ts`, which resets the database before every row and signs the default context in, and
+most of those files seed through the API as well, so a stubbed row left among them
+would pay all of that for nothing. A moved row lives in a `*.stub.e2e.ts` file, keeps every
 assertion it had and its title but for the ` @pr` the lane axis adds, and the file it left keeps
 its own rows and hooks. A row that the real-stack projects ran at two widths keeps both here
 too: `stub` runs every stubbed row as `chromium` runs every row of the suite, `stub-phone` greps
-the `@phone` tag as `iphone` does, and a row that is a phone row alone says so itself with the
-`test.skip` its author wrote, read against this project's name. Such a file
+the `@phone` tag as `iphone` does, and a row that runs on the phone alone carries `@phone-only`,
+which the phone projects grep beside `@phone` and the desktop ones do not. Such a file
 declares its `test` with `stubbed(seed)` (`e2e/stub/stub-test.ts`): `seed` is the API seeding the
 rows need, which runs in record mode alone, and what it returns is written beside the recording
 as a scene file and handed back to each row as `scene`, so no row ever names an id the server
@@ -2586,12 +2736,13 @@ The job uploads the re-recorded set, and applying it is a replacement of
 every recording the job named as written by no row any more.
 It finds those too - which it could not while it re-recorded over the committed set - and a
 pull request refuses one before a nightly meets it, in two halves, because no one reading can
-see them all. `bun e2e/tools/row-map.ts` reads the listing: it refuses a recording no listed
-row owns, and a row the listing marks `skipped` owns none, which is every row skipped where it
-is declared - `test.fixme`, `test.skip(title, fn)`, a `describe.skip`, or a describe-level
-`test.skip(true)` or `test.fixme()` - none of which runs a test-scoped fixture at all. The
-replay refuses what a listing cannot read: a row that skips itself inside its body, and one
-that passed and set no `scene` (`deadRecordingGuard`, `e2e/stub/stub-test.ts`).
+see them all. `bun e2e/tools/row-map.ts` reads the two listings that are the suite (below): it
+refuses a recording no listed row owns, and a row a listing marks `skipped` owns none, which is
+every row skipped where it is declared - `test.fixme`, `test.skip(title, fn)`, a
+`describe.skip`, or a describe-level `test.skip(true)` or `test.fixme()` - none of which runs a
+test-scoped fixture at all. The replay refuses what a listing cannot read: a row that skips
+itself inside its body, and one that passed and set no `scene` (`deadRecordingGuard`,
+`e2e/stub/stub-test.ts`).
 Neither half sees a describe-level modifier whose condition is a function of a worker fixture,
 such as `test.skip(({ isMobile }) => !isMobile)`: the listing marks its rows `passed`, and
 Playwright decides it before any test-scoped fixture runs. So a stubbed row skips itself
@@ -2619,12 +2770,18 @@ and the pull request needs it.
 `e2e/row-map.md` holds the rows that moved, each with the reason a recording can answer it, and
 every file whose rows stayed, each with the server behaviour those rows depend on.
 `bun e2e/tools/row-map.ts --write` writes it and `e2e/__tests__/row-map.test.ts` fails when the
-committed file and a fresh generation differ. It carries no count and names no `@pr` row,
-deliberately: both are read from a listing of the whole suite, so a map that held them would be
-red on every pull request of every tree that adds or removes a row here. A **new spec file**
-still moves it, since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the
-generation refuses to write a map without one - and refuses a reason there for a file the
-listing does not name.
+committed file and a fresh generation differ. The generation reads two listings and takes the
+rows of both, because one listing is no longer the suite: a listing that names no project holds
+no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
+`nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
+on a two-core pod, the reading the comment above that tool's own `defaultListing` and
+`clockListing` carries (`e2e/tools/row-map.ts`: the default listing about three and a half
+seconds on its own and the wall-clock one about one).
+The map carries no count and names no `@pr` row, deliberately: both are read from those
+listings, which hold the whole suite, so a map that held them would be red on every pull
+request of every tree that adds or removes a row here. A **new spec file** still moves it,
+since its rows need a line in `e2e/stub/real-stack-reasons.ts`, and the generation refuses to
+write a map without one - and refuses a reason there for a file the listings do not name.
 
 What the map says of a moved row is that the move touched no line of what it asserts, and that
 sentence is the whole of what a reviewer reads for it, so a row where it is false must say so
@@ -2741,12 +2898,13 @@ which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-reques
 
 Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
 person takes and a baseline CI compares must be the same rendering, and a host's browser build,
-fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it seeds on the
-host, where `psql` is, starts the container and runs those two projects in it. Run it through
-the harness from this package, and give it `--update-snapshots` to take the baselines again:
+fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it starts a
+stack on the host (`e2e/harness-up.ts`), seeds it there, where `psql` is, then starts the
+container and runs those two projects in it. Run it from this package, and give it
+`--update-snapshots` to take the baselines again:
 
 ```sh
-bun e2e/run.ts -- e2e/visual-run.sh --update-snapshots
+e2e/visual-run.sh --update-snapshots
 ```
 
 Outside that container the rows reach the runner and every one of them skips itself, since

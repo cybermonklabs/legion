@@ -192,15 +192,21 @@ type Runtime struct {
 	conns                runtime.Conns
 	paneEnv              map[string]string
 	environ              []string
-	tmuxPath             string
-	legion               string
-	now                  func() time.Time
-	log                  *slog.Logger
-	providerEnvDir       string
-	providerKeys         []string
-	operatorEnv          map[string]string
-	piConfigFiles        []string
-	roleConfigFiles      map[claim.Role][]string
+	// ownEnviron is the daemon's own environment, as Options.Environ gave it and before
+	// PaneEnvironment made a pane's out of it: what a launch resolves the machine's shared public
+	// leak check in (resolveLeakCheck). environ above is the pane environment, which carries
+	// neither the operator's XDG_CONFIG_HOME nor any name off the allow list, so it is no
+	// environment to resolve that check in.
+	ownEnviron      []string
+	tmuxPath        string
+	legion          string
+	now             func() time.Time
+	log             *slog.Logger
+	providerEnvDir  string
+	providerKeys    []string
+	operatorEnv     map[string]string
+	piConfigFiles   []string
+	roleConfigFiles map[claim.Role][]string
 	// takeOver is the runtime whose locators this runtime takes over (Options.TakeOver):
 	// runtime.RuntimeSandbox under TakeOverKubernetes, "" for none.
 	takeOver string
@@ -346,6 +352,7 @@ func New(opts Options) (*Runtime, error) {
 		commandTimeout:       opts.CommandTimeout,
 		conns:                opts.Conns,
 		paneEnv:              paneEnv,
+		ownEnviron:           environ,
 		tmuxPath:             tmuxPath,
 		legion:               legion,
 		now:                  opts.Now,

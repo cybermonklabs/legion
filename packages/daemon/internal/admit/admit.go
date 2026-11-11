@@ -1058,10 +1058,31 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		// cleared with the generation, so a second close hands its children over with none: such a
 		// child keeps its phase and pull request, and its architect registers its spec as a fresh
 		// root's does, the gate its READY needs.
-		for _, gate := range gates {
-			gate.Issue = stored.Key
-			if err := a.store.PutGate(ctx, tx, gate); err != nil {
-				return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
+		//
+		// An old root that recorded no gate is the common case, and there the carry writes nothing:
+		// the orphan's own pairs stand as the hand-over left them, so neither the read of them nor
+		// the comparison against them is made.
+		if len(gates) > 0 {
+			// The pairs the orphan itself holds before the carry: a member of a gated tree holds
+			// the copy its hand-over carried to it, and the carry writes the old root's rows over
+			// that.
+			held, err := a.store.GatesOf(ctx, tx, stored.Key)
+			if err != nil {
+				return fmt.Errorf("read the gates of re-admitted orphan %s: %w", stored.Key, err)
+			}
+			for _, gate := range gates {
+				gate.Issue = stored.Key
+				if err := a.store.PutGate(ctx, tx, gate); err != nil {
+					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
+				}
+			}
+			// The carry binds this issue's steps to the old root's documents, so it moves the pairs
+			// of an orphan that held none and leaves those of one re-admitted onto the same
+			// documents (record.PublishChangedGates); a carry is the one path that gives an issue a
+			// gate without its architect registering anything, so Dispatch hears of it here or
+			// nowhere.
+			if _, err := record.PublishChangedGates(ctx, a.store, tx, stored.Key, held, a.now()); err != nil {
+				return fmt.Errorf("publish the gates carried to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}
 		return a.store.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: stored.Key, Generation: stored.Generation, GateCarried: len(gates) > 0})
@@ -1078,7 +1099,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	// A root set back to todo is a new generation of the whole tree, so the old generation's pull
 	// request, gate, handoffs and pending READY go for every issue of it, not only the root's.
-	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree)
+	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
 }
 
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the

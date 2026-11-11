@@ -76,7 +76,7 @@ import {
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
 import { actorText } from "./actor-text";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine, commandName } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import {
@@ -138,7 +138,7 @@ import {
 import { ownerSubscribeLine } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
 import { humanEditHead } from "./human-edit";
-import { decisionBlockLines, relatedCheckLines } from "./related-check";
+import { decisionBlockLines, declinedAskLines, relatedCheckLines } from "./related-check";
 import { pageSummaryText, searchAnswer } from "./search-answer";
 import { isNoAnswersRoute, renderSessionAnswersList } from "./session-answers";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
@@ -352,11 +352,28 @@ function renderAdvice(
   // it stored, the approval that version replaced and how that approval comes back - rather than a
   // rule about editing a spec, because the server sends it only on the write that superseded the
   // approval.
+  //
+  // The gate clause comes from `design_gates`, the server's record of which issues' design gates
+  // name the document just written: it names those issues, and it is silent for every other
+  // document. Absent (an older Dispatch keeps no such record), empty, and anything that is not a
+  // list of gates all print no clause, which is the safe direction - a reader told nothing asks
+  // the tree's architect, a reader told a gate that is not there stops working for no reason.
   const superseded = advice.superseded_approval;
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
-    lines.push(
-      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since: a Legion design gate on this document is closed meanwhile, so every READY in its tree is refused. Meant to change the approved design? Request approval with \`dispatch request-approval\`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.`
+    const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
+    const parts = [
+      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since.`,
+    ];
+    if (gates.length > 0) {
+      const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");
+      parts.push(
+        `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`
+      );
+    }
+    parts.push(
+      "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan."
     );
+    lines.push(parts.join(" "));
   }
 
   // The cadence line comes last and opens by saying the write went through: behind `| tail -1`
@@ -500,6 +517,17 @@ function numberArg(args: Record<string, unknown>, name: string): number {
 
 function optionalString(args: Record<string, unknown>, name: string): string | undefined {
   const value = args[name];
+  return typeof value === "string" ? value : undefined;
+}
+
+/** A field the server reads as a tri-state: absent leaves it, null clears it, a string sets it.
+ *  `assignee` is one, and `--clear-assignee` is how the command sends its null. */
+function optionalNullableString(
+  args: Record<string, unknown>,
+  name: string
+): string | null | undefined {
+  const value = args[name];
+  if (value === null) return null;
   return typeof value === "string" ? value : undefined;
 }
 
@@ -2664,6 +2692,10 @@ function eventHead(event: DispatchEvent): string | undefined {
       const previousAnswer = event.payload.previous_answer;
       return `${textHead(event.payload.question)} -> ${textHead(askAnswerText(event.payload.answer))}${previousAnswer === undefined ? "" : ` (was: ${textHead(askAnswerText(previousAnswer))})`}`;
     }
+    case "ask.asked_of":
+      // Whom the question waits on after the hand-on. An empty `asked_of` handed it to the
+      // assignee of its own issue, whom the payload does not name.
+      return `${textHead(event.payload.question)} -> asked of ${event.payload.asked_of ?? "the assignee of its issue"}`;
     case "comment.created":
     case "comment.answered":
     case "comment.anchor_refreshed":
@@ -2769,6 +2801,7 @@ function askSummary(
     `${reply.id} · ${actorText(reply.author)}`,
     `Body: ${reply.body}`,
   ]);
+  const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
     `Question: ${ask.question}`,
     ...anchorLines(ask),
@@ -2807,7 +2840,12 @@ function askSummary(
           "Resolution:",
           `- By: ${ask.resolution.actor.id}`,
           `- Kind: ${ask.resolution.kind}`,
-          `- Reason: ${ask.resolution.reason}`,
+          // A decline the person wrote no note with holds no reason, so the line is left out
+          // rather than printed empty; the sentences Dispatch wrote for the asking agent stand
+          // on a bullet of their own, under the label every reader of them names them with
+          // (`dispatchWordsText`), so nobody reads them as the person's words.
+          ...(ask.resolution.reason === "" ? [] : [`- Reason: ${ask.resolution.reason}`]),
+          ...(resolutionWords === undefined ? [] : [`- ${resolutionWords}`]),
         ]),
     "Replies:",
     ...(chain.length === 0 ? ["- none"] : chain),
@@ -2866,9 +2904,22 @@ function openAskAge(ageSeconds: number): string {
   return `${days}d${hours % 24 === 0 ? "" : ` ${hours % 24}h`}`;
 }
 
+/** The person an open ask is asked of, as the server resolved it (`waiting_on_person`: whoever
+ *  the ask was handed to, and the assignee of its issue until somebody hands it on), and
+ *  `nobody` where the server names none — an ask on a project document, or on an issue nobody
+ *  holds, that nobody was handed. */
+function openAskAskedOf(ask: OpenAsk): string {
+  const person = ask.waiting_on_person;
+  return person === undefined || person === "" ? "nobody" : person;
+}
+
+/** One row of `dispatch open-asks`, in both of the listing's groups: the person it is asked of
+ *  is on every row, since one row renderer is one rule. The word is the ask card's own, `asked
+ *  of`, rather than `waiting on`, because a row under `Waiting on agent (N):` waits on the
+ *  agent - the next move there is the agent's, and naming the person must not claim otherwise. */
 function openAskLine(ask: OpenAsk, baseUrl: string): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${openAskAskedOf(ask)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
@@ -3018,10 +3069,10 @@ function inboxReadRefusal(error: unknown): string {
  * band are the server's order and nothing re-sorts them.
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
- * on a person that the viewer has not deferred and that sit on their own issues (`waitingOnYou`),
+ * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request, which is the viewer's by construction because the list is read
  * as `?approver=me`. Here that is the band's own rows and nothing narrower, since `?assignee=me`
- * keeps only the asks on issues assigned to the caller, as the page's default view does; counting
+ * keeps only the asks that wait on the caller, as the page's default view does; counting
  * the rows it prints is therefore the page's rule, and it is the one count that cannot disagree
  * with the lines under it.
  *
@@ -4213,6 +4264,7 @@ export async function executeDispatchTool(
       const rankBefore = optionalString(args, "before");
       const rankAfter = optionalString(args, "after");
       const priority = optionalPriority(args, "priority");
+      const assignee = optionalNullableString(args, "assignee");
       const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
       const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
       const requestedLinks = Array.isArray(args.external_links)
@@ -4289,6 +4341,7 @@ export async function executeDispatchTool(
           ...(title === undefined ? {} : { title }),
           ...(labels === undefined ? {} : { labels }),
           ...(priority === undefined ? {} : { priority }),
+          ...(assignee === undefined ? {} : { assignee }),
           ...(route === undefined ? {} : { route }),
           ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
           ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
@@ -4343,6 +4396,9 @@ export async function executeDispatchTool(
         ...(priority === undefined
           ? []
           : [after.priority === null ? "priority cleared" : `priority -> P${after.priority}`]),
+        ...(assignee === undefined
+          ? []
+          : [after.assignee === null ? "assignee cleared" : `assignee -> ${after.assignee}`]),
         ...(rank === undefined
           ? []
           : [
@@ -4700,13 +4756,18 @@ export async function executeDispatchTool(
           : resolved === undefined
             ? issueTopic(issue())
             : documentTopic(resolved.artifact);
-      // The check's form sits right under the line naming the ask; renderAdvice's cadence line
-      // must stay the result's last line.
-      const checkLines = relatedCheckLines(ask.advice?.suggestions, {
+      // The check's form sits right under the line naming the ask, and the issue's declined
+      // asks under that; renderAdvice's cadence line must stay the result's last line.
+      const checkContext = {
         project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
         text: stringArg(args, "question"),
         configUrl: linkBase,
-      });
+      };
+      const checkLines = relatedCheckLines(ask.advice?.suggestions, checkContext);
+      // An ask on a project document stands on no issue, and the server sends declined asks
+      // only for a write that does, so there is nothing to print there.
+      const declinedLines =
+        ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
@@ -4714,6 +4775,7 @@ export async function executeDispatchTool(
         text: [
           `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
           ...checkLines,
+          ...declinedLines,
           await followsAsk(askOwner, input.subscriptions),
           ...adviceLines,
         ].join("\n"),
@@ -5043,11 +5105,19 @@ export async function executeDispatchTool(
           .find((text) => text !== undefined) ??
         resolved.issue?.title ??
         "";
-      const checkLines = decisionBlockLines(edited.advice, {
+      const checkContext = {
         project: resolved.artifact.project,
         text: editAskText,
         configUrl: linkBase,
-      });
+      };
+      const checkLines = decisionBlockLines(edited.advice, checkContext);
+      // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line
+      // must stay the result's last line. A project document stands on no issue, and the server
+      // sends declined asks only for a write that does.
+      const declinedLines =
+        resolved.issue === undefined
+          ? []
+          : declinedAskLines(edited.advice, resolved.issue.key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
       );
@@ -5059,6 +5129,7 @@ export async function executeDispatchTool(
         text: [
           `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
           ...checkLines,
+          ...declinedLines,
           ...tokenTrailer,
           ...adviceLines,
         ].join("\n"),

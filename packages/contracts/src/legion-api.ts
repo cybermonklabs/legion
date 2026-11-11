@@ -206,12 +206,20 @@ const legionHandoffRecordView = z.object({
 });
 
 /** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
- * completion reported, the Dispatch handoff record it named), and the rounds it has run. */
+ * completion reported, the Dispatch handoff record it named), the rounds it has run and the
+ * counts of the moves back that made them. */
 const legionPhaseView = z.object({
   claim: legionClaimView,
   handoffCommit: nonEmptyString.optional(),
   handoffRecord: legionHandoffRecordView.optional(),
   rounds: z.number().int().nonnegative(),
+  /** How many times the issue's work has gone back by each kind of move, keyed `<from>-<to>` as
+   * the daemon counts the pairs (`reviewing-implementing` and the rest). Absent, never `{}`, for
+   * a worker whose issue has had no move back, and absent from the whole state for a caller in a
+   * pod whose plugin declares a contract below 62 (the daemon's `withoutBackwardMoves`), so every
+   * reader takes it as optional. `rounds` beside it counts every round, a conflict round
+   * included, which no pair counts. */
+  backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
 /** `api.PullRequestView` — the pull request as the daemon observes it from GitHub.
@@ -318,14 +326,16 @@ const legionCheckView = z.object({
 
 /** `record.Answer` — the act that ended a root's wait on a person: a person's answer on the awaited
  * ask (`ask`), its retraction by Dispatch's settlement (`retracted`) or its close by someone who is
- * not a person (`closed`), a person's act on another ask (`reply`), a session handing the last
- * question back to the agent's turn (`turn`), a person's review of the spec (`approved`,
+ * not a person (`closed`), a person's act on another ask (`reply`), a person's decline to answer an
+ * ask of the root, the awaited one or any other (`declined`, contract 68), a session handing the
+ * last question back to the agent's turn (`turn`), a person's review of the spec (`approved`,
  * `changes_requested`), or a spec version newer than the one waited on (`version`). */
 export const LEGION_WAIT_ANSWERS = [
   "ask",
   "retracted",
   "closed",
   "reply",
+  "declined",
   "turn",
   "approved",
   "changes_requested",
@@ -425,7 +435,7 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
-/** `api.AssignmentView` — one experiment's answer for an issue (contract 60): the name the
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 74): the name the
  * project declares the experiment under, the arm the draw gave the unit, the mode in force at
  * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
@@ -489,12 +499,12 @@ const legionIssue = z.object({
    * off draws — is `none`. They are absent together while no `memory` answer applies to the
    * issue — a tree first opened before the setting existed — and while its only `memory` answer
    * records no draw, which is a hand-over settling the tree at no arm and which answered none
-   * of the three before contract 60 as well. Every issue of a tree carries its tree's, since
+   * of the three before contract 74 as well. Every issue of a tree carries its tree's, since
    * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
-  /** Every experiment answer that applies to the issue (contract 60): its tree's, for an
+  /** Every experiment answer that applies to the issue (contract 74): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
    * order the project's file declares the experiments — the order
    * `settings.projects.<KEY>.experiments` names them in. `variant` and `mode` ride whatever they
@@ -503,7 +513,7 @@ const legionIssue = z.object({
    * experiment the tree it left held no row for, which is how a reader tells a unit settled at
    * no arm from a unit never drawn, which carries no row at all. The key is absent from an issue
    * no experiment holds an answer for, and from every issue of the body the route serves a
-   * caller before 60, so a reader takes it as optional. */
+   * caller before 74, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
 });
 
