@@ -111,6 +111,8 @@ export const realStackReasons: Record<string, string> = {
   "inbox-approval-message.e2e.ts":
     "the reading pane draws the document under review from its live room",
   "inbox-cli.e2e.ts": "runs `dispatch inbox` against the server and compares it with the page",
+  "inbox-decline.e2e.ts":
+    "every decline is a write the server takes and the surfaces re-read; the kind it refuses to decline is the server's; the note's bound is the route's",
   "inbox-dismiss.e2e.ts": "dismiss and restore writes, bulk requests, refusals and reloads",
   "inbox-drawer.e2e.ts": "answers an ask in the drawer",
   "inbox-mark-all.e2e.ts": "mark-all is a server write, including its refusal",

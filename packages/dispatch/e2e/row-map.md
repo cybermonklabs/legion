@@ -237,6 +237,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/hover-preview.e2e.ts` | the row it keeps is a phone gesture read in the iphone configuration, which no stub project repeats |
 | `e2e/inbox-approval-message.e2e.ts` | the reading pane draws the document under review from its live room |
 | `e2e/inbox-cli.e2e.ts` | runs `dispatch inbox` against the server and compares it with the page |
+| `e2e/inbox-decline.e2e.ts` | every decline is a write the server takes and the surfaces re-read; the kind it refuses to decline is the server's; the note's bound is the route's |
 | `e2e/inbox-dismiss.e2e.ts` | dismiss and restore writes, bulk requests, refusals and reloads |
 | `e2e/inbox-drawer.e2e.ts` | answers an ask in the drawer |
 | `e2e/inbox-mark-all.e2e.ts` | mark-all is a server write, including its refusal |
