@@ -61,8 +61,9 @@ const (
 	// podUpdatePreviousPod is a pod of this issue that is already gone: the one a claim retired
 	// before the live ones still records a round over.
 	podUpdatePreviousPod = "f1a9c3d7-5e84-4b20-9c61-0d8a7f26b4e3"
-	// podUpdatePluginReasons is what a plugin round records, which carries ", " inside it.
-	podUpdatePluginReasons = "the process speaks plugin contract 42, and this daemon speaks 43"
+	// podUpdateTwoReasons is what a round records when two keys of its pod drifted at once,
+	// which carries ", " inside it.
+	podUpdateTwoReasons = "image legion-worker:v19.50.0, now legion-worker:v19.51.0"
 )
 
 // podUpdateStart is where the rig's clock stands when a test begins, and what a round seeded on a
@@ -1519,39 +1520,6 @@ func TestPodUpdateWaitsWhileNoClaimRecordsThePod(t *testing.T) {
 	}
 }
 
-// A plugin round whose worker has answered ends when the sweep reads that answer. Where the
-// claim's process is gone by then — an operator suspended it — the round ends and launches
-// nothing: starting that process again is the operator's to do, and the claim's next launch
-// installs this daemon's plugin anyway.
-func TestPodUpdatePluginRoundEndDoesNotRelaunchAnOperatorSuspendedClaim(t *testing.T) {
-	round := supervise.PluginRound(api.DaemonAPIVersion)
-	rig := newPodUpdateRig(t, podUpdateRole{
-		role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-		contract: api.DaemonAPIVersion - 1, round: round, reasons: podUpdatePluginReasons, signalled: true,
-	})
-
-	rig.handle(claim.RoleImplementer, supervise.RequestSuspend{
-		Claim: rig.tokens[claim.RoleImplementer], By: supervise.SuspendedByOperator,
-	})
-	rig.awaitClaim(claim.RoleImplementer, "the operator's suspension", func(c supervise.Claim) bool {
-		return c.State == supervise.StateSuspended
-	})
-
-	rig.tick()
-
-	ended := rig.awaitSwept(claim.RoleImplementer, "its plugin round to end", func(c supervise.Claim) bool {
-		return c.UpdateRound == ""
-	})
-	if ended.State != supervise.StateSuspended || ended.SuspendedBy != supervise.SuspendedByOperator {
-		t.Fatalf("the claim after its plugin round ended = %s suspended by %q, want it left as the operator suspended it",
-			ended.State, ended.SuspendedBy)
-	}
-	if resumes, spawns := rig.rt.CallsOf("Resume"), rig.rt.CallsOf("Spawn"); len(resumes)+len(spawns) != 0 {
-		t.Fatalf("the round's end started %d processes, want none: the operator's suspension holds this claim",
-			len(resumes)+len(spawns))
-	}
-}
-
 // A claim still launching has no process to judge: the contract it records is the one its last
 // process declared, and the one its launch is bringing up is this daemon's. The round waits for
 // it rather than telling the operator to drain the pod, which at this release's own roll would
@@ -1763,14 +1731,15 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	wantAnswered(t, notices[0], claim.RoleImplementer)
 }
 
-// Every reason carries ", " inside it already — a moved address, a pod-shape drift, the two
-// contracts of a plugin round — so the notice carries what the round records, whole. A list built
-// by splitting that string cuts one reason into pieces that each read as a reason of their own.
+// Every reason carries ", " inside it already — a moved address, a pod-shape drift, two keys of
+// one pod that drifted at once — so the notice carries what the round records, whole. A list
+// built by splitting that string cuts one reason into pieces that each read as a reason of
+// their own.
 func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 	rig := newPodUpdateRig(t, podUpdateRole{
 		role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-		contract: api.DaemonAPIVersion, round: supervise.PluginRound(api.DaemonAPIVersion),
-		reasons: podUpdatePluginReasons,
+		contract: api.DaemonAPIVersion, round: podUpdateRound,
+		reasons: podUpdateTwoReasons,
 	})
 
 	rig.clock.advance(podUpdateNotice)
@@ -1788,7 +1757,7 @@ func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 	if err := json.Unmarshal(rows[0].Payload, &payload); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if got, want := string(payload.Update.Reasons), strconv.Quote(podUpdatePluginReasons); got != want {
+	if got, want := string(payload.Update.Reasons), strconv.Quote(podUpdateTwoReasons); got != want {
 		t.Fatalf("the notice carries reasons %s, want the one string the round records, %s", got, want)
 	}
 }

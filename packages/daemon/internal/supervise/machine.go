@@ -377,15 +377,19 @@ type StepRecord struct {
 
 // The two kinds of round Claim.UpdateRound spells, each with what identifies it: a pod's, which
 // every role claim of one issue shares, and one claim's own plugin round. They are here, beside
-// the field, because a round is written in this package (openPluginUpdate, the daemon's
-// openPodUpdate) and matched in internal/daemon's sweep, which recognises the rounds it must
-// carry by them.
+// the field, because a round is matched in this package and written in internal/daemon's sweep
+// (openPodUpdate), which recognises the rounds it must carry by them.
 //
 // The round's id is the one record of its kind: PodRound and PluginRound are how one is written,
 // InPodRound and InPluginRound how a claim's is read, and IsPluginRound how a round a claim does
-// not hold yet is read. Nothing else carries the kind beside the id, so nothing can disagree with
-// it — UpdateTask words the task from it, and endPodUpdate decides from it whether the round ends
-// in a relaunch.
+// not hold yet is read. Nothing else carries the kind beside the id, so nothing can disagree
+// with it.
+//
+// No daemon on this release writes a plugin round: the stale-plugin lane relaunches a stale
+// process and asks its worker nothing (plugin.go's refreshPlugin). The plugin half of this is
+// how a claim a daemon of an earlier release left in such a round is found and taken out of it
+// (endCurrentPluginRound, the end the sweep posts), and it stays until no daemon that can write
+// one is left to restart from.
 const (
 	PodRoundPrefix    = "pod:"
 	PluginRoundPrefix = "plugin:"
@@ -396,14 +400,16 @@ const (
 func PodRound(pod string) string { return PodRoundPrefix + pod }
 
 // PluginRound is the round id of the per-claim round for a process to be started again on the
-// daemon contract given.
+// daemon contract given. Nothing of this release opens such a round; it is how one an earlier
+// daemon wrote is read back, which is what a restart onto this release needs to take a claim
+// out of it.
 func PluginRound(contract int) string { return PluginRoundPrefix + strconv.Itoa(contract) }
 
 // InPodRound and InPluginRound say which kind of round this claim is in; both are false for a
 // claim in no round at all. IsPodRound and IsPluginRound ask the same of a round id on its own,
-// for the callers that have the round before any claim holds it (UpdateTask, wording the ask the
-// round sends; LeftPodRound, asked about a round the claim may not record), so the words and the
-// claim's own reading can never part company.
+// for the callers that have the round before any claim holds it (LeftPodRound, asked about a
+// round the claim may not record; the workflow's idle rule, reading a round it was handed), so
+// the words and the claim's own reading can never part company.
 func (c Claim) InPodRound() bool { return IsPodRound(c.UpdateRound) }
 
 func (c Claim) InPluginRound() bool { return IsPluginRound(c.UpdateRound) }
@@ -597,6 +603,18 @@ type Deps struct {
 	// WakePace is how fast the daemon lets this machine's launches out (reserveWake); its zero
 	// value is the pacing off.
 	WakePace WakePace
+	// RefreshGate bounds how much of that pacing the stale-plugin refresh lane may hold at once:
+	// a credit per refresh the lane has waiting, K of them, K the same rate WakePace carries
+	// (RefreshGate, NewRefreshGate, and the gate's own file for why the lane is bounded where no
+	// other is). The daemon builds one for all its machines and holds the same reference for its
+	// own refresh pass, which corrects it from the wakes those machines publish
+	// (internal/daemon's run, openSupervision, refreshStalePlugins).
+	//
+	// nil is no gate at all, and every caller that reads this field reads a nil one as every
+	// request granted — the unbounded lane this change replaces — rather than calling through it:
+	// a harness that builds no gate paces its refreshes by nothing, exactly as a nil
+	// WakePace.Reserve paces its launches by nothing.
+	RefreshGate RefreshAdmitter
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
 	Secrets Enroller
@@ -1859,9 +1877,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 // lets the claim's process go and starts the next (WakeLaunch, launchNow). It is what tells a
 // claim that only waits its turn from one that is to be replaced, and two decisions read it: the
 // delivery that would be handed to a process this launch is about to end (sendPending), and every
-// observation of that same process, whichever path reports it (judge). A plugin task's wake is
-// neither — it replaces no process and the session it wakes goes on taking work — so it is not
-// one of these.
+// observation of that same process, whichever path reports it (judge).
 func (m *Machine) launchWaits() bool {
 	return m.wake != nil && m.wake.kind == WakeLaunch
 }

@@ -19,10 +19,11 @@ import (
 )
 
 // WakeKind is which of the daemon's paced lanes a wake is in, and the whole of what the line that
-// wake writes says it was (wakeRan, WakeRanFields). The three below are every lane there is, and
-// all three reserve from the one limiter the daemon builds (internal/wakepace, openSupervision in
-// internal/daemon), because what an Anthropic organization's per-minute uncached-input cap counts
-// is the context a woken session reads, not whether the daemon started a process for it.
+// wake writes says it was (wakeRan, WakeRanFields). The three below are every lane the daemon has
+// named, and the ones a wake is still reserved under draw from the one limiter the daemon builds
+// (internal/wakepace, openSupervision in internal/daemon), because what an Anthropic
+// organization's per-minute uncached-input cap counts is the context a woken session reads, not
+// whether the daemon started a process for it.
 //
 // They are one named type rather than loose strings so that a misspelt kind does not compile and
 // a fourth lane is found by the compiler in every place a kind travels — the machine's own wake,
@@ -37,12 +38,13 @@ const (
 	// a relaunch raises, which lets the claim's previous process go at its turn (launchNow,
 	// wakeNow).
 	WakeLaunch WakeKind = "launch"
-	// WakePluginTask is the update task the stale-plugin lane queues to a live session in place
-	// of a launch (refreshPlugin, openPluginUpdateIfStale). It starts no process and replaces
-	// none: the session it wakes goes on taking work. Three decisions turn on the kind — the
-	// turn's handling of a held suspension (wakeNow), the lifecycle recheck that turn makes, and
-	// whether a launch waits over the claim's process at all (launchWaits) — beside the line the
-	// wake writes.
+	// WakePluginTask is the kind the stale-plugin lane's update task was reserved under, while
+	// that lane asked a worker to push its work and answer before its process was replaced. No
+	// decision reserves one now: the lane relaunches the process and asks its worker nothing
+	// (refreshPlugin, relaunchStale), so every wake a machine parks is a launch. The kind is left
+	// declared because the wire outlives the daemon that wrote it — an operator reading a fleet
+	// reads `plugin-task` from a daemon of an earlier release, and the schema keeps a kind's
+	// string unconstrained for exactly that (contracts' legionWakeWaiting).
 	WakePluginTask WakeKind = "plugin-task"
 	// WakeCatchUp is the notice a start row writes to an architect already running in place of a
 	// launch, which waits on its own durable row rather than in a machine and is run by the
@@ -75,10 +77,10 @@ type WakePace struct {
 }
 
 // WakeWaiting is a machine's waiting wake as its view publishes it: what kind of wake it is
-// (WakeLaunch, WakePluginTask) and the moment the pacing gave it, which is when it runs (wakeNow).
-// It is the memory-only `wake` the machine holds, cut down to what a reader outside this package
-// is owed: never the launch itself, and never the state the gate found, which only an operator's
-// request that does not wait reads (dropWakeFor).
+// (WakeLaunch, the one kind a machine parks) and the moment the pacing gave it, which is when it
+// runs (wakeNow). It is the memory-only `wake` the machine holds, cut down to what a reader
+// outside this package is owed: never the launch itself, and never the state the gate found,
+// which only an operator's request that does not wait reads (dropWakeFor).
 type WakeWaiting struct {
 	Kind WakeKind
 	At   time.Time
@@ -111,8 +113,8 @@ type wake struct {
 	// whose own lifecycle recheck the store could not answer: that retry waits the probe interval
 	// (relaunchLater, relaunchAgain) and must recheck the lifecycle when it comes, as every launch
 	// of this package does, so it re-enters the gate rather than the launch — and pays a token
-	// again, which reserveWake states. It is set for a launch wake alone: a plugin task's turn
-	// makes no lifecycle check, since it starts no process (openPluginUpdateIfStale).
+	// again, which reserveWake states. Every wake a machine parks today is a launch and carries
+	// it; the field is nil where the launch path raised none to retry with.
 	again func(context.Context) error
 	// pluginMark is the intent of the stale-plugin relaunch this wake holds: the contract that
 	// relaunch is made for, which the launch writes to PluginRelaunchFor when it starts the
@@ -149,12 +151,11 @@ type wake struct {
 // token of its own; the one the first took is spent either way, since the limiter charges on
 // the reserve. The replaced wake's work is the same launch the new one makes, and the intent of
 // a stale-plugin relaunch it carried goes with it unwritten, so nothing of the first relaunch
-// is left to put right (wake.pluginMark). Two of the three stale-plugin lanes raise no such
-// second launch at all: refreshPlugin returns over a claim that already holds a wake of any
-// kind, and staleRegistration over one whose launch waits. The third does — a plugin round
-// whose end comes while the claim's own relaunch waits its turn replaces that wake (endPodUpdate)
-// — and a paced request reaches here twice over a parked claim for no other reason, since the
-// table answers a second start of a claim at launching without launching anything.
+// is left to put right (wake.pluginMark). Neither stale-plugin relaunch raises such a second
+// launch at all: refreshPlugin returns over a claim that already holds a wake of any kind, and
+// staleRegistration over one whose launch waits. A paced request reaches here twice over a
+// parked claim for no other reason, since the table answers a second start of a claim at
+// launching without launching anything.
 //
 // again is the launch raised anew, for the turn to retry with when its own lifecycle recheck is
 // unanswered; nil for a kind whose turn makes no such check (wake.again).
@@ -233,14 +234,6 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // is tens of minutes away over a wave (holdSuspendUntilReady) — and that suspension takes the wake
 // with it, so no turn of such a claim is reached at all.
 //
-// A plugin task's turn ends no hold, because that wake replaces no process: it opens a round over
-// a session that goes on running (openPluginUpdateIfStale), while the hold it would end exists to
-// keep that session's turn whole until the turn's own end runs it (holdSuspension). Ending it
-// here would stop the process in the middle of the very turn the hold protects — the turn that
-// held suspension is waiting for — so the hold is left to that end and this wake opens nothing.
-// Nothing is lost: the suspension stops the process, and the launch that resumes the claim
-// installs this daemon's plugin by itself, which is what the round would have asked for.
-//
 // Two things a launch does before it launches, which together close the window over a process
 // the gate left running (reserveWake), and which runWake below takes for this turn and for an
 // operator's delivery alike:
@@ -265,8 +258,12 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	m.wake = nil
 	if m.held != nil {
+		// Every wake a machine parks is a launch, and this hold is ended for one (endHeld): the
+		// process that launch would replace is stopped by the suspension instead. A wake of any
+		// other kind replaces no process, so ending the hold at its turn would stop the process
+		// in the middle of the turn the hold exists to keep whole (holdSuspension).
 		if waiting.kind != WakeLaunch {
-			m.log.Info("supervise: this claim's update task came due while a suspension waits for its turn to end; the hold keeps that turn and no round is opened",
+			m.log.Info("supervise: this claim's wake came due while a suspension waits for its turn to end; the hold keeps that turn and the wake does nothing",
 				"kind", waiting.kind, "reason", m.held.Reason, "by", m.held.By)
 			return nil
 		}
@@ -418,21 +415,19 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // nothing while no launch waits only because one does (judge). The next report of that process
 // would charge another launch failure, the death it already charged excepted (died).
 //
-// Four things it does not touch. A plugin-task wake replaces no process and holds no send back,
-// so the claim it parks goes on taking work and the round opens at its own turn (launchWaits,
-// openPluginUpdateIfStale). A request the table refuses or ignores decides nothing, so it starts
-// no launch either: the row is read here, before anything runs, exactly as Handle reads it after.
-// A task the row acts on but queue refuses decides nothing either, and for an operator's task
-// that refusal is exactly a claim holding a delivery no provider error took back: the deliver
-// route sends the task with no id of its own and no outbox row (operatorDelivery,
-// RequestDeliver.ID, Claim.DeliveredRows), so neither of the two repeats queue accepts over a
-// pending delivery — the repeat of that very delivery under its id, and a row whose task the
-// claim has already taken — can be what arrived, and what is left is "a delivery is already
-// pending" (queue, ErrDeliveryPending). Running the launch for such a task would replace a live
-// process for a request the claim answers with nothing. And a claim holding a suspension is
-// left to its hold: the turn of such a claim ends the suspension rather than launching (wakeNow,
-// endHeld), which is not what a task asks for, and the task is queued and kept until the hold
-// lifts whichever process the claim is running (sendPending).
+// Three things it does not touch. A request the table refuses or ignores decides nothing, so it
+// starts no launch either: the row is read here, before anything runs, exactly as Handle reads
+// it after. A task the row acts on but queue refuses decides nothing either, and for an
+// operator's task that refusal is exactly a claim holding a delivery no provider error took
+// back: the deliver route sends the task with no id of its own and no outbox row
+// (operatorDelivery, RequestDeliver.ID, Claim.DeliveredRows), so neither of the two repeats
+// queue accepts over a pending delivery — the repeat of that very delivery under its id, and a
+// row whose task the claim has already taken — can be what arrived, and what is left is "a
+// delivery is already pending" (queue, ErrDeliveryPending). Running the launch for such a task
+// would replace a live process for a request the claim answers with nothing. And a claim
+// holding a suspension is left to its hold: the turn of such a claim ends the suspension rather
+// than launching (wakeNow, endHeld), which is not what a task asks for, and the task is queued
+// and kept until the hold lifts whichever process the claim is running (sendPending).
 //
 // The one pending task that is not that refusal is the task a provider error took back while
 // the ladder's wait stands for it and nothing works it (replaceable): a newer task takes its

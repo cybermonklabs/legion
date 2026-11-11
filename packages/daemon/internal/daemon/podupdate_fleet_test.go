@@ -73,10 +73,6 @@ var fleetStart = time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 // session its agent registered and no locator, as supervise's fail leaves one: such a claim
 // blocks the round (blockingClaims) and the round asks it nothing (askedClaims), because its
 // machine ignores the round's post (supervise's table).
-//
-// pluginRound seeds each role of the issue in a plugin round instead, the round supervise's
-// refreshPlugin opens over a worker whose process speaks a plugin contract this daemon does not:
-// one process to replace rather than a pod, as an earlier release left it.
 type fleetIssue struct {
 	key          string
 	phase        phase.Phase
@@ -84,7 +80,6 @@ type fleetIssue struct {
 	roles        []claim.Role
 	unregistered []claim.Role
 	failed       []claim.Role
-	pluginRound  bool
 }
 
 // fleetClaim names one claim of the fleet: the issue it is of and the role it runs.
@@ -139,12 +134,6 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 				seeded.PluginContract, seeded.CapabilityHash, seeded.ServingGeneration = 0, nil, 0
 			case slices.Contains(issue.failed, role):
 				seeded.State, seeded.Locator = supervise.StateFailed, nil
-			}
-			if issue.pluginRound {
-				opened := fleetStart
-				seeded.PluginContract = api.DaemonAPIVersion - 1
-				seeded.UpdateRound, seeded.UpdateReasons = supervise.PluginRound(api.DaemonAPIVersion), podUpdatePluginReasons
-				seeded.UpdateOpenedAt, seeded.UpdateTaskedAt = &opened, &opened
 			}
 			claims = append(claims, seeded)
 		}

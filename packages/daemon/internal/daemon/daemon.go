@@ -280,8 +280,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		log.Info("legion workflow boot stage", "stage", "store")
 	}
 	// One limiter for the whole daemon, built before either lane that reserves from it: every
-	// wake the daemon causes — the role processes supervision launches, the update task a
-	// stale-plugin round queues, and the catch-up the workflow engine writes in place of a launch
+	// wake the daemon causes — the role processes supervision launches, the stale-plugin lane's
+	// relaunches among them, and the catch-up the workflow engine writes in place of a launch
 	// — draws from the same rate, because what the organization's cap counts is the uncached
 	// input of the minute after the wake, whichever lane caused it. Its jitter is a draw from
 	// [0, interval), the limiter's own interval: without one, two daemons restarted together
@@ -293,6 +293,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if cfg.WorkerWakesPerMinute > 0 {
 		reserveWake = wakepace.New(cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst, rand.N[time.Duration]).Reserve
 	}
+	// The one gate of the stale-plugin refresh lane, built here because K is that same rate: the
+	// lane may hold one minute of the pacing at a time, and the sweep a minute later admits the
+	// next minute's worth (supervise.NewRefreshGate, which says what a lane without it costs).
+	// It is built at every rate, the pacing off included, where it grants every request: one
+	// gate to hand the machines and the refresh pass, and one place that reads a rate of zero.
+	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
 	// The mapping read waits out an unreachable Dispatch without limit, and the App mint waits out
 	// GitHub's transient failures within appMintRetry; a repository whose installation read fails
 	// is left out and read again, never a refused boot. The boot budget bounds none of them, as it
@@ -363,7 +369,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps = workflow.tokens
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -1082,6 +1088,14 @@ type supervision struct {
 	supervisor *supervisor
 	tokens     *api.BootTokens
 	claims     []supervise.Claim
+	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
+	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to
+	// openSupervision beside the wake limiter). Supervision keeps the reference because the
+	// refresh pass is its own: each sweep corrects the gate from the wakes the machines publish
+	// (waitingWakes) and then asks it for each stale claim it is about to post
+	// (refreshStalePlugins). nil is no gate — a supervision a test built by hand — and the pass
+	// reads that as every refresh admitted, which is the unbounded lane of before this gate.
+	refreshGate supervise.RefreshAdmitter
 	// imageReport is what the worker image's passed probe reported: of the image, from its OK line,
 	// and of the pool, the attempts that waited on its capacity (bootprobe.ImageReport); under
 	// tmux, the model-fallback mark alone, read by plan.modelFallback. probed is whether the probe
@@ -1255,7 +1269,13 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // operator paces nothing, which is the gate's reading of the pacing off (supervise's
 // reserveWake). The rate and the burst go with it for the line every wake writes, never for that
 // decision (supervise.WakePace).
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Tokens, reserve func(time.Time) time.Time) (*supervision, error) {
+//
+// refreshGate is the daemon's one stale-plugin refresh gate, threaded exactly as reserve is and
+// from the same place (run builds both, from the one rate): it goes on the machines' Deps, so
+// every machine of this daemon asks the same gate, and the supervision keeps the same reference,
+// because the refresh pass corrects it from the wakes those machines publish and asks it for
+// each claim it posts (refreshStalePlugins, waitingWakes).
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Tokens, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1332,6 +1352,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			Rate:    cfg.WorkerWakesPerMinute,
 			Burst:   cfg.WorkerWakeBurst,
 		},
+		RefreshGate:        refreshGate,
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
@@ -1340,7 +1361,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st,
+		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
 	}
@@ -1564,11 +1585,13 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // turnEnded). staleRegistration accepts such a registration and charges it nothing, for the same
 // reason (supervise.Deps.NoPluginInstall).
 //
-// A claim in an update round is skipped, whatever contract it records: the round is carrying it,
-// and the process is replaced when the round ends (reconcilePodUpdates), so a StalePlugin post
-// would start the round's clock again at every sweep, or relaunch mid-turn a claim the round is
-// waiting on. The round reaches a worker that cannot call ready_for_update too, so there is no
-// longer a claim a round holds and this lane must rescue.
+// A claim in an update round is skipped, whatever contract it records. A pod round is carrying
+// it, and the process is replaced when that round ends (reconcilePodUpdates), so a StalePlugin
+// post would relaunch mid-turn a claim the round is waiting on and take the pod's replacement
+// its answer. A plugin round an earlier daemon left on the claim is skipped by the same
+// reading: nothing of this release opens one, and such a claim leaves its round at the
+// registration that speaks this daemon's contract (supervise's endCurrentPluginRound) or at an
+// end posted for it (endPodUpdate), after which this pass posts for it like any other.
 //
 // A daemon that cannot relaunch onto a plugin (PluginRelaunchable false, LEGION-164's degraded
 // Kubernetes mode) posts nothing; it logs one Error line per stale claim at boot only — a sweep's
@@ -2195,8 +2218,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.StrandedClaims = api.StrandedClaimsOf(stranded)
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
-	// a launch or a plugin task waits in its claim's machine, in memory alone, since no store holds
-	// one and a restart raises the wave again through its own paths; a paced catch-up waits on its
+	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
+	// restart raises the wave again through its own paths; a paced catch-up waits on its
 	// outbox row, read here in the snapshot every other durable fact of this state is read from.
 	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
 	if err != nil {

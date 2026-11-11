@@ -754,142 +754,6 @@ func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
 	}
 }
 
-// A boot that finds forty live claims on a plugin contract this daemon has moved past queues each
-// one an update task — the wake the stale-plugin lane causes, which wakes a live session in place
-// of a launch — at the operator's pace: the state names every one of them as a `plugin-task` wake
-// with the turn the limiter gave it, the schedule is spread like any other wave's, and each
-// claim's own round opens at its own turn rather than at boot. The boot's own start returns inside
-// the thirty seconds startWaveDaemon allows it, with the posts still going out, and the API serves
-// every read this test makes while the wave waits. The sweep's next turn runs meanwhile: it reaps
-// orphans again and carries the one round already open and answered to its end, while the forty
-// claims of the wave still wait their turns.
-//
-// The negative control is the pacing reverted for this case, the rate set to 0
-// (TestWithNoPacingTheStalePluginWaveOpensEveryRoundInOneTick): all forty rounds then open inside
-// one tick of the test clock, which is forty live sessions woken in the same minute.
-func TestAStalePluginWaveQueuesItsUpdateTasksAtTheOperatorsPace(t *testing.T) {
-	cfg := waveConfig(t)
-	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, supervise.PodUpdateContract)
-	})
-	answered := answeredPluginRound(t, cfg)
-	clock, logged := newWaveClock(), &syncBuffer{}
-	rt := newWaveRuntime(clock)
-	origin := clock.Now()
-	reaped := func() int { return len(rt.fake().CallsOf("ReconcileOrphans")) }
-
-	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
-
-	waiting := awaitWave(t, d, waveSize)
-	for _, wake := range waiting {
-		if wake.Kind != "plugin-task" || !slices.Contains(tokens, wake.Claim) {
-			t.Fatalf("the state names a waiting wake %+v, want a plugin task of one of the wave's claims", wake)
-		}
-	}
-	if launched := rt.launches(); len(launched) != 0 {
-		t.Fatalf("%d launches while the plugin wave waits, want none: the round's task wakes the session that runs", len(launched))
-	}
-	round := supervise.PluginRound(api.DaemonAPIVersion)
-	for _, wake := range waiting {
-		if open := d.claim(wake.Claim).UpdateRound; open != "" {
-			t.Fatalf("%s is already in round %q while its update task waits its turn, want none until that turn", wake.Claim, open)
-		}
-	}
-	if open := openRounds(t, d, tokens, round); open != 1 {
-		t.Fatalf("%d of the wave's rounds are open while it waits, want the one the burst let out", open)
-	}
-
-	// The sweep runs while the wave waits: it reaps again, and the round already answered is
-	// carried to its end — a claim with no process, so it ends launching nothing.
-	atBoot := reaped()
-	testwait.Eventually(t, "the sweep's next turn to reap the runtime's orphans again", func() bool { return reaped() > atBoot })
-	testwait.Eventually(t, "the sweep's next turn to carry the answered round to its end", func() bool {
-		return d.claim(answered).UpdateRound == ""
-	})
-	if got := waitingWakes(t, d); len(got) != len(waiting) {
-		t.Fatalf("%d wakes wait after the sweep's turn, want the %d it found waiting", len(got), len(waiting))
-	}
-
-	moments := wakeMoments(origin, waiting)
-	assertSpread(t, "the stale-plugin wave's update tasks", moments, origin)
-	opened := 1
-	for _, wake := range waiting {
-		clock.advanceTo(wake.DueAt)
-		opened++
-		testwait.Eventually(t, fmt.Sprintf("the update round of %s to open at its turn", wake.Claim), func() bool {
-			return d.claim(wake.Claim).UpdateRound == round
-		})
-		if got := openRounds(t, d, tokens, round); got != opened {
-			t.Fatalf("%d of the wave's rounds are open at %s, want %d: one turn opens one round", got, wake.DueAt, opened)
-		}
-	}
-	if launched := rt.launches(); len(launched) != 0 {
-		t.Fatalf("the plugin wave launched %d processes, want none: every worker was asked to push first", len(launched))
-	}
-	assertWakeLines(t, logged, "plugin-task", moments)
-}
-
-// answeredPluginRound stores a claim of cfg's project whose own plugin round is open and already
-// answered, its process let go by the suspension that followed: the round the sweep has left to
-// carry while a wave waits. It returns its token.
-func answeredPluginRound(t *testing.T, cfg config.Config) claim.Token {
-	t.Helper()
-	project, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	issue := cfg.Project + "-900"
-	token, err := claim.NewToken(project, issue, claim.RoleTester)
-	if err != nil {
-		t.Fatal(err)
-	}
-	answeredAt := time.Now().UTC()
-	putClaim(t, cfg, supervise.Claim{
-		Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleTester, Generation: 1,
-		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_answered",
-		SessionFile: "/sessions/answered.jsonl", PluginContract: supervise.PodUpdateContract,
-		UpdateRound: supervise.PluginRound(api.DaemonAPIVersion), UpdateReasons: "the process speaks an earlier plugin contract",
-		UpdateOpenedAt: &answeredAt, UpdateSignalledAt: &answeredAt,
-	})
-	writePrompt(t, cfg, token)
-	return token
-}
-
-// openRounds is how many of tokens are in the round named.
-func openRounds(t *testing.T, d *daemon, tokens []claim.Token, round string) int {
-	t.Helper()
-	open := 0
-	for _, token := range tokens {
-		if d.claim(token).UpdateRound == round {
-			open++
-		}
-	}
-	return open
-}
-
-// The negative control of the stale-plugin case: the pacing reverted, the rate at 0, and every one
-// of the forty rounds opens inside one tick of the test clock — forty live sessions woken in the
-// same minute, which is the plugin wave the cap counts.
-func TestWithNoPacingTheStalePluginWaveOpensEveryRoundInOneTick(t *testing.T) {
-	cfg := waveConfig(t)
-	cfg.WorkerWakesPerMinute = 0
-	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, supervise.PodUpdateContract)
-	})
-	clock, logged := newWaveClock(), &syncBuffer{}
-	rt := newWaveRuntime(clock)
-	round := supervise.PluginRound(api.DaemonAPIVersion)
-
-	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
-
-	testwait.Eventually(t, "every round of the unpaced plugin wave to open", func() bool {
-		return openRounds(t, d, tokens, round) == len(tokens)
-	})
-	if waiting := waitingWakes(t, d); len(waiting) != 0 {
-		t.Fatalf("wakesWaiting with the pacing off = %+v, want none", waiting)
-	}
-}
-
 // The negative control of every c-spread launch case: the pacing reverted, the rate set to 0, so
 // the limiter releases every wake at its own now. The whole wave then launches inside one tick of
 // the test clock — the restart of 2026-11-04 — which is what the paced cases must not do, and
@@ -1340,8 +1204,8 @@ func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T)
 // today: the gate leaves such a claim exactly as it stands — idle, with its process recorded — so
 // the process runs until the wake's turn, when the relaunch stops it and starts the next one. No
 // sweep takes it for an orphan meanwhile: the claim still records it, so every reconciliation the
-// sweep runs knows it. The wave here is the stale-plugin lane's other branch, the relaunch of a
-// worker whose plugin cannot answer an update round at all, which is a relaunch no request raised.
+// sweep runs knows it. The wave here is the stale-plugin lane's own: one relaunch for each stale
+// claim, raised by no request at all.
 //
 // The negative control is the pacing reverted, the rate at 0: every one of the forty processes is
 // then stopped and replaced inside one tick of the test clock
