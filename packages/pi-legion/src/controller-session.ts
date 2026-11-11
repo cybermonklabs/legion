@@ -6,7 +6,15 @@ import {
 } from "@legion/contracts";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
-import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  CLAIM_BOOT_ATTEMPT_TIMEOUT_MS,
+  CLAIM_BOOT_BUDGET_MS,
+  type ClaimBootBounds,
+  callWithinClaimBootBudget,
+  claimBootBudget,
+  LegionDaemonApiError,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import { classifySession, requiredEnvironment } from "@legion/pi-shared/legion-session";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
@@ -63,6 +71,10 @@ export function createControllerSession(deps: {
   readonly persistedTranscript: PersistedTranscript;
   readonly pi: PiApi;
   readonly exitProcess: (code: number) => never;
+  /** The two bounds this claim's daemon calls run under, read at each claim. Production passes
+   * none, so they take `CLAIM_BOOT_ATTEMPT_TIMEOUT_MS` and `CLAIM_BOOT_BUDGET_MS`; a test passes
+   * its own, since no test can wait out the production budget. */
+  readonly bounds?: () => ClaimBootBounds | undefined;
 }): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
   // The session the daemon last registered as the controller and the grant minter for its
@@ -256,29 +268,52 @@ export function createControllerSession(deps: {
     // channels; any other ignores whatever LEGION_SLACK_CHANNELS it inherited.
     const slackChannels = supervised ? daemonControllerSlackChannels(process.env) : [];
     const client = daemon();
-    const { daemon: served } = await client.state();
+    // The claim's own daemon calls run under the claim boot's policy, one budget for the two of
+    // them: each attempt bounded, a retry while the daemon cannot answer (a transport failure, a
+    // timed-out attempt, a 5xx), and one wall-clock budget over the lot
+    // (`callWithinClaimBootBudget`, `@legion/pi-shared/daemon-client`). The controller registers
+    // the `legion` tool behind this claim, so a call that hangs costs it its tool exactly as a
+    // hung claim boot costs a worker its own: this is that same policy, read from the one place
+    // that holds it rather than written again here.
+    const budget = claimBootBudget(
+      deps.bounds?.() ?? {
+        attemptMs: CLAIM_BOOT_ATTEMPT_TIMEOUT_MS,
+        budgetMs: CLAIM_BOOT_BUDGET_MS,
+      }
+    );
+    const { daemon: served } = await callWithinClaimBootBudget(
+      "the daemon's state",
+      (signal) => client.state({ signal }),
+      budget
+    );
     const servedRole = controllerToken(legionProjectToken(served.project, "the daemon's project"));
     if (controllerToken(project) !== servedRole) {
       throw new Error(
         `LEGION_PROJECT ${project} names controller role ${controllerToken(project)}, but the daemon at ${requiredEnvironment(process.env, "LEGION_DAEMON_URL")} serves project ${served.project}, whose controller role is ${servedRole}`
       );
     }
-    const registration = await client
-      .registerController({
-        bootToken: capability,
-        sessionId: sessionID,
-        ompSessionFile: sessionFile,
-        agentId,
-        pluginContract: pkg.legion.daemonApiVersion,
-      })
-      .catch((error: unknown) => {
-        if (error instanceof LegionDaemonApiError) {
-          logger.error(
-            `[legion] claims/register for the controller failed (${error.status}): ${error.detail}`
-          );
-        }
-        throw error;
-      });
+    const registration = await callWithinClaimBootBudget(
+      "claims/register for the controller",
+      (signal) =>
+        client.registerController(
+          {
+            bootToken: capability,
+            sessionId: sessionID,
+            ompSessionFile: sessionFile,
+            agentId,
+            pluginContract: pkg.legion.daemonApiVersion,
+          },
+          { signal }
+        ),
+      budget
+    ).catch((error: unknown) => {
+      if (error instanceof LegionDaemonApiError) {
+        logger.error(
+          `[legion] claims/register for the controller failed (${error.status}): ${error.detail}`
+        );
+      }
+      throw error;
+    });
     if (controllerToken(project) !== registration.claimToken) {
       throw new Error(
         `LEGION_PROJECT ${project} names controller role ${controllerToken(project)}, but the daemon registered this controller as ${registration.claimToken}`

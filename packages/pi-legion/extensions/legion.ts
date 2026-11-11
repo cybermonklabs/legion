@@ -12,7 +12,11 @@ import {
   sessionEnvoySettings,
 } from "@legion/envoy-client/session-settings";
 import { createEnvoyClient } from "@legion/envoy-client/transport";
-import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  type ClaimBootBounds,
+  createLegionDaemonClient,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import { nextFallbackModel } from "@legion/pi-shared/fallback-chain";
 import {
@@ -31,6 +35,7 @@ import {
 } from "@legion/pi-shared/interface";
 import {
   classifySession,
+  daemonLaunchedAgentProcess,
   type LegionSessionKind,
   requiredEnvironment,
 } from "@legion/pi-shared/legion-session";
@@ -88,6 +93,115 @@ import {
   workspaceRecreatedMessage,
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
+
+/**
+ * Oh My Pi's own bound on one extension handler, measured in this pod on 2026-11-11: a
+ * `session_start` held past it is aborted — `{"type":"extension_error",…,"error":"handler timed
+ * out after 30000ms"}`, the abort firing at 29 998 ms and at 30 003 ms in two runs — the session
+ * runs on, and `pi.getActiveTools()` holds no `legion`. This entry never lets its own handler
+ * reach it: a role whose process kept the `envoy_*` tools and no `legion` tool runs a whole phase
+ * unable to report its work (dispatch://INFRA-2883).
+ */
+export const OMP_HANDLER_BOUND_MS = 30_000;
+
+/**
+ * The bound this entry holds the whole of its own `session_start` to, from its first statement
+ * through the one that activates the tool, and the same for `/legion-claim-controller`, the one
+ * other path that registers it. It sits between the claim boot's whole budget
+ * (`CLAIM_BOOT_BUDGET_MS`, 20 000 ms, `@legion/pi-shared/daemon-client`) and Oh My Pi's own
+ * {@link OMP_HANDLER_BOUND_MS}: above the boot, so a boot that spends its budget still writes its
+ * own line and ends the process itself; below the harness, so a handler that would outlive its
+ * bound decides its own ending — one line naming the step, then the process ended for the daemon
+ * to launch again — rather than being aborted into the session this issue is about.
+ */
+export const LEGION_SESSION_START_BOUND_MS = 25_000;
+
+// The bound above, as a test sets it. Production never sets this, so both handlers keep the real
+// 25 s; a test sets a short one, since no row can wait out 25 seconds.
+let sessionStartBoundMs = LEGION_SESSION_START_BOUND_MS;
+export function setLegionSessionStartBoundForTests(ms: number | undefined): void {
+  sessionStartBoundMs = ms ?? LEGION_SESSION_START_BOUND_MS;
+}
+
+// The two bounds the claim boot and the controller's own registration run under
+// (`CLAIM_BOOT_ATTEMPT_TIMEOUT_MS` and `CLAIM_BOOT_BUDGET_MS`). Production sets none and takes
+// those two; a test sets its own, since no row can wait out the production budget.
+let claimBootBounds: ClaimBootBounds | undefined;
+export function setLegionClaimBootBoundsForTests(bounds: ClaimBootBounds | undefined): void {
+  claimBootBounds = bounds;
+}
+
+/** A failure of one named step of a handler that registers the `legion` tool, which the one line
+ * that ends the process reports as the step that failed. Every step is named. */
+class HandlerStepFailure extends Error {
+  constructor(
+    readonly step: string,
+    readonly failure: unknown
+  ) {
+    super(messageFor(failure));
+    this.name = "HandlerStepFailure";
+  }
+}
+
+/** `error` as the one line reports it: the step it failed at, and why. */
+function stepFailure(error: unknown): { readonly step: string; readonly why: string } {
+  return error instanceof HandlerStepFailure
+    ? { step: error.step, why: messageFor(error.failure) }
+    : { step: "an unnamed step", why: messageFor(error) };
+}
+
+/** One handler's bound while it runs: how long it was given, and how much of it is left. */
+interface HandlerBound {
+  readonly boundMs: number;
+  /** Milliseconds left of the bound; 0 or less once it is spent. */
+  readonly remainingMs: () => number;
+}
+
+/**
+ * Runs one step of a bounded handler under what is left of its bound and names its failure: a
+ * step that starts with the bound spent does not run, and one that outlives it fails the handler
+ * where it stands. The step itself is not cancelled — a host call this entry cannot abort runs on
+ * in a process that is ending — but the handler stops waiting for it.
+ *
+ * `bound` undefined is a process this entry ends nothing in (a session a person started): the
+ * step runs unbounded, as it did before this cover, and only its failure is named, for the
+ * caller that hands it back as the command's own error.
+ */
+async function boundedStep<T>(
+  bound: HandlerBound | undefined,
+  step: string,
+  run: () => T | Promise<T>
+): Promise<T> {
+  if (bound === undefined) return named(step, run);
+  const left = bound.remainingMs();
+  if (left <= 0) {
+    throw new HandlerStepFailure(
+      step,
+      new Error(`the handler's bound of ${bound.boundMs} ms was spent before it ran`)
+    );
+  }
+  const spent = Promise.withResolvers<never>();
+  const timer = setTimeout(() => {
+    spent.reject(
+      new Error(`it outlived the handler's bound of ${bound.boundMs} ms, which is spent`)
+    );
+  }, left);
+  timer.unref?.();
+  try {
+    return await named(step, () => Promise.race([Promise.resolve(run()), spent.promise]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Runs one step and names its failure, so the ending knows which step it was. */
+async function named<T>(step: string, run: () => T | Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw new HandlerStepFailure(step, error);
+  }
+}
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
@@ -371,17 +485,67 @@ export default function legionExtension(pi: PiApi): void {
     return daemonClient;
   };
 
+  // Whether this instance has already ended the process, and the one ending every part of this
+  // entry takes: the claim boot's, the Envoy-plugin refusal's, the stall ladder's last step and
+  // the cover below. In production `exitProcess` is `process.exit` and nothing runs after it; a
+  // test's stand-in throws in its place, and that throw then travels up through whatever handler
+  // was running — so the flag is what keeps the cover from reading an ending already taken, whose
+  // line is already written, as a failure of its own.
+  let processEnding = false;
+  const endProcess: (code: number) => never = (code) => {
+    processEnding = true;
+    return exitProcess(code);
+  };
+
+  /**
+   * The clock a handler that registers the `legion` tool runs under, started at its first
+   * statement: {@link LEGION_SESSION_START_BOUND_MS} in the agent the daemon launched for a role,
+   * and none in any other process, where this entry ends nothing and a step that never answers is
+   * Oh My Pi's own to abort, exactly as before this cover (R1).
+   */
+  const handlerBound = (): HandlerBound | undefined => {
+    if (!daemonLaunchedAgentProcess(process.env, process.argv)) return undefined;
+    const deadline = Date.now() + sessionStartBoundMs;
+    return { boundMs: sessionStartBoundMs, remainingMs: () => deadline - Date.now() };
+  };
+
+  /**
+   * The one ending every failure and every overrun of the two handlers that register the `legion`
+   * tool takes (R1, R3): one line naming the step, then the process, so the daemon launches it
+   * again. A process that runs on past such a failure keeps the `envoy_*` tools and no `legion`
+   * tool, which is a role that can claim, report and hand off nothing, and which nothing else
+   * notices (dispatch://INFRA-2883).
+   *
+   * Two endings are not this one. A process that is not the daemon's agent for a role — a session
+   * a person started, the operator's own controller among them — is never ended here: the failure
+   * is the command's own error, which Oh My Pi reports to whoever is reading it. And an ending
+   * this handler has already taken, which wrote its own line, is handed on as it is.
+   */
+  const endHandler = (handler: string, error: unknown): never => {
+    if (processEnding) throw error;
+    if (!daemonLaunchedAgentProcess(process.env, process.argv)) {
+      throw error instanceof HandlerStepFailure ? error.failure : error;
+    }
+    const { step, why } = stepFailure(error);
+    logger.error(
+      `[legion] ${handler} failed at ${step}: ${why}; this session would run on with no legion tool, so exiting for the daemon to launch it again`
+    );
+    return endProcess(1);
+  };
+
   // A root architect's or phase worker's claim, and the operator-launched controller's.
   const claimSession = createClaimSession({
     daemon: roleDaemon,
     persistedTranscript,
-    exitProcess: (code) => exitProcess(code),
+    exitProcess: endProcess,
+    bounds: () => claimBootBounds,
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
     persistedTranscript,
     pi,
-    exitProcess: (code) => exitProcess(code),
+    exitProcess: endProcess,
+    bounds: () => claimBootBounds,
   });
 
   /**
@@ -449,7 +613,7 @@ export default function legionExtension(pi: PiApi): void {
         now: Date.now,
         log: logger,
       }),
-      exitProcess: (code) => exitProcess(code),
+      exitProcess: endProcess,
       log: logger,
     });
   };
@@ -583,44 +747,57 @@ export default function legionExtension(pi: PiApi): void {
   // with the id its copies carry, and owed until that run starts (agent_start), whatever starts it.
   let recreatedNotice: WorkspaceRecreatedNotice | undefined;
 
-  pi.on("session_start", async (_event, context) => {
-    // A `task`-spawned subagent session loads a fresh instance of this whole module: bail out
-    // before classification, or the inherited LEGION_* environment would look like a fresh
-    // root/worker boot and its failure would exit the parent process. See isSubagentSession.
-    if (await checkSubagentSession(context)) return;
-    await titleSession(context);
+  /**
+   * The rest of `session_start` once the subagent check has answered, from the title through the
+   * step that activates the `legion` tool: every step named and bounded, so that every failure
+   * and every overrun of it reaches the one ending (`endHandler`, R1 and R3). A session the
+   * classifier reads as no Legion session returns from here and leaves the process running, as
+   * it always has.
+   */
+  const startLegionSession = async (
+    context: SessionContext,
+    bound: HandlerBound | undefined
+  ): Promise<void> => {
+    await boundedStep(bound, "titleSession", () => titleSession(context));
     // The session this pane's claim is on, for the reminder's timers and its record check, which
     // run outside every hook.
     paneContext = context;
-    const branch = context.sessionManager.getBranch?.() ?? [];
     // A worker the daemon relaunched with --resume keeps its phase: its next turn may start from
     // an Envoy notice rather than a new assignment, and must find the phase still open. The
     // transcript is this host's store for that record; the runner is handed the record alone.
-    phaseReminder.restore(restorePhaseStallEntry(branch));
+    await boundedStep(bound, "restorePhaseReminder", () =>
+      phaseReminder.restore(restorePhaseStallEntry(context.sessionManager.getBranch?.() ?? []))
+    );
     // The model fallback's own restore waits for the claim below: its save writes an entry into
     // the session's transcript, and a session no Legion claim is on is nobody's role to move or
     // to write into.
-    const session = classifySession(process.env);
+    const session = await boundedStep(bound, "classifySession", () => classifySession(process.env));
     if (session.kind === "not-legion") return;
     // Every Legion session (a root architect, a phase worker, the controller) claims through the
     // Envoy plugin's interface, so a process without it ends here, the way a refused boot
-    // registration does: one log line, then the exit the daemon sees and relaunches from. A
-    // person's own session returned above and never exits.
-    const refusal = envoyPluginRefusal();
+    // registration does: one log line, then the exit the daemon sees and relaunches from. That
+    // ending is its own, taken in a hand-started session as much as in the daemon's agent, and
+    // the cover around this handler adds nothing to it. A person's own session returned above
+    // and never exits.
+    const refusal = await boundedStep(bound, "envoyPluginRefusal", () => envoyPluginRefusal());
     if (refusal !== undefined) {
       logger.error(refusal);
-      exitProcess(1);
+      endProcess(1);
     }
     // Every Legion session watches its own tool calls; a subagent's instance returned above.
-    armStallWatch(session);
+    await boundedStep(bound, "armStallWatch", () => armStallWatch(session));
     // The controller registers through the controller session and gets the `legion` tool's
     // controller operations (`read_state`, `set_status`), each minting its own controller grant.
     if (session.kind === "controller") {
-      await controllerSession.handleSessionStart(context);
+      await boundedStep(bound, "controllerClaim", () =>
+        controllerSession.handleSessionStart(context)
+      );
       // The controller reports no activity — the daemon releases no pod of its — so it has no
       // managed interval of its own, and the stall watch takes one here: its session runs tool
       // calls that can stick like any other's.
-      context.setInterval(stallSweep, SESSION_ACTIVITY_PERIOD_MS);
+      await boundedStep(bound, "armSessionWatches", () =>
+        context.setInterval(stallSweep, SESSION_ACTIVITY_PERIOD_MS)
+      );
     } else {
       // A resume whose role launcher found the workspace recreated since the session was last
       // written (src/workspace-recreated.ts) is told so in a message saved to the session ahead of
@@ -628,90 +805,133 @@ export default function legionExtension(pi: PiApi): void {
       // that turn resumes with the notice already in its history. It goes before the role claim, so
       // no delivery on the role's topic can start a turn ahead of it, and a subagent, which returned
       // above, never is told.
-      recreatedNotice = workspaceRecreatedNotice(
-        process.env,
-        session.kind === "root-architect" ? session.tree : session.issue
-      );
-      if (recreatedNotice !== undefined) {
-        pi.sendMessage(workspaceRecreatedMessage(recreatedNotice), {
-          deliverAs: "steer",
-          triggerTurn: false,
-        });
-      }
-      await claimSession.bootstrap(context);
-      // The claim is registered. A phase worker relaunched into an open phase gets its reminder
-      // from a timer, since nothing else would wake it. The guard drops that timer when any turn
-      // started meanwhile, which is exactly the case to drop — the daemon re-sending an
-      // interrupted task arrives as a prompt.
-      if (phaseWorkerSession(context)) phaseReminder.armResumeReminder();
-      /**
-       * INFRA-927: the session measures its six capability rows on this interval, while it is
-       * idle, up to three times, until every row is present — a check that lost the boot-time
-       * race stayed reported open for the session's whole life, since the boot measured once and
-       * never again. The architect measures first at the sixth tick as every other role does
-       * (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`); its extra readies make
-       * its waiting notices due at once, which is the same release a relaunched architect's ready
-       * already makes.
-       *
-       * The measurement's input is snapshotted here, since the host's accessors answer only from
-       * a handler and throw at factory time, and it is read before `registerLegionTool()` below,
-       * so the rows see the tool surface `session_start` exposes.
-       */
-      const capabilityClaim = claimSession.capability(context.sessionManager.getSessionId());
-      let capabilitySchedule: CapabilitySchedule | undefined;
-      if (capabilityClaim !== undefined) {
-        const capabilityInput = {
-          cwd: context.cwd,
-          sessionId: capabilityClaim.sessionID,
-          issue: capabilityClaim.issue,
-          promptAgents: capabilityClaim.promptAgents ?? [],
-          activeTools: pi.getActiveTools(),
-          agentsExposed: pi.agents !== undefined,
-        };
-        capabilitySchedule = createCapabilitySchedule({
-          claim: capabilityClaim,
-          measure: () => measureCapabilities(capabilityHost(), capabilityInput, capabilityBudgets),
-          send: (report, signal) =>
-            roleDaemon().ready(
-              {
-                claimToken: capabilityClaim.claimToken,
-                sessionId: capabilityClaim.sessionID,
-                secret: capabilityClaim.secret,
-                generation: capabilityClaim.generation,
-                capabilities: report,
-              },
-              { signal }
-            ),
-          sendTimeoutMs: capabilitySendTimeoutMs,
-          // Live, as the activity report reads it: a context captured once would answer for the
-          // session as it was at its start.
-          isIdle: () => paneContext?.isIdle?.(),
-          log: (message, fields) => logger.warn(message, fields),
-        });
-      }
-      // Between turns, the host's own managed interval is the only sight of this session's
-      // background work; it sends nothing unless what it reads has changed. Every claimed
-      // session reports, an architect's as much as a phase worker's: the daemon releases a pod
-      // only when each of its live roles has said it runs nothing. The stall watch's sweep rides
-      // the same 5 seconds, which bounds how late a stuck call is found against a ladder whose
-      // own steps are minutes apart.
-      context.setInterval(() => {
-        if (paneContext !== undefined) {
-          void reportActivity(paneContext, { onlyWhenChanged: true });
+      await boundedStep(bound, "workspaceRecreatedNotice", () => {
+        recreatedNotice = workspaceRecreatedNotice(
+          process.env,
+          session.kind === "root-architect" ? session.tree : session.issue
+        );
+        if (recreatedNotice !== undefined) {
+          pi.sendMessage(workspaceRecreatedMessage(recreatedNotice), {
+            deliverAs: "steer",
+            triggerTurn: false,
+          });
         }
-        // None of the three is awaited: a measurement that runs for up to 10 s, or a step of the
-        // ladder that outlasts the tick, never delays the activity report the daemon reads to
-        // decide whether the pod may be released.
-        void capabilitySchedule?.tick();
-        stallSweep();
-      }, SESSION_ACTIVITY_PERIOD_MS);
+      });
+      await boundedStep(bound, "claimBoot", () => claimSession.bootstrap(context));
+      await boundedStep(bound, "armSessionWatches", () => {
+        // The claim is registered. A phase worker relaunched into an open phase gets its reminder
+        // from a timer, since nothing else would wake it. The guard drops that timer when any turn
+        // started meanwhile, which is exactly the case to drop — the daemon re-sending an
+        // interrupted task arrives as a prompt.
+        if (phaseWorkerSession(context)) phaseReminder.armResumeReminder();
+        /**
+         * INFRA-927: the session measures its six capability rows on this interval, while it is
+         * idle, up to three times, until every row is present — a check that lost the boot-time
+         * race stayed reported open for the session's whole life, since the boot measured once and
+         * never again. The architect measures first at the sixth tick as every other role does
+         * (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`); its extra readies make
+         * its waiting notices due at once, which is the same release a relaunched architect's ready
+         * already makes.
+         *
+         * The measurement's input is snapshotted here, since the host's accessors answer only from
+         * a handler and throw at factory time, and it is read before `registerLegionTool()` below,
+         * so the rows see the tool surface `session_start` exposes.
+         */
+        const capabilityClaim = claimSession.capability(context.sessionManager.getSessionId());
+        let capabilitySchedule: CapabilitySchedule | undefined;
+        if (capabilityClaim !== undefined) {
+          const capabilityInput = {
+            cwd: context.cwd,
+            sessionId: capabilityClaim.sessionID,
+            issue: capabilityClaim.issue,
+            promptAgents: capabilityClaim.promptAgents ?? [],
+            activeTools: pi.getActiveTools(),
+            agentsExposed: pi.agents !== undefined,
+          };
+          capabilitySchedule = createCapabilitySchedule({
+            claim: capabilityClaim,
+            measure: () =>
+              measureCapabilities(capabilityHost(), capabilityInput, capabilityBudgets),
+            send: (report, signal) =>
+              roleDaemon().ready(
+                {
+                  claimToken: capabilityClaim.claimToken,
+                  sessionId: capabilityClaim.sessionID,
+                  secret: capabilityClaim.secret,
+                  generation: capabilityClaim.generation,
+                  capabilities: report,
+                },
+                { signal }
+              ),
+            sendTimeoutMs: capabilitySendTimeoutMs,
+            // Live, as the activity report reads it: a context captured once would answer for the
+            // session as it was at its start.
+            isIdle: () => paneContext?.isIdle?.(),
+            log: (message, fields) => logger.warn(message, fields),
+          });
+        }
+        // Between turns, the host's own managed interval is the only sight of this session's
+        // background work; it sends nothing unless what it reads has changed. Every claimed
+        // session reports, an architect's as much as a phase worker's: the daemon releases a pod
+        // only when each of its live roles has said it runs nothing. The stall watch's sweep rides
+        // the same 5 seconds, which bounds how late a stuck call is found against a ladder whose
+        // own steps are minutes apart.
+        context.setInterval(() => {
+          if (paneContext !== undefined) {
+            void reportActivity(paneContext, { onlyWhenChanged: true });
+          }
+          // None of the three is awaited: a measurement that runs for up to 10 s, or a step of the
+          // ladder that outlasts the tick, never delays the activity report the daemon reads to
+          // decide whether the pod may be released.
+          void capabilitySchedule?.tick();
+          stallSweep();
+        }, SESSION_ACTIVITY_PERIOD_MS);
+      });
     }
     // The claim is registered, so this session is a Legion role's: a worker the daemon
     // relaunched into a session that fell back down the model chain comes back with the due time
     // of its return and how often each model's wait has doubled (src/model-fallback.ts).
-    restoreModelFallback(context);
-    registerLegionTool();
-    await activateLegionTool();
+    await boundedStep(bound, "restoreModelFallback", () => restoreModelFallback(context));
+    await boundedStep(bound, "registerLegionTool", () => registerLegionTool());
+    await boundedStep(bound, "activateLegionTool", () => activateLegionTool());
+  };
+
+  /**
+   * The whole handler runs under one bound and one ending (R1, R3): a failure of any step of it,
+   * and a step that outlives {@link LEGION_SESSION_START_BOUND_MS}, write one line naming the
+   * step and end the process, in the agent the daemon launched for a role and in no other
+   * process. The bound is below Oh My Pi's own {@link OMP_HANDLER_BOUND_MS}, so this handler
+   * decides its own ending rather than being aborted into a session that runs on with no
+   * `legion` tool.
+   */
+  pi.on("session_start", async (_event, context) => {
+    const bound = handlerBound();
+    // A `task`-spawned subagent session loads a fresh instance of this whole module: bail out
+    // before classification, or the inherited LEGION_* environment would look like a fresh
+    // root/worker boot and its failure would exit the parent process. See isSubagentSession.
+    //
+    // It is this handler's first statement and the one step that ends nothing: until it has
+    // answered, this instance may be a subagent's, inside a process that holds its parent's
+    // claim and may be running its turn. A failure of this step, and an overrun of it, are
+    // written as one line here and this instance returns.
+    let subagent: boolean;
+    try {
+      subagent = await boundedStep(bound, "checkSubagentSession", () =>
+        checkSubagentSession(context)
+      );
+    } catch (error) {
+      const { step, why } = stepFailure(error);
+      logger.error(
+        `[legion] session_start failed at ${step}: ${why}; this instance returns and the process runs on, since it may be a task subagent's`
+      );
+      return;
+    }
+    if (subagent) return;
+    try {
+      await startLegionSession(context, bound);
+    } catch (error) {
+      endHandler("session_start", error);
+    }
   });
 
   // A prompt (the daemon's task as an RPC `prompt`, or a person's direct message pi-envoy
@@ -955,17 +1175,31 @@ export default function legionExtension(pi: PiApi): void {
     // override for a lost claim. From a hand-started session it is an interactive takeover: the
     // role and recorded session id move to this session (see `controllerSession.claim`), which
     // then gets the `legion` tool's controller operations as a launched controller does.
-    // The operator started this session and reads it, so a missing Envoy plugin is answered as
-    // the command's error, never an exit, and nothing is claimed.
+    //
+    // It is the one path besides `session_start` that registers the `legion` tool, so it takes
+    // the same cover (R1): in the agent the daemon launched for a role — the controller it
+    // launched itself among them — every failure and every overrun of this handler writes one
+    // line naming the step and ends the process. In any other process nothing is ended: the
+    // operator started that session and reads it, so a missing Envoy plugin and every other
+    // failure are answered as the command's error and nothing is claimed. `legion controller
+    // start` deletes both boot-token names from the controller it launches for an operator,
+    // which is what leaves that session on this second footing.
     handler: async (_args, context) => {
-      const refusal = envoyPluginRefusal();
-      if (refusal !== undefined) throw new Error(refusal);
-      await controllerSession.claim(context);
-      // The claim is registered, so this session is the controller's: the arming and the
-      // doubling levels its branch records are read back here, as session_start reads a worker's.
-      restoreModelFallback(context);
-      registerLegionTool();
-      await activateLegionTool();
+      const bound = handlerBound();
+      try {
+        await boundedStep(bound, "envoyPluginRefusal", () => {
+          const refusal = envoyPluginRefusal();
+          if (refusal !== undefined) throw new Error(refusal);
+        });
+        await boundedStep(bound, "controllerClaim", () => controllerSession.claim(context));
+        // The claim is registered, so this session is the controller's: the arming and the
+        // doubling levels its branch records are read back here, as session_start reads a worker's.
+        await boundedStep(bound, "restoreModelFallback", () => restoreModelFallback(context));
+        await boundedStep(bound, "registerLegionTool", () => registerLegionTool());
+        await boundedStep(bound, "activateLegionTool", () => activateLegionTool());
+      } catch (error) {
+        endHandler("/legion-claim-controller", error);
+      }
     },
   });
 

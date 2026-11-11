@@ -1,5 +1,5 @@
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound";
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import type { ClaimBootBounds, LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   exportJjSessionAttribution,
   paneAttributionOptions,
@@ -78,7 +78,13 @@ export function attributionInputs(
  *
  * The transcript is recorded as the bootstrapped session before the registration; the jj
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
- * A 4xx registration refusal, and any failure after a registration, exit the process.
+ * Every ending of the boot that is not a registered claim — a refusal of any status, a request
+ * that never reached the daemon, a call that did not answer inside its bound, a spent budget, a
+ * failure of any step after the registration — writes its own line and ends this process there
+ * (`bootLegionClaim`), so nothing of it comes back to `bootstrap` to throw. What still throws
+ * out of `bootstrap` is what runs before the boot: the boot token this pane was launched with,
+ * and the transcript. That failure is `session_start`'s own, whose cover ends the process on one
+ * line naming this step (`extensions/legion.ts`).
  */
 export function createClaimSession(deps: {
   readonly daemon: () => LegionDaemonClient;
@@ -86,6 +92,10 @@ export function createClaimSession(deps: {
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
   readonly exitProcess: (code: number) => never;
+  /** The boot's two bounds, read at each boot. Production passes none, so the boot takes
+   * `CLAIM_BOOT_ATTEMPT_TIMEOUT_MS` and `CLAIM_BOOT_BUDGET_MS`; a test passes its own, since no
+   * test can wait out the production budget. */
+  readonly bounds?: () => ClaimBootBounds | undefined;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
@@ -145,6 +155,7 @@ export function createClaimSession(deps: {
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",
       stop: () => deps.exitProcess(1),
+      bounds: deps.bounds?.(),
     });
   };
 
@@ -155,12 +166,7 @@ export function createClaimSession(deps: {
 
     const bootToken = requiredSecret(process.env, "LEGION_BOOT_TOKEN");
     booting = boot(context, sessionID, bootToken, deps.daemon());
-    try {
-      await booting;
-    } catch (error) {
-      booting = undefined;
-      throw error;
-    }
+    return booting;
   };
 
   return {

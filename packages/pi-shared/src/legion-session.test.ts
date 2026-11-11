@@ -127,3 +127,24 @@ test("reads no agent for a shell that inherited the role's whole environment", (
     false
   );
 });
+
+test("an environment the classifier refuses is still the daemon's own agent", () => {
+  // A role's agent whose LEGION_ROLE is not a role is the one the cover exists for: the
+  // classifier refuses it, and the strict reading would leave that agent running with no
+  // `legion` tool.
+  expect(
+    daemonLaunchedAgentProcess(
+      { LEGION_ROLE: "not-a-role", LEGION_BOOT_TOKEN: "boot-token" },
+      AGENT_ARGV
+    )
+  ).toBe(true);
+  // A session a person started in a role's pod inherits that same environment and is still not
+  // an agent: no `--mode rpc` on its own command line.
+  expect(
+    daemonLaunchedAgentProcess({ LEGION_ROLE: "not-a-role", LEGION_BOOT_TOKEN: "boot-token" }, [
+      "/bin/bash",
+      "-lc",
+      "bun test",
+    ])
+  ).toBe(false);
+});

@@ -71,10 +71,15 @@ export function requiredEnvironment(env: NodeJS.ProcessEnv, key: string): string
  * The environment alone is not enough, measured in this issue's pod on 2026-11-11: every
  * descendant of the agent inherits it, so a shell, a test and a person's own Oh My Pi inside a
  * role's pod all read the role and the boot token, and an environment-only answer would end all
- * three. The marks are read command line first because that one is the cheapest and the one that
- * rules out every inheriting descendant, and because the classifier throws on an environment the
- * daemon never writes (an unknown `LEGION_ROLE`, both launch markers at once), which no process
- * outside this one should have to meet.
+ * three. The marks are read command line first, because that one is the cheapest and is the mark
+ * that rules out every inheriting descendant.
+ *
+ * The classifier throws on an environment the daemon never writes (an unknown `LEGION_ROLE`,
+ * both launch markers at once, a role with no tree or issue), and such an environment is the
+ * daemon's own agent all the same: nothing else carries the other two marks. A refusal there is
+ * read as a Legion session, because the strict reading would answer "no Legion session" for a
+ * role's own agent and leave it running with no `legion` tool, which is the fault this answer
+ * exists to end.
  *
  * Production passes `process.env` and `process.argv`; a test passes its own values.
  */
@@ -84,7 +89,11 @@ export function daemonLaunchedAgentProcess(
 ): boolean {
   if (!runsInRpcMode(argv)) return false;
   if (!env.LEGION_BOOT_TOKEN && !env.LEGION_BOOT_TOKEN_FILE) return false;
-  return classifySession(env).kind !== "not-legion";
+  try {
+    return classifySession(env).kind !== "not-legion";
+  } catch {
+    return true;
+  }
 }
 
 function runsInRpcMode(argv: readonly string[]): boolean {
