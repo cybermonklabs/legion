@@ -187,6 +187,7 @@ const LEGION_FIELDS: Readonly<Record<LegionField, true>> = {
  *  difference that is the clock and not the board. */
 const LEGION_HEADER_FIELDS: Readonly<Record<LegionHeaderField, true>> = {
   facts_updated_at: true,
+  legion_issues: true,
   queue_length: true,
   read_at: true,
   read_error: true,

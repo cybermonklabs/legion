@@ -3,6 +3,6 @@ body: |-
   The Legion board's generated types follow the route to
   `GET /api/v1/projects/{key}/legion/board`, which replaces `GET /api/v1/legion/board` and its
   `project` query. `LegionBoardResponse` gains `issues`, a map keyed by issue key of each issue's
-  stored Legion facts (`LegionBoardFacts`), and its header gains `facts_updated_at` and
-  `facts_cursor_age_seconds`. `LegionBoardCard` gains `slot_use`, `waiting`, `waiting_place`,
+  stored Legion facts (`LegionBoardFacts`), and its header gains `legion_issues`,
+  `facts_updated_at` and `facts_cursor_age_seconds`. `LegionBoardCard` gains `slot_use`, `waiting`, `waiting_place`,
   `slot_since` and `tree_slot`.

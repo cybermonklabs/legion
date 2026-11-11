@@ -80,6 +80,7 @@ function header(overrides: Partial<LegionBoardHeader> = {}): LegionBoardHeader {
   return {
     facts_cursor_age_seconds: 12,
     facts_updated_at: "2026-11-03T05:03:00Z",
+    legion_issues: 3,
     queue_length: 0,
     read_at: "2026-11-03T05:03:30Z",
     read_error: null,

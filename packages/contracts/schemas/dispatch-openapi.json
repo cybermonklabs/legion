@@ -20820,6 +20820,9 @@
               "string"
             ]
           },
+          "legion_issues": {
+            "type": "integer"
+          },
           "queue_length": {
             "type": "integer"
           },
@@ -20860,6 +20863,7 @@
           "read_at",
           "read_ok",
           "read_error",
+          "legion_issues",
           "facts_updated_at",
           "facts_cursor_age_seconds"
         ],

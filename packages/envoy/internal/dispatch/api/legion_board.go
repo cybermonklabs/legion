@@ -138,9 +138,11 @@ type legionBoardFacts struct {
 // trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
 // answered at all, which shows the board with empty columns.
 //
-// The two facts fields are read apart for one reason: a reader can then tell a project with no
-// Legion work (rows: none, cursor: an age) from a project whose backfill has not run (rows:
-// none, cursor: null).
+// The three facts fields are read together for one reason: a reader can then tell a project with
+// no Legion work from a project whose backfill has not run. The first carries no Legion issues
+// and no rows; the second carries Legion issues and no rows. The cursor age alone cannot tell
+// them apart, because it is the deployment's one consumer rather than the project's, and every
+// project of a running deployment reads the same age.
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
@@ -149,12 +151,17 @@ type legionBoardHeader struct {
 	ReadAt      *time.Time `json:"read_at"`
 	ReadOK      bool       `json:"read_ok"`
 	ReadError   *string    `json:"read_error"`
+	// LegionIssues is how many issues of this project carry Legion phase work, which is the
+	// same set the facts consumer writes a row for. The board reads that set already, for its
+	// cards and its tree walk, so the count costs no read of its own.
+	LegionIssues int `json:"legion_issues"`
 	// FactsUpdatedAt is the oldest updated_at of the stored rows this answer served, null where
 	// it served none.
 	FactsUpdatedAt *time.Time `json:"facts_updated_at"`
 	// FactsCursorAgeSeconds is how long ago the facts consumer's oldest cursor last moved
 	// (legionfacts.CursorAge), measured when the board was read, and null where the consumer
-	// holds no cursor row at all.
+	// holds no cursor row at all. It is of the deployment's one consumer and not of this
+	// project, so it says how fresh the facts are and never whether this project has any.
 	FactsCursorAgeSeconds *int `json:"facts_cursor_age_seconds"`
 }
 
@@ -749,6 +756,14 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 
 	header := legionBoardHeader{QueueLength: len(cards[legion.ColumnQueue])}
+	// How many issues of this project Legion has worked, counted over the set the board already
+	// read: it is what tells a project with no Legion work from one whose facts have not been
+	// written yet, since neither carries a stored row.
+	for _, key := range p.ranked {
+		if p.phaseWork.has(key) {
+			header.LegionIssues++
+		}
+	}
 	// Slots in use are the daemon's own count where it reports one. dispatch://INFRA-980 makes
 	// admission.active list every issue that holds a slot, children included, so it is the
 	// authority; before that release the daemon lists roots there and only a root carries a slot,

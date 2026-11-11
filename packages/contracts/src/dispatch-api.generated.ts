@@ -4911,6 +4911,7 @@ export interface components {
       facts_cursor_age_seconds: null | number;
       /** Format: date-time */
       facts_updated_at: null | string;
+      legion_issues: number;
       queue_length: number;
       /** Format: date-time */
       read_at: null | string;
