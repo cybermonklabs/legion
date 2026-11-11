@@ -1407,9 +1407,10 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 
 // assertAcknowledgedThrough waits for consumer to have acknowledged every message of its filter up
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
-// deliveries: a message whose AckWait passes unacknowledged is due again at the server, and this
-// consumer takes it at the pull that follows its handler's return, which is at-least-once
-// delivery the consumer deduplicates and which a delivery count would read as more.
+// deliveries: a message whose AckWait passes unacknowledged falls due again at the server, and the
+// redelivery that may follow races the acknowledgement its handler's return sends
+// (ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
+// deduplicates and which a delivery count would read as more.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
 	testwait.Eventually(t, fmt.Sprintf("%s has acknowledged through stream sequence %d", consumer, last.Sequence), func() bool {
@@ -1973,11 +1974,11 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and each
 			// handling of this row ends, in a nak or in an acknowledgement, in about 200 ms, long
 			// before the first tick is due (keepInProgress, ackprogress.go). Where the margin
-			// closes the keeper defers a third read and prevents none: a report, or the
-			// acknowledgement, that reaches the server after the window has lapsed makes the
-			// message due again at the server, and this consumer takes it at the pull that
-			// follows the handler's return, since a fetch batch of consumerFetchBatch leaves no
-			// pull outstanding while the handler runs. The third read is made there.
+			// closes, the keeper prevents a third read only while its reports reach the server
+			// in time, and a late one leaves a redelivery racing the nak or acknowledgement
+			// that handling's return sends (ConsumerSpec.HandlerLimit's comment in consume.go,
+			// where that mechanism is written). A third read can be made no earlier than that
+			// redelivery.
 			spec.AckWait = time.Minute
 			var mu sync.Mutex
 			var asks []time.Time

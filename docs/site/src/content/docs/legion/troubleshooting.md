@@ -1134,9 +1134,10 @@ notice comes once per handoff commit, from whichever pass finds it first.
   after failures, not a backlog: a retried event keeps the time it was first stored. It can also
   be an event whose progress report, or whose acknowledgement, reached the server after the
   acknowledgement window had lapsed, which makes the event due again at the server with no
-  failure of its own; this consumer takes it at its next pull, once the handler that held it has
-  returned, and `an intake fact was delivered again and dropped as already applied`, under the
-  same `stream_seq`, is what names that second reading.
+  failure of its own. A second delivery may then reach this consumer at its next pull, once the
+  handler that held it has returned, and it races the acknowledgement that same return sends,
+  which usually wins. Where the delivery wins, `an intake fact was delivered again and dropped as
+  already applied`, under the same `stream_seq`, is what names that second reading.
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the
@@ -1155,8 +1156,11 @@ notice comes once per handoff commit, from whichever pass finds it first.
   count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
   at the consumer's next pull where the step held the handler past about one acknowledgement
   window after the limit, whichever the server takes first. A progress report that reached the
-  server late makes the event due again at the server while the handler runs, and this consumer
-  takes it at its next pull after that return all the same, which is the moment named above.
+  server late makes the event due again at the server while the handler runs. The two outcomes
+  are still the ones above: the redelivery reaches this consumer at its next pull after that
+  return, or the nak the cut sends is taken first, which takes the event out of the redelivery
+  queue and resets its timer, so the event comes one nak delay later, whichever the server takes
+  first.
   The reports stop at the limit, so a handler cut there has had no report for whatever it ran
   past the limit. A step that ignored the cancelled context would hold the message, and this
   warning, for the whole of its own run. Between this
@@ -1197,10 +1201,13 @@ notice comes once per handoff commit, from whichever pass finds it first.
   (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
   than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake reported
   the delivery in progress for `took`. Nothing was delivered to this consumer while that handler
-  ran: it asks for one message at a time and had no pull outstanding. The report defers a second
-  delivery rather than preventing one: a report, or the acknowledgement itself, that reaches the
-  server after the window has lapsed makes the event due again, and this consumer takes it at its
-  next pull after the handler returns. What says that happened is a second line under the same
+  ran: it asks for one message at a time and had no pull outstanding, except where the client
+  reconnects and asks again. That is what defers a second delivery while the handler runs. The
+  report is what prevents one, while each report reaches the server inside the window: each
+  report starts the window again. A report, or the acknowledgement itself, that reaches the
+  server after the window has lapsed makes the event due again, and a second delivery may then
+  reach this consumer at its next pull after the handler returns, racing the acknowledgement that
+  same return sends, which usually wins. What says that happened is a second line under the same
   `stream_seq`, `an intake fact was delivered again and dropped as already applied` with
   `delivered` one higher (the entry below). This line's own `delivered` is that delivery's count:
   the handling that outlived the window writes the line before its own acknowledgement. The fact

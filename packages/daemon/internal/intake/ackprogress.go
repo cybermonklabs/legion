@@ -19,32 +19,30 @@ import (
 //
 // It also quiets a true failure. A wedged handler does not show as that repeated preparation
 // while it holds, and does not raise the delivered count in the consumer-lag warning
-// (lagWatch.observe in consume.go), because the message it is stuck on is reported in progress,
-// and because the intake consumer, which pulls one message at a time, has no pull outstanding
-// while a handler runs. That is no promise: the keeper defers a second delivery rather than
-// preventing one. A progress report, or the acknowledgement itself, that reaches the server after
-// the acknowledgement window has lapsed makes the message due again at the server, and that
-// consumer takes it at the pull that follows the handler's return, where the repeated
-// preparation and the raised count come back for that one delivery. A reconnect, which pulls
-// again, is the one exception. The campaign of dispatch://INFRA-1113 measured both halves of
-// this at a 200 ms window: 21 messages whose handler ran past the window were never delivered
-// again, the longest running 888.6 ms under 12 reports of the keeper, and every redelivery it
-// traced was a signal the server got late — five times a progress report 2.3 ms to 177.9 ms
-// late, and once the acknowledgement.
+// (lagWatch.observe in consume.go), because nothing is delivered to this consumer while a handler
+// runs (ConsumerSpec.HandlerLimit's comment in consume.go, where that mechanism is written). What
+// keeps the message from falling due at all is the keeper, while its reports reach the server
+// before the window lapses. A report, or the acknowledgement itself, that reaches the server late
+// lets the message fall due while the handler still runs, and a redelivery that wins its race
+// with that handling's acknowledgement brings the repeated preparation and the raised count back
+// for that one delivery. The campaign of dispatch://INFRA-1113 measured both halves of this at a
+// 200 ms window: 21 messages whose handler ran past the window were never delivered again, the
+// longest running 888.6 ms under 12 reports of the keeper, and every redelivery it traced was a
+// signal the server got late — five times a progress report 2.3 ms to 177.9 ms late, and once
+// the acknowledgement.
 //
 // What still shows a wedged handler is the stall: ConsumerLag.Stalled, true once messages wait and
 // none has been handled for consumerStallAfter, and the state route's consumers[].stalled that
 // serves it (packages/daemon/internal/api/state.go).
 
 // keepInProgress reports message in progress to JetStream every `every` for as long as a handler
-// works on it, which holds off a second delivery of that message: each report the server gets
-// inside the acknowledgement window starts that window again, so the message is not handed out a
-// second time and prepared again. It is no promise. A report, or the acknowledgement itself,
-// that reaches the server after the window has lapsed makes the message due again at the server;
-// the keeper defers that delivery rather than preventing it, and the one caller's consumer takes
-// the message at the pull that follows the handler's return, since it pulls one message at a
-// time and a reconnect is the one exception (consumeMessage in consume.go). It returns stop,
-// which ends the keeper. stop is safe to call many times and returns only once the
+// works on it, which prevents a second delivery of that message while each report reaches the
+// server before the acknowledgement window lapses: such a report starts that window again, so the
+// message is not handed out a second time and prepared again. A report, or the acknowledgement
+// itself, that reaches the server late lets the message fall due again there, and the redelivery
+// then races the acknowledgement or nak the handler's return sends, which usually wins
+// (ConsumerSpec.HandlerLimit's comment in consume.go, where that mechanism is written). It
+// returns stop, which ends the keeper. stop is safe to call many times and returns only once the
 // keeper's goroutine has ended, so a caller that calls it before it acknowledges or naks the
 // message knows no tick can still be in flight: a tick that reached the server after a nak would
 // reset the server's redelivery timer and stretch the retry the nak asked for. nats.go would stop
@@ -57,11 +55,11 @@ import (
 // time.Ticker asks for: it drops a tick its goroutine was not scheduled for (Go 1.27.3). No report
 // covers the first period of a window, whatever the fraction is, because a ticker sends only after
 // each tick, so until one period has passed the window alone stands between the handler and the
-// server making the message due again, which the caller's consumer takes at the pull that follows
-// the handler's return. The campaign of dispatch://INFRA-1113 measured that first report at a
-// 200 ms window, whose period is 66.7 ms: the largest interval from the keeper's start to its
-// first report was 403.7 ms, which is 6.06 times the period, and the 99th percentile of that
-// interval was 276.8 ms.
+// server making the message due again, after which a redelivery races the acknowledgement or nak
+// the handler's return sends (ConsumerSpec.HandlerLimit's comment in consume.go). The campaign of
+// dispatch://INFRA-1113 measured that first report at a 200 ms window, whose period is 66.7 ms:
+// the largest interval from the keeper's start to its first report was 403.7 ms, which is 6.06
+// times the period, and the 99th percentile of that interval was 276.8 ms.
 //
 // jetstream.ErrMsgAlreadyAckd ends the keeper with no line at all. nats.go never marks a message
 // acknowledged for a progress signal (nats.go v1.53.1's (*jetStreamMsg).ackReply, which sets ackd

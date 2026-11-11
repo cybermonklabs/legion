@@ -189,8 +189,9 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// above the work each message does, and a redelivery the count would see needs the whole
 	// 30 seconds to pass before that handling's acknowledgement reaches the server. This consumer
 	// is intake.OpenConsumers' own, with the fetch batch of one every intake consumer takes
-	// (consumerFetchBatch, consume.go), so it would take such a redelivery at the pull that
-	// follows the handler's return, not while the handler runs.
+	// (consumerFetchBatch, consume.go), so no redelivery can reach it while a handler runs, and
+	// one the server makes after a handler's return races that return's acknowledgement
+	// (ConsumerSpec.HandlerLimit's comment in consume.go, where that mechanism is written).
 	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
 	if err != nil {
 		t.Fatalf("read the GitHub consumer: %v", err)

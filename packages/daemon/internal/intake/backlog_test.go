@@ -33,20 +33,22 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	spec := consumerSpec(&lockedBuffer{})
 	// A hang guard, not the subject: AckWait bounds each read a handling of these events makes
 	// (prepareRepository), and consumerSpec's 200 ms is about the length of such work on a loaded
-	// runner, so a minute is far above it and cuts nothing this row does. The margin is also what
-	// keeps the read below the hold's own: the backlog's first fact is in hand from the handler's
-	// first moment until after that read, and a redelivery of it needs the whole minute to pass
-	// before this handling's acknowledgement reaches the server. The campaign of
-	// dispatch://INFRA-1113 measured that trip at 516.8 ms at its largest, under 16 busy loops on
-	// 2 CPUs, and the handler's own work and that trip together, about 717 ms, are a factor of
-	// about 80 below this window. The progress keeper reports nothing here: it ticks at
-	// a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and the hold ends as soon
-	// as the read below is made, long before the first tick is due (keepInProgress,
-	// ackprogress.go). Where the margin closes the keeper defers a second delivery and prevents
-	// none: a report, or the acknowledgement, that reaches the server after the window has lapsed
-	// makes the message due again at the server, and this consumer takes it at the pull that
-	// follows the handler's return, since a fetch batch of consumerFetchBatch leaves no pull
-	// outstanding while the handler runs. That pull is after the read below.
+	// runner, so a minute is far above it and cuts nothing this row does. The window is the
+	// backstop's delay as well, and that is what keeps the read below inside the hold: the
+	// backstop further down this row releases the hold after spec.AckWait (held.releaseAfter),
+	// which at consumerSpec's 200 ms could free the backlog's first fact before that read is
+	// made. A redelivery of that fact needs the whole
+	// minute to pass before this handling's acknowledgement reaches the server, and it could act
+	// only after the read in any case, since that acknowledgement is sent only after it. The
+	// campaign of dispatch://INFRA-1113 measured that trip at 516.8 ms at its largest, under 16
+	// busy loops on 2 CPUs, and the handler's own work and that trip together, about 717 ms, are
+	// a factor of about 80 below this window. The progress keeper reports nothing here: it ticks
+	// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and the hold ends as
+	// soon as the read below is made, long before the first tick is due (keepInProgress,
+	// ackprogress.go). Where the margin closes, the keeper prevents a second delivery only while
+	// its reports reach the server in time, and a late one leaves a redelivery racing this
+	// handling's acknowledgement (ConsumerSpec.HandlerLimit's comment in consume.go, where that
+	// mechanism is written). Either outcome can act only after the read below.
 	spec.AckWait = time.Minute
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
