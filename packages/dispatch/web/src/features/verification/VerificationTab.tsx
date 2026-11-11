@@ -284,7 +284,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
           <span
             // The class map, never wordsFor: an answer this build holds no class for would
             // otherwise put the server's own word into className and leave the pill unstyled.
-            className={`${pillShapeClassName} ${surfaceMutedBg} ${PASS_STANDS_TEXT[stands] ?? textMutedOnSurface}`}
+            className={`${pillShapeClassName} ${surfaceMutedBg} ${PASS_STANDS_TEXT[stands] ?? textMutedOnSurfaceMuted}`}
             data-testid="verification-check-pass-stands"
           >
             {wordsFor(PASS_STANDS_LABELS, stands)}
