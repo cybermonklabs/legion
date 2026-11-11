@@ -1014,21 +1014,26 @@ type Machine struct {
 	// It is memory only, and it belongs to one launch at a time: the gate reads the kind off it
 	// and takes it onto the wake it parks, and the turn hands it back (reserveWake,
 	// wake.pluginMark, holdPluginRelaunch), the launch consumes it as it starts (launchNow,
-	// commitPluginRelaunch), and the decider drops whatever neither took (relaunchMarked). The
-	// mark itself is the claim's and durable, written by the launch that commits this intent.
+	// commitPluginRelaunch), and the decider drops whatever neither took (relaunchMarked). It
+	// never outlives the decision that raised it, which the end of every decision holds it to
+	// (endRefreshLane): a retry that still owes one carries it in its own closure
+	// (retryHolding). The mark itself is the claim's and durable, written by the launch that
+	// commits this intent.
 	pluginRelaunch *pluginIntent
 	// refreshCredit is whether this machine holds a credit of the stale-plugin refresh gate: one
 	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
 	// for was decided — by the daemon's pass, which hands what it took on the event it posts
 	// (StalePlugin.Admitted), or inside the decision itself, where a relaunch reached with none
-	// asks for its own (refreshPlugin's guard, admitRefresh) — and given back at the one helper
-	// that gives one back (releaseRefresh).
+	// asks for its own (refreshPlugin's guard, admitRefresh) — and given back at the end of the
+	// decision that holds it unless a refresh wake of this machine's own is waiting for its turn
+	// (endRefreshLane, releaseRefresh).
 	//
 	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
-	// claim that already holds a wake, so a second refresh of the same claim returns before it
-	// can take a second credit, and the one it was handed is released at that return. It is
-	// memory only, as the wake it is taken for is: a restart leaves the gate empty and the first
-	// pass fills it from the claims it reads (RefreshGate, refreshStalePlugins).
+	// claim that already holds a wake, and a post that arrives carrying a credit over a machine
+	// that already holds one gives the new one straight back to the gate rather than losing it
+	// behind this one flag (refreshPlugin). It is memory only, as the wake it is taken for is: a
+	// restart leaves the gate empty and the first pass fills it from the claims it reads
+	// (RefreshGate, refreshStalePlugins).
 	refreshCredit bool
 	// identity is the latest hello2 identity for the claim's current incarnation,
 	// kept until its enrollment lands; enrollmentSent is whether that enrollment has been handed
@@ -1472,9 +1477,19 @@ func (m *Machine) stoppingProcess() func() {
 	return func() { m.stopping = false }
 }
 
-// unlock ends a locked section that may have changed the claim: it publishes the claim, says the
-// machine decides nothing, then releases mu.
+// unlock ends a locked section that may have changed the claim: it holds the stale-plugin lane to
+// its invariants — the credit this machine holds goes back unless a refresh wake of its own is
+// waiting, and nothing of a relaunch's intent outlives the decision that raised it
+// (endRefreshLane) — publishes the claim, says the machine decides nothing, then releases mu.
+//
+// Every decision of a machine ends here, which is what makes it the place those two are kept:
+// the five locked sections that can change the claim all defer it (Handle, which every event and
+// every timer of this package comes through, ReleaseUncertainLaunch, PodUpdateTold, StartedBy,
+// Retree), and the six sections that take mu without it read the claim or count goroutines and
+// change neither the wake, the credit nor the intent (Claim, OnDurableState, Wait, compaction,
+// and the two goroutine tails in delivery.go and secrets.go).
 func (m *Machine) unlock() {
+	m.endRefreshLane()
 	m.publish()
 	m.decide(nil)
 	m.mu.Unlock()
@@ -1830,7 +1845,7 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool) error {
 // intent that mark came from goes back on the machine where that retry runs, so the relaunch it
 // raises waits under the lane's own kind rather than under the launch kind every other launch
 // takes — the restoration a refused turn's retry takes, from the same wrapper (retryHolding,
-// retryOf, reserveWake, dispatch://INFRA-2712 R4).
+// runWake, reserveWake, dispatch://INFRA-2712 R4).
 func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
@@ -2203,10 +2218,9 @@ func (m *Machine) retire(ctx context.Context) error {
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
 // (relaunchLater), no wake of the pacing waits its turn (reserveWake) — the launch it was to
 // make is the one this end replaces, and the credit of the refresh gate a refresh of the
-// stale-plugin lane held for that wake goes back with it (releaseRefresh,
-// dispatch://INFRA-2712 R1): nothing of that refresh waits in the pacing once the wake is
-// dropped, and a launch that reaches here has given the credit back already, at the gate that
-// let it run (reserveWake, runWake) — no send talks to it, no suspension is held for its turn,
+// stale-plugin lane held for that wake goes back at the end of this decision, which is where a
+// credit whose wake is gone goes back wherever that wake went (endRefreshLane,
+// dispatch://INFRA-2712 R1) — no send talks to it, no suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
 // replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
@@ -2226,8 +2240,6 @@ func (m *Machine) letGo() {
 	m.disarmAll()
 	m.relaunch = nil
 	m.wake = nil
-	// The wake went with the process this end lets go, so the credit goes back with it.
-	m.releaseRefresh()
 	m.forgetSend()
 	m.held = nil
 	m.staleRelaunch = nil

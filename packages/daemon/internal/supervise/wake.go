@@ -206,14 +206,12 @@ type wake struct {
 // that runs where it is raised — the controller's own claim, a daemon whose pacing is off —
 // writes its lane in the line it writes (wakeRan) exactly as one that waits does.
 //
-// Those same two returns give back the credit of the refresh gate this machine holds, if it
-// holds one (releaseRefresh, dispatch://INFRA-2712 R1): the work the credit was taken for runs
-// here rather than waiting in the pacing, which is the whole of what the gate counts. A wake of
-// this lane that parks keeps the credit on the machine for as long as it waits, and its turn is
-// what gives it back (runWake); a park of any other kind gives it back where it parks, since the
-// wake the credit was taken for is gone from the machine there (parkWake). Neither call here
-// reads the kind, since a machine holds a credit for a refresh and for nothing else, and a
-// release with none held is nothing.
+// Those same two returns leave the credit of the refresh gate this machine may hold with no
+// wake waiting for it, so the end of the decision gives it back (endRefreshLane,
+// dispatch://INFRA-2712 R1): the work the credit was taken for runs here rather than waiting in
+// the pacing, which is the whole of what the gate counts. A wake of this lane that parks keeps
+// the credit on the machine for as long as it waits, and the turn that takes that wake off the
+// machine is what gives it back (parkWake, wakeNow, runWake).
 func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(context.Context) error) error {
 	kind := WakeLaunch
 	if intent := m.pluginRelaunch; intent != nil {
@@ -226,7 +224,6 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 		// names (R6), so a wake no pacing could have held — the pacing off, or this wake let
 		// through — says so rather than swelling that count.
 		m.wakeRan(kind, false, 0)
-		m.releaseRefresh()
 		return run(ctx)
 	}
 	// Past the return above there is a limiter and this wake is not one it lets through, so the
@@ -237,7 +234,6 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 	at := reserve(now)
 	if !at.After(now) {
 		m.wakeRan(kind, true, 0)
-		m.releaseRefresh()
 		return run(ctx)
 	}
 	// The intent of a stale-plugin relaunch travels with the launch it names, so the wake that
@@ -267,25 +263,22 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 // held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
 // the wake's turn does not run.
 //
-// The credit of the refresh gate this machine may hold is given back here for a park of any
-// other kind (releaseRefresh, dispatch://INFRA-2712 R1): such a park overwrites the wake that
-// credit was taken for — the second launch raised over a claim whose refresh still waits, which
-// reserveWake states — and a credit whose wake is gone is worse than a credit merely lost
-// (RefreshGate). A park of this lane's own kind keeps it: that wake is the one the credit was
+// The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
+// and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
 // taken for, whether it is parked for the first time or taken up again (reserveWake,
-// reparkWake).
+// reparkWake), and a park of any other kind overwrites it — the second launch raised over a
+// claim whose refresh still waits, which reserveWake states — so the end of that decision gives
+// the credit back, a credit whose wake is gone being worse than a credit merely lost
+// (RefreshGate).
 //
 // No decision of this package raises that second launch over a parked refresh today — the lane
 // returns over a claim that already holds a wake of any kind, a stale registration raises
 // nothing over one whose launch waits, every observation and the stall backstop are held back
 // while a launch waits, and every path that lets the claim's process go drops the wake with it
-// (refreshPlugin, staleRegistration, judge, probe, backstopStalledTurn, letGo). What is kept
-// here is the shape of the rule rather than the handling of a case the machine drives, which is
-// what retryOf keeps for the same lane and for the same reason.
+// (refreshPlugin, staleRegistration, judge, probe, backstopStalledTurn, letGo). A path that
+// raises one later is held to the rule by ending its decision, with nothing for this park to
+// remember (endRefreshLane).
 func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Duration) error {
-	if waiting.kind != WakePluginRefresh {
-		m.releaseRefresh()
-	}
 	m.wake = waiting
 	m.arm(TimerWake, after, "")
 	if m.claim.Locator != nil {
@@ -314,11 +307,12 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // is tens of minutes away over a wave (holdSuspendUntilReady) — and that suspension takes the wake
 // with it, so no turn of such a claim is reached at all.
 //
-// Both ways out of a held suspension give the credit of the refresh gate this machine may hold
-// back, because neither leaves a refresh of this lane waiting in the pacing
-// (dispatch://INFRA-2712 R1): the wake that starts no process is spent where it is read and
-// gives the credit back there (releaseRefresh), and the suspension that ends the claim's process
-// gives it back with the wake it lets that process go with (endHeld, suspendedFor, letGo).
+// Both ways out of a held suspension leave nothing of this refresh waiting in the pacing, so the
+// end of this decision gives the credit of the refresh gate this machine may hold back
+// (endRefreshLane, dispatch://INFRA-2712 R1): the wake that starts no process is spent where it
+// is read, and the suspension that ends the claim's process lets that process go with the wake
+// it was parked over (endHeld, suspendedFor, letGo). The wake is off the machine either way,
+// which is what that end reads.
 //
 // Two things a launch does before it launches, which together close the window over a process
 // the gate left running (reserveWake), and which runWake below takes for this turn and for an
@@ -330,12 +324,12 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 //     cleanup is reserved. The refusal goes where launchAfter's own goes (relaunchRefused), and
 //     the turn gives back what its own park took before it does: the watch of the process this
 //     turn keeps (watchAgain). The credit of the refresh gate a refresh of the stale-plugin
-//     lane waited on goes back inside that refusal, which is where every refused launch of this
-//     lane gives one back (relaunchRefused, releaseRefresh), and the retry that refusal may
-//     leave waiting re-enters the gate as the lane that raised it, carrying the intent this
-//     wake held (retryOf, wake.again). Nothing of the claim is put right for a stale-plugin
-//     relaunch there, because nothing was written for it: only a launch that starts a process
-//     writes the mark (wake.pluginMark, launchNow).
+//     lane waited on goes back at the end of the decision that met the refusal, which is where
+//     every refused launch of this lane gives one back (relaunchRefused, endRefreshLane), and
+//     the retry that refusal may leave waiting re-enters the gate as the lane that raised it,
+//     carrying the intent this wake held (retryHolding, wake.again). Nothing of the claim is put
+//     right for a stale-plugin relaunch there, because nothing was written for it: only a launch
+//     that starts a process writes the mark (wake.pluginMark, launchNow).
 //   - A turn the process it replaces may have started is taken back first (interrupted), exactly
 //     as replaceProcess takes one back before it relaunches. The gate let this wake park over a
 //     live process, and that process can have confirmed a task since: letting it go without the
@@ -356,8 +350,8 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 		if !StartsProcess(waiting.kind) {
 			m.log.Info("supervise: this claim's wake came due while a suspension waits for its turn to end; the hold keeps that turn and the wake does nothing",
 				"kind", waiting.kind, "reason", m.held.Reason, "by", m.held.By)
-			// The wake is spent and nothing is left of it, so the credit goes back here.
-			m.releaseRefresh()
+			// The wake is spent and nothing is left of it; the credit goes back with the
+			// decision (endRefreshLane).
 			return nil
 		}
 		return m.endHeld(ctx)
@@ -380,15 +374,24 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // Both steps can end the wake's work with the process the claim records kept and the wake
 // spent, and each gives back exactly what it left standing. The watch is the first step's
 // alone (watchAgain), and so is the retry: a refusal that leaves one hands it the intent this
-// wake carried, so that the launch it raises waits under the lane that raised it (retryOf).
-// The credit of the refresh gate is given back by neither step: the refusal itself gives it
-// back, as it does for every refused launch of this lane wherever that refusal came from
-// (relaunchRefused, releaseRefresh, dispatch://INFRA-2712 R1). Neither step gives a plugin mark
-// back, because a wake that is abandoned writes none: the intent is written by the launch that
-// starts the process replacing the stale one, and by nothing else (wake.pluginMark,
-// holdPluginRelaunch, launchNow). A relaunch abandoned at either step started nothing, so the
-// claim keeps the mark of whatever relaunch last did run, and the next registration of this
-// same process is read against that one (staleRegistration).
+// wake carried, so that the launch it raises waits under the lane that raised it
+// (retryHolding). A refusal leaves a retry only over a live claim that records no process
+// (relaunchRefused's first branch), and this lane does park a wake over such a claim: the
+// launch whose StateLaunching write failed arms a retry that holds the intent, and the wake
+// that retry parks waits over the claim that write left recording none (launchNow,
+// relaunchLater, parkWake). So the retry handed on here is a case the machine drives, and the
+// lane's kind is what it must not lose on the way.
+//
+// Neither step gives the credit of the refresh gate back; the end of the decision does: the wake
+// is off the machine before either runs (wakeNow, runParkedLaunchNow), so a decision that ends at
+// the lifecycle refusal or at a take-back the store would not take holds a credit no wake of this
+// lane waits for, and gives it back there (endRefreshLane, relaunchRefused,
+// dispatch://INFRA-2712 R1). Neither step gives a plugin mark back, because a wake that is
+// abandoned writes none: the intent is written by the launch that starts the process replacing
+// the stale one, and by nothing else (wake.pluginMark, holdPluginRelaunch, launchNow). A
+// relaunch abandoned at either step started nothing, so the claim keeps the mark of whatever
+// relaunch last did run, and the next registration of this same process is read against that
+// one (staleRegistration).
 //
 // What giving that credit back means for the retry the refusal may arm is where the gate states
 // it: that retry asks this gate nothing, so the wake it parks waits in the pacing with no
@@ -402,10 +405,11 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // order in which the claim still holds what those two steps would spend: a claim that is no
 // longer stale, or that has started a turn since, is relaunched by this wake not at all
 // (refreshOverturned, dispatch://INFRA-2712 R2). Such a claim keeps its turn and the task that
-// turn is working, gives back the credit the gate admitted it on, and is left watched exactly as
-// the lifecycle refusal below leaves one (watchAgain), its probe left to the sweep's next
-// observation. The wake is spent and the relaunch is owed again, which the sweep's own
-// stale-plugin pass raises for a claim that is still stale when it next reads it.
+// turn is working, gives back at the end of this decision the credit the gate admitted it on,
+// and is left watched exactly as the lifecycle refusal below leaves one (watchAgain), its probe
+// left to the sweep's next observation. The wake is spent and the relaunch is owed again, which
+// the sweep's own stale-plugin pass raises for a claim that is still stale when it next reads
+// it.
 //
 // The difference between the two steps is what the store is reached for: only a delivery a turn
 // has confirmed is taken back (interrupted), a turn is confirmed in a ready or idle claim
@@ -424,7 +428,6 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 		m.log.Info("supervise: the fact this claim's plugin refresh was raised for is gone; its relaunch is left to the next stale-plugin pass",
 			"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
 		m.watchAgain()
-		m.releaseRefresh()
 		return nil
 	}
 	// Every kind a machine parks today starts a process (StartsProcess), so both steps are taken
@@ -434,7 +437,7 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 	if StartsProcess(waiting.kind) {
 		if err := m.checkLaunch(ctx); err != nil {
 			m.watchAgain()
-			return m.relaunchRefused(ctx, m.retryOf(waiting), err)
+			return m.relaunchRefused(ctx, m.retryHolding(waiting.pluginMark, waiting.again), err)
 		}
 		if m.claim.Locator != nil {
 			if err := m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd); err != nil {
@@ -443,62 +446,46 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 		}
 	}
 	// Past both steps the launch runs, so the intent this wake carried goes back to the machine
-	// for that launch to commit as it starts (holdPluginRelaunch, launchNow), and the credit the
-	// gate admitted this refresh on is given back: what it was counting is a refresh waiting in
-	// the pacing, and this one is waiting no longer (releaseRefresh).
+	// for that launch to commit as it starts (holdPluginRelaunch, launchNow). The credit the gate
+	// admitted this refresh on goes back at the end of this decision, as it does wherever the
+	// wake is spent: what it was counting is a refresh waiting in the pacing, and this one is
+	// waiting no longer (endRefreshLane).
 	m.holdPluginRelaunch(waiting.pluginMark)
-	m.releaseRefresh()
 	m.wakeRan(waiting.kind, paced, m.deps.Clock.Now().Sub(waiting.reserved))
 	return waiting.run(ctx)
 }
 
-// retryOf is the retry a refused turn leaves waiting (runWake, relaunchRefused, relaunchLater),
-// wrapped so that it re-enters the gate as the lane that raised it. The retry is the same launch
-// raised anew from the top (wake.again, launchAfter), and the gate reads the lane off the intent
-// the machine holds (reserveWake, pluginIntent). The turn took that intent onto the wake it was
-// parked with, so a retry that re-entered with the machine holding none would park a
-// stale-plugin relaunch under the launch kind: an operator reading the state through a wave
-// would count the lane short by exactly the claims whose refresh is in trouble, while the count
-// of what the lane has left still names them, and the two numbers would disagree in the one case
-// the operator is reading them for (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh).
+// retryHolding wraps a retry so that it re-enters the wake gate as the lane that raised it. The
+// retry is the same launch raised anew from the top (wake.again, launchAfter), and the gate
+// reads the lane off the intent the machine holds (reserveWake, pluginIntent), so a retry that
+// re-entered with the machine holding none would park a stale-plugin relaunch under the launch
+// kind: an operator reading the state through a wave would count the lane short by exactly the
+// claims whose refresh is in trouble, while the count of what the lane has left still names
+// them, and the two numbers would disagree in the one case the operator is reading them for
+// (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh).
 //
-// The intent is put back where the retry runs rather than at the refusal itself, which is what
-// the wrapper is for (retryHolding). A refusal over a claim that still records its process, and
-// one over a claim that runs none, leaves no retry at all — the error goes back to whoever asked
-// for it (relaunchRefused's first branch) — and a retry relaunchLater did arm can be dropped
-// before it runs, by a suspension the machine ends that claim with at that timer instead
-// (relaunchAgain) or with the process it is let go with (letGo). An intent restored at the
-// refusal would outlive every one of those and mark the next launch of this machine, whatever
-// raised it, as a stale-plugin relaunch (markPluginRelaunch, commitPluginRelaunch). Restored
-// where the retry runs it reaches exactly the launch the refusal left owing, and that launch
-// writes the mark where it starts the process replacing the stale one and nowhere else
-// (launchNow), which is the rule every other path of this relaunch keeps.
+// It answers the two retries a stale-plugin relaunch can leave waiting: the one a refused turn
+// arms, holding the intent the turn took off the wake it was parked with (runWake,
+// relaunchRefused), and the one a failed StateLaunching write arms after the launch had already
+// committed the intent (launchNow, relaunchLater). again is the launch raised anew from the top
+// and intent the relaunch it still owes.
 //
-// The window this guards is one no decision of the machine produces today, which the next
-// reader should know before taking the test that covers it for a driven case
-// (plugin_refresh_wake_test.go puts a claim in the window rather than driving it there). A
-// refusal leaves a retry only over a live claim that records no process (relaunchRefused's
-// first branch), and every wake that carries an intent was parked over a claim that records
-// one: the lane relaunches a claim whose process holds a capability (refreshPlugin), and every
-// path that lets a process go drops the wake with it (letGo). What is kept here is the shape of
-// the rule rather than the handling of a case the machine drives — a lane kind added later that
-// starts no process, or a refusal met over a claim this lane parked with none, must not lose
-// the lane's kind to the launch kind. The retry the machine does reach today is the other one
-// the same wrapper answers: the launch whose StateLaunching write failed after its intent was
-// committed (launchNow, retryHolding).
-func (m *Machine) retryOf(waiting *wake) func(context.Context) error {
-	return m.retryHolding(waiting.pluginMark, waiting.again)
-}
-
-// retryHolding is that restoration itself, shared by the two retries a stale-plugin relaunch
-// can leave waiting: the one a refused turn arms (retryOf) and the one a failed StateLaunching
-// write arms after the launch had already committed the intent (launchNow, relaunchLater).
-// again is the launch raised anew from the top and intent the relaunch it still owes; the
-// intent goes back on the machine where that retry runs and nowhere earlier, so it reaches the
-// launch that retry makes and no other (holdPluginRelaunch, reserveWake). Each caller's own
-// doc states why its retry would otherwise lose the lane's kind. A retry no stale-plugin
-// relaunch raised, and a kind that leaves none to raise, are handed back as they are: nil wraps
-// nothing.
+// The intent goes back on the machine where that retry runs and nowhere earlier, so it reaches
+// the launch that retry makes and no other (holdPluginRelaunch, reserveWake), and nowhere
+// earlier is the only place it can go: nothing of this lane outlives the decision that raised
+// it, so an intent put back at the refusal or at the failed write would be dropped as that
+// decision ended and the retry would park under the launch kind after all (endRefreshLane).
+// The closure is what carries it across the probe interval the retry waits out. A retry
+// relaunchLater armed and the machine then drops — by a suspension it ends that claim with at
+// that timer instead (relaunchAgain), or with the process it is let go with (letGo) — takes the
+// intent with it, so nothing is left to mark the next launch of this machine, whatever raised
+// it (markPluginRelaunch, commitPluginRelaunch). Restored where the retry runs, the intent
+// reaches exactly the launch that retry makes, and that launch writes the mark where it starts
+// the process replacing the stale one and nowhere else (launchNow), which is the rule every
+// other path of this relaunch keeps.
+//
+// A retry no stale-plugin relaunch raised, and a kind that leaves none to raise, are handed
+// back as they are: nil wraps nothing.
 func (m *Machine) retryHolding(intent *pluginIntent, again func(context.Context) error) func(context.Context) error {
 	if again == nil || intent == nil {
 		return again

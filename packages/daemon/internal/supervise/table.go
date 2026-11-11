@@ -192,8 +192,10 @@ type StalePlugin struct {
 	// exempt from the pacing and takes no credit (reserveWake); a claim the pass read in a
 	// turn, whose relaunch takes no wake until that turn's end asks the gate itself
 	// (holdStaleRelaunch, afterTurn, R2); and a post a test or another daemon path makes with
-	// no gate behind it. The machine holds what it is handed until the relaunch runs or is
-	// abandoned (refreshPlugin, refreshCredit, releaseRefresh).
+	// no gate behind it. The machine holds what it is handed until the decision that raises the
+	// relaunch ends with no refresh wake of this claim's waiting, and gives it straight back to
+	// the gate where it already holds one of its own (refreshPlugin, refreshCredit,
+	// endRefreshLane).
 	Admitted bool
 }
 
@@ -265,10 +267,19 @@ type PodUpdateOpen struct {
 // ask itself: the stale-plugin lane relaunches a stale process and asks its worker nothing
 // (refreshPlugin, relaunchStale), so no task this daemon sends is about a plugin contract.
 //
+// The text is built in three pieces, and reasons goes in a piece of its own. A reason is the JSON
+// the daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
+// character. A value put between two constant pieces that both hold that same quote reads as the
+// end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The sentence that holds
+// reasons has no quote character in it, and the sentences on each side of it are pieces of their
+// own. The three pieces make the same bytes as the one format string this text was.
+//
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
 func UpdateTask(round, reasons string) string {
-	return fmt.Sprintf(`The daemon must replace the pod that runs this issue's roles. The reasons are: %s.
+	return "The daemon must replace the pod that runs this issue's roles. " +
+		fmt.Sprintf("The reasons are: %s.", reasons) +
+		fmt.Sprintf(`
 
 Do these three steps now:
 
@@ -280,7 +291,7 @@ If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 and s
 
 The replacement deletes the pod and the disk. The disk holds your workspace. Work that you do not push is lost.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, reasons, round)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the

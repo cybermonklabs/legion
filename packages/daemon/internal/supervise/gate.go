@@ -17,46 +17,54 @@ package supervise
 // that every other lane's wakes, a newly admitted tree's first architect launch among them, queue
 // behind one minute of refreshes rather than behind the whole fleet's worth.
 //
-// A credit is taken before a refresh is posted (Admit), given back where the relaunch it was
-// taken for runs or is abandoned (Release), and the whole count is put right at each sweep from a
-// re-read of the wakes the lane actually has waiting (Correct).
+// A credit is taken before a refresh is posted (Admit), given back at the end of the decision
+// that holds it when no refresh wake of this machine's own is waiting (Release, Machine.unlock),
+// and the whole count is put right at each sweep from a re-read of the wakes the lane actually
+// has waiting (Correct).
 //
-// The release is the rule the lane holds to everywhere it can reach: a machine holds a credit
-// only while the refresh wake that credit was taken for is waiting or is having its turn, and
-// every path that drops such a wake gives the credit back where it drops it. releaseRefresh
-// names every one of those paths. A credit that outlived its wake would cost the lane more than
-// the credit: the machine goes on reading it as held, so its next uncredited post skips the
-// gate and parks a wake the gate never granted, which is the one thing this bound promises
-// cannot happen (Machine.refreshCredit, refreshPlugin).
+// The release is one rule enforced in one place: a machine holds a credit only while a
+// WakePluginRefresh wake of its own is parked or is having its turn, and every decision that ends
+// with no such wake on the machine gives the credit back as it ends (Machine.unlock,
+// endRefreshLane). Every path that drops, spends or never raises such a wake is covered by that
+// one check without naming the lane at all — the branches of refreshPlugin that raise no
+// relaunch, the refusal of every launch there is, the park of another kind over this lane's wake,
+// the wake's own turn, and the process let go with the wake parked over it — which is why no
+// decision of this package releases a credit of its own accord. A credit that outlived its wake
+// would cost the lane more than the credit: the machine goes on reading it as held, so its next
+// uncredited post skips the gate and parks a wake the gate never granted, which is the one thing
+// this bound promises cannot happen (Machine.refreshCredit, refreshPlugin).
 //
-// The correction is there for what no release can reach: a post to a claim this daemon no longer
-// supervises, which no machine of this daemon decides at all (internal/daemon's supervisor.post),
-// and the turn take-back the store refused, at the wake's own turn and at the relaunch's own
-// decision (runWake's interrupted, replaceNow). Each of those leaves one credit out until the
-// next sweep reads the wakes the lane really has waiting.
+// The correction is there for what no decision of a machine reaches: a post to a claim this
+// daemon no longer supervises, which no machine of this daemon decides at all (internal/daemon's
+// supervisor.post).
 //
-// One window of the lane leans the other way, and the same correction answers it: a launch of
-// this lane the lifecycle recheck refuses gives its credit back at the refusal itself, wherever
-// that refusal came from — the launch path's own pre-check, the recheck a wake's turn makes,
-// the relaunch a failure raises — as the rule above says it must (relaunchRefused,
-// releaseRefresh), and the retry that refusal may arm re-enters the pacing asking this gate
-// nothing — so the wake it parks is one the lane holds with no admission behind it until the
-// next correction counts it.
+// Two windows of the lane lean the other way, and the same correction answers both: each is a
+// wake of this lane that enters the pacing with no admission behind it and waits there until
+// the next correction counts it. The first is the retry of a refused launch: a launch of this
+// lane the lifecycle recheck refuses gives its credit back at the end of the decision that met
+// the refusal, wherever that refusal came from — the launch path's own pre-check, the recheck a
+// wake's turn makes, the relaunch a failure raises — and the retry that refusal may arm
+// re-enters the pacing asking this gate nothing (relaunchRefused, retryHolding). The second is
+// the retry of a launch whose write of StateLaunching failed: the credit went back at the end
+// of the decision that launch ran in, whether it waited a turn or ran where it was raised, and
+// the retry re-enters the gate asking it nothing in just the same way (launchNow,
+// relaunchLater).
 //
-// The bound a reader derives from this gate is read against both: each of the paths above costs
-// the lane one credit, the refusal's retry costs it one wake over the bound, and each costs it
-// only until the next sweep's correction. Release is the fast path and Correct the backstop —
-// without the correction a lane that lost K credits would admit nothing ever again, and without
-// Release a credit freed inside a minute would sit out the rest of that minute for nothing.
+// The bound a reader derives from this gate counts both: the lane can hold one wake over the
+// bound for each such retry waiting, and each of them costs it only until the next sweep's
+// correction. Release is the fast path and Correct the backstop — without the correction a lane
+// that lost K credits would admit nothing ever again, and without Release a credit freed inside a
+// minute would sit out the rest of that minute for nothing.
 //
 // It lives in this package rather than in internal/daemon because Deps already carries the rest
 // of the lane's facts (PluginContract, PluginRelaunchable, NoPluginInstall, WakePace) and because
 // internal/daemon imports this package: one gate per daemon serves both of the lane's askers, the
 // daemon's own pass over every stale claim (refreshStalePlugins) and the machine that holds a
 // stale relaunch back until the turn in flight ends (holdStaleRelaunch, refreshPlugin). The
-// machine's own two lines to it are at the foot of this file (admitRefresh, releaseRefresh), and
-// the credit each machine may hold is one, because a claim that already holds a wake is decided
-// nothing (Machine.refreshCredit, refreshPlugin).
+// machine's own lines to it are at the foot of this file (admitRefresh, releaseRefresh,
+// endRefreshLane), and the credit each machine may hold is one, because a claim that already
+// holds a wake is decided nothing and a post that arrives over a credit already held gives its
+// own straight back (Machine.refreshCredit, refreshPlugin).
 
 import "sync"
 
@@ -231,35 +239,45 @@ func (m *Machine) admitRefresh() bool {
 }
 
 // releaseRefresh gives back the credit this machine holds, if it holds one, and leaves it holding
-// none. It is the one way a credit goes back, so no path gives one credit back twice: a relaunch
-// that is abandoned at one step and re-decided at another releases once, and every further call
-// over the same machine is nothing.
+// none. A release over a machine holding none is nothing, so no path gives one credit back twice.
 //
-// Where it is called is requirement R1's own list (dispatch://INFRA-2712), and the whole of it,
-// because the rule it keeps is that no credit of this lane outlives the wake it was taken for
-// (RefreshGate). It is called at every exit of refreshPlugin that raises no gated relaunch, at
-// the lifecycle refusal relaunchStale makes before it reserves, at the refusal of every launch
-// there is, which is where a refused launch of this lane gives its credit back wherever the
-// refusal came from and whose retry then re-enters the gate as a launch of the lane with no
-// credit of its own (relaunchRefused, launchAfter, runWake, relaunchAfterFailure), at the three
-// places the wake's work is about to run (reserveWake's exempt and straight-through paths,
-// runWake), at the re-read that overturns a refresh at its own turn (refreshOverturned, R2),
-// and at the three places a wake is dropped with nothing of its refresh left waiting: the
-// machine letting the claim's process go with the wake it was parked over, which every
-// suspension, failure and retirement reaches and which the suspension a wake's turn ends
-// reaches too (letGo, wakeNow's endHeld, suspendedFor); the park of another lane's wake over
-// the one this credit was taken for, a park of this lane's own kind keeping it (parkWake); and
-// the turn of a wake that starts no process, which is spent where it is read and runs nothing
-// (wakeNow).
-//
-// What no call of it reaches is left to the sweep's own correction (Correct,
-// refreshStalePlugins), which is one rule for all of them rather than a release at each: a post
-// to a claim the daemon no longer supervises, and a take-back the store refused at the wake's
-// turn or at the relaunch's own decision (runWake's interrupted, replaceNow).
+// Its one caller is endRefreshLane below, and no decision of this package releases of its own
+// accord: there is no list of release sites to keep in step with the code (RefreshGate,
+// Machine.unlock). A credit the machine never took is not its to give back — the second one an
+// admitted post hands a machine already holding one goes back to the gate itself (refreshPlugin).
 func (m *Machine) releaseRefresh() {
 	if !m.refreshCredit {
 		return
 	}
 	m.refreshCredit = false
 	m.deps.RefreshGate.Release()
+}
+
+// endRefreshLane holds the stale-plugin lane to its two invariants, at the one line every
+// decision of a machine ends on (Machine.unlock, dispatch://INFRA-2712 R1). Both are of the same
+// shape — nothing of a relaunch this lane raised may outlive the decision that raised it, except
+// the wake that relaunch is waiting on — and both are kept here rather than at each of the paths
+// that could break them, because a path added later keeps them by ending its decision.
+//
+// The credit goes back unless a refresh wake of this machine's own is waiting: that wake is the
+// one thing a credit may be held for, from the park that raises it to the turn that runs it
+// (parkWake, wakeNow), and a decision that ends with any other wake on the machine, or with
+// none, has either dropped that wake, spent it, or never raised one. A credit kept past such a
+// decision is worse than a credit lost, because the machine reads it as held at its next
+// uncredited post, skips the gate and parks a wake the gate never granted (refreshCredit,
+// refreshPlugin).
+//
+// The intent goes whatever the decision did with it: it names one launch and no other, and the
+// launch it names is raised, parked and committed inside the decision that marked it
+// (markPluginRelaunch, reserveWake, commitPluginRelaunch). One left standing here would mark
+// the next launch of this machine — a resume, a retry, a death's relaunch — as a relaunch of
+// this lane, which writes PluginRelaunchFor for a contract no relaunch was made for and reports
+// the lane one claim wide of what it holds (dispatch://INFRA-2712 R4). A retry that still owes
+// one carries it in its own closure and puts it back where it runs, so it loses nothing here
+// (retryHolding).
+func (m *Machine) endRefreshLane() {
+	if m.wake == nil || m.wake.kind != WakePluginRefresh {
+		m.releaseRefresh()
+	}
+	m.pluginRelaunch = nil
 }

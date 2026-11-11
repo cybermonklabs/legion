@@ -49,12 +49,12 @@ const (
 // the process the claim still runs (refreshPlugin, relaunchStale, parkWake). It answers the
 // harness and the wake that waits.
 //
-// The walk to ready spends the limiter's burst, so the relaunch raised after it is one the
-// pacing holds rather than one that runs where it is raised, which is the whole of what these
-// tests are about. The claim keeps the process it records and the state it is in, because the
-// park writes neither (parkWake). PluginRelaunchable is left as the harness leaves it, false:
-// the lane's own pass never reads it — the daemon's pass and the registration path do
-// (refreshStalePlugins, staleRegistration) — so a test that walks a relaunched claim back to
+// The walk to the state asked for spends the limiter's burst, so the relaunch raised after it
+// is one the pacing holds rather than one that runs where it is raised, which is the whole of
+// what these tests are about. The claim keeps the process it records and the state it is in,
+// because the park writes neither (parkWake). PluginRelaunchable is left as the harness leaves
+// it, false: the lane's own pass never reads it — the daemon's pass and the registration path
+// do (refreshStalePlugins, staleRegistration) — so a test that walks a relaunched claim back to
 // ready has its registration accepted rather than refused for a contract this harness gives it
 // no way to speak.
 //
@@ -64,7 +64,15 @@ const (
 // claim's (refreshWakeRate).
 func refreshParked(t *testing.T) (*harness, WakeWaiting) {
 	t.Helper()
-	return refreshParkedAt(t, wakeRate)
+	return refreshParkedAt(t, wakeRate, StateReady)
+}
+
+// refreshParkedIdle is that same window over a claim whose turn has ended, which is the state
+// the lane's own pass finds most of a fleet in: a claim in a turn is held back for its end
+// (holdStaleRelaunch), so what a sweep posts and the gate admits is mostly idle claims.
+func refreshParkedIdle(t *testing.T) (*harness, WakeWaiting) {
+	t.Helper()
+	return refreshParkedAt(t, wakeRate, StateIdle)
 }
 
 // refreshWakeRate is twice the shipped rate, which puts the turn of a second wake 7.5s out
@@ -73,18 +81,18 @@ func refreshParked(t *testing.T) (*harness, WakeWaiting) {
 // deadline that would otherwise have run first.
 const refreshWakeRate = 2 * wakeRate
 
-func refreshParkedAt(t *testing.T, rate int) (*harness, WakeWaiting) {
+func refreshParkedAt(t *testing.T, rate int, state ClaimState) (*harness, WakeWaiting) {
 	t.Helper()
 	h := pacedHarness(t, rate)
-	h.reach(StateReady)
+	h.reach(state)
 	h.m.deps.PluginContract = refreshContract
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
 	waiting := h.wantWaitingWake(WakePluginRefresh)
-	if got := h.claim(); got.State != StateReady || got.Locator == nil {
+	if got := h.claim(); got.State != state || got.Locator == nil {
 		t.Fatalf("the claim whose refresh waits is %s recording %+v, want %s recording the process it still runs",
-			got.State, got.Locator, StateReady)
+			got.State, got.Locator, state)
 	}
 	return h, waiting
 }
@@ -154,7 +162,7 @@ func TestAStaleRegistrationsRelaunchWaitsUnderTheLaunchKind(t *testing.T) {
 // (refreshWakeRate, testStop): that deadline would suspend the claim by itself a few seconds
 // later, and a test that let it fire would read the same claim whatever the turn did.
 func TestASuspensionHeldOverTheRefreshsRelaunchEndsAtItsTurn(t *testing.T) {
-	h, waiting := refreshParkedAt(t, refreshWakeRate)
+	h, waiting := refreshParkedAt(t, refreshWakeRate, StateReady)
 	stale := h.locator()
 	// A turn of the agent's own is what makes the suspension one the machine holds rather than
 	// one it runs where it arrives (holdSuspension).
@@ -295,22 +303,25 @@ func TestAnOperatorsDeliveryOverTheRefreshsParkedRelaunchRunsItNow(t *testing.T)
 // at the probe interval from the top (runWake, relaunchRefused, relaunchLater), and that retry
 // re-enters the gate: the intent the wake carried goes back to the machine for it, so the wake
 // it parks waits under the lane's own kind rather than under the launch kind every other launch
-// takes (retryOf, reserveWake). Counted by its kind — which is the whole reason the kind exists
-// — a lane that lost its refreshes to `launch` there would under-count exactly the claims whose
-// refresh is in trouble, while the count of what the lane has left still named them, and the two
-// numbers an operator reads a wave by would disagree in the one case they are read for
-// (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh). The mark follows the intent and is
-// written by the launch that starts the process replacing the stale one, and by nothing before
-// it: the refusal marks nothing, and the retry's own launch marks the claim as it starts
+// takes (retryHolding, reserveWake). Counted by its kind — which is the whole reason the kind
+// exists — a lane that lost its refreshes to `launch` there would under-count exactly the
+// claims whose refresh is in trouble, while the count of what the lane has left still named
+// them, and the two numbers an operator reads a wave by would disagree in the one case they are
+// read for (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh). The mark follows the intent
+// and is written by the launch that starts the process replacing the stale one, and by nothing
+// before it: the refusal marks nothing, and the retry's own launch marks the claim as it starts
 // (launchNow, commitPluginRelaunch).
 //
 // The refusal leaves a retry only over a claim that records no process and is live
-// (relaunchRefused's first branch, which hands the error back for every other claim), and no
-// decision of this machine parks a refresh that way: the lane relaunches a claim that holds a
+// (relaunchRefused's first branch, which hands the error back for every other claim), and the
+// refresh pass itself parks no refresh that way: the lane relaunches a claim that holds a
 // capability, so it records its process, and every path that lets a process go drops the wake
 // with it (letGo, refreshPlugin). So the claim is put in that window here rather than driven
-// into it, and what the case holds is the rule that answers whatever reaches it — a retry of
-// this lane's launch is this lane's.
+// into it. The road that does drive a refresh wake over a claim recording no process is the
+// retry of a launch whose own write failed, which the case below drives from end to end
+// (TestTheRetryOfARefreshWhoseLaunchWriteFailedWaitsUnderTheLanesOwnKind); what this case
+// holds is the same rule met at the turn's own refusal — a retry of this lane's launch is this
+// lane's.
 //
 // The negative control is the wrapping reverted (runWake handed waiting.again itself): the
 // retry then parks under `launch`, which this test reads at the kind of the wake waiting.
@@ -353,4 +364,131 @@ func TestTheRetryOfARefusedRefreshWaitsUnderTheLanesOwnKind(t *testing.T) {
 		t.Fatalf("the claim after the retry that ran is marked for %d, want %d: the retry is the relaunch this lane owed", got, refreshContract)
 	}
 	h.wantWakeLine(h.token, "kind=plugin-refresh", "waited=true")
+}
+
+// The retry a launch's own failed write leaves waiting is the lane's too, and this is the road
+// the machine drives to it. The refresh's turn passes its lifecycle recheck, lets the stale
+// process go, and the claim write that records StateLaunching fails: the launch has started
+// nothing, it keeps in memory the mark it had already committed, and it tries the same launch
+// again at the probe interval (launchNow, relaunchLater). That retry is a launch from the top
+// and reserves afresh, and the intent the failed launch took off the machine goes back on it
+// where the retry runs, so the wake it parks is the lane's rather than a plain launch
+// (retryHolding, reserveWake). Counted by its kind, a refresh that lost its wake to `launch`
+// here is a claim the lane is still working through that an operator reading the wave cannot
+// see it working through, which is the one disagreement the kind exists to prevent
+// (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh).
+//
+// The wake that retry parks waits over a claim that records no process, which is the window
+// the case above can only put a claim in: this one reaches it from a stale idle claim and the
+// lane's own pass.
+//
+// The negative control is the wrapping reverted (launchNow handing relaunchLater the bare
+// closure): the retry then parks under `launch`, which this case reads at the kind of the wake
+// waiting and again at the lines its turns write.
+func TestTheRetryOfARefreshWhoseLaunchWriteFailedWaitsUnderTheLanesOwnKind(t *testing.T) {
+	h, waiting := refreshParkedIdle(t)
+	stale := h.locator()
+	// From here the store takes no claim write, so the launch the turn runs records nothing.
+	h.store.fail("PutClaim", errBoom)
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	h.wantWakeLine(h.token, "kind=plugin-refresh", "waited=true")
+	h.wantStarts(h.token, 1)
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the launch whose write failed left the claim %s recording %+v, want %s recording no process",
+			c.State, c.Locator, StateLaunching)
+	}
+	if _, ok := h.m.timers[TimerRelaunch]; !ok {
+		t.Fatalf("the launch whose write failed armed %v, want its retry on the probe interval", h.m.timers)
+	}
+	if stops := h.calls("Suspend"); len(stops) == 0 || stops[len(stops)-1].Locator != stale {
+		t.Fatalf("stopped %+v, want the stale process this launch let go, %+v", stops, stale)
+	}
+
+	// The store answers again and the retry runs, with a wave of a daemon's own claims in the
+	// queue ahead of it: the retry reserves afresh, so it waits a turn of its own, which is the
+	// wake this case reads the kind of. Without the queue the limiter has caught up over the
+	// probe interval and the retry runs where it is raised, which is no park at all.
+	h.store.fail("PutClaim", nil)
+	queueAhead(h, 4)
+	h.advance(testProbe)
+
+	retry := h.wantWaitingWake(WakePluginRefresh)
+	h.wantStarts(h.token, 1)
+
+	h.advance(retry.At.Sub(h.clock.Now()))
+
+	h.wantStarts(h.token, 2)
+	if got := h.store.load(h.token).PluginRelaunchFor; got != refreshContract {
+		t.Fatalf("the claim stored after the retry that ran is marked for %d, want %d: the retry is the relaunch this lane owed",
+			got, refreshContract)
+	}
+	if lines := h.logs.lines(WakeRanMessage, "claim="+string(h.token), "kind=plugin-refresh"); len(lines) != 2 {
+		t.Fatalf("logged %v, want the lane's own line from the turn whose write failed and from the retry's turn", lines)
+	}
+	if lines := h.logs.lines(WakeRanMessage, "claim="+string(h.token), "kind=launch"); len(lines) != 1 {
+		t.Fatalf("logged %v, want the one launch-kind wake of this claim, its own first launch in the walk to idle: every wake of it since is this lane's", lines)
+	}
+}
+
+// And when that retry's own lifecycle recheck refuses, the machine is left holding no intent at
+// all: the retry put it back for the launch it was raising, and the decision that met the
+// refusal ended with it, which is the rule every decision of a machine ends on (endRefreshLane,
+// Machine.unlock). So the next launch of this claim is counted as the launch it is, and not as
+// one of the lane's. An intent left standing would mark that launch for a contract no relaunch
+// of it was made for and count it into the lane an operator reads the wave by
+// (commitPluginRelaunch, dispatch://INFRA-2712 R4), and the relaunch the lane still owes is not
+// lost by that: the next sweep reads the claim stale and posts it again (refreshStalePlugins).
+//
+// The refusal here is the tree's cleanup reserved, which suspends the claim for the daemon
+// (relaunchRefused), and the launch that follows is the daemon's own resume by rule once that
+// cleanup has cleared. An operator's resume is the same launch and reads the same, but it is
+// exempt from the pacing and so parks nothing (exemptWake): a paced one is taken here because
+// it parks a wake, and this case reads the kind of that wake as well as the kind of the line
+// its turn writes.
+//
+// The negative control is the intent left standing at the end of the decision (endRefreshLane's
+// last line removed): the resume's wake then parks under `plugin-refresh` and its line says the
+// lane ran a refresh it never raised.
+func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *testing.T) {
+	h, waiting := refreshParkedIdle(t)
+	h.store.fail("PutClaim", errBoom)
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	if _, ok := h.m.timers[TimerRelaunch]; !ok {
+		t.Fatalf("the launch whose write failed armed %v, want its retry on the probe interval", h.m.timers)
+	}
+	// The write lands again, and the tree's cleanup is reserved by the time the retry rechecks
+	// the lifecycle, which is the refusal that suspends the claim for the tree's close.
+	h.store.fail("PutClaim", nil)
+	store := &refusableCheckLaunchStore{memStore: h.store, refuse: true}
+	h.m.deps.Store = store
+
+	h.advance(testProbe)
+
+	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon {
+		t.Fatalf("the refused retry left the claim %s suspended by %q, want %s by %q: the tree's close retires it",
+			c.State, c.SuspendedBy, StateSuspended, SuspendedByDaemon)
+	}
+	if intent := h.m.pluginRelaunch; intent != nil {
+		t.Fatalf("the machine holds the relaunch intent %+v after the refused retry, want none: nothing of this lane outlives the decision that held it", *intent)
+	}
+
+	// The cleanup clears and the claim is launched again, by the rule that says it owns its
+	// issue's phase, with a wave in the queue ahead of it so that this launch waits a turn.
+	store.refuse = false
+	queueAhead(h, 4)
+	h.must(RequestRuleResume{Claim: h.token, Reason: "it owns its issue's phase"})
+
+	resumed := h.wantWaitingWake(WakeLaunch)
+
+	h.advance(resumed.At.Sub(h.clock.Now()))
+
+	h.wantStarts(h.token, 2)
+	h.wantWakeLine(h.token, "kind=launch", "waited=true")
+	if lines := h.logs.lines(WakeRanMessage, "claim="+string(h.token), "kind=plugin-refresh"); len(lines) != 1 {
+		t.Fatalf("logged %v, want the one line of the refresh turn whose write failed: the resume's launch is none of this lane's", lines)
+	}
 }

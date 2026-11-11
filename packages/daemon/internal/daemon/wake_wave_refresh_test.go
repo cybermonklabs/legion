@@ -598,13 +598,15 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// own guard, launchWaits). So no death relaunch is raised over that wake, the wake keeps
 		// its turn and its credit, and the process the wake's turn lets go is the dead one.
 		//
-		// What does take a credit away with no return is every path that drops a waiting wake
+		// What does take a credit out of the gate is every path that drops a waiting wake
 		// without running it (letGo), and an operator's suspension of such a claim is one of
-		// them: it ends the very process the refresh wake was parked over. That is the credit
-		// the next sweep's correction takes back, which is what requirement R1 promises of every
-		// loss outside the three paths that return a credit directly (the correction
-		// refreshStalePlugins makes, supervise.RefreshGate.Correct;
-		// decision P2 of dispatch://INFRA-2712/artifact/plan-md).
+		// them: it ends the very process the refresh wake was parked over. The credit comes
+		// back inside that same decision, which ends with no refresh wake of this machine's own
+		// waiting (supervise's endRefreshLane, Machine.unlock), and the next sweep's pass is
+		// what spends it, posting another stale claim on it. The correction stays the backstop
+		// for the losses no decision of a machine reaches (the correction refreshStalePlugins
+		// makes, supervise.RefreshGate.Correct; decision P2 of
+		// dispatch://INFRA-2712/artifact/plan-md).
 		//
 		// It reads a full gate too, and waits for one in the same way, for the same reason: a
 		// lane that never fills one has the drain below to answer for, and the end of this case
@@ -631,12 +633,13 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 					len(after), killed, claimsOfWakes(after)[killed], len(waiting))
 			}
 
-			// The credit a dropped wake does take away, and the sweep that takes it back. The
-			// sweeps are counted from the moment the wake is seen gone rather than from the
-			// request that dropped it, because the sweep runs on the wall clock while the drop
-			// and the reading of it are the test's own round trips: what is being measured is
-			// the correction, which is the next pass's first act (refreshStalePlugins), not how
-			// long this test took to see the wake go.
+			// The credit the dropped wake gives back, and the sweep that spends it on another
+			// claim: what this segment measures is the release inside the suspension's own
+			// decision followed by the next sweep's admission. The sweeps are counted from the
+			// moment the wake is seen gone rather than from the request that dropped it,
+			// because the sweep runs on the wall clock while the drop and the reading of it are
+			// the test's own round trips: what is being measured is that pass's own first acts
+			// (refreshStalePlugins), not how long this test took to see the wake go.
 			status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(drained)+"/suspend", nil, true)
 			if status != http.StatusOK {
 				t.Fatalf("the suspend of %s, which holds an admitted refresh wake, = %d; body %s", drained, status, body)

@@ -1741,7 +1741,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // pass reads the claims of a snapshot, and the machine decides the post as the claim stands
 // then: a claim read idle can have started a turn by the time its post is decided, and one read
 // working can have ended it. The first is posted a credit the machine gives straight back
-// (refreshPlugin, releaseRefresh) and is relaunched at that turn's end or at a later sweep; the
+// (refreshPlugin, endRefreshLane) and is relaunched at that turn's end or at a later sweep; the
 // second is posted none, and raises its relaunch at the next sweep, which is one minute. One
 // sweep is what an imperfect skip costs here, as it is for the wake the parked skip reads.
 //
@@ -1822,9 +1822,10 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // claim that left its round at a registration speaking this daemon's contract (supervise's
 // endCurrentPluginRound) is no longer stale at all, and the contract term above passes over it.
 //
-// noPluginInstall nil is every launch installing a plugin, which is what a tmux daemon has and
-// what a source a test builds by hand holds; the daemon's own readers are each given the rule
-// over this deployment's configuration (noPluginInstall, serve).
+// noPluginInstall nil is every launch installing a plugin, which only a source a test builds by
+// hand holds: serve gives the state's source the rule over this deployment's configuration and
+// the lane's own pass builds a closure of it at every sweep, so no daemon reads this term as
+// nil, a tmux daemon included (noPluginInstall, serve, refreshStalePlugins).
 func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bool) bool {
 	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
 		return false
@@ -2347,8 +2348,9 @@ type source struct {
 	// noPluginInstall is whether a claim's launch installs no plugin at all (the package's
 	// noPluginInstall over this daemon's configuration), the one term of the stale-plugin lane's
 	// own rule that the claim itself does not carry, which State needs to count what that lane
-	// has left (api.State.ClaimsToRefresh). Nil is every launch installing a plugin: that is
-	// what a tmux daemon has, and what a source a test builds by hand reads as.
+	// has left (api.State.ClaimsToRefresh). Nil is every launch installing a plugin, which only
+	// a source a test builds by hand reads as: serve sets this field over the daemon's own
+	// configuration, whatever the runtime.
 	noPluginInstall func(supervise.Claim) bool
 }
 
