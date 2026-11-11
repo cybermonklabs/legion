@@ -32,7 +32,8 @@ type routeAnswer struct {
 // column would have to be written on every row of the table, GET rows included. No row carries
 // its shape: routes() stamps the write class and the OAuth scopes onto the row it builds, and
 // nothing stamps this (routes_table.go), so the emitter and the two mount guards read the map
-// here. routes_shapes_test.go pins how many rows it holds.
+// here. routes_shapes_test.go holds it to the table: the map and the rows the server mounts are
+// the same set.
 type routeShape struct {
 	// Status is the status the route answers when it succeeds.
 	Status int
