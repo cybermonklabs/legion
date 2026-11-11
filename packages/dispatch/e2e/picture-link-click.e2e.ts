@@ -1,8 +1,6 @@
-import { expect, test } from "@playwright/test";
-
 import { createIssue, createIssueArtifact, createProject, editArtifact } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A picture line the editor cannot draw gives way to a link to the artifact's page
@@ -17,10 +15,6 @@ const agentSession = {
   actor: { kind: "session" as const, id: "e2e-picture-link-click" },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @firefox: the engine's focus rule for a click on a link inside the editor.
 // @pr: The picture-link family's one row on the lane: a fallback link far down the document opens the artifact's page on a plain click.

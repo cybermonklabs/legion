@@ -60,7 +60,7 @@ export interface Measured {
  * longest hold was 585 ms in Chromium and 1,001 ms in Firefox, and the two rows of
  * `nested-directive.e2e.ts` read 61 and 79 ms. The Firefox figure is the 49-marker body, the
  * longest the page parses on its own thread (`markdown-worker-threshold.ts`), and it is the one
- * row this pod leaves no room under the bound: the same row read a 435 ms gap at one lane on a
+ * row this pod leaves no room under the bound: the same row read a 435 ms gap at one worker on a
  * CI runner, and 787 to 1,370 ms over six runs here. With `MarkdownBody`'s sliced painter taken
  * out, so that the 16,000 elements of an 8,000-item list are built and laid out in one task,
  * the three rows that draw one read 908 to 1,010 ms here against the 312 to 382 ms they read

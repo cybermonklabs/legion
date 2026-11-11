@@ -1,9 +1,11 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { ApproverGrantResp, LauncherCredentialResp } from "../../api/types";
 import { GrantsSection } from "./GrantsSection";
@@ -157,7 +159,8 @@ test("revoking a machine login refreshes Live grants", async () => {
 });
 
 test("the machine-login page lists the viewer's machine logins, and Revoke ends the one confirmed", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   let live = [devbox, laptop];
   const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
     credentials: live,
@@ -181,9 +184,7 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
       ],
     ]);
     // A mutation calls its function a few microtasks after the click; a timer runs after them all.
-    const settled = Promise.withResolvers<void>();
-    setTimeout(settled.resolve, 0);
-    await settled.promise;
+    await tick(0);
     expect(revokeMachineLogin).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
@@ -195,6 +196,7 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
     expect(section.getByText("laptop.example.com")).toBeDefined();
     expect(revokeMachineLogin).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     cleanup();
     confirm.mockRestore();
     getMachineLogins.mockRestore();

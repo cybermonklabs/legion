@@ -68,6 +68,19 @@ const waitingOnExpression = `case
 	else coalesce(lr.turn, 'human')
 end`
 
+// askedOfPersonExpression is the one rule for which person an ask waits on: the person somebody
+// handed it to, and the assignee of its issue until somebody does. Three reads share it: the
+// Inbox read's person filter (?assignee=, api/inbox.go), the author's read behind
+// `dispatch open-asks` (listOpenAsks in api/asks.go), and the open ask the Replies list leaves
+// out, since the Inbox already lists it (myRepliesOwner in api/replies.go). It names the ask a
+// and its issue i, so every query reading it joins issues as i.
+//
+// It compares with = rather than wrapping either column in lower(btrim(...)): both
+// asks.asked_of and issues.assignee hold what model.CanonicalLogin returns, so the two sides
+// match as they are stored. The expression spans two tables, so no index on issues.assignee
+// (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
+const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee)`
+
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
 // anchored ask on its document and an unanchored one on its Conversation turn (the bare issue page
@@ -91,12 +104,17 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 // askReadColumns are askRowColumns plus the newest comment in the ask's thread. WaitingOn derives
 // from that reply with the moved and newly handed-back approval-request overrides in
 // waitingOnExpression, aliased waiting_on so a query ordering by it (the Inbox) names the column
-// rather than evaluating the rule a second time; LastReply still names the newest comment. Queries
-// selecting them read from askReadFrom. Event payloads are built from askRowColumns instead: they
-// never carry WaitingOn.
-const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression + ` as waiting_on`
+// rather than evaluating the rule a second time; LastReply still names the newest comment.
+// WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
+// waiting_on_person for the same reason, and null when nobody waits. Queries selecting them read
+// from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
+const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
+	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
 
-var askReadFrom = askRowFrom + lastReplyJoin
+// askReadFrom joins the ask's issue as i, which askedOfPersonExpression reads; a query over it
+// that wants the issue's own columns reads them from that join rather than joining issues again.
+var askReadFrom = askRowFrom + `
+	left join issues i on i.key = a.issue_key` + lastReplyJoin
 
 // nullableAskArtifactRef holds the nullable columns of one optional document an ask names - a
 // quoted anchor's or an approval request's artifact_id, both resolved through a left join that
@@ -289,18 +307,23 @@ func (s *server) loadAskAnchorArtifact(
 }
 
 // scanAskRead decodes one askReadColumns row; an open ask gets WaitingOn from
-// waitingOnExpression, and the newest reply is returned separately (nil when the thread is
-// empty).
+// waitingOnExpression, WaitingOnPerson comes from askedOfPersonExpression, which is null in SQL
+// when nobody waits on the ask, and the newest reply is returned separately (nil when the thread
+// is empty).
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time
 	var turn string
-	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn}, extra...)...)
+	var waitingOnPerson *string
+	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson}, extra...)...)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
 	if ask.State == "open" {
 		ask.WaitingOn = turn
+	}
+	if waitingOnPerson != nil {
+		ask.WaitingOnPerson = *waitingOnPerson
 	}
 	if repliedAt == nil {
 		return ask, nil, nil

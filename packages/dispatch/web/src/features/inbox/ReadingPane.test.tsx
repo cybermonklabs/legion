@@ -25,6 +25,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow } from "../threads/replies-fixture";
+import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
 
@@ -193,17 +194,21 @@ function renderPane({
   const answered: string[] = [];
   /** Every registration the head's Snooze made, in order: `[askId, live]`. */
   const snoozeLiveness: (readonly [string, boolean])[] = [];
+  /** Every registration a card's hand-on made, in order: `[askId, live]`. */
+  const handOnLiveness: (readonly [string, boolean])[] = [];
   const tree = (row: InboxRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
-            <ReadingPane
-              onAnswered={(id) => answered.push(id)}
-              onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
-              row={{ ask: row, kind: "ask" }}
-              viewer="alice"
-            />
+            <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
+              <ReadingPane
+                onAnswered={(id) => answered.push(id)}
+                onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
+                row={{ ask: row, kind: "ask" }}
+                viewer="alice"
+              />
+            </AskHandOnLiveContext>
           </MarginProvider>
         </DocumentRuntime.Provider>
       </QueryClientProvider>
@@ -213,6 +218,7 @@ function renderPane({
   return {
     answered,
     client,
+    handOnLiveness,
     opened,
     rerender: (row: InboxRow) => view.rerender(tree(row)),
     runtime: fake,
@@ -569,6 +575,38 @@ test("the head's Snooze registers its write, so the list keeps the row the colum
   }
 });
 
+test("the column's card registers its hand-on, so the list keeps the row the column is on", async () => {
+  const user = userEvent.setup();
+  // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
+  const row = issueAsk({
+    asked_of: "alice",
+    issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
+  });
+  const held = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
+  // The control reads the people as the reader reaches for it, bob among them.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  const { handOnLiveness, view } = renderPane({ ask: row });
+
+  try {
+    await user.selectOptions(await screen.findByLabelText("Hand this question to"), "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalled());
+    // The control sits in the card, not in the head, so the registration reaches the list
+    // through the context the Inbox provides rather than through a prop of this column's: the
+    // optimistic `waiting_on_person` takes the row out of that list as the write starts, and
+    // the card that wrote is the only surface a refusal is shown on.
+    await waitFor(() => expect(handOnLiveness).toEqual([["ask-a", true]]));
+  } finally {
+    held.resolve({ ...row, asked_of: null, waiting_on_person: "bob" });
+    view.unmount();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
 test("a project document's head names the project and the document, and opens it at the section", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk({
@@ -854,6 +892,9 @@ test("a comment thread in a document opens that document at its block", async ()
 });
 
 test("an orphaned anchor falls back to the thread alone, with its quote", async () => {
+  // On the fake clock from before the first render, so the settle the pane starts there is a
+  // timer this test moves the clock past rather than a wait of its own.
+  jest.useFakeTimers();
   const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([]);
   const thread = threadRow({
     anchor: anchor({ orphaned: true }),
@@ -869,9 +910,10 @@ test("an orphaned anchor falls back to the thread alone, with its quote", async 
     expect(body.hasAttribute("data-inbox-pane-fallback")).toBe(true);
     expect(body.querySelector("[data-inbox-thread-quote]")?.textContent).toBe("three attempts");
     // Nothing opened the document: an anchor nothing can be placed at opens no room.
-    await Bun.sleep(SETTLE_MS * 2);
+    await tick(SETTLE_MS * 2);
     expect(runtime.connections).toHaveLength(0);
   } finally {
+    realClock();
     view.unmount();
     listArtifactComments.mockRestore();
   }

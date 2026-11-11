@@ -1,9 +1,7 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createComment, createIssue, createProject, getArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 // A bare web address after punctuation or an escaped scheme colon is a link remark-gfm reads, and
@@ -40,10 +38,6 @@ const links: { href: string; name: string }[][] = [
   [{ href: "https://a.test/a", name: "https://a.test/a" }],
   [{ href: "http://b.test/a_", name: "http://b.test/a_" }],
 ];
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test.describe("a bare web address is a link in a document written through the API, as in a comment", () => {
   // SLOW(>=2s): 3,811 ms in this head's four-worker CI report (`dispatch-e2e-report-1` of run

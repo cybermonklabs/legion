@@ -259,9 +259,9 @@ start_stack() {
 		STACK_DB_URL="postgres://postgres:dispatch@127.0.0.1:55432/${STACK_DB_NAME}?sslmode=disable"
 	fi
 	BROKER_BIN="$DEV_BROKER_DIR/bin/broker"
-	# The one binary dev-airlock.sh builds of its own, under the work directory its banner named.
-	# Three of this script's steps are subcommands of it.
-	STANDS_BIN="$AIRLOCK_DIR/bin/dev-airlock-stands"
+	# dev-broker.sh builds this binary with the rest of the stack's binaries, under the work
+	# directory its own banner named. Three of this script's steps are subcommands of it.
+	STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 	echo "airlock-check: the stack is up (${#BROKER_API_ADDRS[@]} brokers, work directory $AIRLOCK_DIR)" >&2
 }
 
@@ -1752,7 +1752,7 @@ check_k9() {
 	start_stack
 	stack_facts
 	# This check's own files. The load driver is a mode of dev-airlock-stands, which
-	# dev-airlock.sh built when it started the stack, so there is nothing to build here.
+	# dev-broker.sh built with the stack's other binaries, so there is nothing to build here.
 	mkdir -p "$WORK_DIR/k9"
 
 	local pids pid environs=""

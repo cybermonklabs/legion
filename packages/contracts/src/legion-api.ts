@@ -206,12 +206,20 @@ const legionHandoffRecordView = z.object({
 });
 
 /** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
- * completion reported, the Dispatch handoff record it named), and the rounds it has run. */
+ * completion reported, the Dispatch handoff record it named), the rounds it has run and the
+ * counts of the moves back that made them. */
 const legionPhaseView = z.object({
   claim: legionClaimView,
   handoffCommit: nonEmptyString.optional(),
   handoffRecord: legionHandoffRecordView.optional(),
   rounds: z.number().int().nonnegative(),
+  /** How many times the issue's work has gone back by each kind of move, keyed `<from>-<to>` as
+   * the daemon counts the pairs (`reviewing-implementing` and the rest). Absent, never `{}`, for
+   * a worker whose issue has had no move back, and absent from the whole state for a caller in a
+   * pod whose plugin declares a contract below 62 (the daemon's `withoutBackwardMoves`), so every
+   * reader takes it as optional. `rounds` beside it counts every round, a conflict round
+   * included, which no pair counts. */
+  backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
 /** `api.PullRequestView` — the pull request as the daemon observes it from GitHub.

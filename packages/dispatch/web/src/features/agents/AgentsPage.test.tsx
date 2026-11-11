@@ -11,6 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -36,9 +37,8 @@ import type {
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view is a lazy route of the app. Importing it here loads its module with the test
-// file, so a `findByRole` after the click waits for the render alone, not for that first load,
-// which takes longer than the second such a wait allows.
+// The live view is a lazy route of the app. Its module's first compile is not what a wait is
+// for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../agent-view/AgentConversationPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
@@ -116,12 +116,16 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
   return { agents: listed, current: true, refilling: false };
 }
 
-// The signed-in reader is `alice`, and a card's first number is their own work: these rows are
-// on an issue assigned to them.
+// The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
+// on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
+// on whose issue is theirs.
 const inbox: InboxRow[] = [1, 2].map((number) => ({
   anchor: null,
   answer: null,
   artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "planner-session", kind: "session" },
   block_id: null,
   created_at: new Date(now - 60_000).toISOString(),
@@ -129,6 +133,7 @@ const inbox: InboxRow[] = [1, 2].map((number) => ({
   id: `ask-${number}`,
   issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
   issue_key: "CORE-1",
+  waiting_on_person: "alice",
   kind: "question",
   last_reply: null,
   multiple: false,
@@ -507,6 +512,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
         id: "builder-bobs",
         issue: { assignee: "bob", key: "CORE-2", title: "Bob's work" },
         issue_key: "CORE-2",
+        waiting_on_person: "bob",
       }),
       builderAsk({
         id: "builder-snoozed",
@@ -3057,8 +3063,7 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
     );
     expect(new Set(page.createBroadcast.mock.calls.map(([, bounds]) => bounds.key)).size).toBe(1);
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3080,7 +3085,7 @@ test("Stop trying ends a late broadcast, and Retry sends it again under the same
     await broadcastToPlanner(region, "Status?");
     const sends = screen.getByRole("region", { name: "Sends" });
     expect(within(sends).queryByRole("button", { name: "Stop trying" })).not.toBeInTheDocument();
-    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createBroadcast).toHaveBeenCalledTimes(5);
     expect(within(sends).getByText(broadcastLate)).toBeTruthy();
 
@@ -3090,7 +3095,7 @@ test("Stop trying ends a late broadcast, and Retry sends it again under the same
       within(sends).getByText(`Stopped sending to 1 agent: ${new SendStoppedError().message}`)
     ).toBeTruthy();
     expect(within(sends).getByRole("button", { name: "Restore draft" })).toBeTruthy();
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(page.createBroadcast).toHaveBeenCalledTimes(5);
 
     page.createBroadcast.mockImplementation(async (input) => ({
@@ -3108,8 +3113,7 @@ test("Stop trying ends a late broadcast, and Retry sends it again under the same
     expect(within(sends).getByRole("link", { name: "Sent to 1 agent" })).toBeTruthy();
     expect(new Set(page.createBroadcast.mock.calls.map(([, bounds]) => bounds.key)).size).toBe(1);
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3479,7 +3483,8 @@ test("a refused send's row shows its message formatted on one line, with its who
 // in there. Nobody can see it, so a reply that arrives then must stay unread - in the navigation
 // and on the row - until the fold opens and puts the conversation back on screen.
 test("an open row a closed fold hides marks nothing read, and opening the fold reads what it shows", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const asked = exchange("m1", "Still there?", "2026-09-14T01:00:00Z");
   const page = renderAgents({ listedAgents: [stale, ...agents], messages: [asked] });
 
@@ -3512,9 +3517,7 @@ test("an open row a closed fold hides marks nothing read, and opening the fold r
     await within(staleCard).findByText("Yes, still here.");
     // A mark the hidden row sent would go out from an effect a few microtasks on; give it a
     // task, so the assertion below is not merely early.
-    const settled = Promise.withResolvers<void>();
-    setTimeout(settled.resolve, 20);
-    await settled.promise;
+    await tick(20);
     expect(page.putAgentState).not.toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "New reply 1" })).toBeTruthy();
 
@@ -3527,6 +3530,7 @@ test("an open row a closed fold hides marks nothing read, and opening the fold r
       )
     );
   } finally {
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3852,14 +3856,6 @@ test("/ falls through to the Dispatch-wide search dialog when no agents are conn
   }
 });
 
-/** Moves the fake clock `ms` on and lets every promise the move released run. */
-async function tick(ms: number): Promise<void> {
-  await act(async () => {
-    jest.advanceTimersByTime(ms);
-    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-  });
-}
-
 const keyedStopped = new SendStoppedError().message;
 
 /** Opens `name`'s live view from its Agents row, by the row's own live link (`AgentName`'s). */
@@ -3911,7 +3907,7 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
   try {
     await sendFromLiveView(user, "Status please");
     expect(page.createAgentMessage).toHaveBeenCalledTimes(1);
-    await tick(1_000);
+    await jump(1_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(2);
 
     // Another session's live view holds nothing of Planner's: only its own empty box refuses Send.
@@ -3922,7 +3918,7 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     expect(
       within(screen.getByTestId("agent-composer")).getByRole("button", { name: "Send" })
     ).toHaveAttribute("title", "Type a message first.");
-    await tick(2_000);
+    await jump(2_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(3);
 
     // Back on Planner: the same send, still out.
@@ -3931,16 +3927,16 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     const held = screen.getByTestId("agent-send-held");
     expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
-    await tick(4_000);
-    await tick(8_000);
+    await jump(4_000);
+    await jump(8_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
-    await tick(15_000);
+    await jump(15_000);
     expect(within(held).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
 
     await user.click(within(held).getByRole("button", { name: "Stop trying" }));
     await tick(0);
     expect(screen.getByTestId("agent-send-error").textContent).toBe(keyedStopped);
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
     expect(
       new Set(
@@ -3954,8 +3950,7 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     await user.click(within(held).getByRole("button", { name: "Discard" }));
     expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3973,7 +3968,7 @@ test("the session's Agents row shows a live-view send as its own turn and can st
 
   try {
     await sendFromLiveView(user, "Status please");
-    await tick(1_000);
+    await jump(1_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(2);
 
     await backToAgents(user);
@@ -3987,13 +3982,13 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     expect(field.value).toBe("");
     expect(field.closest("fieldset")?.disabled).toBe(false);
 
-    for (const wait of [2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
     expect(within(held).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
     await user.click(within(held).getByRole("button", { name: "Stop trying" }));
     await tick(0);
     expect(within(planner).getByTestId("agent-send-error").textContent).toBe(keyedStopped);
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
 
     // Retry from the row is the same message, so it goes under the same key, and lands.
@@ -4008,8 +4003,7 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     expect(new Set(messageKeys(page.createAgentMessage)).size).toBe(1);
     expect(within(planner).queryByTestId("agent-send-held")).not.toBeInTheDocument();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -4032,7 +4026,7 @@ test("the Agents row's Retry of a live-view send re-sends it as it was", async (
 
   try {
     await sendFromLiveView(user, "Status please");
-    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
     await user.click(screen.getByRole("button", { name: "Stop trying" }));
     await tick(0);
@@ -4056,8 +4050,7 @@ test("the Agents row's Retry of a live-view send re-sends it as it was", async (
     expect(page.createAgentMessage.mock.calls[5]?.[2].key).toBe(pressedKey);
     expect(within(planner).queryByTestId("agent-send-held")).not.toBeInTheDocument();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -4255,7 +4248,7 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
     const held = screen.getByTestId("agent-send-held");
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
 
-    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(within(held).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
     expect(within(held).getByRole("button", { name: "Stop trying" })).toBeTruthy();
     expect(page.createAgentMessage.mock.calls.length).toBeGreaterThan(1);
@@ -4266,8 +4259,7 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
     expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
     expect(new Set(messageKeys(page.createAgentMessage)).size).toBe(1);
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     onlineManager.setOnline(online);
     page.view.unmount();
     page.restore();

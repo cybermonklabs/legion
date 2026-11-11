@@ -175,10 +175,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				view.Architect = &claimView
 				continue
 			}
+			// The worker's view exists only while its claim is live, so its counts of the moves
+			// back ride with the claim exactly as `rounds` does: a role whose process has gone
+			// shows neither, and the record keeps both for the role's next claim.
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
 				Rounds:        item.Rounds,
+				BackwardMoves: item.BackwardMoves,
 			}
 			if item.HandoffRecord != "" {
 				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}

@@ -126,6 +126,14 @@ type bootConfig struct {
 	// zero for the server's own twelve seconds; only DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under
 	// the test hooks, sets it.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter is how long a pending event-horizon observation waits before the process
+	// logs its stall warning, and HorizonWarnEvery how often every event-horizon warning repeats
+	// - that stall warning, the failed-observation warning and the failed-persist warning - both
+	// zero for the horizon's own five and thirty seconds; only DISPATCH_TEST_HORIZON_STALL_AFTER
+	// and DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks, set them, since a test whose
+	// wait keys on the stall warning cannot sit out either.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes, zero for the document service's own 30 s; only
 	// DISPATCH_TEST_EDIT_NOTICE_QUIET, under the test hooks, sets it.
@@ -759,24 +767,30 @@ func main() {
 	// from GitHub and records the completed checks Envoy's record of that head lacks. It is a
 	// timer that stays, as the webhook redelivery sweep and the delivery reconcile beside it are:
 	// GitHub has no feed of the webhook it never delivered, so there is nothing to wake on.
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID)
+	ciReconcileInterval := cireconcile.Interval
+	if boot.CIReconcileInterval > 0 {
+		ciReconcileInterval = boot.CIReconcileInterval
+	}
+	// The interval is the pass's own bound as well as the loop's period: a pass reads from the
+	// cursor the pass before it left and ends on that bound, so the loop's lease is free when
+	// the next pass is due and the one line each pass logs says how far round the cycle it got.
+	// ciInstance is filled in once this process is registered, below, and each pass records its
+	// counts in ci_reconcile_passes under the id it then holds.
+	ciInstance := &registeredInstance{}
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
 	}
 	if reconciler != nil {
-		interval := cireconcile.Interval
-		if boot.CIReconcileInterval > 0 {
-			interval = boot.CIReconcileInterval
-		}
-		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", interval)
+		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
 		}
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
-		go duty.RunLeased(ctx, leases, cireconcile.Lease, interval, duty.TickAfterInterval, reconciler.Pass)
+		go duty.RunLeased(ctx, leases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
 	} else {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
@@ -881,6 +895,9 @@ func main() {
 		slog.Error("dispatch: register this server process", "error", err)
 		os.Exit(1)
 	}
+	// The CI reconcile loop started before this, so it has been reading the holder and finding
+	// nothing; from here each of its passes records its counts under this process's row.
+	ciInstance.set(registration.ID)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool.
@@ -1089,6 +1106,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_UNRECORDED_MARK_TTL", &boot.UnrecordedMarkTTL},
 		{"DISPATCH_TEST_ROUTE_ROSTER_TTL", &boot.RouteRosterTTL},
 		{"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW", &boot.ListenerTakeoverWindow},
+		{"DISPATCH_TEST_HORIZON_STALL_AFTER", &boot.HorizonStallAfter},
+		{"DISPATCH_TEST_HORIZON_WARN_EVERY", &boot.HorizonWarnEvery},
 		{"DISPATCH_TEST_EDIT_NOTICE_QUIET", &boot.EditNoticeQuiet},
 		{"DISPATCH_TEST_CI_RECONCILE_INTERVAL", &boot.CIReconcileInterval},
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
@@ -1523,6 +1542,8 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
+	built.HorizonStallAfter = boot.HorizonStallAfter
+	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.DevSignIn = boot.DevSignIn
 	return built

@@ -16,7 +16,8 @@ package api
 // same commit; `packages/contracts/fixtures/daemon-api/version.json`, written by this package's
 // golden test and read by the plugin's, holds the two together.
 //
-// 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
+// 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's
+// worker
 // container, and the shim's hello2.
 //
 // 9: secrets broker machine login -- the daemon's own agent-secrets machine login state
@@ -24,7 +25,8 @@ package api
 //
 // 10: LEGION-208 -- POST /legion/v1/roots/close, the Go legion tool's close_root.
 //
-// 11: LEGION-208 -- legionAppLogins on POST /legion/v1/gh-token, each Legion role App's login keyed by
+// 11: LEGION-208 -- legionAppLogins on POST /legion/v1/gh-token, each Legion role App's login keyed
+// by
 // its App role.
 //
 // 12: LEGION-223 -- one daemon: the manifest field is renamed `legion.daemonApiVersion`, `legion
@@ -49,7 +51,8 @@ package api
 // container may carry `LEGION_CONTROLLER=1` beside `LEGION_BOOT_TOKEN_FILE`, which the plugin must
 // answer by registering on `POST /legion/v1/claims/register` with the launch's boot token and
 // reporting ready on `claims/ready`. A plugin built before it reads that pod as the operator's
-// controller, throws for want of `LEGION_CONTROLLER_SECRET`, and never registers, so the image probe
+// controller, throws for want of `LEGION_CONTROLLER_SECRET`, and never registers, so the image
+// probe
 // must refuse such an image rather than leave the controller's keeper relaunching it forever.
 //
 // 15: LEGION-462 -- a Sandbox locator on GET /legion/v1/state addresses one role process in its
@@ -63,7 +66,8 @@ package api
 // state, and the bump is why the two never meet. (This branch first took 15; LEGION-462 landed at
 // 15 first, and pi-legion 8.3.0 declares it without `capabilities`, so a daemon at 15 would pass
 // the gate against a plugin whose strict reader refuses its state. Renumbered, as
-// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md says.)
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
 //
 // 17: LEGION-588 -- the role prompts the daemon embeds name the `dispatch` command an agent runs in
 // its shell, which the Envoy plugin puts on the pane's PATH, rather than the `dispatch_*` tools it
@@ -172,7 +176,8 @@ package api
 // every other row. `installed` leaves the status set: no row has awaited a pod launch since
 // LEGION-629 turned extension discovery on in the pod's launch, so no daemon has emitted it since,
 // and the field that rendered it (capabilities.Capability.Awaits) is gone. The probe's OK line
-// gains a third `model-fallback` mark, `unread`, when the probe could not read `retry.modelFallback`.
+// gains a third `model-fallback` mark, `unread`, when the probe could not read
+// `retry.modelFallback`.
 // A 24 plugin's strict reader refuses a state whose deployment rows carry `source`, so the boot
 // gate and `legion probe-image` refuse the mixed pair.
 //
@@ -185,7 +190,8 @@ package api
 // before 27 exits 2 on the unknown flag in every new issue pod's init container, so the daemon's
 // image probe, which holds the image's pi-legion to this number, refuses such an image at boot
 // instead. (26 was sjawhar/legion#1999's, open when this was taken; a release declaring 26 would
-// carry no `--default-branch`, so this branch took the number above it, as the collision note says.)
+// carry no `--default-branch`, so this branch took the number above it, as the collision note
+// says.)
 //
 // 28: LEGION-694 (sjawhar/legion#1999) -- api.State gains `heldOutboxRows`, every due lifecycle
 // outbox row held behind its issue's running lifecycle row (record.Store.HeldRows), each with its
@@ -262,7 +268,8 @@ package api
 // declaring it, then sjawhar/legion#2009 at 32 and released pi-legion v10.10.0 declaring it, each
 // without these shapes, so this branch takes the number above it, as the collision note says.)
 //
-// 34: cybermonklabs/legion INFRA-31 -- the roles of an issue share one scratch on the issue's volume,
+// 34: cybermonklabs/legion INFRA-31 -- the roles of an issue share one scratch on the issue's
+// volume,
 // `/legion/scratch` (scratchRoot), and the values `mainEnvironment` sets name its directories:
 // every role container of a pod, a workflow role's and the controller's, is told the same
 // `TMPDIR`, `XDG_CACHE_HOME`, `XDG_DATA_HOME` and `BUN_INSTALL_CACHE_DIR` —
@@ -456,7 +463,8 @@ package api
 // record id in place of the commit. `commit` stays the implementer's (its pushed tip, and retro's
 // commit) and the merger's; the planner, tester and reviewer send none, and the daemon no longer
 // requires one of them. `api.PhaseView` gains `handoffRecord`, `{id, version}`, absent until the
-// worker's completion of its current file-backed phase names one; store migration 20261101144900_handoff_records keeps it
+// worker's completion of its current file-backed phase names one; store migration
+// 20261101144900_handoff_records keeps it
 // on the phase row. A 44 plugin posts a commit and no record, which this daemon refuses, and its
 // strict reader refuses a state carrying `handoffRecord`, so the boot gate and `legion
 // probe-image` refuse the mixed pair. (This branch took 40 and store migration 0055; main then
@@ -638,7 +646,8 @@ package api
 // look of its issue's production check reports on that look, and every other session's completion
 // is its phase's. A completion of a `done` issue, which runs no phase, from a session working no
 // look is neither, and is refused `CHECK_LOOK_NOT_SERVED` rather than being read as a phase
-// completion missing its commit. The settings body loses its `projects.<KEY>.deploys` block, with every
+// completion missing its commit. The settings body loses its `projects.<KEY>.deploys` block, with
+// every
 // path by which the daemon guessed that production carried a merge; a plugin reads the settings
 // loosely, so that loss alone changes no strictly parsed shape. A plugin below this contract has
 // a strict reader that refuses a state whose check views carry `role`, and its `handoff_complete`
@@ -846,15 +855,59 @@ package api
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 60, 61, 62: taken by open pull requests of this repository while this branch was open — 60 by
-// cybermonklabs/legion#2539, #2731 and #3511, 61 by #2230 and 62 by #3522 — read on 2026-11-11
-// over `gh api graphql` across every open pull request, with each one's own copy of this file at
-// refs/pull/<n>/head. None of them carries the merge marks, so this branch takes the number
-// above them rather than one of theirs, as
+// 62: INFRA-2551 (cybermonklabs/legion) -- the daemon counts every move back of an issue by its
+// `<from>-<to>` pair (internal/phase's BackwardPairs), and each worker of `GET /legion/v1/state`
+// carries those counts as `backwardMoves`, the pair to its count (`api.PhaseView`). The key is
+// absent, and never `{}`, for an issue that has had no move back, so a reader tells an issue
+// carrying no counts at all from one whose counts the daemon holds. `rounds` beside it keeps its
+// meaning exactly, rising on every move back, a conflict round included, which no pair counts
+// since nobody sent the work back; and the counts start empty at the migration that added them
+// (`20261110225246_backward_moves_and_cap_told`) and are never filled in from the past, so an
+// issue already in flight reads counts that add up to less than its `rounds`.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 62 is served the workers without the field (api's stateFor,
+// withoutBackwardMoves), as a caller below 58 is served the issues with no place in the
+// admission line, one below 57 the claim views with no `step`, one below 56 the stranded report
+// without its retired entries, one below 55 the issues without the gated steps, one below 53 a
+// body with no wakes waiting, one below 51 the issues without the admission's trees and each
+// issue's tree, one below 49 without the memory draw and one below 46 without the claim views'
+// update rounds; the nine compose, and every reader from 62 on takes the field as optional. A
+// plugin at 61 does not refuse the field, as a plugin before one of the earlier contracts above
+// refuses its own: every answer-side schema of `packages/contracts` has stripped a key it does
+// not name since sjawhar/legion#2788, which that package's own test holds it to. The strip is
+// still what serves such a caller: one that did not ask for the field is not given it, and a
+// plugin built before #2788 is strict and would refuse the body.
+// The same change gives `legion.yaml` a `hooks:` key — each hook naming the event it stands on,
+// the moves back it selects, how many of them fire it, the roles its words go in front of and
+// those words, written inline or read from a `prompt_file` — and the settings block of that
+// state carries every running hook as `hooks`: each one's `name`, `on`, `moves`, `every`,
+// `roles` and `prompt_file`, and never its words, as this route serves the path of
+// `instructions` and never its text. That key is no part of this number: the plugin parses the
+// settings block loosely (35 above), so a later legion.yaml key changes no strictly parsed
+// shape and bumps nothing. The one shape this number is for is the workers' field above.
+// The rest of the change moves no shape a caller reads: the architect is told the
+// `review_round_cap` message once for each value of the cap rather than on every round past it
+// (`record.PhaseRow.CapTold`, the same migration), and a hook that fires publishes its prompt
+// through the outbox to the roles it names (the `hook_prompt` payload), which is the daemon's
+// own lane and no route.
+// (The base carries 59, and no release declares this change's shapes. Two open pull requests
+// declare the numbers between: cybermonklabs/legion#2731 declares 60 and #2230 declares 61,
+// read from `const DaemonAPIVersion` at each head on 2026-11-11, so this change takes 62, the
+// number above them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. Read main's own number, and every open branch's, again at the next forward merge rather
+// than from this line.)
+//
+// 63, 64, 65: taken by open pull requests of this repository while this branch was open — 63 by
+// cybermonklabs/legion#3573, which declares it beside this branch, 64 by #3521 and 65 by #3511,
+// each read at 2026-11-11T08:59Z from `const DaemonAPIVersion` in that pull request's own copy
+// of this file at refs/pull/<n>/head, over every open pull request of the repository. None of
+// them carries the merge marks, so this branch takes the number above them rather than one of
+// theirs, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A gap, left so the history reads as it happened.
 //
-// 63: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon's enqueue at
+// 66: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon's enqueue at
 // READY jumps the merge queue, and can hold a path still while a window runs. `GET
 // /legion/v1/state` gains four keys: `mergeJumps`, every live jump mark of the project by issue
 // (the issue, the reason, the controller session that set it and when); `mergeHolds`, every live
@@ -866,7 +919,7 @@ package api
 // queue then held — each with its number, position, jump, state and when GitHub enqueued it —
 // the queue's total count, whether the entries are unknown, and whether GitHub refused the jump,
 // with its answer). None of the four is ever null, so a plugin built before this refuses the
-// state over them: the route serves a caller whose pod's claims record a contract below 63 the
+// state over them: the route serves a caller whose pod's claims record a contract below 66 the
 // state with none of the four keys at all (api's stateFor, withoutMergeMarks), as it serves a
 // caller below 58 one with no `waitingLine`, one below 57 one with no `step`, one below 56 the
 // stranded report without its retired entries, one below 55 the issues without the gated steps,
@@ -883,12 +936,15 @@ package api
 // and that the controller was told. A rollback is not free: an older daemon's payload decoder is
 // strict, so it refuses those three fields on every retry of every ready_merge row this daemon
 // wrote, and that daemon's reader knows neither of the two new notice kinds, `merge-held` and
-// `merge-jump-refused`. (main carries 59. The open pull requests of this repository declare 60
-// (cybermonklabs/legion#2539, #2731, #3511), 61 (#2230) and 62 (#3522), beside numbers already
-// passed, read on 2026-11-11 with `gh api graphql` over every open pull request's file list —
-// a list GitHub cut short read as touching the file — and then each one's `version.go` at
-// refs/pull/<n>/head. 63 is the lowest number above the base's that no open pull request holds,
-// which is the number this repository's own gate names in its refusal
-// (.github/scripts/check-daemon-api-contract.sh). Read main's own number, and this file on every
-// open pull request, again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 63
+// `merge-jump-refused`. (main carried 59 when this branch was cut and carries 62 now, which
+// INFRA-2551 landed as cybermonklabs/legion#3522 at 07:47Z on 2026-11-11, so this entry was
+// renumbered at the forward merge that took that tip. The open pull requests of this repository
+// declare 63 (#3573, beside this branch's own earlier 63), 64 (#3521) and 65 (#3511), and two more
+// declare 62, the base's own number, which the gate refuses as it stands; read at 2026-11-11T08:59Z
+// with `gh api graphql` over every open pull request's file list — a list GitHub cut short read as
+// touching the file — and then each one's `version.go` at refs/pull/<n>/head. 66 is the lowest
+// number above the base's that no open pull request holds, which is the number this repository's
+// own gate names in its refusal (.github/scripts/check-daemon-api-contract.sh). Read main's own
+// number, and this file on every open pull request, again at the next forward merge rather than
+// from this line.)
+const DaemonAPIVersion = 66
