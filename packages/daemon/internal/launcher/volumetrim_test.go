@@ -1675,11 +1675,19 @@ func linkProcFixture(t *testing.T, pids ...int) string {
 	t.Helper()
 	root := t.TempDir()
 	for _, pid := range pids {
-		if err := os.Symlink(filepath.Join("/proc", strconv.Itoa(pid)), filepath.Join(root, strconv.Itoa(pid))); err != nil {
-			t.Fatal(err)
-		}
+		linkProcEntry(t, root, pid)
 	}
 	return root
+}
+
+// linkProcEntry adds one process to a /proc a case built, which is how a case starts a process
+// under a running sweep: the reader lists the directory again at every refresh of the used-path
+// set (readUsedPaths), so the process is in that reading and in none taken before it.
+func linkProcEntry(t *testing.T, root string, pid int) {
+	t.Helper()
+	if err := os.Symlink(filepath.Join("/proc", strconv.Itoa(pid)), filepath.Join(root, strconv.Itoa(pid))); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestVolumeTrimHandleHelper is the test binary re-executed as another process of the pod: it
@@ -1746,6 +1754,81 @@ func TestTheSweepSkipsEveryEntryOfARootAProcessHoldsOpen(t *testing.T) {
 	}
 	if f.logged(locked.Path) == 0 {
 		t.Errorf("the locked root %s was not reported; the trimmer wrote %q", locked.Path, f.linesWritten())
+	}
+	f.assertProtected()
+}
+
+// A root that is taken open after the listing has passed it is skipped from that moment too:
+// the rendered install that takes the `flock` runs at every role launch (installBlock,
+// internal/runtime/sandbox/plugins.go), and a full volume is exactly when roles are being
+// relaunched, so a sweep that may run five minutes meets `bun install` starting under it. The
+// used-path set is read again every volumeUsedPathsMaxAge for that reason, and the question
+// asked of each reading is of the entry's root (usedPaths.Holds): Covers is of the entry
+// itself and ignores a process holding an ancestor of it by design.
+//
+// The lock is taken at the first entry boundary after the sweep's first deletion, which is
+// after the listing by construction, and the entries that stood under the root at that moment
+// are the ones the sweep must now leave. Its control is the other three roots, swept whole.
+func TestTheSweepSkipsARootAProcessTakesOpenWhileItRuns(t *testing.T) {
+	f := newTrimFixture(t, 6)
+	locked := f.roots[3] // bun's install cache, the flock target of every rendered install
+	f.proc = linkProcFixture(t, os.Getpid())
+	oldest := f.oldestFirst()[0]
+	var held []string // the entries of the locked root that stood when the lock was taken
+	taken := false
+	f.clock.setHook(func(clock *fakeClock) {
+		if taken || f.exists(oldest.path) {
+			return
+		}
+		taken = true
+		linkProcEntry(t, f.proc, startHandleHelper(t, locked.Path))
+		for _, entry := range f.entries {
+			if strings.HasPrefix(entry.path, locked.Path+"/") && f.exists(entry.path) {
+				held = append(held, entry.path)
+			}
+		}
+		// The age at which the delete loop reads /proc again, so the next reading of the clock
+		// is the one that takes the reading the lock is in.
+		clock.advance(volumeUsedPathsMaxAge + time.Millisecond)
+	})
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+
+	tr := f.trimmer()
+	out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+	if !taken {
+		t.Fatalf("the case never reached the moment it stages: the sweep deleted nothing, so no lock was taken while it ran (%s)", out.reason)
+	}
+	kept, swept := 0, 0
+	for _, entry := range f.entries {
+		under := strings.HasPrefix(entry.path, locked.Path+"/")
+		switch {
+		case under && !f.exists(entry.path):
+			if slices.Contains(held, entry.path) {
+				t.Errorf("the sweep deleted %s, which stood under %s when a process took that root open; the trimmer wrote %q",
+					entry.path, locked.Path, f.linesWritten())
+			}
+			// Anything else under the root went before the lock was taken, which is the sweep
+			// doing as it was told.
+		case under:
+			kept++
+		case f.exists(entry.path):
+			t.Errorf("the sweep left %s, which nothing holds; the trimmer wrote %q", entry.path, f.linesWritten())
+		default:
+			swept++
+		}
+	}
+	if kept == 0 || swept == 0 {
+		t.Fatalf("the case kept %d entries under %s and swept %d elsewhere, want both: it can tell nothing apart otherwise; the trimmer wrote %q",
+			kept, locked.Path, swept, f.linesWritten())
+	}
+	if out.deletions != len(f.gone()) {
+		t.Errorf("the sweep counted %d deletions against the %d entries that are gone", out.deletions, len(f.gone()))
+	}
+	if said := f.logged(locked.Path); said != 1 {
+		t.Errorf("the trimmer wrote %d lines naming %s, want the one line a root that became held is worth: %d entries were skipped under it, and the roles container's log is the only place this work is visible; it wrote %q",
+			said, locked.Path, kept, f.linesWritten())
 	}
 	f.assertProtected()
 }

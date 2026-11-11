@@ -841,6 +841,11 @@ type sweepOutcome struct {
 type sweepEntry struct {
 	path string
 	rule EntryRule
+	// root is the reclaimable root the entry was listed under. The delete loop asks the
+	// used-path set as each refresh leaves it about this path and not about the entry
+	// (usedPaths.Holds): a root nothing held when the listing passed it may be locked by the
+	// time the loop reaches its entries.
+	root string
 	// at is the newest modification time anywhere in the entry when it was listed, which is
 	// both what the entries are ordered by and what the pre-delete re-read compares against.
 	at  time.Time
@@ -895,6 +900,9 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	stalled := 0
 	sinceRead := 0
 	readFailed := false
+	// heldSaid is the roots this sweep has already reported as taken open, so the line below is
+	// one per root: there are four roots and tens of thousands of entries under them.
+	var heldSaid []string
 	for _, entry := range entries {
 		if reason, settingsStop := t.halted(ctx, deadline); reason != "" {
 			out.reason, out.settingsStop = reason, settingsStop
@@ -911,6 +919,25 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 				out.reason = fmt.Sprintf("a /proc read the kernel refused while the sweep ran, so it kept what it had deleted and stopped (%s)", strings.Join(used.Refused, "; "))
 				break
 			}
+		}
+		if used.Holds(entry.root) {
+			// The root was not held when the listing passed it — one that was is skipped whole
+			// there — so a process has taken it since: the `bun install` taking its flock on
+			// its cache root that the refresh above exists to catch (volumeUsedPathsMaxAge),
+			// and the entries under the root are the ones that install is filling. Covers
+			// cannot answer this, which is why the question is asked of the root: it ignores a
+			// process holding an ancestor of the entry by design, since the sweep would
+			// otherwise stop at the first role that stood in a cache root (Covers and Holds,
+			// volumeguard.go).
+			//
+			// Once per root and not once per entry: the roles container's log is the only
+			// place this work is visible to a person, and a line per entry would bury it. It
+			// is the reason a standing state of the trimmer's is said once (says).
+			if !slices.Contains(heldSaid, entry.root) {
+				heldSaid = append(heldSaid, entry.root)
+				t.logf(volumeTrimLog+"the reclaimable root %s was taken open by a process of the pod after the listing and its remaining entries are skipped", entry.root)
+			}
+			continue
 		}
 		if used.Covers(entry.path) {
 			continue
@@ -1019,14 +1046,15 @@ func (t *trimmer) halted(ctx context.Context, deadline time.Time) (reason string
 // A root that is absent or is not a directory is skipped and reported rather than being an
 // error: a pod whose roles have not started yet has no bun cache, and nothing about that should
 // keep the sweep away from the three roots that are there. A root a process holds open is
-// skipped whole (usedPaths.Holds).
+// skipped whole (usedPaths.Holds), and every entry listed carries the root it came from, which
+// the delete loop asks that question of again on each refreshed reading.
 func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline time.Time) (entries []sweepEntry, cut string, bySettings bool) {
-	add := func(path string, rule EntryRule, dir bool) bool {
+	add := func(root ReclaimableRoot, path string, dir bool) bool {
 		if reason, settingsStop := t.halted(ctx, deadline); reason != "" {
 			cut, bySettings = reason, settingsStop
 			return false
 		}
-		switch ok, why, err := entryKindOK(path, rule); {
+		switch ok, why, err := entryKindOK(path, root.Entry); {
 		case errors.Is(err, fs.ErrNotExist):
 			return true
 		case err != nil:
@@ -1046,7 +1074,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 		if at.After(cutoff) {
 			return true // inside the minimum age: something wrote in it too recently
 		}
-		entries = append(entries, sweepEntry{path: path, rule: rule, at: at, dir: dir})
+		entries = append(entries, sweepEntry{path: path, rule: root.Entry, root: root.Path, at: at, dir: dir})
 		return true
 	}
 
@@ -1103,7 +1131,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 					if !strings.HasSuffix(name.Name(), "-a") && !strings.HasSuffix(name.Name(), "-d") {
 						continue
 					}
-					if !add(filepath.Join(path, name.Name()), root.Entry, name.IsDir()) {
+					if !add(root, filepath.Join(path, name.Name()), name.IsDir()) {
 						return entries, cut, bySettings
 					}
 				}
@@ -1113,7 +1141,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 					continue
 				}
 			}
-			if !add(path, root.Entry, child.IsDir()) {
+			if !add(root, path, child.IsDir()) {
 				return entries, cut, bySettings
 			}
 		}
