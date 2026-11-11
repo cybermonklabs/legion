@@ -346,15 +346,13 @@ func (s *server) createStoredMessage(
 		}
 	}
 	// An issue message's blocks, the mentions each holds and its own references are indexed as
-	// one write (refs.ReplaceCountedItem); a direct message, which writes no mention, has its
-	// blocks indexed alone and moves nothing. The message's insert is queued below, so the
-	// issue the row will name is handed over: it gives the context its blocks' windows embed
-	// them under and the document its `#id`s resolve against, its issue's spec.
-	pending, err := s.pendingItemOf(ctx, tx, string(refs.ItemMessage), refs.PendingSource{IssueKey: issueKey})
-	if err != nil {
-		return model.Message{}, nil, err
-	}
-	referenceChanges, indexMessage, err := s.planItemWrite(ctx, tx, refs.ItemMessage, messageID, input.Body, pending, createdAt, issueKey != nil, nil, nil)
+	// one write (planPendingItem); a direct message, which writes no mention, has its blocks
+	// indexed alone and moves nothing. The message's insert is queued below, so the issue the
+	// row will name is handed over: it gives the context its blocks' windows embed them under
+	// and the document its `#id`s resolve against, its issue's spec.
+	referenceChanges, indexWrite, err := s.planPendingItem(
+		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
+	)
 	if err != nil {
 		return model.Message{}, nil, err
 	}
@@ -377,7 +375,7 @@ func (s *server) createStoredMessage(
 		if err := queueRequestKeyRecovery(ctx, b, messageRecovery{MessageID: messageID, Delivery: delivery}); err != nil {
 			return err
 		}
-		if err := indexMessage(b); err != nil {
+		if err := indexWrite(b); err != nil {
 			return err
 		}
 		payload := thread.payload(message, referenceChanges)
@@ -1033,24 +1031,6 @@ func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	}
 	message.Deliveries = []model.MessageDelivery{}
 	return message, nil
-}
-
-// indexMessage indexes message, which the calling transaction has just written: an issue
-// message's blocks, the mentions each holds and its own references (refs.ReplaceCountedItem),
-// and the reference graph changes they moved. A direct message writes no mention, so its blocks
-// hold none either: only its blocks are indexed, and it moves nothing.
-//
-// It parses the body and reads the document the message belongs to under whatever the calling
-// transaction holds, so its one caller is the broadcast write (writeBroadcast), whose copies
-// are inserted before their index. Every other message write plans its index before its first
-// row lock instead and writes the plan with its own writes (planItemWrite, createStoredMessage,
-// planMessageReply).
-func (s *server) indexMessage(ctx context.Context, tx pgx.Tx, message model.Message) (model.ReferenceChanges, error) {
-	if message.IssueKey == nil {
-		_, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil)
-		return model.ReferenceChanges{}, err
-	}
-	return refs.ReplaceCountedItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, s.deps.ServerURL, message.CreatedAt)
 }
 
 // loadMessageReplyChains reads, for each seed message, every message transitively replying to

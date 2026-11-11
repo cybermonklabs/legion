@@ -72,7 +72,7 @@ func issueAncestors(ctx context.Context, q queryer, issue model.Issue) ([]string
 // newIssueEventPayload is the payload of an issue.created, issue.updated or issue.closed: the
 // issue after the write, what it moved in the reference graph, the fields it changed, and the
 // issue's ancestors read in tx. The caller adds thread_logins when the status or the assignee
-// moved (issueWriteThreadLogins).
+// moved (api/issue_patch.go, events.IssueLoginsOf).
 func newIssueEventPayload(ctx context.Context, tx pgx.Tx, issue model.Issue, changes model.ReferenceChanges, changed []string) (model.IssueEventPayload, error) {
 	ancestors, err := issueAncestors(ctx, tx, issue)
 	if err != nil {

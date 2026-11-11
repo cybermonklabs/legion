@@ -714,7 +714,8 @@ func xidCitingBody(text, issueKey string) string {
 // taken under the advisory lock that assigns no transaction id (store.LockOwner,
 // lockedCommentForDelivery); the climb from it to the head of its thread, the ask it hangs
 // under (threadHeadOf); the block the reply names, with the index its comment may owe planned
-// there; and the reply's own block index and references, planned for an id and a created_at
+// there and the block itself addressed there, so the reply carries it instead of reading it
+// back; and the reply's own block index and references, planned for an id and a created_at
 // reserved there (planCommentReply). Each refusal those reads raise is raised where it was
 // raised, after the mention and the attempt have been checked, so the answers of this route are
 // what they were. The mention rows are read without a lock, so the window opens at the attempt
@@ -727,11 +728,11 @@ func TestXidWindowCommentDeliveryReply(t *testing.T) {
 		"mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	settledCommentDeliveries(t, f.database, comment.ID)
-	f.measure(t, http.StatusCreated, storetest.XidWindowOf(10,
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(9,
 		"the attempt row's lock, the reply's insert, its author's follow of the ask it joins, the one "+
-			"batch writing its block index and its references, the attempt's update, the block the reply "+
-			"answers, the thread's logins, the batch appending comment.answered, the stamp of its "+
-			"references and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+			"batch writing its block index and its references, the attempt's update, the thread's "+
+			"logins, the batch appending comment.answered, the stamp of its references and the COMMIT "+
+			"ending them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return xidSessionReply(t, h, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
 			"attempt": 1, "body": xidCitingBody("It holds: the listener keeps its interests in the bucket.", f.issueKey),
 			"reply_to_block": "b2",
@@ -744,8 +745,9 @@ func TestXidWindowCommentDeliveryReply(t *testing.T) {
 // issue's whole spec for the `#id` scope. The window opens at the parent message's lock, which
 // the route takes in the order the accept route takes its own - issue, message, attempt. The
 // block the reply names is read before it, with the index that read finds the parent owes
-// written under the lock, the order refs.IndexItemIfOwed states; the reply's own block index
-// and references are planned there too, for an id and a created_at reserved there
+// written under the lock, the order refs.IndexItemIfOwed states; the block itself is addressed
+// there too, so the reply carries it instead of reading it back, and the reply's own block
+// index and references are planned there, for an id and a created_at reserved there
 // (planMessageReply), and written as one batch behind its insert. The issue's owner lock
 // assigns no transaction id.
 func TestXidWindowMessageDeliveryReply(t *testing.T) {
@@ -754,11 +756,11 @@ func TestXidWindowMessageDeliveryReply(t *testing.T) {
 		"body":   "Can this ship?\n\nThe migration section is the one to read.",
 		"target": "session:s1", "delivery": "steer",
 	}, "alice")
-	f.measure(t, http.StatusCreated, storetest.XidWindowOf(11,
-		"the parent message's lock, the attempt row's lock, the reply's insert, the block it answers, the "+
-			"one batch writing its block index and its references, its thread, the thread's logins, the "+
-			"batch appending message.answered, the stamp of its references, the attempt's update and the "+
-			"COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(10,
+		"the parent message's lock, the attempt row's lock, the reply's insert, the one batch writing "+
+			"its block index and its references, its thread, the thread's logins, the batch appending "+
+			"message.answered, the stamp of its references, the attempt's update and the COMMIT ending "+
+			"them"), func(h http.Handler) *httptest.ResponseRecorder {
 		return xidSessionReply(t, h, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 			"attempt": 1, "body": xidCitingBody("It can: the outbox keys each copy.", f.issueKey),
 			"in_reply_to_block": "b2",

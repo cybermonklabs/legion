@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -86,6 +88,35 @@ func deferredRefusal(err error) (refusal, failure error) {
 	return nil, err
 }
 
+// replyRowPlan is the reply row a delivery callback's route plans above its first row lock and
+// may then write, so that the transaction holds its transaction id for its writes alone
+// (INFRA-636). Both routes write as they go rather than through a ledger, so each planned
+// statement is run where that route makes its write. The half that differs between them - the
+// thread a comment reply joins, the body and the named block a message reply carries - each
+// embeds this in a plan of its own (commentReplyPlan, messageReplyPlan).
+type replyRowPlan struct {
+	// parentIndex is the index the item the reply answers was found to owe, written before the
+	// reply's own writes (refs.ItemRepair.Write).
+	parentIndex refs.ItemRepair
+	// id and createdAt are the reply row's, reserved while planning because its index and its
+	// references are planned for them before the insert runs.
+	id        string
+	createdAt time.Time
+	// replyBlock is the block of its parent the reply names as the reply carries it, nil when
+	// it names none. It is read while planning, because the reply's row is not inserted then
+	// and the read that gives a stored reply its block would find nothing
+	// (namedBlock.replyBlock).
+	replyBlock *model.ReplyBlock
+	// changes are the reference graph changes the reply's event counts, and write is the step
+	// that writes its blocks, their mentions and its references.
+	changes model.ReferenceChanges
+	write   docs.WriteStep
+	// refusal is the *apiError this planning earned, held back to the branch that answers with
+	// it so that no answer of the route moves. A failure that is not a refusal is returned at
+	// once instead (deferredRefusal).
+	refusal error
+}
+
 // planReplyBlock checks that blockID is a current block of item itemID — the comment or the
 // message a reply answers, or the ask a reply names, whose blocks are the parts of its question,
 // its options and its answer — and returns it with the index the item owes, which the caller
@@ -93,10 +124,10 @@ func deferredRefusal(err error) (refusal, failure error) {
 // once beside them (refs.ItemRepair.Write, the two delivery replies). The caller holds the
 // item's owner (when it has one), which assigns no transaction id (store.LockOwner), and takes
 // the item row of a message with the index it writes, never with this read; an item an older
-// build wrote, or wrote after its last
-// index, is indexed by the same transaction (refs.PlanItemIfOwed), so the block named is one
-// the item holds now: the repaired index is read from its plan, the stored one from the block
-// rows. A block the item does not hold now answers 400 with code, naming field and the block.
+// build wrote, or wrote after its last index, is indexed by the same transaction
+// (refs.PlanItemIfOwed), so the block named is one the item holds now: the repaired index is
+// read from its plan, the stored one from the block rows. A block the item does not hold now
+// answers 400 with code, naming field and the block.
 //
 // The live write of this request is the reply, which its own route stamps; the item indexed here
 // is the parent, whose text an earlier write already carried an event for, so a block mention

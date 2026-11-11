@@ -112,33 +112,6 @@ type CarriedEdit struct {
 	Blocks       []itemblocks.Carried
 }
 
-// ReplaceCountedItem indexes a comment's or an issue message's body, which the calling
-// transaction has just inserted: its blocks and the mentions each holds (IndexItem), then the
-// item's own references (replaceRefs), from one reading of body (Mentions), so the blocks and
-// the item read every bare key, `#id` and short id alike. The counted targets it resolves are
-// those either moved. A direct message, which writes no mention, calls IndexItem alone with no
-// located mentions. A transaction that decides before it writes plans the same index and
-// reconciliation instead (ReadItemIndex, PlanItemIndex, PlanReplace) and queues both in its
-// write phase.
-func ReplaceCountedItem(
-	ctx context.Context,
-	tx pgx.Tx,
-	kind ItemKind,
-	itemID, body, serverURL string,
-	at time.Time,
-) (model.ReferenceChanges, error) {
-	located := NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
-	moved, err := IndexItem(ctx, tx, kind, itemID, body, at, located, nil)
-	if err != nil {
-		return model.ReferenceChanges{}, err
-	}
-	changed, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil)
-	if err != nil {
-		return model.ReferenceChanges{}, err
-	}
-	return CountedChanges(ctx, tx, append(changed, moved...))
-}
-
 // IndexItem records body, written at `at` (the created_at of an insert, the edited_at of an
 // edit), as the current revision of the blocks of comment or message itemID, in the caller's
 // transaction. It is ReadItemIndex, planItemBlocks and Queue back to back, the queued statements
@@ -181,7 +154,7 @@ func ReplaceCountedItem(
 // owed_at.
 //
 // It returns the targets of the block mentions it inserted or deleted, which the caller's event
-// counts (ReplaceCountedItem, ItemIndexing.Moved).
+// counts (ItemIndexing.Moved).
 func IndexItem(
 	ctx context.Context,
 	tx pgx.Tx,

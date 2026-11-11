@@ -89,9 +89,9 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ASK_NOT_OPEN", http.StatusConflict, "only open asks may be handed to another person")
 		return
 	}
-	// Whom the ask waited on before this write, read under the two locks through the expression
-	// every reader of that person shares, and the assignee of its issue beside it (null for a
-	// document ask, which has none).
+	// Whom the ask waited on before this write, read under the owner's lock through the
+	// expression every reader of that person shares, and the assignee of its issue beside it
+	// (null for a document ask, which has none).
 	var waitedOn, assignee *string
 	if err := tx.QueryRow(r.Context(), `
 		select `+askedOfPersonExpression+`, i.assignee
@@ -126,7 +126,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	ask.AskedOfAt = &handedOnAt
 
 	payload := model.NewAskEventPayload(ask, model.ReferenceChanges{})
-	// The two people the hand-on moved, as an assignee move names them (issueWriteThreadLogins):
+	// The two people the hand-on moved, as an assignee move names them (api/issue_patch.go):
 	// the Inbox lists an open ask under the person it waits on, so this write takes it out of
 	// one person's list and puts it into the other's, and no other reader's rows move. That is
 	// why the event does not carry the ask's thread logins (events.ThreadLoginsOf): somebody

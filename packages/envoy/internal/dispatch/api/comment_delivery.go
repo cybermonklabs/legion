@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -996,28 +995,12 @@ type commentReplyInput struct {
 }
 
 // commentReplyPlan is everything a delivery callback's reply is decided on, read and planned
-// before the route takes its first row lock, so that the transaction holds its transaction id
-// for its writes alone (INFRA-636). The route writes as it goes rather than through a ledger,
-// so each planned statement is run where that route makes its write.
+// before the route takes its first row lock (replyRowPlan), with the thread that reply joins.
 type commentReplyPlan struct {
+	replyRowPlan
 	// thread is the head of the thread the reply joins, with ReplyBlock set to the block of
 	// the answered comment the reply names (nil when it names none).
 	thread commentThreadTarget
-	// parentIndex is the index the answered comment was found to owe, written before the
-	// reply's own writes (refs.ItemRepair.Write).
-	parentIndex refs.ItemRepair
-	// id and createdAt are the reply row's, reserved here because its index and its references
-	// are planned for them before the insert runs.
-	id        string
-	createdAt time.Time
-	// changes are the reference graph changes the reply's event counts, and write is the step
-	// that writes its blocks, their mentions and its references.
-	changes model.ReferenceChanges
-	write   docs.WriteStep
-	// refusal is the *apiError this planning earned, held back to the branch that answers with
-	// it so that no answer of the route moves. A failure that is not a refusal is returned at
-	// once instead (deferredRefusal).
-	refusal error
 }
 
 // planCommentReply plans one delivery callback's reply under the comment's owner lock and above
@@ -1028,13 +1011,16 @@ type commentReplyPlan struct {
 // The reply row is not inserted yet, so what no read of that row can answer is handed over: the
 // issue its blocks' windows embed them under and the document its `#id`s resolve against, named
 // by the fields that row will hold (pendingItem, refs.PendingSource), exactly as the comments
-// route hands them over for a row it has only queued.
+// route hands them over for a row it has only queued. The named block is addressed under the
+// reply's owner here for the same reason: the read that gives a stored reply its block would
+// find no row yet, and addressing a document's comment is itself a read (ownerAddress).
 func (s *server) planCommentReply(
 	ctx context.Context, tx pgx.Tx, comment model.Comment, body string, replyToBlock *string,
 ) (commentReplyPlan, error) {
 	var plan commentReplyPlan
 	var err error
-	if plan.thread, err = s.threadHeadOf(ctx, tx, ownerOf(comment.IssueKey, comment.ArtifactID), comment); err != nil {
+	owner := ownerOf(comment.IssueKey, comment.ArtifactID)
+	if plan.thread, err = s.threadHeadOf(ctx, tx, owner, comment); err != nil {
 		plan.refusal, err = deferredRefusal(err)
 		return plan, err
 	}
@@ -1045,17 +1031,18 @@ func (s *server) planCommentReply(
 			return plan, err
 		}
 		plan.parentIndex, plan.thread.ReplyBlock = repair, block
+		issueKey, project, slug, err := s.ownerAddress(ctx, tx, owner)
+		if err != nil {
+			return plan, err
+		}
+		plan.replyBlock = block.replyBlock(issueKey, project, slug)
 	}
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, clock_timestamp()`).Scan(&plan.id, &plan.createdAt); err != nil {
 		return plan, err
 	}
-	pending, err := s.pendingItemOf(ctx, tx, string(refs.ItemComment), refs.PendingSource{
+	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, refs.ItemComment, plan.id, body, refs.PendingSource{
 		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
-	})
-	if err != nil {
-		return plan, err
-	}
-	plan.changes, plan.write, err = s.planItemWrite(ctx, tx, refs.ItemComment, plan.id, body, pending, plan.createdAt, true, nil, nil)
+	}, plan.createdAt, true)
 	return plan, err
 }
 
@@ -1277,6 +1264,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The block the reply names was read above its locks, where its row did not exist yet, so
+	// the reply carries it from the plan rather than reading it back: the read that gives a
+	// stored reply its block is one statement of the transaction id's window, and the comments
+	// route carries the same block for the same reason (comment_create.go).
+	reply.ReplyBlock = plan.replyBlock
 	waitingOn := plan.thread.waitingOnAfter(turn)
 	if plan.thread.AskID != nil {
 		if err := asks.FollowAuthor(r.Context(), tx, *plan.thread.AskID, actor); err != nil {

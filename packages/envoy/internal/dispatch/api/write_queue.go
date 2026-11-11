@@ -122,50 +122,55 @@ func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *d
 }
 
 // pendingItem is what the route writing a comment or an issue message hands over for an item
-// whose insert this transaction has only queued: the two things a read of that row would
-// answer and cannot yet. windowContext is what the windows of the item's blocks embed them
-// under, read from the issue the item is written on (refs.IssueWindowContext); document is the
-// one the item's `#id`s resolve against, read from the fields the queued row will hold and only
-// for a body that names a question block (refs.PendingDocument).
+// whose row this transaction has not written: the two things a read of that row would answer
+// and cannot yet. windowContext is what the windows of the item's blocks embed them under, read
+// from the issue the item is written on (refs.IssueWindowContext); document is the one the
+// item's `#id`s resolve against, read from the fields that row will hold and only for a body
+// that names a question block (refs.PendingDocument).
+//
+// Three shapes of route hand one over: the one whose insert is queued on a ledger and whose
+// index is queued beside it (queueItemReferences), the one whose insert is queued on a batch it
+// runs itself (createStoredMessage), and the two delivery replies, which have not made the
+// insert at all when they plan and run the planned step where they make their write
+// (planCommentReply, planMessageReply).
 type pendingItem struct {
 	windowContext string
 	document      *refs.PendingDocument
 }
 
-// queueItemReferences is refs.ReplaceCountedItem split in two, for a comment or an issue message
-// this transaction writes at `at`: it plans the index of the item's blocks and the mentions each
-// holds (refs.PlanItemIndex) and the reconciliation of the item's own references, resolves the
-// counted targets both move, and queues the index's statements and the reconciliation's, in that
-// order, in tx's write phase. A direct message (cites false) writes no mention, so its blocks
-// hold none either: its blocks alone are indexed, and it moves nothing. The transaction has only
-// queued the item's insert, so what no read of that row can answer - the context its blocks'
-// windows embed them under and the document its `#id`s resolve against - is read from the fields
-// source says the row will hold and handed over with it (pendingItem). Every read below runs
-// under the ledger the write queues on, whatever context the route passed
+// queueItemReferences plans the index of the blocks of a comment or an issue message this
+// transaction writes at `at` and the mentions each holds, with the reconciliation of the item's
+// own references (planPendingItem), and queues the index's statements and the reconciliation's,
+// in that order, in tx's write phase. A direct message (cites false) writes no mention, so its
+// blocks hold none either: its blocks alone are indexed, and it moves nothing. Every read below
+// runs under the ledger the write queues on, whatever context the route passed
 // (docs.Ledger.ReadContext).
 func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, body string, source refs.PendingSource, at time.Time, cites bool) (model.ReferenceChanges, error) {
 	ctx = ledger.ReadContext(ctx)
-	pending, err := s.pendingItemOf(ctx, tx, string(kind), source)
-	if err != nil {
-		return model.ReferenceChanges{}, err
-	}
-	changes, write, err := s.planItemWrite(ctx, tx, kind, itemID, body, pending, at, cites, nil, nil)
+	changes, write, err := s.planPendingItem(ctx, tx, kind, itemID, body, source, at, cites)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
 	return changes, ledger.Queue(write)
 }
 
-// pendingItemOf is what a route hands over for an item of kind kind whose insert it has queued,
-// over the fields source says that row will hold. The window context is read here, since every
-// item's blocks are indexed under it; the document is not read at all unless the item's body
-// names a question block, so it is handed over unread (refs.PendingDocument).
-func (s *server) pendingItemOf(ctx context.Context, tx pgx.Tx, kind string, source refs.PendingSource) (*pendingItem, error) {
+// planPendingItem is planItemWrite for an item of kind kind whose row this transaction has not
+// written: it reads what no read of that row can answer, over the fields source says the row
+// will hold, and plans the item's index and its references for it. The window context is read
+// here, since every item's blocks are indexed under it; the document is not read at all unless
+// the item's body names a question block, so it is handed over unread (refs.PendingDocument).
+// Every route that writes a comment or an issue message plans through this one call, whichever
+// of the three shapes it takes (pendingItem).
+func (s *server) planPendingItem(
+	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string,
+	source refs.PendingSource, at time.Time, cites bool,
+) (model.ReferenceChanges, docs.WriteStep, error) {
 	windowContext, err := refs.IssueWindowContext(ctx, tx, source.IssueKey)
 	if err != nil {
-		return nil, err
+		return model.ReferenceChanges{}, nil, err
 	}
-	return &pendingItem{windowContext: windowContext, document: refs.NewPendingDocument(kind, source)}, nil
+	pending := &pendingItem{windowContext: windowContext, document: refs.NewPendingDocument(string(kind), source)}
+	return s.planItemWrite(ctx, tx, kind, itemID, body, pending, at, cites, nil, nil)
 }
 
 // queueEditedItemReferences is queueItemReferences for an edit of a comment from previous to
@@ -187,18 +192,20 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // planItemWrite plans the item's index and, when the item cites its mentions, the reconciliation
 // of its own references, counts what they and edited (the targets an edit moves although its
 // edges stay; nil for a first write) move, and returns those counts with the step that writes
-// both, for the route to queue where it makes the write: on its ledger (queueItemReferences), or
-// on the batch of a transaction that runs its write phase itself (createStoredMessage).
+// both, for the route to run where it makes the write: queued on its ledger
+// (queueItemReferences), on the batch of a transaction that runs its write phase itself
+// (createStoredMessage), or as a batch of its own beside the statements of a route that writes
+// as it goes (store.RunWrite, the two delivery replies).
 //
 // Every read it makes runs under the context it is given, which its caller derives from the
 // ledger the write queues on (queueItemReferences, docs.Ledger.ReadContext), so a mention of a
 // row this transaction has queued resolves to that row (refs.Pending). A transaction that runs
 // its own write phase has queued no row and reads under the context it holds
-// (createStoredMessage).
+// (createStoredMessage, planCommentReply, planMessageReply).
 //
-// pending is what the route hands over for an item whose insert this transaction has queued, so
-// that no read of the item's own row can answer it: the context its blocks' windows embed them
-// under (refs.ItemIndex.WithWindowContext) and the document its `#id`s resolve against
+// pending is what the route hands over for an item whose row this transaction has not written,
+// so that no read of it can answer: the context its blocks' windows embed them under
+// (refs.ItemIndex.WithWindowContext) and the document its `#id`s resolve against
 // (refs.NewReaderInScope). It is nil for a write of an item already stored, which the index's
 // read and ScopeOf answer both of for themselves.
 func (s *server) planItemWrite(

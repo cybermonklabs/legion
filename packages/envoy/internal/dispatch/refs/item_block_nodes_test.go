@@ -17,7 +17,7 @@ import (
 const itemBlockServer = "https://dispatch.example"
 
 // insertIndexedItem inserts a comment or an issue message of issueKey with body and indexes it
-// as a write of this build does (ReplaceCountedItem), returning its id.
+// as a write of this build does (indexItemAsAWriteDoes), returning its id.
 func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -30,9 +30,7 @@ func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body st
 	if err := tx.QueryRow(ctx, `insert into `+table+` (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text, created_at`, issueKey, body).Scan(&id, &createdAt); err != nil {
 		t.Fatalf("insert %s: %v", kind, err)
 	}
-	if _, err := ReplaceCountedItem(ctx, tx, kind, id, body, itemBlockServer, createdAt); err != nil {
-		t.Fatalf("index %s %s: %v", kind, id, err)
-	}
+	indexItemAsAWriteDoes(t, tx, kind, id, body, itemBlockServer, createdAt)
 	return id
 }
 

@@ -1566,7 +1566,7 @@ A reopen waits behind the owner lock or is observed as open;
 a newly committed anchor changes the mark snapshot and refuses the deletion; an unaccounted mark with no committed ask/comment row fails closed.
 
 References form one graph.
-Mentions (`dispatch://` refs and same-origin dashboard URLs in a document version, ask question, comment body, or issue message) are derived on every write into `refs` by a `refs.Replacement` the write plans in its read phase (`refs.PlanReplace`, `refs.PlanReplaceFrom`) and queues in its write phase (`refs.Replacement.Queue`), beside the `refs.ItemIndexing` an item's write plans with it (`refs.ReadItemIndex`, `refs.PlanItemIndex`), or at once by `refs.ReplaceCountedItem` (a comment's or an issue message's write that runs outside a route's two phases, which first indexes the item's blocks, below).
+Mentions (`dispatch://` refs and same-origin dashboard URLs in a document version, ask question, comment body, or issue message) are derived on every write into `refs` by a `refs.Replacement` the write plans in its read phase (`refs.PlanReplace`, `refs.PlanReplaceFrom`) and queues in its write phase (`refs.Replacement.Queue`), beside the `refs.ItemIndexing` an item's write plans with it, which indexes the item's blocks and the mentions each holds (`refs.ReadItemIndex`, `refs.PlanItemIndex`, below).
 All of them reconcile rather than rewrite:
 an edge that survives keeps its `created_at` and `source_seq` (the `events.id` that introduced it, stamped right after the source's event is appended, in the same transaction: by `refs.Stamp` with the id in hand, or in a write phase's batch by `refs.QueueStamp`, which names the id as `store.LatestEventID`, the events id sequence's `currval`, so nothing between the event and its stamp may append another event).
 Structural relations stay in the columns that own them and the `graph_edges` view (migration 0032) unions both into one typed edge relation:
@@ -1690,7 +1690,7 @@ Without `blocks`, with a `base_revision` that is no longer the stored one (anoth
 (4) every other takes the next new id; (5) a current stored block nothing took is removed.
 The body itself is taken as it was before blocks: its blocks never refuse a write.
 
-Every comment and issue message writes its mentions twice in the transaction that writes it (`refs.ReplaceCountedItem`, or, where that transaction decides before it writes, the plan `api.planItemWrite` makes of the same index and reconciliation):
+Every comment and issue message writes its mentions twice in the transaction that writes it (the plan `api.planItemWrite` makes of the item's index and of the reconciliation of its own references):
 its own `refs` rows, as before, and one row per (block, target) in `comment_block_refs` or `message_block_refs`, each mention at the block whose extent holds its start.
 A new block row takes the write's time, or at the item's first indexing its own `refs` row's `created_at` and `source_seq`, and `refs.Stamp` gives the others their event;
 the targets whose block rows moved join the item's own in the event's `references_changed`, so a link that moves between two blocks of one comment is named, beside every cited target an edit that moves the head of the comment's text names (`refs.EditedTargets`' rule).
@@ -2738,7 +2738,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   are excluded from that count and from `?to=<ask>` (`refs.AskBacklinkExclusions`, the default of a read naming no `?kind=`); `?kind=replies_to` or `?kind=part_of` still returns them.
 
 - A write that moves the reference graph names what it moved.
-  A plan a write makes in its read phase and queues in its write phase - a `refs.Replacement` whose moved targets it resolves with `refs.CountedChanges`, beside a `refs.ItemIndexing` for an item (`docs.planReplaceCounted` and `docs.replaceVersionRefs`, `api.planFoundReferences` and `api.planItemWrite`) - or `refs.ReplaceCountedItem`, which writes at once (a comment's or an issue message's write, which indexes the item's blocks with it), is how a body is indexed:
+  A plan a write makes before it writes and runs where it makes its write - a `refs.Replacement` whose moved targets it resolves with `refs.CountedChanges`, beside a `refs.ItemIndexing` for an item (`docs.planReplaceCounted` and `docs.replaceVersionRefs`, `api.planFoundReferences` and `api.planItemWrite`) - is how a body is indexed:
   each reconciles that source's edges and keeps the targets a reader refreshes by name (`refs.CountedChanges`)
   — an issue and an ask, whose readers carry a batched count, a document or file, whose Referenced by panel lists its edges, and a block of a document, whose own panel and every link to it read one graph read and whose document's panel lists the edges at its blocks
   — which the event carries as `references_changed` (`[{kind, id, issue_key?, artifact_id?, ref?}]`:
@@ -2763,7 +2763,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a `blocked_by` change moves each added or removed blocker's `referenced_by_count`, so the PATCH names those blockers and `issue.created` names every blocker the new issue holds, merged with what its spec cites (`refs.MergeChanges`, which names each target once and keeps the per-kind cap).
   A consumer refreshes exactly those rows (the ask's lists, its thread and the Inbox, the issue's detail, the backlink panels, a document's panel, a block's read and its document's panel) instead of sweeping every list;
   a write that cited nothing named carries neither field.
-  `grep -rn 'refs\.ReplaceCountedItem\|refs\.PlanReplace\|refs\.PlanItemIndex' --include=*.go internal` lists every write that indexes a body.
+  `grep -rn 'refs\.PlanReplace\|refs\.PlanItemIndex\|refs\.IndexItem' --include=*.go internal` lists every write that indexes a body.
 
 - Every payload family that can carry reference changes is built by a helper that takes them, so a producer that forgets does not compile:
   `artifact.*` through `api.artifactCreatedEventPayload` and `docs.ArtifactVersionEventPayload` (`writeVersionTx` returns `model.ReferenceChanges`, `SnapshotVersion` and `NamedVersion` return them on a `docs.VersionResult`, and the six producers
@@ -2791,9 +2791,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A direct (issue-less) conversation keeps no `user_threads` row, so its `message.created` and `message.answered` name the thread root's author instead, the one person whose Inbox holds that conversation's Agent row (`api/thread_logins.go`, `directThreadLogins`, which walks up from the message it answers, so a queued insert reads the same root), and `[]` when no person opened the thread.
   An `issue.updated` or `issue.closed` that moved the status or the assignee carries it too, as the sorted union of two sets:
   for a close or a reopen the logins with a row on one of the issue's open asks, which the Replies list leaves out while the issue is open and the ask waits on them, read by the event's own insert after the ask writes queued before it (`events.IssueLoginsOf`), and `[]` for any other status move;
-  for an assignee move the assignee the issue was taken from and the one it was given to (`movedAssigneeLogins`), since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other.
+  for an assignee move the assignee the issue was taken from and the one it was given to (`api/issue_patch.go`, over `movedLogins`), since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other.
   A login in both sets is named once, and a write that moved neither carries no `thread_logins`.
-  A writer whose asks are written by the time it reads them takes both halves in Go instead (`issueWriteThreadLogins`, `events.IssueThreadLogins`).
   `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved from the row it read (`api/state.go`), or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`askSnoozeEvent`, `api/ask_snooze.go`), whose payload is exactly `{login, changed: ["snoozed"]}`:
   the stream has no per-viewer filter, so every signed-in person and agent replays it, and it names no ask and no `state` of the writer's (the writer's tabs refetch their whole Inbox);
   an event without `changed` predates snooze events, so a reader takes it as any of `pinned`, `last_read_seq` and `dismissed`.

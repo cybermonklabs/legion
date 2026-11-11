@@ -170,9 +170,9 @@ var goingToolRoutes = map[string][]goingToolRoute{
 	},
 	// The issue-less send to one session. Its path names the session the tool was asked to
 	// reach, not the calling session, so the placeholder binds to the tool's own argument. The
-	// body is indexed without its references counted (indexMessage: a message with no issue
-	// takes refs.IndexItem), so this write makes no mention edge; a send naming in_reply_to
-	// makes the replies_to edge every message reply makes.
+	// body is indexed without its references counted (createStoredMessage: a message with no
+	// issue takes refs.IndexItem alone), so this write makes no mention edge; a send naming
+	// in_reply_to makes the replies_to edge every message reply makes.
 	"dispatch_send_to_agent": {{
 		Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/messages",
 		Path: map[string]string{"session_id": "session"}, Relations: []string{"replies_to"},

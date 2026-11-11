@@ -320,9 +320,7 @@ func TestABareKeyLeavesALaterBlockMentionInItsOwnBlock(t *testing.T) {
 	body := "ACME-1 is the issue.\n\nSee dispatch://ACME-1/artifact/notes#b-two."
 	insertPrefixComment(t, tx, source, "ACME-1", body)
 	at := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
-	if _, err := ReplaceCountedItem(ctx, tx, ItemComment, source, body, resolverServer, at); err != nil {
-		t.Fatalf("index the comment: %v", err)
-	}
+	indexItemAsAWriteDoes(t, tx, ItemComment, source, body, resolverServer, at)
 
 	rows, err := tx.Query(ctx, `
 		select block_id, to_kind, to_id from comment_block_refs where comment_id = $1::uuid

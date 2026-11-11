@@ -8,12 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -836,31 +834,19 @@ type messageReplyInput struct {
 }
 
 // messageReplyPlan is everything a session's reply to a message delivery is decided on, read
-// and planned before the route takes its first row lock, so that the transaction holds its
-// transaction id for its writes alone (INFRA-636). The route writes as it goes rather than
-// through a ledger, so each planned statement is run where that route makes its write.
+// and planned before the route takes its first row lock (replyRowPlan), with the body that
+// reply carries and the block of its parent it names.
 //
 // One plan serves both rows the route can insert - the reply to the attempt, and a follow-up
 // posted under a reply the session already made (replyAfterAnswer) - because at most one of
 // them is written and both carry this body, in this conversation's issue.
 type messageReplyPlan struct {
-	// block is the block of the answered message the reply names, nil when it names none, and
-	// parentIndex the index that message was found to owe.
-	block       *namedBlock
-	parentIndex refs.ItemRepair
-	// id, createdAt and body are the reply row's, the first two reserved here because its
-	// index and its references are planned for them before the insert runs.
-	id        string
-	createdAt time.Time
-	body      string
-	// changes are the reference graph changes the reply's event counts, and write is the step
-	// that writes its blocks, their mentions and its references.
-	changes model.ReferenceChanges
-	write   docs.WriteStep
-	// refusal is the *apiError this planning earned, held back to the branch that answers with
-	// it so that no answer of the route moves. A failure that is not a refusal is returned at
-	// once instead (deferredRefusal).
-	refusal error
+	replyRowPlan
+	// block is the block of the answered message the reply names, nil when it names none; a
+	// follow-up names none, so one plan serves both rows.
+	block *namedBlock
+	// body is the reply row's, which its index and its references were planned for.
+	body string
 }
 
 // planMessageReply plans one session reply above every row lock the route takes: the block the
@@ -870,7 +856,9 @@ type messageReplyPlan struct {
 // The reply row is not inserted yet, so the issue its blocks' windows embed them under and the
 // document its `#id`s resolve against are handed over, named by the fields that row will hold
 // (pendingItem, refs.PendingSource), as createStoredMessage hands them over for a row it has
-// only queued. A direct message writes no mention, so its blocks hold none and it moves nothing.
+// only queued. The named block is addressed here for the same reason: the read that gives a
+// stored reply its block would find no row yet. A direct message writes no mention, so its
+// blocks hold none and it moves nothing.
 func (s *server) planMessageReply(
 	ctx context.Context, tx pgx.Tx, message model.Message, body string, inReplyToBlock *string,
 ) (messageReplyPlan, error) {
@@ -882,16 +870,15 @@ func (s *server) planMessageReply(
 			return plan, err
 		}
 		plan.parentIndex, plan.block = repair, block
+		plan.replyBlock = block.replyBlock(message.IssueKey, "", "")
 	}
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&plan.id, &plan.createdAt); err != nil {
 		return plan, err
 	}
-	pending, err := s.pendingItemOf(ctx, tx, string(refs.ItemMessage), refs.PendingSource{IssueKey: message.IssueKey})
-	if err != nil {
-		return plan, err
-	}
-	plan.changes, plan.write, err = s.planItemWrite(
-		ctx, tx, refs.ItemMessage, plan.id, body, pending, plan.createdAt, message.IssueKey != nil, nil, nil,
+	var err error
+	plan.changes, plan.write, err = s.planPendingItem(
+		ctx, tx, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
+		plan.createdAt, message.IssueKey != nil,
 	)
 	return plan, err
 }
@@ -1006,7 +993,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body, followUp, plan)
+		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body != nil && followUp, plan)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1052,7 +1039,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, plan, plan.block)
+		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, plan)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1077,18 +1064,20 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // replyAfterAnswer is the reply route on an attempt the session already answered with answer.
-// Without a follow-up every call is a retry of that answer and posts nothing: the host's
-// automatic BTW answer is sent that way, so a frame the session is handed twice can never post a
-// second answer, and an error report after an answer is a retry too. A follow-up whose text the
-// session already posted in this conversation (its first reply, or an earlier follow-up) is a
-// resend and posts nothing; any other is posted under the first reply, and its event is
-// returned. A posted follow-up is the plan's row: the route planned one reply for this body
-// above its locks, and at most one of the two branches writes it (messageReplyPlan).
+// post is this call asking to post the plan's body under that answer: the request carried a
+// body and named ?follow_up=true. Without it every call is a retry of that answer and posts
+// nothing: the host's automatic BTW answer is sent that way, so a frame the session is handed
+// twice can never post a second answer, and an error report after an answer is a retry too. A
+// follow-up whose text the session already posted in this conversation (its first reply, or an
+// earlier follow-up) is a resend and posts nothing; any other is posted under the first reply,
+// and its event is returned. A posted follow-up is the plan's row: the route planned one reply
+// for this body above its locks, and at most one of the two branches writes it
+// (messageReplyPlan).
 func (s *server) replyAfterAnswer(
-	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, body *string, followUp bool,
+	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, post bool,
 	plan messageReplyPlan,
 ) (replyRead, *model.Event, error) {
-	if body == nil || !followUp {
+	if !post {
 		return replyRead{Message: answer, Duplicate: true}, nil, nil
 	}
 	posted, err := scanMessage(tx.QueryRow(ctx, `
@@ -1097,14 +1086,14 @@ func (s *server) replyAfterAnswer(
 		where (id = $1 or in_reply_to = $1) and body = $2
 		  and author->>'kind' = 'session' and author->>'id' = $3
 		order by created_at desc limit 1
-	`, answer.ID, *body, actor.ID))
+	`, answer.ID, plan.body, actor.ID))
 	if err == nil {
 		return replyRead{Message: posted, Duplicate: true}, nil, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return replyRead{}, nil, err
 	}
-	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, plan, nil)
+	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, plan)
 	if err != nil {
 		return replyRead{}, nil, err
 	}
@@ -1147,11 +1136,13 @@ func followUpRequested(r *http.Request) (bool, error) {
 // naming a block of parent stores it and previews that block's text in place of the parent's.
 //
 // plan carries the row: its id and created_at, written explicitly because its index and its
-// references were planned for them before this insert ran, and the step that writes them
-// (planMessageReply). Nothing of the body is read here, so this write holds the transaction id
-// for its own statements alone (INFRA-636).
+// references were planned for them before this insert ran, the body, the block it names and the
+// step that writes its index (planMessageReply). A follow-up names no block, so the plan's
+// serves both rows the route can insert. Nothing of the body and nothing of the reply's own row
+// is read here, so this write holds the transaction id for its own statements alone
+// (INFRA-636).
 func (s *server) insertSessionReply(
-	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan, block *namedBlock,
+	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
 	author, err := json.Marshal(actor)
 	if err != nil {
@@ -1161,16 +1152,16 @@ func (s *server) insertSessionReply(
 		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8)
 		returning `+messageColumns+`
-	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, block.nodeID(), plan.createdAt))
+	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	// The block was read above the route's locks, where this row did not exist yet, so the
+	// reply carries it from the plan rather than reading it back (createStoredMessage).
+	reply.ReplyBlock = plan.replyBlock
 	replyParent := messageReplyParentOf(parent)
-	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, &reply); err != nil {
-			return model.Message{}, model.Event{}, err
-		}
-		replyParent.ReplyBody = messageReplyPreview(block.excerpt)
+	if plan.block != nil {
+		replyParent.ReplyBody = messageReplyPreview(plan.block.excerpt)
 	}
 	// The reply's blocks, the mentions each holds and its own references were planned above the
 	// route's locks; their statements run here as one batch of their own, where the index of a

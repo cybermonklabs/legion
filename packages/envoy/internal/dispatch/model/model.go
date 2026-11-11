@@ -1518,7 +1518,7 @@ type AskAnsweredEventPayload struct {
 // blocked_by, external_links; for issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
-// assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
+// assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
 // or a reopen every login with a Replies row on one of the issue's open asks, read by the
 // event's own insert, after the ask writes the transaction queued before it
 // (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the

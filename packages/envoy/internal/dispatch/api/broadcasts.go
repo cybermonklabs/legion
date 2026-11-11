@@ -20,6 +20,7 @@ import (
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -452,8 +453,11 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		// Each copy is a direct message: its blocks are indexed, and it writes no mention.
-		if _, err := s.indexMessage(ctx, tx, message); err != nil {
+		// Each copy is a direct message: its blocks are indexed, and it writes no mention, so
+		// its blocks hold none either and the write moves nothing. The copy is inserted above,
+		// so its body is read here rather than planned before the insert, as every other
+		// message write plans it (api.planItemWrite).
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what

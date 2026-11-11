@@ -30,8 +30,8 @@ func threadLoginsQuery(param string) string {
 }
 
 // issueLoginsQuery is the status half of an issue event's thread_logins, for an event that
-// closed or reopened the issue (IssueThreadLogins, IssueLoginsOf), its issue key the parameter
-// param: every login with a Replies row on one of that issue's open asks, sorted and never nil.
+// closed or reopened the issue (IssueLoginsOf), its issue key the parameter param: every login
+// with a Replies row on one of that issue's open asks, sorted and never nil.
 // The Replies list leaves out an open ask on an open issue that waits on that login
 // (api/replies.go, myRepliesOwner), so a close or a reopen moves exactly those rows and no
 // other. It reads the asks through asks_open and their rows through user_threads_thread, so it
@@ -39,9 +39,8 @@ func threadLoginsQuery(param string) string {
 //
 // An issue event carries logins on an assignee move too, the old and the new assignee, since the
 // same rule moves the row of an open ask nobody has handed on out of one Inbox and into the
-// other; the two sets are joined by api/thread_logins.go's issueWriteThreadLogins, which is the
-// whole of what an issue event names, and by the `also` logins IssueLoginsOf unions into this
-// query for a writer whose asks are still queued. An ask somebody handed on waits on the person
+// other; the two sets are joined by the `also` logins IssueLoginsOf unions into this query,
+// which is the whole of what an issue event names. An ask somebody handed on waits on the person
 // it was handed to wherever its issue goes, so no assignee move touches its row; the hand-on
 // itself names the two people instead (api/ask_asked_of.go, over api/thread_logins.go's
 // movedLogins).
@@ -51,17 +50,6 @@ func issueLoginsQuery(param string) string {
 		from user_threads u
 		where u.thread_id in (select a.id from asks a where a.issue_key = ` + param + ` and a.state = 'open')
 	`
-}
-
-// IssueThreadLogins is issueLoginsQuery read in q, for a writer whose asks are written by the
-// time it reads them. A writer whose write phase is one batch has the event's insert read them
-// instead (IssueLoginsOf).
-func IssueThreadLogins(ctx context.Context, q Queryer, issueKey string) ([]string, error) {
-	logins := []string{}
-	if err := q.QueryRow(ctx, issueLoginsQuery("$1"), issueKey).Scan(&logins); err != nil {
-		return nil, fmt.Errorf("read the logins of issue %s's open asks: %w", issueKey, err)
-	}
-	return logins, nil
 }
 
 // Logins is the thread_logins an event's payload carries, read by the event's own insert
@@ -98,7 +86,7 @@ func ThreadLoginsOf(threadID string) *Logins {
 // IssueLoginsOf is the logins of issueKey's open asks (issueLoginsQuery), read by the event's
 // insert: after the asks a close withdrew or a reopen restored earlier in the same batch. also is
 // the logins the write already knows it moved, the assignee it took the issue from and the one it
-// gave it to (api.issueWriteThreadLogins), unioned into them.
+// gave it to (api/issue_patch.go, over api/thread_logins.go's movedLogins), unioned into them.
 func IssueLoginsOf(issueKey string, also ...string) *Logins {
 	return &Logins{query: issueLoginsQuery, key: issueKey, also: also}
 }

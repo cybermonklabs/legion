@@ -11,21 +11,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// issueThreadLogins is the status half of an issue event's thread_logins: whose Replies count a
-// status move can change. Only a close or a reopen (closedMoved) changes one, for the logins with
-// a Replies row on the issue's open asks (events.IssueThreadLogins); any other status move names
-// nobody, as [] rather than left out, so a reader knows the event says so. A close withdraws the
-// issue's open asks and a reopen restores them before this read, and each of those ask events
-// names its own thread's logins, so after a close this names only an open ask a close by an older
-// release left behind. tx must hold those ask writes: a writer that only queued them has the
-// event's own insert read the logins instead (events.IssueLoginsOf).
-func issueThreadLogins(ctx context.Context, tx pgx.Tx, issueKey string, closedMoved bool) ([]string, error) {
-	if !closedMoved {
-		return []string{}, nil
-	}
-	return events.IssueThreadLogins(ctx, tx, issueKey)
-}
-
 // movedLogins adds to logins the canonical login of each person a write moved an Inbox row
 // between, sorted and without a duplicate. A person may be nil - an issue nobody held, an ask
 // that waited on nobody - and naming the same person twice names them once. The result is never
@@ -46,42 +31,6 @@ func movedLogins(logins []string, moved ...*string) []string {
 	}
 	slices.Sort(logins)
 	return logins
-}
-
-// movedAssigneeLogins is the canonical login of each assignee a write moved the issue between -
-// the one it took it from and the one it gave it to, either of which may be nil for an issue
-// nobody held or nobody holds - sorted and without a duplicate, and [] for a write that moved
-// none. The Replies list leaves out an open ask on an open issue that waits on the reader
-// (api/replies.go, myRepliesOwner), so moving the assignee takes the asks nobody has handed on
-// out of the new assignee's list and puts them into the old one's. An ask somebody handed on
-// waits on that person wherever its issue goes, so the move leaves its row where it is.
-func movedAssigneeLogins(movedAssignees []*string) []string {
-	return movedLogins(nil, movedAssignees...)
-}
-
-// issueWriteThreadLogins is the thread_logins of an issue.updated or issue.closed: every login
-// whose Inbox rows the write can have moved, sorted and without a duplicate.
-//
-// A status move names issueThreadLogins' logins, an assignee move movedAssigneeLogins', and a
-// write that moved both the union of the two, which is why the result is sorted here rather than
-// taken as events.IssueThreadLogins sorted it.
-//
-// movedAssignees is nil on a write that left the assignee alone, so a status-only move still
-// answers exactly what it answered before. A writer whose ask writes are only queued cannot read
-// the status half here: it hands the assignee half to the event's insert, which unions it into
-// the read of the asks (events.IssueLoginsOf).
-func issueWriteThreadLogins(
-	ctx context.Context, tx pgx.Tx, issueKey string, statusMoved, closedMoved bool, movedAssignees []*string,
-) ([]string, error) {
-	logins := []string{}
-	if statusMoved {
-		moved, err := issueThreadLogins(ctx, tx, issueKey, closedMoved)
-		if err != nil {
-			return nil, err
-		}
-		logins = moved
-	}
-	return movedLogins(logins, movedAssignees...), nil
 }
 
 // commentThread is the thread the user_threads trigger files comment under (0095's

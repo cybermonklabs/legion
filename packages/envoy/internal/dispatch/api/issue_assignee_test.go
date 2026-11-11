@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -273,8 +274,9 @@ func TestPatchIssueReassignsClearsAndLeavesAssigneeAlone(t *testing.T) {
 // sorted. Through a request the status half is empty whenever an assignee rides with it: only a
 // close or a reopen names anybody, a close withdraws the issue's open asks before this read, and
 // a closed issue refuses an assignee, so a reopen carries none. The union of two sets that both
-// have members is pinned on issueWriteThreadLogins itself, over an issue whose open ask alice
-// holds a Replies row on: alice is in both sets and is named once.
+// have members is pinned on the read the event's own insert makes (events.IssueLoginsOf, the
+// assignees the write moved unioned into the logins of the issue's open asks), over an issue
+// whose open ask alice holds a Replies row on: alice is in both sets and is named once.
 func TestPatchMovingStatusAndAssigneeNamesBothMovesLogins(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Handed over", "A spec")
@@ -298,8 +300,9 @@ func TestPatchMovingStatusAndAssigneeNamesBothMovesLogins(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	logins, err := issueWriteThreadLogins(context.Background(), tx, issue.Key, true, true, []*string{new("alice"), new("carol")})
-	if err != nil {
+	query, args := events.IssueLoginsOf(issue.Key, movedLogins(nil, new("alice"), new("carol"))...).SQL(1)
+	logins := []string{}
+	if err := tx.QueryRow(context.Background(), query, args...).Scan(&logins); err != nil {
 		t.Fatalf("read the write's logins: %v", err)
 	}
 	if want := []string{"alice", "carol"}; !slices.Equal(logins, want) {
