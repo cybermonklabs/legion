@@ -4,6 +4,7 @@ import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 
 import { sql, sqlAt } from "../psql";
+import { SPAWN_TEST_MS } from "./spawn-test-ms";
 
 /** The PostgreSQL server this run may make a database on: an issue pod names it, a developer
  *  names it, and the `dispatch` CI job has no Postgres at all, so these cases skip there. The
@@ -144,14 +145,26 @@ test.skipIf(!live)("keeps each caller's statements together when two calls overl
 // e2e/keyed-writes.e2e.ts holds a row locked in one call while it watches pg_stat_activity for
 // that wait in another, so an overlapping call must reach the database beside the session's
 // transaction rather than behind it.
-test.skipIf(!live)("runs a call that overlaps another on a second connection", async () => {
-  const holding = sql("BEGIN", "SELECT pg_sleep(3)", "COMMIT");
-  const sleeping = await sql(
-    "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(3)%'"
-  );
-  await holding;
-  expect(sleeping).toBe("1");
-});
+// This row costs at least 3 s by construction: it holds `SELECT pg_sleep(3)` open in one call
+// while a second call reads pg_stat_activity for it. Under this issue's calibrated load (2 CPUs,
+// 6 busy loops, 8 runs of the whole lane) its worst reading was 3.15 s, which on the slow pod
+// shape spawn-test-ms.ts describes is about 6.8 s - past Bun's unwritten 5 s default, so this row
+// takes the lane's shared limit rather than that default. The `60_000` numbers near the top of
+// this file are the `beforeAll` and `afterAll` hook timeouts: they bound no test body, so a
+// reader who scans this file for a number and finds those would wrongly read these rows as
+// covered.
+test.skipIf(!live)(
+  "runs a call that overlaps another on a second connection",
+  async () => {
+    const holding = sql("BEGIN", "SELECT pg_sleep(3)", "COMMIT");
+    const sleeping = await sql(
+      "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(3)%'"
+    );
+    await holding;
+    expect(sleeping).toBe("1");
+  },
+  SPAWN_TEST_MS
+);
 
 // A NOTICE and a WARNING go to the same pipe an error does, so what a statement wrote there is
 // not what it is judged by: e2e/failed-room.e2e.ts drops a trigger that is not there between its
