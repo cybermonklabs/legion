@@ -80,11 +80,12 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 //
 // The second names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
-// holds no row of `heavy-bodies.e2e.ts` or `nested-directive.e2e.ts` - 50 rows of those two
-// files in this head's wall-clock listing - and with the default listing alone this generation
-// refused outright: "the listing names no real-stack row in them: heavy-bodies.e2e.ts,
-// nested-directive.e2e.ts", measured by running the tool at this head before the second listing
-// was added. Neither listing names a process count, so both run one Dispatch process, which is
+// holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` or
+// `nested-directive.e2e.ts` - 54 rows of those three files in this head's wall-clock listing -
+// and with the default listing alone this generation refused outright: "the listing names no
+// real-stack row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running
+// the tool before the second listing was added, when those two were the whole of the set.
+// Neither listing names a process count, so both run one Dispatch process, which is
 // the only mode whose project list declares the wall-clock projects at all.
 const [defaultListing, clockListing] = await Promise.all([
   listing("e2e/playwright.config.ts", {}),

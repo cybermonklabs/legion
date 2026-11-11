@@ -8,15 +8,21 @@ import {
   editArtifact,
   getArtifactText,
   getIssue,
+  patchIssue,
 } from "./api";
-import { documentEditor, openWithCaret } from "./editor";
+import { expectTextOnlyDecisions, seedDecisionBody } from "./decision-bodies";
+import { documentEditor, indexedBlockAsk, openWithCaret } from "./editor";
 import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// A typed block written in a text body (a comment, an ask, a message) is drawn as a document
-// draws it: a callout carries its header, the block's name with its kind badge and its title on
-// one row, and a decision (`:::ask`) block is the decision card, its urgency pill and "Decision"
-// in the header and its options as the card's rows, with the source list folded away.
+// A typed block in a text body (a comment, an ask, a message) is drawn as a document draws it: a
+// callout carries its header, the block's name with its kind badge and its title on one row, and
+// a decision (`:::ask`) block is the decision card, its urgency pill and "Decision" in the header
+// and its options as the card's rows, with the source list folded away. A decision block is no
+// shape the API takes in a body: it refuses such a body with 400 DECISION_BLOCK_IN_BODY, so every
+// row below that needs one seeds the body straight into `comments` (`e2e/decision-bodies.ts`).
+// The card a body draws differs from a document's in one thing: it carries the line saying the
+// question is text and must be opened as an ask, and offers nothing to answer it with.
 
 const agent = {
   actor: { id: "e2e-text-blocks-agent", kind: "session" as const },
@@ -74,6 +80,9 @@ test("a comment's callout shows the document's header with its kind and title", 
 
     // The header reads as a label rather than a stack of prose lines: one row.
     expect((await header.boundingBox())?.height).toBeLessThanOrEqual(40);
+
+    // A body that holds no decision block is told nothing about opening an ask.
+    await expect(thread.locator("[data-dispatch-ask-text-only]")).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -83,17 +92,19 @@ test("a comment's callout shows the document's header with its kind and title", 
 test("a comment's ask block shows the decision card @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Decision in a comment" });
-  const comment = await createComment(
-    issue.key,
-    { body: ':::ask{urgency="high"}\nWhich one?\n\n- A: first\n- B: second\n:::\n' },
-    agent
-  );
+  // The server refuses a body holding a decision block (400 DECISION_BLOCK_IN_BODY), so the
+  // comment is seeded straight into `comments` (`e2e/decision-bodies.ts`).
+  const commentId = await seedDecisionBody({
+    author: agent.actor,
+    body: ':::ask{urgency="high"}\nWhich one?\n\n- A: first\n- B: second\n:::\n',
+    issueKey: issue.key,
+  });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const thread = await openCommentThread(page, comment.id);
+    const thread = await openCommentThread(page, commentId);
     const decision = thread.locator('section[data-proof-block-type="ask"]');
     await expect(decision.getByText("Which one?", { exact: true })).toBeVisible();
 
@@ -128,19 +139,25 @@ test("a comment's ask block shows the decision card @pr", async ({ browser }) =>
 
     // The card's urgency accent: a 4px left border.
     await expect(decision).toHaveCSS("border-left-width", "4px");
+
+    // The one card the thread drew says the question is text, and offers nothing to answer it
+    // with.
+    await expectTextOnlyDecisions(thread, 1);
   } finally {
     await alice.close();
   }
 });
 
 /** Files an issue titled `title` whose document holds an open decision, replies `body` under that
- * decision, and opens the issue as alice. Returns alice's context, for the caller to close, and
- * the reply's thread inside the document's decision card. */
+ * decision, and opens the issue as alice. The reply is seeded straight into `comments`
+ * (`e2e/decision-bodies.ts`): every body here holds a decision block, which the server refuses.
+ * Returns alice's context, for the caller to close, the document's own decision block, and the
+ * reply's thread inside that decision's card. */
 async function replyUnderDocumentDecision(
   browser: Browser,
   title: string,
   body: string
-): Promise<{ alice: BrowserContext; thread: Locator }> {
+): Promise<{ alice: BrowserContext; decision: Locator; thread: Locator }> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -171,14 +188,14 @@ async function replyUnderDocumentDecision(
   if (storage === undefined) {
     throw new Error("the storage decision was not indexed");
   }
-  await createComment(issue.key, { ask_id: storage.id, body }, agent);
+  await seedDecisionBody({ askId: storage.id, author: agent.actor, body, issueKey: issue.key });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
     const decision = documentEditor(page).locator('[data-dispatch-ask-block="storage"]');
-    return { alice, thread: decision.getByTestId(`thread-${storage.id}`) };
+    return { alice, decision, thread: decision.getByTestId(`thread-${storage.id}`) };
   } catch (error) {
     await alice.close();
     throw error;
@@ -193,7 +210,7 @@ async function replyUnderDocumentDecision(
 test("a reply under a document's decision keeps the lists of the typed blocks it holds", async ({
   browser,
 }) => {
-  const { alice, thread } = await replyUnderDocumentDecision(
+  const { alice, decision, thread } = await replyUnderDocumentDecision(
     browser,
     "Reply under a decision",
     ':::callout{kind="warning" title="Steps first"}\n- step one\n- step two\n:::\n\n' +
@@ -208,6 +225,16 @@ test("a reply under a document's decision keeps the lists of the typed blocks it
     await expect(thread.getByText("step two", { exact: true })).toBeVisible();
     // The malformed decision's source list shows: it has no rows to stand in for it.
     await expect(thread.getByText("Fine: ok", { exact: true })).toBeVisible();
+
+    // The one decision the reply holds says the question is text, and offers nothing to answer
+    // it with — while the document's own decision around it says no such thing: every line of
+    // that kind inside the document's card is the reply's.
+    await expectTextOnlyDecisions(thread, 1);
+    await expect(decision.locator("[data-dispatch-ask-text-only]")).toHaveCount(1);
+    const hosted = decision.locator("article[data-testid^=ask-]");
+    await expect(hosted.getByRole("radio")).toHaveCount(3);
+    await hosted.getByRole("radio", { name: "Postgres reuse" }).check();
+    await expect(hosted.getByRole("button", { exact: true, name: "Answer" })).toBeEnabled();
   } finally {
     await alice.close();
   }
@@ -276,13 +303,19 @@ test("a malformed decision's blank option shows no bullet in a body or a read-on
     { content: source, name: "blank.md" },
     { as: "agent" }
   );
-  const comment = await createComment(issue.key, { body: source }, agent);
+  // The server refuses this body too (400 DECISION_BLOCK_IN_BODY): what it holds is a decision
+  // block, malformed or not, so this comment is seeded the same way.
+  const commentId = await seedDecisionBody({
+    author: agent.actor,
+    body: source,
+    issueKey: issue.key,
+  });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const thread = await openCommentThread(page, comment.id);
+    const thread = await openCommentThread(page, commentId);
     const bodyDecision = thread.locator('section[data-proof-block-type="ask"]');
     await expect(bodyDecision).toHaveAttribute("data-dispatch-ask-malformed", "true");
     await expect(
@@ -291,6 +324,9 @@ test("a malformed decision's blank option shows no bullet in a body or a read-on
     const bodyItems = bodyDecision.locator("[data-proof-block-content] > ul > li");
     await expect(bodyItems).toHaveCount(2);
     await expect(bodyItems.nth(1)).toHaveCSS("display", "none");
+
+    // A malformed decision in a body says the question is text where it drew nothing before.
+    await expectTextOnlyDecisions(thread, 1);
 
     await page.goto(`/issues/${issue.key}/artifacts/${created.artifact.slug}`);
     const docDecision = documentEditor(page).locator('[data-dispatch-ask-block="blank"]');
@@ -301,6 +337,8 @@ test("a malformed decision's blank option shows no bullet in a body or a read-on
     const docBlank = docItems.nth(1);
     await expect(docBlank).toHaveText("");
     await expect(docBlank).toHaveCSS("display", "list-item");
+    // A document surface says nothing about opening an ask: the block is the document's own.
+    await expect(docDecision.locator("[data-dispatch-ask-text-only]")).toHaveCount(0);
 
     await page.goto(`/issues/${issue.key}/artifacts/${created.artifact.slug}?v=1`);
     const versionView = page.getByTestId("version-view");
@@ -312,6 +350,68 @@ test("a malformed decision's blank option shows no bullet in a body or a read-on
     await expect(readOnlyItems.filter({ hasText: "A: first" })).toBeVisible();
     await expect(readOnlyItems.nth(1)).toHaveText("");
     await expect(readOnlyItems.nth(1)).toHaveCSS("display", "none");
+    // A saved version draws the same record with nothing to answer it with, and no such line.
+    const answer = readOnlyDecision.getByRole("button", { exact: true, name: "Answer" });
+    await expect(readOnlyDecision.getByRole("radio")).toHaveCount(0);
+    await expect(answer).toHaveCount(0);
+    await expect(readOnlyDecision.locator("[data-dispatch-ask-text-only]")).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The line belongs to a body alone: a decision block a document holds is answered where it
+// stands, so no document surface draws it. The three document surfaces this tree has are the
+// live editor, a saved version read at `?v=1` and a closed issue's read-only document, and all
+// three are read below. A surface added later says which it is: `AskBlockCard`'s `inBody`
+// carries no default, so a card drawn for a document is written with `inBody={false}` and can
+// never take the line by forgetting to.
+test("a document's own decision block draws no line about opening an ask, live, saved or closed", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec:
+      "## Specification\n\nContext.\n\n" +
+      ':::ask{#storage urgency="high" multiple="false" state="open"}\n' +
+      "Which engine?\n\n- Postgres: reuse\n- SQLite: one file\n:::\n",
+    title: "Decision in a document",
+  });
+  await indexedBlockAsk(issue.key, "storage");
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    const live = documentEditor(page).locator('[data-dispatch-ask-block="storage"]');
+    const hosted = live.locator("article[data-testid^=ask-]");
+    await expect(hosted).toBeVisible();
+
+    // The reader answers it where it stands: the options are controls, and picking one arms
+    // the Answer button.
+    await expect(hosted.getByRole("radio")).toHaveCount(3);
+    await hosted.getByRole("radio", { name: "Postgres reuse" }).check();
+    await expect(hosted.getByRole("button", { exact: true, name: "Answer" })).toBeEnabled();
+    await expect(live.locator("[data-dispatch-ask-text-only]")).toHaveCount(0);
+
+    // The saved version draws the same record, with nothing to answer it with.
+    await page.goto(`/issues/${issue.key}/artifacts/spec?v=1`);
+    const saved = page.getByTestId("version-view").locator('[data-dispatch-ask-block="storage"]');
+    await expect(saved.locator('ul[aria-label="Options"] > li')).toHaveCount(2);
+    await expect(saved.getByRole("radio")).toHaveCount(0);
+    await expect(saved.getByRole("button", { exact: true, name: "Answer" })).toHaveCount(0);
+    await expect(saved.locator("[data-dispatch-ask-text-only]")).toHaveCount(0);
+
+    // A closed issue's document draws the same record, read-only, and no line either.
+    await patchIssue(issue.key, { status: "done" }, { login: "bob" });
+    await page.goto(`/issues/${issue.key}`);
+    await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
+    const closed = documentEditor(page).locator('[data-dispatch-ask-block="storage"]');
+    await expect(closed.locator('ul[aria-label="Options"] > li')).toHaveCount(2);
+    await expect(closed.getByRole("radio")).toHaveCount(0);
+    await expect(closed.getByRole("button", { exact: true, name: "Answer" })).toHaveCount(0);
+    await expect(closed.locator("[data-dispatch-ask-text-only]")).toHaveCount(0);
   } finally {
     await alice.close();
   }

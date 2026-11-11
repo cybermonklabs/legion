@@ -1921,6 +1921,7 @@ jobs:
               - '!packages/envoy/cmd/agent-secrets-helper/**/*_test.go'
               - '!packages/envoy/cmd/broker-refgen/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/**/*_test.go'
+              - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/broker/airlock/**/*_test.go'
               - '!packages/envoy/internal/broker/airlockproxy/**/*_test.go'
@@ -2819,11 +2820,11 @@ jobs:
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'
-            # The text checks of the three Go modules, and the Dispatch API's seven static
+            # The text checks of the three Go modules, and the Dispatch API's eight static
             # source checks: the tests whose subject is a file's words. Their job runs
             # packages/envoy/internal/textcheck, packages/envoy/infra/internal/textcheck and
             # packages/daemon/internal/textcheck, which the three Go lanes leave out of their
-            # own runs, and those checks' twelve tests by name. packages/envoy stays a wide
+            # own runs, and those checks' fifteen tests by name. packages/envoy stays a wide
             # root: file_copy_test.go walks every .go file under it (infra included), the API's
             # guards and one_expression_guard_test.go walk every non-test .go file of the
             # module, and the guard step compiles that package's whole test closure, which
@@ -3042,6 +3043,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
               - '!packages/envoy/internal/dispatch/api/copy_lock_order_test.go'
+              - '!packages/envoy/internal/dispatch/api/decision_block_route_guard_test.go'
               - '!packages/envoy/internal/dispatch/api/event_insert_guard_test.go'
               - '!packages/envoy/internal/dispatch/api/keyed_write_guard_test.go'
               - '!packages/envoy/internal/dispatch/api/lock_level_test.go'
@@ -4481,9 +4483,9 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # The checks whose subject is text: each module's internal/textcheck package, and the
-  # Dispatch API's seven static source checks, which read the module's own source. None of them
+  # Dispatch API's eight static source checks, which read the module's own source. None of them
   # opens a database or starts a container, so the job carries no service and no `bun install`,
-  # and the three Go lanes above leave those packages and those twelve tests out of their own runs
+  # and the three Go lanes above leave those packages and those fifteen tests out of their own runs
   # (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
   # walk, so it is selected often, which is why the job is kept this cheap: four `go test`
   # calls, 4 minutes 4 seconds measured with an empty build cache

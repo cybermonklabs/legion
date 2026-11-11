@@ -9,12 +9,12 @@ name: CI job text-checks
 #
 # What runs here is the tests whose subject is text: a guide's wording against the code it
 # pins, a file copied from one tree to another, the imports a package may have, and the
-# Dispatch API's seven static source checks - its six source guards and
+# Dispatch API's eight static source checks - its seven source guards and
 # one_expression_guard_test.go - which read the module's own source. None of them starts a
 # server, a container or a database, so none of them belongs in a Postgres-backed product
 # suite, where it waited behind that suite's fixtures and ran again on every change to the
 # module. Each module keeps its own package of them, internal/textcheck, and this job runs
-# those three packages and those checks' twelve tests; the three product lanes leave exactly
+# those three packages and those checks' fifteen tests; the three product lanes leave exactly
 # those out of their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE and
 # TEXT_CHECK_TESTS build both sides), so each of these tests runs once per run of the router.
 #
@@ -80,16 +80,16 @@ jobs:
       - name: Check the text packages/daemon pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/daemon
-      # The API's seven static source checks read the module's source and open no database, so
+      # The API's eight static source checks read the module's source and open no database, so
       # they run here rather than in the job that carries Postgres for that package. They sit in
       # the package they guard, beside its Postgres-backed tests, so this step selects them by
       # name: the list is generated in .github/scripts/ci_job_reads.py from TEXT_CHECK_TESTS,
-      # the same declaration that leaves exactly these twelve out of envoy-go's plain step, so a
+      # the same declaration that leaves exactly these fifteen out of envoy-go's plain step, so a
       # guard test added or renamed reaches both or fails the ci-filters job naming this step.
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
       # step from even building their fixtures' work.
       - name: Test the Dispatch API's source guards (no database)
-        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
+        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
