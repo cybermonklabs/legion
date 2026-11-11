@@ -109,20 +109,19 @@ func (s *Postgres) ReplaceMergeHolds(ctx context.Context, tx pgx.Tx, project str
 	return nil
 }
 
-// MergeHolds deletes the project's ended holds and answers the rest; LiveMergeHolds is the same
-// read without the delete. Keep the two together: a reader that follows one must find the other
-// beside it.
+// MergeHolds deletes the project's ended holds and answers the rest, which is LiveMergeHolds'
+// own answer: once the holds that ended are gone, every row of the project is a live one. Keep
+// the two together: a reader that follows one must find the other beside it.
 func (s *Postgres) MergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error) {
 	if _, err := tx.Exec(ctx, "delete from merge_holds where project = $1 and ends_at <= $2", project, now); err != nil {
 		return nil, fmt.Errorf("delete the ended merge holds of %s: %w", project, err)
 	}
-	rows, err := tx.Query(ctx, `select `+mergeHoldColumns+` from merge_holds where project = $1 order by ordinal`, project)
-	if err != nil {
-		return nil, fmt.Errorf("list the merge holds of %s: %w", project, err)
-	}
-	return scanMergeHolds(rows, project)
+	return s.LiveMergeHolds(ctx, tx, project, now)
 }
 
+// LiveMergeHolds is the project's holds that have not ended at now, in the list's own order,
+// deleting nothing: the read a caller makes that only shows the holds, where MergeHolds is the
+// same read made by the merge itself, which clears the ended ones as it goes.
 func (s *Postgres) LiveMergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error) {
 	rows, err := tx.Query(ctx, `select `+mergeHoldColumns+` from merge_holds
 		where project = $1 and ends_at > $2 order by ordinal`, project, now)
