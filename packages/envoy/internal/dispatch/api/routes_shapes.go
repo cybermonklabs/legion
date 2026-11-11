@@ -634,9 +634,12 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/issues/{key}/handoffs":                {Status: http.StatusOK, Response: []model.HandoffSummary{}},
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/handoffs/{id}":                        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":                        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":                 {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/design-gates": {
+		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
+	},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -720,6 +723,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
+	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: model.Ask{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
 		Status: http.StatusOK, Response: []model.Comment{}, Params: issueCommentsQuery{},
 	},

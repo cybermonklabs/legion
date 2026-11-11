@@ -190,6 +190,10 @@ func (h *dispatchHolder) PutGatedSteps(ctx context.Context, project string, step
 	return h.get().PutGatedSteps(ctx, project, steps)
 }
 
+func (h *dispatchHolder) PutDesignGates(ctx context.Context, key string, gates []dispatch.DesignGateDocument) error {
+	return h.get().PutDesignGates(ctx, key, gates)
+}
+
 // publisherHolder is the Envoy notify publisher (config.HolderEnvoyPublisher), which the outbox
 // publishes every notice through. It is a notify.Publisher itself. A rebuild reads the Envoy
 // bearer again (readEnvoyToken) and swaps; the publisher it replaces is an HTTP client with

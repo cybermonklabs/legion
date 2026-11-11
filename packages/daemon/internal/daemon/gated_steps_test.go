@@ -8,7 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -239,5 +243,119 @@ func TestALiveDesignGateChangeDuringAPublishIsNotLost(t *testing.T) {
 	}
 	if rows := outboxRows(t, pool); rows != 0 {
 		t.Fatalf("outbox rows = %d once the new list was published, want none", rows)
+	}
+}
+
+// designGatesPublications is every design-gates publication the outbox holds, by the issue it is
+// addressed to, with the row's id: the kind's unique partial index allows one row per issue, so a
+// second pass that queued beside a pending row would be read here as a changed id, and a second
+// row of one issue could not be written at all.
+func designGatesPublications(t *testing.T, pool *pgxpool.Pool) map[string]int64 {
+	t.Helper()
+	queued := map[string]int64{}
+	rows, err := pool.Query(context.Background(), "select issue, id from outbox where kind = $1", string(record.OutboxKindDesignGatesPublish))
+	if err != nil {
+		t.Fatalf("read the queued design-gates publications: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var issue string
+		var id int64
+		if err := rows.Scan(&issue, &id); err != nil {
+			t.Fatalf("read the queued design-gates publications: %v", err)
+		}
+		queued[issue] = id
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the queued design-gates publications: %v", err)
+	}
+	return queued
+}
+
+// Every gate of a deployment that upgrades into the design-gates route was written before the
+// kind existed, so nothing has published any of them: without the boot pass Dispatch would learn
+// an issue's documents only once something moved that set again, which for a tree already waiting
+// on its approval is never. The boot queues one publication for each recorded issue that holds a
+// gate (daemon.queueRecordedGatesPublish), carrying the documents its own gate rows record.
+//
+// A done issue is left out: a gate is live for Dispatch's advice only while the issue holding it
+// is not done there, and a closed tree's close deletes no gate row, so publishing its set would
+// have Dispatch print a clause for a gate that holds nothing back. The status read is what
+// Dispatch last showed, not what the daemon means by the issue. An issue with no gate is left out
+// for the plainer reason that it has no set.
+//
+// It queues at every boot, because the daemon keeps no record of what it last published, so a
+// restart loop must cost neither a second row nor a Dispatch write: the enqueue writes nothing
+// for a row whose payload is already what it would write (record.Postgres.EnqueueDesignGates).
+func TestBootQueuesEveryRecordedGatePublication(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject}
+	const gated, done, ungated = "LEGION-301", "LEGION-302", "LEGION-303"
+	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}
+	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}
+	approved := 1
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		for _, seed := range []struct {
+			key   string
+			shown string
+			pairs []record.DesignGateDocument
+		}{
+			{key: gated, shown: "in_progress", pairs: []record.DesignGateDocument{criteria, spec}},
+			{key: done, shown: record.DoneStatus, pairs: []record.DesignGateDocument{spec}},
+			{key: ungated, shown: "in_progress"},
+		} {
+			if err := records.PutIssue(ctx, tx, record.Issue{Key: seed.key, Repo: "acme/widgets", DefaultBranch: "main",
+				GitHubRepo: "acme/widgets", Project: gatePublishProject, Title: seed.key, Tree: seed.key,
+				Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: seed.shown,
+				Rank: seed.key, HandedOver: true, LastDispatchSeq: 1}); err != nil {
+				return err
+			}
+			for _, pair := range seed.pairs {
+				if err := records.PutGate(ctx, tx, record.DesignGate{Issue: seed.key, Step: pair.Step,
+					ArtifactID: pair.ArtifactID, LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the recorded gates: %v", err)
+	}
+
+	if err := boot.queueRecordedGatesPublish(ctx); err != nil {
+		t.Fatalf("the first boot's pass: %v", err)
+	}
+	queued := designGatesPublications(t, pool)
+	if len(queued) != 1 {
+		t.Fatalf("the boot queued publications for %v, want the one gated issue %s Dispatch does not show done", queued, gated)
+	}
+	row, ok := queued[gated]
+	if !ok {
+		t.Fatalf("the boot queued publications for %v, want one for %s", queued, gated)
+	}
+
+	// A restart loop: the same record read again queues no second row, and writes nothing into
+	// the one still pending, which is the row the lane goes on to run.
+	if err := boot.queueRecordedGatesPublish(ctx); err != nil {
+		t.Fatalf("a second boot's pass: %v", err)
+	}
+	if second := designGatesPublications(t, pool); !reflect.DeepEqual(second, map[string]int64{gated: row}) {
+		t.Fatalf("a second boot left publications %v, want the one row %d of %s the first boot queued", second, row, gated)
+	}
+
+	client := &gatePublishDispatch{}
+	runner := &outbox{pool: pool, records: records, dispatch: client, dispatchProject: gatePublishProject,
+		now: func() time.Time { return time.Now().UTC() }, log: quietLogger()}
+	if drained, _ := runner.drain(ctx, "", []record.OutboxKind{record.OutboxKindDesignGatesPublish}); !drained {
+		t.Fatal("the design-gates lane did not drain")
+	}
+	want := []gatePublished{{Issue: gated, Gates: wire(criteria, spec)}}
+	if got := client.taken(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the boot's publications reached Dispatch as %+v, want %+v: each issue's own documents, and nothing for a done or an ungated issue", got, want)
+	}
+	if rows := outboxRows(t, pool); rows != 0 {
+		t.Fatalf("the outbox holds %d rows after the lane ran, want none", rows)
 	}
 }

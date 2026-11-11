@@ -230,6 +230,58 @@ test("a card's table holds every number its graph draws", async () => {
   }
 });
 
+// The median of a bar runs over every finished issue, one the role never worked counting as
+// zero, so a role most issues never reach reads 0 with its hours sitting in the bar beside it.
+// What makes that readable is the count of issues the bar holds hours for, which the server
+// sends as `issues`: without it on the card a median of 0 reads as a false number rather than
+// as a population most issues are not in.
+test("the phase-time table names how many issues each bar holds hours for", async () => {
+  const user = userEvent.setup();
+  await renderSection([setting("ACME")], () =>
+    report({
+      finished: 9,
+      phase_time: {
+        bars: [
+          {
+            hours: 12,
+            issues: 3,
+            median_hours_per_issue: 0,
+            role: "architect",
+            segments: {
+              ci_wait: 0,
+              idle: 2,
+              in_a_turn: 6,
+              waiting_on_children: 0,
+              waiting_on_person: 4,
+            },
+          },
+        ],
+        idle_share: 0.167,
+      },
+    })
+  );
+
+  await screen.findByText("Work time to merge");
+  await user.click(
+    screen
+      .getByRole("group", { name: "Phase time by worker type view" })
+      .querySelector("button:last-of-type") as HTMLElement
+  );
+  const table = await waitFor(() => {
+    const found = document.querySelector('[data-chart-table="Phase time by worker type"]');
+    if (found === null) throw new Error("no table");
+    return found;
+  });
+  // The table is one row per worker type and one column per series, so the count stands in the
+  // architect's row under its own header, beside the median of 0 it makes readable.
+  expect(table.textContent).toContain("Issues with hours");
+  const row = Array.from(table.querySelectorAll("tr")).find((line) =>
+    line.textContent?.startsWith("architect")
+  );
+  if (row === undefined) throw new Error("the table holds no architect row");
+  expect(row.textContent).toContain("3");
+});
+
 test("the scope toggle reads the metrics again for the roots alone", async () => {
   const user = userEvent.setup();
   const { metrics } = await renderSection([setting("ACME")], (query) =>

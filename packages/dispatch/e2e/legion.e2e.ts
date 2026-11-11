@@ -444,12 +444,16 @@ test("the Delivery page's Legion section draws the four metrics @legion", async 
     await expect(figure("splitting", "Issues filed")).toHaveText("1");
     await expect(figure("splitting", "Roots finished")).toHaveText("1");
 
-    // The worker types the child's work was shared out over, on the phase-time card's table.
+    // The worker types the child's work was shared out over, on the phase-time card's table,
+    // and the count of issues each bar holds hours for: a bar's median runs over every finished
+    // issue, one the role never worked counting as zero, so that count is what keeps a median
+    // of 0 readable as a population most issues are not in.
     const phaseTime = section.locator('[data-legion-metric="phase_time"]');
     await phaseTime.getByRole("button", { name: "Table" }).click();
     const table = phaseTime.locator('[data-chart-table="Phase time by worker type"]');
     await expect(table.locator("td", { hasText: "implementer" }).first()).toBeVisible();
     await expect(table.locator("th", { hasText: "Worker type" }).first()).toBeVisible();
+    await expect(table.locator("th", { hasText: "Issues with hours" }).first()).toBeVisible();
 
     // The toggle reads the metrics again for the roots alone: one of the two finished.
     await section.getByRole("button", { name: "Roots" }).click();
