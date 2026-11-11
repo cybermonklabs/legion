@@ -2,8 +2,8 @@
  *  itself: whether to keep this run's stack logs or remove them with the run directory.
  *
  *  The stacks' logs are the only record of what their servers said, and a failed run is read from
- *  them; a green run's are megabytes nobody opens, which the wrapper this suite replaced deleted
- *  with the run directory. Playwright gives a `globalTeardown` hook the configuration and nothing
+ *  them; a green run's are megabytes nobody opens, and go with the run directory. Playwright
+ *  gives a `globalTeardown` hook the configuration and nothing
  *  else, and it runs the teardown BEFORE it asks a reporter for the run's status: `taskRunner.run`
  *  calls `cleanup()`, which is the teardown tasks, and `finishTaskRun` calls `reporter.onEnd`
  *  after it (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/
@@ -33,9 +33,9 @@
  *  in both of its `--reporter` lists, so a green CI leg records its rows and deletes its own logs.
  *
  *  A row that failed and passed on its retry is a failure here, and the logs of that run are
- *  kept. The run exits 0, so the wrapper would have deleted them; keeping them is the better
- *  answer, since a flaky row is exactly the one whose cause is in a server's log rather than in
- *  its trace. A row a Ctrl-C cut off counts the same way, for the same reason. */
+ *  kept, although the run exits 0: a flaky row is exactly the one whose cause is in a server's
+ *  log rather than in its trace. A row a Ctrl-C cut off counts the same way, for the same
+ *  reason. */
 
 /** Whether any row at all reached this module, which is what tells a reported run from a silent
  *  one, and whether any failure did - a row's own, or one that belonged to no row. */

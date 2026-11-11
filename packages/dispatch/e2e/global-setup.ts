@@ -102,9 +102,10 @@ function neededEngines(projects: readonly FullProject[]): readonly PlaywrightEng
  *  stack's harness and Postgres already up and minutes of the run gone, and it names `playwright
  *  install`, which is not this package's command.
  *
- *  `e2e/run.ts` asked first whether its command ran Playwright's test runner at all, and exempted
- *  a listing from this check. Neither question is this file's: a listing (`--list`) runs no
- *  `globalSetup` at all, and nothing but a Playwright run reaches this module. */
+ *  The check asks nothing about the command line: a listing (`--list`) runs no `globalSetup` at
+ *  all, and nothing but a Playwright run reaches this module. What it asks about is the run's
+ *  own projects, which is every project of the configuration in a UI session, whatever
+ *  `--project` that command line held, so such a session needs every engine. */
 async function refuseMissingBrowsers(projects: readonly FullProject[]): Promise<void> {
   // Playwright's own launchers, which answer where it put each engine. They are imported
   // statically: the runner that calls this hook has @playwright/test loaded already, so there is
