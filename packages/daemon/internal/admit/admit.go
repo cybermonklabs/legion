@@ -1291,12 +1291,17 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	// Every tree of this project that has stopped is told to the controller here, after the
 	// releases and the line's judgement: the rule reads the facts this pass already holds —
-	// the slots it has given back, what a blocker holds, what waits for its children and the
-	// line itself, where every issue the cap is holding stands — and no pass may read them
-	// twice. It runs before the cap check below, because a deployment whose cap admits nothing
-	// still runs the trees it opened before and still owes its controller the news that one
-	// has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, slots, facts, line); err != nil {
+	// what a blocker holds, what waits for its children, the line itself, which carries both
+	// where every issue stands and whether it held a slot when the line was built, and the
+	// slot rows the line was judged from, which name every holder of the cap and not only the
+	// holders standing in the line — and no pass may read them twice. The slots are what the
+	// rule's liveness clause is read from: a project is stopped for good when no slot holder
+	// of it can finish and no agent of it is at work, and a holder in a phase of its own
+	// stands in no line (lineCanMove). They are this pass's own rows, read again after every
+	// release it made, so the rule judges the slots the project holds now. It runs before the
+	// cap check below, because a deployment whose cap admits nothing still runs the trees it
+	// opened before and still owes its controller the news that one has stopped.
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, line, slots); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
@@ -1445,25 +1450,16 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
-				// The answer takes the root out of its wait and back to admitted, which is a
-				// phase change and so a movement of the tree (record.Store.MarkIssueMoved, the
-				// rule in workflow's dispatchIssue). Nothing else writes one for it: the
-				// person's act that answered the wait was recorded on Dispatch and is read here
-				// from the record rather than carried by a fact of this issue, and the
-				// architect's claim stands idle through the resume, which the quiet measure
-				// counts as no work (record's restingStates). Unmarked, the root would keep the
-				// moved_at of its last real movement, which is where it stood when it handed
-				// the question to the person, and the next pass would tell the controller that
-				// a tree the daemon has just resumed has stopped.
-				if err := a.store.MarkIssueMoved(ctx, tx, issue.Key, now); err != nil {
-					return admitted, released, err
-				}
 				if writeInProgress {
 					if err := a.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, now); err != nil {
 						return admitted, released, err
 					}
 				}
-				// ResumeAwaitedRoot is the resume's handout (record.Store.StartHandout).
+				// ResumeAwaitedRoot is the resume's handout (record.Store.StartHandout), and it
+				// is where this promotion's movement is marked: the resume starts the root's
+				// architect, and the mark sits at that write so that the other resume carries
+				// it too — the root whose person had already acted, which workflow tells where
+				// it stands (its tellInPlace). The reasoning is in ResumeAwaitedRoot.
 				if err := a.engine.ResumeAwaitedRoot(ctx, tx, issue, *awaiting); err != nil {
 					return admitted, released, fmt.Errorf("resume %s after a person's answer: %w", issue.Key, err)
 				}

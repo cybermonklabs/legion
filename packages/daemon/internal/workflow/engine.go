@@ -280,21 +280,21 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// silently miss a kind a later change adds — the mark would stop being written for it, with
 	// nothing failing to say so — and three of the six movements are no fact of their own anyway:
 	// a phase change, a start and a recorded handoff are consequences several different facts
-	// reach. So each site sits at the write it is about. Eight are in this package: this one, the
+	// reach. So each site sits at the write it is about. Nine are in this package: this one, the
 	// Dispatch event of the issue; the pull request's row (Engine.putPullRequest); the phase
 	// write (Engine.transition and Engine.retryPhase); the hold a failed claim writes
 	// (Engine.claimFailed); the handoff's phase row and the completion that records it
-	// (Engine.handoff); the wait on a person a root enters (enterAwaiting); and the start
-	// (StartOrOwe).
+	// (Engine.handoff); the wait on a person a root enters (enterAwaiting); the resume of a root
+	// a person answered, which starts its architect again (ResumeAwaitedRoot, for the promotion
+	// that answers the wait and for the root told in place alike); and the start (StartOrOwe).
 	//
-	// The other three are the admission pass's own writes of a phase and of a start, which no
+	// The other two are the admission pass's own writes of a phase and of a start, which no
 	// fact of the issue carries and which this package therefore never sees: the re-admission
-	// that opens a new generation of a tree (admit's readmit), the resume of a root a person
-	// answered, and the promotion of a root the line has been holding, which opens its tree and
-	// queues its architect's start (both in admit's promoteHolds). Unmarked, a root the pass had
-	// just started would carry the stamp of the moment a person labelled it, and the next pass
-	// would read a tree the daemon opened a second ago as a tree that had stopped
-	// (admit's tellStalledTrees).
+	// that opens a new generation of a tree (admit's readmit), and the promotion of a root the
+	// line has been holding, which opens its tree and queues its architect's start (admit's
+	// promoteHolds). Unmarked, a root the pass had just started would carry the stamp of the
+	// moment a person labelled it, and the next pass would read a tree the daemon opened a
+	// second ago as a tree that had stopped (admit's tellStalledTrees).
 	//
 	// Here the mark goes past both of the fences above, so an event the record has already
 	// applied — a redelivery, or one older than the newest the record took — moves nothing, and
