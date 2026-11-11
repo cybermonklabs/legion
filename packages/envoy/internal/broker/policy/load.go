@@ -92,6 +92,10 @@ const (
 	// ReasonScopesKind: a secret that is not a google-service-account one carries a scopes tag
 	// (TagRules). No other minter reads it, so the tag would narrow nothing while saying it had.
 	ReasonScopesKind = "scopes-kind"
+	// ReasonShapeMalformed: the shape tag is set to a value that is neither token nor document
+	// (TagRules). The tag says what the stored value is, so a word the broker does not know
+	// leaves it unable to say what a release of the secret would hand over.
+	ReasonShapeMalformed = "shape-malformed"
 )
 
 // slugPattern is a secret's name under the prefix: the lowercase form of an environment-variable
