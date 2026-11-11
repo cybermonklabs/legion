@@ -3838,3 +3838,5 @@ func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
 		t.Fatalf("envoy_sends_unresponsive_total = %s after a send the bus never took, want 1", got)
 	}
 }
+
+// INFRA-1413 selection probe, never merged.
