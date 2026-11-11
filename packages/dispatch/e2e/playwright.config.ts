@@ -136,11 +136,12 @@ const stub = stubSelection({
 // (`clockFileOnCommandLine`, e2e/configurations.ts). The three wall-clock projects
 // (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so no run that
 // names no project holds a row of the file such a command named, whatever Playwright then does
-// with the rest of the line - answer "No tests found", or run the whole default selection, which
-// is what a filter dropped after a `--` leaves (e2e/configurations.ts). Neither answer names a
-// cure; this says the command that does run the file. Throwing as this module evaluates is what
-// puts the message on standard error and the run's status above zero, and Playwright prints a
-// config error with a stack after it, so the first line is the command and nothing else.
+// with the rest of the line - for example, answer "No tests found", or run the whole default
+// selection, which is what a filter dropped after a `--` leaves (e2e/configurations.ts). No such
+// answer names a cure; this says the command that does run the file. Throwing as this module
+// evaluates is what puts the message on standard error and the run's status above zero, and
+// Playwright prints a config error with a stack after it, so the first line is the command and
+// nothing else.
 //
 // That line names its own worker count. The measurement a wall-clock row makes is a reading
 // only in a run one worker wide, and `refuseASharedRun` (e2e/main-thread-hold.ts) fails a
@@ -159,11 +160,11 @@ if (clockFile !== undefined) {
       `projects - ${clockProjectNames.join(", ")} - are out of the default selection, because ` +
       "their rows are read from the wall clock and need the machine to themselves, so no run " +
       "that names no project holds a row of that file, whatever Playwright then does with the " +
-      'rest of this command line - answer "No tests found", or run the whole default ' +
-      "selection, which is what a filter dropped after a `--` leaves. Write the project as " +
-      "--project=<name> and never --project <name>: the option is variadic, so the file after " +
-      "it would be read as a second project name. To run every wall-clock row in all three " +
-      "engines, run `bun run e2e:clock`."
+      'rest of this command line - for example, answer "No tests found", or run the whole ' +
+      "default selection, which is what a filter dropped after a `--` leaves. Write the " +
+      "project as --project=<name> and never --project <name>: the option is variadic, so the " +
+      "file after it would be read as a second project name. To run every wall-clock row in " +
+      "all three engines, run `bun run e2e:clock`."
   );
 }
 

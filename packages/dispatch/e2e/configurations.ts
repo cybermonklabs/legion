@@ -313,8 +313,9 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
  *  the three wall-clock projects are out of the default selection, so no run that names no
  *  project holds a row of the file such a command named, whatever Playwright then does with the
- *  rest of the line - answer "No tests found", or run the whole default selection, which is what
- *  a filter dropped after a `--` leaves (the post-dash drop below). Neither answer names a cure.
+ *  rest of the line - for example, answer "No tests found", or run the whole default selection,
+ *  which is what a filter dropped after a `--` leaves (the post-dash drop below). No such answer
+ *  names a cure.
  *
  *  Reading begins after the `test` command word, and a command line with no such word answers
  *  `undefined`. A worker re-evaluates this configuration with Playwright's own argv rather than
@@ -386,7 +387,7 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
  *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What
  *  the run does without its filter depends on the option that took the `--`: `--list --grep --
- *  e2e/heavy-bodies.e2e.ts`, written as a regex this reader does not answer for, reached the
+ *  'e2e/heavy.bodies.e2e.ts'`, written as a regex this reader does not answer for, reached the
  *  runner with no filter and a grep of `--` and exited 1 with `Error: No tests found` above
  *  `Total: 0 tests in 0 files`, and `--list --output -- 'e2e/heavy.bodies.e2e.ts'` lists the
  *  1,299 rows of the default selection. Neither run reaches the wall-clock file the person

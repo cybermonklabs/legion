@@ -1078,11 +1078,11 @@ jobs:
         # `apt-get update`.
         #
         # The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
-        # coedit, signin and two-builds today (e2e/playwright.config.ts:50 matches them by that
-        # suffix, so a new one joins without an edit here) -- and they run headless Chromium and
-        # compare no screenshot (none holds `toHaveScreenshot` or `toMatchSnapshot`), and
-        # fonts-liberation and fonts-noto-color-emoji are on the image already. A row that later
-        # needs CJK or Thai glyphs would fail visibly.
+        # coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
+        # matches them by that suffix, so a new one joins without an edit here) -- and they run
+        # headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
+        # `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
+        # already. A row that later needs CJK or Thai glyphs would fail visibly.
         #
         # The 4-minute budget: this step downloads browsers only, and Playwright makes up to
         # five attempts, across its download hosts, inside it. Of the 339 s maximum above,

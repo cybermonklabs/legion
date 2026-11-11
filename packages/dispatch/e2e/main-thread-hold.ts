@@ -31,9 +31,10 @@ export interface Measured {
   readonly held: number;
 }
 
-// The row's file as the list reporter prints it, relative to the package rather than to the run's
-// cwd or to Playwright's rootDir, which is this directory (`packageRoot` in
-// e2e/measure-reporter.ts:43): the command the refusal below prints is run from the package.
+// The row's file as the list reporter prints it, relative to the package (`packageRoot` in
+// e2e/measure-reporter.ts holds that reading, in the comment above it) rather than to the run's
+// cwd or to Playwright's rootDir, which is this directory: the command the refusal below prints
+// is run from the package.
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
@@ -75,9 +76,9 @@ function refuseASharedRun(): void {
   const commandLine = info.config.argv.join(" ");
   // The command comes first and alone, as the wall-clock refusal in `e2e/playwright.config.ts`
   // prints it, so the line a reader is shown beside the failed row is the one that fixes it. It
-  // names its own `--workers=1`, because spec R2 has every command that measures a wall-clock
-  // row state the one worker its reading rests on, rather than take it from the configuration's
-  // default (`workers: 1`, e2e/playwright.config.ts).
+  // names its own `--workers=1`, because dispatch://INFRA-1280/spec#b-r2 has every command
+  // that measures a wall-clock row state the one worker its reading rests on, rather than
+  // take it from the configuration's default (`workers: 1`, e2e/playwright.config.ts).
   const file = relative(packageRoot, info.file);
   throw new Error(
     `bun run e2e -- --project=${info.project.name} ${file} --workers=1` +

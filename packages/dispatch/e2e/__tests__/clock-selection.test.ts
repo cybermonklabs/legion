@@ -2,9 +2,9 @@
  *  before it refuses such a command (`e2e/configurations.ts`'s `clockFileOnCommandLine`).
  *
  *  Both directions cost a reader something, and only one of them is loud. A command the reader
- *  misses runs no row of the file the person named - Playwright answers "No tests found", or
- *  drops a filter written after a `--` and runs the whole default selection instead - and
- *  neither answer names a cure, which is the whole reason the refusal exists (INFRA-1280). A
+ *  misses runs no row of the file the person named - for example, Playwright answers "No tests
+ *  found", or drops a filter written after a `--` and runs the whole default selection instead -
+ *  and no such answer names a cure, which is the whole reason the refusal exists (INFRA-1280). A
  *  command the reader answers for where Playwright would have run it is refused for nothing,
  *  and the rows below are the shapes that invite that reading: an option whose value is a file
  *  name or a grep, a `--` the filter sits behind, a user-interface run, which lists the
