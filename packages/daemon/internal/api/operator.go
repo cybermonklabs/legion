@@ -114,6 +114,14 @@ type OperatorClaim struct {
 	// the controller's claim on no issue, so no claim view of the state carries it, and `legion
 	// claims list` is where an operator reads what a stuck controller is doing.
 	Step *StepView `json:"step,omitempty"`
+	// Failure is why the claim failed: the one word the site that failed it chose, the sentence
+	// that site wrote beside it, the moment and the four counts it failed with
+	// (ClaimFailureView, FailureViewOf). It is absent for a claim the daemon holds no cause for
+	// — one that never failed, and one a launch has run again since, which is the only thing
+	// that clears the record (supervise's launchNow) — and stands on a claim an operator
+	// retired after it failed, which is what lets the seat reading it say why that worker is
+	// gone.
+	Failure *ClaimFailureView `json:"failure,omitempty"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -257,6 +265,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		UpdateRound:     c.UpdateRound,
 		UpdateHead:      c.UpdateHead,
 		Step:            StepViewOf(step),
+		Failure:         FailureViewOf(c),
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{

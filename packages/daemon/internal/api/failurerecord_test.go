@@ -170,11 +170,11 @@ func decodeFailureState(t *testing.T, body []byte) servedFailureState {
 
 // A claim the daemon holds a cause for says why beside the sentence it already kept, on every
 // surface an agent reads, and a held issue says which phase its hold took it out of
-// (dispatch://INFRA-3083). This is the one test of that record over the routes: the row below
-// reads `GET /legion/v1/state`, and the routes the rest of the issue adds — the operator's claim
-// list, the architect's retry and the status route — each add a row of their own, so a build
-// that serves the record on one surface and not another fails here rather than passing on the
-// surface its author happened to read.
+// (dispatch://INFRA-3083). This is the one test of that record over the routes: the rows below
+// read `GET /legion/v1/state` and the operator's claim list, and the routes the rest of the
+// issue adds — the architect's retry and the status route — each add a row of their own, so a
+// build that serves the record on one surface and not another fails here rather than passing
+// on the surface its author happened to read.
 //
 // The record is driven through the supervision's own terminal path rather than written by hand:
 // a view built from a claim no failure wrote would pass whatever the daemon records.
@@ -276,6 +276,43 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 		if got := served.Issues[failureHeldIssue].HoldReason; got != string(record.HoldEscalated) {
 			t.Errorf("the hold reason served to a pod one contract behind is %q, want %s: the strip takes the two keys of this contract and nothing else",
 				got, record.HoldEscalated)
+		}
+	})
+
+	// The operator's own list, the surface `legion claims list` reads: the record stands on
+	// every claim of it, beside the budgets an operator already reads there, so the seat that
+	// runs the command is told the cause the daemon chose rather than left to read it out of
+	// the sentence. This route narrows by no contract — it answers an operator's token, not a
+	// pod's plugin — so both claims carry the record whole, the retired one included.
+	t.Run("GET /legion/v1/operator/claims", func(t *testing.T) {
+		recorder := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("list the claims = %d, want 200; body %s", recorder.Code, recorder.Body)
+		}
+		var list OperatorClaims
+		if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
+			t.Fatalf("decode the listing %s: %v", recorder.Body, err)
+		}
+		listed := make(map[claim.Token]OperatorClaim, len(list.Claims))
+		for _, c := range list.Claims {
+			listed[c.Token] = c
+		}
+		for _, held := range []supervise.Claim{failed, retired} {
+			got, ok := listed[held.Token]
+			if !ok {
+				t.Fatalf("the listing carries no %s: %s", held.Token, recorder.Body)
+			}
+			// Field by field, as the state's row above: the moment crosses the wire as a
+			// timestamp, which is equal to the claim's rather than identical to it.
+			want := FailureViewOf(held)
+			if got.Failure == nil || got.Failure.Cause != want.Cause || got.Failure.Detail != want.Detail ||
+				got.Failure.Attempts != want.Attempts || got.Failure.At == nil || !got.Failure.At.Equal(*want.At) {
+				t.Errorf("%s is listed with %+v, want the record its failure wrote, %+v", held.Token, got.Failure, want)
+			}
+			if got.Failure != nil && got.Failure.Attempts != got.Budgets {
+				t.Errorf("%s is listed with the counts %+v beside the budgets %+v, want the record's counts to be the budgets it failed with",
+					held.Token, got.Failure.Attempts, got.Budgets)
+			}
 		}
 	})
 }

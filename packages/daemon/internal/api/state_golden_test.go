@@ -993,7 +993,13 @@ func TestOperatorClaimGolden(t *testing.T) {
 	golden(t, "operator-claim.json", operatorClaim())
 }
 
+// What a successful forget-session answers: the failed claim whose session the operator
+// abandoned, carrying why it failed. This is the fixture that holds the operator wire's failure
+// record, because operatorClaim's is working and a working claim has none: the launch that ran
+// it again cleared it (supervise's launchNow), which is why the record stands on a failed claim
+// alone.
 func TestForgetSessionOperatorClaimGolden(t *testing.T) {
+	failedAt := time.Date(2026, 9, 22, 9, 28, 41, 0, time.UTC)
 	golden(t, "operator-forget-session.json", OperatorClaim{
 		Token:                "legion-legion-legion-208-architect",
 		Tree:                 "LEGION-208",
@@ -1006,6 +1012,12 @@ func TestForgetSessionOperatorClaimGolden(t *testing.T) {
 		Budgets:              BudgetsView{LaunchFailures: 3},
 		UncertainStreak:      0,
 		PluginContract:       38,
+		Failure: &ClaimFailureView{
+			Cause:    supervise.CauseLaunchRefused,
+			Detail:   "launch failures ran out: resume the pane: the session table holds no such session",
+			At:       &failedAt,
+			Attempts: BudgetsView{LaunchFailures: 3},
+		},
 	})
 }
 
