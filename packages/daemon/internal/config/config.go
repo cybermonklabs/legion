@@ -1092,6 +1092,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := checkMemory(cfg); err != nil {
 		return Config{}, err
 	}
+	if err := checkExperiments(cfg); err != nil {
+		return Config{}, err
+	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
 		return Config{}, err
 	}

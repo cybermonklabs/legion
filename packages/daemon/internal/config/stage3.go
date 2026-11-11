@@ -86,6 +86,13 @@ type Project struct {
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
 	Memory Memory
+	// Experiments are `experiments`, the experiments the project declares, in the order its file
+	// declares them; nil when the file names none. The order is the file's and is kept as a slice
+	// rather than a mapping because a later reader loads a drawn unit's files in the order the
+	// project declares the experiments, and a mapping's iteration order is no contract. The
+	// `memory` block is an experiment too and is not in this list: ExperimentsDeclared is the one
+	// list every reader below the loader asks, and it maps the block in.
+	Experiments []Experiment
 	// ProductionCheck is `production_check`, the role that works the production check a merge
 	// closing one of the project's issues opens: the tester, which a project that names no key
 	// gets, or the empty role, which is the file's `off` and opens no check at all. The key
@@ -221,7 +228,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if value.Kind != yaml.MappingNode {
 		return Project{}, nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "commit_issue_trailer_repos", "deploys", "memory", "merge", "merge_queue_role", "mergeQueueRole", "production_check", "slack_channels")
+	fields, err := members(value, key, "commit_issue_trailer_repos", "deploys", "experiments", "memory", "merge", "merge_queue_role", "mergeQueueRole", "production_check", "slack_channels")
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
@@ -271,6 +278,17 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	if memory := fields["memory"]; memory != nil {
 		if project.Memory, err = readMemory(memory, key+".memory"); err != nil {
+			return Project{}, nil, err
+		}
+	}
+	if experiments := fields["experiments"]; experiments != nil {
+		if project.Experiments, err = readExperiments(experiments, key+".experiments"); err != nil {
+			return Project{}, nil, err
+		}
+		// The block and `experiments.memory` are one experiment spelled two ways, and only here
+		// are both spellings in view: the memory member is read by the mapping's own key rather
+		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
