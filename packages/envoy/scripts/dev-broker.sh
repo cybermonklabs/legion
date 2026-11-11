@@ -263,6 +263,27 @@ for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets
   ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
 done
 
+# await <what> <seconds> <log file> <grep -E pattern> [pid to watch]
+# Waits for a line one process logs, and fails the run the moment that process dies instead of
+# looping until the wait gives up. scripts/dev-airlock.sh has the same helper, and the two
+# scripts' waits read alike.
+await() {
+  local what="$1" seconds="$2" file="$3" pattern="$4" watch="${5:-}" waited=0
+  while [ "$waited" -lt "$((seconds * 2))" ]; do
+    if grep -qE "$pattern" "$file" 2>/dev/null; then
+      return 0
+    fi
+    if [ -n "$watch" ] && ! kill -0 "$watch" 2>/dev/null; then
+      echo "dev-broker: $what exited during startup (see $file)" >&2
+      exit 1
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  echo "dev-broker: $what did not happen within ${seconds}s (see $file)" >&2
+  exit 1
+}
+
 # --- The stand-in GitHub the two github-app secrets are minted against. dev-airlock-stands
 # serves nine stands and this stack uses the GitHub one; the others cost a loopback port each and
 # nothing points at them. It writes this run's App key and prints one JSON report naming that
@@ -278,22 +299,7 @@ echo "dev-broker: starting dev-airlock-stands (its GitHub stand mints the github
 STANDS_PID=$!
 # The stands write their report and then log this line, so once it is in STANDS_LOG the JSON is
 # whole and every stand is listening.
-STANDS_READY=false
-for _ in $(seq 1 60); do
-  if ! kill -0 "$STANDS_PID" 2>/dev/null; then
-    echo "dev-broker: dev-airlock-stands exited during startup; see $STANDS_LOG" >&2
-    exit 1
-  fi
-  if grep -q 'stands listening records=' "$STANDS_LOG" 2>/dev/null; then
-    STANDS_READY=true
-    break
-  fi
-  sleep 0.5
-done
-if [ "$STANDS_READY" != true ]; then
-  echo "dev-broker: dev-airlock-stands did not report its stands within 30s; see $STANDS_LOG" >&2
-  exit 1
-fi
+await "dev-airlock-stands" 30 "$STANDS_LOG" 'stands listening records=' "$STANDS_PID"
 stand() { jq -r "$1" "$STANDS_JSON"; }
 # The GitHub stand is reached by the broker's own minter, which trusts the host's roots and
 # nothing else, so it is served over plain http on a port the system picked and is named by that
@@ -495,6 +501,8 @@ dev-broker: ready.
   export AGENT_SECRETS_MACHINE_FILE=$WORK_DIR/machine.json
   export AGENT_SECRETS_STATE_FILE=$WORK_DIR/sessions.json
   export DEV_BROKER_DIR=$WORK_DIR
+  export DEV_BROKER_POD_UID=$POD_UID
+  export DEV_BROKER_SERVICE=$SERVICE
   export DEV_BROKER_GITHUB_URL=$GITHUB_URL
   export DEV_BROKER_GITHUB_RECORDS_URL=$GITHUB_RECORDS_URL
   export DEV_BROKER_GITHUB_ANSWER_URL=$GITHUB_ANSWER_URL
@@ -545,7 +553,7 @@ dev-broker: ready.
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets DEMO_SERVICE_TOKEN -- printenv DEMO_SERVICE_TOKEN
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets $GITHUB_SECRET --github-owner $GITHUB_OWNER \\
       --github-repo proofs --github-token -- \\
-      curl -fsS -H "Authorization: Bearer \\\$$GITHUB_SECRET" $GITHUB_URL/repos/$GITHUB_OWNER/proofs
+      sh -c 'curl -fsS -H "Authorization: Bearer \$$GITHUB_SECRET" $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
 
   To approve a pending request for DEMO_API_KEY, open the approve_url agent-secrets prints for
   it (${PUBLIC_URL}/approve/<record>) in a browser: the broker sends you to sign in at

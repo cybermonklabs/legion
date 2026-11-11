@@ -61,6 +61,8 @@ dev-broker: ready.
   export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.LsGorY/machine.json
   export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.LsGorY/sessions.json
   export DEV_BROKER_DIR=/tmp/agent-secrets-dev.LsGorY
+  export DEV_BROKER_POD_UID=6d75548a-6373-4837-a09f-84aa2f3b2921
+  export DEV_BROKER_SERVICE=legion-daemon
   export DEV_BROKER_GITHUB_URL=http://127.0.0.1:44686
   export DEV_BROKER_GITHUB_RECORDS_URL=http://127.0.0.1:50479/records/github
   export DEV_BROKER_GITHUB_ANSWER_URL=http://127.0.0.1:50479/answers/github
@@ -119,9 +121,11 @@ stand this stack starts: `DEMO_GITHUB_APP`, whose `github-owners` tag names `acm
 under logins that differ only in case (`ada` and `Ada`), so a release of it holds two
 installations and `agent-secrets --github-token` refuses it. The exports name both secrets, the
 stand's address, the route that reads back every call it was sent, and the route that sets what
-it answers the next token request (`ordinary`, `refuse` or `widen`). A grant lasts for the
-`--ttl` its
-request names; with none, 15 minutes when any secret it names is human tier and 12 hours otherwise
+it answers the next token request (`ordinary`, `refuse` or `widen`). They also name the pod and
+the registered service of the enrolment command the banner prints (`DEV_BROKER_POD_UID` and
+`DEV_BROKER_SERVICE`), so a script enrols that same session from the exports alone. A grant lasts
+for the `--ttl` its request names; with none, 15 minutes when any secret it names is human tier
+and 12 hours otherwise
 (until its session ends for a secret tagged `default-grant=session`), and never past its session. Every command below runs in that second shell.
 
 ## Run a helper and log it in
@@ -374,7 +378,6 @@ dev-airlock: starting dev-broker.sh (Postgres, dev-oidc-issuer, its broker)...
 dev-broker: ready.
 ...
 dev-airlock: created isolated database dev_airlock_egq8i8
-dev-airlock: building dev-airlock-stands...
 dev-airlock: starting dev-airlock-stands...
 dev-airlock-stands: stands listening records=http://127.0.0.1:16053
 dev-airlock: starting the API and proxy fronts...

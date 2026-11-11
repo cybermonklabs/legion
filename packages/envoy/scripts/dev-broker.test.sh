@@ -31,7 +31,9 @@
 # approval page; and (h) each instance registers its one service under both halves a service
 # needs - BROKER_SERVICE_LOGINS for the account that logs in as it and BROKER_SERVICES for the
 # account its pods run as - and its banner says how to take the secret that service owns, with
-# the pod uid its own issuer bound.
+# the pod uid its own issuer bound, exports that uid and that service name for a check script
+# to enrol the same session by, and runs its --github-token example's curl in a shell of its
+# own, so the child expands the name the grant gave it.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -453,12 +455,14 @@ assert_instance_isolated() {
   # own option.
   if ! grep -qF -- "--pod-uid pod-uid-of-${pod_account##*:}" "$log_file" \
     || ! grep -qF -- "--service ${service}" "$log_file" \
-    || ! grep -qF -- "DEMO_SERVICE_TOKEN" "$log_file"; then
+    || ! grep -qF -- "DEMO_SERVICE_TOKEN" "$log_file" \
+    || ! grep -qF "export DEV_BROKER_POD_UID=pod-uid-of-${pod_account##*:}" "$log_file" \
+    || ! grep -qF "export DEV_BROKER_SERVICE=${service}" "$log_file"; then
     cat "$log_file" >&2
-    echo "FAIL: $label's banner does not say how to take its service-owned secret as a pod of ${service}" >&2
+    echo "FAIL: $label's banner does not say how to take its service-owned secret as a pod of ${service}, or exports no pod uid and service name for it" >&2
     exit 1
   fi
-  printf 'PASS: %s registers %s under both halves and tells a reader how to take the secret it owns\n' "$label" "$service"
+  printf 'PASS: %s registers %s under both halves, tells a reader how to take the secret it owns, and exports that pod uid and service name\n' "$label" "$service"
   # The stand-in GitHub and the two github-app secrets it mints: the stands are started for the
   # three installations the case pair needs, the broker is pointed at that stand's own address,
   # and the fake store holds both secrets with the kind, the tier, the owner and the
@@ -487,6 +491,19 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s starts a stand-in GitHub for three installations, mints against it, and holds both github-app secrets its service owns\n' "$label"
+  # The example that takes a github-app secret runs its curl in a shell of its own, so that
+  # shell expands the name the grant put in the child's environment. An example that printed
+  # the name with a backslash before it, outside any shell, would have curl send those
+  # characters, and the stand would answer 401 to a token it never minted. grep -F reads a
+  # newline as another pattern, so the one line that carries the shell is the pattern here.
+  local github_example
+  github_example=$'sh -c \'curl -fsS -H "Authorization: Bearer $DEMO_GITHUB_APP" http://'
+  if ! grep -qF -- "$github_example" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's banner does not run its --github-token example's curl in a shell that expands DEMO_GITHUB_APP" >&2
+    exit 1
+  fi
+  printf 'PASS: %s prints a --github-token example whose child shell expands the name the grant gave it\n' "$label"
 
   port="$bound"
 

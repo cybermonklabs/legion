@@ -192,30 +192,25 @@ if [ "$ready" != true ]; then
 	echo "github-narrowing-check: the stack was not ready within 300 seconds; see $STACK_LOG" >&2
 	exit 1
 fi
-# Everything the banner exports, which is where this check's addresses and secret names come from.
+# Everything the banner exports, which is where this check's addresses, secret names and the pod
+# and service it enrols come from.
 eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
 AGENT_SECRETS_BIN="$DEV_BROKER_DIR/bin/agent-secrets"
 STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
-# The pod and the service the banner's own enrolment command names, so this check enrols the
-# session that command describes rather than one of its own invention.
-POD_UID="$(sed -n 's/.*--pod-uid \([^ ]*\).*/\1/p' "$STACK_LOG" | head -n 1 || true)"
-SERVICE="$(sed -n 's/^  registered service: *\([^ ]*\) .*/\1/p' "$STACK_LOG" | head -n 1 || true)"
-if [ -z "$POD_UID" ] || [ -z "$SERVICE" ]; then
-	echo "github-narrowing-check: the stack's banner names no pod uid or no registered service" >&2
-	exit 1
-fi
 echo "github-narrowing-check: the stack is up (broker $AGENT_SECRETS_URL, GitHub stand $DEV_BROKER_GITHUB_URL)" >&2
 
 # --- The session: a pod of the service that owns the two github-app secrets, enrolled as the
-# Legion daemon enrols a worker pod, so each request for one is granted without asking. ---
+# Legion daemon enrols a worker pod, so each request for one is granted without asking. The pod
+# and the service are the stack's own exports, the ones its banner's enrolment command names, so
+# this check enrols the session that command describes rather than one of its own invention. ---
 mkdir -p "$KEY_DIR"
 THUMBPRINT="$("$AGENT_SECRETS_BIN" keygen --out "$KEY_DIR")"
 "$STANDS_BIN" enroll-pod \
 	--url "$AGENT_SECRETS_URL" \
-	--service "$SERVICE" \
+	--service "$DEV_BROKER_SERVICE" \
 	--token-file "$DEV_BROKER_DIR/registrar-token" \
 	--pod-token-file "$DEV_BROKER_DIR/pod-token" \
-	--pod-uid "$POD_UID" \
+	--pod-uid "$DEV_BROKER_POD_UID" \
 	--thumbprint "$THUMBPRINT" \
 	>"$WORK_DIR/enrollment.json"
 ENROLLMENT_ID="$(jq -r .enrollment_id "$WORK_DIR/enrollment.json")"
@@ -225,7 +220,7 @@ if [ -z "$ENROLLMENT_ID" ] || [ "$ENROLLMENT_ID" = null ]; then
 fi
 printf '%s' "$ENROLLMENT_ID" >"$KEY_DIR/enrollment"
 export AGENT_SECRETS_KEY_DIR="$KEY_DIR"
-echo "github-narrowing-check: enrolled pod session $ENROLLMENT_ID (pod $POD_UID, service $SERVICE)" >&2
+echo "github-narrowing-check: enrolled pod session $ENROLLMENT_ID (pod $DEV_BROKER_POD_UID, service $DEV_BROKER_SERVICE)" >&2
 
 # --- The child the checks run ---------------------------------------------------------------
 #
