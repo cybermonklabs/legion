@@ -174,18 +174,14 @@ test("a run of more than one stack that sets none of them is not refused", () =>
   expect(() => refuseStackConflicts(2, { HOME: home, TMPDIR: tmpdir() })).not.toThrow();
 });
 
-test(
-  "a run of more than one stack refuses to start without a Postgres provider",
-  async () => {
-    // Each stack runs a Postgres of its own, because e2e/seed.ts truncates its database
-    // before every row. The refusal comes before a server starts, and it leaves nothing
-    // behind: the run directory it made is removed with everything else the failed start held.
-    await expect(startStacks(2, { env: {} })).rejects.toThrow(
-      "2 Playwright workers run 2 stacks, each with a Postgres of its own"
-    );
-  },
-  SPAWN_TEST_MS
-);
+test("a run of more than one stack refuses to start without a Postgres provider", async () => {
+  // Each stack runs a Postgres of its own, because e2e/seed.ts truncates its database
+  // before every row. The refusal comes before a server starts, and it leaves nothing
+  // behind: the run directory it made is removed with everything else the failed start held.
+  await expect(startStacks(2, { env: {} })).rejects.toThrow(
+    "2 Playwright workers run 2 stacks, each with a Postgres of its own"
+  );
+});
 
 // The database a stack reads is the psql it starts, so the case that proves which one it picked
 // needs psql and a live database to answer; without either it would prove nothing and is

@@ -317,7 +317,7 @@ function parseOptions(argv: readonly string[]): Options {
   const rawSpread = values["reconnect-spread-ms"];
   const reconnectSpreadMs = rawSpread === undefined ? RECONNECT_SPREAD_MS : Number(rawSpread);
   if (
-    rawSpread === "" ||
+    rawSpread?.trim() === "" ||
     !Number.isFinite(reconnectSpreadMs) ||
     reconnectSpreadMs < 0 ||
     reconnectSpreadMs > MAX_TIMER_DELAY_MS
