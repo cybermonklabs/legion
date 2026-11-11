@@ -269,7 +269,7 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 	// created with no spec carries a spec.md whose markdown is empty, and a document whose
 	// last block an edit removed still holds the windows of the text it had. Writing a
 	// document's windows is what deletes the window rows its blocks no longer stand for
-	// (windowWrite.queue's `dropped`), so leaving such a version unmarked here would leave
+	// (writeWindows' `dropped`), so leaving such a version unmarked here would leave
 	// those rows standing for text the document no longer holds; the arm finds it by the
 	// version recorded below rather than by a row of document_blocks it has none of
 	// (documentsOwedWindowsQuery, INFRA-988).
@@ -293,7 +293,7 @@ const DocumentWindowKind = "document_block"
 
 // windowKinds is every kind an embeddings window row is written under. A statement naming them
 // as literals is one the planner can prove embeddings_window_owner's partial predicate for,
-// whatever a parameter holds (planWindows).
+// whatever a parameter holds (writeWindows).
 const windowKinds = `('document_block', 'comment_block', 'message_block', 'ask_part')`
 
 // BlockEmbeddingStates is where meaning search stands on each block of the owner whose windows
@@ -302,7 +302,7 @@ const windowKinds = `('document_block', 'comment_block', 'message_block', 'ask_p
 // vector. A block no window covers is in no entry of the map, which a reader of one block reads
 // as model.BlockNotEmbedded - a block the indexer puts in no window, and every block of an owner
 // whose windows are not written yet. The read names the window kinds as literals beside the
-// parameter, as every read and write of a window does (planWindows), so the planner can prove
+// parameter, as every read and write of a window does (writeWindows), so the planner can prove
 // embeddings_window_owner's partial predicate and reach the owner's rows through that index.
 //
 // It lives here, with the writes of the rows it reads, so the list of window kinds is held in
@@ -351,23 +351,24 @@ func BlockEmbeddingStates(ctx context.Context, q Queryer, kind, ownerKey string)
 // writes (BlockIndexing.Queue, docs.windowDocument), windowing the stored latest version's
 // markdown - the text the version write indexed - a tick behind that write.
 //
-// The title the windows embed is read first, and the one statement that writes them is sent as
-// a batch of its own (store.RunWrite), so the transaction takes its transaction id at that
-// statement and holds it only to the commit.
+// The title the windows embed is read first, and the one statement that writes them is the only
+// one after it, so the transaction takes its transaction id at that statement and holds it only
+// to the commit.
 func WriteDocumentWindows(ctx context.Context, tx pgx.Tx, artifactID, markdown string, blocks []model.ArtifactBlock) error {
 	title, err := documentTitle(ctx, tx, artifactID)
 	if err != nil {
 		return err
 	}
 	nodes, _, _ := uniqueBlocks(blocks)
-	write, err := planDocumentWindows(artifactID, title, markdown, nodes)
-	if err != nil {
-		return err
-	}
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		write.queue(b)
-		return nil
-	})
+	// The state is read from document_block_versions inside the statement, which also clears the
+	// marker that listed the document, so the clear and the windows it stands for cannot come
+	// apart (DocumentsOwedWindows).
+	return writeWindows(ctx, tx, DocumentWindowKind, artifactID,
+		itemblocks.DocumentWindows(title, documentBlockTexts(markdown, nodes)), blockState{
+			query: `update document_block_versions v set windows_owed_at = null
+			          where v.artifact_id = $5::uuid returning ` + documentBlockState + ` as block_state`,
+			args: []any{artifactID},
+		})
 }
 
 // documentTitle is the name document artifactID's artifacts row holds, which the windows of its
@@ -378,22 +379,6 @@ func documentTitle(ctx context.Context, q Queryer, artifactID string) (string, e
 		return "", fmt.Errorf("read the title of %s for its windows: %w", artifactID, err)
 	}
 	return title, nil
-}
-
-// planDocumentWindows plans the write of the windows of the document's blocks (nodes, as
-// uniqueBlocks keeps them), which stamps the state those blocks are in beside them, so the
-// window arm can tell these windows from ones an older build left behind. The owner key of a
-// document's windows is its artifact id, and the context of each is the document's own title
-// and the heading above the window (itemblocks.DocumentWindows). The state is read from
-// document_block_versions inside the statement, which also clears the marker that listed the
-// document, so the clear and the windows it stands for cannot come apart (DocumentsOwedWindows).
-func planDocumentWindows(artifactID, title, markdown string, nodes []model.ArtifactBlock) (windowWrite, error) {
-	return planWindows(DocumentWindowKind, artifactID,
-		itemblocks.DocumentWindows(title, documentBlockTexts(markdown, nodes)), blockState{
-			query: `update document_block_versions v set windows_owed_at = null
-			          where v.artifact_id = $5::uuid returning ` + documentBlockState + ` as block_state`,
-			args: []any{artifactID},
-		})
 }
 
 // documentBlockTexts is each block of nodes holding text of its own, in document order, with
@@ -414,54 +399,42 @@ func documentBlockTexts(markdown string, nodes []model.ArtifactBlock) []itembloc
 	return blocks
 }
 
-// blockState is how one write of an owner's windows (planWindows) tells that write what state
+// blockState is how one write of an owner's windows (writeWindows) tells that write what state
 // the blocks those windows cover are in: one query returning a single block_state column, which
 // the write runs as a common table expression and stamps beside the windows. Both owners'
 // queries are updates: an item's clears the marker that listed it on the kind's state row and
 // returns the state that row holds (clearItemWindowsOwed), and a document's clears the same
 // marker on document_block_versions and returns the version its blocks are indexed at
-// (planDocumentWindows). The query numbers its parameters from $5 and passes their values in
-// args, since the window write holds $1 to $4.
+// (WriteDocumentWindows). The query numbers its parameters from $5 and passes their values in
+// args, since writeWindows holds $1 to $4.
 type blockState struct {
 	query string
 	args  []any
 }
 
-// windowWrite is the write of one owner's windows, planned where the windows are built and sent
-// as a batch of its own by the block-index tick's window arm, which is the one writer of them
-// (WriteDocumentWindows, WriteItemWindows). Everything the statement needs is worked out when it
-// is planned, so queueing it reads nothing and nothing is read between two of a write phase's
-// statements.
-type windowWrite struct {
-	kind, ownerKey string
-	// payload is the windows as the statement's jsonb_to_recordset reads them, and ids the
-	// embeddings id of each, which the delete of the rows the new set does not name takes.
-	payload []byte
-	ids     []string
-	state   blockState
-}
-
-// planWindows plans windows as the windows of owner ownerKey, of kind kind: each takes the id
-// "<owner key>#<its id suffix>" through embeddings_enqueue_window, which rewrites a row only
-// where the hash of its text moved, and the owner's rows of that kind the new set does not name
-// are deleted. Rewriting an owner's windows when none of them changed therefore leaves every
-// row's vector, attempts and wait as they stand, and an owner left with no block loses every
-// window it had.
+// writeWindows writes windows as the windows of owner ownerKey, of kind kind, in the caller's
+// transaction: each takes the id "<owner key>#<its id suffix>" through
+// embeddings_enqueue_window, which rewrites a row only where the hash of its text moved, and the
+// owner's rows of that kind the new set does not name are deleted. Rewriting an owner's windows
+// when none of them changed therefore leaves every row's vector, attempts and wait as they
+// stand, and an owner left with no block loses every window it had.
 //
-// The whole write is one statement, so a document of fifty windows is one statement of the
-// batch its transaction sends, and the marker that listed the owner is settled in that same
-// statement, an item's and a document's alike (clearItemWindowsOwed, planDocumentWindows). The
-// windows go through jsonb_to_recordset in the top-level select; the state query, the stamp of
-// what it returns and the delete are common table expressions, and Postgres runs a
-// data-modifying one exactly once and to completion whether or not the select reads it. The
-// delete cannot race the enqueue: it names only ids the new set does not hold, and the enqueue
-// writes only ids it does.
+// The whole write is one statement, so a document of fifty windows costs one round trip, and the
+// marker that listed the owner is settled in that same round trip, an item's and a document's
+// alike (clearItemWindowsOwed, WriteDocumentWindows). It is the last statement of the
+// transaction that sends it, and everything it writes was decided before it, so the transaction
+// takes its transaction id here and holds it only to the commit (WriteDocumentWindows,
+// WriteItemWindows). The windows go through jsonb_to_recordset in the top-level select; the
+// state query, the stamp of what it returns and the delete are common table expressions, and
+// Postgres runs a data-modifying one exactly once and to completion whether or not the select
+// reads it. The delete cannot race the enqueue: it names only ids the new set does not hold, and
+// the enqueue writes only ids it does.
 //
 // The delete names the kind twice, as the parameter and in the literal list of every window
 // kind, because a generic plan knows nothing of what the parameter holds: the literal list is
 // what lets the planner prove embeddings_window_owner's partial predicate and read the owner's
 // rows through that index.
-func planWindows(kind, ownerKey string, windows []itemblocks.Window, state blockState) (windowWrite, error) {
+func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows []itemblocks.Window, state blockState) error {
 	type row struct {
 		Suffix string   `json:"suffix"`
 		Text   string   `json:"text"`
@@ -475,16 +448,11 @@ func planWindows(kind, ownerKey string, windows []itemblocks.Window, state block
 	}
 	payload, err := json.Marshal(rows)
 	if err != nil {
-		return windowWrite{}, fmt.Errorf("encode the windows of %s %s: %w", kind, ownerKey, err)
+		return fmt.Errorf("encode the windows of %s %s: %w", kind, ownerKey, err)
 	}
-	return windowWrite{kind: kind, ownerKey: ownerKey, payload: payload, ids: ids, state: state}, nil
-}
-
-// queue queues the planned write on a write phase's batch.
-func (w windowWrite) queue(b *store.WriteBatch) {
-	b.Queue(fmt.Sprintf("write the windows of %s %s", w.kind, w.ownerKey), `
+	if _, err := tx.Exec(ctx, `
 		with state as (
-			`+w.state.query+`
+			`+state.query+`
 		),
 		stamped as (
 			insert into embedding_window_states (kind, owner_key, block_state, written_at)
@@ -499,11 +467,14 @@ func (w windowWrite) queue(b *store.WriteBatch) {
 		)
 		select embeddings_enqueue_window($1, $2 || '#' || w.suffix, w.text, w.covers)
 		from jsonb_to_recordset($3::jsonb) as w (suffix text, text text, covers text[])
-	`, append([]any{w.kind, w.ownerKey, w.payload, w.ids}, w.state.args...)...)
+	`, append([]any{kind, ownerKey, payload, ids}, state.args...)...); err != nil {
+		return fmt.Errorf("write the windows of %s %s: %w", kind, ownerKey, err)
+	}
+	return nil
 }
 
 // documentBlockState is the state of a document's blocks that its windows are stamped with
-// (planDocumentWindows): the version they are indexed at, over document_block_versions v. The
+// (WriteDocumentWindows): the version they are indexed at, over document_block_versions v. The
 // state is read from document_block_versions in the statement that writes the windows, so what
 // is stamped is the version the blocks those windows cover are indexed at, and a document owed
 // its first block index holds a null version, which stamps as the empty string.
@@ -530,7 +501,7 @@ const documentBlockState = `coalesce(v.version::text, '')`
 // migration 20261108070100 set it once for every document whose windows were already stale
 // when the column arrived. The one statement that writes a document's windows clears it,
 // beside the stamp of the version those windows were written from (WriteDocumentWindows,
-// windowWrite.queue), so the clear and the windows cannot come apart; that statement's own
+// writeWindows), so the clear and the windows cannot come apart; that statement's own
 // `dropped` is the only delete of a window row in the server, and a route that removes one
 // otherwise marks its owner here, or this read will not see it.
 //
@@ -569,7 +540,7 @@ func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit in
 //     carries a spec.md whose markdown is empty, so the index holds no row of
 //     document_blocks for it to be found by. The arm windows such a document to no window,
 //     which deletes whatever windows a version that did hold blocks left behind and clears
-//     the marker in the one statement (WriteDocumentWindows, windowWrite.queue). The semi-join
+//     the marker in the one statement (WriteDocumentWindows, writeWindows). The semi-join
 //     this replaced dropped it, and since that statement is the only one that clears the
 //     marker, the row stayed marked for ever: an entry in the partial index that every later
 //     pass paid a probe for and no pass could ever remove (INFRA-988).

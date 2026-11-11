@@ -935,9 +935,10 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // committed while it waited is seen; a direct message, whose conversation is no owner, has no
 // such lock and needs none, since nothing ever rewrites a message's body. It takes no item row: a
 // row lock would assign the transaction a transaction id to hold through everything it reads and
-// plans, and under the owner lock it excludes nothing the owner lock does not. Reading and
-// planning come first and its writes follow back to back (IndexItemIfOwed). A new block and a new
-// mention take the time the item's text was written: a comment's and an ask's
+// plans, and what it would exclude beyond the owner lock is a writer of the item row that takes
+// no owner lock, which the census test refuses (lockItemOwner). Reading and planning come first
+// and its writes follow back to back (IndexItemIfOwed). A new block and a new mention take the
+// time the item's text was written: a comment's and an ask's
 // coalesce(edited_at, created_at), a message's created_at. An item a write site indexed since it
 // was listed is no longer owed and is left alone; one deleted since, before the lock or while it
 // waited, took its state row with it (on delete cascade), so nothing is owed.
@@ -977,10 +978,36 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 // state row with it (on delete cascade), so nothing is owed of it. A direct message, whose
 // conversation is no owner, has none and needs none, since nothing rewrites a message's body.
 //
-// It takes no row lock: that would give the transaction a transaction id to hold through
-// everything it then reads and plans, and under the owner's lock it excludes nothing the
-// owner's lock does not (IndexOwedItemBlocks). The reads the lock guards come in the
-// statements after it, so each sees what the lock's previous holder committed.
+// It takes no row lock. main took the item's row `for no key update` where this lock now
+// stands, which gives the transaction a transaction id to hold through everything it then reads
+// and plans; an advisory lock gives it none (store.LockOwner, IndexOwedItemBlocks). The reads
+// this lock guards come in the statements after it, so each sees what the lock's previous
+// holder committed.
+//
+// What main's row lock covered and this lock does not: the row lock excluded every writer of
+// that row, whether or not that writer held the owner's lock, where an advisory lock excludes
+// exactly the writers that take it. So this lock rests on an invariant of the whole server -
+// every writer of a comment, a message, an ask or one of their block-state rows takes that
+// item's owner lock first - and that invariant is held by a census test rather than by this
+// comment: api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus finds every write of those
+// rows in the module and reds unless the function making it is on a list naming the lock it
+// takes, so a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds there before
+// it ships.
+//
+// Two writers on that list hold no owner lock and cost this one nothing.
+// docs.RestoreDecidedWordings runs once at boot under the copy locks alone, and refuses its
+// restoration when the rows moved under it; refs.RebuildAll raises the owed markers of every
+// comment, message and ask so the index re-derives them, and writes no item row and no other
+// column of a state row. A third, docs.backfillAnchorBlocks, is the one writer of an item row
+// that holds no owner lock while the server serves: it is an operator command pinning the block
+// of each legacy quote anchor, one key of one column per row, over rows whose block_id is still
+// unset, which is why the route that writes that same key writes only its own key too (api's
+// commentAction).
+//
+// A new writer of one of those rows takes this lock before it reads what it writes:
+// store.LockOwner on store.OwnerOf(the row's issue key, its artifact id), as lockItemOwner,
+// api's lockedComment and lockCommentOwner and docs' lockArtifactOwner each take it, and then
+// reads in the statement after it. Then it goes on the census with the lock it took.
 func lockItemOwner(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string) (bool, error) {
 	owner, found, err := sourceOwner(ctx, tx, string(kind), itemID)
 	if err != nil || !found {
@@ -999,10 +1026,10 @@ func lockItemOwner(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string)
 // split from - its stored body and its issue's title in one statement, or an ask's parts
 // (AskParts, itemWindowText) - pairs it with the item's current block rows, and sends the one
 // statement that writes the windows under those ids, stamping the state the blocks are in
-// beside them and clearing the marker that listed it in that same statement, as a batch of its
-// own (clearItemWindowsOwed, planWindows, store.RunWrite). It writes no block row and no
-// reference: the index of this item's blocks stands, and only its windows are missing, so
-// everything it reads is read before it holds a transaction id.
+// beside them and clearing the marker that listed it in that same statement
+// (clearItemWindowsOwed, writeWindows). It writes no block row and no reference: the index of
+// this item's blocks stands, and only its windows are missing, so everything it reads is read
+// before it holds a transaction id.
 //
 // It is the one writer of an item's windows. An index of the item's blocks records the blocks
 // and leaves the windows that stand for them to this arm (ItemIndexing.Queue), so every set of
@@ -1034,15 +1061,8 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 	if !aligned {
 		return false, markItemBlocksOwed(ctx, tx, kind, tables, itemID)
 	}
-	write, err := planWindows(kind.WindowKind(), kind.WindowOwnerKey(itemID),
+	return true, writeWindows(ctx, tx, kind.WindowKind(), kind.WindowOwnerKey(itemID),
 		itemblocks.Windows(windowContext, itemWindowBlocks(blocks, ids)), clearItemWindowsOwed(tables, itemID))
-	if err != nil {
-		return false, err
-	}
-	return true, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		write.queue(b)
-		return nil
-	})
 }
 
 // itemWindowText is the blocks the item's stored text splits into, in order, and the context
@@ -1062,6 +1082,13 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 // reads and plans: the caller holds the item's owner lock, which every writer of the item takes
 // (WriteItemWindows, lockItemOwner), and the reads come in the statements after it, so each
 // sees what the lock's previous holder committed.
+//
+// main read the comment's or message's row `for no key update` here, which held it against
+// every writer of that row, one holding no owner lock included. This read holds it against the
+// writers that take the owner's lock, and the census test is what makes those every writer
+// there is (lockItemOwner, api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus). A new
+// writer of the row takes that lock, or the text read here can move under the windows written
+// from it.
 func itemWindowText(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, itemID string) ([]itemblocks.Block, string, bool, error) {
 	if kind == ItemAsk {
 		ask, _, found, err := askForParts(ctx, tx, itemID)
