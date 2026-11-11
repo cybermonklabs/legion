@@ -823,7 +823,7 @@ listener's user is named after `tailnet.listener.machineId`, which defaults to
 Tailscale Service `envoy-hub` or by setting `machineId`: the listener's user is then the one the
 VM rendered, with `ListenerPermissions(envoy-hub)`, and its durable is the VM listener's
 `listener-envoy-hub`, so a durable restored with the streams is the one the new listener binds.
-Every tailnet host's listener runs as that one machine id.
+The hub runs one listener, in a pod of its own, as that machine id.
 
 The rendered `auth.conf` is a key of the chart's ConfigMap `<n>-config`, beside `nats.conf`, which
 includes it; like the VM's metadata, the ConfigMap holds it in the clear, public keys only.
@@ -885,40 +885,61 @@ enforcement, which is the cluster's.
 With `tailnet`, each of `tailnet.replicas` host pods is a tailnet node of its own, named after its
 pod, and a host of the Tailscale Service `svc:<tailnet.serviceName>`. A Tailscale Service sends a
 client to a host, not to a host per port, so every host serves both of the Service's ports: 4222,
-forwarded as TCP to the hub's client Service, and 9020, forwarded to the session listener the same
-pod runs on its loopback. Clients reach them as the hub's `tailnetNatsUrl`,
+forwarded as TCP to the hub's client Service, and 9020, forwarded to the session listener's own
+cluster Service. Clients reach them as the hub's `tailnetNatsUrl`,
 `nats://<tailnet.serviceName>.<tailnetDnsName>:4222`, and `tailnetEnvoyUrl`, the same name on
 9020. The listener's `/v1` takes no bearer there, as on the VM, so
 [The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written.
 
-A host advertises the Service only while its own listener answers `/healthz` with HTTP 200: it
-asks every 5 seconds, advertises after two answers of 200 in a row and drains after three failures
-in a row. So the two ports are coupled: a host whose listener is unhealthy drains both, 4222
-included, though NATS behind it is healthy, and a listener failure on every host takes the hub's
-4222 off the tailnet too. In-cluster clients, which reach the client Service directly, are
-unaffected. No metric of the hub shows it, since every server stays healthy: the alert on the
-session listener being down covers it.
+Each host's advertiser advertises the Service as soon as its node may, and reads no health URL.
+So a listener fault leaves the hub's 4222 on the tailnet, and every host keeps serving both ports
+while the listener's own pod is unready. Nothing drains a host when NATS or the listener is out of
+reach: the split gives that signal up on purpose, and an alert reads the listener's own pod
+instead (see [Metrics and alerts](#metrics-and-alerts)). In-cluster clients, which reach the
+client Service directly, are unaffected by any of it.
 
 A host pod is ready only while its node hosts the Service, approved, so the Deployment's rollout
 (`maxUnavailable: 0`, `maxSurge: 1`) and its budget (`maxUnavailable: 1`) count only hosts that
 serve: a new host serves before an old one stops. A stopping host drains the Service, waits 20
-seconds for its clients to move to another host and logs its node out, while its listener keeps
-answering for 25 seconds before it stops; the advertiser exits on its SIGTERM at once.
+seconds for its clients to move to another host and logs its node out. The advertiser exits on
+its SIGTERM at once, and the pod's grace period of 60 seconds holds the tailscale side alone, 55
+seconds of it.
 
-Every host runs the listener as the same machine id, `tailnet.listener.machineId`, so all of them
-bind the one durable `listener-<machine id>`. The hosts are therefore safe only with a listener
-build that has dispatch://INFRA-557's single-deliverer take-over: one pod delivers from the
-durable, every other pod waits as a standby and takes over within seconds when the active pod
-goes, and `/healthz` answers 200 only on a pod that can serve `/v1`, which is what the advertiser
-judges. No such build exists until INFRA-557 lands. With an earlier build, a second host's listener
-waits 135 seconds to bind the durable the first one holds, then exits and is restarted, again and
-again (`cmd/listener/durable.go`, `durableBindDeadline`). Through each wait its `/healthz` answers
-200 (`"starting"`) and its `/v1` serves (`cmd/listener/main.go`, `healthzHandler`), so its
-advertiser advertises it after two answers, its node joins the Service and its pod counts as ready,
-in the rollout and the budget too, until its listener exits and it leaves the Service. And after a
-NATS reconnect in place two hosts can both deliver from the durable, so a session can be given one
-message twice. The component cannot tell which build `tailnet.listener.image` is, so this is the
-operator's to keep.
+### The session listener
+
+The session listener runs in a workload of its own, the Deployment `<n>-listener`, and in no host
+pod. One pod runs it, as machine `tailnet.listener.machineId`, and no input changes that count.
+Two copies would contend for the one durable `listener-<machine id>`: the second waits 135
+seconds for it (`cmd/listener/durable.go`, `durableBindDeadline`), then exits, and is restarted
+again and again. That holds until cybermonklabs/legion#2404 gives the listener a delivery lease.
+The module's README lists the five objects the listener's name carries
+([The session listener](../README.md#the-session-listener)).
+
+How it is reached. Each host forwards the Tailscale Service's port 9020 to the Service
+`<n>-listener` in the hub's namespace. The NetworkPolicy `<n>-listener` admits TCP 9020 from the
+tailnet hosts' pods alone, and every other port of the listener's pod is admitted to nobody. The
+listener binds `0.0.0.0` and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is what lets its
+`/v1` answer with no credential off loopback. It carries no `ENVOY_API_TOKEN`: the NetworkPolicy
+keeps `/v1` to the hosts, and the listener answers 421 to every `Host` outside
+`ENVOY_ALLOWED_HOSTS`. The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside
+the hosts.
+
+How it is updated. A change of the listener's image, size or environment rolls the one pod with
+`maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness
+reads the HTTP status of `/healthz` and never its body, so the new pod is ready while it still
+waits for the durable, and the rolling update never waits for the stream. The old pod keeps
+answering for 5 seconds, the time its removal from the Service's endpoints takes to reach every
+node's proxy, and then stops in 28 seconds, inside its grace period of 35. Those 35 seconds are
+under the 135-second bind deadline, so the old pod frees the durable before the new one gives up,
+and the two overlap for at most 33 seconds. The Tailscale Service's port 9020 refuses connections
+while no listener pod is ready, and its port 4222 serves through it.
+
+What is watched. The startup and liveness probes read `/healthz` with `curl -sS`, which exits 0
+whatever the HTTP status, so a 503 during a NATS outage or a cache warm-up restarts nothing. The
+listener gets two minutes for its first answer, and a minute of no answer at all restarts the
+container. The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or
+an Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names
+this pod and its container.
 
 ### Metrics and alerts
 
@@ -966,10 +987,11 @@ writes one copy can trail another by a few messages in a single scrape: give the
 duration longer than a few scrapes. A stream whose every server is down has no series at all,
 which the pod-down alert covers.
 
-A pod that is down, a hub pod (`<n>-0` to `<n>-2`, container `nats`) or a tailnet host
-(`<n>-tailnet-…`, containers `tailscale` and `listener`), is read from Cloud Monitoring's GKE
-system metrics for containers, `kubernetes.io/container/*` on the `k8s_container` resource, by
-`namespace_name`, `pod_name` and `container_name`: for example `kubernetes.io/container/uptime`
-absent, or `kubernetes.io/container/restart_count` rising. GKE reports them itself, so they hold
-for a pod whose exporter is gone with it.
+A pod that is down, a hub pod (`<n>-0` to `<n>-2`, container `nats`), a tailnet host
+(`<n>-tailnet-…`, container `tailscale`) or the session listener (`<n>-listener-…`, container
+`listener`), is read from Cloud Monitoring's GKE system metrics for containers,
+`kubernetes.io/container/*` on the `k8s_container` resource, by `namespace_name`, `pod_name` and
+`container_name`: for example `kubernetes.io/container/uptime` absent, or
+`kubernetes.io/container/restart_count` rising. GKE reports them itself, so they hold for a pod
+whose exporter is gone with it.
 
