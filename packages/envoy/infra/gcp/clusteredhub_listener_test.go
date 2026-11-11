@@ -175,24 +175,26 @@ func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
 	}}, seed)
 }
 
-// The listener's three probes all read /healthz on its own loopback. Startup and liveness are
-// status-blind, curl -sS of it: a listener answering 503 while NATS is down or its caches warm is
-// alive and keeps its warm caches, and only one answering nothing at all is restarted, after two
-// minutes of silence at startup (5 s × 24) or one minute later on (10 s × 6). Readiness is curl
-// -fsS, which reads the HTTP status and never the body, so a pod still waiting for its durable,
-// which /healthz answers 200 with a starting body, is ready and the rolling update never waits
-// for the stream.
+// The listener's startup and liveness probes read /livez and its readiness probe reads /healthz,
+// both on its own loopback. Startup and liveness are status-blind, curl -sS of /livez, which the
+// listener answers 204 without touching the bus: a listener whose NATS is down or whose caches
+// are warming is alive, keeps those caches and repairs itself, and only one that answers nothing
+// at all is restarted, after two minutes of silence at startup (5 s × 24) or one minute later on
+// (10 s × 6). Readiness is curl -fsS of /healthz, which reads the HTTP status and never the
+// body: that status is what tells a starting pod from a serving one, and a pod still waiting for
+// its durable, which /healthz answers 200 with a starting body, is ready, so the rolling update
+// never waits for the stream.
 func TestClusteredNatsHubListenerProbes(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	listener := podContainer(t, template, "listener")
 
-	blind := []any{"curl", "-sS", "-o", "/dev/null", "--max-time", "6", "http://127.0.0.1:9020/healthz"}
+	blind := []any{"curl", "-sS", "-o", "/dev/null", "--max-time", "8", "http://127.0.0.1:9020/livez"}
 	want := map[string]any{
 		"startupProbe": map[string]any{
-			"exec": map[string]any{"command": blind}, "periodSeconds": 5.0, "timeoutSeconds": 7.0, "failureThreshold": 24.0,
+			"exec": map[string]any{"command": blind}, "periodSeconds": 5.0, "timeoutSeconds": 9.0, "failureThreshold": 24.0,
 		},
 		"livenessProbe": map[string]any{
-			"exec": map[string]any{"command": blind}, "periodSeconds": 10.0, "timeoutSeconds": 7.0, "failureThreshold": 6.0,
+			"exec": map[string]any{"command": blind}, "periodSeconds": 10.0, "timeoutSeconds": 9.0, "failureThreshold": 6.0,
 		},
 		"readinessProbe": map[string]any{
 			"exec":          map[string]any{"command": []any{"curl", "-fsS", "http://127.0.0.1:9020/healthz"}},

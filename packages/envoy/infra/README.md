@@ -189,7 +189,7 @@ the new `nats.conf` and `auth.conf` is applied, and every restarted pod starts o
 | --- | --- | --- |
 | `kubeconfig` | required | A secret: the kubeconfig of the cluster the hub runs on, from which the hub builds its Kubernetes provider. May come from another resource or stack. |
 | `namespace` | required | The existing namespace every child is created in, a DNS label. The component never creates it. |
-| `name` | required | The chart's release name and `fullnameOverride`, so the StatefulSet's name and every child's: a DNS-1123 label of at most 43 bytes, so `<n>-listener`, the longest name the hub derives, stays within the 52 bytes a StatefulSet's or Deployment's name may have. |
+| `name` | required | The chart's release name and `fullnameOverride`, so the StatefulSet's name and every child's: a DNS-1035 label of at most 43 bytes, a letter first. The chart renders the Service `<n>-headless` and the component the Service `<n>-listener`, which Kubernetes holds to that shape, and `<n>-listener`, the longest name the hub derives, stays within the 52 bytes a StatefulSet's or Deployment's name may have. |
 | `serviceName` | required | The in-cluster client Service's name, a DNS-1035 label (a letter first, at most 63 characters). Clients in `clientNamespaces` reach the hub at `nats://<serviceName>.<namespace>.svc.cluster.local:4222`. |
 | `natsImage`, `reloaderImage`, `exporterImage` | required | nats-server, the chart's config reloader and its Prometheus exporter, each pinned by digest: `<name>@sha256:<64 lowercase hex digits>`. Chart 2.15.1 runs `nats:2.15.1-alpine`, `natsio/nats-server-config-reloader:0.24.0` and `natsio/prometheus-nats-exporter:0.20.2` by default, the versions the `natslive` tests run; pin those versions' digests. |
 | `natsReplicas` | unset | Only with `tailnet`: the session listener's `ENVOY_NATS_REPLICAS`, the copies JetStream keeps of every stream and bucket the listener creates, 1 to 3, since the hub runs three servers and JetStream refuses a stream with more copies than it has servers. Unset, the variable is unset and the listener keeps one copy. |
@@ -224,7 +224,7 @@ input:
   `allowedHosts` entries. The refusal names the input by its path and never its value. A seed in
   a user's name, a rule entry or an `nkey` is refused by the authorization, as for `gcp:NatsHub`;
 - no `kubeconfig`;
-- a `name` that is not a DNS-1123 label or is over 43 bytes, a `namespace` that is not a DNS
+- a `name` that is not a DNS-1035 label or is over 43 bytes, a `namespace` that is not a DNS
   label, and a `serviceName` that is not a DNS-1035 label;
 - an image that is not pinned by digest, the listener's and `tailscaleImage` included;
 - a `natsReplicas` outside 1 to 3, and a `natsReplicas` without `tailnet`, whose listener alone
@@ -288,8 +288,8 @@ image's own user, with no privilege escalation and every Linux capability droppe
   tailnet. Its preStop hook drains the Service from the node (bounded at 5 seconds), waits 20
   seconds for clients to move to another host, and logs the node out (bounded at 5 seconds);
 - `advertiser`, a script on the Tailscale image, which advertises `svc:<tailnet.serviceName>` as
-  soon as the pod's node may advertise it, and reads no health URL. It writes the ready file once
-  the node's `service-host` capability lists the Service, which is the tailnet's approval. A node
+  soon as the pod's node may advertise it. It writes the ready file once the node's
+  `service-host` capability lists the Service, which is the tailnet's approval. A node
   advertised and not approved for 120 seconds is drained and, 15 seconds later, advertised again,
   the bound doubling up to 960 seconds: a node that advertised before the Service existed is never
   approved until it advertises anew. It exits at once on its SIGTERM, so it never holds the pod to
@@ -349,15 +349,18 @@ credential. There is no `ENVOY_API_TOKEN`. The NetworkPolicy above decides who m
 the listener's own `Host` check answers 421 to every name outside `ENVOY_ALLOWED_HOSTS`, as for
 `gcp:NatsHub`'s listener ([The hub's listener](docs/nats-hub.md#the-hubs-listener)).
 
-Three probes read `http://127.0.0.1:9020/healthz` on the pod's own loopback:
+Three probes read the pod's own loopback, two routes between them:
 
-- startup, `curl -sS` every 5 seconds, 24 failures allowed: two minutes for the first answer;
-- liveness, the same `curl -sS` every 10 seconds, 6 failures allowed. Without `-f`, curl exits 0
-  whatever the HTTP status, so any answer keeps the container running and only a minute of no
-  answer at all restarts it. A 503 never restarts it;
-- readiness, `curl -fsS` every 5 seconds, with a 6-second timeout and 2 failures allowed. It reads
-  the HTTP status and never the body, so a pod that answers 200 (`"starting"`) while it waits for
-  the durable is ready, and the rolling update never waits for the stream.
+- startup, `curl -sS -o /dev/null --max-time 8` of `http://127.0.0.1:9020/livez` every 5 seconds,
+  24 failures allowed: two minutes for the first answer;
+- liveness, the same `curl -sS` of `/livez` every 10 seconds, 6 failures allowed. The listener
+  answers `/livez` 204 and reads no bus for it, and without `-f` curl exits 0 whatever the HTTP
+  status, so any answer keeps the container running and only a minute of no answer at all
+  restarts it;
+- readiness, `curl -fsS` of `http://127.0.0.1:9020/healthz` every 5 seconds, with a 6-second
+  timeout and 2 failures allowed. It reads the HTTP status and never the body, so a pod that
+  answers 200 (`"starting"`) while it waits for the durable is ready, and the rolling update
+  never waits for the stream.
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
@@ -1248,10 +1251,10 @@ autoscaler move those pods as far as the budget allows.
 Every serving container has a startup and a liveness probe, and a liveness probe fails only when
 the process does not answer at all. `envoy-dispatch`'s and `envoy-listener`'s run
 `curl -sS -o /dev/null --max-time 8` against their own `/livez` on loopback (ports 8766 and
-9020), with a 9-second timeout. `/livez` reads nothing: `envoy-dispatch` answers it `204`, and
-`envoy-listener`, which has no such route, answers it `404` from its router, outside the `/v1`
-routes its bearer guards. Without `-f`, curl exits 0 whatever the status, so any answer passes:
-unlike `/healthz`, which reads Postgres (`envoy-dispatch`) or NATS (`envoy-listener`) on every call, the probe neither fails during a
+9020), with a 9-second timeout. `/livez` reads nothing: `envoy-dispatch` and `envoy-listener`
+each answer it `204`. Without `-f`, curl exits 0 whatever the status, so any answer passes:
+unlike `/healthz`, which reads Postgres (`envoy-dispatch`) or NATS (`envoy-listener`) on every
+call, the probe neither fails during a
 dependency outage nor waits on a slow hub, so neither restarts every pod. Liveness asks every 10
 seconds, and three missed answers in a row restart the container.
 Startup asks the same question for longer before liveness takes over: 30 minutes for

@@ -1,9 +1,6 @@
 package gcp
 
 import (
-	"fmt"
-	"strconv"
-
 	appsv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apps/v1"
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	metav1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/meta/v1"
@@ -33,42 +30,12 @@ const (
 	// kubelet's SIGKILL, and it stays under the 135 s bind deadline at which a starting listener
 	// gives up waiting for the durable this one holds (packages/envoy/cmd/listener/durable.go).
 	clusteredHubListenerGraceSeconds = 35
-	// clusteredHubListenerProbeTimeoutSeconds is the time clusteredHubListenerProbe gives /healthz
-	// to answer: its handler answers within 5 s, so a read that runs out at 6 s read a listener
-	// that answered nothing at all. It is the listener's own, not the health gate of a tailnet
-	// host (tailnetHealthTimeoutSeconds): the listener's pod is not a tailnet host.
-	clusteredHubListenerProbeTimeoutSeconds = 6
 
 	// The listener pod's seed volume and where its container mounts it: its NATS seed from the
 	// operator's Secret, by reference.
 	clusteredHubListenerSeedMount = "/var/run/secrets/envoy"
 	clusteredHubListenerSeedFile  = "nats-seed"
 )
-
-// clusteredHubListenerHealthURL is the session listener's /healthz on its own pod's loopback,
-// which the listener's startup and liveness probes read. The tailnet hosts' advertiser no longer
-// reads it: the listener runs in a pod of its own, and no advertiser can reach that loopback.
-var clusteredHubListenerHealthURL = fmt.Sprintf("http://127.0.0.1:%d/healthz", core.DefaultListenerPort)
-
-// clusteredHubListenerProbe is the listener's startup and liveness check: any HTTP answer from
-// /healthz, within the 5 s its handler answers in (curl's 6 s, the probe's 7 s), passes. Without
-// -f curl exits 0 on a 503, so a listener answering 503 while NATS is down or its caches warm is
-// alive: it retries by itself, and a restart would only drop its warm caches. Only a listener
-// that answers nothing at all is restarted. Readiness is readyProbe, curl -fsS of the same
-// /healthz, which reads the HTTP status and never the body: a pod still waiting for its durable,
-// which /healthz answers 200 with a starting body, is ready, so the rolling update never waits
-// for the stream. Startup and liveness stay status-blind, so a 503 never restarts the pod.
-func clusteredHubListenerProbe(periodSeconds, failureThreshold int) *corev1.ProbeArgs {
-	return &corev1.ProbeArgs{
-		Exec: &corev1.ExecActionArgs{Command: pulumi.ToStringArray([]string{
-			"curl", "-sS", "-o", "/dev/null", "--max-time", strconv.Itoa(clusteredHubListenerProbeTimeoutSeconds),
-			clusteredHubListenerHealthURL,
-		})},
-		PeriodSeconds:    pulumi.Int(periodSeconds),
-		TimeoutSeconds:   pulumi.Int(clusteredHubListenerProbeTimeoutSeconds + 1),
-		FailureThreshold: pulumi.Int(failureThreshold),
-	}
-}
 
 // clusteredHubListenerEnv is the listener container's environment: the resolver's rendering of
 // core.ListenerConfig, in its order, the seed file mounted from the operator's Secret, and the
@@ -105,7 +72,14 @@ func clusteredHubListenerName(release string) string {
 // clusteredHubListenerPod is the session listener's pod: the listener container alone, with the
 // NATS seed mounted from the operator's Secret by reference. It runs as clusteredHubTailnetUID,
 // the uid its image's own user has, and stops inside clusteredHubListenerGraceSeconds, which
-// holds the preStop wait and the listener's own stop.
+// holds the preStop wait and the listener's own stop. Its three probes read two routes. Startup
+// and liveness are answersProbe, curl -sS of /livez, which the listener answers 204 without
+// touching NATS: they are status-blind, so only a listener that answers nothing at all is
+// restarted, and a listener whose bus is down keeps its warm caches and repairs itself.
+// Readiness is readyProbe, curl -fsS of /healthz, which reads the HTTP status and never the
+// body: that status is what tells a starting pod from a serving one, and a pod still waiting for
+// its durable, which /healthz answers 200 with a starting body, is ready, so the rolling update
+// never waits for the stream.
 func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 	l := s.tailnet.listener
 	pod := corev1.PodSpecArgs{
@@ -125,9 +99,9 @@ func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 			// /bin/sleep.
 			Lifecycle: sleepPreStop(clusteredHubListenerPreStopSeconds),
 			// Up to two minutes for the first answer, then one minute of no answer at all
-			// restarts it (clusteredHubListenerProbe says why any answer is alive).
-			StartupProbe:    clusteredHubListenerProbe(5, 24),
-			LivenessProbe:   clusteredHubListenerProbe(10, 6),
+			// restarts it (answersProbe says why any answer is alive).
+			StartupProbe:    answersProbe(core.DefaultListenerPort, 5, 24),
+			LivenessProbe:   answersProbe(core.DefaultListenerPort, 10, 6),
 			ReadinessProbe:  readyProbe(core.DefaultListenerPort, 5, 6, 2),
 			SecurityContext: tailnetContainerSecurity(),
 		}},

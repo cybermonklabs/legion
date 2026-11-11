@@ -264,12 +264,13 @@ stop DNS rebinding, so the listener checks the request's `Host` too: a listener 
 no bearer and no OIDC verifier serves loopback and the names in `ENVOY_ALLOWED_HOSTS` alone,
 which the hub renders from `tailnetDnsName` and `listener.allowedHosts`, and answers every other
 `Host`, an empty one included, with 421 (`packages/envoy/cmd/listener/apiauth.go`, `apiAuth` and
-`servesHost`; `/healthz`, `/metrics` and the `/webhook/` routes are exempt). A page whose own
-name an attacker repoints at the hub's tailnet address sends that name as the `Host`, so it is
-refused with the rest. A client that dials the hub by any other address, its bare MagicDNS label
-`<h>` or its tailnet IP among them, is refused the same way unless that address is in
-`listener.allowedHosts`. The guard shipped in legion-envoy-v13.11.1, so an image older than that
-release checks no `Host` at all, and on such an image a rebinding page still has the whole API.
+`servesHost`; `/healthz`, `/metrics` and the `/webhook/` routes are exempt, and `/livez` never
+reaches the check). A page whose own name an attacker repoints at the hub's tailnet address
+sends that name as the `Host`, so it is refused with the rest. A client that dials the hub by any
+other address, its bare MagicDNS label `<h>` or its tailnet IP among them, is refused the same
+way unless that address is in `listener.allowedHosts`. The guard shipped in
+legion-envoy-v13.11.1, so an image older than that release checks no `Host` at all, and on such
+an image a rebinding page still has the whole API.
 A browser that asks before a public page reaches a private or tailnet address (Chrome's Local
 Network Access) blocks that; any other browser on a device the policy admits to 9020 is a way in,
 which is one more reason to grant 9020 narrowly.
@@ -894,12 +895,12 @@ cluster Service. Clients reach them as the hub's `tailnetNatsUrl`,
 9020. The listener's `/v1` takes no bearer there, as on the VM, so
 [The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written.
 
-Each host's advertiser advertises the Service as soon as its node may, and reads no health URL.
-So a listener fault leaves the hub's 4222 on the tailnet, and every host keeps serving both ports
-while the listener's own pod is unready. Nothing drains a host when NATS or the listener is out of
-reach: the split gives that signal up on purpose, and an alert reads the listener's own pod
-instead (see [Metrics and alerts](#metrics-and-alerts)). In-cluster clients, which reach the
-client Service directly, are unaffected by any of it.
+Each host's advertiser advertises the Service as soon as its node may. So a listener fault leaves
+the hub's 4222 on the tailnet, and every host keeps serving both ports while the listener's own
+pod is unready. Nothing drains a host when NATS or the listener is out of reach: the split gives
+that signal up on purpose, and an alert reads the listener's own pod instead (see [Metrics and
+alerts](#metrics-and-alerts)). In-cluster clients, which reach the client Service directly, are
+unaffected by any of it.
 
 A host pod is ready only while its node hosts the Service, approved, so the Deployment's rollout
 (`maxUnavailable: 0`, `maxSurge: 1`) and its budget (`maxUnavailable: 1`) count only hosts that
@@ -941,12 +942,14 @@ never becomes Ready leaves the old one serving: nothing stops it, and the new on
 bind deadline. The Tailscale Service's port 9020 refuses connections while no listener pod is
 ready, and its port 4222 serves through it.
 
-What is watched. The startup and liveness probes read `/healthz` with `curl -sS`, which exits 0
-whatever the HTTP status, so a 503 during a NATS outage or a cache warm-up restarts nothing. The
-listener gets two minutes for its first answer, and a minute of no answer at all restarts the
-container. The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or
-an Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names
-this pod and its container.
+What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
+listener answers 204 without reading the bus, and which exits 0 whatever the HTTP status, so a
+NATS outage or a cache warm-up restarts nothing. The listener gets two minutes for its first
+answer, and a minute of no answer at all restarts the container. Only the readiness probe reads
+`/healthz`, whose HTTP status is what tells a starting pod from a serving one.
+The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or an
+Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names this
+pod and its container.
 
 ### Metrics and alerts
 

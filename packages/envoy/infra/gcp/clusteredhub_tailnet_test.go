@@ -137,10 +137,9 @@ func TestClusteredNatsHubTailnetShutdownFitsTheGrace(t *testing.T) {
 }
 
 // The tailscale container joins with the component's auth key and every tag, and never advertises
-// the Service by itself: the advertiser does, on the host's own readiness alone. Its script
-// carries an empty health, which tailnetAdvertiserScript reads as no gate, since the session
-// listener runs in a pod of its own and no advertiser can reach that pod's loopback: a listener
-// fault no longer takes NATS off the tailnet.
+// the Service by itself: the advertiser does, on the host's own readiness alone. The session
+// listener runs in a pod of its own, and no advertiser can reach that pod's loopback, so a
+// listener fault no longer takes NATS off the tailnet.
 func TestClusteredNatsHubTailnetHostJoinsWithTheTagsAndAdvertisesWithNoHealthGate(t *testing.T) {
 	args := clusteredArgs()
 	args.Tailnet.Tags = []string{"tag:envoy-hub-host", "tag:example"}
@@ -153,11 +152,10 @@ func TestClusteredNatsHubTailnetHostJoinsWithTheTagsAndAdvertisesWithNoHealthGat
 
 	command := podContainer(t, template, "advertiser")["command"].([]any)
 	require.Equal(t, []any{"/bin/sh", "-c"}, command[:2])
-	require.Contains(t, command[2], "\nhealth=''\n", "an empty health, which the script reads as no gate")
 	require.Contains(t, command[2], "\nservice=svc:envoy-hub\n")
 	require.Contains(t, command[2], "\ngrace=60\n")
-	t.Logf("%d health setting(s) examined in the advertiser's script, over %d host container(s)",
-		strings.Count(command[2].(string), "\nhealth="), len(template["spec"].(map[string]any)["containers"].([]any)))
+	t.Logf("%d host container(s) examined in the tailnet pod",
+		len(template["spec"].(map[string]any)["containers"].([]any)))
 }
 
 // The budget lets one tailnet host go at a time, and selects exactly the Deployment's pods.

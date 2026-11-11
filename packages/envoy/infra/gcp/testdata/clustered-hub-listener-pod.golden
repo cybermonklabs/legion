@@ -62,13 +62,13 @@
               "-o",
               "/dev/null",
               "--max-time",
-              "6",
-              "http://127.0.0.1:9020/healthz"
+              "8",
+              "http://127.0.0.1:9020/livez"
             ]
           },
           "failureThreshold": 6,
           "periodSeconds": 10,
-          "timeoutSeconds": 7
+          "timeoutSeconds": 9
         },
         "name": "listener",
         "readinessProbe": {
@@ -109,13 +109,13 @@
               "-o",
               "/dev/null",
               "--max-time",
-              "6",
-              "http://127.0.0.1:9020/healthz"
+              "8",
+              "http://127.0.0.1:9020/livez"
             ]
           },
           "failureThreshold": 24,
           "periodSeconds": 5,
-          "timeoutSeconds": 7
+          "timeoutSeconds": 9
         },
         "volumeMounts": [
           {

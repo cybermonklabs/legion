@@ -121,8 +121,8 @@ type ClusteredNatsHubArgs struct {
 	Kubeconfig pulumi.StringInput `pulumi:"kubeconfig" provider:"secret"`
 	// The existing namespace the hub runs in; the component never creates it.
 	Namespace string `pulumi:"namespace"`
-	// The chart's release name and fullnameOverride, and so the StatefulSet's name: a DNS-1123
-	// label of at most 44 bytes.
+	// The chart's release name and fullnameOverride, and so the StatefulSet's name and the names
+	// of the Services the chart and the component render: a DNS-1035 label of at most 43 bytes.
 	Name string `pulumi:"name"`
 	// The in-cluster client Service's name, a DNS-1035 label.
 	ServiceName   string `pulumi:"serviceName"`
@@ -345,8 +345,8 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.Kubeconfig == nil {
 		return clusteredHubSettings{}, core.InputErrorf("kubeconfig", "kubeconfig is required: the hub builds its own Kubernetes provider from it")
 	}
-	if len(args.Name) > maxClusteredHubNameBytes || !namespaceRule.MatchString(args.Name) {
-		return clusteredHubSettings{}, core.InputErrorf("name", "name %q must be a DNS-1123 label of at most %d bytes, so <name>-listener stays within the 52 bytes a StatefulSet's or Deployment's name may have",
+	if len(args.Name) > maxClusteredHubNameBytes || !dns1035LabelRule.MatchString(args.Name) {
+		return clusteredHubSettings{}, core.InputErrorf("name", "name %q must be a DNS-1035 label of at most %d bytes, a letter first: the chart renders the Service <name>-headless and the component the Service <name>-listener, which Kubernetes holds to that shape, and <name>-listener must stay within the 52 bytes a StatefulSet's or Deployment's name may have",
 			args.Name, maxClusteredHubNameBytes)
 	}
 	if !dnsLabel(args.Namespace) {

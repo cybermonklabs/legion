@@ -3556,7 +3556,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   both write their lines through a text handler on `io.Discard`, so the number is the line's own cost and not the operator's stderr behind it).
   It is always on rather than a setting because that is under a thousandth of a route's own cost, and the question it answers - which caller is making the requests - is asked when a deployment is already in trouble and nobody can turn a setting on retroactively.
 
-- Health endpoints reflect dependency health, not just process liveness, except Dispatch's `GET /livez`, which is liveness alone by design:
+- Health endpoints reflect dependency health, not just process liveness, except `GET /livez`, which both `envoy-dispatch` and `envoy-listener` serve as liveness alone by design:
   it answers `204` reading nothing, so a liveness or startup probe never restarts a process for a slow or unreachable dependency, and readiness stays on `/healthz`.
   `/healthz` returns `degraded` for a JetStream/KV probe that answered with a transient failure and `unhealthy` for NATS loss, a JetStream check that did not answer within its budget, a stopped interest, role claim, session or CI KV watcher, a missing durable consumer, or a durable consumer `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves.
 
@@ -4024,7 +4024,7 @@ The `Host` is compared with its port stripped, its IPv6 brackets off, case folde
 That keeps a page that rebinds its own name to an address reaching the listener (a loopback port, or a forward such as a tailnet one) from using its bearer-free API.
 A listener that requires a bearer checks no `Host`, since such a page holds no bearer.
 The boot log's `listener API hosts:` line names what is served.
-`/healthz`, `/metrics` and the webhook routes are served to any `Host`.
+`/healthz`, `/livez`, `/metrics` and the webhook routes are served to any `Host`.
 
 Each item below names an endpoint and its method, then its contract, and an item that names no endpoint continues the contract above it.
 
@@ -4846,7 +4846,7 @@ Targeted issue `message.created` skips bound-route and author fan-out because th
 `/v1` accepts two bearer kinds: the `ENVOY_API_TOKEN` shared token, and
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
 — a projected service-account token that issuer signed for that audience.
-The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither.
+The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require neither, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
 `/v1` is open only when neither is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with neither unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
 That flag is how an operator declares that something else fences the listener's port.
 The clustered hub's session listener is the deployment in this repository that sets it: it binds `0.0.0.0` in a pod of its own, behind a NetworkPolicy that admits TCP 9020 from the tailnet entry's pods alone (`infra/gcp/clusteredhub_listener.go`).

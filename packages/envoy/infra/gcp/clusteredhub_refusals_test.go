@@ -25,8 +25,12 @@ type clusteredRefusal struct {
 
 // requireClusteredRefusals runs each row through the resolver, which must refuse it as a
 // core.InputError naming the row's input, never quoting the tailnet auth key or the kubeconfig.
+// It counts the rows it ran and fails on none, because a table that tries no input refuses
+// nothing and would pass whatever the resolver does.
 func requireClusteredRefusals(t *testing.T, rows []clusteredRefusal) {
 	t.Helper()
+	require.NotEmpty(t, rows, "the table tries no input, so it proves no refusal")
+	t.Logf("%d input(s) tried", len(rows))
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			args := clusteredArgs()
@@ -60,7 +64,7 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 	requireClusteredRefusals(t, []clusteredRefusal{
 		{"no kubeconfig", func(a *A) { a.Kubeconfig = nil }, "kubeconfig", []string{"kubeconfig is required"}},
 
-		{"no name", func(a *A) { a.Name = "" }, "name", []string{`name ""`, "DNS-1123 label of at most 43 bytes"}},
+		{"no name", func(a *A) { a.Name = "" }, "name", []string{`name ""`, "DNS-1035 label of at most 43 bytes"}},
 		{"a 44-byte name", func(a *A) { a.Name = strings.Repeat("a", 44) }, "name", []string{"at most 43 bytes"}},
 		{"a name with an uppercase letter", func(a *A) { a.Name = "Envoy-nats" }, "name", []string{`name "Envoy-nats"`}},
 		{"a name ending in a hyphen", func(a *A) { a.Name = "envoy-" }, "name", []string{`name "envoy-"`}},
