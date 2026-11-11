@@ -124,14 +124,17 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		}
 	}
 
-	// assertArchitectStarted is the tree architect's start as the promotion has always made it:
-	// the root's one start row, which names no phase and carries no task.
-	assertArchitectStarted := func(t *testing.T, pool *pgxpool.Pool) {
+	// assertArchitectStarted is the tree architect's start as the promotion makes it: the root's
+	// one start row, which names no phase and waits for no slot. It carries the root's own first
+	// task (workflow.ArchitectStartTask) where this start is what creates the architect, and
+	// nothing where the architect has already run, since that session is resumed rather than born
+	// and its ready's catch-up tells it.
+	assertArchitectStarted := func(t *testing.T, pool *pgxpool.Pool, want string) {
 		t.Helper()
 		rows := startRows(t, pool, root)
 		architect, started := rows[claim.RoleArchitect]
-		if len(rows) != 1 || !started || architect.task != "" || architect.needsSlot {
-			t.Fatalf("the re-admitted root's starts are %+v, want the architect's alone, carrying no task and waiting for no slot", rows)
+		if len(rows) != 1 || !started || architect.task != want || architect.needsSlot {
+			t.Fatalf("the re-admitted root's starts are %+v, want the architect's alone, carrying %q and waiting for no slot", rows, want)
 		}
 	}
 
@@ -159,7 +162,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		assertBroughtBack(t, rows, claim.RolePlanner, claim.RoleImplementer)
 		assertNeverStarted(t, rows, claim.RoleReviewer, claim.RoleMerger, claim.RoleArchitect)
 		assertCarriesThePhase(t, rows, claim.RoleTester)
-		assertArchitectStarted(t, pool)
+		assertArchitectStarted(t, pool, architectStart(admission, root, 2, ""))
 		survived(t, pool, tokens)
 	})
 
@@ -181,7 +184,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		if len(rows) != 3 {
 			t.Fatalf("the member's starts in accepting are %+v, want the three roles that have run and nothing waiting for a slot", rows)
 		}
-		assertArchitectStarted(t, pool)
+		assertArchitectStarted(t, pool, architectStart(admission, root, 2, ""))
 		survived(t, pool, tokens)
 	})
 
@@ -199,7 +202,9 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		if again := issue(t, pool, root); again.Generation != 2 || again.Phase != phase.Admitted {
 			t.Fatalf("the re-admitted root = %#v, want generation 2 standing at admitted", again)
 		}
-		assertArchitectStarted(t, pool)
+		// Its architect has run, so this start resumes that session rather than creating one and
+		// carries no task of its own: the catch-up its ready writes is what tells it.
+		assertArchitectStarted(t, pool, "")
 		survived(t, pool, tokens)
 	})
 
@@ -221,7 +226,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		rows := startRows(t, pool, member)
 		assertCarriesThePhase(t, rows, claim.RoleTester)
 		assertBroughtBack(t, rows, claim.RolePlanner)
-		assertArchitectStarted(t, pool)
+		assertArchitectStarted(t, pool, architectStart(admission, root, 2, ""))
 		survived(t, pool, tokens)
 	})
 }

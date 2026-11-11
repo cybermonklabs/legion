@@ -331,6 +331,33 @@ func (r *mainPathRig) bringUp() {
 	}
 }
 
+// takeTheTask is the architect working the task it has been given: the turn its prompt starts,
+// that turn's end, and the prompt's own result, after which the claim holds no delivery. A path
+// that goes on past a start runs it, because an agent given a task works it, and a claim still
+// holding one is refused the next (supervise's queue, ErrDeliveryPending). It does nothing for a
+// claim that holds no task.
+func (r *mainPathRig) takeTheTask() {
+	r.t.Helper()
+	machine := r.machine()
+	pending := machine.Claim().Pending
+	if pending == nil {
+		return
+	}
+	for _, ev := range []supervise.Event{
+		supervise.StreamTurnStart{Claim: r.token, DeliveryID: pending.ID},
+		supervise.StreamTurnEnd{Claim: r.token},
+		supervise.StreamPromptResult{Claim: r.token, DeliveryID: pending.ID, AgentInvoked: true},
+	} {
+		if err := machine.Handle(r.ctx, ev); err != nil {
+			r.t.Fatalf("handle %T for the architect: %v", ev, err)
+		}
+	}
+	r.waitMachine()
+	if got := machine.Claim().Pending; got != nil {
+		r.t.Fatalf("the architect holds %#v after the turn its task ran, want the task retired", got)
+	}
+}
+
 // recordClaim writes the architect's claim as the daemon persists it, which is what the workflow
 // reads of it (record.Store.RoleRuns, SessionClaimsTree).
 func (r *mainPathRig) recordClaim() {
@@ -397,6 +424,9 @@ func readmissionPath(r *mainPathRig) string {
 	r.admitPass()
 	r.runStarts()
 	r.bringUp()
+	// The first start gives a fresh architect its tree's own first task
+	// (workflow.ArchitectStartTask), which it works before anything parks it.
+	r.takeTheTask()
 	r.park()
 	r.runSuspend()
 	ref := r.decide(mainPathAsk)
@@ -447,6 +477,8 @@ func toldInPlacePath(r *mainPathRig) string {
 	r.admitPass()
 	r.runStarts()
 	r.bringUp()
+	// As above: the admission that launched this architect gave it the root's first task.
+	r.takeTheTask()
 	r.recordClaim()
 	for _, ask := range []string{"ask-a", "ask-b"} {
 		r.apply("opened:"+ask, intake.DispatchAskOpened{Key: r.key, Ask: ask, Kind: record.AskQuestion,
@@ -485,8 +517,17 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				rig := newMainPathRig(t, wired)
 				want := path.run(rig)
 				prompts := rig.prompts()
-				if len(prompts) != 1 || !strings.Contains(prompts[0].Message, want) {
-					t.Fatalf("RootHears wired=%t: the architect was prompted %d times with %+v, want exactly one prompt carrying %q",
+				// A path that launches a fresh architect begins with the task admission gave that
+				// start (workflow.ArchitectStartTask), which the path's architect works. The
+				// path's own task is the last prompt, and no other prompt carries it.
+				carried := 0
+				for _, prompt := range prompts {
+					if strings.Contains(prompt.Message, want) {
+						carried++
+					}
+				}
+				if len(prompts) == 0 || carried != 1 || !strings.Contains(prompts[len(prompts)-1].Message, want) {
+					t.Fatalf("RootHears wired=%t: the architect was prompted %d times with %+v, want its last prompt, and only it, carrying %q",
 						wired, len(prompts), prompts, want)
 				}
 				sent[wired] = len(prompts)
@@ -496,10 +537,10 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 					}
 					continue
 				}
-				asked := rig.asked.about(prompts[0].DeliveryID)
+				asked := rig.asked.about(prompts[len(prompts)-1].DeliveryID)
 				if len(asked) == 0 {
 					t.Fatalf("the task prompted as %s was never put to RootHears; every root architect's task of a run is",
-						prompts[0].DeliveryID)
+						prompts[len(prompts)-1].DeliveryID)
 				}
 				for _, call := range asked {
 					if !call.hears || call.claim != rig.token || call.delivery.Phase != "" || call.delivery.Generation == 0 {

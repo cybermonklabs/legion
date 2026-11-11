@@ -112,6 +112,18 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 	return admission
 }
 
+// architectStart is the task admission queues with the start of a root architect this admission
+// creates (workflow.ArchitectStartTask): the root's own first task, with what its tree is owed
+// leading it where a person decided something on it while nobody in the tree could hear them. A
+// start that resumes an architect that has already run carries that owed text alone. A test about
+// what admission writes names the task through this helper, under the gate steps its own
+// admission runs; the text itself is pinned whole in internal/workflow (TestArchitectStartTask)
+// and its delivery to a launched architect in internal/daemon
+// (TestAFreshAdmissionGivesItsArchitectItsStartTask).
+func architectStart(admission *Admission, key string, generation uint64, decided string) string {
+	return workflow.ArchitectStartTask(record.Issue{Key: key, Tree: key, Generation: generation}, admission.engine.GatedSteps(), decided)
+}
+
 func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact, engine, admission); err != nil {

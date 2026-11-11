@@ -1453,9 +1453,31 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}, now); err != nil {
 					return admitted, released, err
 				}
-				task, kept, err := a.engine.ParkedDecisionTask(ctx, tx, issue)
+				decided, kept, err := a.engine.ParkedDecisionTask(ctx, tx, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("name the decisions on %s while nobody in its tree could hear them: %w", issue.Key, err)
+				}
+				// A tree whose architect has never run is launched by this very start, and the
+				// start carries its first task, as a phase worker's start carries its phase's: it
+				// is the one thing that tells that architect, in the turn its own launch begins,
+				// that this tree is its to take up (workflow.ArchitectStartTask). Without it the
+				// daemon launched a fresh architect with nothing at all, and the first thing it
+				// was ever given was the catch-up its ready writes, which states the tree and
+				// leaves the first act to be inferred; a root measured that way held its slot with
+				// an idle architect that had neither claimed it nor registered its design gate.
+				//
+				// A tree whose architect claim exists is told by that catch-up as before: its
+				// session is relaunched or resumed rather than created here, so it may still hold
+				// a task of its own that this one would be refused behind, and it is no longer a
+				// session born with an empty context. What such a start carries is what it always
+				// carried, the decisions its tree is owed and nothing else.
+				task := decided
+				launches, err := a.store.ArchitectLaunches(ctx, tx, []string{issue.Tree})
+				if err != nil {
+					return admitted, released, fmt.Errorf("read whether %s's architect has run: %w", issue.Key, err)
+				}
+				if _, ran := launches[issue.Tree]; !ran {
+					task = workflow.ArchitectStartTask(issue, a.engine.GatedSteps(), decided)
 				}
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no

@@ -208,8 +208,9 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 	}
 	readmitRoot(t, pool, admission)
 	starts := architectStartRows(t, pool)
-	if len(starts) != 1 || starts[0].Task != "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
-		"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue." {
+	if len(starts) != 1 || starts[0].Task != architectStart(admission, "LEGION-ROOT", 2,
+		"While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
+			"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue.") {
 		t.Fatalf("architect starts %#v, want one naming dispatch://LEGION-ROOT/ask/ask-1", starts)
 	}
 	if kept := starts[0].Kept; kept == nil || len(kept.Decisions) != 1 || kept.Decisions[0].Ref != "dispatch://LEGION-ROOT/ask/ask-1" ||
@@ -255,8 +256,9 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 	apply(t, pool, admission, "busy-parked", intake.DispatchIssue{Key: "LEGION-BUSY", ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated",
 		Status: "backlog", Title: "LEGION-BUSY", Rank: "A", HandedOver: true}, admission.engine)
 	tasks := architectStartTasks(t, pool)
-	if len(tasks) != 1 || tasks[0] != "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
-		"dispatch://LEGION-ROOT/comment/c-1 (ask-reply by user:alice). Read each before you continue." {
+	if len(tasks) != 1 || tasks[0] != architectStart(admission, "LEGION-ROOT", 2,
+		"While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
+			"dispatch://LEGION-ROOT/comment/c-1 (ask-reply by user:alice). Read each before you continue.") {
 		t.Fatalf("architect starts' tasks %q, want one naming dispatch://LEGION-ROOT/comment/c-1", tasks)
 	}
 }
@@ -317,14 +319,18 @@ func TestADecisionOnARootThatWaitsForNoSlotKeepsNothing(t *testing.T) {
 	}
 }
 
-// A root first admitted keeps nothing, so its architect starts with no task, as before.
-func TestAFirstAdmissionStartsItsArchitectWithNoTask(t *testing.T) {
+// A root first admitted keeps nothing, so its architect's start names no decision: it carries the
+// root's own first task alone, which every admission of a queued root carries
+// (workflow.ArchitectStartTask). Before, such a start carried no task at all and the architect it
+// launched was given nothing until its ready's catch-up.
+func TestAFirstAdmissionStartsItsArchitectWithItsOwnTaskAlone(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
 	apply(t, pool, admission, "first", intake.DispatchIssue{Key: "LEGION-NEW", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.created",
 		Status: "todo", Title: "new", Rank: "A", HandedOver: true}, admission.engine)
-	if tasks := architectStartTasks(t, pool); len(tasks) != 1 || tasks[0] != "" {
-		t.Fatalf("architect starts' tasks %q, want one start with no task", tasks)
+	starts := architectStartRows(t, pool)
+	if len(starts) != 1 || starts[0].Task != architectStart(admission, "LEGION-NEW", 1, "") || starts[0].Kept != nil {
+		t.Fatalf("architect starts %#v, want one carrying the root's own first task and naming no decision", starts)
 	}
 }
 
@@ -371,8 +377,11 @@ func TestARootReadmittedOnAnOlderApprovalIsToldBothVersions(t *testing.T) {
 			})
 			readmitRoot(t, pool, admission)
 			starts := architectStartRows(t, pool)
-			if len(starts) != 1 || starts[0].Task != tc.want {
-				t.Fatalf("architect starts %#v, want one whose task is %q", starts, tc.want)
+			// tc.want is what the start names of what the tree is owed; the root's own first task
+			// carries it (workflow.ArchitectStartTask).
+			want := architectStart(admission, "LEGION-ROOT", 2, tc.want)
+			if len(starts) != 1 || starts[0].Task != want {
+				t.Fatalf("architect starts %#v, want one whose task is %q", starts, want)
 			}
 			named := 0
 			if strings.Contains(tc.want, "request approval") {
@@ -471,8 +480,9 @@ func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *test
 		}
 	})
 	readmitRoot(t, pool, admission)
-	if starts := architectStartRows(t, pool); len(starts) != 1 || starts[0].Task != versions {
-		t.Fatalf("first architect starts %#v, want one whose task is %q", starts, versions)
+	if starts := architectStartRows(t, pool); len(starts) != 1 ||
+		starts[0].Task != architectStart(admission, "LEGION-ROOT", starts[0].Generation, versions) {
+		t.Fatalf("first architect starts %#v, want one whose task names %q", starts, versions)
 	}
 	// The start finishes without delivering (its tree parked again first): its row goes, and with
 	// it its claim on the pair.
@@ -485,8 +495,9 @@ func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *test
 	parkedRoot(t, pool)
 	apply(t, pool, admission, "readmitted-again", intake.DispatchIssue{Key: "LEGION-ROOT", ResolvedRepo: "acme/widgets", Seq: 9, Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: true}, admission.engine)
-	if starts := architectStartRows(t, pool); len(starts) != 1 || starts[0].Task != versions {
-		t.Fatalf("second architect starts %#v, want one whose task is %q", starts, versions)
+	if starts := architectStartRows(t, pool); len(starts) != 1 ||
+		starts[0].Task != architectStart(admission, "LEGION-ROOT", starts[0].Generation, versions) {
+		t.Fatalf("second architect starts %#v, want one whose task names %q", starts, versions)
 	}
 }
 
@@ -613,8 +624,9 @@ func TestARootAPersonsApprovalHandsOverIsToldNoStaleApproval(t *testing.T) {
 	if len(starts) != 1 {
 		t.Fatalf("architect starts %#v, want one", starts)
 	}
-	if strings.Contains(starts[0].Task, "request approval") || (starts[0].Kept != nil && starts[0].Kept.Approved != 0) {
-		t.Fatalf("the start's task %q (kept %#v) names an approval pair, want none: the person approved the latest version", starts[0].Task, starts[0].Kept)
+	if starts[0].Task != architectStart(admission, "LEGION-ROOT", starts[0].Generation, "") || (starts[0].Kept != nil && starts[0].Kept.Approved != 0) {
+		t.Fatalf("the start's task %q (kept %#v) names an approval pair, want the root's own first task alone: the person approved the latest version",
+			starts[0].Task, starts[0].Kept)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		if approved, latest, err := record.NewStore().ReadmittedApproval(ctx, tx, "LEGION-ROOT"); err != nil || approved != 0 || latest != 0 {
