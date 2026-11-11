@@ -35,8 +35,8 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 ## Choosing what to work on
 
 - Finishing an issue, take the top `todo` one by priority then board rank, per project.
-- `todo` means specced and waiting on nothing; one that waits goes in `backlog`, saying on what.
-- Hold at most three issues in flight; move the rest to `backlog`, saying where each is.
+- `todo` means specced and waiting on nothing; one that waits on a named, specified thing goes in `backlog`, saying on what. A queue, a board rank, or a full in-flight slot is not such a wait, and never moves an issue to `backlog`.
+- Work on at most three issues at once; leave the rest at their status and priority. This cap is on your own attention, and never authorises changing the status or priority of work a person prioritised.
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
 
 ## Issue status is yours to move
