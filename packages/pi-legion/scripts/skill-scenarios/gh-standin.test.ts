@@ -147,6 +147,31 @@ test("a call past the end of a route's replies takes the last reply again", asyn
   expect(fixtures().routes[0]?.answered).toBe(3);
 });
 
+test("a route that follows another advances on that route's calls, never on its own", async () => {
+  const { gh, fixtures } = world([
+    { match: "^gh pr checks", replies: [RED, GREEN], follows: "^gh run rerun" },
+    { match: "^gh pr view", replies: [RED, GREEN] },
+    { match: "^gh run rerun", stdout: RERUN },
+  ]);
+
+  const read = [await gh("pr", "checks"), await gh("pr", "checks"), await gh("pr", "checks")];
+  // The route beside it follows nothing, so it advances on its own calls, as every route did.
+  const own = [await gh("pr", "view"), await gh("pr", "view")];
+  await gh("run", "rerun", "17420", "--failed");
+  const pressed = await gh("pr", "checks");
+
+  expect(read.map((call) => [call.stdout, call.exit])).toEqual([
+    [`${RED.stdout}\n`, 1],
+    [`${RED.stdout}\n`, 1],
+    [`${RED.stdout}\n`, 1],
+  ]);
+  expect(own.map((call) => call.stdout)).toEqual([`${RED.stdout}\n`, `${GREEN.stdout}\n`]);
+  expect([pressed.stdout, pressed.exit]).toEqual([`${GREEN.stdout}\n`, 0]);
+  // Four calls of its own left the followed route where the one call of the route it follows
+  // reached: the sequence is read from `answered` of that route, never from its own.
+  expect(fixtures().routes.map((route) => route.answered)).toEqual([4, 2, 1]);
+});
+
 test("a spent route falls through to the next route that matches, and to the 404 when none does", async () => {
   const { gh, calls } = world([
     { match: "^gh run rerun \\d+ --failed", stdout: RERUN, spends: 1 },

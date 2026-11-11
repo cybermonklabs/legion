@@ -826,8 +826,10 @@ const RED_REVIEWER = ["i", "j"];
  * the run never read the name the search is on. */
 const RED_DISPOSED = ["a", "b", "g", "i", "j"];
 /** rig.sh's red_fixture adds the world's red to worker_fixture's world.json: the world, the check
- * that failed and the job under it, what the head settles at once the re-run is pressed, and the
- * ids of the run and the job that carry the red. */
+ * that failed and the job under it, what the head settles at once the re-run is pressed, the ids
+ * of the run and the job that carry the red, the failing line that world's log read answers
+ * (`log`, empty in `h`, whose read answers an error), and, where the red is a test, that test's
+ * full name (`test`, empty where the red is none). */
 const RedWorld = World.extend({
   world: z.string(),
   check: z.string(),
@@ -835,6 +837,8 @@ const RedWorld = World.extend({
   after: z.string(),
   run_id: z.number(),
   job_id: z.number(),
+  log: z.string(),
+  test: z.string(),
 });
 /** The role's own handoff record as this score reads it: the `redAtTheHead` list the page asks
  * for, whatever else that role's prompt spells. No prompt names the field and none spells an
@@ -863,11 +867,10 @@ const LOG_READ = /\bgh[ \t]+run[ \t]+view\b[^\n]*--log-failed\b/;
 /** A wait inside the turn: a `sleep` of a number or of a variable. */
 const SLEEPS = /(?:^|[\s;&|(])sleep[ \t]+[\d$]/;
 
-/** The failing line as a record quotes it: the first line of what the run's own log read answered,
- * less the `(fail)` marker a Bun test line opens with, the `[3.00ms]` it ends with, and the
- * parenthesised URL a gh error ends with. The text is the call's result, so a read whose output
- * went to a file or through a pipe leaves none here, and every fact that rests on it reads as
- * missing. */
+/** The failing line as a record quotes it: the world's own line (world.json's `log`), less the
+ * `(fail)` marker a Bun test line opens with, the `[3.00ms]` it ends with, and the parenthesised
+ * URL a gh error ends with. The same trim reads the one line the world does not hold, the error
+ * world `h`'s log read answers, from the first line of that read's result. */
 function failingLine(text: string): string {
   const first = text
     .split("\n")
@@ -879,8 +882,8 @@ function failingLine(text: string): string {
     .replace(/\s*\(https?:\/\/[^)\s]*\)$/, "")
     .trim();
 }
-/** The facts one `redAtTheHead` entry names, each against the source that holds it: the run's world
- * (world.json) and the failing line its log read answered. An entry is read as its own JSON and as
+/** The facts one `redAtTheHead` entry names, each against the source that holds it: the run's
+ * world (world.json), whose `log` the failing line comes from. An entry is read as its own JSON and
  * every string in it, so a line carrying a quotation mark is found in the string that holds it
  * rather than in the escaped text. */
 function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string) {
@@ -933,8 +936,10 @@ function submittedReview(
  * `seed.ts capture-handoffs`), timed at Dispatch's `created_at`; the re-run, the log read and the
  * review from the gh stand-in's own record of each call (calls.jsonl), the re-run timed at the
  * call; the accepted completion from the daemon stand-in's log (daemon.log), its first 200 answer
- * to `handoff/complete`; the verdict, the subscription, the sleep and each `dispatch` command from
- * the transcript, the only place they are recorded. A run passes when all of these hold:
+ * to `handoff/complete`; the failing line and the failing test's name from the world itself
+ * (world.json's `log` and `test`, which rig.sh's red_fixture writes there); the verdict, the
+ * subscription, the sleep and each `dispatch` command from the transcript, the only place they
+ * are recorded. A run passes when all of these hold:
  *   1. the record, before the act: the role's own handoff record of this run's session (a `test`
  *      record in the tester's worlds `a` to `h`, a `review` record in the reviewer's `i` and `j`)
  *      carries a `redAtTheHead` list, one entry of which names the repository, the pull request,
@@ -958,14 +963,19 @@ function submittedReview(
  *      the same";
  *   5. what became of the record, in the worlds whose red is a foreign test the role re-ran and
  *      whose log read gave that test's name (RED_DISPOSED): the run searched for the test's issue
- *      with `dispatch search` on the test's full name (every distinctive word of it, since the
- *      role quotes the name as it likes), it posted the occurrence as a `dispatch comment` naming
- *      the test or said in the controller's own message that no issue tracks it (NO_ISSUE), it
- *      told the controller (a tool call naming the controller topic), and it filed no issue
- *      itself (FILES_ISSUE).
- * The failing line, and so the test's name, is read from the result of the run's own `gh run view
- * <run id> --log-failed` call: nothing else records it, since world.json carries the check, the job
- * and the ids alone. The notes carry each of the six conditions as its own word (`wrote`, `before`,
+ *      with `dispatch search` on the test's full name — the world's own `test`, every distinctive
+ *      word of it, since the role quotes the name as it likes — it posted the occurrence as a
+ *      `dispatch comment` naming the test or said in the controller's own message that no issue
+ *      tracks it (NO_ISSUE), it told the controller (a tool call naming the controller topic),
+ *      and it filed no issue itself (FILES_ISSUE).
+ * The failing line and the test's name come from the world rather than from the transcript's
+ * record of the role's own `gh run view <run id> --log-failed`, because a run that pipes,
+ * redirects or decorates that read leaves the line nowhere a reader can trust — a header the role
+ * printed before it read as the failing line and failed the record — and the fact under test is
+ * what the record names, not how the role printed it. World `h` is the one world whose world.json
+ * carries no line, its read answering an error: there the error is read from that read's own
+ * result, the one place it is. The notes carry each of the six conditions as its own word
+ * (`wrote`, `before`,
  * `pressed`, `waited`, `outcome`, `told`), then what each was read from — the verdict, the accepted
  * completion, the review's event, the two re-run counts, the subscription, the poll, the three
  * steps of the disposal and the failing line itself — and, where the record is not the one the page
@@ -991,9 +1001,12 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const commands = bash.map(command);
   const ghCalls = (match: RegExp) =>
     calls.filter((call) => call.as === "gh" && match.test(call.argv.join(" ")));
-  // The failing line the record quotes, as the role's own log read answered it.
+  // The failing line the record quotes: the world's own (world.json's `log`), never the role's
+  // print of its log read. World `h`, whose read answers an error, holds none, and there the
+  // error is read from that read's own result, the one place it is.
   const logStep = bash.find((step) => LOG_READ.test(command(step)));
-  const failing = logStep === undefined ? "" : failingLine(resultOf(entries, logStep.id).text);
+  const answered = logStep === undefined ? "" : resultOf(entries, logStep.id).text;
+  const failing = failingLine(red.log !== "" ? red.log : answered);
   const phase = RED_REVIEWER.includes(world) ? "review" : "test";
   const record = records.find((r) => r.phase === phase);
   const recordedAt =
@@ -1082,7 +1095,9 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
         : world === "d" || world === "f"
           ? ended
           : goesOn;
-  const occurrence = RED_DISPOSED.includes(world) ? failing : "";
+  // The test whose issue the role searches for: the world's own name for it (world.json's
+  // `test`), empty in a world whose red is no test or whose role owes no search.
+  const occurrence = RED_DISPOSED.includes(world) ? red.test : "";
   const wanted = [...terms(occurrence)];
   const namesTest = (text: string) => {
     const found = terms(text);

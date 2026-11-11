@@ -14,6 +14,12 @@
 //   `replies` is a list of {stdout?, stderr?, exit?}, served in order: the first call matching the
 //   route takes the first reply, the second the second, and a call past the end takes the last
 //   again. A route with no `replies` answers its own {stdout, stderr, exit} to every call.
+//   `follows` names another route by its `match` text, and the sequence is then reached by the
+//   calls that route has answered rather than by this route's own: a read of the head that follows
+//   the re-run's route answers its first reply however many times it is read, and its second from
+//   the moment the re-run is pressed. The head's state changes when the role acts, never when it
+//   reads, so a role that reads the head twice in one turn reads the same state twice. A `follows`
+//   that names no route of the file reaches nothing, leaving the route at its first reply.
 //   `spends` is how many matching calls the route answers. After that many it matches nothing, and
 //   the call falls through to the next route whose pattern matches it, or to the 404.
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
@@ -37,13 +43,15 @@ const Reply = z.object({
   exit: z.number().optional(),
 });
 /** rig.sh's worker_fixture writes each route as {match, stdout?, stderr?, exit?}, and a route that
- * answers a sequence, spends itself or publishes a settlement adds `replies`, `spends` and
- * `publish`. `answered` is the stand-in's own: the count of calls the route has answered. */
+ * answers a sequence, follows another route's calls, spends itself or publishes a settlement adds
+ * `replies`, `follows`, `spends` and `publish`. `answered` is the stand-in's own: the count of
+ * calls the route has answered. */
 const Fixtures = z.looseObject({
   routes: z.array(
     Reply.extend({
       match: z.string(),
       replies: z.array(Reply).optional(),
+      follows: z.string().optional(),
       spends: z.number().optional(),
       answered: z.number().optional(),
       publish: z.unknown().optional(),
@@ -161,9 +169,15 @@ if (!route) {
   exit(1);
 }
 /** The answer this call takes: the reply its route's sequence has reached — the first call takes
- * the first reply, a call past the end takes the last again — or the route's own answer. */
+ * the first reply, a call past the end takes the last again — or the route's own answer. A route
+ * that follows another reaches its sequence by that route's answered calls rather than its own, so
+ * the state it answers turns on the call the role makes, not on the reads it makes. */
 const replies = route.replies ?? [];
-const answer = replies[Math.min(route.answered ?? 0, replies.length - 1)] ?? route;
+const followed =
+  route.follows === undefined
+    ? route
+    : fixtures.routes.find((candidate) => candidate.match === route.follows);
+const answer = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? route;
 // The count of calls each route has answered outlives this process in fixtures.json, with the body
 // where this call edited the pull request's: one read-modify-write of the file carries both.
 const edited = fixtures.routes.map((candidate) => ({

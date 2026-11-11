@@ -4099,7 +4099,8 @@ const redTest = "notify > retries a refused send";
 /** The error that read answers in world h, where the log cannot be read. */
 const redLogError =
   "failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions)";
-/** world.json as rig.sh's red_fixture leaves it: worker_fixture's world, and the world's red. */
+/** world.json as rig.sh's red_fixture leaves it: worker_fixture's world, the world's red, the
+ * failing line its log read answers (`log`) and the full name of the test that failed (`test`). */
 const redWorldFile = (fields: object = {}) =>
   JSON.stringify({
     key: "LWEVAL-1",
@@ -4113,6 +4114,8 @@ const redWorldFile = (fields: object = {}) =>
     after: "green",
     run_id: 7001001,
     job_id: 8001001,
+    log: redLine,
+    test: redTest,
     ...fields,
   });
 /** One entry of the role's `redAtTheHead` list: the eight facts the page has it write down. */
@@ -4298,6 +4301,33 @@ redRun("red-at-the-head-a-head-5", {
 redRun("red-at-the-head-a-head-16", {
   "handoffs.json": handoffs(redRecord({ red: [{ note: "A check was red and I re-ran it." }] })),
 });
+// A record whose entry quotes another world's failing line, not the one this world's read answers.
+redRun("red-at-the-head-a-head-17", {
+  "handoffs.json": handoffs(
+    redRecord({
+      red: [redEntry({ failingLine: "(fail) greet.test.ts > trims the name [1.00ms]" })],
+    })
+  ),
+});
+// The role printed a header of its own before its log read, so the transcript's first line of that
+// read is no failing line. The world holds the line, so nothing of the record rests on the print.
+redRun("red-at-the-head-a-head-18", {}, [
+  ...header,
+  turn[0],
+  redPage,
+  toolCall("call-log", "bash", {
+    command: 'echo "=== run view log-failed 7001001 ===" && gh run view 7001001 --log-failed',
+  }),
+  result("call-log", `=== run view log-failed 7001001 ===\n${redLine}\n`),
+  writeHandoff,
+  toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
+  redSubscribe,
+  redSearch,
+  result("call-s", "No issues found."),
+  redComment,
+  redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
+  ...redComplete("pass", "The re-run of test (notify) passed."),
+]);
 // Re-ran and waited, but subscribed to nothing.
 redRun("red-at-the-head-a-head-6", {}, [
   ...header,
@@ -4443,7 +4473,7 @@ const redBuildLine = "Error: Failed to download https://bun.sh/download/bun.zip:
 redWorldRun(
   "red-at-the-head-c-head-1",
   "c",
-  { check: "build", job: "build (linux-x64)" },
+  { check: "build", job: "build (linux-x64)", log: redBuildLine, test: "" },
   {
     "handoffs.json": handoffs(
       redRecord({
@@ -4484,7 +4514,13 @@ const redOwnTurn = (parts: object[]) => [
 redWorldRun(
   "red-at-the-head-d-head-1",
   "d",
-  { check: "test (widgets)", job: "test (widgets)", after: "red" },
+  {
+    check: "test (widgets)",
+    job: "test (widgets)",
+    after: "red",
+    log: redOwnLine,
+    test: "greet.test.ts > trims the name",
+  },
   { ...redOwn, "calls.jsonl": calls([redLogCall]) },
   redOwnTurn(redComplete("fail", "greet.test.ts > trims the name fails at the head."))
 );
@@ -4492,7 +4528,13 @@ redWorldRun(
 redWorldRun(
   "red-at-the-head-d-head-2",
   "d",
-  { check: "test (widgets)", job: "test (widgets)", after: "red" },
+  {
+    check: "test (widgets)",
+    job: "test (widgets)",
+    after: "red",
+    log: redOwnLine,
+    test: "greet.test.ts > trims the name",
+  },
   redOwn,
   redOwnTurn([
     toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
@@ -4535,7 +4577,7 @@ const redTitleLine = 'The title "feat: greet() (LWEVAL-1)" has no scope.';
 redWorldRun(
   "red-at-the-head-f-head-1",
   "f",
-  { check: "title", job: "title", after: "red" },
+  { check: "title", job: "title", after: "red", log: redTitleLine, test: "" },
   {
     "calls.jsonl": calls([redLogCall]),
     "handoffs.json": handoffs(
@@ -4571,7 +4613,7 @@ const redErrorRecord = (line: string) =>
 redWorldRun(
   "red-at-the-head-h-head-1",
   "h",
-  {},
+  { log: "" },
   { "handoffs.json": redErrorRecord(redLogError) },
   redTurn(redComplete("pass", "The re-run of test (notify) passed."), redLogError)
 );
@@ -4579,7 +4621,7 @@ redWorldRun(
 redWorldRun(
   "red-at-the-head-h-head-2",
   "h",
-  {},
+  { log: "" },
   { "handoffs.json": redErrorRecord("the log could not be read") },
   redTurn(redComplete("pass", "The re-run of test (notify) passed."), redLogError)
 );
@@ -4705,6 +4747,23 @@ test("an entry that names none of the eight facts is no record of the red", () =
     "red-at-the-head-a-head-16",
     "wrote=false",
     'recordProblems=["its entry names no repository, pull request, head, check, run id, attempt, job, failing line"]'
+  );
+});
+
+test("the record passes on the world's own failing line, and fails on another world's", () => {
+  // The passing side is the world-`a` run above, whose entry quotes this world's line.
+  expect(rowOf("red-at-the-head-a-head-1")).toContain(
+    'failingLine="notify > retries a refused send"'
+  );
+  redFails("red-at-the-head-a-head-17", "wrote=false", "its entry names no failing line");
+});
+
+test("a log read the role printed a header before decides nothing: the line is the world's", () => {
+  expect(rowOf("red-at-the-head-a-head-18")).toMatch(
+    /^red-at-the-head-a-head-18\tpass=true\tref=true\tworld=a record=v1 wrote=true /
+  );
+  expect(rowOf("red-at-the-head-a-head-18")).toContain(
+    'searched=true posted=true controller=true filed=false failingLine="notify > retries a refused send"'
   );
 });
 

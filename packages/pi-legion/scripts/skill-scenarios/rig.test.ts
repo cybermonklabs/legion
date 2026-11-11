@@ -1464,6 +1464,37 @@ describe("red_fixture", () => {
     expect(after.checksExit).toBe(RED_WORLD[world].after === "green" ? 0 : 1);
   });
 
+  // Catches the defect the first live run of world a measured: the head's second read in a turn
+  // answered the settlement although the role had pressed nothing, so the role read the head as
+  // already re-run and pressed no re-run of its own. The head turns on the act, never on the read
+  // (gh-standin.ts, `follows`), and the re-run the role presses after its reads still turns it.
+  test.each([
+    ...RED_WORLDS,
+  ])("world %s: reading the head again, with no re-run between, answers red again", async (world) => {
+    const run = redFixture(world);
+
+    const first = await readHead(run);
+    const again = await readHead(run);
+    for (const read of [first, again]) {
+      expect({ rollup: read.rollup, checks: read.checks, runs: read.checkRuns }).toEqual({
+        rollup: headIs(world, "before"),
+        checks: headIs(world, "before"),
+        runs: headIs(world, "before"),
+      });
+      expect(read.checksExit).toBe(1);
+    }
+
+    const rerun = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    expect(rerun.exit).toBe(0);
+    const after = await readHead(run);
+    expect({ rollup: after.rollup, checks: after.checks, runs: after.checkRuns }).toEqual({
+      rollup: headIs(world, "after"),
+      checks: headIs(world, "after"),
+      runs: headIs(world, "after"),
+    });
+    expect(after.checksExit).toBe(RED_WORLD[world].after === "green" ? 0 : 1);
+  });
+
   // Catches: a spent head whose earlier `failure` is gone, which the page's spend test reads, and
   // one that carries it in every world, which would spend the re-run of the nine others.
   test("the spent head alone carries an earlier failure of another check", async () => {
@@ -1641,9 +1672,11 @@ describe("red_fixture", () => {
     ]);
   });
 
-  // Catches: a world.json that loses the world, its check or its settlement, which the scorer
-  // reads the run's answers against (score.ts, redAtTheHead).
-  test("world.json carries the world, its check, its job and its settlement", () => {
+  // Catches: a world.json that loses the world, its check, its settlement, the failing line or
+  // the failing test's name, each of which the scorer reads the run's answers against (score.ts,
+  // redAtTheHead: the record is judged against `log` and the role's `dispatch search` against
+  // `test`).
+  test("world.json carries the world, its check, its job, its settlement and its failing line", () => {
     const run = redFixture("g");
     expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
       key: RED_KEY,
@@ -1657,6 +1690,8 @@ describe("red_fixture", () => {
       after: "green",
       run_id: RED_RUN_ID,
       job_id: RED_JOB_ID,
+      log: "(fail) notify > retries a refused send [3.00ms]",
+      test: "notify > retries a refused send",
     });
   });
 });

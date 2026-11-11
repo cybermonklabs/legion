@@ -525,10 +525,14 @@ cmd_profile() {
   )
   # Both plugins: a tester-proof worker's pane loads the Legion extension, which exits a Legion
   # session that finds no Envoy plugin, and every plain session gets its Dispatch skills and tools
-  # from the Envoy plugin.
-  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$P/home" --dest "$P/pi-envoy" >"$P/install.log" 2>&1 ||
+  # from the Envoy plugin. With SKILL_SCENARIOS_OMP set the installer is given that binary, since
+  # a pod carries the pinned Oh My Pi and no mise; with it unset the installer reads .omp-pin and
+  # runs it through mise, as it always has.
+  local -a omp_arg=()
+  [ -z "${SKILL_SCENARIOS_OMP:-}" ] || omp_arg=(--omp "$SKILL_SCENARIOS_OMP")
+  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$P/home" --dest "$P/pi-envoy" "${omp_arg[@]}" >"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-envoy failed; see $P/install.log"
-  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$P/home" --dest "$P/pi-legion" >>"$P/install.log" 2>&1 ||
+  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$P/home" --dest "$P/pi-legion" "${omp_arg[@]}" >>"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-legion failed; see $P/install.log"
   # The envoy.json a session of the label reads: a named profile's $PI_CODING_AGENT_DIR/envoy.json
   # (envoyConfigPath, packages/envoy-client/src/envoy-config.ts), which Oh My Pi sets to the
@@ -624,7 +628,7 @@ base_env() {
   cp -a "$P/home" "$R/home"
   {
     echo "HOME=$R/home"
-    echo "USER=$USER"
+    echo "USER=${USER:-$(id -un)}"
     echo "TERM=xterm-256color"
     echo "TMPDIR=$R/tmp"
     echo "MISE_DATA_DIR=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
@@ -1679,13 +1683,16 @@ run_tester_proof() {
 # every call skills/legion-worker/references/red-at-the-head.md tells a role to make is answered,
 # so none falls through to the stand-in's 404: the head's own check runs, the re-run, the read of
 # the failing attempt's log, the head's runs and the failing run's jobs. The head has one state per
-# turn, never three: all three reads answer a sequence of two, red and then what the world settles
-# at, so every read before the re-run is red and every read after it is the world's own answer, and
-# `gh pr checks` exits 1 while it reads red and 0 once it reads green, as the real command does. In
-# a world that stays red both answers are red, and nothing of it moves. The head's check-runs route
-# goes in front of worker_fixture's generic check-runs route, which is left answering the same red
-# to a `status` read. The re-run's route carries the settlement the head's checks would raise
-# later, as the envelope the gh stand-in publishes the moment the role presses the re-run.
+# act, never one per read: all three reads answer a sequence of two, red and then what the world
+# settles at, and each of them follows the re-run's route rather than its own calls (gh-standin.ts,
+# `follows`), so the head reads red however many times a role reads it before the re-run, and the
+# world's own answer from the moment the re-run is pressed, and `gh pr checks` exits 1 while it
+# reads red and 0 once it reads green, as the real command does. In a world that stays red both
+# answers are red, and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the
+# head reads red for the whole run. The head's check-runs route goes in front of worker_fixture's
+# generic check-runs route, which is left answering the same red to a `status` read. The re-run's
+# route carries the settlement the head's checks would raise later, as the envelope the gh stand-in
+# publishes the moment the role presses the re-run.
 # The ten worlds, each the same change under a different red:
 #   a  a failing test of packages/notify, a package the change does not touch; green on the re-run
 #   b  that test, red again on the re-run
@@ -1701,7 +1708,8 @@ run_tester_proof() {
 #   h  a, with the read of the failing attempt's log answering an error
 #   i  a with a reviewer, j  b with a reviewer: the same reds, another role's phase
 red_fixture() {
-  local world=$1 pr head branch check job step summary log log_err after run_id job_id red_id
+  local world=$1 pr head branch check job step summary log log_err test_name world_log
+  local after run_id job_id red_id
   read -r pr head branch < <(jq -r '"\(.pr) \(.head) \(.branch)"' "$R/world.json")
   run_id=$((7000000 + pr))
   job_id=$((8000000 + pr))
@@ -1711,6 +1719,7 @@ red_fixture() {
   a | b | e | h | i | j)
     check='test (notify)'
     job='test (notify)'
+    test_name='notify > retries a refused send'
     step='Run bun test packages/notify'
     summary='1 of 412 tests in packages/notify failed.'
     log='(fail) notify > retries a refused send [3.00ms]'
@@ -1719,6 +1728,7 @@ red_fixture() {
   c)
     check='build'
     job='build (linux-x64)'
+    test_name=''
     step='Set up Bun'
     summary='The job failed while it installed its tools.'
     log='Error: Failed to download https://bun.sh/download/bun-v1.4.4/bun-linux-x64.zip: HTTP 504 Gateway Timeout'
@@ -1726,6 +1736,7 @@ red_fixture() {
   d)
     check='test (widgets)'
     job='test (widgets)'
+    test_name='greet.test.ts > trims the name'
     step='Run bun test .'
     summary='1 of 2 tests in the repository root failed.'
     log='(fail) greet.test.ts > trims the name [1.00ms]'
@@ -1733,6 +1744,7 @@ red_fixture() {
   f)
     check='title'
     job='title'
+    test_name=''
     step='Check the pull request title'
     summary="The title \"feat: greet() ($worker_key)\" has no scope: the pattern is <type>(<scope>): <subject>."
     log="The title \"feat: greet() ($worker_key)\" has no scope: the pattern is <type>(<scope>): <subject>."
@@ -1740,6 +1752,7 @@ red_fixture() {
   g)
     check='ci'
     job='test (notify)'
+    test_name='notify > retries a refused send'
     step='Run bun test packages/notify'
     summary='1 of 6 lanes failed: test (notify).'
     log='(fail) notify > retries a refused send [3.00ms]'
@@ -1747,6 +1760,10 @@ red_fixture() {
   *) fail "red_fixture: '$world' is no world of red-at-the-head" ;;
   esac
   case $world in a | c | g | h | i) after=green ;; *) after=red ;; esac
+  # The failing line this world's log read answers, as the world knows it: a world whose read
+  # answers an error (h) leaves none, since the role reads no line there.
+  world_log=$log
+  [ -z "$log_err" ] || world_log=''
   jq --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" --arg branch "$branch" \
     --arg world "$world" --arg check "$check" --arg job "$job" --arg step "$step" \
     --arg summary "$summary" --arg log "$log" --arg log_err "$log_err" --arg after "$after" \
@@ -1817,10 +1834,14 @@ red_fixture() {
        jobs_url:($api + "/actions/runs/" + ($run_id|tostring) + "/jobs"),
        created_at:$t0, updated_at:$t0,
        pull_requests:[{number:$pr, head:{sha:$head, ref:$branch}}]} as $run
-    | [{match:("^gh api .*commits/" + $head + "/check-runs"),
+    # The three reads of the head follow the re-run route (gh-standin.ts, `follows`): each answers
+    # the first of its two replies however many times a role reads it before the re-run, and the
+    # second from the moment the re-run is pressed.
+    | "^gh run rerun" as $rerun
+    | [{match:("^gh api .*commits/" + $head + "/check-runs"), follows:$rerun,
         replies:[{stdout:{total_count:($red_checks|length), check_runs:$red_checks}},
                  {stdout:{total_count:($settled_checks|length), check_runs:$settled_checks}}]},
-       {match:"^gh run rerun", stdout:"✓ Requested rerun of failed jobs",
+       {match:$rerun, stdout:"✓ Requested rerun of failed jobs",
         publish:{topic:("notifications.github." + $owner + "." + $repo_name + ".pr."
                         + ($pr|tostring) + ".checks"),
                  source:"github",
@@ -1838,22 +1859,28 @@ red_fixture() {
         if (.stdout|type) == "object" and (.stdout|has("statusCheckRollup"))
         then (.replies = [{stdout:(.stdout + {statusCheckRollup:rollup($shown)})},
                           {stdout:(.stdout + {statusCheckRollup:rollup($latest)})}]
-              | del(.stdout))
+              | .follows = $rerun | del(.stdout))
         elif .match == "^gh pr checks"
         then (.replies = [{stdout:rows($shown), exit:1},
                           {stdout:rows($latest),
                            exit:(if ($failed|length) > 0 then 1 else 0 end)}]
-              | del(.stdout))
+              | .follows = $rerun | del(.stdout))
         elif .match == "^gh api .*(check-runs|status)"
         then .stdout = {total_count:($red_checks|length), check_runs:$red_checks}
         else . end)
     | .routes = $new + .routes' "$R/fixtures.json" >"$R/fixtures.red.json"
   mv "$R/fixtures.red.json" "$R/fixtures.json"
   # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
-  # it, and what the head settles at once the re-run is pressed.
+  # it, what the head settles at once the re-run is pressed, the failing line the world's log read
+  # answers (`log`, empty where that read answers an error), and, where the red is a test, that
+  # test's full name (`test`, empty where it is none). score.ts's redAtTheHead judges the role's
+  # record against `log` and its `dispatch search` against `test`, so that neither rests on how
+  # the role printed its own log read.
   jq --arg world "$world" --arg check "$check" --arg job "$job" --arg after "$after" \
+    --arg log "$world_log" --arg test "$test_name" \
     --argjson run_id "$run_id" --argjson job_id "$job_id" \
-    '. + {world:$world, check:$check, job:$job, after:$after, run_id:$run_id, job_id:$job_id}' \
+    '. + {world:$world, check:$check, job:$job, after:$after, run_id:$run_id, job_id:$job_id,
+          log:$log, test:$test}' \
     "$R/world.json" >"$R/world.red.json"
   mv "$R/world.red.json" "$R/world.json"
 }
