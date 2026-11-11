@@ -322,8 +322,8 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			subject: "notifications.dispatch.issue.CAPTURE-4.ask.resolved",
 			file:    "dispatch/ask-resolved-declined.json",
 			want: DispatchAskClosed{Key: "CAPTURE-4", Ask: "9f2b7c41-6d0a-4e3b-8c57-1ab2d3e4f506", Kind: "question", State: "resolved",
-				Resolution: ResolutionDeclined, Reason: "The vendor owns that date; I do not.", DispatchWords: declineDispatchWords,
-				Actor: dispatch.Actor{Kind: "user", ID: "human"}, Mark: mark(13, "2026-09-23T00:46:38Z")},
+				Decline: &record.AskDecline{Note: "The vendor owns that date; I do not.", Words: declineDispatchWords},
+				Actor:   dispatch.Actor{Kind: "user", ID: "human"}, Mark: mark(13, "2026-09-23T00:46:38Z")},
 		},
 		{
 			name:    "Dispatch ask reply returning the turn to the agent (hand-built)",

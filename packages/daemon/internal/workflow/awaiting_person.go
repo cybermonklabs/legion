@@ -64,10 +64,10 @@ func (e *Engine) declare(ctx context.Context, tx pgx.Tx, root record.Issue, mark
 	return e.store.Declare(ctx, tx, root.Key, mark)
 }
 
-// personAnswered answers root's wait with a person's act on ask at mark, which is their decline
-// of it when declined. The architect is the tree's only agent while it waits, so a person's act on
-// any ask of the root counts — an act on another question, which the architect may have asked in
-// place of the one the wait names, among them. The act answers only a wait it follows: one
+// personAnswered answers root's wait with a person's act on ask at mark, which is their decline of
+// it where decline is set. The architect is the tree's only agent while it waits, so a person's
+// act on any ask of the root counts — an act on another question, which the architect may have
+// asked in place of the one the wait names, among them. The act answers only a wait it follows: one
 // Dispatch recorded at or before the wait's start (record.EventMark.After against Awaiting.Since)
 // is an answer the person gave before the architect handed the work back to them, and the root
 // waits on their next act.
@@ -79,13 +79,13 @@ func (e *Engine) declare(ctx context.Context, tx pgx.Tx, root record.Issue, mark
 // answers the next wait as a reply, would be named a decline again and the resume would point at
 // the old note instead of what they just wrote. Admission's own pass has no act to read and reads
 // the row's sequences instead (answeredSince).
-func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issue, ask string, mark record.EventMark, declined bool) error {
+func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issue, ask string, mark record.EventMark, decline *record.AskDecline) error {
 	if !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
 		return nil
 	}
 	answer, by := "workflow: a person acted on an ask of a root waiting on them", record.AnsweredByReply
 	switch {
-	case declined:
+	case decline != nil:
 		answer, by = "workflow: a person declined to answer an ask of a root waiting on them", record.AnsweredByDecline
 	case root.Awaiting.Ask == ask:
 		answer, by = "workflow: an architect ask was answered", record.AnsweredByAsk

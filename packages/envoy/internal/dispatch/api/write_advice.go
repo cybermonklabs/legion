@@ -245,12 +245,12 @@ func (s *server) declinedAsksAdvice(ctx context.Context, tx pgx.Tx, route, issue
 }
 
 // declinedAskHeadUnits is how much of a declined ask's question and of the person's note the
-// reminder carries, in UTF-16 units. It is the length the one reader of the field prints,
-// QUESTION_HEAD in packages/envoy-client/src/ask-answer.ts, read by declinedAskLines in
-// packages/envoy-client/src/related-check.ts: the two are the same number so that the field
-// carries exactly what the line shows, and neither side can grow the other's cost by itself.
-// Every declined ask of the issue is still named, and the whole note stands at the ask's own
-// link, which the same line prints.
+// reminder carries, in UTF-16 units. The one reader of the field, declinedAskLines in
+// packages/envoy-client/src/related-check.ts, prints what it was sent and cuts nothing itself;
+// this number is held equal to QUESTION_HEAD in packages/envoy-client/src/ask-answer.ts, the
+// length every other surface quotes a question at, so the field carries exactly what the line
+// shows, and neither side can grow the other's cost by itself. Every declined ask of the issue
+// is still named, and the whole note stands at the ask's own link, which the same line prints.
 const declinedAskHeadUnits = 200
 
 // declinedAskHead is the server's copy of the client's textHead (packages/envoy-client/src/
@@ -276,6 +276,10 @@ func declinedAskHead(text string) string {
 	return flat
 }
 
+// declinedAsk is the SQL predicate, on asks, that holds for an ask a person declined to answer
+// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew.
+const declinedAsk = `state = 'resolved' and resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+
 // readDeclinedAsks is declinedAsksAdvice's read, apart so its rows are closed before the
 // savepoint they were read on is released. Nil, not an empty list, where the issue holds no
 // declined ask: the field is omitted rather than sent empty.
@@ -294,7 +298,7 @@ func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey strin
 	// The note is the resolution's reason, which a person who wrote none leaves empty.
 	rows, err := tx.Query(ctx, `
 		select id::text, question, coalesce(resolution->>'reason', '') from asks
-		where issue_key = $1 and state = 'resolved' and resolution->>'kind' = 'declined'
+		where issue_key = $1 and `+declinedAsk+`
 		order by created_at, id
 	`, issueKey)
 	if err != nil {

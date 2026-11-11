@@ -481,7 +481,7 @@ func answeredSince(waiting record.Awaiting, asks []record.RootAsk, gateArtifacts
 // that act is the ask's own close and the mirror records a decline, else otherwise, which is
 // whether the ask is the one the wait names.
 func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.Answer {
-	if ask.Declined && seq == ask.ClosedSeq {
+	if ask.Decline != nil && seq == ask.ClosedSeq {
 		return record.AnsweredByDecline
 	}
 	return otherwise
@@ -638,16 +638,17 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 			waiting.AnsweredDetail, key)
 	case record.AnsweredByDecline:
 		// The sentences and the note are Dispatch's record of the decline, printed as the mirror
-		// row holds them (record.RootAsk.DeclinedWords, DeclinedNote): the daemon writes neither,
-		// so the architect reads the person's words and not the daemon's paraphrase of them. A
-		// decline the person wrote no note with ends after the sentences.
+		// row holds them (record.RootAsk.Decline): the daemon writes neither, so the architect
+		// reads the person's words and not the daemon's paraphrase of them. The note is quoted,
+		// as a review's reason is (changesDetail), so the architect reads where the person's own
+		// words begin and end. A decline the person wrote no note with ends after the sentences.
 		fmt.Fprintf(&task, "A person declined to answer your ask %s on %s.", waiting.AnsweredDetail, key)
-		if declined := declinedRow(asks, waiting.AnsweredDetail); declined != nil {
-			if declined.DeclinedWords != "" {
-				fmt.Fprintf(&task, " %s", declined.DeclinedWords)
+		if decline := recordedDecline(asks, waiting.AnsweredDetail); decline != nil {
+			if decline.Words != "" {
+				fmt.Fprintf(&task, " %s", decline.Words)
 			}
-			if declined.DeclinedNote != "" {
-				fmt.Fprintf(&task, " Their note: %s", declined.DeclinedNote)
+			if decline.Note != "" {
+				fmt.Fprintf(&task, " Their note: %q", decline.Note)
 			}
 		}
 	default:
@@ -723,14 +724,14 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	return task.String()
 }
 
-// declinedRow is the mirror row of ask when a person declined to answer it, nil otherwise: it
+// recordedDecline is the decline the mirror holds for ask, nil where no person declined it: it
 // carries the sentences Dispatch wrote for the asking agent and the person's own note, which the
 // resume prints. A record holding no such row — a decline mirrored by a release before this one,
 // or a row a later read has not reached — leaves the resume naming the ask alone.
-func declinedRow(asks []record.RootAsk, ask string) *record.RootAsk {
+func recordedDecline(asks []record.RootAsk, ask string) *record.AskDecline {
 	for i := range asks {
-		if asks[i].Ask == ask && asks[i].Declined {
-			return &asks[i]
+		if asks[i].Ask == ask && asks[i].Decline != nil {
+			return asks[i].Decline
 		}
 	}
 	return nil

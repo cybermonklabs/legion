@@ -395,8 +395,9 @@ type declineAskInput struct {
 }
 
 // declineAsk records that a person chose not to answer an ask. The ask closes as every other
-// resolution closes, its kind is "declined", and the row keeps the person's note apart from the
-// four sentences Dispatch writes for the asking agent (model.DeclineDispatchWords).
+// resolution closes, its kind is model.AskResolutionDeclined, and the row keeps the person's
+// note apart from the four sentences Dispatch writes for the asking agent
+// (model.DeclineDispatchWords).
 func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -445,7 +446,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
-			return docs.WriteAskResolution(ctx, tx, ask, "declined", note, model.DeclineDispatchWords, actor)
+			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, model.DeclineDispatchWords, actor)
 		},
 	})
 	if err != nil {

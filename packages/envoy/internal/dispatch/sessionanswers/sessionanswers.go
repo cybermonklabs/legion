@@ -17,6 +17,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+// declinedResolution is the SQL predicate, on a resolution the events carry, that holds for an
+// ask a person declined to answer (model.AskResolutionDeclined).
+const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
 // $1 since $2, $3 being the session's own topic (contracts.AgentSubject). Its three sources:
 //
@@ -85,11 +89,15 @@ const query = `
 		where e.type = 'ask.answered' and e.payload->>'id' in (select id from answer_ids)
 	), decline_ids as (
 		-- A decline carries its own words, so the arm keeps the resolution the event recorded.
-		-- An ask can be resolved more than once - a settlement that restores a block reopens it,
-		-- and it can be declined again - so the latest decline of each ask is the one listed.
+		-- An ask holds at most one decline: a resolved ask is not resolved again (api's
+		-- transitionAskTx), and the only resolutions anything takes back are the retraction a
+		-- document's settlement wrote when the block left (docs.settlementRetraction) and the
+		-- withdrawal an issue's close wrote, which its reopen undoes - never a decline. The
+		-- distinct on is what holds the list to one item per ask, the latest decline of it,
+		-- whatever the events hold.
 		select distinct on (id) id, resolution
 		from reached
-		where type = 'ask.resolved' and resolution->>'kind' = 'declined'
+		where type = 'ask.resolved' and ` + declinedResolution + `
 		order by id, (resolution->>'at')::timestamptz desc
 	), comment_ids as (
 		select id, bool_or(m) as mentioned

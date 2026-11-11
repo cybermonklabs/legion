@@ -216,12 +216,12 @@ const declineDispatchWords = "The person chose not to answer this question. " +
 // which carries their own note apart from the sentences Dispatch wrote for the asking agent. The
 // close decodes as the decline it is, with both kept apart, and a decline the person wrote no note
 // with carries the sentences and an empty note. A close whose payload has no resolution, and one
-// whose resolution kind this daemon does not know, decode as a close with no resolution at all.
+// whose resolution kind this daemon does not know, decode as a close carrying no decline at all.
 func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 	person := map[string]any{"kind": "user", "id": "alice"}
-	closed := func(resolution, reason, words string) Fact {
-		return DispatchAskClosed{Key: "LEGION-7", Ask: "ask-q", Kind: "question", State: "resolved", Resolution: resolution, Reason: reason,
-			DispatchWords: words, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}
+	closed := func(decline *record.AskDecline) Fact {
+		return DispatchAskClosed{Key: "LEGION-7", Ask: "ask-q", Kind: "question", State: "resolved", Decline: decline,
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}
 	}
 	for _, tc := range []struct {
 		name       string
@@ -230,14 +230,14 @@ func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 	}{
 		{name: "a decline with the person's note",
 			resolution: map[string]any{"kind": "declined", "reason": "The vendor owns that date; I do not.", "dispatch_words": declineDispatchWords},
-			want:       closed("declined", "The vendor owns that date; I do not.", declineDispatchWords)},
+			want:       closed(&record.AskDecline{Note: "The vendor owns that date; I do not.", Words: declineDispatchWords})},
 		{name: "a decline the person wrote no note with",
 			resolution: map[string]any{"kind": "declined", "reason": "", "dispatch_words": declineDispatchWords},
-			want:       closed("declined", "", declineDispatchWords)},
+			want:       closed(&record.AskDecline{Words: declineDispatchWords})},
 		{name: "a resolution kind this daemon does not know",
 			resolution: map[string]any{"kind": "withdrawn", "reason": "the asker took it back"},
-			want:       closed("", "", "")},
-		{name: "a close with no resolution at all", resolution: nil, want: closed("", "", "")},
+			want:       closed(nil)},
+		{name: "a close with no resolution at all", resolution: nil, want: closed(nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := map[string]any{"id": "ask-q", "kind": "question", "state": "resolved"}

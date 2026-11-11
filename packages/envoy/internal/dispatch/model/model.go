@@ -1857,6 +1857,13 @@ type AskResolution struct {
 	At            time.Time `json:"at"`
 }
 
+// AskResolutionDeclined is the AskResolution kind a person's decline of an ask records, and the
+// one kind that carries DeclineDispatchWords. It is a constant of this package because the three
+// places that write or read it are in three packages - the decline route, the reminder of an
+// issue's declined asks (api) and the list of what people wrote to a session (sessionanswers) -
+// and the last of those cannot import api.
+const AskResolutionDeclined = "declined"
+
 // DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
 // answer: the four sentences the asking agent reads to decide what to do next.
 const DeclineDispatchWords = "The person chose not to answer this question. " +

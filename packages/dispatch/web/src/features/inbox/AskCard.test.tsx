@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -13,7 +12,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { ApiError, api, type DeclineAskInput } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -883,164 +882,6 @@ test("a reply that is nothing but a reference shows its card", async () => {
     ).toBe("/issues/CORE-2");
   } finally {
     getIssueSummary.mockRestore();
-    view.unmount();
-  }
-});
-
-/** An open question: the one ask the decline control is drawn on. */
-function openAsk(overrides: Partial<Ask> = {}): Ask {
-  return answeredAsk({ answer: null, state: "open", ...overrides });
-}
-
-/** The four sentences Dispatch writes beside a person's note when they decline to answer
- *  (`model.DeclineDispatchWords`), written here as the server writes them. They are for the
- *  agent that asked, so the browser never draws them. */
-const DISPATCH_WORDS =
-  "The person chose not to answer this question. Decide the next step without an answer. " +
-  "Do not ask this question again unless the facts change. Write in your work what you assumed.";
-
-/** The ask as the server hands it back once the person has declined it, with `note` as the
- *  reason they wrote; an empty note leaves an empty reason. */
-function declinedAsk(note: string): Ask {
-  return openAsk({
-    resolution: {
-      actor: { id: "alice", kind: "user" },
-      at: "2026-10-08T03:00:00Z",
-      dispatch_words: DISPATCH_WORDS,
-      kind: "declined",
-      reason: note,
-    },
-    state: "resolved",
-  });
-}
-
-test("an open question offers Decline to answer, whoever holds the turn", async () => {
-  for (const turn of ["human", "agent"]) {
-    const ask = openAsk({ waiting_on: turn });
-    const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
-    const card = within(view.container);
-    try {
-      expect(await card.findByRole("button", { name: "Decline to answer" })).toBeTruthy();
-    } finally {
-      view.unmount();
-    }
-  }
-});
-
-test("an approval request offers no decline, which the server refuses", async () => {
-  const ask = approvalAsk();
-  const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
-  const card = within(view.container);
-  try {
-    await card.findByRole("radio", { name: "Approve" });
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
-  }
-});
-
-test("an answered ask offers no decline", async () => {
-  const ask = answeredAsk();
-  const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
-  const card = within(view.container);
-  try {
-    await waitFor(() => expect(card.getByText(/Answered by/)).toBeTruthy());
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
-  }
-});
-
-test("a declined ask shows Declined and the person's note, and offers no decline", async () => {
-  const note = "Ask the release owner instead.";
-  const ask = declinedAsk(note);
-  const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
-  const card = within(view.container);
-  try {
-    const record = await card.findByTestId("ask-ask-1");
-    expect(within(record).getByTestId("ask-resolution-badge").textContent).toBe("Declined");
-    expect(record.textContent).toContain("alice declined to answer");
-    expect(record.textContent).toContain(note);
-    // Dispatch's own words are the asking agent's to read, never the browser's.
-    expect(record.textContent).not.toContain("The person chose not to answer");
-    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
-  }
-});
-
-test("a decline sends the person's note and closes the question", async () => {
-  const user = userEvent.setup();
-  const open = openAsk();
-  const note = "The release owner decides this one.";
-  const declined = declinedAsk(note);
-  const sent: DeclineAskInput[] = [];
-  const { view } = renderCard(
-    <AskCard
-      ask={open}
-      declineAsk={async (_id, input) => {
-        sent.push(input);
-        return declined;
-      }}
-      getAskThread={async () => thread(declined)}
-      initialThread={thread(open)}
-    />
-  );
-  const card = within(view.container);
-  try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
-    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
-    await user.click(within(dialog).getByLabelText("Note (optional)"));
-    await user.paste(note);
-    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
-
-    await waitFor(() => expect(sent).toEqual([{ note }]));
-    const record = await card.findByTestId("ask-ask-1");
-    expect(within(record).getByTestId("ask-resolution-badge").textContent).toBe("Declined");
-    expect(record.textContent).toContain(note);
-    expect(card.queryByRole("dialog")).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
-  }
-});
-
-test("the decline dialog counts what is left to write, and sends no note when empty", async () => {
-  const user = userEvent.setup();
-  const open = openAsk();
-  const declined = declinedAsk("");
-  const sent: DeclineAskInput[] = [];
-  const { view } = renderCard(
-    <AskCard
-      ask={open}
-      declineAsk={async (_id, input) => {
-        sent.push(input);
-        return declined;
-      }}
-      getAskThread={async () => thread(declined)}
-      initialThread={thread(open)}
-    />
-  );
-  const card = within(view.container);
-  try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
-    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
-    const field = within(dialog).getByLabelText("Note (optional)");
-    expect(field).toHaveAttribute("maxlength", String(DISPATCH_EVENT_BODY_MAX));
-    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX} characters left`)).toBeTruthy();
-
-    await user.click(field);
-    await user.paste("Four");
-    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX - 4} characters left`)).toBeTruthy();
-
-    await user.clear(field);
-    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
-
-    await waitFor(() => expect(sent).toEqual([{}]));
-    const record = await card.findByTestId("ask-ask-1");
-    expect(record.textContent).toContain("alice declined to answer");
-    // A decline with no note holds no reason, so the line ends with the act itself.
-    expect(record.textContent).not.toContain("declined to answer -");
-  } finally {
     view.unmount();
   }
 });

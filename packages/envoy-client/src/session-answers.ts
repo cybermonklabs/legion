@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
-import { QUESTION_HEAD } from "./ask-answer";
+import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
@@ -109,18 +109,14 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
   if (item.ask !== undefined) {
     // The question is the session's own words, not the person's, so cutting it to the length
     // every surface quotes a question at (QUESTION_HEAD) loses nothing a person wrote.
-    const question = item.ask.question.replace(/\s+/g, " ").trim();
-    lines.push(
-      `Question: ${question.length > QUESTION_HEAD ? `${question.slice(0, QUESTION_HEAD)}…` : question}`
-    );
+    lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
   }
   if (item.kind === "answer") {
     const selected = item.selected ?? [];
     lines.push(`Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`);
   }
-  if (item.dispatch_words !== undefined && item.dispatch_words !== "") {
-    lines.push(`Dispatch's words: ${item.dispatch_words}`);
-  }
+  const words = dispatchWordsText(item.dispatch_words);
+  if (words !== undefined) lines.push(words);
   if (item.text !== "") lines.push(item.text);
   return lines.join("\n");
 }

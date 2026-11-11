@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ const declineWords = "The person chose not to answer this question. " +
 // resolution kind `declined`, with the person's own note apart from Dispatch's words.
 func declineOf(ask string, seq int64, note string) intake.DispatchAskClosed {
 	return intake.DispatchAskClosed{Key: "LEGION-208", Ask: ask, Kind: record.AskQuestion, State: "resolved",
-		Resolution: intake.ResolutionDeclined, Reason: note, DispatchWords: declineWords, Actor: askPerson, Mark: askSeq(seq)}
+		Decline: &record.AskDecline{Note: note, Words: declineWords}, Actor: askPerson, Mark: askSeq(seq)}
 }
 
 // replyOf is a person's reply in the thread of ask at seq, carrying no turn for anyone, as
@@ -43,8 +44,11 @@ func replyOf(ask string, seq int64) intake.DispatchAskReply {
 func declinedMirror(t *testing.T, pool *pgxpool.Pool, ask, note string) {
 	t.Helper()
 	row := mirroredAsk(t, pool, ask)
-	if row == nil || !row.Declined || row.DeclinedNote != note || row.DeclinedWords != declineWords {
-		t.Fatalf("the mirror row of %s = %+v, want it declined with the note %q and Dispatch's own words", ask, row, note)
+	if row == nil {
+		t.Fatalf("the ask %s has no mirror row, want it declined with the note %q and Dispatch's own words", ask, note)
+	}
+	if row.Decline == nil || row.Decline.Note != note || row.Decline.Words != declineWords {
+		t.Fatalf("the mirror row of %s records the decline %+v, want the note %q and Dispatch's own words", ask, row.Decline, note)
 	}
 }
 
@@ -90,13 +94,14 @@ func resumeTaskOf(t *testing.T, pool *pgxpool.Pool, key string) string {
 }
 
 // namesTheDecline fails unless task says a person declined ask and carries Dispatch's four
-// sentences and note, each as the record holds it. A decline the person wrote no note with
-// (note "") must end after the sentences, with no separator left dangling.
+// sentences and the person's note, each as the record holds it, the note quoted so its words are
+// marked off as theirs. A decline the person wrote no note with (note "") must end after the
+// sentences, with no separator left dangling.
 func namesTheDecline(t *testing.T, task, key, ask, note string) {
 	t.Helper()
 	want := "A person declined to answer your ask " + ask + " on " + key + ". " + declineWords
 	if note != "" {
-		want += " Their note: " + note
+		want += fmt.Sprintf(" Their note: %q", note)
 	}
 	if !strings.HasPrefix(task, want) {
 		t.Fatalf("the resume task is %q, want it to open with %q", task, want)

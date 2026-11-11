@@ -76,7 +76,7 @@ import {
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
 import { actorText } from "./actor-text";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine, commandName } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import {
@@ -2784,6 +2784,7 @@ function askSummary(
     `${reply.id} · ${actorText(reply.author)}`,
     `Body: ${reply.body}`,
   ]);
+  const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
     `Question: ${ask.question}`,
     ...anchorLines(ask),
@@ -2824,11 +2825,10 @@ function askSummary(
           `- Kind: ${ask.resolution.kind}`,
           // A decline the person wrote no note with holds no reason, so the line is left out
           // rather than printed empty; the sentences Dispatch wrote for the asking agent stand
-          // on a line of their own, named, so nobody reads them as the person's words.
+          // on a bullet of their own, under the label every reader of them names them with
+          // (`dispatchWordsText`), so nobody reads them as the person's words.
           ...(ask.resolution.reason === "" ? [] : [`- Reason: ${ask.resolution.reason}`]),
-          ...(ask.resolution.dispatch_words === undefined || ask.resolution.dispatch_words === ""
-            ? []
-            : [`- Dispatch's words: ${ask.resolution.dispatch_words}`]),
+          ...(resolutionWords === undefined ? [] : [`- ${resolutionWords}`]),
         ]),
     "Replies:",
     ...(chain.length === 0 ? ["- none"] : chain),

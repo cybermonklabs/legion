@@ -379,7 +379,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		// both travel as data from Dispatch rather than as a copy of four sentences here. Any
 		// other resolution kind, and a close whose payload carries none, is the close alone.
 		if ask.Resolution != nil && ask.Resolution.Kind == ResolutionDeclined {
-			closed.Resolution, closed.Reason, closed.DispatchWords = ResolutionDeclined, ask.Resolution.Reason, ask.Resolution.DispatchWords
+			closed.Decline = &record.AskDecline{Note: ask.Resolution.Reason, Words: ask.Resolution.DispatchWords}
 		}
 		return closed, nil
 	case "ask.handed_back":

@@ -13,9 +13,10 @@
 --
 -- The decline is a fact of the ask, like kind and by_tree beside it, so it is kept whatever order
 -- the ask's events arrive in and has no fence of its own: a question closed with no answer stays
--- declined, and Dispatch's settlement restoring such an ask restores that same close. Every row
--- recorded before this migration takes the default, which is what the record of those asks says:
--- no decline was ever read for them.
+-- declined, and no later event of that ask says otherwise, since Dispatch refuses every
+-- transition of a resolved ask and the settlement that restores a retracted one restores no other
+-- resolution. Every row recorded before this migration takes the default, which is what the record
+-- of those asks says: no decline was ever read for them.
 --
 -- The ninth value of the answer check is `declined`, the act that answered a root's wait: a
 -- person's decline of an ask of the root, the one the wait names or any other

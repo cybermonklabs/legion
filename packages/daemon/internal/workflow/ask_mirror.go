@@ -57,18 +57,16 @@ const (
 // facts of the ask (kind, artifact, byTree, a person's decline) and a person's acts (personAct's
 // answer and other) are kept from any event that carries them, however old.
 type askChange struct {
-	seq           int64
-	kind          string
-	artifact      string
-	byTree        bool
-	state         askState
-	turn          string
-	closer        string
-	answer        bool
-	other         bool
-	declined      bool
-	declinedNote  string
-	declinedWords string
+	seq      int64
+	kind     string
+	artifact string
+	byTree   bool
+	state    askState
+	turn     string
+	closer   string
+	answer   bool
+	other    bool
+	decline  *record.AskDecline
 }
 
 // apply merges the change into row.
@@ -79,10 +77,11 @@ func (c askChange) apply(row *record.RootAsk) {
 	}
 	row.ByTree = row.ByTree || c.byTree
 	// A person's decline is the ask's own fact, kept like its kind: the question was closed with
-	// no answer, and nothing later takes that back. Its note and Dispatch's words come with it,
-	// so a row only ever carries the two that belong to the decline it records.
-	if c.declined {
-		row.Declined, row.DeclinedNote, row.DeclinedWords = true, c.declinedNote, c.declinedWords
+	// no answer, and nothing later takes that back. An ask is declined at most once — Dispatch
+	// refuses every transition of a resolved ask — so a decline the row already holds is the
+	// same one any later event of that ask carries, and the row stands as it is.
+	if row.Decline == nil {
+		row.Decline = c.decline
 	}
 	if c.answer {
 		row.PersonAnswerSeq = max(row.PersonAnswerSeq, c.seq)
@@ -248,11 +247,10 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 }
 
 // closeAsk closes the ask's mirror row, keeping the turn it last had, records who closed it
-// (closer), records a person's decline on the row with Dispatch's own words and the person's note,
-// and records a person's act personAct names, which answers the root's wait when it
-// would answer one (answersWait, personAnswered). A close by anyone else moves the wait when it
-// takes an ask of the wait away from the person (itemLeft): settlement's is a retraction, any other
-// a close the resume names.
+// (closer), records a person's decline on the row as Dispatch recorded it, and records a person's
+// act personAct names, which answers the root's wait when it would answer one (answersWait,
+// personAnswered). A close by anyone else moves the wait when it takes an ask of the wait away
+// from the person (itemLeft): settlement's is a retraction, any other a close the resume names.
 //
 // A decline is a resolution by a person, so personAct already counts it among the acts that
 // answer a wait, and the close in hand is what says the answer was a decline (personAnswered).
@@ -268,10 +266,8 @@ func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAs
 		return err
 	}
 	answer, other := personAct(fact)
-	declined := fact.Resolution == intake.ResolutionDeclined
 	before, after, err := e.mirrorAsk(ctx, tx, *root, fact.Ask, askChange{seq: fact.Mark.Seq, kind: fact.Kind, artifact: fact.Artifact,
-		state: askClosed, closer: closer, answer: answer, other: other,
-		declined: declined, declinedNote: fact.Reason, declinedWords: fact.DispatchWords})
+		state: askClosed, closer: closer, answer: answer, other: other, decline: fact.Decline})
 	if err != nil {
 		return err
 	}
@@ -280,7 +276,7 @@ func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAs
 	case err != nil:
 		return err
 	case answers:
-		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark, declined)
+		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark, fact.Decline)
 	case closer == record.ClosedByPerson:
 		return nil
 	case closer == record.ClosedBySettlement:
@@ -366,7 +362,7 @@ func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 	case err != nil:
 		return err
 	case answers:
-		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark, false)
+		return e.personAnswered(ctx, tx, *root, fact.Ask, fact.Mark, nil)
 	case fact.Actor.Person():
 		return nil
 	case inTree && fact.WaitingOn == "human" && after.ByTree && after.Question():

@@ -846,7 +846,7 @@ package api
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 60: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// 65: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
 // an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
 // (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
 // any other — rather than answer it, so nobody will answer that question. The daemon then starts
@@ -856,17 +856,20 @@ package api
 // root nobody declined an ask of is served exactly as before.
 // `packages/contracts/src/legion-api.ts` lists the nine values in `LEGION_WAIT_ANSWERS`, and
 // that list is a `z.enum`, which refuses a value it does not name rather than stripping it like
-// an unknown key: a plugin at 59 reading a declined root's state would refuse the whole body, so
-// the bump keeps the two apart from here on. It does not keep them apart on the way back: the
+// an unknown key: a plugin at any earlier contract reading a declined root's state would refuse
+// the whole body, so the bump keeps the two apart from here on. It does not keep them apart on the way back: the
 // migration is forward-only and the answer stands on the root's own row, so an older daemon
 // binary put back on this schema serves `answeredBy: "declined"` from the rows this release
-// wrote, and the plugin at 59 it is gated to then refuses the whole `GET /legion/v1/state` body
-// and not the one root that declined. The daemon ships store migration
+// wrote, and the plugin at the earlier contract it is gated to then refuses the whole
+// `GET /legion/v1/state` body and not the one root that declined. The daemon ships store migration
 // `20261111021610_ask_declined.up.sql` with it, which adds the three columns the decline is kept
 // on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
 // the ninth value; an older daemon binary reads that schema without them and resumes such a root
 // through `resumeTask`'s default arm, so the root still starts and only Dispatch's words are
-// lost. (The base carries 59, so this change takes 60, as
+// lost. (This entry first took 60, when the base carried 59. main carries 62 now, and of the
+// open pull requests that declare a number #3534 and #3573 both take 63 and #3521 takes 64, so
+// the lowest free one above the base is 65 and this change takes it, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says; read the base's own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 60
+// says; read the base's own number and the open pull requests again at the next merge rather
+// than from this line.)
+const DaemonAPIVersion = 65

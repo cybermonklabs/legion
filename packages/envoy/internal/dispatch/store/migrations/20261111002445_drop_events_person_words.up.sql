@@ -12,5 +12,10 @@
 -- code reads, so neither release loses an answer, only a plan choice.
 -- `drop index` takes ACCESS EXCLUSIVE on events for the instant it unlinks the index, inside the
 -- runner's one transaction, so every read and write of an event waits behind it for that moment;
--- it reads no row of the table and rewrites none.
+-- it reads no row of the table and rewrites none. That is why the census lets this migration
+-- through whatever events has grown to: a plain `drop index` is one of the catalog-only shapes
+-- exempt from its 1 GiB table limit (pgmigrate's catalogOnlyStatements), because the time the
+-- statement holds its lock does not grow with the table. The exemption is for this shape alone -
+-- RESTRICT, which is the default, and no cascade - and the census withholds it from every kind
+-- while an enabled DDL event trigger would run code of its own on the command.
 drop index events_person_words;

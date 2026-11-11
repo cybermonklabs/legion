@@ -326,28 +326,25 @@ func (DispatchAskRestored) isFact() {}
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
 // that act (Mark).
 //
-// Resolution is why a resolved ask needs no human answer any more, of the resolutions this daemon
-// knows: ResolutionDeclined, a person's decline to answer. It is "" for an answer, for a close
-// whose payload carries no resolution, and for a resolution kind this daemon does not know, which
-// is no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
-// one. Reason is the person's own note alone ("" where they wrote none) and DispatchWords the
-// sentences Dispatch wrote beside it for the asking agent (Dispatch's model.DeclineDispatchWords),
-// each as Dispatch recorded it and each empty with Resolution.
+// Decline is the person's decline to answer, set where the close carries a resolution of the one
+// kind this daemon acts on (ResolutionDeclined) and nil for every other close: an answer, a close
+// whose payload carries no resolution, and a resolution kind this daemon does not know, which is
+// no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
+// one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
+// as Dispatch recorded it.
 type DispatchAskClosed struct {
-	Key           string
-	Ask           string
-	Kind          string
-	Artifact      string
-	State         string
-	Resolution    string
-	Reason        string
-	DispatchWords string
-	Actor         dispatch.Actor
-	Mark          record.EventMark
+	Key      string
+	Ask      string
+	Kind     string
+	Artifact string
+	State    string
+	Decline  *record.AskDecline
+	Actor    dispatch.Actor
+	Mark     record.EventMark
 }
 
 // ResolutionDeclined is the resolution kind of an ask a person chose not to answer
-// (DispatchAskClosed.Resolution), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
+// (DispatchAskClosed.Decline), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
 const ResolutionDeclined = "declined"
 
 func (DispatchAskClosed) isFact() {}
