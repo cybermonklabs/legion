@@ -239,6 +239,7 @@ function ConversationReply({
         </>
       }
       current={reply.id === currentReplyId}
+      deleted={postDeletion(reply)}
       edited={reply.edited_at}
       markRef={markRef}
       delivery={

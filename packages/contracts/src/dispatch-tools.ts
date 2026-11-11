@@ -288,7 +288,7 @@ const READ_OWNER_RULE =
 const READ_MESSAGE_RULE =
   "message stands alone: it names the conversation, so name no issue, project, artifact, or ref with it.";
 const READ_HISTORY_RULE =
-  "history reads the bodies an edit or a delete of one comment or message replaced, so it goes with ref naming that post and with nothing else: message stands alone and names a whole conversation, which keeps no history of its own.";
+  "history reads the bodies an edit or a delete of one post replaced, so it needs a ref naming one comment or one issue message: message stands alone and names a whole conversation, which keeps no history of its own.";
 
 /** dispatch_read's refusal: a call with message breaks only the message rule, and a call
  *  without it only the owner rule; history breaks its own rule beside either. */

@@ -235,7 +235,7 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
   if (id !== undefined) {
     targets.push({ queryKey: ["comment", id] });
     if (event.type === "comment.edited" || event.type === "comment.deleted") {
-      targets.push(commentBlockReads(id));
+      targets.push(itemBlockReads("comment", id));
     }
   }
   const root = payloadString(event, "reply_to");
@@ -250,21 +250,15 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
 }
 
 /**
- * Every read of a block of comment `id` (`blockQuery`, which each link to the block and its own
- * panel share, pinned or not), found by its node, `comment/<id>#<block id>`. The node carries the
- * block's text, which the read keeps until an event refreshes it (`staleTime: Infinity`), and the
- * server names no block of a comment in `references_changed`: the comment's own edit does, and
- * its delete, which re-indexes the post with an empty body.
+ * Every read of a block of comment or issue message `id` (`blockQuery`, which each link to the
+ * block and its own panel share, pinned or not), found by its node, `<kind>/<id>#<block id>`.
+ * The node carries the block's text, which the read keeps until an event refreshes it
+ * (`staleTime: Infinity`), and the server names no block of a post in `references_changed`: the
+ * post's own edit does, and its delete, which re-indexes the post with an empty body. A message
+ * has both since the post corrections gave it them.
  */
-function commentBlockReads(id: string): RefreshTarget {
-  const prefix = `comment/${id}#`;
-  return referencePanels(({ node }) => node.kind === "block" && node.id.startsWith(prefix));
-}
-
-/** `commentBlockReads` for an issue message, whose blocks move on an edit and on a delete since
- *  the post corrections gave a message both. */
-function messageBlockReads(id: string): RefreshTarget {
-  const prefix = `message/${id}#`;
+function itemBlockReads(kind: "comment" | "message", id: string): RefreshTarget {
+  const prefix = `${kind}/${id}#`;
   return referencePanels(({ node }) => node.kind === "block" && node.id.startsWith(prefix));
 }
 
@@ -1018,11 +1012,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // its root): a reply changes its root's read, and a payload need not name the root.
     targets.push({ queryKey: ["issue-messages", key] }, { queryKey: ["issue-message", key] });
     // An edit and a delete rewrite the message's blocks, so every read of one of them, as a
-    // comment's own edit does (`commentBlockReads`).
+    // comment's own edit does (`itemBlockReads`).
     if (event.type === "message.edited" || event.type === "message.deleted") {
       const id = payloadString(event, "id");
       if (id !== undefined) {
-        targets.push(messageBlockReads(id));
+        targets.push(itemBlockReads("message", id));
       }
     }
     appendRepliedBlock(targets, event);

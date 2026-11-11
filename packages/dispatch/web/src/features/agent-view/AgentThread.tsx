@@ -140,6 +140,17 @@ function useCorrection(): { deleted: PostDeletion | null; edited: string | undef
   return { deleted: at === undefined ? null : { at, by: by ?? null }, edited };
 }
 
+/** A turn's own text, or the deleted line in its place once its author withdrew the Dispatch
+ *  message behind it: what `PostBody` is for a surface that renders a body itself, for the three
+ *  turns here whose text assistant-ui's own parts render. */
+function CorrectedParts({ deleted }: { deleted: PostDeletion | null }): ReactNode {
+  return deleted === null ? (
+    <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+  ) : (
+    <DeletedBody deleted={deleted} />
+  );
+}
+
 function UserMessage(): ReactNode {
   // A message someone other than the viewer sent the session, stored or taken as its own turn
   // (AgentRuntimeThread names them): it sits on the session's side of the thread with its author,
@@ -168,11 +179,7 @@ function UserMessage(): ReactNode {
           {issue === undefined ? null : ` · ${issue}`}
           <EditedMark at={edited} deleted={deleted} />
         </p>
-        {deleted === null ? (
-          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-        ) : (
-          <DeletedBody deleted={deleted} />
-        )}
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }
@@ -181,11 +188,7 @@ function UserMessage(): ReactNode {
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
       >
-        {deleted === null ? (
-          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-        ) : (
-          <DeletedBody deleted={deleted} />
-        )}
+        <CorrectedParts deleted={deleted} />
       </div>
     </div>
   );
@@ -222,11 +225,7 @@ function AssistantMessage(): ReactNode {
           Reply via Dispatch
           <EditedMark at={edited} deleted={deleted} />
         </p>
-        {deleted === null ? (
-          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-        ) : (
-          <DeletedBody deleted={deleted} />
-        )}
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }

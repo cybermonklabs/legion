@@ -59,14 +59,15 @@ interface ReplyDelivery {
 /** One reply in a thread: author, time, the quoted parent, the body, and - when the reply was
  *  itself delivered to a session - what became of that delivery. `actions` sit beside the Reply
  *  button (the Conversation adds copy-reference). `edited` marks the byline where the reply's
- *  author replaced its body; the deleted line for a deleted reply is in `body`, which its host
- *  draws through `PostBody`. */
+ *  author replaced its body, and `deleted` keeps that mark off a reply whose author then deleted
+ *  it; the deleted line itself is in `body`, which its host draws through `PostBody`. */
 export function ReplyTurn({
   actions,
   at,
   author,
   body,
   current = false,
+  deleted,
   delivery,
   edited,
   markRef,
@@ -80,6 +81,9 @@ export function ReplyTurn({
   author: Actor;
   body: ReactNode;
   current?: boolean;
+  /** The reply's deletion, where its author deleted it: it keeps ` · edited` off the byline,
+   *  since the deleted line in `body` already says what became of the text. */
+  deleted?: PostDeletion | null;
   delivery?: ReplyDelivery;
   /** When the reply's author last replaced its body; null or absent on one nobody edited. */
   edited?: string | null;
@@ -121,7 +125,7 @@ export function ReplyTurn({
           <AgentName actor={author} className="font-semibold" inline />
           <span>
             <Timestamp at={at} />
-            <EditedMark at={edited} />
+            <EditedMark at={edited} deleted={deleted} />
           </span>
         </p>
         {quote === undefined ? null : (

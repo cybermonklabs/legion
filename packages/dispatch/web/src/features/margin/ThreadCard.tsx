@@ -294,6 +294,8 @@ export function ThreadCard({
     order: threadOrder,
     replies: thread.replies,
   });
+  // The thread's posts, root first: the post a reply quotes is looked up among them.
+  const threadItems = [root, ...thread.replies];
   // An edit whose save is out, or was refused, is the held-send store's: its editor stays open on
   // its comment until the save lands or the reader drops it, whatever closed the card meanwhile.
   const heldEdits = useHeldSendsUnder(COMMENT_EDIT_SEND_KEY);
@@ -478,47 +480,51 @@ export function ThreadCard({
             {composerFirst ? replyComposer : null}
             {shown.length === 0 ? null : (
               <ol aria-label="Replies" className={`mt-3 space-y-2 border-t pt-3 ${borderDefault}`}>
-                {shown.map((reply) => (
-                  <li
-                    aria-current={reply.id === currentReplyId ? "true" : undefined}
-                    className={`rounded-lg p-2 ${card}`}
-                    data-reply=""
-                    key={reply.id}
-                    ref={reply === newestReply ? markRead : undefined}
-                    style={{ marginLeft: "0px" }}
-                  >
-                    {editing(reply) ? (
-                      renderEditor(reply)
-                    ) : (
-                      <>
-                        {reply.reply_block == null ? null : (
-                          <ReplyQuote
-                            author={
-                              passageItem(reply.reply_block, [root, ...thread.replies])?.author
-                            }
-                            block={reply.reply_block}
-                            className="mb-2"
-                            deleted={postDeletion(
-                              passageItem(reply.reply_block, [root, ...thread.replies])
-                            )}
-                            excerpt=""
+                {shown.map((reply) => {
+                  // The quoted post, read once: its author names the quote and its deletion
+                  // marks it.
+                  const quoted =
+                    reply.reply_block == null
+                      ? undefined
+                      : passageItem(reply.reply_block, threadItems);
+                  return (
+                    <li
+                      aria-current={reply.id === currentReplyId ? "true" : undefined}
+                      className={`rounded-lg p-2 ${card}`}
+                      data-reply=""
+                      key={reply.id}
+                      ref={reply === newestReply ? markRead : undefined}
+                      style={{ marginLeft: "0px" }}
+                    >
+                      {editing(reply) ? (
+                        renderEditor(reply)
+                      ) : (
+                        <>
+                          {reply.reply_block == null ? null : (
+                            <ReplyQuote
+                              author={quoted?.author}
+                              block={reply.reply_block}
+                              className="mb-2"
+                              deleted={postDeletion(quoted)}
+                              excerpt=""
+                            />
+                          )}
+                          <CommentBody
+                            artifactSlug={artifactSlug}
+                            comment={reply}
+                            owner={owner}
+                            showOrphan={false}
+                            showReference={showReference}
                           />
-                        )}
-                        <CommentBody
-                          artifactSlug={artifactSlug}
-                          comment={reply}
-                          owner={owner}
-                          showOrphan={false}
-                          showReference={showReference}
-                        />
-                        {renderDeliveries?.(reply)}
-                      </>
-                    )}
-                    {editing(reply) ? null : (
-                      <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
-                    )}
-                  </li>
-                ))}
+                          {renderDeliveries?.(reply)}
+                        </>
+                      )}
+                      {editing(reply) ? null : (
+                        <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             )}
           </>

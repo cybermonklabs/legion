@@ -313,6 +313,13 @@ type deletedPost struct {
 	by model.Actor
 }
 
+// deletedPostKey names one post an event page holds: the table its id is in, and the id. Each
+// kind's ids are its own, so a comment and a message of the same id are two posts here.
+type deletedPostKey struct {
+	comment bool
+	id      string
+}
+
 // attachDeletedPostFields gives every event of a deleted comment or message the mark the post
 // itself reads with, and takes the body out of its payload: a read of the event log says that
 // the post is deleted and gives no part of what it said. The stored row is never rewritten -
@@ -331,6 +338,9 @@ type deletedPost struct {
 func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Event) error {
 	commentIDs, messageIDs := []string{}, []string{}
 	postIDs := make([]string, len(events))
+	// A page holds several events of one post - its creation, its edit, its delete - and the
+	// read asks after each post once.
+	asked := map[deletedPostKey]bool{}
 	for index := range events {
 		comment := commentBodyEventKinds[events[index].Type]
 		if !comment && !messageBodyEventKinds[events[index].Type] {
@@ -349,27 +359,22 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 			continue
 		}
 		postIDs[index] = header.ID
+		key := deletedPostKey{comment: comment, id: header.ID}
+		if asked[key] {
+			continue
+		}
+		asked[key] = true
 		if comment {
 			commentIDs = append(commentIDs, header.ID)
 		} else {
 			messageIDs = append(messageIDs, header.ID)
 		}
 	}
-	comments, err := s.readDeletedPosts(ctx, `
-		select id::text, deleted_at, deleted_by from comments
-		where id::text = any($1::text[]) and deleted_at is not null
-	`, commentIDs)
+	marks, err := s.readDeletedPosts(ctx, commentIDs, messageIDs)
 	if err != nil {
 		return err
 	}
-	messages, err := s.readDeletedPosts(ctx, `
-		select id::text, deleted_at, deleted_by from messages
-		where id::text = any($1::text[]) and deleted_at is not null
-	`, messageIDs)
-	if err != nil {
-		return err
-	}
-	if len(comments) == 0 && len(messages) == 0 {
+	if len(marks) == 0 {
 		return nil
 	}
 	for index := range events {
@@ -378,11 +383,10 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 		}
 		// Each kind's id names its own table, so a comment event reads the comments' marks and
 		// a message event the messages'.
-		marks := messages
-		if commentBodyEventKinds[events[index].Type] {
-			marks = comments
-		}
-		deleted, found := marks[postIDs[index]]
+		deleted, found := marks[deletedPostKey{
+			comment: commentBodyEventKinds[events[index].Type],
+			id:      postIDs[index],
+		}]
 		if !found {
 			continue
 		}
@@ -407,31 +411,38 @@ func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Eve
 	return nil
 }
 
-// readDeletedPosts reads the mark of each post of ids that is deleted, by its id as text, through
-// the comments_id_text and messages_id_text indexes: a payload id that is not a uuid cannot fail
-// the read, as it would under a cast of the parameter.
-func (s *server) readDeletedPosts(ctx context.Context, query string, ids []string) (map[string]deletedPost, error) {
-	marks := map[string]deletedPost{}
-	if len(ids) == 0 {
+// readDeletedPosts reads the mark of each post of commentIDs and messageIDs that is deleted, in
+// one statement over the two tables: by its id as text, through the comments_id_text and
+// messages_id_text indexes, so a payload id that is not a uuid cannot fail the read, as it would
+// under a cast of the parameter.
+func (s *server) readDeletedPosts(ctx context.Context, commentIDs, messageIDs []string) (map[deletedPostKey]deletedPost, error) {
+	marks := map[deletedPostKey]deletedPost{}
+	if len(commentIDs) == 0 && len(messageIDs) == 0 {
 		return marks, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, query, ids)
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select true, id::text, deleted_at, deleted_by from comments
+		where id::text = any($1::text[]) and deleted_at is not null
+		union all
+		select false, id::text, deleted_at, deleted_by from messages
+		where id::text = any($2::text[]) and deleted_at is not null
+	`, commentIDs, messageIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id string
+		var key deletedPostKey
 		var at time.Time
 		var by []byte
-		if err := rows.Scan(&id, &at, &by); err != nil {
+		if err := rows.Scan(&key.comment, &key.id, &at, &by); err != nil {
 			return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
 		}
 		mark := deletedPost{at: at.UTC()}
 		if err := json.Unmarshal(by, &mark.by); err != nil {
-			return nil, fmt.Errorf("decode the actor that deleted post %s: %w", id, err)
+			return nil, fmt.Errorf("decode the actor that deleted post %s: %w", key.id, err)
 		}
-		marks[id] = mark
+		marks[key] = mark
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)

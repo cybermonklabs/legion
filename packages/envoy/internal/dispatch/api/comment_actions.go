@@ -16,9 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// lockedComment is the prologue of every change to an existing comment - resolve, reopen,
-// edit, accept, reject: read the comment, lock its owner and refuse a closed one, then re-read
-// it `for update` so the mutation holds its row lock.
+// lockedComment is the prologue of every change to an existing comment that a closed owner
+// refuses - resolve, reopen, accept, reject: read the comment, lock its owner and refuse a
+// closed one, then re-read it `for update` so the mutation holds its row lock.
 func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
 	open, err := s.lockOwnerOfComment(ctx, tx, id)
 	if err != nil {
@@ -30,14 +30,49 @@ func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, id string) (model
 	return s.loadCommentForUpdate(ctx, tx, id)
 }
 
-// lockedCommentForDelivery is the same prologue for a comment's mention delivery and the
-// mentioned agent's reply to it, which a closed issue still takes: it takes the owner's lock in
-// the same order without the closed refusal.
-func (s *server) lockedCommentForDelivery(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
+// lockedCommentAllowingClosed is the same prologue for the writes a closed issue still takes: a
+// comment's mention delivery and the mentioned agent's reply to it, and the author's own edit
+// and delete (lockedCommentForCorrection). It takes the owner's lock in the same order without
+// the closed refusal.
+func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
 	if _, err := s.lockOwnerOfComment(ctx, tx, id); err != nil {
 		return model.Comment{}, err
 	}
 	return s.loadCommentForUpdate(ctx, tx, id)
+}
+
+// lockedCommentForCorrection is the prologue both corrections of a comment take, the comment
+// twin of lockedMessageForCorrection (message_corrections.go): the prologue that does not refuse
+// a closed owner - a wrong post nobody can correct after the issue closes is the defect these
+// two routes exist for, and a correction adds no new work to a closed issue - and then the
+// refusals in the order every write of this change takes them: the author first, so a caller
+// that is not the author learns nothing else about the post; then a post already deleted, since
+// a delete is final. A comment has no kind to refuse on, which the message twin refuses between
+// the two. verb names the write in each refusal.
+//
+// The author is compared as a writer and not field by field: a person's actor carries the
+// credential that acted beside them (model.ActorAct), so an agent correcting its person's
+// comment carries an Act the stored author has not, and the person is who the authorship is
+// about.
+//
+// ok is false once it has written the refusal.
+func (s *server) lockedCommentForCorrection(
+	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, verb string,
+) (model.Comment, bool) {
+	comment, err := s.lockedCommentAllowingClosed(r.Context(), tx, r.PathValue("id"))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return model.Comment{}, false
+	}
+	if !comment.Author.SameAs(actor) {
+		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the comment author may "+verb+" it")
+		return model.Comment{}, false
+	}
+	if comment.DeletedAt != nil {
+		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
+		return model.Comment{}, false
+	}
+	return comment, true
 }
 
 // lockOwnerOfComment reads the comment and locks its owner, answering whether that owner is
@@ -101,27 +136,11 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	comment.Resolved = false
 	comment.ResolvedBy = nil
 	comment.ResolvedAt = nil
-	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		// A resolved orphaned suggestion reopens like any thread: its mark is gone, so it has no
-		// projection kind to carry and ProjectMark writes only the marks map.
-		projectionKind := ""
-		kind, kindErr := s.commentProjectionKind(documentCtx, comment)
-		if kindErr != nil && !errors.Is(kindErr, docs.ErrAnchorMissing) {
-			s.writeHandlerError(w, kindErr)
-			return
-		}
-		if kindErr == nil {
-			projectionKind = kind
-		}
-		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, replies, projectionKind), actor); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	// A reopen is refused above on a reply, so the mark this writes is the thread's own; a
+	// resolved orphaned suggestion reopens like any thread (projectThreadMark).
+	if err := s.projectThreadMark(documentCtx, tx, comment, actor); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	payload, err := s.commentEventPayload(r.Context(), tx, &comment, artifactName, commentEventThread{}, model.ReferenceChanges{})
 	if err != nil {
@@ -196,25 +215,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	// The prologue that does not refuse a closed owner: a wrong post nobody can correct after
-	// the issue closes is the defect this route exists for, and a correction adds no new work
-	// to a closed issue. Every other write of an existing comment keeps lockedComment's
-	// 409 ISSUE_CLOSED.
-	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The author is compared as a writer and not field by field: a person's actor carries the
-	// credential that acted beside them (model.ActorAct), so an agent editing its person's
-	// comment carries an Act the stored author has not, and the person is who the authorship is
-	// about.
-	if !comment.Author.SameAs(actor) {
-		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the comment author may edit it")
-		return
-	}
-	if comment.DeletedAt != nil {
-		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
+	// The prologue that keeps lockedComment's 409 ISSUE_CLOSED off this route and refuses every
+	// caller but the author of a comment that stands.
+	comment, ok := s.lockedCommentForCorrection(w, r, tx, actor, "edit")
+	if !ok {
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)

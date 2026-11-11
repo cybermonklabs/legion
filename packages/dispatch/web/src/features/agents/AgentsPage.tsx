@@ -241,6 +241,7 @@ function AgentExchangeReply({
               targetName: rowTarget(agent),
             }
       }
+      deleted={postDeletion(reply)}
       edited={reply.edited_at}
       onReply={() => onReply(agentReplyTo(agent, read, reply))}
       quote={

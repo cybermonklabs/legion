@@ -4869,17 +4869,19 @@ export async function executeDispatchTool(
     case "dispatch_edit_message": {
       const id = await resolveMessageArgument(input.tool, stringArg(args, "message"), client);
       const message = await client.editMessage(id, { body: stringArg(args, "body"), actor });
+      const issue = messageIssueKey(message);
       return {
-        text: `Edited message ${message.id} on ${messageIssueKey(message)}. Dispatch keeps the body it replaced.`,
-        details: { issue: messageIssueKey(message), message: message.id },
+        text: `Edited message ${message.id} on ${issue}. Dispatch keeps the body it replaced.`,
+        details: { issue, message: message.id },
       };
     }
     case "dispatch_delete_message": {
       const id = await resolveMessageArgument(input.tool, stringArg(args, "message"), client);
       const message = await client.deleteMessage(id, actor);
+      const issue = messageIssueKey(message);
       return {
-        text: `Deleted message ${message.id} on ${messageIssueKey(message)}. No read gives its body again.`,
-        details: { issue: messageIssueKey(message), message: message.id },
+        text: `Deleted message ${message.id} on ${issue}. No read gives its body again.`,
+        details: { issue, message: message.id },
       };
     }
     case "dispatch_ask": {

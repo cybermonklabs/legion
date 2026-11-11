@@ -2478,3 +2478,34 @@ test("the Conversation marks an edited message and reads a deleted one as delete
     stub.restore();
   }
 });
+
+// An author who edits a reply and then deletes it leaves both marks on the record, and the
+// reader meets only the deleted line: ` · edited` points at a body nobody can read any more.
+test("a deleted reply its author had edited reads as deleted, with no edited mark", async () => {
+  const root = message("message-1");
+  const deletedReply = message("message-2", {
+    body: "",
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T04:00:00Z",
+    deleted_by: alice,
+    edited_at: "2026-09-09T03:00:00Z",
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const deletedLine = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>("[data-post-deleted]");
+      if (found === null) throw new Error("the deleted reply is not on the page yet");
+      return found;
+    });
+    const reply = deletedLine.closest("[data-reply]") as HTMLElement;
+    expect(reply.textContent).toContain("Deleted by alice");
+    expect(reply.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});

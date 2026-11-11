@@ -20,13 +20,9 @@ import (
 // settleUndeliverableMention writes its two causes in (delivery_sweep.go).
 const deletedPostDeliveryError = "not sent: the post was deleted"
 
-// deleteComment answers DELETE /api/v1/comments/{id}. It takes the prologue that locks the
-// owner without refusing a closed one (lockedCommentForDelivery): a wrong post nobody can
-// correct after the issue closes is the defect this route exists for.
-//
-// The refusals are in one order on every write of this change: the author first, so a caller
-// that is not the author learns nothing else about the post; then the kind, which a comment has
-// nothing to refuse on; then a post already deleted, since a delete is final.
+// deleteComment answers DELETE /api/v1/comments/{id}. Its prologue is the comment twin of the
+// message delete's (lockedCommentForCorrection): the owner locked without the closed refusal,
+// then the author and a post already deleted.
 func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -44,17 +40,8 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if !comment.Author.SameAs(actor) {
-		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the comment author may delete it")
-		return
-	}
-	if comment.DeletedAt != nil {
-		writeError(w, "POST_DELETED", http.StatusConflict, "this comment is deleted")
+	comment, ok := s.lockedCommentForCorrection(w, r, tx, actor, "delete")
+	if !ok {
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)

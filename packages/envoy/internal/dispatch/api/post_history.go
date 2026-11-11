@@ -117,30 +117,30 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 		return postHistoryRead{}, err
 	}
 	read := postHistoryRead{Entries: []postHistoryEntry{}}
+	var deletedAt *time.Time
 	var deletedBy []byte
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
 		select deleted_at, deleted_by from `+items+` where id = $1
-	`, id).Scan(&read.DeletedAt, &deletedBy); err != nil {
+	`, id).Scan(&deletedAt, &deletedBy); err != nil {
 		return postHistoryRead{}, err
 	}
-	if len(deletedBy) > 0 {
-		var actor model.Actor
-		if err := json.Unmarshal(deletedBy, &actor); err != nil {
-			return postHistoryRead{}, fmt.Errorf("decode the actor that deleted %s %s: %w", kind, id, err)
-		}
-		read.DeletedBy = &actor
+	read.DeletedAt, read.DeletedBy, err = deletedPostMark(deletedAt, deletedBy)
+	if err != nil {
+		return postHistoryRead{}, err
 	}
 	var cursor *time.Time
 	if !before.IsZero() {
 		cursor = &before
 	}
+	// A delete gives no part of the body on any read of the post, so the mark stands in place of
+	// every body this list would otherwise serve and the read fetches none of them.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select body, edited_by, edited_at
+		select case when $4::boolean then '' else body end, edited_by, edited_at
 		from post_body_history
 		where `+column+` = $1 and ($2::timestamptz is null or edited_at < $2)
 		order by edited_at desc, id desc
 		limit $3
-	`, id, cursor, maxEventPage)
+	`, id, cursor, maxEventPage, read.DeletedAt != nil)
 	if err != nil {
 		return postHistoryRead{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
 	}
@@ -153,11 +153,6 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 		}
 		if err := json.Unmarshal(editedBy, &entry.EditedBy); err != nil {
 			return postHistoryRead{}, fmt.Errorf("decode the actor of a kept body of %s %s: %w", kind, id, err)
-		}
-		// A delete gives no part of the body on any read of the post, so the mark stands in
-		// place of every body this list would otherwise serve.
-		if read.DeletedAt != nil {
-			entry.Body = ""
 		}
 		entry.EditedAt = entry.EditedAt.UTC()
 		read.Entries = append(read.Entries, entry)
