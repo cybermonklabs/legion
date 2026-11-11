@@ -585,6 +585,22 @@ func resultsGitHubAnswering(
 	answer func(base, head string) (int, string),
 ) (http.Handler, *store.Store) {
 	t.Helper()
+	handler, database, _ := resultsGitHubServed(t, repos, held, defaultBranch, answer)
+	return handler, database
+}
+
+// resultsGitHubServed is resultsGitHubAnswering answering also the server its handler mounts,
+// for the test that must move what that server holds of its own: the default branch each
+// repository was last resolved to, which delivery.Branches keeps for
+// delivery.BranchCommitStaleAfter and which a test can reach no other way, since it cannot
+// wait five minutes out. readThroughGitHub answers the same for the read-through's cache.
+func resultsGitHubServed(
+	t *testing.T,
+	repos, held map[string]bool,
+	defaultBranch string,
+	answer func(base, head string) (int, string),
+) (http.Handler, *store.Store, *server) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -603,8 +619,20 @@ func resultsGitHubAnswering(
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
 	})
+	// The read that says whether Dispatch can see the repository at all
+	// (delivery.Branches.DefaultBranchOf) is refused for a repository repos does not hold, as
+	// the installation lookup above is. A test takes a repository out of the map to lose it
+	// after Dispatch has read it, which this route is what answers: the client caches the
+	// installation it resolved and the token it minted, so the lookup alone would go on
+	// saying yes.
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"full_name":%q,"default_branch":%q}`, r.PathValue("owner")+"/"+r.PathValue("repo"), defaultBranch)
+		name := r.PathValue("owner") + "/" + r.PathValue("repo")
+		if !repos[name] {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		fmt.Fprintf(w, `{"full_name":%q,"default_branch":%q}`, name, defaultBranch)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		sha := r.PathValue("sha")
@@ -626,11 +654,11 @@ func resultsGitHubAnswering(
 		fmt.Fprintf(w, `{"status":%q}`, comparison)
 	})
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
-	handler, database, _ := newTestServer(t, testServerOptions{
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream,
 	})
-	return handler, database
+	return handler, database, served
 }
 
 // A result at a commit the repository of the check's issue does not hold is refused, and
@@ -1177,6 +1205,90 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 	standsAt(t, read, "k2", onNeither.Result.ID,
 		"an after-merge result at a commit neither branch carries, the base branch deleted",
 		model.CommitOtherCommit, false)
+}
+
+// The same squash-merged issue once the App has lost the repository. The merge commit stands
+// at the base branch still: Dispatch recorded that yes when it recorded the merge, a yes is
+// kept for good, and the stored row is read before any call to GitHub, so the branch's name
+// is the whole of what the answer needs (delivery.Branches.CommitOnBranch). The branch the
+// check compares with is named from the default branch this process resolved before the App
+// lost the repository, which delivery keeps across a read that can say nothing exactly so
+// that this answer survives (delivery/branch.go:261-273).
+//
+// This pins the reviewer's finding on pull request #3530 (dispatch://INFRA-1522):
+// branchBases compared with nothing as soon as the repository read answered unreadable, so
+// the branches were never asked and the stored yes was never reached. One failed App read
+// turned every `after_merge` and every `default_branch` result of the repository from
+// `at_basis` to `unknown` — the squash merge of a deleted base branch among them, which
+// nothing else can ever place.
+func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepository(t *testing.T) {
+	// The test owns the map the fixture reads per request, so taking the repository out of it
+	// is the App losing it: GitHub refuses the read of the repository and every compare read
+	// of it from that moment on.
+	repos := map[string]bool{"acme/widgets": true}
+	handler, database, served := resultsGitHubServed(t, repos, nil, "main",
+		func(base, head string) (int, string) {
+			if !repos["acme/widgets"] {
+				return http.StatusNotFound, ""
+			}
+			if base == "main" && head == mergeCommit {
+				return http.StatusOK, "behind"
+			}
+			return http.StatusOK, "diverged"
+		})
+	issue := issueInRepository(t, handler, "RESD3", "acme/widgets", "Merged, then the App lost the repository")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	// Recorded as production records a merge, through the writer that seeds the one fact the
+	// merge itself proves: the base branch held the merge commit.
+	attributed := issue.Key
+	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+		Repo: "acme/widgets", Number: 51, HeadSHA: headCommit, HeadRef: "legion/work",
+		BaseRef: "integration/x", State: "merged", IssueKey: &attributed, AttributionSource: "title",
+		AttributionComplete: true, Title: "A change", URL: "https://github.com/acme/widgets/pull/51",
+		MergeCommitSHA: baseMergeCommit,
+	}); err != nil {
+		t.Fatalf("record the merge of the issue's pull request: %v", err)
+	}
+
+	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+
+	// The App loses the repository. delivery.Branches holds what it last read for
+	// delivery.BranchCommitStaleAfter, so the read past that span is made here with the clock
+	// moved on rather than by waiting five minutes: it learns nothing, keeps the name it had
+	// and marks the repository unreadable, which is the state the read below runs in.
+	ctx := context.Background()
+	served.branches.DefaultBranchOf(ctx, served.deps.GitHub, "acme/widgets", time.Now())
+	delete(repos, "acme/widgets")
+	branch, readable := served.branches.DefaultBranchOf(ctx, served.deps.GitHub, "acme/widgets",
+		time.Now().Add(delivery.BranchCommitStaleAfter))
+	if branch != "main" || readable {
+		t.Fatalf("the default branch after the App lost the repository = %q, readable=%v; want main and false",
+			branch, readable)
+	}
+
+	read := readResults(t, handler, issue.Key)
+	stands := standsAt(t, read, "k2", merge.Result.ID,
+		"an after-merge result at the merge commit of a repository the App can no longer read",
+		model.CommitAtBasis, false)
+	if stands.Basis == nil || stands.Basis.Branch != "integration/x" {
+		t.Fatalf("the merge commit stands at %+v, want the base branch integration/x", stands.Basis)
+	}
+	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 2 ||
+		compared[0].Branch != "integration/x" || compared[1].Branch != "main" {
+		t.Fatalf("the after-merge check of a repository the App cannot read compared with %+v, want the base branch and the trunk", compared)
+	}
+	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsYes {
+		t.Fatalf("the check answers pass_stands %+v, want yes: the pass at the merge commit stands", stood)
+	}
+	// A commit no branch holds a stored answer for is unknown all the same: nothing can be
+	// asked while the App cannot read the repository, and that is no evidence about the work.
+	unplaced := standsAt(t, read, "k2", stray.Result.ID,
+		"an after-merge result at a commit nothing is stored for, the App having lost the repository",
+		model.CommitUnknown, false)
+	if unplaced.Reason != model.ReasonReadFailed {
+		t.Fatalf("that result is unknown for %q, want %q", unplaced.Reason, model.ReasonReadFailed)
+	}
 }
 
 // A compare read GitHub failed to answer about the branch an issue merged into leaves the

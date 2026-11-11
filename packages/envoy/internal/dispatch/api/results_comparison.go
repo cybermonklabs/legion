@@ -55,12 +55,16 @@ import (
 // Two answers the surface used to collapse into one are kept apart here. A check with nothing
 // to compare with — an issue that resolves to no repository, and a `before_merge` check whose
 // issue holds no pull request at all — names model.ReasonNoPullRequestOrBranch, and its
-// results stand at no basis, so no pass of it stands. A check whose repository Dispatch cannot
-// read names model.ReasonRepositoryUnreadable, and every result of it is unknown: nothing can
-// have taught Dispatch that commit's pull request, so "no head" is no evidence that the work
-// has moved on. Dispatch's own failed read is model.ReasonReadFailed for the same reason, the
-// read of the branch an issue's pull request merged into among them. A database hiccup must
-// not make a reviewer refuse an approval.
+// results stand at no basis, so no pass of it stands. A check Dispatch can compare nothing of
+// names model.ReasonRepositoryUnreadable, and every result of it is unknown: a `before_merge`
+// check whose repository the App cannot read, where nothing can have taught Dispatch that
+// commit's pull request, so "no head" is no evidence that the work has moved on; and a branch
+// check of a repository no read of this process ever named a default branch for, where there
+// is no branch to ask a stored answer about. A branch check Dispatch can name a branch for
+// goes on comparing with it while the App cannot read the repository, since the stored answer
+// is keyed by that name and a yes stands for good (branchBases). Dispatch's own failed read is
+// model.ReasonReadFailed for the same reason, the read of the branch an issue's pull request
+// merged into among them. A database hiccup must not make a reviewer refuse an approval.
 //
 // Where the reader was given a commit (?at=), that one commit is the only basis of every check
 // of the issue and no read of GitHub is made at all: the reader asked what the results say
@@ -149,6 +153,13 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 // naming both is what makes that a decision of this file's rather than an agreement between
 // two packages that either could end without a compiler saying so.
 const noMergedBranch = ""
+
+// noDefaultBranchNamed is what delivery.Branches.DefaultBranchOf answers for a repository no
+// read of this process ever named a default branch for, which a deployment holding no App key
+// makes of every repository: no branch to compare with, and none to ask a stored answer about
+// either, since a branch_commits row is keyed by one. It is spelled like delivery.DefaultBranch
+// and means the opposite of it, as noMergedBranch does, so each is named where it is used.
+const noDefaultBranchNamed = ""
 
 // answer fills in what one check compared its results with, where each of its results stands,
 // and whether a pass of it stands. The check's results are already in place, newest first,
@@ -242,11 +253,23 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // results with, in the order they are asked about (measuredBranches), under the names a reader
 // sees. The repository's default branch is named here rather than carried as
 // delivery.DefaultBranch, since the surface says which branch it compared against.
+//
+// The branches are asked about whenever the issue resolves to a repository this process has
+// named a default branch for, whether or not the App can read that repository just now. A
+// stored answer is keyed by a branch and is read before any call to GitHub, a yes standing for
+// good, so the name delivery keeps across a read that could say nothing is the whole of what
+// the walk needs to reach it (delivery.Branches.CommitOnBranch). The merge commit of a squash
+// merge whose base branch is deleted is what turns on this: nothing but that stored yes can
+// ever place it, and refusing the walk while the App cannot be read would turn every
+// `after_merge` and every `default_branch` result of the repository from `at_basis` to
+// `unknown` for as long as the read fails. Where no branch of the walk holds a stored answer
+// the result is unknown all the same, through onNamedBranch's own arms.
 func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlock) comparison {
-	defaultBranch, readable := c.defaultBranchOf(ctx, check.IssueKey)
-	if !readable {
-		// Either kind of nothing: no repository resolves, or the App cannot read the one that
-		// does. nothingReason tells them apart from the same two memoized reads.
+	defaultBranch, _ := c.defaultBranchOf(ctx, check.IssueKey)
+	if defaultBranch == noDefaultBranchNamed {
+		// Either kind of nothing: no repository resolves, or no read of this process ever
+		// named a default branch for the one that does, which leaves no branch to ask about.
+		// nothingReason tells them apart from the same two memoized reads.
 		return noBases(c.nothingReason(ctx, check.IssueKey))
 	}
 	branches, chosen := c.measuredBranches(ctx, check, defaultBranch)
@@ -619,15 +642,17 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 // Both routes resolve through this one function: two hand-kept copies of this resolve are how
 // a refusal and a result's answer come to name different repositories.
 //
-// It answers a repository whether or not the deployment holds an App key, because the results
-// read needs it for an answer that asks GitHub nothing: onBranch answers from the
-// branch_commits row Dispatch already holds while that row stands, with no call at all
-// (delivery.Branches.CommitOnBranch), and a nil here would turn every such answer unknown.
-// That holds for a check compared with a branch Dispatch can name with no read of GitHub: an
-// `after_merge` check whose issue merged, where the branch is the merge's own, and any check
-// compared with a default branch this process has already resolved once, which delivery keeps
-// for the purpose. Only a repository no read of this process ever named a default branch for
-// has no branch to ask the stored answer about, since a row is keyed by one. The record route
+// It answers a repository whether or not Dispatch can read it — the deployment holding no App
+// key, the App having lost the repository — because the results read needs it for an answer
+// that asks GitHub nothing: onBranch answers from the branch_commits row Dispatch already
+// holds while that row stands, with no call at all (delivery.Branches.CommitOnBranch), and a
+// nil here would turn every such answer unknown. branchBases walks the branches for that row
+// whenever Dispatch can name one with no read of GitHub, readable just now or not: an
+// `after_merge` check whose issue merged asks the merge's own branch first, and every check
+// compared with a default branch asks the name this process has already resolved once, which
+// delivery keeps for the purpose. Only a repository no read of this process ever named a
+// default branch for has no branch to ask the stored answer about, since a row is keyed by
+// one, and that is the one repository a branch check compares nothing of. The record route
 // makes the no-App-key check at its own call site, where every use of the answer is a GitHub
 // round trip.
 func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) *string {
