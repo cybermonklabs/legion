@@ -1636,6 +1636,11 @@ export const dispatchToolSpecs = [
       "dispatch doc-edit run on their own write, and write nothing: it lists the three items of " +
       "one project most like a title and a text (at most one per issue or document, open ones " +
       "first), each ask with whether it is answered. Use it to check a draft before filing it. " +
+      "It calls the POST form of the related route, which is the form that also lists the " +
+      "answered asks of other projects: at most two answered questions of another project, " +
+      "each naming the project it is in, its answer and who gave it, ranked by meaning alone " +
+      "and claiming nothing about whether they answer your question. The GET form of that " +
+      "route, which the dashboard's new-issue dialog calls, lists none of them. " +
       "It searches by meaning and by the text's rarest words, and says how it searched; when " +
       "meaning search cannot run it searches by keywords only and says why. When it could not " +
       "search at all it says why and names the dispatch search to run instead. exclude_issues " +
