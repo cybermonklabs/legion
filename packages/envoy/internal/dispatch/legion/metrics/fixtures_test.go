@@ -26,6 +26,12 @@ func (i *Issue) under(parent string) *Issue {
 	return i
 }
 
+// openedAt is when the issue was created, which its own row carries.
+func (i *Issue) openedAt(at time.Time) *Issue {
+	i.CreatedAt = at
+	return i
+}
+
 // closedAt closes the issue.
 func (i *Issue) closedAt(at time.Time) *Issue {
 	i.ClosedAt = &at

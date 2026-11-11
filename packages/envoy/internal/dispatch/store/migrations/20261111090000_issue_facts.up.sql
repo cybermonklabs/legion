@@ -19,10 +19,9 @@
 --   root_key        the root of the issue's tree (legion.TreeRoot, as ProjectFacts answers it).
 --                   An issue that is its own tree's root holds its own key.
 --   tree_depth      how many child_of links lie between the issue and that root, zero for the
---                   root itself. It is computed from the tree, not from ProjectFacts, which
---                   answers the root alone.
---   slot_hours      how long the issue has held a Legion slot, from the board population's slot
---                   facts, which read legion_observations.
+--                   root itself, walked over the population's parent links (ProjectFacts).
+--   slot_hours      how long the issue has held an admission slot of its own, measured from the
+--                   history of its `slot` observations (ProjectFacts, over legion_observations).
 --   waiting_reason  why the issue waits — ready, slot, blocked or person — or null where it
 --                   waits on nothing, by the card rule the board draws.
 --   work_first_at   the first and last moment of the issue's measured work. They name the days

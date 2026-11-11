@@ -68,6 +68,25 @@ var WorkingColumns = map[string]bool{
 	ColumnMerging:      true,
 }
 
+// Column is the board column an issue stands in: the Queue for a queued issue that has not
+// started work, and the column of its phase for every other issue. It is "" for an issue whose
+// phase no column holds (`done`, and any phase a later daemon adds), which puts it on no card at
+// all. The board draws the columns from this rule and the stored facts read the same rule, so a
+// card and a fact can never place one issue in two columns.
+//
+// phase is the daemon's phase of the issue, slot the slot it holds of its own, and queued whether
+// the daemon's waiting line names the issue or a blocker link holds it. An issue that has started
+// its work keeps the column of its phase while it waits: it holds a slot of its own, or its phase
+// is a working one (WorkingColumns). A slot holder in `admitted` is a root whose architect runs
+// at the design gate.
+func Column(phase string, slot *int, queued bool) string {
+	column, named := PhaseColumns[phase]
+	if queued && (!named || (slot == nil && !WorkingColumns[column])) {
+		return ColumnQueue
+	}
+	return column
+}
+
 // What the slot an issue holds of its own is used for: a worker of it is in a turn, nobody of it
 // is in a turn in a phase of its own, it waits on a person, or it holds the slot for its
 // children, who either work or do not.

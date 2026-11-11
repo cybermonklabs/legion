@@ -289,6 +289,28 @@ func (c *computation) isRoot(key string) bool {
 	return c.treeRoot(key) == key
 }
 
+// treeDepth is how many child_of links lie between the issue and its tree root (treeRoot), zero
+// for the root itself. It climbs the parent Dispatch records, which is the link the depth counts;
+// the root the walk stops at may instead be the `tree` the daemon named, and a chain that does
+// not reach that root answers zero, as the root itself does. The keys it has climbed through keep
+// a parent chain that loops from running for ever.
+func (c *computation) treeDepth(key string) int {
+	root := c.treeRoot(key)
+	climbed := map[string]bool{}
+	for depth, at := 0, key; at != "" && !climbed[at]; depth++ {
+		if at == root {
+			return depth
+		}
+		climbed[at] = true
+		issue := c.population.Issues[at]
+		if issue == nil {
+			break
+		}
+		at = issue.Parent
+	}
+	return 0
+}
+
 // inScope is the scope toggle itself, written once because two rules read it: the finished
 // population (finished) and the filings of the splitting table (splitting) are narrowed the same
 // way, so a reader of either number is reading the same rule. In `roots` an issue that is a root

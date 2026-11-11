@@ -53,13 +53,12 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legion.ColumnHeld, "Held"},
 }
 
-// legionBoardQueues is whether an issue the daemon's waiting line or a blocker link names is on
-// the Queue column: one that holds no slot and is in no working phase, or one whose phase no
-// column holds. A slot holder in `admitted` is a root whose architect runs at the design gate,
-// and an issue in a working phase keeps that phase while it waits for a slot.
-func legionBoardQueues(issue *legionBoardIssue) bool {
-	column, named := legion.PhaseColumns[issue.phase]
-	return !named || (issue.slot == nil && !legion.WorkingColumns[column])
+// legionBoardQueued is whether an issue the daemon's waiting line or a blocker link names stands
+// in the Queue column. The rule is the legion package's, which takes plain values because the
+// stored per-issue facts answer the same column with no card to hand (legion.Column); this is its
+// one call from the board.
+func legionBoardQueued(issue *legionBoardIssue) bool {
+	return legion.Column(issue.phase, issue.slot, true) == legion.ColumnQueue
 }
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
@@ -522,7 +521,7 @@ func (c *legionBoardCards) nearestCard(key string) string {
 // A card's column is the first of these that holds: the daemon's waiting line, in its own order,
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
 // first, then follows Dispatch's rank); the issues a blocker link holds, after them in the Queue
-// column — of both lists only the issues that have not started work (legionBoardQueues), since
+// column — of both lists only the issues that have not started work (legionBoardQueued), since
 // an issue that has started keeps the column of its phase and carries its place in the line on
 // its card; and otherwise the column its phase falls in. An issue the daemon reports in
 // `admitted` that holds no slot and that neither list names is a child its tree has not started:
@@ -546,7 +545,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 
 	// The queue: the daemon's waiting line in its own order, then the issues a blocker link holds
 	// that the line does not already name, of the issues that have not started work
-	// (legionBoardQueues). Each issue the line names keeps its place in it, on whichever column
+	// (legionBoardQueued). Each issue the line names keeps its place in it, on whichever column
 	// its card is.
 	queued := make([]string, 0, len(waiting)+len(blockers))
 	seen := map[string]bool{}
@@ -557,13 +556,13 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		}
 		seen[key] = true
 		places[key] = len(places) + 1
-		if legionBoardQueues(p.issues[key]) {
+		if legionBoardQueued(p.issues[key]) {
 			queued = append(queued, key)
 		}
 	}
 	blocked := make([]string, 0, len(blockers))
 	for key := range blockers {
-		if p.issues[key] != nil && !seen[key] && legionBoardQueues(p.issues[key]) {
+		if p.issues[key] != nil && !seen[key] && legionBoardQueued(p.issues[key]) {
 			blocked = append(blocked, key)
 		}
 	}

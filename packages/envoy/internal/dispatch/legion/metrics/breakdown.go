@@ -8,9 +8,10 @@ import (
 )
 
 // The per-issue Legion facts (dispatch://INFRA-2915): one issue's work hours shared out by phase,
-// the work time they come out of, its review rounds, whether it is its tree's root and which tree
-// it is in. ProjectFacts is the one computation of them. Every reader of these numbers calls it
-// and keeps no rule of its own, so no two views of one issue can answer different numbers.
+// the work time they come out of, its review rounds, where it stands in its tree, how long it
+// held an admission slot, and when it opened, closed and was worked. ProjectFacts is the one
+// computation of them. Every reader of these numbers calls it and keeps no rule of its own, so no
+// two views of one issue can answer different numbers.
 //
 // The hours are shared out part by part, each hour counted once (dispatch://INFRA-979). They are
 // the bars' hours (the work time less the queued time). An hour an ask held is waiting on a
@@ -72,16 +73,37 @@ func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.D
 	return spent, children
 }
 
-// IssueFacts is one issue's Legion facts: the hours by breakdown part (the board's column ids),
-// the work time those hours are shared out of, the review rounds, whether the issue is its tree's
-// root and which tree it is in. One issue with Legion phase work, open or closed, has one of
-// these, whatever its hours are.
+// IssueFacts is one issue's Legion facts: when it opened and closed, the hours by breakdown part
+// (the board's column ids), the work time those hours are shared out of, the review rounds,
+// whether the issue is its tree's root, which tree it is in and how deep in it, how long it held
+// an admission slot, and the first and last moment of its measured work. One issue with Legion
+// phase work, open or closed, has one of these, whatever its hours are.
 type IssueFacts struct {
+	// OpenedAt and ClosedAt are the issue's own row: when it was created, and when it closed or
+	// nil while it is open.
+	OpenedAt time.Time  `json:"opened_at"`
+	ClosedAt *time.Time `json:"closed_at"`
+
 	PhaseHours   map[string]float64 `json:"phase_hours"`
 	WorkHours    float64            `json:"work_hours"`
 	ReviewRounds int                `json:"review_rounds"`
 	Root         bool               `json:"root"`
 	Tree         string             `json:"tree"`
+
+	// TreeDepth is how many child_of links lie between the issue and the root Tree names, zero
+	// for the root itself (Population.treeDepth).
+	TreeDepth int `json:"tree_depth"`
+
+	// SlotHours is how long the issue held an admission slot of its own, from its own `slot`
+	// observations read as a history (Population.slotSpans): never from the daemon's
+	// `admission.active`, which names every issue holding one, children included.
+	SlotHours float64 `json:"slot_hours"`
+
+	// WorkFirstAt and WorkLastAt are the first and the last moment of the issue's measured work,
+	// the ends of the same bar spans PhaseHours is shared out of. Both nil for an issue whose
+	// work took no measured time. They name the days an issue's work falls in.
+	WorkFirstAt *time.Time `json:"work_first_at"`
+	WorkLastAt  *time.Time `json:"work_last_at"`
 }
 
 // ProjectFacts is every issue of the population with Legion phase work, open or closed, and its
@@ -113,13 +135,22 @@ func ProjectFacts(population *Population) map[string]IssueFacts {
 				parts[id] = hours(here)
 			}
 		}
-		out[key] = IssueFacts{
+		facts := IssueFacts{
+			OpenedAt:     issue.CreatedAt,
+			ClosedAt:     issue.ClosedAt,
 			PhaseHours:   parts,
 			WorkHours:    c.workedOf(issue).row.Hours,
 			ReviewRounds: reviewRounds(issue, c.timelineOf(issue)),
 			Root:         c.isRoot(key),
 			Tree:         c.treeRoot(key),
+			TreeDepth:    c.treeDepth(key),
+			SlotHours:    hours(totalOf(population.slotSpans(issue, population.To))),
 		}
+		if bars := normalize(c.barSpansOf(issue)); len(bars) > 0 {
+			first, last := bars[0].From, bars[len(bars)-1].To
+			facts.WorkFirstAt, facts.WorkLastAt = &first, &last
+		}
+		out[key] = facts
 	}
 	return out
 }

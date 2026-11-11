@@ -79,6 +79,69 @@ func TestEveryIssueWithPhaseWorkHasFactsWhateverItsHoursAre(t *testing.T) {
 	}
 }
 
+// TestTheFactsCountTheSlotHoursAndTheDepthInTheTree: the slot hours are the stretch the issue's
+// own `slot` observations say it held a slot, and the depth is the child_of links between the
+// issue and its tree's root.
+func TestTheFactsCountTheSlotHoursAndTheDepthInTheTree(t *testing.T) {
+	// The root took slot 1 at hour 2 and gave it up at hour 7, so it held one for five hours.
+	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(12)).
+		statusAt(hour(0), "in_progress").
+		statusAt(hour(12), "done").
+		observe(legion.FieldSlot, hour(2), "1").
+		observe(legion.FieldSlot, hour(7), "null")
+	child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(3)).closedAt(hour(9)).
+		statusAt(hour(3), "in_progress").
+		statusAt(hour(9), "done")
+	grandchild := newIssue("INFRA-3").under("INFRA-2").worked("tester", hour(5)).closedAt(hour(8)).
+		statusAt(hour(5), "in_progress").
+		statusAt(hour(8), "done")
+	facts := ProjectFacts(fixture(hour(-24), hour(24), root, child, grandchild))
+
+	if got := facts["INFRA-1"]; got.SlotHours != 5 {
+		t.Errorf("the root held a slot for %g h, want the five from hour 2 to hour 7: %+v", got.SlotHours, got)
+	}
+	if got := facts["INFRA-2"]; got.SlotHours != 0 {
+		t.Errorf("the child held a slot for %g h, want none: it has no slot observation of its own", got.SlotHours)
+	}
+	depths := map[string]int{"INFRA-1": 0, "INFRA-2": 1, "INFRA-3": 2}
+	for key, want := range depths {
+		got := facts[key]
+		if got.Tree != "INFRA-1" || got.TreeDepth != want {
+			t.Errorf("%s is %d links below %s, want %d below INFRA-1", key, got.TreeDepth, got.Tree, want)
+		}
+	}
+}
+
+// TestTheFactsNameWhenAnIssueOpenedClosedAndWasWorked: the issue's own row gives the opening and
+// the close, the bar spans give the first and the last moment of its measured work, and an issue
+// whose work took no measured time has neither moment.
+func TestTheFactsNameWhenAnIssueOpenedClosedAndWasWorked(t *testing.T) {
+	worked := newIssue("INFRA-1").openedAt(hour(-2)).worked("implementer", hour(1)).closedAt(hour(6)).
+		statusAt(hour(1), "in_progress").
+		statusAt(hour(6), "done")
+	instant := newIssue("INFRA-2").under("INFRA-1").openedAt(hour(0)).
+		worked("implementer", hour(4)).closedAt(hour(4))
+	open := newIssue("INFRA-3").under("INFRA-1").openedAt(hour(1)).
+		worked("tester", hour(2)).statusAt(hour(2), "in_progress")
+	facts := ProjectFacts(fixture(hour(-24), hour(8), worked, instant, open))
+
+	got := facts["INFRA-1"]
+	if !got.OpenedAt.Equal(hour(-2)) || got.ClosedAt == nil || !got.ClosedAt.Equal(hour(6)) {
+		t.Errorf("the worked issue opened at %s and closed at %v, want hour -2 and hour 6", got.OpenedAt, got.ClosedAt)
+	}
+	if got.WorkFirstAt == nil || !got.WorkFirstAt.Equal(hour(1)) || got.WorkLastAt == nil || !got.WorkLastAt.Equal(hour(6)) {
+		t.Errorf("its work ran from %v to %v, want hour 1 to hour 6", got.WorkFirstAt, got.WorkLastAt)
+	}
+	if got := facts["INFRA-2"]; got.WorkFirstAt != nil || got.WorkLastAt != nil {
+		t.Errorf("the issue whose work took no measured time ran from %v to %v, want neither moment: %+v",
+			got.WorkFirstAt, got.WorkLastAt, got)
+	}
+	if got := facts["INFRA-3"]; got.ClosedAt != nil || got.WorkLastAt == nil || !got.WorkLastAt.Equal(hour(8)) {
+		t.Errorf("the open issue closed at %v and was last worked at %v, want no close and the population's end",
+			got.ClosedAt, got.WorkLastAt)
+	}
+}
+
 // twoTrees seeds two Legion trees of one project, each a root its architect opened with one
 // child its implementer worked and closed: enough that a read of one tree's issues covers one
 // tree and leaves the other unread.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"go/ast"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -35,6 +36,13 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // string literals and chains of literals and package-level constants, in every non-test Go file
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
+//
+// A test-only helper package is a test source that does not end in _test.go: storetest opens a
+// database for a test, legiontest seeds one test's Legion history. Such a package cannot be
+// written as _test.go files, because another package's test imports it, and its rows exist only
+// in the database one test made and dropped, where no reader of the log by id ever runs. The
+// scan names one by its import of `testing`, which no file of a server reachable from a request
+// imports and which every such helper does.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	sources := moduleSources(t, "../../..")
 	constants, err := stringConstants(sources)
@@ -44,6 +52,9 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	var offences []string
 	broker := 0
 	for _, source := range sources {
+		if importsTesting(source.file) {
+			continue
+		}
 		path := filepath.ToSlash(source.path)
 		for _, statement := range sqlStatements(source.file, constants) {
 			if !eventInsertStatement.MatchString(statement) {
@@ -69,4 +80,17 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 			"written around a value this scan cannot resolve, this guard now passes by seeing "+
 			"nothing", brokerEventInsert, broker)
 	}
+}
+
+// importsTesting is whether the file is part of a test-only helper package: it imports `testing`,
+// which the standard library's own documentation reserves for test code and which no file a
+// request reaches imports. It is a reading of the source and not a proof, so a reviewer, not this
+// scan, is what stops a server file importing `testing` to step out of the guard.
+func importsTesting(file *ast.File) bool {
+	for _, imported := range file.Imports {
+		if imported.Path != nil && imported.Path.Value == `"testing"` {
+			return true
+		}
+	}
+	return false
 }
