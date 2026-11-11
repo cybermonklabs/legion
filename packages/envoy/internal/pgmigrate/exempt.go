@@ -100,10 +100,12 @@ func catalogOnlyFunction(node json.RawMessage) string {
 // catalogOnlyDrop names a drop's kind as the report names it, "drop trigger", "drop function" or
 // "drop index", and answers "" for a drop of anything else (a table, a view, a schema, a
 // procedure), for a drop with cascade, and for a node it cannot read. catalogOnlyStatements
-// argues all three. A concurrent drop is not singled out: it does the same catalog work, and the
-// runner never applies one anyway, since Postgres refuses CONCURRENTLY inside the transaction a
-// migration runs in and the non-transactional mode holds one CREATE INDEX CONCURRENTLY alone
-// (concurrentIndex).
+// argues all three. A concurrent drop is not singled out: it does the same catalog work, and no
+// migration the census reads can hold one anyway, since Postgres refuses CONCURRENTLY inside the
+// transaction a migration runs in and the non-transactional mode holds one CREATE INDEX
+// CONCURRENTLY alone (concurrentIndex). The runner does issue a DROP INDEX CONCURRENTLY of its
+// own, to clear the invalid index a failed build left behind (nontransactional.go), but that
+// statement is the runner's and stands in no migration the census parses.
 func catalogOnlyDrop(node json.RawMessage) string {
 	var drop struct {
 		RemoveType string `json:"removeType"`

@@ -9,8 +9,8 @@ import {
 import { messageFor } from "./errors";
 import { askStateLines } from "./search-answer";
 
-/** What a not-made line needs to name the search to run by hand, and what a declined ask's link
- *  is built from. */
+/** What a not-made line needs to name the search to run by hand, and what an item's link is made
+ *  absolute against. */
 export interface RelatedCheckContext {
   /** The project the check searched, for `dispatch search --project`. */
   readonly project: string;
@@ -19,11 +19,6 @@ export interface RelatedCheckContext {
   readonly text: string;
   /** The Dispatch URL item links are made absolute against. */
   readonly configUrl: string;
-  /** The issue the write stands on, which a declined ask's link names (`/issues/<key>/asks/<id>`,
-   *  the ask's own `dispatch://KEY/ask/<id>` address as `dispatch-href.ts` pairs the two). A
-   *  write on a project document stands under no issue, and carries no declined ask either, so
-   *  it names none. */
-  readonly issueKey?: string;
 }
 
 /**
@@ -128,8 +123,10 @@ export function decisionBlockLines(
  * answer (`declined_asks`): a line saying how many there are, and for each, oldest first, its
  * question, that it was declined, the person's note where they wrote one, and a link to the ask
  * — its `/issues/<key>/asks/<id>` page, which is the ask's own `dispatch://KEY/ask/<id>` address
- * (`dispatch-href.ts`), made absolute as every other link here is. A write whose context names
- * no issue prints the ask's id in the link's place.
+ * (`dispatch-href.ts`), made absolute as every other link here is. The issue is an argument
+ * rather than part of the check's context because the server sends `declined_asks` only for a
+ * write that stands on an issue (`api/asks.go` and `api/artifacts.go` guard the advice on the
+ * owner having an issue key), so every caller that has asks to print knows the key.
  *
  * The question and the note are printed as the server sent them, cut mark and all: the server
  * cuts both to the length this line shows (`declinedAskHeadUnits` in
@@ -147,7 +144,8 @@ export function decisionBlockLines(
  */
 export function declinedAskLines(
   advice: WriteAdvice | undefined,
-  context: RelatedCheckContext
+  issueKey: string,
+  configUrl: string
 ): string[] {
   try {
     const declined = advice?.declined_asks;
@@ -159,21 +157,17 @@ export function declinedAskLines(
         : `This issue holds ${count} questions a person declined to answer. Ask one again only if the facts have changed:`,
     ];
     for (const ask of declined) {
-      lines.push(`- Declined: ${ask.question} ${declinedAskWhere(ask.id, context)}`);
+      const href = absoluteHref(
+        `/issues/${encodeURIComponent(issueKey)}/asks/${encodeURIComponent(ask.id)}`,
+        configUrl
+      );
+      lines.push(`- Declined: ${ask.question} → ${href}`);
       if (ask.note !== "") lines.push(`  Their note: ${ask.note}`);
     }
     return lines;
   } catch (error) {
     return [`The issue's declined asks could not be shown: ${messageFor(error)}`];
   }
-}
-
-/** Where a declined ask is read: its page where the context names the issue, else its id, which
- *  is what `dispatch_ask_read` and the ask commands take. */
-function declinedAskWhere(id: string, context: RelatedCheckContext): string {
-  const key = context.issueKey ?? "";
-  if (key === "") return `(ask ${id})`;
-  return `→ ${absoluteHref(`/issues/${encodeURIComponent(key)}/asks/${encodeURIComponent(id)}`, context.configUrl)}`;
 }
 
 /**

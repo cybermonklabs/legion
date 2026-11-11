@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AdviceDeclinedAsk, SessionAnswer, WriteAdvice } from "@legion/contracts";
-import { declinedAskLines, type RelatedCheckContext } from "../related-check";
+import { declinedAskLines } from "../related-check";
 import { renderSessionAnswerItem } from "../session-answers";
 
 /** The four sentences Dispatch writes beside a person's note when they decline to answer
@@ -10,12 +10,10 @@ const DISPATCH_WORDS =
   "The person chose not to answer this question. Decide the next step without an answer. " +
   "Do not ask this question again unless the facts change. Write in your work what you assumed.";
 
-const context: RelatedCheckContext = {
-  project: "CORE",
-  text: "Which transport ships first?",
-  configUrl: "http://dispatch.test",
-  issueKey: "CORE-7",
-};
+/** The write these lines stand on: a declined ask is only ever printed for a write on an issue,
+ *  so the key is always known, and the link is made absolute against the Dispatch URL. */
+const ISSUE_KEY = "CORE-7";
+const CONFIG_URL = "http://dispatch.test";
 
 /** A write's advice as the ask route and the document-edit route answer it, carrying the
  *  issue's declined asks when the server read them and nothing where it sent none. */
@@ -43,7 +41,7 @@ const region: AdviceDeclinedAsk = {
 
 describe("what a write about to ask is told of the issue's declined asks", () => {
   test("a declined ask of the issue is printed as declined and never as answered", () => {
-    const lines = declinedAskLines(advice([transport, region]), context);
+    const lines = declinedAskLines(advice([transport, region]), ISSUE_KEY, CONFIG_URL);
 
     expect(lines).toEqual([
       "This issue holds 2 questions a person declined to answer. Ask one again only if the facts have changed:",
@@ -55,15 +53,9 @@ describe("what a write about to ask is told of the issue's declined asks", () =>
     // person who said nothing.
     expect(lines.join("\n")).not.toMatch(/answered|answer:/iu);
 
-    expect(declinedAskLines(advice([transport]), context)[0]).toBe(
+    expect(declinedAskLines(advice([transport]), ISSUE_KEY, CONFIG_URL)[0]).toBe(
       "This issue holds a question a person declined to answer. Ask it again only if the facts have changed:"
     );
-    // A context naming no issue - a write on a project document - has no page to link, so the
-    // line names the ask by the id every ask command takes.
-    expect(declinedAskLines(advice([region]), { ...context, issueKey: undefined })).toEqual([
-      "This issue holds a question a person declined to answer. Ask it again only if the facts have changed:",
-      "- Declined: Which region goes first? (ask ask-2)",
-    ]);
 
     // The server cuts the question and the note to the length this line shows and marks what
     // it cut, so the line prints both as they came: cutting again here would take a reader's
@@ -74,7 +66,7 @@ describe("what a write about to ask is told of the issue's declined asks", () =>
       question: "Which queue, of the ones the exporter already writes to,…",
       note: `${"word ".repeat(80).trim()}…`,
     };
-    expect(declinedAskLines(advice([sentCut]), context)).toEqual([
+    expect(declinedAskLines(advice([sentCut]), ISSUE_KEY, CONFIG_URL)).toEqual([
       "This issue holds a question a person declined to answer. Ask it again only if the facts have changed:",
       `- Declined: ${sentCut.question} → http://dispatch.test/issues/CORE-7/asks/ask-3`,
       `  Their note: ${sentCut.note}`,
@@ -82,9 +74,9 @@ describe("what a write about to ask is told of the issue's declined asks", () =>
   });
 
   test("a write the server sent no declined asks on prints nothing, and a broken one prints why", () => {
-    expect(declinedAskLines(undefined, context)).toEqual([]);
-    expect(declinedAskLines(advice(), context)).toEqual([]);
-    expect(declinedAskLines(advice([]), context)).toEqual([]);
+    expect(declinedAskLines(undefined, ISSUE_KEY, CONFIG_URL)).toEqual([]);
+    expect(declinedAskLines(advice(), ISSUE_KEY, CONFIG_URL)).toEqual([]);
+    expect(declinedAskLines(advice([]), ISSUE_KEY, CONFIG_URL)).toEqual([]);
 
     // The lines ride on a write that already succeeded, so a result this client cannot read
     // costs the reader these lines and nothing above them.
@@ -94,7 +86,7 @@ describe("what a write about to ask is told of the issue's declined asks", () =>
       },
     } as unknown as WriteAdvice;
 
-    expect(declinedAskLines(unreadable, context)).toEqual([
+    expect(declinedAskLines(unreadable, ISSUE_KEY, CONFIG_URL)).toEqual([
       "The issue's declined asks could not be shown: the advice could not be read",
     ]);
   });

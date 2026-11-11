@@ -356,7 +356,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
-			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, "", actor)
+			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor)
 		},
 	})
 	if err != nil {
@@ -446,7 +446,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
-			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, model.DeclineDispatchWords, actor)
+			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, actor)
 		},
 	})
 	if err != nil {

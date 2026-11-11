@@ -255,21 +255,23 @@ func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
 
 // adviceBoundBytes is what the declined-ask reminder of one write may cost the wire. R6 asks
 // for every declined ask of the issue by name, so the count of them is not what bounds the
-// field; the text of each is. The one reader of the field prints the head of the question and
-// the head of the note (QUESTION_HEAD, 200 characters, in packages/envoy-client/src/
-// related-check.ts, whose own comment gives the reason: "a note runs to 32,000 units and the
-// field names every declined ask of the issue"), and the whole note stands at the ask's own
-// link, which the same line prints. So the advice carries heads, and a person's longest note
-// costs the next question nothing.
+// field; the text of each is. The server cuts both the question and the person's note to the
+// head its one reader prints (declinedAskHeadUnits in write_advice.go, held equal to
+// QUESTION_HEAD, 200 UTF-16 units, in packages/envoy-client/src/ask-answer.ts), and that
+// reader, declinedAskLines in packages/envoy-client/src/related-check.ts, prints what it was
+// sent and cuts nothing itself, for the reason its own comment gives: "a note running to 32,000
+// units costs the write nothing and the whole of it stands at the ask's link". So the advice
+// carries heads, and a person's longest note costs the next question nothing.
 const adviceBoundBytes = 64 * 1024
 
 // TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote holds the reminder to a size,
 // against the notes a person may actually write: ten declined asks, each note at the bound the
-// decline route takes (contracts.DispatchEventBodyMax). Measured on 4157f15c the write's
-// answer is 322,039 bytes, 321,506 of them the advice, because the read sends every note whole
-// (packages/envoy/internal/dispatch/api/write_advice.go, readDeclinedAsks), and the reader
-// prints 4,446 characters of it. Every write that opens a question on such an issue pays that,
-// and the cost grows with each decline.
+// decline route takes (contracts.DispatchEventBodyMax). It guards against the defect measured
+// on 4157f15c, when the read sent every note whole (packages/envoy/internal/dispatch/api/
+// write_advice.go, readDeclinedAsks): the write's answer was 322,039 bytes, 321,506 of them the
+// advice, of which the reader printed 4,446 characters. Every write that opened a question on
+// such an issue paid that, and the cost grew with each decline. The read sends heads now
+// (declinedAskHead), and this test fails if they ever go.
 func TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote(t *testing.T) {
 	const declines = 10
 	handler := newTestHandler(t)

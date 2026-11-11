@@ -1858,10 +1858,11 @@ type AskResolution struct {
 }
 
 // AskResolutionDeclined is the AskResolution kind a person's decline of an ask records, and the
-// one kind that carries DeclineDispatchWords. It is a constant of this package because the three
-// places that write or read it are in three packages - the decline route, the reminder of an
-// issue's declined asks (api) and the list of what people wrote to a session (sessionanswers) -
-// and the last of those cannot import api.
+// one kind that carries DeclineDispatchWords, which docs.WriteAskResolution writes under it. It
+// is a constant of this package because the four places that write or read it sit in three
+// packages - the write of every resolution (docs), the decline route and the reminder of an
+// issue's declined asks (api), and the list of what people wrote to a session
+// (sessionanswers) - and api imports the other two, so neither can import api.
 const AskResolutionDeclined = "declined"
 
 // DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to

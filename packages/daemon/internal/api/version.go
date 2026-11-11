@@ -924,7 +924,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 65: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// 68: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
 // an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
 // (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
 // any other — rather than answer it, so nobody will answer that question. The daemon then starts
@@ -944,12 +944,16 @@ package api
 // on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
 // the ninth value; an older daemon binary reads that schema without them and resumes such a root
 // through `resumeTask`'s default arm, so the root still starts and only Dispatch's words are
-// lost. (This entry first took 60, when the base carried 59, and 65 at the forward merge of
-// 2026-11-11 that brought main in. main declares 64 now, the entry right above this one, and the
-// reading that entry records of every open pull request of this repository at
-// refs/pull/<n>/head gives 60, 61, 62 and 63 and no 65, so this change keeps 65, the number
-// above them all. Read the base's own number and every open pull request again at the next
-// merge rather than from this line, as
+// lost. (This entry first took 60, when the base carried 59, then 65 at the forward merge of
+// 2026-11-11 that brought main in, and 68 here. main declares 64, the entry right above this
+// one, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 126 open
+// pull requests of this repository on 2026-11-11 gives 64 (#2404, #2461, #2603, #3577), 65
+// (#2731, #3519 and this one), 66 (#3534) and 70 (#3573), so this change takes 68, which no open
+// head declares and which this tree published as its own. That reading is of this file at
+// refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds answers without
+// this path. Read the base's own number and every open pull request again at the next merge
+// rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 65
+const DaemonAPIVersion = 68

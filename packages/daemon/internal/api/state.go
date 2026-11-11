@@ -457,7 +457,7 @@ type Issue struct {
 // wait; the answered root then stands in admission's waiting line as well, among the issues
 // whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
 // of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
-// (contract 60) — among them, and it names how the wait was answered, not always by a person.
+// (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`

@@ -4745,10 +4745,12 @@ export async function executeDispatchTool(
         project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
         text: stringArg(args, "question"),
         configUrl: linkBase,
-        ...(ask.issue_key === null ? {} : { issueKey: ask.issue_key }),
       };
       const checkLines = relatedCheckLines(ask.advice?.suggestions, checkContext);
-      const declinedLines = declinedAskLines(ask.advice, checkContext);
+      // An ask on a project document stands on no issue, and the server sends declined asks
+      // only for a write that does, so there is nothing to print there.
+      const declinedLines =
+        ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
@@ -5090,12 +5092,15 @@ export async function executeDispatchTool(
         project: resolved.artifact.project,
         text: editAskText,
         configUrl: linkBase,
-        ...(resolved.issue === undefined ? {} : { issueKey: resolved.issue.key }),
       };
       const checkLines = decisionBlockLines(edited.advice, checkContext);
       // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line
-      // must stay the result's last line.
-      const declinedLines = declinedAskLines(edited.advice, checkContext);
+      // must stay the result's last line. A project document stands on no issue, and the server
+      // sends declined asks only for a write that does.
+      const declinedLines =
+        resolved.issue === undefined
+          ? []
+          : declinedAskLines(edited.advice, resolved.issue.key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
       );
