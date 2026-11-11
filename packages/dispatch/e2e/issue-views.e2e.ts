@@ -2,6 +2,7 @@ import { expect, type Locator, test } from "@playwright/test";
 
 import { createProject } from "./api";
 import { seedLegionFixture, seedLegionMetricsCorpus, startFakeLegionDaemon } from "./legion-seed";
+import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -48,6 +49,8 @@ test("default columns fit desktop views and phone titles use two lines @legion @
 }) => {
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);
+  await sql(`INSERT INTO issues (key, project_key, number, title, status, created_by, rank)
+    VALUES ('ACME-2479', 'ACME', 2479, 'Long key phone width control', 'todo', '{"kind":"user","id":"alice"}', 'Zz')`);
   await seedLegionMetricsCorpus();
   const context = await asUser(browser, "alice");
   try {

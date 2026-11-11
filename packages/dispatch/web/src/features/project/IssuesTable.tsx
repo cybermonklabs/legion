@@ -68,7 +68,7 @@ import { issueIsUnread } from "./UnreadDot";
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
 const PHONE_PRIMARY: Record<BuiltInViewId, readonly ColumnId[]> = {
-  open: ["status", "phase"],
+  open: ["phase"],
   triage: ["created"],
   waiting: ["queue", "waited"],
   "in-flight": ["phase", "time_in_phase"],
