@@ -34,7 +34,7 @@ type Hook struct {
 // a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.BackwardPairs).
 // It is the word the configuration spells as well (config.HookEventWorkBack), written out again
 // here because this package imports no configuration: a hook reaches the engine with its event
-// as the operator wrote it, and recordRound fires the hooks that name this one.
+// as the operator wrote it, and recordPass fires the hooks that name this one.
 const HookEventWorkBack = "work_back"
 
 // Config supplies the project-scoped workflow limits and the clock used only to stamp durable
@@ -970,17 +970,41 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
 }
 
+// backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
+// names which of the guard's three readings failed. served is whether the table holds a backward
+// row of the issue's phase for the move's target.
+func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) string {
+	switch {
+	case fact.To == "":
+		return fmt.Sprintf("a backward move names the phase it moves to; the %s's move of %s named none, so it changed nothing",
+			fact.Requester, issue.Key)
+	case !served:
+		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
+			issue.Phase, fact.To, fact.Requester, issue.Key)
+	case RoleFor(issue.Phase) != fact.Requester:
+		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
+			issue.Phase, issue.Key, RoleFor(issue.Phase), fact.Requester, fact.To)
+	}
+	return ""
+}
+
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	// The table is the guard: a move no backward row serves - to anything but an earlier phase -
-	// is refused rather than answered as if it moved.
-	// An empty target is refused first, since the row lookup takes it to match any row.
-	if _, ok := e.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase}); fact.To == "" || !ok || RoleFor(issue.Phase) != fact.Requester {
-		return refused("BACKWARD_REFUSED", fmt.Sprintf("a backward move needs the role running %s of %s and an earlier phase a backward move reaches from it; the %s's move to %s changed nothing",
-			issue.Phase, issue.Key, fact.Requester, fact.To)), nil
+	// The table is the guard, and it reads three things: the move names a target, a backward row
+	// of the issue's phase serves that target - anything but an earlier phase has none - and the
+	// caller is the role running that phase. An empty target is read first, since the row lookup
+	// takes it to match any row.
+	//
+	// The refusal says which of the three failed, because the three are different mistakes and a
+	// sentence naming only the last had two readers of this file guess wrong on one day: a target
+	// the table does not serve is the caller's own phase misread, while a requester mismatch is a
+	// role acting on a phase that is not its own.
+	_, served := e.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
+	if why := backwardRefusal(*issue, fact, served); why != "" {
+		return refused("BACKWARD_REFUSED", why), nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {

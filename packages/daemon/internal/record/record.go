@@ -428,11 +428,11 @@ type PhaseRow struct {
 	// --version <n>`, as its task's Handoff line says. Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	// Rounds is how many times the issue moved back to an earlier phase while this role held it,
-	// counted on the implementer's row alone (workflow's recordRound): a reviewer's request for
-	// changes, a tester's fail, a worker's backward move, and the move the daemon makes on its own
-	// for a head that conflicts with its base. What review_round_cap bounds is Rounds less
-	// ConflictRounds.
+	// Rounds is how many review rounds the issue has had while this role held it, counted on the
+	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
+	// and nothing else opens one — a tester's fail, a worker's backward move and the move the
+	// daemon makes on its own for a head that conflicts with its base each raise Pass and leave
+	// this count where it stands. What review_round_cap bounds is Rounds less ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -442,13 +442,14 @@ type PhaseRow struct {
 	ConflictRounds int
 	// BackwardMoves is how many times the issue moved back by each kind of move, keyed
 	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
-	// "reviewing-implementing", "merging-implementing" and the rest. Like Rounds it is
-	// counted on the implementer's row alone (workflow's recordRound), and the two count the same
-	// moves to different ends: Rounds keeps its meaning exactly, rising on every backward move,
-	// because a phase completion's idempotency key is built from it (api/handoff.go's
-	// handoffPosition), while this map says what kind each move was, which is what a hook reads.
-	// A conflict round is the one move the two part company on: it raises Rounds and
-	// ConflictRounds and no pair, since nobody sent the work back, so no hook fires for it.
+	// "reviewing-implementing", "merging-implementing" and the rest. It is counted on the
+	// implementer's row alone, beside Pass and in the same place (workflow's recordPass), and the
+	// two count the same moves to different ends: Pass rises on every move back, because a phase
+	// completion's idempotency key is built from it (api/handoff.go's handoffPosition), while this
+	// map says what kind each move was, which is what a hook reads. A conflict round is the one
+	// move the two part company on: it raises Pass, and Rounds and ConflictRounds where a review
+	// opened the round, and no pair at all, since nobody sent the work back, so no hook fires
+	// for it.
 	// The map starts empty when the migration lands and is never filled in from the past, so an
 	// issue already in flight reads counts that add up to less than its Rounds.
 	BackwardMoves map[string]int

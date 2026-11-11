@@ -473,8 +473,9 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 // writes nothing of its own, and the cause is not lost, since the message or settlement that
 // wakes a role still reaches it once the pod is back — but the resume that refused it stands,
 // so a caller whose claim is still not running resumes it all the same rather than reading the
-// refusal as a pod already on its way (the outbox's wakeForDelivery, the workflow's wakeReleased
-// through the start row it queues). The transaction of a release that suspends a role closes the
+// refusal as a pod already on its way: the outbox's wakeForDelivery resumes the claim in process,
+// and the workflow's wakeReleased closes a resume whose pod has since been released
+// (CloseResumeOfAReleasedPod) and takes the wake it refused. The transaction of a release that suspends a role closes the
 // resumes left open (CloseOpenResumes), so a pod that came back and whose role took no turn the
 // daemon saw holds nothing back at the next release; a release that suspends none closes no
 // resume, because the pod it stops is one no wake of the issue is waiting on.
@@ -493,6 +494,32 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 		return false, err
 	}
 	return true, CancelPodBackstops(ctx, tx, p.project, issue, role)
+}
+
+// CloseResumeOfAReleasedPod closes the open resume of issue's role when the pod that resume was
+// waiting for has since been released, and answers whether it closed one. It is the heal of a
+// wake the resume refused: the row says a pod is coming back for that role, and a release
+// recorded after it says the pod it meant is gone.
+//
+// The test is the resume's own release against the issue's newest release of any kind, which is
+// not the release a wake pairs with (LatestPodRelease passes over a release that suspended no
+// role). That is the point: the release of a pod no claim can use suspends none, so it ends no
+// wake and closes no resume — and it still takes away the pod every open resume of the issue was
+// waiting for. A resume recorded against the newest release is a pod on its way back and is left
+// alone, which is what keeps one wake per pod (pod_resumes_one_open_per_role, TakePodWake).
+//
+// The other way a resume sticks — a daemon that stopped between the take and the resume it leads
+// to, with no release since — is the outbox's to heal, in process, because the claim's own state
+// is what tells it (the delivery wake, internal/daemon's wakeForDelivery).
+func (p *PodRecords) CloseResumeOfAReleasedPod(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error) {
+	tag, err := tx.Exec(ctx, `update pod_resumes set closed_at = now()
+		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
+		and release_id < coalesce((select max(id) from pod_releases where project = $1 and issue = $2), 0)`,
+		p.project, issue, string(role))
+	if err != nil {
+		return false, fmt.Errorf("close the stale resume of %s's %s: %w", issue, role, err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // FirePodBackstop marks backstop id fired and answers whether this call was the one that fired
