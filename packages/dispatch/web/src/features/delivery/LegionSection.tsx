@@ -132,9 +132,15 @@ export function workTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
   ];
 }
 
-/** Metric 2's chart: each worker type's bar, split into its five segments, and the median hours
- *  per issue beside them. One row per worker type; a bar's whole time is its five segments, so
- *  the table holds every hour the card counts. */
+/** Metric 2's chart: each worker type's bar, split into its five segments, the median hours
+ *  per issue beside them, and how many issues held hours in that bar. One row per worker type;
+ *  a bar's whole time is its five segments, so the table holds every hour the card counts.
+ *
+ *  The median runs over every finished issue of the window, an issue the role never worked
+ *  counting as zero, so the seven bars describe one population; `Issues with hours` is how many
+ *  issues that bar holds hours for, which is what keeps a median of 0 readable as a population
+ *  most issues are not in rather than as a false number. It counts the issues the bar holds
+ *  hours for anywhere, so it qualifies the five segment rows as much as the median. */
 export function phaseTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
   const bars = report.phase_time.bars ?? [];
   const max = topOf(bars.map((bar) => bar.hours));
@@ -160,6 +166,13 @@ export function phaseTimeSeries(report: LegionMetricsResponse): ChartSeries[] {
       label: "Median per issue",
       max: topOf(bars.map((bar) => bar.median_hours_per_issue)),
       points: points((bar) => bar.median_hours_per_issue),
+    },
+    {
+      kind: "spark",
+      format: asCount,
+      label: "Issues with hours",
+      max: topOf(bars.map((bar) => bar.issues)),
+      points: points((bar) => bar.issues),
     },
   ];
 }
