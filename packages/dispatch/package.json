@@ -15,6 +15,8 @@
     "dispatch:local": "bun e2e/local-instance.ts",
     "build:contracts": "bun run --filter @legion/contracts build",
     "e2e": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts",
+    "e2e:clock": "bun run build:contracts && bun run build:web && bun run e2e:clock:run",
+    "e2e:clock:run": "playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1",
     "e2e:embedder": "bun run build:contracts && bun run build:web && bun run e2e:embedder:run",
     "e2e:embedder:run": "DISPATCH_E2E_EMBEDDER=fake playwright test --config e2e/playwright.config.ts --project=chromium search-tiers",
     "e2e:multiprocess": "bun run build:contracts && bun run build:web && bun run build:web-b && bun run e2e:multiprocess:run",

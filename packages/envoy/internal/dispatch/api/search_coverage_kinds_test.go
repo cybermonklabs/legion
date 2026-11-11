@@ -17,8 +17,9 @@ const searchFreshness = 60 * time.Second
 
 // within runs probe until it answers true, failing the test when searchFreshness has passed
 // since written. It polls rather than waits the whole time out, so a check that holds at once -
-// which every one of these does, since each kind is indexed in the write's own transaction -
-// costs nothing.
+// which every one of these does, since each kind is indexed in the write's own transaction and
+// the block-index tick these tests drive themselves has already run (INFRA-988) - costs
+// nothing.
 func within(t *testing.T, written time.Time, what string, probe func() bool) {
 	t.Helper()
 	for {
@@ -50,10 +51,14 @@ func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64
 // blocks of the document, the comment, the ask and the message are indexed as windows under
 // them over that same wait.
 func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 
 	written := time.Now()
 	corpus := seedSearchCorpus(t, handler)
+	// An item's and a document's windows are the block-index tick's to write, not the write's
+	// (INFRA-988), and no tick runs behind a test server, so the test runs the one the
+	// deployment's reconciler would have run in the seconds this check allows.
+	windowOwedOwners(t, deps)
 
 	for _, item := range []struct{ query, kind, id string }{
 		{"astrolabe", "document", corpus.primaryArtifactID},
@@ -87,8 +92,12 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 // lacking, nothing failed and no oldest age, and the total the same.
 func TestTheBackfillLeavesEveryIndexedKindComplete(t *testing.T) {
 	embedder := &fakeEmbedder{}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	seedSearchCorpus(t, handler)
+	// The windows of the corpus's items and documents are the block-index tick's, which no test
+	// server runs of its own (INFRA-988): without this pass the four window kinds hold nothing
+	// and the report has no kind to call complete.
+	windowOwedOwners(t, deps)
 
 	// What a restore or a replication writes with the triggers off: the issue is there and its
 	// queue row is not, which is the gap the coverage pass exists to close.
@@ -227,8 +236,11 @@ func seedNotIndexedKinds(t *testing.T, database *store.Store, corpus searchCorpu
 // exactly what they were.
 func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
 	embedder := &fakeEmbedder{}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchCorpus(t, handler)
+	// The four window kinds are the block-index tick's to write (INFRA-988), and this test
+	// needs every covered kind complete before it can tell an uncovered one from it.
+	windowOwedOwners(t, deps)
 	processAllPending(t, database, embedder)
 
 	before := searchCoverageResponse(t, handler)
