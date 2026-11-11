@@ -16,7 +16,8 @@ import (
 // 20261110225246, which added the hook prompt's — so each of the three names that kind, since a
 // database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
 // after both the head-arrival column and the drop that takes it away again (20261109130413),
-// which leaves the table as main has it. The five versions of main's above the claim-death
+// which leaves the table as main has it, and the resume's own anchor (20261111181500), which is
+// this branch's one version above main's newest. The five versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
 // (20261109191929), the backward-move counts with the hook prompt (20261110225246), the kind of
 // the rule that wrote a release mark (20261111001612) and the declined ask (20261111021610), are
@@ -29,7 +30,7 @@ var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
-	20261107095842, 20261108152000, 20261108190000, 20261109130413,
+	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
 }
 
 // mainsNewestMigration is the newest version main carries, the decline a person may answer an ask

@@ -171,7 +171,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// often moves the issue's pairs; a re-registration of the document the step already names
 	// queues nothing (record.PublishChangedGates). Its read of the issue's gates is made after
 	// the write in this transaction, so the set it publishes is the one the registration leaves.
-	if _, err := record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now()); err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
@@ -488,7 +488,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 	// Every gate write asks the same question of the issue's pairs, this one included: these
 	// writes clear a review mark and leave each step on the document it named, so the answer is
 	// that nothing is published.
-	_, err = record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
+	err = record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
 	return err
 }
 
@@ -548,7 +548,7 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	}
 	// The reset keeps the step on the document it named, so the pairs stand as they were and
 	// nothing is published; the question is asked of every gate write.
-	if _, err := record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now()); err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
@@ -691,7 +691,7 @@ func (e *Engine) recordHandover(ctx context.Context, tx pgx.Tx, gate record.Desi
 	if err := e.store.PutGate(ctx, tx, classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.Version, fact.Mark)); err != nil {
 		return err
 	}
-	_, err = record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
+	err = record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
 	return err
 }
 
@@ -885,7 +885,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
 		return err
 	}
-	if _, err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
 		return err
 	}
 	// What the tree does next is the whole issue's question, not this row's, and nothing here
@@ -893,7 +893,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	// (classify.DesignGatesOpen), and the members an opening releases take their first phase from
 	// admission's own pass over this same fact, each at the slot that phase needs (the waiting
 	// line, where record.Waiting classes such a member LineFirstPhase and StartFirstPhase runs
-	// it). So the set the publish read is not read again below.
+	// it).
 	if tell {
 		if err := e.tellChangesOnce(ctx, tx, gate.Step, fact, true); err != nil {
 			return err

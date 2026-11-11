@@ -45,17 +45,14 @@ func GateDocuments(gates map[DesignStep]DesignGate) []DesignGateDocument {
 // inside Postgres.PutGate because PutGate is also what every test seed writes a gate with: an
 // enqueue there would queue a publication under each of them.
 func PublishChangedGates(ctx context.Context, store Store, tx pgx.Tx, issue string, before map[DesignStep]DesignGate,
-	now time.Time) (map[DesignStep]DesignGate, error) {
+	now time.Time) error {
 	after, err := store.GatesOf(ctx, tx, issue)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	documents := GateDocuments(after)
 	if slices.Equal(documents, GateDocuments(before)) {
-		return after, nil
+		return nil
 	}
-	if err := store.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: documents}, now); err != nil {
-		return nil, err
-	}
-	return after, nil
+	return store.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: documents}, now)
 }

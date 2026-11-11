@@ -53,9 +53,9 @@ type Pods interface {
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
 	// a wake another pass already took, which is already bringing the pod back.
 	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time) (bool, error)
-	// CloseResumeOfAReleasedPod closes the open resume of issue's role when the pod it was
-	// waiting for has since been released, and answers whether it closed one.
-	CloseResumeOfAReleasedPod(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
+	// has gone away: a release of the issue recorded since that wake was taken.
+	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
 }
@@ -215,14 +215,14 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // committed without one is what wedges a role, which is why the outbox's own delivery wake, which
 // resumes a claim in process instead, heals a refused wake (wakeForDelivery).
 //
-// A refusal this one heals itself is the resume of a pod that has since been released: the
-// release of a pod no claim of the issue can use ends no wake and so closes no resume, and it
-// still takes the pod away, leaving a row that would otherwise refuse every later wake of that
-// role — a CI settlement queueing nothing, and R5's backstop spent on a refusal, since
-// podBackstopDue fires the row before it calls this. So the refusal is read once more: a resume
-// recorded against a release older than the issue's newest is closed, and the wake it refused is
-// taken (Pods.CloseResumeOfAReleasedPod). A resume of the newest release is left alone, which is
-// the pod on its way back.
+// One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
+// refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
+// use ends no wake and so closes no resume, and it still takes the pod, leaving a row that would
+// otherwise refuse every later wake of that role — a CI settlement queueing nothing, and R5's
+// backstop spent on a refusal, since podBackstopDue fires the row before it calls this. So each
+// wake first closes a resume of this role written before the issue's newest release
+// (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back, since such a
+// resume was itself written after every release there is.
 func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (bool, error) {
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
 	if err != nil || issue == nil {
@@ -235,21 +235,12 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
-	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
-	if err != nil {
+	if err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role); err != nil {
 		return false, err
 	}
-	if !taken {
-		stale, err := e.cfg.Pods.CloseResumeOfAReleasedPod(ctx, tx, issue.Key, released.Role)
-		if err != nil || !stale {
-			return false, err
-		}
-		e.log.Warn("wake: a released role's resume stood open for a pod that has since been released; this wake closes it and takes the wake",
-			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
-		taken, err = e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
-		if err != nil || !taken {
-			return false, err
-		}
+	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
+	if err != nil || !taken {
+		return false, err
 	}
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, WakeTask(kind, detail)))

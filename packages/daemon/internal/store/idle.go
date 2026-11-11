@@ -254,8 +254,9 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		// TestAnIssueWithNoLiveClaimHasItsSandboxReleased/"the pod holding a claim an earlier
 		// release left released" is what holds this, and the teardown's own reading in that
 		// package's outbox arms no backstop here for the same reason. A resume this release
-		// leaves open is closed by the next wake of its role, which reads that a release came
-		// after it (store's CloseResumeOfAReleasedPod, the workflow's wakeReleased).
+		// leaves open is closed by the next wake of its role, which reads that a release was
+		// recorded after that wake was taken (store's ClosePodGoneResume, the workflow's
+		// wakeReleased).
 		if !mark.SuspendsNoRole {
 			if err := CloseOpenResumes(ctx, tx, project, issue); err != nil {
 				return err

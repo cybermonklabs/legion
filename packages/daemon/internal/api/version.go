@@ -904,9 +904,10 @@ package api
 // `fixAttempts` — no CI verdict moves an issue at all on this contract: the daemon names every
 // check it read to the tree's roles and judges none (dispatch://INFRA-714/spec R1), where the
 // contract below it sent the work back to the implementer on every red that stood, so this
-// daemon counts no fix attempt and keeps no verdict of its own — and gains `mergeState`, GitHub's own merge state for the head in GitHub's
-// lowercase spelling (`clean`, `unstable`, `has_hooks`, `blocked`, `dirty`, `behind`, `draft`,
-// `unknown`), absent until the daemon's read of the pull request has run. `api.PhaseView` gains
+// daemon counts no fix attempt and keeps no verdict of its own — and gains `mergeState`, GitHub's
+// own merge state for the head in GitHub's lowercase spelling (`clean`, `unstable`, `has_hooks`,
+// `blocked`, `dirty`, `behind`, `draft`, `unknown`), absent until the daemon's read of the pull
+// request has run. `api.PhaseView` gains
 // `pass`, the passes the phase has made through its stretch of the workflow, beside the `rounds`
 // only a review requesting changes counts. Every claim view, a phase worker's and the operator's,
 // gains `lastTurnStart` and `lastTurnEnd`, each absent until the claim's agent has begun or ended
@@ -935,8 +936,9 @@ package api
 // entries below carry those releases' shapes with this one. Read at the forward merge of
 // 2026-11-11 that brought main 287919e791 in: main declares 68, and the deployment's contract
 // ledger (dispatch://INFRA-2560) records 66, 67 and 70 claimed by open pull requests of this
-// repository, with 69 free, so this change takes 69. This branch lands second every time, so it takes the free number at the merge
-// that lands it, written in each of the six sites that hold the number — this file,
+// repository, with 69 free, so this change takes 69. This branch lands second every time, so it
+// takes the free number at the merge that lands it, written in each of the six sites that hold
+// the number — this file,
 // `stallRecordContract` and `waitingLineContract` in api/server.go, the contracts fixture and the
 // `pi-legion` and `claude-envoy` manifests — since
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches this file and
