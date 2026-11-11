@@ -863,12 +863,13 @@ type CheckBound struct{}
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
 // PhaseEnded tells the role whose phase a CI-red transition ended that its phase is over, on that
-// role's own Envoy topic. It is the one message the daemon addresses to a role that is not an
-// architect of its own accord: when CI goes red the implementer starts at once, and without that
-// message nothing tells the tester, the reviewer, the merger or the implementer in retro that the
-// phase it was working is no longer its own, since the daemon's next task for a role waits for that
-// role's turn to end. Role is the recipient, From the phase that ended, To the phase the issue is
-// in now, Reason what the architect's checks-red notice carries, and TaskFollows that the recipient
+// role's own Envoy topic. It is the daemon's own news of the workflow to a role that is not an
+// architect, where the hook prompt beside it on this lane carries a deployment's words: when CI
+// goes red the implementer starts at once, and without this message nothing tells the tester, the
+// reviewer, the merger or the implementer in retro that the phase it was working is no longer its
+// own, since the daemon's next task for a role waits for that role's turn to end. Role is the
+// recipient, From the phase that ended, To the phase the issue is in now, Reason what the
+// architect's checks-red notice carries, and TaskFollows that the recipient
 // is also the role the new phase starts — the implementer sent back from retro — whose task for
 // that phase follows this message. It stops nothing: the recipient keeps its turn, its jobs, its
 // process and its session.
