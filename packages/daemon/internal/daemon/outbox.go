@@ -693,6 +693,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.checkBound(ctx, row)
 	case record.PhaseEnded:
 		return r.phaseEnded(ctx, row, value)
+	case record.HookPrompt:
+		return r.hookPrompt(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -1142,6 +1144,59 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	}
 	if published != nil {
 		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, published)
+	}
+	return nil
+}
+
+// hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
+// the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
+// else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
+// and then the deployment's own words for the round that move back opened, unchanged
+// (record.HookPrompt.Message). It rides the role-message lane beside a phase-ended message
+// (record.LaneRoleMessage), so it waits behind no other row of its issue and reaches the role
+// while that round is the round the role works. It stops nothing it reaches, as a phase-ended
+// message stops nothing: the session takes it at its next model turn, and the role's turn, jobs
+// and process run on.
+//
+// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
+// holding it. The hook wrote its words for this round, and nothing repeats them: the move back
+// they were written for has been made, and no later task of the daemon's carries them, so a
+// prompt nobody is there to read is worth nothing later either. An unheld topic is besides the
+// ordinary state for a role an issue has never had — the deployment's default hook writes a row
+// for the reviewer, and the work of an issue may never have reached one — and a role that never
+// claims its topic would hold the row for ever.
+//
+// The three answers of the confirmed publish route are different failures and keep the ordinary
+// retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take the prompt on the
+// next attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can
+// be replaced by another session on the role, and a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied) goes through once an operator changes that grant.
+func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload record.HookPrompt) error {
+	if r.notices == nil {
+		return errors.New("hook prompt executor has no Envoy publisher")
+	}
+	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return fmt.Errorf("the %s of %s: %w", payload.Role, row.Issue, err)
+	}
+	// A role whose pod was released is not "no live session holds the role": its session is
+	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
+	// than finishing undelivered. This runs before the publish, which would otherwise answer
+	// ErrNoHolder and drop the prompt the woken role is owed.
+	if woken, err := r.wakeForDelivery(ctx, token, record.OutboxKey(row.ID), "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
+		return err
+	} else if woken {
+		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
+	}
+	message := payload.Message(row.Issue)
+	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
+	if errors.Is(published, notify.ErrNoHolder) {
+		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role",
+			"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count)
+		return nil
+	}
+	if published != nil {
+		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, published)
 	}
 	return nil
 }
