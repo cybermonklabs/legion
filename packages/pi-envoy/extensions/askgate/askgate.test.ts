@@ -6490,7 +6490,7 @@ describe("rules check", () => {
     );
     expect(replaced?.block).toBe(true);
     expect(replaced?.reason).toContain(
-      "The ask block #cache that starts 'I checked the cache path and it is fine. Should I change it?' matches the rule \"no change\": \"keep it as it is\"."
+      'The ask block #cache that starts \'I checked the cache path and it is fine. Should I change it?\' matches the rule "no change": "keep it as it is".'
     );
     expect(g.calls.filter(isRules)).toHaveLength(1);
     expect(g.entries.map((e) => [e.decision, e.rule, e.ruleOutcome])).toEqual([
