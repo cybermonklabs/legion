@@ -5,6 +5,7 @@
     "checks": "read",
     "contents": "write",
     "issues": "write",
+    "merge_queues": "write",
     "metadata": "read",
     "workflows": "write",
     "packages": "read",

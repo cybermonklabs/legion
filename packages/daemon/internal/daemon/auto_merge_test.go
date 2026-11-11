@@ -1524,48 +1524,62 @@ func messagePosts(t *testing.T, pool *pgxpool.Pool) []string {
 // arms it rather than enqueueing it, and an armed pull request fails a required check that judges
 // the arm (LEGION-800). The row waits instead, quietly at debug however long, while a required check
 // runs (BLOCKED), and enters the queue once GitHub reports the pull request mergeable: auto-merge is
-// never armed.
+// never armed. It enters through the enable where the repository allows auto-merge, which GitHub
+// answers with an enqueue, and through the merge queue's own enqueue where it does not: GitHub
+// refuses every enable where allow_auto_merge is off, merge queue or not, which left every READY of
+// such a repository unmerged.
 func TestAREADYMergeOnAMergeQueueBaseNeverArmsAutoMerge(t *testing.T) {
-	github := newQueueGitHub(t, "BLOCKED")
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
-	clock := time.Now().UTC()
-	row := mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, clock)
-	row.Attempts = waitWarnAttempts
-	enqueueOutbox(t, pool, records, row)
-	var logged bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	runner := mergeRunner(pool, records, github.url, log, func() time.Time { return clock })
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce with a required check running: %v", err)
-	}
-	if _, arms := github.counts(); arms != 0 {
-		t.Fatalf("enables %d while a required check runs on a merge-queue base, want none: GitHub would arm auto-merge", arms)
-	}
-	assertMergeRows(t, pool, 1, "merge-refused", 0)
-	var levels []string
-	for line := range strings.Lines(logged.String()) {
-		var entry struct{ Level, Kind string }
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("decode log line %q: %v", line, err)
-		}
-		if entry.Kind == string(record.OutboxKindReadyMerge) {
-			levels = append(levels, entry.Level)
-		}
-	}
-	if len(levels) != 1 || levels[0] != "DEBUG" {
-		t.Fatalf("the waiting row logged at %v, want one line at DEBUG", levels)
-	}
-	github.set(func(g *armableGitHub) { g.mergeState = "CLEAN" })
-	clock = clock.Add(time.Hour)
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce once the required checks passed: %v", err)
-	}
-	github.mu.Lock()
-	defer github.mu.Unlock()
-	if github.arms != 1 || !github.queued || github.armed {
-		t.Fatalf("enables %d, queued %t, armed %t once GitHub reports the pull request mergeable; want one enable that enqueues it and never an arm", github.arms, github.queued, github.armed)
+	for _, autoMergeOff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("auto-merge off %t", autoMergeOff), func(t *testing.T) {
+			github := newQueueGitHub(t, "BLOCKED")
+			github.set(func(g *armableGitHub) { g.autoMergeOff = autoMergeOff })
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			clock := time.Now().UTC()
+			row := mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, clock)
+			row.Attempts = waitWarnAttempts
+			enqueueOutbox(t, pool, records, row)
+			var logged bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			runner := mergeRunner(pool, records, github.url, log, func() time.Time { return clock })
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce with a required check running: %v", err)
+			}
+			if _, arms := github.counts(); arms != 0 {
+				t.Fatalf("submissions %d while a required check runs on a merge-queue base, want none: GitHub would arm auto-merge", arms)
+			}
+			assertMergeRows(t, pool, 1, "merge-refused", 0)
+			var levels []string
+			for line := range strings.Lines(logged.String()) {
+				var entry struct{ Level, Kind string }
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("decode log line %q: %v", line, err)
+				}
+				if entry.Kind == string(record.OutboxKindReadyMerge) {
+					levels = append(levels, entry.Level)
+				}
+			}
+			if len(levels) != 1 || levels[0] != "DEBUG" {
+				t.Fatalf("the waiting row logged at %v, want one line at DEBUG", levels)
+			}
+			github.set(func(g *armableGitHub) { g.mergeState = "CLEAN" })
+			clock = clock.Add(time.Hour)
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce once the required checks passed: %v", err)
+			}
+			assertMergeRows(t, pool, 1, "merge-refused", 0)
+			github.mu.Lock()
+			defer github.mu.Unlock()
+			wantEnqueues := 0
+			if autoMergeOff {
+				wantEnqueues = 1
+			}
+			if github.arms != 1 || github.enqueues != wantEnqueues || github.refusedEnables != 0 || !github.queued || github.armed {
+				t.Fatalf("submissions %d, enqueues %d, refused enables %d, queued %t, armed %t once GitHub reports the pull request mergeable; want one submission that enqueues it (%d through enqueuePullRequest), no refused enable and never an arm",
+					github.arms, github.enqueues, github.refusedEnables, github.queued, github.armed, wantEnqueues)
+			}
+		})
 	}
 }
 
@@ -1599,17 +1613,20 @@ func TestAREADYMergeRowWaitingOnAnArmEndsOnceTheMergeMovesTheRecord(t *testing.T
 
 // armableGitHub is GitHub's GraphQL API for acme/widgets#42 at ready-head as a ready_merge row and a
 // disarm read and change it: the pull request's state and merge state, whether its base requires a
-// merge queue (its repository allowing auto-merge either way), whether it is armed for auto-merge or
-// sits in the merge queue, what state the queue has that entry in and the commit the queue built it
-// on (queueState, queueBase: QUEUED on nothing built yet when empty), the branch the pull request
-// merges into with that branch's tip (baseName, baseTip: queueBaseBranch at queueBaseTip when
-// empty), what GitHub answers for the pull request's own mergeability (mergeable: null when
-// empty), and its timeline of arms and removals. An enablePullRequestAutoMerge at ready-head
-// enqueues it on a merge-queue base GitHub reports mergeable now and arms auto-merge otherwise,
-// as GitHub does, and a disablePullRequestAutoMerge turns auto-merge off; each lands on
-// the timeline as the implement App's (implementApp), and both are counted (arms counts every
-// enable). A removal outside the daemon is remove's. jobLogs is the log of each Actions job of
-// a merge group by its id, as GET /actions/jobs/{id}/logs answers it — a job it holds none for
+// merge queue, whether its repository allows no auto-merge (autoMergeOff: allowed when false),
+// whether it is armed for auto-merge or sits in the merge queue, what state the queue has that
+// entry in and the commit the queue built it on (queueState, queueBase: QUEUED on nothing built
+// yet when empty), the branch the pull request merges into with that branch's tip (baseName,
+// baseTip: queueBaseBranch at queueBaseTip when empty), what GitHub answers for the pull request's
+// own mergeability (mergeable: null when empty), and its timeline of arms and removals. An
+// enablePullRequestAutoMerge at ready-head enqueues it on a merge-queue base GitHub reports
+// mergeable now and arms auto-merge otherwise, as GitHub does, and is refused, as GitHub refuses
+// it, where the repository allows no auto-merge; an enqueuePullRequest at ready-head enqueues it;
+// a disablePullRequestAutoMerge turns auto-merge off. Each lands on the timeline as the implement
+// App's (implementApp), and each is counted: arms counts every enable and enqueue GitHub accepted,
+// enqueues the enqueues alone, and refusedEnables the enables GitHub refused. A removal outside
+// the daemon is remove's. jobLogs is the log of each Actions job of a merge group by its id, as
+// GET /actions/jobs/{id}/logs answers it — a job it holds none for
 // is GitHub's 404, as a check run no Actions job backs would answer — and logReads counts the
 // reads of them the daemon made. logArrived, where a test gives one, is closed as the first
 // such read reaches the fake, which then holds the answer open until the request's own context
@@ -1622,11 +1639,14 @@ type armableGitHub struct {
 	state, mergeState     string
 	mergeable             string
 	queueRequired         bool
+	autoMergeOff          bool
 	armed, queued         bool
 	queueState, queueBase string
 	baseName, baseTip     string
 	timeline              []string
 	disables, arms        int
+	enqueues              int
+	refusedEnables        int
 	jobLogs               map[int64]string
 	logReads              int
 	logArrived            chan struct{}
@@ -1696,6 +1716,11 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 			if !strings.Contains(string(body), `"head":"ready-head"`) {
 				t.Errorf("arm request %s, want READY's expected head", body)
 			}
+			if g.autoMergeOff {
+				g.refusedEnables++
+				_, _ = io.WriteString(w, `{"data":null,"errors":[{"type":"UNPROCESSABLE","message":"Auto merge is not allowed for this repository"}]}`)
+				return
+			}
 			g.arms++
 			if g.queueRequired && (g.mergeState == "CLEAN" || g.mergeState == "HAS_HOOKS" || g.mergeState == "UNSTABLE") {
 				g.queued = true
@@ -1705,8 +1730,20 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 				g.timeline = append(g.timeline, timelineEvent("AutoMergeEnabledEvent"))
 			}
 			_, _ = io.WriteString(w, `{"data":{}}`)
+		case strings.Contains(string(body), "enqueuePullRequest"):
+			if !strings.Contains(string(body), `"head":"ready-head"`) {
+				t.Errorf("enqueue request %s, want READY's expected head", body)
+			}
+			if !g.queueRequired {
+				t.Errorf("enqueue request %s on a base with no merge queue", body)
+			}
+			g.arms++
+			g.enqueues++
+			g.queued = true
+			g.timeline = append(g.timeline, timelineEvent("AddedToMergeQueueEvent"))
+			_, _ = io.WriteString(w, `{"data":{}}`)
 		case strings.Contains(string(body), "mergePullRequest"), strings.Contains(string(body), "dequeuePullRequest"):
-			t.Errorf("request %s, want only an enable: GitHub merges an armed or queued pull request itself", body)
+			t.Errorf("request %s, want only an enable or an enqueue: GitHub merges an armed or queued pull request itself", body)
 		case strings.Contains(string(body), "timelineItems"):
 			_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"login":%q},"repository":{"pullRequest":{"timelineItems":{"nodes":[%s]}}}}}`,
 				implementApp+"[bot]", strings.Join(g.timeline, ","))
@@ -1735,8 +1772,8 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 			if baseTip == "" {
 				baseTip = queueBaseTip
 			}
-			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"autoMergeAllowed":true,"pullRequest":{"id":"PR_42","state":%q,"title":"feat(daemon): merge the accepted READY head","mergeable":%s,"headRefOid":"ready-head","mergeStateStatus":%q,"updatedAt":%q,"isMergeQueueEnabled":%t,"autoMergeRequest":%s,"mergeQueueEntry":%s,"baseRef":{"name":%q,"target":{"oid":%q}}}}}}`,
-				g.state, mergeable, g.mergeState, time.Now().UTC().Format(time.RFC3339), g.queueRequired, autoMerge, entry, baseName, baseTip)
+			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"autoMergeAllowed":%t,"pullRequest":{"id":"PR_42","state":%q,"title":"feat(daemon): merge the accepted READY head","mergeable":%s,"headRefOid":"ready-head","mergeStateStatus":%q,"updatedAt":%q,"isMergeQueueEnabled":%t,"autoMergeRequest":%s,"mergeQueueEntry":%s,"baseRef":{"name":%q,"target":{"oid":%q}}}}}}`,
+				!g.autoMergeOff, g.state, mergeable, g.mergeState, time.Now().UTC().Format(time.RFC3339), g.queueRequired, autoMerge, entry, baseName, baseTip)
 		}
 	}})
 	return g

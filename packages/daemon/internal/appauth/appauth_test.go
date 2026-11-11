@@ -148,7 +148,7 @@ func askedInExchange(t *testing.T, r *http.Request) (string, accessTokensBody) {
 // at the highest access any of them names: what an installation whose account has approved all
 // of Legion's grants is granted.
 var grantedEverythingAsked = map[string]string{
-	"actions": "write", "checks": "write", "contents": "write", "metadata": "read",
+	"actions": "write", "checks": "write", "contents": "write", "merge_queues": "write", "metadata": "read",
 	"pull_requests": "write", "security_events": "write", "statuses": "write", "workflows": "write",
 }
 
@@ -505,7 +505,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	// actions among them and nothing writable, and the implement App's write set.
 	want := []string{
 		`{"repositories":["legion"],"permissions":{"actions":"read","contents":"read","metadata":"read","pull_requests":"read"}}`,
-		`{"repositories":["legion"],"permissions":{"actions":"write","checks":"read","contents":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
+		`{"repositories":["legion"],"permissions":{"actions":"write","checks":"read","contents":"write","merge_queues":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
 	}
 	if len(bodies) != len(want) || bodies[0] != want[0] || bodies[1] != want[1] {
 		t.Fatalf("exchange bodies = %q, want %q", bodies, want)
@@ -1104,7 +1104,7 @@ func TestTokenAsksForTheIssuesRepositoryAndTheAppsWritePermissions(t *testing.T)
 		want map[string]string
 	}{
 		{Implement, "legion-implementer", map[string]string{
-			"actions": "write", "checks": "read", "contents": "write", "metadata": "read",
+			"actions": "write", "checks": "read", "contents": "write", "merge_queues": "write", "metadata": "read",
 			"pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write",
 		}},
 		{Review, "legion-reviewer", map[string]string{

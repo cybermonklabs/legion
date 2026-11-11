@@ -39,7 +39,7 @@ const read = `query PullRequestAutoMerge($owner: String!, $name: String!, $numbe
   }
 }`
 
-// The four mutations below pass the leak guard by none of its entry points, and are meant to: a
+// The five mutations below pass the leak guard by none of its entry points, and are meant to: a
 // pull request's node id, a commit sha and a merge method are everything their variables carry,
 // and none of the three can hold a private name, a secret or a line of anyone's text. A later
 // reader adding a check here would be checking three generated identifiers.
@@ -48,14 +48,21 @@ const (
 	dequeue = `mutation DequeuePullRequest($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }`
 	// The enable and the merge pass no commit headline and no commit body, so each repository's own
 	// squash settings decide the message a merge lands with, and this package decides none of it.
-	//
-	// On a merge-queue base GitHub ignores any commit message input anyway
-	// (EnablePullRequestAutoMergeInput says so).
 	enable = `mutation EnableAutoMerge($id: ID!, $head: GitObjectID!, $method: PullRequestMergeMethod!) {
   enablePullRequestAutoMerge(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: $method}) { clientMutationId }
 }`
 	merge = `mutation MergeREADYHead($id: ID!, $head: GitObjectID!, $method: PullRequestMergeMethod!) {
   mergePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: $method}) { clientMutationId }
+}`
+	// The enqueue is the merge queue's own mutation, sent where the repository allows no
+	// auto-merge: GitHub refuses enablePullRequestAutoMerge in a repository whose allow_auto_merge
+	// is off ("Auto merge is not allowed for this repository"), merge queue or not, and a ruleset
+	// can require a merge queue with auto-merge off. GitHub authorizes it for an installation token
+	// only with Merge queues write (appauth's writePermissions), which the enable does not need, so
+	// a repository that allows auto-merge keeps the enable. It takes no merge method and no
+	// message: the queue's ruleset decides both.
+	enqueue = `mutation EnqueuePullRequest($id: ID!, $head: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head}) { clientMutationId }
 }`
 )
 
@@ -221,13 +228,13 @@ func FailingRuns(runs []FailingRun) string {
 // named, through github, a GraphQL client. It reads GitHub first and then asks keep for the READY
 // head the record still awaits, so a READY withdrawn or left between the two submits nothing. A
 // base that requires a merge queue gets the pull request enqueued once GitHub reports it mergeable
-// now, a pull request GitHub reports mergeable now is merged, and a repository that allows
-// auto-merge gets it armed; every mutation carries head as GitHub's expected head. A base with a
-// merge queue waits until GitHub reports the pull request mergeable (Unmergeable), a required check
-// still running among what holds it back: there GitHub's enable arms auto-merge on a pull request
-// it does not report mergeable rather than enqueueing it, and a required check may judge the arm,
-// so Submit never arms one. A repository that allows none of those waits the same way. GitHub's
-// own rules decide each answer; Submit bypasses none.
+// now, through the enable where the repository allows auto-merge and through the merge queue's own
+// enqueue where it does not, a pull request GitHub reports mergeable now is merged, and a
+// repository that allows auto-merge gets it armed; every mutation carries head as GitHub's expected
+// head. A base with a merge queue waits until GitHub reports the pull request mergeable
+// (Unmergeable), a required check still running among what holds it back, so Submit never arms one
+// there: an arm a required check judges can fail it. A repository that allows none of those waits
+// the same way. GitHub's own rules decide each answer; Submit bypasses none.
 //
 // Only GitHub merging the pull request at head ends a submission, or the record leaving that READY
 // (Stale). An arm or a merge-queue entry at head is a wait (Armed), not the end. armed says the row
@@ -294,7 +301,10 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	if !ok {
 		return "", &Unmergeable{Number: number, Repo: repo, Head: head, State: pull.MergeStateStatus, Queue: pull.IsMergeQueueEnabled}
 	}
-	variables := map[string]any{"id": pull.ID, "head": head, "method": "SQUASH"}
+	variables := map[string]any{"id": pull.ID, "head": head}
+	if chosen.squashes {
+		variables["method"] = "SQUASH"
+	}
 	sent := github.GraphQL(ctx, chosen.mutation, variables, nil)
 	switch {
 	case sent == nil && chosen.merges:
@@ -379,9 +389,9 @@ func (l *Lagging) Is(target error) bool { return target == wait.ErrWaiting }
 func (l *Lagging) Stalled(now time.Time) bool { return now.Sub(l.Since) > LagBound }
 
 // Unmergeable is GitHub reporting pull request Number of Repo in merge State at READY's Head, not
-// mergeable yet, on a base that requires a merge queue (Queue), where enabling auto-merge now would
-// arm it rather than enqueue it, or in a repository that allows no auto-merge: Submit enqueues or
-// merges it once GitHub reports it mergeable. It is a wait (wait.ErrWaiting).
+// mergeable yet, on a base that requires a merge queue (Queue), or in a repository that allows no
+// auto-merge: Submit enqueues or merges it once GitHub reports it mergeable. It is a wait
+// (wait.ErrWaiting).
 type Unmergeable struct {
 	Number      int
 	Repo        ghrepo.Repository
@@ -391,7 +401,7 @@ type Unmergeable struct {
 
 func (u *Unmergeable) Error() string {
 	if u.Queue {
-		return fmt.Sprintf("pull request #%d of %s is %s at READY's head %s, and its base requires a merge queue, where enabling auto-merge before GitHub reports it mergeable arms it instead of enqueueing it: the daemon enqueues it once GitHub reports it mergeable",
+		return fmt.Sprintf("pull request #%d of %s is %s at READY's head %s, and its base requires a merge queue: the daemon enqueues it once GitHub reports it mergeable",
 			u.Number, u.Repo, u.State, u.Head)
 	}
 	return fmt.Sprintf("pull request #%d of %s is %s at READY's head %s, and the repository allows no auto-merge: the daemon merges it once GitHub reports it mergeable",
@@ -621,29 +631,34 @@ func (d *Disappeared) Error() string {
 
 func (d *Disappeared) Is(target error) bool { return target == wait.ErrWaiting }
 
-// submission is the mutation Submit sends for a pull request, what it asks GitHub to do, and
-// whether GitHub's acceptance of it merges the pull request now.
+// submission is the mutation Submit sends for a pull request, what it asks GitHub to do, whether
+// GitHub's acceptance of it merges the pull request now, and whether it takes a merge method (the
+// merge queue's enqueue takes none: its ruleset decides the method).
 type submission struct {
 	mutation, action string
-	merges           bool
+	merges, squashes bool
 }
 
 // choose is the submission GitHub's answer calls for: an enqueue on a base that requires a merge
 // queue once GitHub reports the pull request mergeable now, a merge of a pull request mergeable now
 // anywhere else, an arm in a repository that allows auto-merge, and none otherwise. A merge-queue
-// base gets no arm: GitHub's enable enqueues a pull request it reports mergeable now and arms
-// auto-merge on any other.
+// base gets no arm: GitHub's enable arms auto-merge on a pull request it does not report mergeable
+// now. Its enqueue is the enable where the repository allows auto-merge, which GitHub answers by
+// enqueueing a pull request it reports mergeable now, and enqueuePullRequest where it does not,
+// since GitHub refuses every enable there.
 func choose(answer repository) (submission, bool) {
 	pull := answer.PullRequest
 	switch {
+	case pull.IsMergeQueueEnabled && mergeableNow(pull.MergeStateStatus) && answer.AutoMergeAllowed:
+		return submission{enable, "enqueue", false, true}, true
 	case pull.IsMergeQueueEnabled && mergeableNow(pull.MergeStateStatus):
-		return submission{enable, "enqueue", false}, true
+		return submission{enqueue, "enqueue", false, false}, true
 	case pull.IsMergeQueueEnabled:
 		return submission{}, false
 	case mergeableNow(pull.MergeStateStatus):
-		return submission{merge, "merge", true}, true
+		return submission{merge, "merge", true, true}, true
 	case answer.AutoMergeAllowed:
-		return submission{enable, "enable auto-merge for", false}, true
+		return submission{enable, "enable auto-merge for", false, true}, true
 	default:
 		return submission{}, false
 	}

@@ -34,10 +34,12 @@ import (
 // that dequeued an entry would rebuild every entry queued behind it.
 // requeue is GitHub enqueueing again a pull request it dequeues while its auto-merge is still
 // enabled; failDisable answers the disable with an error, stuckArm answers it as done while
-// leaving auto-merge enabled, refuseSubmit answers an enable or merge with GitHub's refusal,
-// refuseType is that GraphQL error's type, movedOnRefuse is the head a push moves the pull request
-// to as GitHub refuses it, and submitStatus answers an enable or merge with that HTTP status
-// instead. updated is the pull request's updatedAt as its JSON value, GitHub's last change to it:
+// leaving auto-merge enabled, refuseSubmit answers an enable, merge or enqueue with GitHub's
+// refusal, refuseType is that GraphQL error's type, movedOnRefuse is the head a push moves the pull
+// request to as GitHub refuses it, and submitStatus answers an enable, merge or enqueue with that
+// HTTP status instead. An enable in a repository that allows no auto-merge is refused as GitHub
+// refuses it, merge queue or not (autoMergeNotAllowed). updated is the pull request's updatedAt as
+// its JSON value, GitHub's last change to it:
 // updatedAt by default, `null` for an answer that carries none.
 // limitAfterRefusal answers every read after a refused enable or merge with GitHub's RATE_LIMITED
 // and a Retry-After of 180 seconds. timelineReads counts the timeline's reads. contextPages is each
@@ -95,6 +97,15 @@ const (
 func submitted(verb string) string {
 	return fmt.Sprintf("%s PR_42 head SQUASH headline=%q body=%q", verb, absent, absent)
 }
+
+// enqueueSent is the merge queue's enqueue the fake records for #42 at head: it passes no merge
+// method and no message, since the queue's ruleset decides both.
+var enqueueSent = fmt.Sprintf("enqueue PR_42 head %s headline=%q body=%q", absent, absent, absent)
+
+// autoMergeNotAllowed is GitHub's refusal of enablePullRequestAutoMerge in a repository whose
+// allow_auto_merge is off, measured on 2026-11-10 in a repository with a merge_queue ruleset on its
+// default branch, and reported for gh as cli/cli#13398.
+const autoMergeNotAllowed = "Auto merge is not allowed for this repository"
 
 // operationHeader is the start of a GraphQL document's operation signature: the operation's name
 // and the "(" that opens the variables it declares. variableName is every $name a document names,
@@ -270,10 +281,14 @@ func (g *github) serve(t *testing.T) string {
 			g.mutations = append(g.mutations, fmt.Sprintf("dequeue %v", request.Variables["id"]))
 			g.queued = g.requeue && g.armed
 			_, _ = w.Write([]byte(`{"data":{"dequeuePullRequest":{"clientMutationId":null}}}`))
-		case strings.Contains(request.Query, "enablePullRequestAutoMerge"), strings.Contains(request.Query, "mergePullRequest"):
+		case strings.Contains(request.Query, "enablePullRequestAutoMerge"), strings.Contains(request.Query, "mergePullRequest"),
+			strings.Contains(request.Query, "enqueuePullRequest"):
 			verb := "merge"
-			if strings.Contains(request.Query, "enablePullRequestAutoMerge") {
+			switch {
+			case strings.Contains(request.Query, "enablePullRequestAutoMerge"):
 				verb = "enable"
+			case strings.Contains(request.Query, "enqueuePullRequest"):
+				verb = "enqueue"
 			}
 			// GitHub reads only what the mutation's input passes, so a field the mutation leaves out
 			// is recorded as absent rather than as the value of the variable it never reads.
@@ -283,8 +298,8 @@ func (g *github) serve(t *testing.T) string {
 				}
 				return request.Variables[variable]
 			}
-			g.mutations = append(g.mutations, fmt.Sprintf("%s %v %v %v headline=%q body=%q", verb, request.Variables["id"], request.Variables["head"], request.Variables["method"],
-				passed("commitHeadline", "headline"), passed("commitBody", "body")))
+			g.mutations = append(g.mutations, fmt.Sprintf("%s %v %v %v headline=%q body=%q", verb, request.Variables["id"], request.Variables["head"],
+				passed("mergeMethod", "method"), passed("commitHeadline", "headline"), passed("commitBody", "body")))
 			if g.submitStatus != 0 {
 				http.Error(w, `{"message":"Server Error"}`, g.submitStatus)
 				return
@@ -301,9 +316,17 @@ func (g *github) serve(t *testing.T) string {
 				_, _ = fmt.Fprintf(w, `{"data":null,"errors":[{"type":%q,"message":%q}]}`, kind, g.refuseSubmit)
 				return
 			}
-			if verb == "enable" {
+			if verb == "enable" && !g.autoMergeOK {
+				g.refused = true
+				_, _ = fmt.Fprintf(w, `{"data":null,"errors":[{"type":"UNPROCESSABLE","message":%q}]}`, autoMergeNotAllowed)
+				return
+			}
+			switch verb {
+			case "enable":
 				g.armed = true
-			} else {
+			case "enqueue":
+				g.queued = true
+			default:
 				g.state = "MERGED"
 			}
 			_, _ = w.Write([]byte(`{"data":{}}`))
@@ -583,7 +606,9 @@ func TestSubmitUsesGitHubsAnswerForTheREADYHead(t *testing.T) {
 		outcome                       Outcome
 		wait                          string
 	}{
-		{name: "a merge queue enqueues a pull request GitHub reports mergeable and waits for the merge", head: "head", keep: "head", mergeState: "CLEAN", queueRequired: true,
+		{name: "a merge queue enqueues a pull request GitHub reports mergeable in a repository that allows no auto-merge and waits for the merge", head: "head", keep: "head", mergeState: "CLEAN", queueRequired: true,
+			want: []string{enqueueSent}, wait: "armed"},
+		{name: "a merge queue enqueues a pull request GitHub reports mergeable through the enable in a repository that allows auto-merge and waits for the merge", head: "head", keep: "head", mergeState: "CLEAN", queueRequired: true, autoMergeOK: true,
 			want: []string{submitted("enable")}, wait: "armed"},
 		{name: "a merge queue waits while a required check runs", head: "head", keep: "head", mergeState: "BLOCKED", queueRequired: true, autoMergeOK: true, wait: "unmergeable"},
 		{name: "a merge queue waits while GitHub computes", head: "head", keep: "head", mergeState: "UNKNOWN", queueRequired: true, autoMergeOK: true, wait: "unmergeable"},

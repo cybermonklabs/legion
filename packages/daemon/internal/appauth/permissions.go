@@ -58,8 +58,14 @@ import (
 // 2026-11-08 stood, because this file named the permission in neither set and GitHub mints a
 // token carrying what the request names. A deployment in token mode asks its command for no
 // permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
+//
+// merge_queues:write is the implement App's alone: its ready_merge row enqueues a READY head with
+// GitHub's enqueuePullRequest in a repository that requires a merge queue and allows no auto-merge
+// (ghautomerge.Submit), and GitHub authorizes that mutation for an installation token only with
+// Merge queues write. An installation not granted it is asked for less (narrowToGranted), so only
+// that enqueue is refused, and the shortfall line names the grant.
 var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
+	Implement: {"actions": "write", "checks": "read", "contents": "write", "merge_queues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
 	Review:    {"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
 }
 
