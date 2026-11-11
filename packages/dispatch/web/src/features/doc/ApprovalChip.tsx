@@ -1,12 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import {
-  api,
-  type CreateArtifactReviewInput,
-  isCapExceeded,
-  isDecisionBlockInBody,
-} from "../../api/client";
+import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
@@ -195,12 +190,9 @@ function RequestChangesDialog({
           </label>
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
-              {/* A reason Dispatch refused for its length, or for the decision block it holds,
-                  says so in its own words, which name the block and where the question belongs;
-                  any other failure is worth another try. */}
-              {isCapExceeded(error) || isDecisionBlockInBody(error)
-                ? error.message
-                : "Could not request changes. Try again."}
+              {/* A reason Dispatch refused for its length says so in its own words, which name
+                  the block and the bound; any other failure is worth another try. */}
+              {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">

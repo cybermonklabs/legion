@@ -15,16 +15,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// decisionWriteRoutes and decisionWritePaths are what the table below must drive: the nine
+// decisionWriteRoutes and decisionWritePaths are what the table below must drive: the eight
 // routes a decision block can be written on, under every actor and every shape each of them
 // takes - both a person and an agent, but for the two replies only the session, which is the
-// one writer those routes have, and for the review only the person, the one writer that route
-// has. The comment route is driven twice over as well, as the comment it stores and as the
-// reply under an ask it stores. The test counts what it drove against these numbers, so a table
-// left empty, or a row dropped from it, fails rather than passes in silence.
+// one writer those routes have. The comment route is driven twice over as well, as the comment
+// it stores and as the reply under an ask it stores. The test counts what it drove against
+// these numbers, so a table left empty, or a row dropped from it, fails rather than passes in
+// silence.
 const (
-	decisionWriteRoutes = 9
-	decisionWritePaths  = 16
+	decisionWriteRoutes = 8
+	decisionWritePaths  = 15
 )
 
 // decisionSession is the live session the fixture's mention and targeted message are delivered
@@ -218,97 +218,90 @@ func (f *decisionFixture) stored(t *testing.T) storedByTheWritePaths {
 }
 
 // decisionWrite is one write path under one actor: send writes body the way that actor writes on
-// that route, and answers what the route said. field is the member the body rides in, which is
-// the first word of the refusal that route answers it with: `body` on every route that stores
-// one, `reason` on the review, whose person's prose rides there (reviews.go).
+// that route, and answers what the route said. Every route here stores the body in `body`, which
+// is the first word of the refusal it answers with.
 type decisionWrite struct {
 	route string
 	actor string
-	field string
 	send  func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder
 }
 
-// decisionWrites is the table: the nine routes of the requirement, each under the actors it
+// decisionWrites is the table: the eight routes of the requirement, each under the actors it
 // takes. A person writes as alice does from a browser. An agent writes as the route lets it: as
 // a session, with the deployment's shared token and its own id in actor, on the five routes that
 // take a session actor, and under its person's own agent token, which carries the person scope,
 // on the three that require it - the comment edit, the issue-less send to a session and the
 // broadcast. The two replies have no person's form at all: both refuse a caller that is not a
 // session (403 REPLY_FORBIDDEN) before any body is read, since a reply answers a delivery
-// attempt made to a session. The header review has no agent's form either: a review is a
-// person's act, and an agent writing one is refused before its reason is read.
+// attempt made to a session.
 //
 // The comment route stands twice over for its two shapes: the comment it stores, and the reply
 // posted under an open ask (ask_id), which the same check holds, since it runs before the ask
 // is resolved and no branch of the handler reaches the store around it.
 func decisionWrites() []decisionWrite {
 	return []decisionWrite{
-		{"POST /api/v1/issues/{key}/comments", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/comments", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
 				map[string]any{"body": body}, "alice")
 		}},
-		{"POST /api/v1/issues/{key}/comments", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/comments", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
 				map[string]any{"body": body, "actor": decisionSessionActor()})
 		}},
-		{"POST /api/v1/issues/{key}/comments", "a person replying under an ask", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/comments", "a person replying under an ask", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
 				map[string]any{"body": body, "ask_id": f.ask}, "alice")
 		}},
-		{"POST /api/v1/artifacts/{id}/comments", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/artifacts/{id}/comments", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.document+"/comments",
 				map[string]any{"body": body}, "alice")
 		}},
-		{"POST /api/v1/artifacts/{id}/comments", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/artifacts/{id}/comments", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.document+"/comments",
 				map[string]any{"body": body, "actor": decisionSessionActor()})
 		}},
-		{"PATCH /api/v1/comments/{id}", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"PATCH /api/v1/comments/{id}", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/comments/"+f.edited,
 				map[string]any{"body": body}, "alice")
 		}},
-		{"PATCH /api/v1/comments/{id}", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"PATCH /api/v1/comments/{id}", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return agentRequest(t, f.handler, http.MethodPatch, "/api/v1/comments/"+f.edited+"?session="+actingSession,
 				map[string]any{"body": body}, f.token)
 		}},
-		{"POST /api/v1/comments/{id}/reply", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/comments/{id}/reply", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/comments/"+f.mention+"/reply",
 				map[string]any{"actor": decisionSessionActor(), "attempt": 1, "body": body})
 		}},
-		{"POST /api/v1/issues/{key}/messages", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/messages", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/messages",
 				map[string]any{"body": body}, "alice")
 		}},
-		{"POST /api/v1/issues/{key}/messages", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/issues/{key}/messages", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/messages",
 				map[string]any{"body": body, "actor": decisionSessionActor()})
 		}},
-		{"POST /api/v1/agents/{session_id}/messages", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/agents/{session_id}/messages", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/agents/"+decisionSession+"/messages",
 				map[string]any{"body": body, "delivery": "btw"}, "alice")
 		}},
-		{"POST /api/v1/agents/{session_id}/messages", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/agents/{session_id}/messages", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return agentRequest(t, f.handler, http.MethodPost,
 				"/api/v1/agents/"+decisionSession+"/messages?session="+actingSession,
 				map[string]any{"body": body, "delivery": "btw"}, f.token)
 		}},
-		{"POST /api/v1/messages/{id}/reply", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/messages/{id}/reply", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return sessionRequest(t, f.handler, http.MethodPost, "/api/v1/messages/"+f.direct+"/reply",
 				map[string]any{"actor": decisionSessionActor(), "attempt": 1, "body": body})
 		}},
-		{"POST /api/v1/broadcasts", "a person", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/broadcasts", "a person", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return postBroadcast(t, f.handler, map[string]any{
 				"body": body, "delivery": "btw", "session_ids": []string{decisionSession},
 			}, "alice")
 		}},
-		{"POST /api/v1/broadcasts", "an agent", "body", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
+		{"POST /api/v1/broadcasts", "an agent", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
 			return agentRequest(t, f.handler, http.MethodPost, "/api/v1/broadcasts?session="+actingSession, map[string]any{
 				"body": body, "delivery": "btw", "session_ids": []string{decisionSession},
 			}, f.token)
-		}},
-		{"POST /api/v1/artifacts/{id}/reviews", "a person", "reason", func(t *testing.T, f *decisionFixture, body string) *httptest.ResponseRecorder {
-			return dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.spec+"/reviews",
-				map[string]any{"state": "changes_requested", "reason": body}, "alice")
 		}},
 	}
 }
@@ -347,7 +340,7 @@ func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
 			for _, placement := range placements {
 				t.Run(placement.name, func(t *testing.T) {
 					assertDecisionBlockRefused(t, write.route+" as "+write.actor, write.send(t, f, placement.body),
-						decisionRefusal(write.field, placement.position, placement.blockType))
+						decisionRefusal("body", placement.position, placement.blockType))
 				})
 			}
 			if after := f.stored(t); after != before {
@@ -457,7 +450,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 	for _, write := range decisionWrites() {
 		t.Run(write.route+" as "+write.actor, func(t *testing.T) {
 			assertDecisionBlockRefused(t, write.route+" as "+write.actor,
-				write.send(t, f, onEveryRoute.body), decisionAtTheTop(write.field))
+				write.send(t, f, onEveryRoute.body), decisionAtTheTop("body"))
 			if after := f.stored(t); after != before {
 				t.Fatalf("%s as %s stored something: %+v, want the %+v it found",
 					write.route, write.actor, after, before)
@@ -494,14 +487,18 @@ func TestACommentOfLoneCarriageReturnsIsStoredByteForByte(t *testing.T) {
 	}
 }
 
-// A review's reason that holds no decision block is written as it was before the rule: the
-// header review stores it, the reviews list reads it back whole, and the store holds the one
-// review more than it did. The route runs the one check the body routes run, so the only prose
-// it refuses is the card nobody can answer (INFRA-1201).
-func TestAReviewReasonWithoutADecisionBlockIsStillWritten(t *testing.T) {
+// A review's reason is left alone, and this row records it rather than leaving the exemption to
+// a comment. While an approval request is open the header review answers it, and the decisions
+// document leaves an answer's text alone; the same reason reaches artifact_reviews unchecked
+// through the ask answer route besides. So a reason holding a decision block is stored, read
+// back whole, and draws a card on the approval chip that nobody can answer, which this issue
+// does not close (INFRA-1201).
+func TestAReviewReasonHoldingADecisionBlockIsStored(t *testing.T) {
 	f := newDecisionFixture(t)
 	before := f.stored(t)
-	const reason = "Name the rollback path, and say which transport the gateway keeps."
+	// The route trims the reason before it stores it (reviews.go), so the text sent carries no
+	// line ending of its own and what is read back is what was written.
+	reason := "The transport is still open.\n\n" + theDecisionBlock
 	written := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.spec+"/reviews",
 		map[string]any{"state": "changes_requested", "reason": reason}, "alice")
 	if written.Code != http.StatusCreated {
@@ -510,7 +507,7 @@ func TestAReviewReasonWithoutADecisionBlockIsStillWritten(t *testing.T) {
 	reviews := decodeBody[[]model.ArtifactReview](t, dispatchRequest(t, f.handler,
 		http.MethodGet, "/api/v1/artifacts/"+f.spec+"/reviews", nil, "alice"))
 	if len(reviews) != 1 || reviews[0].Reason == nil || *reviews[0].Reason != reason {
-		t.Fatalf("the reviews list reads %+v, want the one review holding %q", reviews, reason)
+		t.Fatalf("the reviews list reads %+v, want the one review holding the reason byte for byte", reviews)
 	}
 	if after := f.stored(t); after.SpecReviews != before.SpecReviews+1 || after.ReviewRows != before.ReviewRows+1 {
 		t.Fatalf("the store holds %+v, want the one review more than the %+v it found", after, before)

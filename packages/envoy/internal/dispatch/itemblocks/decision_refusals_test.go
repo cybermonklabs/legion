@@ -516,6 +516,14 @@ var byteOrderMarkRows = []struct {
 		blockType: "ask",
 	},
 	{
+		// readerCopy drops the mark and then reads the lone carriage returns as line endings,
+		// so a body written with both is refused as either on its own is.
+		name:      "a decision block behind one byte-order mark whose line endings are lone carriage returns",
+		body:      "\ufeff:::ask\rWhich?\r:::",
+		position:  1,
+		blockType: "ask",
+	},
+	{
 		name: "a decision block behind two byte-order marks, whose second the reader reads as text",
 		body: "\ufeff\ufeff:::ask{#q urgency=\"med\"}\nWhich?\n\n- A: one\n:::",
 	},

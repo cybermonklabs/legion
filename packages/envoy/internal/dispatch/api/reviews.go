@@ -340,16 +340,6 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 			capExceeded(w, "reason", length, contracts.DispatchEventBodyMax)
 			return
 		}
-		// A review's reason is a person's prose, drawn as Markdown by the approval chip under
-		// the app's own decision-card provider (web ApprovalChip.tsx), so a decision block
-		// written here draws the same card nobody can answer that every stored body is refused
-		// for (INFRA-1201). It is held to the one check and worded by the one helper the body
-		// routes use, naming `reason`, the member the writer wrote it in, so the refusal's
-		// first word is the field they must fix.
-		if err := blockBoundError(itemblocks.Check("reason", *reason)); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
