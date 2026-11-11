@@ -438,55 +438,90 @@ export function IssueHeader({
             />
           </div>
           <div className="flex min-w-0 flex-1 items-start gap-2">
-            {editingTitle ? (
-              <input
-                aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
-                aria-label="Issue title"
-                className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
-                disabled={isClosed}
-                maxLength={ISSUE_TITLE_MAX}
-                onBlur={() => {
-                  drafts.requestTitleSubmit();
-                  setEditingTitle(false);
-                }}
-                onChange={(event) => drafts.writeTitle(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    drafts.discardTitle();
-                    setEditingTitle(false);
-                    return;
-                  }
-                  saveTitleOnEnter(event);
-                }}
-                ref={(node) => node?.focus()}
-                value={drafts.title}
-              />
-            ) : (
+            {/* The heading and the editor share one box, and the heading — rendered in both
+                states, over the live draft — is what sizes it, so the box is the same before,
+                during and after an edit, whichever of the two is in it. A heading wrapped onto
+                two lines giving way to a one-line editor (and, from 2xl where the slot is
+                content-sized, to an editor of its own width) moved every control beside it
+                between the mousedown that ends the edit and the mouseup, and the browser gave
+                that click to neither. The editor is taken out of the flow, so the heading alone
+                decides the box: an `input` in the flow would bring its own default width of
+                about twenty characters to a content-sized slot, and the box would still grow
+                for a title shorter than that. The box's floor is that same width, because a
+                box sized by an 11-character heading would leave about 100 px to type in, less
+                room than the editor has today. */}
+            <div className="relative min-w-[20ch] flex-1">
+              {/* While the edit is open this heading holds the box's size and nothing else: out
+                  of the accessibility tree, out of the tab order, inert, invisible while it
+                  keeps its space (never `display: none`), and carrying none of the handlers
+                  that would otherwise reopen the editor from a copy nobody can see. It stays
+                  the header's one `h1`, which is what the title is read and measured by.
+                  biome-ignore lint/a11y/useHeadingContent: the heading holds the title in both
+                  states; while the edit is open it is hidden from assistive software on purpose,
+                  because the editor over it carries the same text as `Issue title`. */}
               <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
-                  isClosed ? "" : `cursor-text ${borderStrongHover}`
+                aria-hidden={editingTitle ? true : undefined}
+                className={`min-w-0 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
+                  editingTitle ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
                 }`}
-                onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onFocus={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-                    event.preventDefault();
-                    setEditingTitle(true);
-                  }
-                }}
-                tabIndex={isClosed ? -1 : 0}
+                inert={editingTitle}
+                onClick={
+                  editingTitle
+                    ? undefined
+                    : () => {
+                        if (!isClosed) {
+                          setEditingTitle(true);
+                        }
+                      }
+                }
+                onFocus={
+                  editingTitle
+                    ? undefined
+                    : () => {
+                        if (!isClosed) {
+                          setEditingTitle(true);
+                        }
+                      }
+                }
+                onKeyDown={
+                  editingTitle
+                    ? undefined
+                    : (event) => {
+                        if (!isClosed && (event.key === "Enter" || event.key === " ")) {
+                          event.preventDefault();
+                          setEditingTitle(true);
+                        }
+                      }
+                }
+                tabIndex={editingTitle || isClosed ? -1 : 0}
               >
                 {drafts.title}
               </h1>
-            )}
+              {editingTitle ? (
+                <input
+                  aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
+                  aria-label="Issue title"
+                  className={`absolute inset-x-0 top-0 min-w-0 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                  disabled={isClosed}
+                  maxLength={ISSUE_TITLE_MAX}
+                  onBlur={() => {
+                    drafts.requestTitleSubmit();
+                    setEditingTitle(false);
+                  }}
+                  onChange={(event) => drafts.writeTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      drafts.discardTitle();
+                      setEditingTitle(false);
+                      return;
+                    }
+                    saveTitleOnEnter(event);
+                  }}
+                  ref={(node) => node?.focus()}
+                  value={drafts.title}
+                />
+              ) : null}
+            </div>
             <PinButton
               disabled={updateState.isPending}
               label={state.pinned ? "Unpin issue" : "Pin issue"}
