@@ -127,6 +127,12 @@ test.each([
   expect(isIdPrefix(value)).toBe(expected);
 });
 
+/** A wall-clock budget, not one of the machine-sensitive waits this package's defaults cover
+ *  (`web/src/__tests__/setup.ts`): the regression the rows that read it guard, catastrophic
+ *  backtracking, costs minutes rather than milliseconds, so a budget far above what any loaded
+ *  pod spends on a single pass fails a rewrite that backtracks and nothing else. */
+const BACKTRACKING_BUDGET_MS = 2_000;
+
 // A body near the server's 1 MiB request cap that trails a reference with a run of closing
 // parentheses, alone or between the emphasis delimiters the trim also drops, still cites that
 // reference, and a long run of closers followed by anything else is read in one pass too. The
@@ -148,6 +154,9 @@ test.each([
 ] as const)("a reference trailed by %s is read in one pass", (_name, body, refs) => {
   const start = performance.now();
   const found = cited(body, { origin });
-  expect(performance.now() - start).toBeLessThan(2000);
+  // These four rows read 0.08 s, 0.06 s, 0.04 s and 0.00 s idle on a 2-core pod, and 0.14 s,
+  // 0.13 s, 0.10 s and 0.00 s loaded; the budget is 12 times the slowest loaded reading, so no
+  // loaded pod can fail it by being slow.
+  expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
   expect(found).toEqual([...refs]);
 });

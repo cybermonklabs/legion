@@ -845,4 +845,47 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 62: INFRA-2551 (cybermonklabs/legion) -- the daemon counts every move back of an issue by its
+// `<from>-<to>` pair (internal/phase's BackwardPairs), and each worker of `GET /legion/v1/state`
+// carries those counts as `backwardMoves`, the pair to its count (`api.PhaseView`). The key is
+// absent, and never `{}`, for an issue that has had no move back, so a reader tells an issue
+// carrying no counts at all from one whose counts the daemon holds. `rounds` beside it keeps its
+// meaning exactly, rising on every move back, a conflict round included, which no pair counts
+// since nobody sent the work back; and the counts start empty at the migration that added them
+// (`20261110225246_backward_moves_and_cap_told`) and are never filled in from the past, so an
+// issue already in flight reads counts that add up to less than its `rounds`.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 62 is served the workers without the field (api's stateFor,
+// withoutBackwardMoves), as a caller below 58 is served the issues with no place in the
+// admission line, one below 57 the claim views with no `step`, one below 56 the stranded report
+// without its retired entries, one below 55 the issues without the gated steps, one below 53 a
+// body with no wakes waiting, one below 51 the issues without the admission's trees and each
+// issue's tree, one below 49 without the memory draw and one below 46 without the claim views'
+// update rounds; the nine compose, and every reader from 62 on takes the field as optional. A
+// plugin at 61 does not refuse the field, as a plugin before one of the earlier contracts above
+// refuses its own: every answer-side schema of `packages/contracts` has stripped a key it does
+// not name since sjawhar/legion#2788, which that package's own test holds it to. The strip is
+// still what serves such a caller: one that did not ask for the field is not given it, and a
+// plugin built before #2788 is strict and would refuse the body.
+// The same change gives `legion.yaml` a `hooks:` key — each hook naming the event it stands on,
+// the moves back it selects, how many of them fire it, the roles its words go in front of and
+// those words, written inline or read from a `prompt_file` — and the settings block of that
+// state carries every running hook as `hooks`: each one's `name`, `on`, `moves`, `every`,
+// `roles` and `prompt_file`, and never its words, as this route serves the path of
+// `instructions` and never its text. That key is no part of this number: the plugin parses the
+// settings block loosely (35 above), so a later legion.yaml key changes no strictly parsed
+// shape and bumps nothing. The one shape this number is for is the workers' field above.
+// The rest of the change moves no shape a caller reads: the architect is told the
+// `review_round_cap` message once for each value of the cap rather than on every round past it
+// (`record.PhaseRow.CapTold`, the same migration), and a hook that fires publishes its prompt
+// through the outbox to the roles it names (the `hook_prompt` payload), which is the daemon's
+// own lane and no route.
+// (The base carries 59, and no release declares this change's shapes. Two open pull requests
+// declare the numbers between: cybermonklabs/legion#2731 declares 60 and #2230 declares 61,
+// read from `const DaemonAPIVersion` at each head on 2026-11-11, so this change takes 62, the
+// number above them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. Read main's own number, and every open branch's, again at the next forward merge rather
+// than from this line.)
+const DaemonAPIVersion = 62
