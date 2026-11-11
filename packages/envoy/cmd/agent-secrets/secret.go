@@ -269,16 +269,27 @@ func pipeCommand(prefix, profile string, words ...string) string {
 	return prefix + "agent-secrets " + strings.Join(quoted, " ")
 }
 
-// readSecretValue reads the value of the secret name for a form. At a terminal it prompts on
-// stderr, once it holds the terminal with echo off, and reads one line (readHidden), as
-// `gh secret set` does, so the value never shows on the screen; a value of more than one line is
-// refused there, naming pipeTo, the form's own command line (pipeCommand) with the value piped in.
-// Otherwise it reads all of secretStdin, less one trailing newline, so `echo` and a file ending
-// in a newline give the value without one. An empty value is a usage error either way.
-func readSecretValue(name, pipeTo string, stderr io.Writer) (string, error) {
+// readSecretValue reads the value of the secret name for a form, to be stored under shape, the
+// secret's shape tag (policy.TagShape), which is "" for a secret carrying none. At a terminal it
+// prompts on stderr, once it holds the terminal with echo off, and reads one line (readHidden),
+// as `gh secret set` does, so the value never shows on the screen; a value of more than one line
+// is refused there, naming pipeTo, the form's own command line (pipeCommand) with the value piped
+// in. Otherwise it reads all of secretStdin.
+//
+// Both arms then meet one reading of what they read: policy.TrimForShape, the broker's own rule,
+// so a value stored through this client and a value stored by any other writer are spent alike —
+// the broker reads what it releases by that same rule, and a reader of its own here would drift
+// from it. Where the rule changed nothing — a document, whose every byte is part of it, and a
+// value the rule leaves alone, a PEM one among them — one final line feed goes, which is what
+// this reader has always removed, so `echo` and a file ending in a newline give the value without
+// one. A line typed at the prompt carries no ending at all, so the terminal arm meets the
+// fallback and nothing else. An empty value is a usage error either way, in its own arm's words.
+func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, error) {
 	if err := disableCoreDumps(); err != nil {
 		return "", err
 	}
+	// value is what the arm read, and empty the refusal of a value that is empty once read.
+	var value, empty string
 	if fd, ok := stdinTerminal(secretStdin); ok {
 		prompted := false
 		line, err := readHidden(fd, func() {
@@ -307,26 +318,28 @@ func readSecretValue(name, pipeTo string, stderr io.Writer) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read the value at the terminal: %w", err)
 		}
-		if len(line) == 0 {
-			return "", usageErr{errors.New("no value was entered at the prompt")}
-		}
 		if !utf8.Valid(line) {
 			return "", usageErr{errors.New("the value must be valid UTF-8")}
 		}
-		return string(line), nil
+		value, empty = string(line), "no value was entered at the prompt"
+	} else {
+		data, err := io.ReadAll(secretStdin)
+		if err != nil {
+			return "", fmt.Errorf("read the value from standard input: %w", err)
+		}
+		if !utf8.Valid(data) {
+			return "", usageErr{errors.New("the value must be valid UTF-8")}
+		}
+		value, empty = string(data), "the value is read from standard input, which was empty"
 	}
-	data, err := io.ReadAll(secretStdin)
-	if err != nil {
-		return "", fmt.Errorf("read the value from standard input: %w", err)
+	stored, changed := policy.TrimForShape(value, shape)
+	if !changed {
+		stored = strings.TrimSuffix(stored, "\n")
 	}
-	if !utf8.Valid(data) {
-		return "", usageErr{errors.New("the value must be valid UTF-8")}
+	if stored == "" {
+		return "", usageErr{errors.New(empty)}
 	}
-	value := strings.TrimSuffix(string(data), "\n")
-	if value == "" {
-		return "", usageErr{errors.New("the value is read from standard input, which was empty")}
-	}
-	return value, nil
+	return stored, nil
 }
 
 // minRecoveryWindowDays is the shortest recovery window Secrets Manager allows a deletion, 7 days.
@@ -867,7 +880,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if *defaultGrant != "" {
 		command = append(command, "--default-grant", *defaultGrant)
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), stderr)
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, stderr)
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
@@ -898,7 +911,14 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	defer s.Close()
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), stderr)
+	// The value is read under the shape the secret already carries: a set names no tag, and
+	// reading a one-line value the untagged way would store a document's own final line ending
+	// away from an owner who declared it a document, who could then store no such value at all.
+	held, err := s.backend.currentTags(s.ctx, slug)
+	if err != nil {
+		return secretFailIn(stderr, form, s, fmt.Errorf("read %s's tags for its shape: %w", name, err))
+	}
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), held.tags[policy.TagShape], stderr)
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}

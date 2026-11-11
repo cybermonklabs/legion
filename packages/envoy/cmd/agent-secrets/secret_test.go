@@ -390,7 +390,8 @@ func TestSecretAcceptsLoopbackHTTPBrokerURL(t *testing.T) {
 
 // TestSecretCreateResolvesOwnerMeFromTheSessionName: --owner me is the sign-in's session name, the
 // person's email, lowercased; the secret is created on the broker's key with the value read from
-// standard input less its one trailing newline, and the broker is asked to serve it.
+// standard input less its trailing line ending (the shape rule,
+// TestTheValueReaderRemovesATrailingLineEndingBeforeItStores), and the broker is asked to serve it.
 func TestSecretCreateResolvesOwnerMeFromTheSessionName(t *testing.T) {
 	local := secrets.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
@@ -475,6 +476,80 @@ func TestSecretFormsRefuseBadUsageWithExitTwo(t *testing.T) {
 				t.Fatalf("a usage error wrote %d secrets", len(out.SecretList))
 			}
 		})
+	}
+}
+
+// TestTheValueReaderRemovesATrailingLineEndingBeforeItStores: the value a write pipes in is
+// stored as the broker's own shape rule reads it (policy.TrimForShape), so a value stored
+// through this client and a value stored by any other writer are spent alike: a one-line
+// credential loses its whole trailing run of carriage returns and line feeds, however many and
+// in whichever order, rather than keeping a carriage return an editor or a shell left behind.
+// Where the rule changes nothing — a document, whose every byte is part of it, and a value that
+// holds a line ending inside it — one final line feed goes, which is what this reader has always
+// removed. A value that is only line endings is not emptied by the rule, so it keeps every line
+// feed but the last, and a single one of them is refused as an empty value.
+func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
+	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	for _, tc := range []struct {
+		name, piped, shape, stored, refusal string
+	}{
+		{name: "token-and-a-line-feed", piped: "tok\n", stored: "tok"},
+		{name: "token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", stored: "tok"},
+		{name: "token-and-a-carriage-return", piped: "tok\r", stored: "tok"},
+		{name: "token-and-two-line-feeds", piped: "tok\n\n", stored: "tok"},
+		{name: "a-pem-document", piped: pem, stored: "-----BEGIN KEY-----\nabc\n-----END KEY-----"},
+		{name: "one-line-feed-alone", piped: "\n", refusal: "standard input, which was empty"},
+		{name: "two-line-feeds", piped: "\n\n", stored: "\n"},
+		// An owner who declared the secret a document asked for its bytes to be kept, so only
+		// the one final line feed goes and the carriage return before it stays.
+		{name: "a-document-token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", shape: policy.ShapeDocument, stored: "tok\r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := secrets.NewLocal()
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, local, testAccount, adaSignIn)
+			useStdin(t, tc.piped)
+			args := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}
+			if tc.shape != "" {
+				args = append(args, "--shape", tc.shape)
+			}
+			_, stderr, code := runSecret(args...)
+			if tc.refusal != "" {
+				if code != exitUsageError || !strings.Contains(stderr, tc.refusal) {
+					t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.refusal)
+				}
+				if out, _ := local.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{}); len(out.SecretList) != 0 {
+					t.Fatalf("a refused value wrote %d secrets", len(out.SecretList))
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("create: exit %d, stderr %q", code, stderr)
+			}
+			if v := valueOf(t, local, "NEW_KEY"); v != tc.stored {
+				t.Fatalf("stored %q, want %q", v, tc.stored)
+			}
+		})
+	}
+}
+
+// TestSecretSetReadsTheSecretsOwnShape: a set names no tag, so it reads the shape the secret
+// already carries and stores the value under it. The document here would otherwise meet the
+// untagged reading, which keeps a value holding line endings inside it whole: its owner declared
+// it a document, and one final line feed is all that goes.
+func TestSecretSetReadsTheSecretsOwnShape(t *testing.T) {
+	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "old")
+	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
+	local := secrets.NewLocal(wholeFile)
+	startSecretBroker(t, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+	useStdin(t, pem)
+	if _, stderr, code := runSecret("set", "DOCUMENT_KEY"); code != 0 {
+		t.Fatalf("set: exit %d, stderr %q", code, stderr)
+	}
+	if want, v := strings.TrimSuffix(pem, "\n"), valueOf(t, local, "DOCUMENT_KEY"); v != want {
+		t.Fatalf("stored %q, want %q", v, want)
 	}
 }
 
