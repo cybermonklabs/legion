@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   createArtifactAsk,
   createComment,
@@ -17,7 +15,7 @@ import {
   referenceAgent,
   seedReferenceWorld,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,10 +30,6 @@ import { asUser } from "./users";
 // Each row seeds the shared world — three projects, a host whose spec declares five question
 // blocks, and the records a short id names — and reads up to three pages.
 test.setTimeout(180_000);
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** How many characters of an id an address writes short here: the fewest the server resolves. */
 const SHORT = 8;

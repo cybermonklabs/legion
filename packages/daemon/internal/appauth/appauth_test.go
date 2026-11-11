@@ -149,7 +149,7 @@ func askedInExchange(t *testing.T, r *http.Request) (string, accessTokensBody) {
 // of Legion's grants is granted.
 var grantedEverythingAsked = map[string]string{
 	"actions": "write", "checks": "write", "contents": "write", "metadata": "read",
-	"pull_requests": "write", "statuses": "write", "workflows": "write",
+	"pull_requests": "write", "security_events": "write", "statuses": "write", "workflows": "write",
 }
 
 // installationGranting is GitHub's GET /app/installations/{id}: the installation and the
@@ -505,7 +505,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	// actions among them and nothing writable, and the implement App's write set.
 	want := []string{
 		`{"repositories":["legion"],"permissions":{"actions":"read","contents":"read","metadata":"read","pull_requests":"read"}}`,
-		`{"repositories":["legion"],"permissions":{"actions":"write","checks":"read","contents":"write","metadata":"read","pull_requests":"write","statuses":"write","workflows":"write"}}`,
+		`{"repositories":["legion"],"permissions":{"actions":"write","checks":"read","contents":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
 	}
 	if len(bodies) != len(want) || bodies[0] != want[0] || bodies[1] != want[1] {
 		t.Fatalf("exchange bodies = %q, want %q", bodies, want)
@@ -1105,11 +1105,11 @@ func TestTokenAsksForTheIssuesRepositoryAndTheAppsWritePermissions(t *testing.T)
 	}{
 		{Implement, "legion-implementer", map[string]string{
 			"actions": "write", "checks": "read", "contents": "write", "metadata": "read",
-			"pull_requests": "write", "statuses": "write", "workflows": "write",
+			"pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write",
 		}},
 		{Review, "legion-reviewer", map[string]string{
 			"actions": "write", "checks": "write", "contents": "write", "metadata": "read",
-			"pull_requests": "write",
+			"pull_requests": "write", "security_events": "write",
 		}},
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {

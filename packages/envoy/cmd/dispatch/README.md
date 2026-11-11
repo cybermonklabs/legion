@@ -2900,7 +2900,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   List open asks newest-first, including their issue key, title, and assignee.
-  `assignee=me|unassigned|<email>` keeps asks on issues held by the caller, by nobody (project-document asks included), or by that person;
+  `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, and the assignee of its issue until somebody hands it on — so it keeps the asks waiting on the caller, the asks nobody waits on (a project-document ask nobody was handed included), or the asks waiting on that person;
   an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`.
 
 - `/api/v1/me/answers?limit=&offset=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
@@ -2913,7 +2913,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   List the caller's Inbox threads, in the state's own order, of the kinds `kind` names:
-  `reply`, the default, the threads they wrote in (an ask, a comment thread, an issue message thread) where somebody else has written since they last read it, less an open ask the Inbox already lists on an open issue assigned to them;
+  `reply`, the default, the threads they wrote in (an ask, a comment thread, an issue message thread) where somebody else has written since they last read it, less an open ask on an open issue that waits on them, which the Inbox already lists;
   `agent`, their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
   `reply,agent`, both in one order.
   `state` is `unread`, the default and the Inbox count's own read, which lists the rows somebody else has written in since they read them, newest reply first;
@@ -3267,6 +3267,14 @@ Each item below names a path with its method and identity, then its purpose.
   — is `400 ASK_BLOCK_TEXT` naming the field, with nothing written.
   Text past what one write's markdown may make - weighed before it is rendered, an element for each backslash, `*`, `_`, `~`, backtick, `[`, `]` and `<` and two for each line feed, then as its markdown parses - is `413 CAP_EXCEEDED`.
   An edit of a block ask that would leave the document's markdown (what `.../text` answers) longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, is `413 CAP_EXCEEDED` and the ask keeps its text.
+
+- `/api/v1/asks/{id}/asked-of` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
+
+  Hand an open ask to another person, `asked_of` being the email of somebody who has signed in; the ask waits on them from then on, wherever its issue goes, and their Inbox lists it.
+  Naming the assignee of the ask's own issue stores no person, so the ask follows its issue again.
+  Either way the row records who handed it on and when (`asked_of_by`, `asked_of_at`), and one `ask.asked_of` event names the person the ask waited on before and the one it waits on now.
+  A login nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`, an ask that is not open `409 ASK_NOT_OPEN`, and an ask whose issue is closed `409 ISSUE_CLOSED`.
+  A credential without the `person` scope is `403 OAUTH_SCOPE_REQUIRED` before the handler runs: handing a question on is one person asking another, and no agent of a deployment may choose who answers.
 
 - `/api/v1/asks/{id}/answer` (POST; cookie, trusted header, or bearer; needs the `person` scope, and `approve` besides for an ask of kind `approval`)
 
@@ -3663,12 +3671,13 @@ Each item below names a path with its method and identity, then its purpose.
 An event's payload says what its write moved, so a reader can refresh only what it shows (the dashboard's rules are `packages/dispatch/web/src/api/event-refresh.ts`).
 `issue.created`, `issue.updated` and `issue.closed` carry `changed`, the fields whose value the write moved (`title`, `status`, `closed_at` for a close or a reopen, `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`, `blocked_by`, `external_links`;
 on `issue.created` every field the new issue holds a value in), and `ancestors`, the issue's parent chain, parent first up to the root (`[]` for a root).
-`thread_logins`, every login whose Inbox the write can have moved, is on `comment.created` and `comment.answered`, on `message.created` and `message.answered`, on `ask.opened`, `ask.answered` and `ask.resolved`, and on an `issue.updated` or `issue.closed` that moved the status or the assignee.
+`thread_logins`, every login whose Inbox the write can have moved, is on `comment.created` and `comment.answered`, on `message.created` and `message.answered`, on `ask.opened`, `ask.answered`, `ask.resolved` and `ask.asked_of`, and on an `issue.updated` or `issue.closed` that moved the status or the assignee.
 On a comment, an ask or an issue message it is the logins with a Replies row on the write's thread once the write is in;
 on a direct (issue-less) conversation's message, which keeps no Replies row, it is the thread root's author, the one person whose Inbox holds that conversation's agent row, and `[]` when no person opened the thread.
 On an issue event it is the sorted union of two sets, naming a login in both of them once:
-for a close or a reopen the logins with a row on the issue's open asks, which the Inbox leaves out of their Replies while the issue is open and assigned to them, and `[]` for any other status move;
-for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves.
+for a close or a reopen the logins with a row on the issue's open asks, which the Inbox leaves out of their Replies while the issue is open and the ask waits on them, and `[]` for any other status move;
+for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on.
+An `ask.asked_of` names two people instead of a thread's readers: the person the ask waited on and the person it waits on now, since a hand-on moves the ask between their lists and changes nothing for a reader of its thread.
 `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved, or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`PUT` or `DELETE /api/v1/me/asks/{id}/snooze`, which append it only when the row moved).
 A snooze's payload is exactly `{login, changed: ["snoozed"]}`:
 every signed-in caller's event feed on the live socket replays it, so it names neither the ask nor the writer's issue state, and the writer's other tabs and devices refetch their whole Inbox.

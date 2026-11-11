@@ -107,8 +107,8 @@ message.
 Each value you pick becomes a chip under the bar. Remove one with its ×, or all of them with
 **Clear filters**. The filters are in the address as well, so a narrowed list is a link.
 
-The banner at the top, for example `Blocked on you: 2 items, oldest 6h`, counts the asks waiting
-on you — the ones on issues assigned to you that you have not snoozed — and every credential
+The banner at the top, for example `Blocked on you: 2 items, oldest 6h`, counts the open asks
+that wait on you and that you have not snoozed, and every credential
 request waiting on you, whatever the filter below it is set to.
 
 A credential request is an agent asking you to let it use a secret, or a machine asking to start
@@ -129,21 +129,28 @@ across it, the rows stay put until the pointer rests, leaves the list, or you cl
 
 ### Whose asks you see
 
-Every issue has an assignee: the person who answers its asks. The **Assignee** field inside
+Every ask waits on one person: whoever it was handed to, and the assignee of its issue until
+somebody hands it on. The **Assignee** field inside
 **Filter** picks whose asks the Inbox holds. Its button reads `Assignee · you` while it is on you, and
 the list it opens offers **Unassigned** and everyone who has signed in to Dispatch. Pick as many
 people as you like; the button then names the one you picked, or how many.
 
-- The Inbox opens on your own asks every visit: the asks on the issues assigned to you. Dispatch
+- The Inbox opens on your own asks every visit: the asks waiting on you. Dispatch
   remembers nothing between visits.
-- Add **Unassigned** to see the asks nobody holds — those on issues with no assignee, and every
-  ask on a project document.
+- Add **Unassigned** to see the asks nobody waits on — those nobody was handed on issues with no
+  assignee, and the asks on project documents that nobody was handed.
 - Clear the filter to see every open ask.
 
-An ask whose issue nobody is assigned has an **Assign to me** button: at the head of the right
+An ask nobody waits on has an **Assign to me** button: at the head of the right
 column, and on the ask's own row where there is no second column. Choosing it makes the issue
 yours, so the ask is in your own list, and your counts, from then on. An ask on a project
 document belongs to no issue and has no such button.
+
+Every open ask carries **Asked of**, a badge naming the person it waits on and a picker that hands
+it to somebody else. It is on the card wherever the question is drawn: the Inbox, the issue page
+and a document's margin. Hand a question on and it leaves your list and joins theirs, wherever its
+issue goes after that; hand it back to the issue's assignee and it follows the issue again. Under
+the badge the card says who handed it on and when.
 
 The filter is part of the page's address: one `?assignee=` value per person, each a login or the
 word `unassigned`, so a link carries the list you are looking at. `?assignee=everyone` is the
@@ -171,8 +178,8 @@ While the filter names anybody but you alone, the **Waiting on you** band reads 
 person** instead, since those asks wait on whoever holds them.
 
 The banner, a project's **Blocked on you** pill and the Agents page's **Needs you** pill mean
-one thing wherever they appear: the open asks whose turn is a person's, on issues assigned to
-you, that you have not snoozed. The banner adds the credential requests waiting on you, and so
+one thing wherever they appear: the open asks whose turn is a person's, that wait on you and
+that you have not snoozed. The banner adds the credential requests waiting on you, and so
 does the sidebar's **Inbox** number, which adds your unread threads on top of both; a project's
 pill counts no credential request, because a request belongs to no project. None of them follows
 the filter, so a widened filter lists more asks than the number beside the Inbox.

@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createIssue,
   createIssueArtifact,
@@ -8,7 +6,7 @@ import {
   recordCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // Dispatch stored a result at a mistyped commit once, and a reader could not tell it from the
@@ -30,10 +28,6 @@ const spec = `:::requirement{#r1}
 A recorded result names the commit it ran at, whole.
 :::
 `;
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Two pages print a result's line as plain text, where no title attribute can carry the commit
 // the line cut: the Activity tab, through `activity-model.ts`, and the review margin's Pinned
