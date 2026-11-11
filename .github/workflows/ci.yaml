@@ -4,8 +4,9 @@ name: CI
 # Its first job, `changes`, reads the paths the change touched and selects, through one
 # dorny/paths-filter filter per job, the jobs that read those paths; each job runs only when its
 # filter matches (lint runs on every change, and typecheck, test, daemon-go, plugin-pack,
-# sessions-script and text-checks also run when `changes` itself failed). ci-ok condenses every
-# job's result into one check: it fails when a job `changes` selected did not succeed.
+# private-names-port, sessions-script and text-checks also run when `changes` itself failed).
+# ci-ok condenses every job's result into one check: it fails when a job `changes` selected did
+# not succeed.
 # Main's ruleset requires ci-ok and pr-title. ci-ok is the `ci-ok` job
 # at the end of this file, which needs every job of it but itself and those CI_OK_EXEMPT names,
 # and fails when .github/scripts/ci-ok.sh's verdict over their results is failure, so the
@@ -142,6 +143,7 @@ env:
       "test": "test",
       "daemon-go": "daemon_go_tests",
       "plugin-pack": "plugin_pack",
+      "private-names-port": "private_names_port",
       "docs": "docs",
       "contracts": "contracts",
       "test-fixtures": "test_fixtures",
@@ -254,6 +256,10 @@ jobs:
       # pack reads bun.lock, so with it in daemon-go a lockfile change ran the daemon's whole Go
       # suite (dispatch://INFRA-1413, A4).
       plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
+      # The private-name port harness, in a job of its own: it builds the `legion` binary of
+      # this head, so as a step of the test job it put that build's whole closure on the test
+      # filter (dispatch://INFRA-1413).
+      private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.private_names_port }}
       # The session message-wait suite, in a job of its own: it is the one test of the test job
       # that needs a database, and a Postgres service there would start one for every change
       # that selects any of that job's thirty-two harness steps.
@@ -742,6 +748,13 @@ jobs:
               # hold their text to (packages/daemon/internal/api): the splitter, the document
               # parser under it and the contracts both read come with it.
               - 'packages/envoy/dispatchbody/*'
+              # The broker's OAuth wire types: packages/envoy/internal/brokerclient below
+              # imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
+              # was one package short of its own definition until this line. Every other filter
+              # naming this anchor already named the package through a second pattern of its
+              # own (docs' own broker list, listener_command's, which go_notices takes), so the
+              # line adds the package to no other filter's meaning.
+              - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -1476,10 +1489,11 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - *bun_install
               - *biome
-              # The workspace of the two go commands left here - the listener build
-              # scripts/e2e/lib/held-port.test.ts starts and the `legion` build
-              # .github/scripts/check-private-names-port.test.sh:70 starts - and of the setup-go
-              # that installs the Go for them (packages/daemon/go.mod).
+              # The workspace of the one go command left here - the listener build
+              # scripts/e2e/lib/held-port.test.ts starts - and of the setup-go that installs the
+              # Go for it (packages/daemon/go.mod). The `legion` build of the private-name port
+              # harness, which put that binary's whole closure on this filter, is the
+              # private-names-port job's now, with the filter below.
               - *go_workspace
               # Two of its steps read this list: verify-build builds and checks the Claude Code
               # plugin as the release does, and the build-input-list step runs
@@ -1487,20 +1501,6 @@ jobs:
               - *claude_envoy_build
               # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
               - *listener_command
-              # The private-name port harness, the one harness of this job with no gate of its
-              # own: it builds the `legion` binary of this head (:70) and holds the rules that
-              # binary carries to the frozen script's verdicts, so this job reads that build -
-              # the rule file packages/daemon/internal/leakguard embeds among it. A gate of its
-              # own would be this list a second time, which put this step's filters string at
-              # 100,279 bytes, inside rule 18's margin under MAX_ARG_STRLEN.
-              # The frozen script itself is named by check_private_names_test above.
-              - '.github/scripts/check-private-names-port.test.sh'
-              - *legion_command
-              # The one package of that build legion_command does not name: envoy's
-              # internal/brokerclient, which it does name, imports the broker's OAuth wire
-              # types, and every other filter naming that anchor names this package through a
-              # second one.
-              - 'packages/envoy/internal/broker/oauthwire/*'
               # Each harness step's own gate, named here so the job runs for the change that
               # makes one of those gates true. Each of those lists names this file and
               # ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
@@ -1581,6 +1581,35 @@ jobs:
               - 'packages/*/.changes/unreleased/**'
               # The bun tests of this job's scripts import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/internal/**/*_test.go'
+              - '!packages/envoy/listenfd/**/*_test.go'
+              - '!packages/envoy/roleholder/**/*_test.go'
+              # END generated
+            # The private-name port harness, in a job of its own: it builds the `legion` binary
+            # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
+            # rules that binary carries to the frozen shell script's verdicts, case for case.
+            # That build is why this list is as long as it is - legion_command is what the
+            # binary is made of, the rule file packages/daemon/internal/leakguard embeds among
+            # it - and why the step has a job: while it was the test job's, the whole closure
+            # sat on the `test` filter, so a change to one package of the daemon ran thirty-odd
+            # shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+            private_names_port:
+              - *ci_router
+              - '.github/workflows/ci-job-private-names-port.yaml'
+              # The build's workspace, and the go.mod the setup-go that installs its Go reads
+              # (packages/daemon/go.mod).
+              - *go_workspace
+              - *legion_command
+              - '.github/scripts/check-private-names-port.test.sh'
+              # test-lib.sh, which the harness sources for check/is/summary (:63), and the
+              # frozen script it runs every case through beside the binary, symlinked into each
+              # fixture (:203,411,457,546). That script is the subject of
+              # check_private_names_test above, which gates another job's step: this job reads
+              # it as the engine it compares against.
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-private-names.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/daemon/cmd/**/*_test.go'
@@ -1683,10 +1712,7 @@ jobs:
               - '!packages/daemon/internal/wakepace/**/*_test.go'
               - '!packages/daemon/internal/workflow/**/*_test.go'
               - '!packages/daemon/internal/workspace/**/*_test.go'
-              - '!packages/envoy/internal/**/*_test.go'
-              - '!packages/envoy/listenfd/**/*_test.go'
-              - '!packages/envoy/migrationid/**/*_test.go'
-              - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/**/*_test.go'
               # END generated
             # The guides' layout step of the test job (ci-job-test.yaml's
             # "Check the guides' semantic line breaks"), gated on exactly the files that step
@@ -4045,6 +4071,25 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # The harness that holds this repository's four private-name rules, as the `legion` binary of
+  # this head runs them, to the frozen shell script's verdicts case for case
+  # (.github/scripts/check-private-names-port.test.sh). It left the test job in
+  # dispatch://INFRA-1413: the harness builds ./cmd/legion, so that job's filter had to name the
+  # whole closure of that build, and a change to any package of the daemon ran thirty-odd shell
+  # harnesses and the Bun suites of scripts/ that could not see it. Fail-open with typecheck,
+  # test, daemon-go and plugin-pack above, for the reason their comment gives, and as this step
+  # ran while it was one of the test job's.
+  private-names-port:
+    needs: changes
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.private_names_port == 'true') }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-private-names-port.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # Builds the documentation site (docs/site) on every pull request and merge group that could
   # change it. No run of this workflow is a push to main: docs-pages.yaml builds and publishes
   # main's site to GitHub Pages, at the address .github/scripts/repo-paths.sh derives from the
@@ -4916,6 +4961,7 @@ jobs:
       - test
       - daemon-go
       - plugin-pack
+      - private-names-port
       - docs
       - contracts
       - test-fixtures

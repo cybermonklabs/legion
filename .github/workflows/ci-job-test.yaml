@@ -10,9 +10,12 @@ name: CI job test
 # What runs here is what reads this repository's own tooling: the Claude Code plugin build, the
 # changelog fold, the `*.test.sh` harness of each script under .github/scripts (and of
 # scripts/sessions-import-pods.sh), and the Bun suites of scripts/. The daemon's Go tests, which
-# this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's, and the session
+# this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's; the session
 # message-wait suite, the one step here that needed a database, is
-# .github/workflows/ci-job-sessions-script.yaml's. No step of this job needs one now.
+# .github/workflows/ci-job-sessions-script.yaml's, and no step of this job needs one now; and
+# check-private-names-port.test.sh, the one harness here that built a binary of this head - so
+# the only one whose reads were a whole Go closure on this job's filter - is
+# .github/workflows/ci-job-private-names-port.yaml's.
 #
 # Each harness step runs behind an input of its own, which ci.yaml's calling job fills from the
 # `changes` output of the same name, whose filter is that harness and the script it tests: so a
@@ -531,19 +534,6 @@ jobs:
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh
-
-      # After setup-go, and not beside `Test release scripts` where the other .github/scripts
-      # suites sit: it builds the legion binary of this head out of packages/daemon and drives
-      # the leak guard through that binary, so it needs the Go the step above installs from that
-      # module's own go.mod.
-      #
-      # The one harness here with no gate of its own: that gate's filter would be the whole
-      # closure of this build, and a second copy of it put the changes job's filters string at
-      # 100,279 bytes, inside the margin rule 18 of .github/scripts/check-ci-filters.sh keeps
-      # under MAX_ARG_STRLEN. So the job's own filter carries that closure and this step runs
-      # whenever the job does.
-      - name: Test the private-name rules' port against the frozen script
-        run: .github/scripts/check-private-names-port.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

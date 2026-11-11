@@ -1320,18 +1320,19 @@ def harness(filter, step, harness_script, subjects, lib=True):
                 reads=reads(*entries, *subjects))
 
 
+# The private-name port harness, a job of its own since dispatch://INFRA-1413: it is the one
+# harness of this repository that builds a binary of this head, so the filter that selects it
+# has to name that build's whole closure (LEGION_BUILD, ci.yaml's legion_command). While the
+# step was the test job's, that closure was on the `test` filter and a change to any package of
+# the daemon ran thirty-odd shell harnesses and the Bun suites of scripts/ beside it; a gate on
+# the step inside that job was no cure either, since the gate's own filter would be the closure
+# a second time and the changes job's filters string has no room for one (rule 18).
+PRIVATE_NAMES_PORT_JOB = "private-names-port"
 PRIVATE_NAMES_PORT_STEP = "Test the private-name rules' port against the frozen script"
-
-# The one harness of the test job that builds a binary of this head: it runs every case through
-# the frozen shell script and through the rules that binary carries, and holds the two to one
-# verdict. It is also the one harness with no gate of its own - a gate's filter would be this
-# build's whole closure a second time, which the changes job's filters string has no room for
-# (rule 18's cap on it) - so this Run and the harness itself sit on the test job's own gate and
-# the step runs whenever that job does.
 PRIVATE_NAMES_PORT_BUILD = script_run(
     f"{SCRIPTS}/check-private-names-port.test.sh",
     '(cd "$repo_root/packages/daemon" && go build -o "$engine" ./cmd/legion) || {',
-    at("test", PRIVATE_NAMES_PORT_STEP), DAEMON, [LEGION_BUILD], mode="build")
+    at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP), DAEMON, [LEGION_BUILD], mode="build")
 
 
 SCRIPT_TEST_GATES = [
@@ -1636,16 +1637,27 @@ GATES = [
     ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
       + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
-    # What is left of the test job once the daemon's Go suite has a job of its own: the Claude
-    # Code plugin build, the changelog fold, about thirty script harnesses - each behind a gate
-    # of its own below (SCRIPT_TEST_GATES), whose reads this gate carries too, since the job
-    # must be selected for the step to run in it - and the Bun suites of scripts/. Two go
-    # commands are left: the listener build a Bun test starts, and the `legion` build the
-    # private-name port harness starts, the one harness here with no gate of its own.
+    # The private-name port harness, in a job of its own: one step, which builds the `legion`
+    # binary of this head and holds the rules that binary carries to the frozen shell script's
+    # verdicts, case for case. The Run is that build, so this filter is its whole closure; the
+    # reads are the harness, the helpers it sources and the frozen script it compares against.
+    # The comment on PRIVATE_NAMES_PORT_BUILD above says why the step is a job.
+    gate("private_names_port", PRIVATE_NAMES_PORT_JOB, runs=[PRIVATE_NAMES_PORT_BUILD], reads=reads(
+        (f"{SCRIPTS}/check-private-names-port.test.sh", at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP)),
+        (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-private-names.sh",
+         "the frozen script every case of check-private-names-port.test.sh runs beside the "
+         "engine, symlinked into each fixture (:203,411,457,546)"),
+    ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
+
+    # What is left of the test job once the daemon's Go suite and the private-name port harness
+    # have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
+    # script harnesses - each behind a gate of its own below (SCRIPT_TEST_GATES), whose reads
+    # this gate carries too, since the job must be selected for the step to run in it - and the
+    # Bun suites of scripts/. One go command is left, the listener build a Bun test starts.
     gate("test", "test", runs=[
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
-        PRIVATE_NAMES_PORT_BUILD,
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
         ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,122"),
@@ -1655,14 +1667,6 @@ GATES = [
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:9 (tsc -p scripts/dispatch)"),
         (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
-        # The one harness with no gate of its own (PRIVATE_NAMES_PORT_BUILD above): what it
-        # reads is this job's. Its `legion` build is that Run; here are the harness and the
-        # frozen script it holds that build's rules to, which this job also reads through
-        # check_private_names_test's own gate, where that script is the subject under test.
-        (f"{SCRIPTS}/check-private-names-port.test.sh", at("test", PRIVATE_NAMES_PORT_STEP)),
-        (f"{SCRIPTS}/check-private-names.sh",
-         "the frozen script every case of check-private-names-port.test.sh runs beside the "
-         "engine, symlinked into each fixture (:203,411,457,546)"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-15 import @legion/envoy-client/*, and the
