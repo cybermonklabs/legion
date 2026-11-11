@@ -113,9 +113,7 @@ export function DocumentList({ project }: { project: string }): ReactNode {
 
   return (
     <section aria-label="Project documents" className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <CreateDocument documents={documents.data ?? []} owner={{ project }} />
-      </div>
+      <CreateDocument documents={documents.data ?? []} owner={{ project }} />
       <section className={`space-y-3 border-b py-3 ${borderDefault}`}>
         <label
           className={`block text-sm font-medium ${textSecondaryOnSurface}`}

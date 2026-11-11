@@ -32,7 +32,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
-import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument } from "./DocumentWayBack";
+import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument, removalIsOffered } from "./DocumentWayBack";
 
 function kindIcon(kind: Artifact["kind"]): ReactNode {
   const common = {
@@ -219,10 +219,11 @@ function ArtifactRow({
           Download version {latestVersion.number}
         </a>
       )}
-      {/* A removal is a document's: Dispatch refuses an upload's file artifact by the same test
-          it refuses a document that holds writing by, so no row here offers a press that is
-          always refused for its kind. Every other refusal is the server's, shown on the row. */}
-      {artifact.kind === "doc" ? (
+      {/* A removal is offered only where the server can take one: a document of this issue that
+          is neither its spec nor a document that plays a role, since those are refused whatever
+          state they are in (`removalIsOffered`). Every other refusal is the server's, shown on
+          the row. */}
+      {removalIsOffered(artifact) ? (
         <RemoveDocument
           artifact={artifact}
           refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}

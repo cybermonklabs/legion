@@ -454,8 +454,9 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
 }
 
 /**
- * Every event whose server path rewrites the issue's own reference edges: a document version or
- * upload, an ask's creation or edit (a settled ask block among them), a comment or message body -
+ * Every event whose server path rewrites the issue's own reference edges: a document version,
+ * upload or title correction, which moves the title every reference to the document shows; an
+ * ask's creation or edit (a settled ask block among them), a comment or message body -
  * an answer's reply body is indexed like any other - an anchor refresh, a follower change, a child
  * link, and an issue write that moved a structural edge (its parent, its blockers, its components)
  * or the title every one of them shows as its excerpt.
@@ -463,6 +464,7 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
 function changesReferenceGraph(event: DispatchEvent): boolean {
   switch (event.type) {
     case "artifact.created":
+    case "artifact.renamed":
     case "artifact.version":
     case "ask.anchor_refreshed":
     case "ask.edited":

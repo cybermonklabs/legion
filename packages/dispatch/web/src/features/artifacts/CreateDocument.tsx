@@ -2,15 +2,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/classes";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";
+import { TitleForm } from "./TitleForm";
 
 /** Why a closed issue takes no new document. The issue's upload control says it too, so one
  *  sentence covers both ways of adding a document there; the repair upload of a document already
@@ -67,7 +67,7 @@ export function CreateDocument({
 }): ReactNode {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
-  const [takenBy, setTakenBy] = useState<string | undefined>();
+  const [takenBy, setTakenBy] = useState<Artifact | undefined>();
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
   const navigate = useNavigate();
@@ -94,75 +94,26 @@ export function CreateDocument({
     }
     const held = documentHolding(documents, name);
     if (held !== undefined) {
-      setTakenBy(held.name);
+      setTakenBy(held);
       return;
     }
     setTakenBy(undefined);
     submitGuard.guard(() => create.mutate(name));
   };
+  // The artifact that holds the title is named for what it is: the list holds the owner's images
+  // and files beside its documents, and the write refuses their names too.
   const problem =
     takenBy !== undefined
-      ? `A document on ${"issue" in owner ? "this issue" : "this project"} already holds that title: ${takenBy}.`
+      ? `${takenBy.kind === "doc" ? "A document" : "An artifact"} on ${"issue" in owner ? "this issue" : "this project"} already holds that title: ${takenBy.name}.`
       : create.isError
-        ? create.error instanceof Error
-          ? create.error.message
-          : "Could not create the document."
+        ? apiErrorMessage(create.error, "Could not create the document.")
         : undefined;
 
   return (
-    // The host owns the strip this sits in: idle it is one button beside what the host holds
-    // there, and open it takes the line.
-    <div
-      className={`flex min-w-0 flex-wrap items-center gap-2 ${creating ? "w-full" : "shrink-0"}`}
-    >
-      {creating ? (
-        <form
-          aria-label="New document"
-          className="flex w-full min-w-0 flex-wrap items-center gap-2"
-          onSubmit={submit}
-        >
-          <label className="block min-w-48 flex-1">
-            <span className="sr-only">Title</span>
-            <input
-              aria-label="Title"
-              className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-              onChange={(event) => {
-                setTitle(event.target.value);
-                setTakenBy(undefined);
-              }}
-              placeholder="Title"
-              required
-              value={title}
-            />
-          </label>
-          <RefusableButton
-            busy={create.isPending ? "Creating…" : undefined}
-            className="min-h-11 shrink-0"
-            refusal={refusal}
-            refusalShownBy={refusalShownBy}
-            type="submit"
-          >
-            Create
-          </RefusableButton>
-          <button
-            className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={create.isPending}
-            onClick={() => {
-              setCreating(false);
-              setTitle("");
-              setTakenBy(undefined);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          {problem === undefined ? null : (
-            <p className={`w-full text-sm ${dangerText}`} role="alert">
-              {problem}
-            </p>
-          )}
-        </form>
-      ) : (
+    <TitleForm
+      busyLabel="Creating…"
+      formLabel="New document"
+      idle={
         <RefusableButton
           look="secondary-compact"
           onPress={() => {
@@ -175,12 +126,30 @@ export function CreateDocument({
         >
           New document
         </RefusableButton>
-      )}
+      }
+      onCancel={() => {
+        setCreating(false);
+        setTitle("");
+        setTakenBy(undefined);
+      }}
+      onSubmit={submit}
+      onTitleChange={(typed) => {
+        setTitle(typed);
+        setTakenBy(undefined);
+      }}
+      open={creating}
+      pending={create.isPending}
+      problem={problem}
+      refusal={refusal}
+      refusalShownBy={refusalShownBy}
+      submitLabel="Create"
+      title={title}
+    >
       {create.unanswered === undefined ? null : (
         <div className="w-full">
           <LandedWithoutAnswer what={`Document ${create.unanswered.variables}`} />
         </div>
       )}
-    </div>
+    </TitleForm>
   );
 }

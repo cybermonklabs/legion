@@ -5,9 +5,10 @@ import { type ArtifactOwner, api, apiErrorMessage } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/classes";
+import { dangerText } from "../../theme/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";
+import { TitleForm } from "./TitleForm";
 
 /** Why a closed issue takes no correction. Its document is read-only there, as the page says,
  *  and its title is part of what is read. */
@@ -54,17 +55,15 @@ function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
  *
  * Every refusal is the server's own sentence, shown as it came: the name rules a new document's
  * name is held to, a title the owner already holds, and the owner's own refusals. With a
- * `refusal` - the issue is closed - nothing is corrected, and the button says why: on the line
- * the host already shows it on (`refusalShownBy`), or on a hidden line of the button's own.
+ * `refusal` - the issue is closed - nothing is corrected, and the button says why, on a hidden
+ * line of its own (`RefusableButton`).
  */
 export function CorrectTitle({
   artifact,
   refusal = null,
-  refusalShownBy,
 }: {
   readonly artifact: Artifact;
   readonly refusal?: string | null;
-  readonly refusalShownBy?: string;
 }): ReactNode {
   const [correcting, setCorrecting] = useState(false);
   const [title, setTitle] = useState(artifact.name);
@@ -94,54 +93,10 @@ export function CorrectTitle({
     : undefined;
 
   return (
-    // Idle this is one button in the host's strip; open it takes the line it is on.
-    <div
-      className={`flex min-w-0 flex-wrap items-center gap-2 ${correcting ? "w-full" : "shrink-0"}`}
-    >
-      {correcting ? (
-        <form
-          aria-label="Correct title"
-          className="flex w-full min-w-0 flex-wrap items-center gap-2"
-          onSubmit={submit}
-        >
-          <label className="block min-w-48 flex-1">
-            <span className="sr-only">Title</span>
-            <input
-              aria-label="Title"
-              className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Title"
-              required
-              value={title}
-            />
-          </label>
-          <RefusableButton
-            busy={rename.isPending ? "Saving…" : undefined}
-            className="min-h-11 shrink-0"
-            refusal={refusal}
-            refusalShownBy={refusalShownBy}
-            type="submit"
-          >
-            Save
-          </RefusableButton>
-          <button
-            className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={rename.isPending}
-            onClick={() => {
-              setCorrecting(false);
-              setTitle(artifact.name);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          {problem === undefined ? null : (
-            <p className={`w-full text-sm ${dangerText}`} role="alert">
-              {problem}
-            </p>
-          )}
-        </form>
-      ) : (
+    <TitleForm
+      busyLabel="Saving…"
+      formLabel="Correct title"
+      idle={
         <RefusableButton
           look="secondary-compact"
           onPress={() => {
@@ -149,12 +104,39 @@ export function CorrectTitle({
             setCorrecting(true);
           }}
           refusal={refusal}
-          refusalShownBy={refusalShownBy}
         >
           Correct title
         </RefusableButton>
-      )}
-    </div>
+      }
+      onCancel={() => {
+        setCorrecting(false);
+        setTitle(artifact.name);
+      }}
+      onSubmit={submit}
+      onTitleChange={setTitle}
+      open={correcting}
+      pending={rename.isPending}
+      problem={problem}
+      refusal={refusal}
+      submitLabel="Save"
+      title={title}
+    />
+  );
+}
+
+/**
+ * Whether a removal of `artifact` is offered at all. Dispatch removes a document of an issue that
+ * plays no role and is not the issue's spec, and refuses every other artifact whatever state it
+ * is in: a file or an image by its kind, the spec because it is the spec, and a plan or a
+ * Verification document because it plays a role (`artifactIsUntouched`). A press that is always
+ * refused is offered nowhere, so both hosts of the control read this.
+ */
+export function removalIsOffered(artifact: Artifact): boolean {
+  return (
+    artifact.kind === "doc" &&
+    artifact.issue_key !== null &&
+    !artifact.primary &&
+    (artifact.role ?? "") === ""
   );
 }
 
@@ -170,12 +152,10 @@ export function RemoveDocument({
   artifact,
   onRemoved,
   refusal = null,
-  refusalShownBy,
 }: {
   readonly artifact: Artifact;
   readonly onRemoved?: () => void;
   readonly refusal?: string | null;
-  readonly refusalShownBy?: string;
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
@@ -202,7 +182,6 @@ export function RemoveDocument({
         look="secondary-compact"
         onPress={() => submitGuard.guard(() => remove.mutate(artifact.name))}
         refusal={refusal}
-        refusalShownBy={refusalShownBy}
       >
         Remove
       </RefusableButton>

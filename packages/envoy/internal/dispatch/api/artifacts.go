@@ -15,7 +15,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -489,14 +488,13 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, refusal)
 			return
 		}
-		// A create with no content takes none of the documents Dispatch makes itself: the
-		// minted slug decides, as it decides the role the insert below writes, so every
-		// spelling of the name that gives that slug is refused.
-		if input.blank {
-			if role := documentRole(target, kind, slug); role != nil {
-				s.writeHandlerError(w, documentRoleNameRefusal(input.name, slug, *role))
-				return
-			}
+		// The role the insert below writes, which the minted slug decides. A create with no
+		// content takes none of the documents Dispatch makes itself, so every spelling of the
+		// name that gives one of their slugs is refused.
+		role := documentRole(target, kind, slug)
+		if input.blank && role != nil {
+			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
+			return
 		}
 		actorJSON, err := encodeJSON(actor)
 		if err != nil {
@@ -507,7 +505,7 @@ func (s *server) storeArtifact(
 			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
 			values ($1, $2, $3, $4, $5, $6, false, $7, $8)
 			returning `+artifactColumns,
-			target.IssueKey, project, session, slug, input.name, kind, documentRole(target, kind, slug), actorJSON))
+			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1660,6 +1658,25 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 	return artifact, nil
 }
 
+// loadArtifactRowByID reads one artifact's own row by id, without the versions and the approval
+// loadArtifactRow carries: the re-read a write takes under its owner's lock
+// (beginArtifactWrite) reads the row's own fields alone, so it costs one round trip rather than
+// two. A row that is no longer there answers the 404 every artifact read answers, the one
+// idRoutes names for these routes.
+func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artifact, error) {
+	artifact, err := scanArtifact(q.QueryRow(ctx, `
+		select `+artifactColumns+`
+		from artifacts where id = $1
+	`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+	}
+	if err != nil {
+		return model.Artifact{}, err
+	}
+	return artifact, nil
+}
+
 // scanArtifact reads artifactColumns. A session-owned artifact's project is "".
 func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var artifact model.Artifact
@@ -1950,12 +1967,12 @@ func blankWriteToADocumentThatExists(name string, artifact model.Artifact) error
 		name, artifact.Slug, artifact.Name)
 }
 
-// documentRoleNameRefusal is the 400 refusing a create with no content whose minted slug is the
+// createRoleNameRefusal is the 400 refusing a create with no content whose minted slug is the
 // slug of one of the documents Dispatch makes itself (roleSlugs): a person who types `Plan.md`
 // as a title means that document, which Dispatch writes with its own content. The slug is read,
 // not the title, so every spelling that gives it reads the same refusal, and a title whose slug
 // the owner already holds - which mints `plan-md-2` - is a document of its own.
-func documentRoleNameRefusal(name, slug, role string) error {
+func createRoleNameRefusal(name, slug, role string) error {
 	return errorf(http.StatusBadRequest, "ARTIFACT_ROLE_NAME",
 		"%q gives the slug %s, the slug of the issue's %s document, which Dispatch makes itself; give this document another name",
 		name, slug, role)
@@ -1970,29 +1987,6 @@ func newArtifactNameRefusal(name string) error {
 	return errorf(http.StatusBadRequest, "INVALID_ARTIFACT",
 		"artifact name is %d bytes, past the %d bytes a new artifact's name may hold; give it a shorter name",
 		len(name), maxNewArtifactKeyBytes)
-}
-
-// documentNameExtension is a name's extension: what follows its last dot when that holds no
-// blank. markdownNameExtension is the extension a document's name may carry. The two are the
-// rule the command line already holds inline content to (artifactProblem,
-// packages/contracts/src/dispatch-tools.ts), written here in Go for the first time.
-var (
-	documentNameExtension = regexp.MustCompile(`\.([^\s.]+)$`)
-	markdownNameExtension = regexp.MustCompile(`(?i)^(md|markdown)$`)
-)
-
-// markdownDocumentNameRefusal is the 400 refusing a document's name that carries an extension
-// which is not Markdown, or nil. A document holds Markdown, so it goes only under a name that
-// says Markdown or says nothing: a `rows.jsonl` stored that way reads back as Markdown, which
-// is not the file the name promises.
-func markdownDocumentNameRefusal(name string) error {
-	extension := documentNameExtension.FindStringSubmatch(strings.TrimSpace(name))
-	if extension == nil || markdownNameExtension.MatchString(extension[1]) {
-		return nil
-	}
-	return errorf(http.StatusBadRequest, "INVALID_ARTIFACT",
-		"a document holds Markdown, and %q is not a Markdown name; a name ends in .md or .markdown, or carries no extension",
-		name)
 }
 
 // newArtifactKeyRefusal is the 400 refusing a new artifact whose reference key, the target's
@@ -2019,6 +2013,60 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 		return fmt.Errorf("lock the project's documents: %w", err)
 	}
 	return nil
+}
+
+// beginArtifactWrite opens the transaction a write to one artifact runs in: it reads the
+// artifact the request names, takes its owner's lock and reads the row again under that lock. It
+// is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
+// and each of them holds only its own refusals after it.
+//
+// The owner's own refusals come first, as every write to an owner takes them: a closed issue is
+// refused here, before the document is read at all. An agent's conversation takes no lock
+// because it holds no document (uploadArtifactFor), so the handler's own kind refusal is every
+// answer an artifact of a conversation gets.
+//
+// The row is read again under that lock, so every refusal of the handler, and the document its
+// event carries, read the row as it is now: the first read ran before the lock and a correction
+// or a removal of the same document may have committed since. The re-read carries the row alone
+// (loadArtifactRowByID), since neither handler reads the versions or the approval of it.
+//
+// The caller rolls back the transaction it is answered, as it commits it; a preamble that
+// refuses rolls its own transaction back and writes the refusal itself.
+func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx.Tx, model.Artifact, artifactTarget, bool) {
+	ctx := r.Context()
+	artifact, err := s.loadArtifactForRequest(ctx, s.deps.Store.Pool, r)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, model.Artifact{}, artifactTarget{}, false
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, model.Artifact{}, artifactTarget{}, false
+	}
+	refused := func(err error) (pgx.Tx, model.Artifact, artifactTarget, bool) {
+		_ = tx.Rollback(ctx)
+		s.writeHandlerError(w, err)
+		return nil, model.Artifact{}, artifactTarget{}, false
+	}
+	var target artifactTarget
+	switch {
+	case artifact.IssueKey != nil:
+		target = artifactTarget{IssueKey: artifact.IssueKey}
+		if _, err := s.requireOpenOwnerStatus(ctx, tx, issueOwner(*artifact.IssueKey)); err != nil {
+			return refused(err)
+		}
+	case artifact.Project != "":
+		target = artifactTarget{Project: artifact.Project}
+		if err := lockProjectArtifacts(ctx, tx, artifact.Project); err != nil {
+			return refused(err)
+		}
+	}
+	locked, err := loadArtifactRowByID(ctx, tx, artifact.ID)
+	if err != nil {
+		return refused(err)
+	}
+	return tx, locked, target, true
 }
 
 func (s *server) nextArtifactSlug(ctx context.Context, q queryer, target artifactTarget, name string) (string, error) {

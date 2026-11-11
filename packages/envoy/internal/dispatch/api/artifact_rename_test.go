@@ -80,8 +80,8 @@ func renameEvents(t *testing.T, handler http.Handler, issueKey string) []renamed
 // reference key that slug gives and the role it plays are what the first title fixed, so every
 // reference, every anchored comment and the issue's own reads still name the same row. The
 // corrections Dispatch refuses - a name the owner holds, a name reserved for a document Dispatch
-// makes itself, the issue's spec, an artifact that is no document, and a name that is empty, too
-// long or not a Markdown name - each leave the document as it was.
+// makes itself, the issue's spec, an artifact that is no document, and a name that is empty or
+// too long - each leave the document as it was.
 func TestADocumentTitleIsCorrectedWithoutMovingItsAddress(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	spec := createInteractionIssue(t, handler, "TEST", "A spec of its own", "# Spec\n\nA passage.\n")
@@ -168,6 +168,26 @@ func TestADocumentTitleIsCorrectedWithoutMovingItsAddress(t *testing.T) {
 		}
 	})
 
+	t.Run("a title Dispatch holds to no name rule is the person's to give", func(t *testing.T) {
+		issue := titleIssue(t, handler, "A freely titled document")
+		document := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "Launch notes", "# Notes\n").Artifact
+
+		// A corrected title is held to two rules alone: it is not empty, and it is within what
+		// a name may hold. An extension that is not Markdown, and a number a reader takes for
+		// one, are titles a person gives.
+		for _, name := range []string{"rows.jsonl", "Release 1.2"} {
+			corrected := correctedTitle(t, handler, document.ID, name)
+			if corrected.Name != name || corrected.Slug != document.Slug || corrected.RefKey != document.RefKey {
+				t.Fatalf("the document corrected to %q = %#v, want that title under the slug %s and the reference key %s",
+					name, corrected, document.Slug, document.RefKey)
+			}
+			if stored := readDocument(t, handler, document.ID); stored.Name != name || stored.Slug != document.Slug {
+				t.Fatalf("the document read back after the correction to %q = %#v, want that title under the slug %s",
+					name, stored, document.Slug)
+			}
+		}
+	})
+
 	t.Run("each refusal leaves the document as it was", func(t *testing.T) {
 		issue := titleIssue(t, handler, "Refused corrections")
 		owner := "/api/v1/issues/" + issue.Key
@@ -220,12 +240,6 @@ func TestADocumentTitleIsCorrectedWithoutMovingItsAddress(t *testing.T) {
 				code: "INVALID_ARTIFACT", status: http.StatusBadRequest,
 				sentence: fmt.Sprintf("artifact name is %d bytes, past the %d bytes a new artifact's name may hold; give it a shorter name",
 					len(longName), maxNewArtifactKeyBytes),
-			},
-			{
-				what: "a name that is not a Markdown name", artifactID: notes.ID, name: "rows.jsonl",
-				code: "INVALID_ARTIFACT", status: http.StatusBadRequest,
-				sentence: fmt.Sprintf("a document holds Markdown, and %q is not a Markdown name; a name ends in .md or .markdown, or carries no extension",
-					"rows.jsonl"),
 			},
 		} {
 			before := readDocument(t, handler, refused.artifactID)

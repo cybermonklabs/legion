@@ -192,7 +192,8 @@ test("New document on an issue makes an empty document and opens it on the same 
 });
 
 // The write compares the title with each of the owner's names and slugs (`$2 in (name, slug)`),
-// so the control refuses a slug it lists too, and names the document that holds the title.
+// so the control refuses a slug it lists too, and names the artifact that holds the title for
+// what it is: the list holds the issue's images and files beside its documents.
 test("New document on an issue refuses a title the issue already holds", async () => {
   const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact]);
@@ -206,7 +207,7 @@ test("New document on an issue refuses a title the issue already holds", async (
     await user.click(screen.getByRole("button", { name: "Create" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "A document on this issue already holds that title: diagram.png."
+      "An artifact on this issue already holds that title: diagram.png."
     );
     expect(uploadArtifact).not.toHaveBeenCalled();
   } finally {

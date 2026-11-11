@@ -36,6 +36,7 @@ import {
   CLOSED_ISSUE_RENAME_REFUSAL,
   CorrectTitle,
   RemoveDocument,
+  removalIsOffered,
 } from "./DocumentWayBack";
 
 export function artifactVersionUrl(artifactID: string, version: number): string {
@@ -213,7 +214,7 @@ export function ArtifactHeader({
                   artifact={artifact}
                   refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
                 />
-                {issueKey === null ? null : (
+                {issueKey === null || !removalIsOffered(artifact) ? null : (
                   <RemoveDocument
                     artifact={artifact}
                     onRemoved={() =>

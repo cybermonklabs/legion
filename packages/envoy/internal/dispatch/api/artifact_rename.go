@@ -40,44 +40,11 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	// The name is trimmed of spaces before every rule, as an upload's name is
 	// (jsonArtifactUpload), so the rules read what would be stored.
 	name := strings.TrimSpace(input.Name)
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	tx, err := s.begin(r.Context())
-	if err != nil {
-		s.writeHandlerError(w, err)
+	tx, artifact, target, ok := s.beginArtifactWrite(w, r)
+	if !ok {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The owner's own refusals come first, as every write to an owner takes them: a closed
-	// issue is refused here, before the name is read at all. An agent's conversation takes no
-	// lock because it holds no document (uploadArtifactFor), so the kind refusal below is every
-	// correction an artifact of a conversation gets.
-	var target artifactTarget
-	switch {
-	case artifact.IssueKey != nil:
-		target = artifactTarget{IssueKey: artifact.IssueKey}
-		if _, err := s.requireOpenOwnerStatus(r.Context(), tx, issueOwner(*artifact.IssueKey)); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	case artifact.Project != "":
-		target = artifactTarget{Project: artifact.Project}
-		if err := lockProjectArtifacts(r.Context(), tx, artifact.Project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	// The row is read again under that lock, so every refusal below, and the old name the
-	// event carries, read the document as it is now: the read above ran before the lock and a
-	// correction or a removal of the same document may have committed since.
-	artifact, err = s.loadArtifact(r.Context(), tx, artifact.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	if artifact.Kind != "doc" {
 		s.writeHandlerError(w, artifactIsNoDocumentRefusal(artifact))
 		return
@@ -94,14 +61,10 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
-	if refusal := markdownDocumentNameRefusal(name); refusal != nil {
-		s.writeHandlerError(w, refusal)
-		return
-	}
 	// The owner's names are read under its lock. The document the name or the slug finds is a
 	// refusal, unless it is this document itself: correcting the letter case of a title finds
 	// the row being corrected and goes on.
-	held, err := s.findArtifactByNameOrSlug(r.Context(), tx, target, name)
+	held, err := lookupArtifactByNameOrSlug(r.Context(), tx, target, name)
 	switch {
 	case err == nil && held.ID != artifact.ID:
 		s.writeHandlerError(w, artifactNameTakenRefusal(name, held))
@@ -116,7 +79,7 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	// `plan.md` as any other title is.
 	slug := artifactSlug(name)
 	if role := documentRole(target, artifact.Kind, slug); role != nil && !documentPlays(artifact, *role) {
-		s.writeHandlerError(w, roleDocumentNameRefusal(name, slug, *role))
+		s.writeHandlerError(w, renameRoleNameRefusal(name, slug, *role))
 		return
 	}
 	renamed, err := scanArtifact(tx.QueryRow(r.Context(), `
@@ -156,10 +119,10 @@ func artifactNameTakenRefusal(name string, artifact model.Artifact) error {
 		name, artifact.Slug, artifact.Name)
 }
 
-// roleDocumentNameRefusal is the 400 refusing a correction whose new name gives slug, the slug of
+// renameRoleNameRefusal is the 400 refusing a correction whose new name gives slug, the slug of
 // one of the documents Dispatch makes itself (roleSlugs), on a document that does not play that
 // role. The slug is read, not the title, so every spelling that gives it reads this refusal.
-func roleDocumentNameRefusal(name, slug, role string) error {
+func renameRoleNameRefusal(name, slug, role string) error {
 	return errorf(http.StatusBadRequest, "ARTIFACT_ROLE_NAME",
 		"%q gives the slug %s, the slug of the issue's %s document, which this document is not; give it another name",
 		name, slug, role)
