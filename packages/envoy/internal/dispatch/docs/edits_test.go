@@ -3500,6 +3500,74 @@ func TestAnEditCannotDropAnOpenAskBlockAndTheEditorsRemovalRetractsIt(t *testing
 	}
 }
 
+// An edit is refused for the open asks of the blocks it drops itself, and for no others: a
+// document can carry an open ask row whose block left it before this batch ran, and a batch that
+// did not touch that block is not the write that lost it. The refusal names the batch's own block
+// alone, and a batch that drops a block of its own whose ask is not that row is taken.
+func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
+	const second = ":::ask{#second urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich store?\n:::\n"
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, askFixture+"\n"+second+"\nContext ends with no drift.\n")
+	service.settleRoom(artifactID, 0)
+	// The row of the second ask is made an orphan: it stays open, pointing at a block the
+	// document does not hold, which is what a block removed in a person's editor leaves until
+	// settlement retracts its ask.
+	if _, err := service.store.Pool.Exec(context.Background(), `
+		update asks set block_id = 'gone' where block_artifact_id = $1 and block_id = 'second'
+	`, artifactID); err != nil {
+		t.Fatalf("point the second ask at a block the document does not hold: %v", err)
+	}
+
+	var invalidAsk *ErrInvalidAskBlock
+	_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil)
+	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "the open decision block decision,") {
+		t.Fatalf("delete of the open ask block = %v, want it refused for the block it drops", err)
+	}
+	if strings.Contains(err.Error(), "gone") {
+		t.Fatalf("the refusal = %v, want it silent about the orphan row's block, which this batch never touched", err)
+	}
+
+	// The batch below drops a block of its own, and the only open ask row left points at no
+	// block of the document, so this batch loses no question anyone can answer.
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "second"}}, editingSession, nil); err != nil {
+		t.Fatalf("delete of a block whose ask row is not open = %v, want it taken", err)
+	}
+	waitForDocumentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
+}
+
+// A `with` is parsed twice on the way in: once to say whether it names blocks of its own, and
+// once by the path that writes the tree the document keeps. Only the second parse is charged to
+// the write's elements, which are counted across every parse of one write
+// (pmdoc.MaxDocumentElements), so a `with` one parse fits under the limit is applied. Measured
+// 2026-11-11: 60,000 bytes of `)_` make 45,003 elements, and charging both parses refused this
+// replace with "document too large to store".
+func TestApplyOperationReplaceChargesTheWriteForOneParseOfItsWith(t *testing.T) {
+	dense := strings.Repeat(")_", 30_000)
+	measured := pmdoc.MeasureDocument(dense)
+	if measured.TooHeavy() || 2*measured.Elements <= pmdoc.MaxDocumentElements {
+		t.Fatalf("the with makes %d elements, want one parse of it under %d and two over", measured.Elements, pmdoc.MaxDocumentElements)
+	}
+	tree, err := parseInput("Intro.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := applyAlone(tree, model.EditOp{Op: "replace", Find: "Intro.", With: dense})
+	if err != nil {
+		t.Fatalf("replace with %d dense bytes = %v, want it applied", len(dense), err)
+	}
+	// The `_` runs of the with pair into emphasis, so the text the document holds is the text
+	// one parse of the with makes, not the with's own bytes.
+	inline, err := pmdoc.ParseInline(dense, pmdoc.NewWriteBudget())
+	if err != nil {
+		t.Fatalf("one parse of the with = %v, want it under the element limit", err)
+	}
+	want := pmdoc.TextContent(&pmdoc.Node{Type: "paragraph", Children: inline})
+	if got := pmdoc.TextContent(next); got != want {
+		t.Fatalf("the replaced text is %d bytes, want the with's %d", len(got), len(want))
+	}
+}
+
 // An empty with deletes the matched text on purpose. Where it empties a whole paragraph the block
 // and its id stay, holding nothing, whatever blocks are around it; where the text it leaves would
 // read as block syntax at a line start, it is stored escaped and reads back as the characters.

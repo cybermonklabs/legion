@@ -6497,6 +6497,26 @@ describe("rules check", () => {
       ["revise", "no_change", "match"],
     ]);
   });
+  test("a replace whose with opens an ask block under a list marker reaches the rules model with that ask's question (rules test 13b)", async () => {
+    // The server cuts the matched item's own marker off such a `with` and parses what is left
+    // (docs/edits.go's replacementMarkdown), so the gate reads that string too: read as sent, the
+    // ask block opens inside the list item and carries no text, and the rules model would match
+    // on nothing while the server opened the ask with the question.
+    const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });
+    const replaced = await g.device(
+      "r",
+      "dispatch_doc_edit",
+      replaceWith(`- :::ask{#cache}\n${KEEP_INPUT.question}\n:::`)
+    );
+    expect(replaced?.block).toBe(true);
+    expect(replaced?.reason).toContain(
+      'The ask block #cache that starts \'I checked the cache path and it is fine. Should I change it?\' matches the rule "no change": "keep it as it is".'
+    );
+    expect(g.calls.filter(isRules)).toHaveLength(1);
+    expect(g.entries.map((e) => [e.decision, e.rule, e.ruleOutcome])).toEqual([
+      ["revise", "no_change", "match"],
+    ]);
+  });
   test("two rules refusals on one target trip its breaker: the second says so, the third goes out unasked (rules test 14)", async () => {
     const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });
     const first = (await g.device("a", "dispatch_ask", KEEP_INPUT))?.reason ?? "";

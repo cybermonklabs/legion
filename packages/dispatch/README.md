@@ -408,8 +408,11 @@ matched item's own marker, and the markdown each edit answers with. It takes the
 inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
 that project. It is the one driver that can start its own server: given `DATABASE_URL`, a
 loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
-its own trap. That command truncates and reseeds the database it is given, so a `DATABASE_URL`
-naming the database of `LEGION_TEST_PG_DSN` is refused.
+its own trap. That command truncates and reseeds the database it is given, so the run first reads
+the database the connection string names — the path of the URL, a `dbname=` keyword in its query,
+or `PGDATABASE` where it names neither — and refuses the database `LEGION_TEST_PG_DSN` names,
+whichever of the three spells it. It reads that name alone, so a database of that name on another
+server is refused too, and a connection string whose database it cannot read is refused as well.
 
 ```bash
 createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace

@@ -384,6 +384,58 @@ describe("newAsks", () => {
     ).toEqual(["window"]);
   });
 
+  // The server cuts the matched item's own marker off a `with` its marker selected and parses
+  // what is left (replacementMarkdown), so the gate scans that reading too: measured against this
+  // repository's server on 2026-11-11, a `with` of "- :::ask{#q urgency=\"med\"}\nShould we ship
+  // it?\n:::" over the item `- a` selected by its marker is applied and opens the ask with the
+  // question. Read as sent, the ask opens inside the list item and holds no text at all, so the
+  // rules model would match on nothing.
+  test("a replace's with opening with a list marker opens the ask block under it, with its question", () => {
+    const block = ':::ask{#q urgency="med"}\nShould we ship it?\n:::';
+    const asked = newAsks("dispatch_doc_edit", {
+      issue: "DSP-1",
+      artifact: "spec",
+      ops: [{ op: "replace", find: "a", with: `- ${block}` }],
+    });
+
+    expect(asked).toEqual([
+      { kind: "block", id: "q", text: "Should we ship it?", opening: "Should we ship it?" },
+    ]);
+    // The markdown the server parses, through an `insert`, opens the very same ask.
+    expect(asked).toEqual(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "insert", after: "end", markdown: block }],
+      })
+    );
+  });
+
+  // The server cuts a leading `[x] ` or `[ ] ` over a task item's text as well, so the box opens
+  // the same ask the markdown under it opens. Measured on 2026-11-11, a `with` of "[x] :::ask{#q
+  // urgency=\"med\"}\nQ?\n:::" over an unticked task item is refused (a task item whose first
+  // paragraph is empty cannot hold another block after it), so this reading opens nothing there
+  // and the gate over-reports it, which is the side it fails to.
+  test("a replace's with opening with a task checkbox opens the ask block under it, with its question", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: '[x] :::ask{#q urgency="med"}\nQ?\n:::' }],
+      })
+    ).toEqual([{ kind: "block", id: "q", text: "Q?", opening: "Q?" }]);
+  });
+
+  test("a replace's with opening with a list marker and no block opens none", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- the item rewritten\n- a point beside it" }],
+      })
+    ).toEqual([]);
+  });
+
   test("a new issue's spec opens each ask block in it", () => {
     const spec = [
       "# Spec",
