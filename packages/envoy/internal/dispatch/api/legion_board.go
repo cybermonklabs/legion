@@ -1,12 +1,17 @@
-// legion_board.go serves GET /api/v1/legion/board, the Legion view on the project Issues page
-// (dispatch://INFRA-1077, the spec's "The Legion view on the Issues page"), and the body the
-// fourth live view kind sends (live_frames.go's legionBoardView).
+// legion_board.go serves GET /api/v1/projects/{key}/legion/board, the Legion view on the project
+// Issues page (dispatch://INFRA-1077, the spec's "The Legion view on the Issues page"), and the
+// body the fourth live view kind sends (live_frames.go's legionBoardView).
 //
 // The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
 // daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this
 // reads the newest value of each field it recorded, the newest read's own verdict, and the
 // project's issues. A board that called the daemon would read it once per open page and once per
 // event burst, which is what the per-minute lease exists to prevent.
+//
+// The per-issue facts the answer carries are read and never computed. issue_facts holds one row
+// per issue Legion worked, written by the facts consumer (internal/dispatch/legionfacts), and the
+// board serves those rows as they stand. A board that computed them would read the whole metrics
+// population once per open page, which is what the stored rows exist to prevent.
 //
 // Two disciplines, as in the metrics package:
 //
@@ -34,6 +39,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -69,13 +75,19 @@ const (
 	legionNotConfiguredMessage = "this project has no Legion daemon; set one through PUT /api/v1/settings/legion/{project}"
 )
 
-// legionBoardResponse is GET /api/v1/legion/board: the project the board shows, its header, its
-// columns, the settings its daemon reports with where each came from, and when it was computed.
+// legionBoardResponse is GET /api/v1/projects/{key}/legion/board: the project the board shows,
+// its header, its columns, the stored facts of its issues, the settings its daemon reports with
+// where each came from, and when it was computed.
 // Mirrors packages/contracts/src/dispatch-api.ts's LegionBoardResponse exactly.
 type legionBoardResponse struct {
 	Project string              `json:"project"`
 	Header  legionBoardHeader   `json:"header"`
 	Columns []legionBoardColumn `json:"columns"`
+	// Issues is the stored facts of the project's issues, by issue key. There is an entry for
+	// every issue with Legion phase work, open or closed, whatever its hours are, because the
+	// facts consumer writes a row for exactly those issues. An issue on no card carries an entry
+	// all the same, and an issue whose row is not written yet carries none.
+	Issues map[string]legionBoardFacts `json:"issues"`
 	// Settings is the settings the daemon reports, which hold no secret, and SettingSources where
 	// each came from — the file or the route, who changed it and when. Both are the daemon's own
 	// bytes, key by key, and both are {} until a read records them, so a project whose daemon has
@@ -85,12 +97,50 @@ type legionBoardResponse struct {
 	ComputedAt     time.Time                  `json:"computed_at"`
 }
 
+// legionBoardFacts is one issue's stored Legion facts on the wire: the issue_facts row
+// legionfacts.Row holds, less the project the board names and the issue the map is keyed by.
+// Every value is the one the facts consumer computed and stored, and the board adds nothing to
+// any of them.
+//
+//   - OpenedAt is when the issue was opened.
+//   - ClosedAt is when it closed, null while it is open.
+//   - HoursByPhase is the hours it spent in each board column, by column id, a column with no
+//     hours left out.
+//   - WorkHours is its work time to merge, less the time it stood parked and queued.
+//   - ReviewRounds is how many times a reviewer sent its work back.
+//   - RootKey is the root of its tree.
+//   - TreeDepth is how far below that root it stands, 0 for the root itself.
+//   - SlotHours is how long it held an admission slot of its own.
+//   - WaitingReason is why it waits, "" where it waits for nothing.
+//   - WorkFirstAt and WorkLastAt are the first and the last moment of its measured work, null
+//     until it has some.
+//   - UpdatedAt is when its row was written, which the header's facts_updated_at is the oldest
+//     of.
+type legionBoardFacts struct {
+	OpenedAt      time.Time          `json:"opened_at"`
+	ClosedAt      *time.Time         `json:"closed_at"`
+	HoursByPhase  map[string]float64 `json:"hours_by_phase"`
+	WorkHours     float64            `json:"work_hours"`
+	ReviewRounds  int                `json:"review_rounds"`
+	RootKey       string             `json:"root_key"`
+	TreeDepth     int                `json:"tree_depth"`
+	SlotHours     float64            `json:"slot_hours"`
+	WaitingReason string             `json:"waiting_reason"`
+	WorkFirstAt   *time.Time         `json:"work_first_at"`
+	WorkLastAt    *time.Time         `json:"work_last_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
-// trees, the queue's length, and the last read of the daemon — when it was made, whether it
-// succeeded and why it did not. SlotCap is null until a read records the daemon's admission
-// block, Trees is 0 until a daemon that reports its live trees does (dispatch://INFRA-980), and
-// ReadAt is null for a project whose daemon has never answered at all, which shows the board with
-// empty columns.
+// trees, the queue's length, the last read of the daemon — when it was made, whether it
+// succeeded and why it did not — and how fresh the stored facts are. SlotCap is null until a
+// read records the daemon's admission block, Trees is 0 until a daemon that reports its live
+// trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
+// answered at all, which shows the board with empty columns.
+//
+// The two facts fields are read apart for one reason: a reader can then tell a project with no
+// Legion work (rows: none, cursor: an age) from a project whose backfill has not run (rows:
+// none, cursor: null).
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
@@ -99,6 +149,13 @@ type legionBoardHeader struct {
 	ReadAt      *time.Time `json:"read_at"`
 	ReadOK      bool       `json:"read_ok"`
 	ReadError   *string    `json:"read_error"`
+	// FactsUpdatedAt is the oldest updated_at of the stored rows this answer served, null where
+	// it served none.
+	FactsUpdatedAt *time.Time `json:"facts_updated_at"`
+	// FactsCursorAgeSeconds is how long ago the facts consumer's oldest cursor last moved
+	// (legionfacts.CursorAge), measured when the board was read, and null where the consumer
+	// holds no cursor row at all.
+	FactsCursorAgeSeconds *int `json:"facts_cursor_age_seconds"`
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
@@ -166,20 +223,20 @@ type legionBoardWaiting struct {
 	BlockedBy []string   `json:"blocked_by"`
 }
 
-// getLegionBoard answers GET /api/v1/legion/board. Its one parameter is `project`; with none it
-// reads the first project that names a Legion daemon, as GET /api/v1/legion/metrics does. A
-// project that names no daemon is 404 LEGION_NOT_CONFIGURED, which is what shows no view; a
-// project whose daemon has never answered is answered the board with empty columns and the read's
-// failure in its header.
+// getLegionBoard answers GET /api/v1/projects/{key}/legion/board. The project is the path's key,
+// so one address answers one project's board. A project that names no Legion daemon is 404
+// LEGION_NOT_CONFIGURED, which is what shows no view; a project whose daemon has never answered
+// is answered the board with empty columns and the read's failure in its header.
 func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	project, ok := s.legionMetricsProject(w, r)
-	if !ok {
+	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
-	population, err := s.readLegionBoard(r.Context(), project)
+	population, err := s.readLegionBoard(r.Context(), project.Key)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
 			writeError(w, legionNotConfiguredCode, http.StatusNotFound, legionNotConfiguredMessage)
@@ -214,6 +271,12 @@ type legionBoardPopulation struct {
 	// phaseWork is the server's set of the issues that carry Legion phase work, the other half of
 	// what makes an issue Legion's for the walk (legion_phase_work.go); nil is an empty set.
 	phaseWork *legionPhaseWork
+	// facts is the stored Legion facts of the project's issues, by key, as legionfacts.Read
+	// answered them: rows, and no computation of this server's own.
+	facts map[string]legionfacts.Row
+	// cursorAge is how long ago the facts consumer's oldest cursor last moved, in seconds,
+	// measured when this population was read; nil where the consumer holds no cursor row.
+	cursorAge *int
 	// ranked is the project's issue keys in Dispatch's rank order, which is the Queue column's
 	// order when no read has recorded a waiting line.
 	ranked []string
@@ -254,6 +317,11 @@ type legionBoardIssue struct {
 
 // readLegionBoard reads one project's board. A project with no Legion setting is legion's
 // ErrNoSettings, which the route answers 404 and the live hub refuses the subscription with.
+//
+// The stored facts are one read of one project's rows, by the index on (project_key, issue_key),
+// and the board serves what that read answered. Nothing here computes a fact: no elapsed time is
+// added to a stored value, no metrics function is called, and no population is held between
+// calls.
 func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
 	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
@@ -276,6 +344,21 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 	}
 	if err := population.readIssues(ctx, pool); err != nil {
 		return nil, err
+	}
+	// The stored facts: one read of this project's rows, and the age of the consumer's oldest
+	// cursor, which says how fresh they are.
+	facts, err := legionfacts.Read(ctx, pool, project)
+	if err != nil {
+		return nil, err
+	}
+	population.facts = facts
+	age, held, err := legionfacts.CursorAge(ctx, pool, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if held {
+		seconds := int(age.Seconds())
+		population.cursorAge = &seconds
 	}
 	return population, nil
 }
@@ -422,10 +505,15 @@ func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool
 	return rows.Err()
 }
 
-// issueKeys is every issue the board's answer names, which is what the live hub marks its view
-// dirty by (delivery_live_hub_intake.go's dirtyIssueLocked).
+// issueKeys is every issue the board's answer names — the issues the daemon reported and the
+// issues whose stored facts the answer carries — which is what the live hub marks its view dirty
+// by (delivery_live_hub_intake.go's dirtyIssueLocked). A facts write of an issue on no card
+// still moves the answer, because the entry of it in the issues map moves.
 func (p *legionBoardPopulation) issueKeys() map[string]struct{} {
-	keys := make(map[string]struct{}, len(p.issues))
+	keys := make(map[string]struct{}, len(p.issues)+len(p.facts))
+	for key := range p.facts {
+		keys[key] = struct{}{}
+	}
 	for key := range p.issues {
 		keys[key] = struct{}{}
 	}
@@ -514,9 +602,10 @@ func (c *legionBoardCards) nearestCard(key string) string {
 	return ""
 }
 
-// legionBoardCompute is GET /api/v1/legion/board's body for a population read for it. It reads
-// nothing: the live hub answers the same body from the population it already holds, and now is
-// only computed_at.
+// legionBoardCompute is GET /api/v1/projects/{key}/legion/board's body for a population read for
+// it. It reads nothing: the live hub answers the same body from the population it already holds,
+// and now is only computed_at. The issues map is the stored rows the read answered, turned into
+// the wire shape and nothing more.
 //
 // A card's column is the first of these that holds: the daemon's waiting line, in its own order,
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
@@ -684,6 +773,30 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		at := read.at.UTC()
 		header.ReadAt, header.ReadOK, header.ReadError = &at, read.ok, read.failure
 	}
+	// The stored facts as they were read, and how fresh they are: the oldest updated_at of the
+	// rows this answer serves, null where it serves none, and the age the read measured of the
+	// consumer's oldest cursor.
+	issues := make(map[string]legionBoardFacts, len(p.facts))
+	for key, row := range p.facts {
+		hours := row.HoursByPhase
+		if hours == nil {
+			// A row whose work took no measured time carries {} rather than null, as the two
+			// settings blocks do, so a page reads one shape.
+			hours = map[string]float64{}
+		}
+		issues[key] = legionBoardFacts{
+			OpenedAt: row.OpenedAt.UTC(), ClosedAt: legionFactTime(row.ClosedAt), HoursByPhase: hours,
+			WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds, RootKey: row.RootKey,
+			TreeDepth: row.TreeDepth, SlotHours: row.SlotHours, WaitingReason: row.WaitingReason,
+			WorkFirstAt: legionFactTime(row.WorkFirstAt), WorkLastAt: legionFactTime(row.WorkLastAt),
+			UpdatedAt: row.UpdatedAt.UTC(),
+		}
+		if header.FactsUpdatedAt == nil || row.UpdatedAt.Before(*header.FactsUpdatedAt) {
+			at := row.UpdatedAt.UTC()
+			header.FactsUpdatedAt = &at
+		}
+	}
+	header.FactsCursorAgeSeconds = p.cursorAge
 	// Both blocks are objects, empty rather than null, so a page reads one shape whether or not a
 	// read has recorded them.
 	settings, sources := p.settings, p.settingSources
@@ -694,9 +807,19 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		sources = map[string]json.RawMessage{}
 	}
 	return legionBoardResponse{
-		Project: p.project, Header: header, Columns: columns,
+		Project: p.project, Header: header, Columns: columns, Issues: issues,
 		Settings: settings, SettingSources: sources, ComputedAt: now,
 	}
+}
+
+// legionFactTime is one of a stored row's optional moments on the wire: the same moment in UTC,
+// so every time the board writes reads one way, and nil for a row that holds none.
+func legionFactTime(at *time.Time) *time.Time {
+	if at == nil {
+		return nil
+	}
+	utc := at.UTC()
+	return &utc
 }
 
 // card is one issue's card, with the issues holding it and the children of its tree that are on no

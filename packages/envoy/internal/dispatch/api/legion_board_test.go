@@ -119,7 +119,7 @@ func seedLegionBoard(t *testing.T, database *store.Store, project string, now ti
 // legionBoardOf is the board the route answers for project.
 func legionBoardOf(t *testing.T, handler http.Handler, project string) legionBoardResponse {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project="+project, nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/"+project+"/legion/board", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET the board of %s: status=%d body=%s", project, response.Code, response.Body.String())
 	}
@@ -442,7 +442,7 @@ func TestTheLegionBoardOfAProjectWithNoDaemonIsRefused(t *testing.T) {
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project=LINUX", nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LINUX/legion/board", nil, "alice")
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("the board of a project with no daemon: status=%d body=%s", response.Code, response.Body.String())
 	}

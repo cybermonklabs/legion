@@ -1894,11 +1894,11 @@ export interface LegionSettingSource {
  *  bytes the document declares, which is what the settings panel narrows the map to once. */
 export type LegionSettingSources = Readonly<Record<string, LegionSettingSource>>;
 
-/** One column of the Legion board (`GET /api/v1/legion/board`), by its id: the daemon's waiting
- *  line and the issues a blocker link holds, the roots holding a slot whose phase is still
- *  `admitted`, the six phases a role works, `merging` (`retro`, `merging` and `awaiting_merge`),
- *  `awaiting_person` and `held`. Every answer carries all ten, in this order. Read off the
- *  generated column, whose `id` the Go field's `enum` narrows (`legionBoardColumn`). */
+/** One column of the Legion board (`GET /api/v1/projects/{key}/legion/board`), by its id: the
+ *  daemon's waiting line and the issues a blocker link holds, the roots holding a slot whose
+ *  phase is still `admitted`, the six phases a role works, `merging` (`retro`, `merging` and
+ *  `awaiting_merge`), `awaiting_person` and `held`. Every answer carries all ten, in this order.
+ *  Read off the generated column, whose `id` the Go field's `enum` narrows (`legionBoardColumn`). */
 export type LegionBoardColumnID = LegionBoardColumn["id"];
 
 /** Which of a project's Legion issues an answer counts: the Legion section's own toggle. */
@@ -1939,8 +1939,9 @@ export type DeliveryLiveWindow =
  *  neither, which is the seven days ending at the present; naming both is refused, as the GET
  *  route refuses `at` beside `from`/`to`, and it names no query, since the Pipeline section
  *  follows none of the timeline's facets. A legion view names the project whose board it shows and
- *  nothing else: the board has no window, and `project` is all `GET /api/v1/legion/board` reads.
- *  Its snapshot and deltas carry a `LegionBoardResponse`. */
+ *  nothing else: the board has no window, and the project is the whole of what
+ *  `GET /api/v1/projects/{key}/legion/board` reads. Its snapshot and deltas carry a
+ *  `LegionBoardResponse`. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }

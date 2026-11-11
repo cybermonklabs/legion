@@ -1,11 +1,13 @@
-// One issue on the Legion view: everything the card shows comes from `GET /api/v1/legion/board`,
-// which is what the sampler recorded of the project's daemon. Nothing here writes: the daemon owns
-// a Legion issue's status and phase, so the card's priority is a badge rather than the Issues
-// board's editor.
+// One issue on the Legion view: everything the card shows comes from
+// `GET /api/v1/projects/{key}/legion/board`, which is what the sampler recorded of the project's
+// daemon and what the facts consumer stored of the issue. Nothing here writes: the daemon owns a
+// Legion issue's status and phase, so the card's priority is a badge rather than the Issues
+// board's editor. Nothing here computes either: the work time is the number the server stored,
+// written in the card's own words.
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { LegionBoardCard } from "../../api/types";
+import type { LegionBoardCard, LegionBoardFacts } from "../../api/types";
 import { Pill } from "../../components/Pill";
 import {
   borderDefault,
@@ -18,7 +20,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
-import { formatPhaseTime } from "./lib/format";
+import { formatPhaseTime, formatWorkTime } from "./lib/format";
 
 /** One fact of the card: its name, the value, and the `data-` hook an end-to-end test reads it
  *  by. The name is written out rather than abbreviated, so a screen reader hears "Slot 2" and not
@@ -41,17 +43,23 @@ function Fact({
 }
 
 /** One card of the Legion view: the issue's key and title, its priority, how long it has been in
- *  its phase, the slot it holds, the roles in a turn now and its pull request's CI verdict, plus
- *  what holds it where it is — the issues a blocker link names, what it waits on from a person,
- *  and how many issues of its tree have not started and so have no card of their own.
+ *  its phase, the work time the server stored for it, the slot it holds, the roles in a turn now
+ *  and its pull request's CI verdict, plus what holds it where it is — the issues a blocker link
+ *  names, what it waits on from a person, and how many issues of its tree have not started and
+ *  so have no card of their own.
+ *
+ *  `facts` is the issue's entry of the board's `issues` map, which carries the stored facts. It
+ *  is `undefined` for an issue the facts hold no row of, and the card then draws no work time.
  *
  *  `nowMs` is the moment the time in the phase is measured from, which the view passes to every
  *  card so one board reads one clock. */
 export function LegionCard({
   card: issue,
+  facts,
   nowMs,
 }: {
   readonly card: LegionBoardCard;
+  readonly facts: LegionBoardFacts | undefined;
   readonly nowMs: number;
 }): ReactNode {
   const roles = issue.roles ?? [];
@@ -78,6 +86,9 @@ export function LegionCard({
           label="In phase"
           value={formatPhaseTime(issue.phase_since, nowMs)}
         />
+        {facts === undefined ? null : (
+          <Fact hook="work-time" label="Work time" value={formatWorkTime(facts.work_hours)} />
+        )}
         <Fact hook="slot" label="Slot" value={issue.slot === null ? "none" : String(issue.slot)} />
         <Fact
           hook="roles"

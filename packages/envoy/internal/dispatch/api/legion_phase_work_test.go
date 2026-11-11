@@ -153,10 +153,10 @@ func TestALegionTitleAndARenameMarkThePhaseWorkSetStale(t *testing.T) {
 // TestAClosedPageLeavesNoPhaseWorkSetToAnswerFrom: the issues that carry Legion phase work are
 // kept by the live hub's event feed, and the hub reads that feed only while a page holds a
 // subscription — the last page to close stops the generation, and nothing marks the set stale
-// from then until the next one starts (deliveryHub.dropLocked). GET /api/v1/legion/board is
-// answered for any caller, page or no page, so a board read between pages must make the one
-// read itself; one that answers from the set the closed page left behind places an issue in the
-// tree it stood in when that page closed.
+// from then until the next one starts (deliveryHub.dropLocked). GET
+// /api/v1/projects/{key}/legion/board is answered for any caller, page or no page, so a board
+// read between pages must make the one read itself; one that answers from the set the closed
+// page left behind places an issue in the tree it stood in when that page closed.
 func TestAClosedPageLeavesNoPhaseWorkSetToAnswerFrom(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedLegionProjects(t, rig.handler, "INFRA")

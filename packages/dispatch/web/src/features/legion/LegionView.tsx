@@ -1,7 +1,7 @@
 // The Legion view on a project's Issues page: what the project's Legion daemon is doing, as
 // Dispatch's per-minute read of `GET /legion/v1/state` recorded it. Every column, every card and
-// every number comes from `GET /api/v1/legion/board`; nothing is computed here but the time an
-// issue has been in its phase, which is measured from the moment the board gives.
+// every number comes from `GET /api/v1/projects/{key}/legion/board`; nothing is computed here but
+// the time an issue has been in its phase, which is measured from the moment the board gives.
 //
 // Live the way the Delivery page and the Pipeline section are: the `legion` view kind over the
 // page's one live socket (`LIVE` plus `subscribeLive` in `api/queries.ts`), so a card moves with
@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 
 import { isLegionNotConfigured } from "../../api/client";
 import { legionBoardQuery } from "../../api/queries";
-import type { LegionBoardColumn, LegionBoardResponse } from "../../api/types";
+import type { LegionBoardColumn, LegionBoardFacts, LegionBoardResponse } from "../../api/types";
 import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -30,12 +30,15 @@ import {
 import { LegionCard } from "./LegionCard";
 import { LegionSettingsPanel } from "./LegionSettingsPanel";
 
-/** One column of the board, with its cards in the server's order. */
+/** One column of the board, with its cards in the server's order. `facts` is the board's `issues`
+ *  map, from which each card takes its own issue's stored row. */
 function LegionColumn({
   column,
+  facts,
   nowMs,
 }: {
   readonly column: LegionBoardColumn;
+  readonly facts: Readonly<Record<string, LegionBoardFacts>>;
   readonly nowMs: number;
 }): ReactNode {
   const cards = column.cards ?? [];
@@ -62,7 +65,7 @@ function LegionColumn({
       ) : (
         <div className="mt-3 space-y-3">
           {cards.map((issue) => (
-            <LegionCard card={issue} key={issue.key} nowMs={nowMs} />
+            <LegionCard card={issue} facts={facts[issue.key]} key={issue.key} nowMs={nowMs} />
           ))}
         </div>
       )}
@@ -99,9 +102,9 @@ function ReadState({ board }: { readonly board: LegionBoardResponse }): ReactNod
   );
 }
 
-/** The board for one answer of the route: its header, its ten columns in the server's order, and
- *  the daemon's settings. `nowMs` is the moment every card's time in its phase is measured
- *  from. */
+/** The board for one answer of the route: its header, its ten columns in the server's order, the
+ *  stored facts each card draws its work time from, and the daemon's settings. `nowMs` is the
+ *  moment every card's time in its phase is measured from. */
 export function LegionBoardView({
   board,
   nowMs,
@@ -109,6 +112,7 @@ export function LegionBoardView({
   readonly board: LegionBoardResponse;
   readonly nowMs: number;
 }): ReactNode {
+  const facts = board.issues ?? {};
   const { queue_length: queued, slot_cap: cap, slots_in_use: used, trees } = board.header;
   return (
     <>
@@ -131,7 +135,7 @@ export function LegionBoardView({
       <div className="mt-3 overflow-x-auto pb-3 snap-x snap-mandatory" data-legion-columns>
         <div className="flex w-max items-stretch gap-4">
           {(board.columns ?? []).map((column) => (
-            <LegionColumn column={column} key={column.id} nowMs={nowMs} />
+            <LegionColumn column={column} facts={facts} key={column.id} nowMs={nowMs} />
           ))}
         </div>
       </div>

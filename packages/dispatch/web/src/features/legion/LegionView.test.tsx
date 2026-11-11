@@ -16,6 +16,7 @@ import type {
   AuthenticatedUser,
   LegionBoardCard,
   LegionBoardColumnID,
+  LegionBoardFacts,
   LegionBoardResponse,
 } from "../../api/types";
 import { dangerText, successText } from "../../theme/classes";
@@ -81,6 +82,8 @@ function board(
     columns: COLUMNS.map((column) => ({ ...column, cards: cards[column.id] ?? [] })),
     computed_at: "2026-11-03T05:04:00Z",
     header: {
+      facts_cursor_age_seconds: 12,
+      facts_updated_at: "2026-11-03T05:03:00Z",
       queue_length: 0,
       read_at: "2026-11-03T05:03:30Z",
       read_error: null,
@@ -89,9 +92,29 @@ function board(
       slots_in_use: 2,
       trees: 2,
     },
+    issues: {},
     project: "ACME",
     setting_sources: {},
     settings: {},
+    ...overrides,
+  };
+}
+
+/** One issue's stored facts, as the board's `issues` map carries them. */
+function facts(overrides: Partial<LegionBoardFacts> = {}): LegionBoardFacts {
+  return {
+    closed_at: null,
+    hours_by_phase: {},
+    opened_at: "2026-11-01T05:04:00Z",
+    review_rounds: 0,
+    root_key: "ACME-1",
+    slot_hours: 0,
+    tree_depth: 0,
+    updated_at: "2026-11-03T05:03:00Z",
+    waiting_reason: "",
+    work_first_at: null,
+    work_hours: 0,
+    work_last_at: null,
     ...overrides,
   };
 }
@@ -214,12 +237,39 @@ test("a card with no phase entry recorded shows no time in the phase rather than
   expect(issue.querySelector('[data-legion-fact="phase-time"]')?.textContent).toContain("—");
 });
 
+test("a card draws the work time the server stored for its issue, and computes none of it", async () => {
+  // 3.75 h is three hours and 45 minutes, written as the time in the phase is.
+  await renderView(
+    board(
+      { implementing: [card({ key: "ACME-4", title: "Hot reload the settings" })] },
+      { issues: { "ACME-4": facts({ work_hours: 3.75 }) } }
+    )
+  );
+
+  const issue = screen.getByRole("article", { name: "ACME-4 Hot reload the settings" });
+  expect(issue.querySelector('[data-legion-fact="work-time"]')?.textContent).toContain("3 h 45 m");
+});
+
+test("a card whose issue the stored facts hold no row of draws no work time", async () => {
+  await renderView(
+    board(
+      { implementing: [card({ key: "ACME-4" })] },
+      { issues: { "ACME-9": facts({ work_hours: 12 }) } }
+    )
+  );
+
+  const issue = screen.getByRole("article", { name: "ACME-4 Ship the widgets" });
+  expect(issue.querySelector('[data-legion-fact="work-time"]')).toBeNull();
+});
+
 test("the header counts the slots in use against the cap and the queue's length", async () => {
   await renderView(
     board(
       {},
       {
         header: {
+          facts_cursor_age_seconds: 12,
+          facts_updated_at: "2026-11-03T05:03:00Z",
           queue_length: 3,
           read_at: "2026-11-03T05:03:30Z",
           read_error: null,
@@ -244,6 +294,8 @@ test("a daemon that has never answered shows the view with empty columns and the
       {},
       {
         header: {
+          facts_cursor_age_seconds: null,
+          facts_updated_at: null,
           queue_length: 0,
           read_at: null,
           read_error: "dial tcp: connection refused",
@@ -273,6 +325,8 @@ test("a read that failed after a good one keeps the board and says why the last 
       { planning: [card({ key: "ACME-3" })] },
       {
         header: {
+          facts_cursor_age_seconds: 40,
+          facts_updated_at: "2026-11-03T05:00:00Z",
           queue_length: 0,
           read_at: "2026-11-03T05:03:30Z",
           read_error: "context deadline exceeded",

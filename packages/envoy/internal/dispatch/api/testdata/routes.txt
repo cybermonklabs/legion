@@ -107,7 +107,6 @@ POST /api/v1/issues/{key}/results any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any
-GET /api/v1/legion/board any
 GET /api/v1/legion/metrics any
 PUT /api/v1/legion/{project}/settings any
 GET /api/v1/limits any
@@ -156,6 +155,7 @@ POST /api/v1/projects/{key}/artifacts/{slug}/versions any
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number} any
 PUT /api/v1/projects/{key}/default-assignee any
 PUT /api/v1/projects/{key}/gated-steps any
+GET /api/v1/projects/{key}/legion/board any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/references any

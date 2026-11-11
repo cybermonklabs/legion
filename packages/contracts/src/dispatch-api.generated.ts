@@ -1703,23 +1703,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/legion/board": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** @description The Legion view on the Issues page for ?project= (the first project naming a daemon when none is given), from what the sampler recorded of that project's daemon: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, its pull request's CI verdict, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon. */
-    get: operations["getApiV1LegionBoard"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v1/legion/metrics": {
     parameters: {
       query?: never;
@@ -2451,6 +2434,23 @@ export interface paths {
     get?: never;
     /** @description Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of decisions, criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH. */
     put: operations["putApiV1ProjectsByKeyGatedSteps"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/legion/board": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The Legion view on the Issues page for the project the path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, its pull request's CI verdict, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying the stored facts of every issue with Legion phase work, open or closed, by issue key; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts are. 404 PROJECT_NOT_FOUND for a project that does not exist, 404 LEGION_NOT_CONFIGURED when the project names no daemon. */
+    get: operations["getApiV1ProjectsByKeyLegionBoard"];
+    put?: never;
     post?: never;
     delete?: never;
     options?: never;
@@ -4809,7 +4809,33 @@ export interface components {
         | "held";
       label: string;
     };
+    LegionBoardFacts: {
+      /** Format: date-time */
+      closed_at: null | string;
+      hours_by_phase: {
+        [key: string]: number;
+      } | null;
+      /** Format: date-time */
+      opened_at: string;
+      review_rounds: number;
+      root_key: string;
+      /** Format: double */
+      slot_hours: number;
+      tree_depth: number;
+      /** Format: date-time */
+      updated_at: string;
+      waiting_reason: string;
+      /** Format: date-time */
+      work_first_at: null | string;
+      /** Format: double */
+      work_hours: number;
+      /** Format: date-time */
+      work_last_at: null | string;
+    };
     LegionBoardHeader: {
+      facts_cursor_age_seconds: null | number;
+      /** Format: date-time */
+      facts_updated_at: null | string;
       queue_length: number;
       /** Format: date-time */
       read_at: null | string;
@@ -4824,6 +4850,9 @@ export interface components {
       /** Format: date-time */
       computed_at: string;
       header: components["schemas"]["LegionBoardHeader"];
+      issues: {
+        [key: string]: components["schemas"]["LegionBoardFacts"];
+      } | null;
       project: string;
       setting_sources: {
         [key: string]: unknown;
@@ -10094,39 +10123,6 @@ export interface operations {
       };
     };
   };
-  getApiV1LegionBoard: {
-    parameters: {
-      query?: {
-        project?: string;
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["LegionBoardResponse"];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
   getApiV1LegionMetrics: {
     parameters: {
       query?: {
@@ -11953,6 +11949,40 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyLegionBoard: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionBoardResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ProjectsByKeyRelated: {
     parameters: {
       query?: {
@@ -13081,6 +13111,7 @@ export type LauncherCredentialsResponse = components["schemas"]["LauncherCredent
 export type LeadTime = components["schemas"]["LeadTime"];
 export type LegionBoardCard = components["schemas"]["LegionBoardCard"];
 export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
+export type LegionBoardFacts = components["schemas"]["LegionBoardFacts"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];

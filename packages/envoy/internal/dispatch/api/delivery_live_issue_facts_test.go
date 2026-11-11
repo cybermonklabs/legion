@@ -105,15 +105,16 @@ func recomputeOfView(t *testing.T, frame DeliveryLiveView) func(deliveryHubNote)
 	}
 }
 
-// TestAnIssueFactsWriteRecomputesTheLegionBoardAndSendsNoFreshness: the write of one issue's
-// stored Legion facts reaches an open board through the change log, as a delivery row's write
-// reaches an open Delivery page. The board shows the issue, so it is recomputed, and its
-// recompute sends no freshness frame, because it reads no delivery row and judges no verdict.
-// The timeline shows neither issue and is sent nothing either.
+// TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness: the write of one issue's stored
+// Legion facts reaches an open board through the change log, as a delivery row's write reaches an
+// open Delivery page. The board carries that issue's stored row in its issues map, so the write
+// is recomputed and sent as a delta of the one entry, and the recompute sends no freshness frame,
+// because the board reads no delivery row and judges no verdict. The timeline shows neither issue
+// and is sent nothing at all.
 //
 // It counts the recomputes of the one view the facts name and no others: the hub recomputes every
 // view when its event feed is taken again, which no write of this test caused.
-func TestAnIssueFactsWriteRecomputesTheLegionBoardAndSendsNoFreshness(t *testing.T) {
+func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	seedLegionProjects(t, rig.handler, "INFRA")
@@ -138,7 +139,12 @@ func TestAnIssueFactsWriteRecomputesTheLegionBoardAndSendsNoFreshness(t *testing
 	rig.hub.catchUpNow()
 	rig.waitFor(t, shown, 5*time.Second, "a recompute of the board the issue is on", recomputeOfView(t, boardFrame))
 	boardRecomputes := rig.count(shown, recomputeOfView(t, boardFrame))
-	board.none(t, viewMaxWait, "the facts write of an issue the board shows")
+	delta := board.delta(t, 5*time.Second, "b")
+	entry, sent := delta.Maps["issues"]["INFRA-4"]
+	if !sent {
+		t.Fatalf("the delta carries the issues entries %v, want INFRA-4's", delta.Maps["issues"])
+	}
+	board.none(t, viewMaxWait, "the delta of the facts write, which carries no freshness verdict")
 	timeline.none(t, viewMaxWait, "the facts write of an issue the timeline does not show")
 
 	// An issue no open view shows leaves the hub idle and tells no page anything.
@@ -147,6 +153,6 @@ func TestAnIssueFactsWriteRecomputesTheLegionBoardAndSendsNoFreshness(t *testing
 	rig.waitNoRecompute(t, viewMaxWait)
 	board.none(t, time.Second, "the facts write of an issue no view shows")
 	timeline.none(t, time.Second, "the facts write of an issue no view shows")
-	t.Logf("INFRA-4's facts: %d board recompute(s), 0 frames to the board and 0 to the timeline; INFRA-99's facts: the hub went quiet and sent 0 frames",
-		boardRecomputes)
+	t.Logf("INFRA-4's facts: %d board recompute(s), 1 delta carrying its entry (%s) and no freshness frame, 0 frames to the timeline; INFRA-99's facts: the hub went quiet and sent 0 frames",
+		boardRecomputes, entry)
 }

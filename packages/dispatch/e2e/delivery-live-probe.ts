@@ -175,6 +175,7 @@ const PIPELINE_FIELDS: Readonly<Record<PipelineField, true>> = {
 const LEGION_FIELDS: Readonly<Record<LegionField, true>> = {
   columns: true,
   header: true,
+  issues: true,
   project: true,
   setting_sources: true,
   settings: true,
@@ -678,7 +679,7 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
       if (!isLegion(body)) throw new Error("the legion view's snapshot is not a board body");
       return [
         read<LegionBoardResponse>(
-          `/api/v1/legion/board?${new URLSearchParams({ project: view.project })}`,
+          `/api/v1/projects/${encodeURIComponent(view.project)}/legion/board`,
           (answer) => ({
             measures: compareFields(body, answer, LEGION_FIELDS),
             prs: null,
