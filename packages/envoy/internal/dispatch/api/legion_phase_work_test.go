@@ -215,6 +215,41 @@ func TestUnwatchLeavesTheWatchOfTheGenerationThatReplacedItAlone(t *testing.T) {
 	}
 }
 
+// TestATitlelessEventOfARoleSessionMarksThePhaseWorkSet: the phase-work rule reads an event
+// that carried no title of its own under the session's newest title all the same
+// (legion_phase_work.go, legion/phase_work.go), so such an event can be the first that gives
+// its issue phase work. The hub's intake must therefore mark the set stale for it, although it
+// is no retitle and marks no view: a write with no title takes no name away, and the Dispatch
+// CLI sends one whenever the session's title is unset (envoy-client's dispatch-cli.ts).
+//
+// Before this round the intake took main's early return for such an event and never reached
+// observe, so a board read went on answering from a set that predates the work.
+func TestATitlelessEventOfARoleSessionMarksThePhaseWorkSet(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	top, middle, bottom := seedPhaseWorkChain(t, rig, 990, now.Add(-time.Hour))
+	holdAGeneration(t, rig)
+
+	// The session is known to the set as the middle issue's implementer, by an event it wrote
+	// on the bottom issue: its title names the middle, which carries no phase work yet.
+	seedLegionRoleEvent(t, rig.database, bottom, "s-990", "implementer", middle, now.Add(-45*time.Minute))
+	rig.applyEvents(t, "the role session's first event, written on another issue")
+	if tree := legionCard(t, legionBoardOnTheHub(t, rig, "INFRA"), bottom).Tree; tree != bottom {
+		t.Fatalf("the board puts %s in tree %q, want itself: the issue above it carries no phase work yet", bottom, tree)
+	}
+
+	// The same session writes on the middle issue carrying no title: the rule reads it under
+	// the title the set knows, so the middle carries phase work from here and the bottom's
+	// tree climbs past it.
+	seedSessionEvent(t, rig.database, middle, "s-990", "", now.Add(-30*time.Minute))
+	rig.applyEvents(t, "the role session's title-less event on the issue its title names")
+	if tree := legionCard(t, legionBoardOnTheHub(t, rig, "INFRA"), bottom).Tree; tree != top {
+		t.Errorf("after the title-less event the board puts %s in tree %q, want %s: the event gave %s phase work and the set answered from before it", bottom, tree, top, middle)
+	}
+}
+
 // seedPhaseWorkChain seeds three issues of INFRA, top to bottom: a top the daemon reports, a
 // middle it reports nothing of, and a bottom it reports. The walk stops below the middle while
 // the middle is no Legion issue, and climbs to the top the moment it carries phase work, so the

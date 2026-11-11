@@ -92,8 +92,10 @@ func (w *legionPhaseWork) invalidate() {
 }
 
 // observe takes one event a session wrote — the session's id, that session's newest title as
-// the event carries it, and the issue the event was written on — and marks the set stale only
-// where the one read can answer differently for it. The three cases it marks:
+// the event carries it, empty where the event carried none, and the issue the event was
+// written on — and marks the set stale only where the one read can answer differently for it.
+// An empty title is read as the session's known one, since an event carrying no title takes
+// none away. The three cases it marks:
 //
 //   - the session's newest title is a Legion role's and the set's own read did not know it as
 //     one, so every issue the session has written on may carry phase work now;
@@ -110,10 +112,18 @@ func (w *legionPhaseWork) observe(session, title, issue string) {
 	if session == "" {
 		return
 	}
-	parsed, isRole := legion.WorkerTitle(title)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	known, wasRole := w.roleSessions[session]
+	if title == "" {
+		// An event carrying no title takes none away: the name the read uses is the session's
+		// newest, so an event of a session already known as a role is read under that title.
+		// Read as a title of no role instead, such an event would say the session had stopped
+		// being a role, and the third case below - the role's first event on the issue its
+		// title names - would never mark the set for an event written without one.
+		title = known
+	}
+	parsed, isRole := legion.WorkerTitle(title)
 	if isRole && wasRole && known == title {
 		if _, held := w.keys[issue]; held || !parsed.Works(issue) {
 			return

@@ -313,20 +313,26 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 	}
 	if event.Actor.Kind == "session" && event.Actor.ID != "" {
 		origin := event.Actor.Origin
-		if origin == nil || origin.SessionTitle == "" {
+		title := ""
+		if origin != nil {
+			title = origin.SessionTitle
+		}
+		// An event of a session can move which issues the phase-work read answers: the rule
+		// reads the session's newest title against every issue the session has written on, so
+		// an event carrying no title of its own still places that session's work on this issue
+		// (legion_phase_work.go, legion/phase_work.go). An empty title is the set's own case —
+		// observe reads it as the session's known one — so this call stands above the return
+		// below rather than after it. Which events mark the set is the set's own business: the
+		// ordinary session writing here is most of this feed, and a read of every project's
+		// whole event log is what a mark costs.
+		h.server.legionPhaseWork.observe(event.Actor.ID, title, issueKey)
+		if title == "" {
 			// The name delivery.ResolveSessionTitles reads is the newest title the session
 			// stamped, which a write carrying none does not take away. So such a write is no
 			// retitle: it marks no view, and nothing is recorded for the session, which
 			// recheckHeardLocked would replay as one.
 			return
 		}
-		title := origin.SessionTitle
-		// An event of a session can move which issues the phase-work read answers: the title it
-		// carries is that session's newest, and the rule reads it against every issue the
-		// session has written on. Which events those are is the set's own (observe): the
-		// ordinary session writing here is most of this feed, and a read of every project's
-		// whole event log is what a mark costs.
-		h.server.legionPhaseWork.observe(event.Actor.ID, title, issueKey)
 		for _, view := range g.views {
 			if view.showsSessionRetitled(event.Actor.ID, title) {
 				h.markDirtyLocked(g, view, now, deliveryCauseChange)
