@@ -374,48 +374,55 @@ describe("userConfigChain", () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   }, 60_000);
   // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance. Neither helper carries a
-  // deadline of its own any more: each one's 3 s deadline sat below this file's 5 s per-test
-  // limit, and the two run in series inside one row, so on a loaded machine the row hit the
-  // runner's limit before either helper could report what it saw. The per-test limit on each row
-  // below is the single bound, and the fake jj sleeps long past it, so a wait that is never
-  // bounded and a kill that misses the child both end the row at that limit.
-  /** The wrapper's child pid, once it has written it; warns once at 2 s naming the pidfile it is
-   *  waiting for, so a pidfile that is never written says so before the row's limit. */
-  async function pidFrom(pidFile: string): Promise<number> {
+  // are external OS state, which Bun's fake timers cannot advance. The helper's own 30 s is a
+  // hang guard and no bound on the work: what it waits for costs 14 ms unloaded and up to 3.1 s
+  // at 240 busy loops on this two-CPU pod (the wrapper writing its pid; a reaped child answers
+  // at once), so 30 s is about ten times the loaded worst. It sits inside each row's own 60 s
+  // limit on purpose, so that the row's `finally` runs and kills the fake jj's `sleep 300`
+  // rather than leaving it for five minutes: a `killGroup` that misses the child, or a pidfile
+  // that is never written, ends the row here, named, with nothing left behind. The old 3 s
+  // deadlines were removed because they sat below the file's 5 s per-test limit and two of them
+  // ran in series in one row.
+  const POLL_GUARD_MS = 30_000;
+  /** Polls `read` until it answers, warning once at 2 s and giving up at the guard above, with
+   *  `what` named either way. */
+  async function polled<T>(what: string, read: () => Promise<T | undefined>): Promise<T> {
     const start = performance.now();
     let warned = false;
     for (;;) {
-      const pid = await readFile(pidFile, "utf8")
-        .then((value) => Number(value.trim()))
-        .catch(() => 0);
-      if (Number.isInteger(pid) && pid > 0) return pid;
-      if (!warned && performance.now() - start > 2_000) {
+      const value = await read();
+      if (value !== undefined) return value;
+      const waited = performance.now() - start;
+      if (waited > POLL_GUARD_MS) {
+        throw new Error(`gave up waiting for ${what} after ${Math.round(waited)} ms`);
+      }
+      if (!warned && waited > 2_000) {
         warned = true;
-        console.warn(`still waiting for the jj wrapper to write ${pidFile} after 2 s`);
+        console.warn(`still waiting for ${what} after 2 s`);
       }
       await Bun.sleep(10);
     }
   }
 
-  /** Returns once signal 0 says the kernel has reaped the child; warns once at 2 s naming the
-   *  pid it is waiting for, so a child the kill missed says so before the row's limit. */
-  async function reaped(pid: number): Promise<void> {
-    const start = performance.now();
-    let warned = false;
-    for (;;) {
+  /** The wrapper's child pid, once it has written it. */
+  const pidFrom = (pidFile: string): Promise<number> =>
+    polled(`the jj wrapper to write ${pidFile}`, async () => {
+      const pid = await readFile(pidFile, "utf8")
+        .then((value) => Number(value.trim()))
+        .catch(() => 0);
+      return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+    });
+
+  /** Returns once signal 0 says the kernel has reaped the child. */
+  const reaped = (pid: number): Promise<true> =>
+    polled(`the kernel to reap pid ${pid}`, async () => {
       try {
         process.kill(pid, 0);
+        return undefined;
       } catch {
-        return;
+        return true;
       }
-      if (!warned && performance.now() - start > 2_000) {
-        warned = true;
-        console.warn(`still waiting for the kernel to reap pid ${pid} after 2 s`);
-      }
-      await Bun.sleep(10);
-    }
-  }
+    });
 
   it("chains the user config files jj prints, in order", async () => {
     const env = await withJj("printf '/u/a.toml\\n/u/b.toml\\n'");

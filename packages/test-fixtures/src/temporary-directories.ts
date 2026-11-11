@@ -176,11 +176,15 @@ export function temporaryDirectory(
   // these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms, and it failed this hook in 10 of
   // those 10 askgate runs. Three times the worst, 212.5 s, is 637 s, past the 600 s the
   // consumers' timeout-minutes: 10 allows (.github/workflows/ci.yaml), so that ceiling rules and
-  // 300_000 is half of it, 1.4 times that worst. Plainly: at 120 busy loops per CPU, a load far
-  // past anything CI applies, removing a large tree can cost minutes, so this guard catches a
-  // removal that never returns and nothing smaller, and leaves the job room to redden with this
-  // file named rather than cancelling, which names nothing. Bun reports a timed-out `afterAll`
-  // as `(unnamed)`, so the row itself is not named.
+  // 300_000 is half of it, 1.4 times that worst. Half, not more, because the 600 s is the whole
+  // job and this guard is one removal inside it: the tightest consumer is the `pi-envoy` job
+  // (.github/workflows/ci.yaml), whose suite is minutes of its own — `envoy.test.ts` alone is
+  // 58 s idle — so a removal that spends the whole 300 s there still leaves the job room to
+  // redden rather than to be cancelled, and anything larger would not. Plainly: at 120 busy
+  // loops per CPU, a load far past anything CI applies, removing a large tree can cost minutes,
+  // so this guard catches a removal that never returns and nothing smaller, and leaves the job
+  // room to redden with this file named rather than cancelling, which names nothing. Bun reports
+  // a timed-out `afterAll` as `(unnamed)`, so the row itself is not named.
   afterAll(() => {
     removeTree(directory);
   }, 300_000);

@@ -1715,7 +1715,7 @@ describe("deadline and abandonment", () => {
     await started.promise;
     await g.event("session_shutdown");
     // "Inside the runner's 2 s cap" is the budgets themselves: the runner gives a session_shutdown
-    // handler 2 s (SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS, askgate-core.ts:349-356), so the grace must
+    // handler 2 s (SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS, askgate-core.ts:351-358), so the grace must
     // end inside the handler's wait and that wait inside the cap. No elapsed time decides this.
     expect(core.SHUTDOWN_GRACE_MS).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     expect(core.SHUTDOWN_WAIT_MS).toBeLessThan(2_000);
@@ -1821,6 +1821,12 @@ console.log(JSON.stringify(args, null, 2));
   // for less than DRY_RUN_TIMEOUT_MS, which a starved host alone can buy. Held, `readsEnd -
   // now()` is 45_000 ms however long the host takes, and the gate asks for DRY_RUN_TIMEOUT_MS.
   // 1_000_000 is the standing value the deadline rows further down use for their own clocks.
+  // What else it freezes: the gate reads this same clock when it mints a marker
+  // (askgate-core.ts:3492), so the three rows that hold it mint at `createdAt: 1_000_000` and
+  // the mint's own sweep of stale markers cannot fire there. Nothing in these rows asserts
+  // either, and the budget clamp they gave up is still covered by the moving-clock rows at
+  // :3309, :3326 and :3353. A later assertion about an expired or swept marker belongs in one
+  // of those rows, not here, where the frozen clock and not the code would decide it.
   const HELD_CLOCK = () => 1_000_000;
 
   // The script, the working directory and the budget the gate asks for when it dry-runs a

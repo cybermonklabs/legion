@@ -1472,7 +1472,12 @@ async function settle(): Promise<void> {
 // 25 `setImmediate` round trips and no delay, so a condition that never holds would spin a core
 // for the rest of the guard, beside the rows still running, long after the runner failed this
 // one at its own limit. The pacing starts only once the wait is already pathological, so a
-// healthy wait is untouched.
+// healthy wait is untouched. That pacing is also why this helper is for real-timer scopes only:
+// under `jest.useFakeTimers()` a `Bun.sleep` never resolves (measured on bun 1.4.4: a row
+// awaiting `Bun.sleep(5)` there timed out, where real timers resolve it in 14 ms), so from the
+// first warning on the loop would stop polling and the throw below would be unreachable. No
+// caller is in such a scope: the file's fake-timer scopes are `onTestClock`, the store-beat row
+// and the session_shutdown budget row, and none of them calls this.
 async function until(condition: () => boolean, what: string): Promise<void> {
   const start = performance.now();
   let warned = false;
@@ -17066,17 +17071,41 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
 
     natsState.drainHangs = true;
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
+    // The budget is the composite, not the constant alone: Oh My Pi kills a `session_shutdown`
+    // handler at 2 s, and what has to fit inside that is everything this handler does — the
+    // synchronous work at `envoy.ts:3720-3741` and the race at `:3757-3760` — however many
+    // awaited steps it grows. So the handler runs on the test's clock (`jest.useFakeTimers`,
+    // which `envoy.ts:3743` obeys), where no real time passes and load cannot stretch what is
+    // read: the clock moves only as this loop advances it, and the handler's own end is what
+    // stops it. A handler that waits the hanging drain out never ends and reddens at this row's
+    // guard; one whose deadline is used wrongly at `envoy.ts:3743`, or that grows a step waiting
+    // on another timer, ends past the cap and reddens here.
+    jest.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      let settled = false;
+      const handled = fixture.handlers
+        .get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
+        .finally(() => {
+          settled = true;
+        });
+      for (let step = 0; step < 100 && !settled; step += 1) {
+        for (let flush = 0; flush < 50 && !settled; flush += 1) await Promise.resolve();
+        if (!settled) jest.advanceTimersByTime(100);
+      }
+      await handled;
+      // 2_000 is Oh My Pi's own `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh
+      // My Pi is not a dependency of this package.
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
+    } finally {
+      jest.useRealTimers();
+    }
 
     // The handler deregistered and returned while the drain had started and not returned: one
     // that waits the drain out reaches neither of these, because it hangs to this row's limit.
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(natsState.drainStarted).toBe(true);
-    // Oh My Pi kills shutdown handlers at 2 s, so the bounded drain has to finish first: the
-    // budget itself is what has to stay under that cap. 2_000 is Oh My Pi's own
-    // `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh My Pi is not a dependency
-    // of this package.
-    expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
     // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
     // waits for a drain that never returns. The row's own cost, read from bun's junit reporter on
     // this two-CPU pod: 1_265 / 1_281 / 1_285 ms (min/median/max over 5 idle runs), and

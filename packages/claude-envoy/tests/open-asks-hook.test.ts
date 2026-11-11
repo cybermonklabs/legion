@@ -1,9 +1,29 @@
 import { afterEach, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
+import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/session-hook-budgets"
+
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
+
+/** The seconds Claude Code gives the `open-asks` hook, read from `hooks/hooks.json` itself: the
+ * SessionStart command whose arguments name that mode. A hook that outlives it is killed, and a
+ * killed hook writes no env file. */
+const openAsksHookTimeoutMs = ((): number => {
+  const manifest = JSON.parse(
+    readFileSync(resolve(import.meta.dir, "..", "hooks", "hooks.json"), "utf8"),
+  ) as {
+    hooks: { SessionStart: Array<{ hooks: Array<{ args?: string[]; timeout?: number }> }> }
+  }
+  const commands = manifest.hooks.SessionStart.flatMap((matcher) => matcher.hooks)
+  const openAsks = commands.find((command) => command.args?.includes("open-asks"))
+  if (openAsks?.timeout === undefined) {
+    throw new Error("hooks.json declares no timeout for the open-asks SessionStart hook")
+  }
+  return openAsks.timeout * 1_000
+})()
 
 /** Every hook process `runHook` has spawned, kept so a row that its per-test limit abandons
  * mid-wait leaves no `bun hooks/session-hook.ts` behind, waiting on a jj that never answers. */
@@ -814,6 +834,15 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
       ].join("\n"),
     )
     expect(await readdir(stateDir)).toEqual([])
+    // What the row above shows is that the hook gives up; what it cannot show is that it gives
+    // up soon enough, because the constraint is outside this package: Claude Code kills this
+    // hook at the `timeout` `hooks.json` declares for it, and a hook it kills writes no env file
+    // at all, so the session loses `DISPATCH_HOST`, `ENVOY_CONFIG_FILE` and the summary above.
+    // The two bounds run in series on this row's own path — the jj chain, then the Dispatch read
+    // — so their sum is what has to fit, and both numbers are read from the hook's own module
+    // and the timeout from `hooks.json` itself, so raising either without the other reddens
+    // here rather than in production.
+    expect(JJ_BASE_CHAIN_TIMEOUT_MS + OPEN_ASKS_TIMEOUT_MS).toBeLessThan(openAsksHookTimeoutMs)
   } finally {
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
@@ -827,7 +856,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   // in a whole-suite run of this package on this 2-CPU host carrying 80 busy loops per CPU the
   // row failed on `expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")`,
   // charged 36624.60 ms and so nowhere near this limit, because the hook's own
-  // `OPEN_ASKS_TIMEOUT_MS` of 3 s (`hooks/session-hook.ts:120`) lost the Dispatch read on a
+  // `OPEN_ASKS_TIMEOUT_MS` of 3 s (`hooks/session-hook-budgets.ts`) lost the Dispatch read on a
   // starved host. That bound reads no environment variable, so no per-test limit guards it.
   // Row-filtered at 160 busy loops the row is 19 of 20: an independent campaign of 20 runs at
   // that load failed run 2 at line 808 the same way, charged 39970.84 ms. So on a host starved

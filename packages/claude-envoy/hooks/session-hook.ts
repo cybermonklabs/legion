@@ -116,8 +116,8 @@ import { z } from "zod"
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
+import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "./session-hook-budgets"
 
-const OPEN_ASKS_TIMEOUT_MS = 3_000
 const OpenAsksInput = z.object({
   session_id: z.string().min(1),
   cwd: z.string().optional(),
@@ -177,12 +177,10 @@ const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 /** What an overlay export line starts with: the one line of the env file this hook replaces
  *  rather than adds to. */
 const JJ_CONFIG_EXPORT = "export JJ_CONFIG="
-/** The bound on resolving jj's own user config chain for the overlay, inside the 20 s hooks.json
- *  gives this hook: 3 s of jj and then 3 s of the Dispatch read (`OPEN_ASKS_TIMEOUT_MS`) still
- *  leave the session its summary. Not `JJ_CONFIG_PATH_TIMEOUT_MS`, which is the Oh My Pi lane's
- *  bound inside the 30 s that harness gives its session-start handler. A jj that never answers
- *  costs the session the export and nothing else. */
-const JJ_BASE_CHAIN_TIMEOUT_MS = 3_000
+// `JJ_BASE_CHAIN_TIMEOUT_MS`, the bound on resolving jj's own user config chain for the overlay,
+// and `OPEN_ASKS_TIMEOUT_MS`, the bound on the Dispatch read, are both in
+// `./session-hook-budgets`, where a test can read them: their sum has to stay inside the timeout
+// `hooks.json` gives this hook, and that constraint is asserted rather than only written down.
 
 /** `value` as a single-quoted shell word: Claude Code sources this file before every bash command
  *  of the session, so a path or a config chain holding a space, a quote or a `$` must reach the
