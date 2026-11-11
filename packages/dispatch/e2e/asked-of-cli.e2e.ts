@@ -1,11 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
 
 import { createIssue, createProject, createProjectDocument, getAsk } from "./api";
 import { runDispatch } from "./dispatch-cli";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -54,10 +53,6 @@ function askedId(stdout: string): string {
   expect(id, `dispatch ask printed no ask id: ${stdout}`).toBeDefined();
   return id ?? "";
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): five cold `bun` starts of the real `dispatch` command, each its own process,
 // around one hand-on made in a browser.
