@@ -252,9 +252,10 @@ async function natsRelay(
       },
     };
   };
-  // Each send writes its moment through this, which the call below points at its own variable.
-  let sentNow: (at: Moment) => void = () => undefined;
-  const connection = {
+  // One connection view per send, each writing the moment of its own requests into that send's
+  // own variable: nothing is shared between sends, so two running at once would still each read
+  // the send the session answered.
+  const connectionStamping = (stamp: (at: Moment) => void) => ({
     request(
       subject: string,
       payload: Uint8Array,
@@ -280,22 +281,21 @@ async function natsRelay(
         }
         answered.resolve({ data: new TextEncoder().encode(word) });
       });
-      sentNow(moment());
+      stamp(moment());
       socket.write(
         `HPUB ${subject} ${reply} ${headerBytes} ${total}\r\n${headers}${Buffer.from(payload).toString()}\r\n`
       );
       return answered.promise;
     },
-  };
+  });
   return async (sessionID, payload, seq) => {
-    // The moment of the send the session answered, which each request writes here as it goes
-    // out; the helper makes one request at a time, so the last one it wrote is that send.
+    // The moment of the send the session answered: the helper resends until one is answered, and
+    // each request of this send writes its own moment here as it goes out.
     let sent = moment();
-    sentNow = (at: Moment) => {
-      sent = at;
-    };
     await sendRelayFrame({
-      connection,
+      connection: connectionStamping((at) => {
+        sent = at;
+      }),
       newHeaders,
       sessionID,
       subject: `notifications.agent.${sessionID}`,

@@ -9,7 +9,11 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import {
+  deliverSubject,
+  RelayHeader,
+  type RelayReply,
+} from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { Terminal } from "@xterm/headless";
@@ -162,7 +166,9 @@ export interface RelayFrame {
  * table and the one case per row that drives it are what make the next word a row rather than a
  * round.
  */
-export const relayFirstAnswers = {
+export const relayFirstAnswers: Readonly<
+  Record<RelayReply, { readonly takes: boolean; readonly means: string }>
+> = {
   received: { takes: true, means: "the frame decoded, so the session took it" },
   progress: {
     takes: false,
@@ -173,21 +179,31 @@ export const relayFirstAnswers = {
     means: "a frame the session could not decode and dropped, when it comes first",
   },
   nak: { takes: false, means: "the session cannot take the frame" },
-} as const satisfies Readonly<Record<string, { readonly takes: boolean; readonly means: string }>>;
+};
 
-/** The words of that table a frame is taken by, which is what `sendRelayFrame` answers. */
-export type RelayTake = {
-  [Word in keyof typeof relayFirstAnswers]: (typeof relayFirstAnswers)[Word]["takes"] extends true
-    ? Word
-    : never;
-}[keyof typeof relayFirstAnswers];
-
-/** Whether `word`, a session's first answer, is one of those, read from the table alone. */
-function relayTakes(word: string): word is RelayTake {
-  const answer: { readonly takes: boolean } | undefined = (
-    relayFirstAnswers as Readonly<Record<string, { readonly takes: boolean }>>
+/** What the table says of `word`, which holds no row for a word outside the protocol. */
+export function relayAnswerMeaning(
+  word: string
+): { readonly takes: boolean; readonly means: string } | undefined {
+  return (
+    relayFirstAnswers as Readonly<
+      Record<string, { readonly takes: boolean; readonly means: string }>
+    >
   )[word];
-  return answer?.takes === true;
+}
+
+/**
+ * The one word of that table a frame is taken by. The table is typed against the producing
+ * client's own `RelayReply`, so a word it does not know is a compile error rather than a row
+ * nobody drives, and a row the client adds is a missing key rather than a silent refusal; this
+ * stays the one word every caller may read as a take, and a second take word would be a change
+ * made here deliberately.
+ */
+export type RelayTake = "received";
+
+/** Whether `word`, a session's first answer, is that one, read from the table alone. */
+function relayTakes(word: string): word is RelayTake {
+  return word === "received" && relayFirstAnswers.received.takes;
 }
 
 /**
@@ -223,7 +239,8 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
       if (frame.stopped?.error !== undefined) throw frame.stopped.error;
       if (Date.now() > deadline) {
         throw new Error(
-          `${frame.sessionID} took no relay frame on ${frame.subject}: ${String(error)}`
+          `${frame.sessionID} took no relay frame on ${frame.subject} within ` +
+            `${frame.withinMs ?? 30_000} ms: ${String(error)}`
         );
       }
       // A real clock, deliberately: a session that has not yet subscribed its deliver subject
@@ -232,9 +249,8 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
       continue;
     }
     if (!relayTakes(answered)) {
-      const means: string =
-        (relayFirstAnswers as Readonly<Record<string, { readonly means: string }>>)[answered]
-          ?.means ?? "a word the relay protocol does not hold";
+      const means =
+        relayAnswerMeaning(answered)?.means ?? "a word the relay protocol does not hold";
       throw new Error(
         `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}: ${means}, so it took no frame`
       );

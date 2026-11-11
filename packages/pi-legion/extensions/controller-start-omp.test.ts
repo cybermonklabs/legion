@@ -18,6 +18,7 @@ import {
   ompNatsGuard,
   ompRoot,
   type Request,
+  relayFirstAnswers,
   sendRelayFrame,
   serveStandin,
   spawnInteractive,
@@ -89,6 +90,44 @@ const PROJECT = "legion";
  * `notifications.slack.*.<channel>.mention`); the stream stores a mention on the team's own
  * subject, which that topic covers.
  */
+/**
+ * The lever a person sets by hand to see the notice case red without the delivery it rests on,
+ * and to see that red arrive by name rather than at the case's own bound
+ * (LEGION_TEST_CONTROLLER_NOTICE; nothing in CI or in this repository sets it).
+ *
+ *   - `undecodable` relays the notice with `Envoy-Delivered: 0`, which a real session cannot
+ *     decode, so it answers `done` first and `sendRelayFrame` refuses that word at once.
+ *   - `unheld` relays the notice to a session id nobody holds, with a bound of its own, so the
+ *     server answers no responders and the relay refuses it inside that bound.
+ *
+ * Both are refusals the relay names, and the case ends on the next poll of any wait, because the
+ * refusal is given to the stand-in's `fault` hook. A notice lost in a way the relay cannot see -
+ * one published before the session followed the lane, which a session still answers `received` -
+ * is no arm here and stays what it has always been: the case's own 150-second red with no cause.
+ *
+ * A value that is neither of the two and not unset is refused as this file loads, naming what it
+ * read, rather than running the shipped shape under a title claiming an arm.
+ */
+const NOTICE_ARMS = ["undecodable", "unheld"] as const;
+type NoticeArm = (typeof NOTICE_ARMS)[number];
+const noticeArm: NoticeArm | undefined = ((): NoticeArm | undefined => {
+  const given = process.env.LEGION_TEST_CONTROLLER_NOTICE;
+  if (given === undefined) return undefined;
+  if (!(NOTICE_ARMS as readonly string[]).includes(given)) {
+    throw new Error(
+      `LEGION_TEST_CONTROLLER_NOTICE is ${JSON.stringify(given)}, which is none of ` +
+        `${NOTICE_ARMS.join(", ")}; leave it unset for the shipped shape`
+    );
+  }
+  return given as NoticeArm;
+})();
+
+/**
+ * How long the `unheld` arm's relay is offered before it is refused: a bound of its own, far
+ * under the case's, so that arm's red arrives by name rather than at the case's deadline.
+ */
+const NOTICE_UNHELD_MS = 3_000;
+
 const SLACK_CHANNEL = "C0CONTROLLER";
 const SLACK_TEAM = "T0LEGION";
 // The stand-in stream every registration answer and relay frame of a case names is the
@@ -279,6 +318,12 @@ interface StandinHooks {
    * holds that registration until it settles.
    */
   readonly onNoticeInterest?: (sid: string) => void | Promise<void>;
+  /**
+   * Read by every wait of this file on each of its polls: a failure a stand-in callback recorded
+   * is the case's answer, so a wait ends on it at once rather than at its own deadline. The
+   * notice's own delivery is what records one, since nothing awaits it.
+   */
+  readonly fault?: () => Error | undefined;
   /** Called with the session id each Envoy listener request names, as it arrives. */
   readonly onListener?: (sid: string) => void;
   /** Oh My Pi's `keybindings.yml` for the session, written into its agent directory. */
@@ -545,6 +590,10 @@ async function startController(
           `omp exited (${exitCode}) while waiting for ${what}; its screen:\n${terminal.screen()}`
         );
       }
+      // On every poll, not only at the start: a refusal a stand-in callback recorded is the
+      // case's answer, so the wait ends on it the moment it is there.
+      const fault = hooks.fault?.();
+      if (fault !== undefined) throw fault;
       const value = await probe();
       if (value !== undefined) return value;
       if (Date.now() > deadline) {
@@ -679,6 +728,9 @@ async function startDaemonController(
     const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
     for (;;) {
       if (closed.error !== undefined) throw closed.error;
+      // As in `startController`: a refusal a stand-in callback recorded ends this wait at once.
+      const fault = hooks.fault?.();
+      if (fault !== undefined) throw fault;
       const value = await probe();
       if (value !== undefined) return value;
       if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
@@ -776,7 +828,12 @@ interface SentCard {
  */
 interface StoredMessage {
   readonly summary: string;
-  deliver(sid: string, delivered?: number): Promise<unknown>;
+  /**
+   * Relays this message to `sid`. `delivered` is the frame's delivery count, which a session
+   * cannot decode at 0, and `withinMs` is how long the frame is offered before the relay refuses
+   * it; the helper's own bound by default.
+   */
+  deliver(sid: string, delivered?: number, withinMs?: number): Promise<unknown>;
 }
 
 /**
@@ -816,11 +873,10 @@ interface ControllerInbound {
    */
   notice(sid: string): string;
   /**
-   * Why the notice of `summary` never reached its session, for a wait that ran out on it:
-   * nothing awaits `notice`'s own delivery, so its refusal is kept here and named by the wait
-   * that reads the notice, rather than leaving that wait to read as a bare timeout.
+   * The first refusal of a notice this inbound relayed and nobody awaited, for the stand-in's
+   * `fault` hook, so a notice that never reached its session ends the case's next wait by name.
    */
-  undelivered(summary: string): string | undefined;
+  fault(): Error | undefined;
   /** The same notice, stored and not relayed: the stream holds it until `deliver`. */
   storeNotice(): StoredMessage;
   /**
@@ -832,8 +888,8 @@ interface ControllerInbound {
 }
 
 async function controllerInbound(nats: string): Promise<ControllerInbound> {
-  // Why a relayed notice never reached its session, by the notice's summary (`undelivered`).
-  const undelivered = new Map<string, string>();
+  // The first refusal of a notice nobody awaits, which `fault` hands to every wait of the case.
+  let noticeFault: Error | undefined;
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
   const codec = StringCodec();
@@ -854,7 +910,13 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     sid: string,
     subject: string,
     payload: Uint8Array,
-    stamp: { readonly seq: number; readonly storedAt: string; readonly delivered: number } = {
+    stamp: {
+      readonly seq: number;
+      readonly storedAt: string;
+      readonly delivered: number;
+      /** How long the frame is offered before the relay refuses it; the helper's own by default. */
+      readonly withinMs?: number;
+    } = {
       seq: nextSequence(),
       storedAt: new Date().toISOString(),
       delivered: 1,
@@ -880,7 +942,8 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     );
     return {
       summary,
-      deliver: (sid, delivered = 1) => relay(sid, subject, frame, { ...stored, delivered }),
+      deliver: (sid, delivered = 1, withinMs) =>
+        relay(sid, subject, frame, { ...stored, delivered, withinMs }),
     };
   };
   const storeNotice = (): StoredMessage =>
@@ -933,15 +996,29 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     repeat: (sid, card) => relay(sid, `notifications.agent.${sid}`, card.frame),
     notice(sid) {
       const message = storeNotice();
-      // Nothing awaits this delivery, so its refusal is held here rather than raised with no
-      // owner: the wait that reads the notice names it, so a session that answered nak or took
-      // no frame at all says so instead of reading as a wait that ran out.
-      void message.deliver(sid).catch((error: unknown) => {
-        undelivered.set(message.summary, `; the notice was never delivered: ${String(error)}`);
+      // The arm decides what this delivery is, and nothing awaits it: its refusal goes into the
+      // fault box, which every wait of the case reads on its next poll, so a notice that never
+      // reached the session ends the case by name rather than at the case's own bound.
+      //
+      //   - no arm: the notice as it ships, relayed to the session itself.
+      //   - undecodable: delivered 0, which no session can decode, so it answers `done` first
+      //     and the relay refuses that word at once.
+      //   - unheld: relayed to a session id nobody holds, under a bound of its own, so the
+      //     server answers no responders and the relay refuses it inside that bound.
+      const delivery =
+        noticeArm === "undecodable"
+          ? message.deliver(sid, 0)
+          : noticeArm === "unheld"
+            ? message.deliver(`${sid}-unheld`, 1, NOTICE_UNHELD_MS)
+            : message.deliver(sid);
+      void delivery.catch((error: unknown) => {
+        noticeFault ??= new Error(
+          `the notice ${message.summary} never reached ${sid}: ${String(error)}`
+        );
       });
       return message.summary;
     },
-    undelivered: (summary) => undelivered.get(summary),
+    fault: () => noticeFault,
     storeNotice,
     storeMention,
   };
@@ -950,26 +1027,26 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
 // The control for every `await taken` above: that promise is what a case reads as "the session
 // took the frame", so it has to resolve when a session takes the frame and fail, by its own
 // cause, every way a session takes none. One half per row of `relayFirstAnswers`
-// (packages/pi-shared/test/omp-harness.ts), which is where those meanings are written, and two
-// more for the ways a session answers nothing at all:
+// (packages/pi-shared/test/omp-harness.ts), which is where those meanings are written, read from
+// the table itself so a word the protocol gains gets its half the moment it gains a row, and
+// three more halves beside them -
 //
-//   - `received`, the frame decoded: the send resolves with that word.
-//   - `progress`, a frame held unwritten, which no frame is answered with first.
-//   - `done` as a first answer, which is a frame the session could not decode and dropped.
-//   - `nak`, the answer a closed session sends for a frame it cannot take.
-//   - a word the protocol does not hold, which is refused for being none of the above, so a word
-//     nobody has met yet is not read as a take by default.
+//   - `received`, the one row that takes: the send resolves with that word.
+//   - every other row - `progress`, `done` and `nak` today - each refused by name with its own
+//     meaning out of the table.
+//   - a word the table does not hold, refused for being in none of its rows, so a word nobody
+//     has met yet is not read as a take by default.
 //   - an id nothing subscribes, where the server answers 503 no responders.
 //   - a session that takes the frame and never answers, where each request runs its own 1 s
 //     timeout out.
 //
-// The four refused words each name their own meaning in the refusal, and the last two are held
-// to their own cause, since the relay names both in the same words and carries the cause it last
-// met: a half pointed at the wrong subject - main's `notifications.agent.<sid>`, where no
-// session listens for a frame - reads as the no-responders half and is caught rather than
-// passing as the timeout half. The case gives the relay a bound of its own rather than the 30 s
-// a card is allowed, since the only half that has to reach it is the silent one, and it needs
-// the NATS server and not the binary, so it runs wherever one is configured.
+// The last two are held to their own cause, since the relay names both in the same words and
+// carries the cause it last met: a half pointed at the wrong subject - main's
+// `notifications.agent.<sid>`, where no session listens for a frame - reads as the no-responders
+// half and is caught rather than passing as the timeout half. The case gives the relay a bound
+// of its own rather than the 30 s a card is allowed, since the only half that has to reach it is
+// the silent one, and it needs the NATS server and not the binary, so it runs wherever one is
+// configured.
 const RELAY_REFUSAL_MS = 3_000;
 test.skipIf(natsUrl === undefined && !onActions)(
   "a relay frame is answered by the session that takes it, and refused by its own cause when none does",
@@ -1012,21 +1089,22 @@ test.skipIf(natsUrl === undefined && !onActions)(
     await answers(heard, "received");
     expect(await send(heard)).toBe("received");
 
-    // The answer a closed session sends for a frame it cannot take, and a word of no protocol at
-    // all: the relay refuses each by name, so a caller that only awaits the send reads neither as
-    // a take.
-    for (const [word, means] of [
-      ["progress", "holds a frame unwritten"],
-      ["done", "could not decode and dropped"],
-      ["nak", "cannot take the frame"],
-      ["sure thing", "does not hold"],
-    ] as const) {
+    // Every row of `relayFirstAnswers` that is no take, read from the table rather than from a
+    // list of its own, so a word the protocol gains gets a half here the moment it gains a row;
+    // then a word outside the table, which is refused for being in none of its rows.
+    for (const [word, { takes, means }] of Object.entries(relayFirstAnswers)) {
+      if (takes) continue;
       const sid = `refusing-${randomUUID()}`;
       await answers(sid, word);
       await expect(send(sid)).rejects.toThrow(
-        new RegExp(`${sid} answered ${JSON.stringify(word)}.*${means}.*took no frame`, "s")
+        `${sid} answered ${JSON.stringify(word)} on ${ROLE_TOPIC_PREFIX}${controllerToken(PROJECT)}: ${means}, so it took no frame`
       );
     }
+    const babbling = `babbling-${randomUUID()}`;
+    await answers(babbling, "sure thing");
+    await expect(send(babbling)).rejects.toThrow(
+      `${babbling} answered "sure thing" on ${ROLE_TOPIC_PREFIX}${controllerToken(PROJECT)}: a word the relay protocol does not hold, so it took no frame`
+    );
 
     const unheard = `nobody-${randomUUID()}`;
     await expect(send(unheard)).rejects.toThrow(
@@ -1153,8 +1231,9 @@ test.skipIf(skip)(
 // it, as a steer into the start turn or in a later turn. The card's frame and the repeat behind it
 // are taken by the session's one connection in the order they were published. The notice reaches
 // the session as a relay frame of its own consumer, which the session answers `received`
-// (`ControllerInbound.notice`); a notice the session never took is named by the wait that reads
-// it (`ControllerInbound.undelivered`), rather than left to read as a wait that ran out.
+// (`ControllerInbound.notice`); a notice the session never took is refused by the relay, and
+// that refusal ends the case's next wait by name through the stand-in's `fault` hook rather than
+// leaving it to read as a wait that ran out (`LEGION_TEST_CONTROLLER_NOTICE`, above).
 test.skipIf(skip)(
   "a card published as soon as the role is claimed comes after the start turn",
   async () => {
@@ -1170,6 +1249,7 @@ test.skipIf(skip)(
       onNoticeInterest: (claimed) => {
         notice = inbound.notice(claimed);
       },
+      fault: inbound.fault,
     });
     const { card, taken } = await session.until("the controller role's claim", () => sent);
     await taken;
@@ -1187,9 +1267,7 @@ test.skipIf(skip)(
       const reply = `Reply ${answered}.`;
       turn.reply(reply);
       const next = await session.until(
-        `the next model request, or the session settled with the card and the notice read${
-          notice === undefined ? "" : (inbound.undelivered(notice) ?? "")
-        }`,
+        "the next model request, or the session settled with the card and the notice read",
         async () => {
           if (session.turns.length > answered) return "request";
           return reached() && (await isSettledOn(session, reply)) ? "settled" : undefined;
@@ -1504,19 +1582,22 @@ test.skipIf(skip)(
   "a card and a Legion notice that arrive while the start command's claim runs wait for the start turn, and each still gets a turn after it",
   async () => {
     const noticeRegistration = newHold();
+    // Opened before the session, so every wait below can read the notice's own refusal through
+    // `fault` from its first poll.
+    const inbound = await controllerInbound(setup().nats);
     let sid: string | undefined;
     const session = await startController({
       onRoleClaim: (claimed) => {
         sid = claimed;
       },
       onNoticeInterest: () => noticeRegistration.wait(),
+      fault: inbound.fault,
     });
     await session.until("the registration after the controller topic's subscription", () =>
       noticeRegistration.reached() ? true : undefined
     );
     const claimed = await session.until("the controller role's claim", () => sid);
     const start = await session.nextTurn("the start turn's model request");
-    const inbound = await controllerInbound(setup().nats);
     const { card, taken } = inbound.card(claimed, "claim");
     await taken;
     const notice = inbound.notice(claimed);
@@ -1539,9 +1620,7 @@ test.skipIf(skip)(
       session.turns.some(({ request }) => conversation(request).includes(notice));
     for (let answered = 1; ; answered += 1) {
       const next = await session.until(
-        `the next model request, or the session settled with the card and the notice read${
-          inbound.undelivered(notice) ?? ""
-        }`,
+        "the next model request, or the session settled with the card and the notice read",
         async () => {
           if (session.turns.length > answered) return "request";
           return reached() && (await isSettledOn(session, reply)) ? "settled" : undefined;
