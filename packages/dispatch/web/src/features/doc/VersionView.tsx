@@ -86,13 +86,18 @@ export function VersionView({
         : { by: highlightBy, id: highlightId, quote: highlightQuote },
     [highlightBy, highlightId, highlightQuote]
   );
+  // The effect below depends on the signed-in person's login rather than on the whoami answer:
+  // that answer carries `event_head`, so it is a new object after every committed event, and
+  // keyed on it the editor is destroyed and built again while the reader reads. This view reads
+  // the person at build time only, so the login - a string, equal to itself across re-reads - is
+  // both what the editor needs and the signal that it has arrived.
+  const login = userQuery.data?.login;
   useEffect(() => {
     const parent = root.current;
-    const user = userQuery.data;
     if (
       parent === null ||
       markdown === undefined ||
-      user === undefined ||
+      login === undefined ||
       blockSchema === undefined
     ) {
       return;
@@ -116,7 +121,7 @@ export function VersionView({
         blockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
-        user: { color: colorForLogin(user.login), name: user.login },
+        user: { color: colorForLogin(login), name: login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
@@ -166,15 +171,7 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [
-    blockSchema,
-    changeBaseline,
-    createEditor,
-    highlighted,
-    markdown,
-    queryClient,
-    userQuery.data,
-  ]);
+  }, [blockSchema, changeBaseline, createEditor, highlighted, login, markdown, queryClient]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
