@@ -303,11 +303,13 @@ DEAD_ADDRESS="127.0.0.1:1"
 # Job 129743677408 ran without the stand-in, so it measured no fetch at all and can say
 # nothing about how long a fetch takes. Job 129874475871 did measure them: of its 36 fetches
 # that kept the pinned ladder, the npm fetch of the 107 MB Bun tarball reads 0 s, the PyPI
-# wheel 0 s and the package blobs 0 s or 1 s, and the only one above 1 s is the kept case at
-# 63 s. A reading of about 30 s for that tarball is a step duration and no fetch: setup-bun
-# measured 38 s, 40 s and 34 s in that job, and that step is the Node action and the unpack
-# around the fetch.
-# So the floor stands about 108 s above the largest honest fetch measured.
+# wheel 0 s and the package blobs 0 s or 1 s, and the only one above 1 s is the kept case,
+# which read 63 s there because that job ran at the 60 s bound; at the 120 s bound this
+# repository fetches under now, job 130417801504 read that same case at 127 s. A reading of
+# about 30 s for that tarball is a step duration and no fetch: setup-bun measured 38 s, 40 s
+# and 34 s in that job, and that step is the Node action and the unpack around the fetch.
+# The honest readings are of their sources and not of the bound, so they stand whatever the
+# bound is, and the floor stands about 108 s above the largest of them.
 # A fetch that merely rode out a flap of its source reads as the warning `ladder-report` prints
 # below and not as a refusal.
 LADDER_FLOOR=109
