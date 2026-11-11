@@ -924,7 +924,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 65: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 67: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
 // runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
 // the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
@@ -945,7 +945,11 @@ package api
 // frame of their own, because `ServeLauncher` and the launcher's own command loop each close
 // the connection on a frame type they do not name, and a launcher that redials once a second
 // for every role of the pod is the failure this shape exists to avoid.
-// (The base carried 62 at the forward merge that renumbered this entry, 8d24d26ff613, and 63
-// and 64 were declared by open pull requests then, so this change takes 65. Read main's own
-// number, and every open branch's, again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 65
+// (The base carried 64 at the read that chose this number, 2026-11-11, and 65 was declared by
+// three open pull requests then and 66 by a fourth, so this change takes 67, above every open
+// declaration. It is held from here: a later forward merge keeps both sides' entries and leaves
+// this number alone, as it keeps both sides of validNoticeKinds, and it moves again only when
+// main's own DaemonAPIVersion reaches or passes it, because renumbering changes this branch's
+// own diff and costs the tester a round for nothing. Read main's own number, and every open
+// branch's, again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 67
