@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +36,8 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	// none: a report, or the acknowledgement, that reaches the server after the window has
 	// lapsed still has the message delivered again (keepInProgress, ackprogress.go). Measured in
 	// this issue's pod at the base commit, the held-fact row of this package failed 11 of 300
-	// runs at the 200 ms window under 16 busy loops on 2 CPUs, and the keeper's first report was
-	// up to 403.7 ms late against a 66.7 ms period.
+	// runs at the 200 ms window under 16 busy loops on 2 CPUs, and the keeper's first report came
+	// up to 403.7 ms after it started, against a 66.7 ms period, so up to 337 ms late.
 	spec.AckWait = time.Minute
 	stop := startConsume(t, js, spec, pool)
 	defer stop()
@@ -50,8 +51,10 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	const reviewSubject = "notifications.github.sjawhar.legion.pr.42.review"
 	review := capturedGitHubEnvelope(t, "review.json")
 	consumer := githubConsumerName(spec.Project)
-	waitAcknowledged(t, stream, consumer, publishAt(t, js, reviewSubject, review))
-	waitAcknowledged(t, stream, consumer, publishAt(t, js, reviewSubject, review))
+	first := publishAt(t, js, reviewSubject, review)
+	waitAcknowledged(t, stream, consumer, first)
+	second := publishAt(t, js, reviewSubject, review)
+	waitAcknowledged(t, stream, consumer, second)
 
 	written := logs.String()
 	line := logLine(written, droppedDuplicateLine)
@@ -80,10 +83,20 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	if said := logValue(line, "delivered"); said != "1" {
 		t.Errorf("the dropped duplicate's line says delivered=%s, want 1, the dropped copy's own first delivery: %s", said, line)
 	}
-	// The other five fields an operator tells a redelivery from a copy of the listener's mention
+	// The second publication's own stream sequence, by value: this is the one field that holds
+	// the branch's polarity. Both publications are the same envelope on the same subject, so
+	// both copies carry the same consumer, source, event id and subject, and each publication is
+	// a stream message of its own delivered once, so both read delivered=1. Read by key alone,
+	// every field of this line says as much about the applied fact as about the dropped copy,
+	// and the row passes whether the branch reports the duplicate or its opposite. The stream
+	// sequence is what separates them, so it is read by value.
+	if said := logValue(line, "stream_seq"); said != strconv.FormatUint(second, 10) {
+		t.Errorf("the dropped duplicate's line says stream_seq=%s, want %d, the second publication's own message: %s", said, second, line)
+	}
+	// The other four fields an operator tells a redelivery from a copy of the listener's mention
 	// fan-out by. What each one holds is the fixture's — its subject, its ids and the stream's
 	// numbering — so the row asks that it is reported and not what it reads.
-	for _, field := range []string{"source=", "event_id=", "subject=", "stream_seq=", "delivery_seq="} {
+	for _, field := range []string{"source=", "event_id=", "subject=", "delivery_seq="} {
 		if !strings.Contains(line, field) {
 			t.Errorf("the dropped duplicate's line carries no %s, which is what the rate is read by: %s", field, line)
 		}
@@ -91,8 +104,8 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 }
 
 // logValue is what a slog text line holds for key: what follows " key=" up to the next space, or
-// "" when the line carries no such key. Neither field this row reads by value holds a space, so
-// neither is quoted and neither runs past the space that ends it.
+// "" when the line carries no such key. No field this row reads by value holds a space, so none
+// of them is quoted and none runs past the space that ends it.
 func logValue(line, key string) string {
 	_, after, found := strings.Cut(line, " "+key+"=")
 	if !found {

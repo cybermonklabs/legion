@@ -187,15 +187,20 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// What that has to cover is measured. The campaign of dispatch://INFRA-1113 measured, at a
 	// 200 ms window: the largest trip of an acknowledgement to the server 516.8 ms, the largest
 	// lateness of the keeper's own report 337 ms, and the largest trip of a progress report
-	// 158.6 ms, so the largest delay any signal must survive is 517 ms. Those delays are
-	// wall-clock and not a fraction of the period, because the mechanism is a goroutine and a
-	// socket that are not scheduled: a starved goroutine is late by the time it waits, whatever
-	// interval it was waiting for. The 1333 ms left is 2.6 times 517 ms, where a second and a
-	// half would leave 1000 ms, which is 1.9 times, so two seconds is the smallest half-second
-	// that leaves more than twice the largest delay measured. At consumerSpec's 200 ms this row
-	// is not sound: measured in this pod at the base commit, under 16 busy loops on 2 CPUs, it
-	// failed 11 of 300 runs, each failure a delivery too many with one event prepared twice,
-	// while the control below passed 300 of 300.
+	// 158.6 ms. A late first report costs both of the last two, because the report is made late
+	// and then travels: its worst case is the sum, 495.6 ms. The largest single delay measured
+	// is the acknowledgement's own trip, 516.8 ms, which rounds to the 517 ms the window was
+	// sized against. A reader at another period composes it the same way: add the keeper's
+	// lateness to a report's trip, and take the larger of that sum and the acknowledgement's
+	// trip. Those delays are wall-clock and not a fraction of the period, because the mechanism
+	// is a goroutine and a socket that are not scheduled: a starved goroutine is late by the
+	// time it waits, whatever interval it was waiting for. The 1333 ms left is 2.58 times
+	// 517 ms and 2.69 times 495.6 ms, where a second and a half would leave 1000 ms, which is
+	// 1.9 times, so two seconds is the smallest half-second that leaves more than twice the
+	// largest delay measured. At consumerSpec's 200 ms this row is not sound: measured in this
+	// pod at the base commit, under 16 busy loops on 2 CPUs, it failed 11 of 300 runs, each
+	// failure a delivery too many with one event prepared twice, while the control below passed
+	// 300 of 300.
 	//
 	// The hold below is three windows, so six seconds, and the limit on the next line is far
 	// above it.

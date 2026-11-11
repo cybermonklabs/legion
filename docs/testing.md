@@ -528,6 +528,10 @@ Two kinds of row keep an exact count.
   `TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction`
   (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait = time.Minute`
   over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner.
+  This carve-out rests on the keeper reporting a running handler in progress and on its first
+  report arriving one period in. Where the keeper reports at once, or its period stops being a
+  third of the window, size the window again rather than from this sentence: a reader deriving
+  it here would derive it from a mechanism that has moved.
 - A row whose subject is the broker's own delivery behaviour must count deliveries, because the
   count is what it proves. Such a row needs a window above the measured distribution of the first
   report of the progress keeper, the goroutine that reports a running handler in progress so that
@@ -536,6 +540,9 @@ Two kinds of row keep an exact count.
   `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce` and its control
   `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal`
   (`packages/daemon/internal/intake/ackprogress_test.go`) are of this kind.
+  This carve-out rests on a redelivery being observable in no other way. Where the daemon records
+  a delivery count of its own, such a row asserts that record as any other row asserts an effect,
+  and this carve-out ends.
 
 The comment beside such a count names the window and the measurement that sized it. A later reader
 changes the window, the handler or the keeper's period, and that comment is what tells the reader
