@@ -130,16 +130,150 @@ func TestFindDecisionCardReadsABodyTheParseRefuses(t *testing.T) {
 	}
 }
 
-// A `::::ask` with no attributes opens no typed directive for either parser, so the reader draws
-// its lines as text and there is no card to find: the body of
-// packages/dispatch/e2e/unknown-directive.stub.e2e.ts:50, which the parse refuses as well.
-func TestFindDecisionCardFindsNoCardWhereNoAskIsOpened(t *testing.T) {
-	const body = "Lead **bold**\n\n::::ask\nWhich option?\n\n- first\n\n:::note\nA note line\n:::\n::::\n"
-	if _, err := Parse(body); err == nil {
-		t.Fatal("the body parses, so it no longer drives a refused parse")
+// An opening line the browser reader opens an `ask` container on is a decision block wherever it
+// stands, whatever this parser's own grammar makes of that line: the reader draws its card from
+// the container it opened, so the card is found for an opener carrying no attributes, one written
+// with four colons, one a space follows, one carrying a label, and each of them inside a quote, a
+// list item or a callout. The place the card is named at is the one the reader draws it at, since
+// the rewrite keeps every line of the body and the order they stand in.
+func TestFindDecisionCardReadsEveryOpenerTheReaderOpensAnAskOn(t *testing.T) {
+	const question = "Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n"
+	for _, test := range []struct {
+		name, markdown string
+		position       int
+		blockType      string
+	}{
+		{
+			name:      "an opener carrying no attributes",
+			markdown:  ":::ask\n" + question + ":::\n",
+			position:  1,
+			blockType: "ask",
+		},
+		{
+			name:      "an opener of four colons",
+			markdown:  "::::ask\n" + question + "::::\n",
+			position:  1,
+			blockType: "ask",
+		},
+		{
+			name:      "a space after the attributes",
+			markdown:  ":::ask{#b1} \n" + question + ":::\n",
+			position:  1,
+			blockType: "ask",
+		},
+		{
+			name:      "a label before the attributes",
+			markdown:  ":::ask[Which transport?]{#b1}\n" + question + ":::\n",
+			position:  1,
+			blockType: "ask",
+		},
+		{
+			name:      "a label and no attributes",
+			markdown:  ":::ask[Which transport?]\n" + question + ":::\n",
+			position:  1,
+			blockType: "ask",
+		},
+		{
+			name:      "attributes this parser's own grammar refuses",
+			markdown:  ":::ask{urgency=high}\n" + question + ":::\n",
+			position:  1,
+			blockType: "ask",
+		},
+		{
+			name:      "no closing fence at the end of the body",
+			markdown:  ":::ask\n" + question,
+			position:  1,
+			blockType: "ask",
+		},
+		{
+			name:      "in a quote",
+			markdown:  "Lead text.\n\n> :::ask\n> Ship it?\n> :::\n",
+			position:  2,
+			blockType: "blockquote",
+		},
+		{
+			name:      "in a list item",
+			markdown:  "Lead text.\n\n- Context\n\n  :::ask\n  Ship it?\n  :::\n",
+			position:  2,
+			blockType: "bullet_list",
+		},
+		{
+			name:      "on a list item's own first line",
+			markdown:  "Lead text.\n\n- :::ask\n  Ship it?\n  :::\n",
+			position:  2,
+			blockType: "bullet_list",
+		},
+		{
+			name:      "inside a callout",
+			markdown:  ":::callout{#c1 kind=\"note\"}\nA note.\n\n:::ask\nShip it?\n:::\n:::\n",
+			position:  1,
+			blockType: "callout",
+		},
+		{
+			name:      "a four-colon opener whose content the ask's own rule refuses",
+			markdown:  "Lead **bold**\n\n::::ask\nWhich option?\n\n- first\n\n:::note\nA note line\n:::\n::::\n",
+			position:  2,
+			blockType: "ask",
+		},
+		{
+			name:      "lines a carriage return ends",
+			markdown:  ":::ask\r\nShip it?\r\n:::\r\n",
+			position:  1,
+			blockType: "ask",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Parse(test.markdown); err == nil {
+				t.Fatal("the body parses, so it no longer drives a refused parse")
+			}
+			card, found := FindDecisionCard(test.markdown)
+			if !found || card.Position != test.position || card.Type != test.blockType {
+				t.Fatalf("FindDecisionCard() = %+v, %v, want block %d (%s)",
+					card, found, test.position, test.blockType)
+			}
+		})
 	}
-	if card, found := FindDecisionCard(body); found {
-		t.Fatalf("FindDecisionCard() = %+v, %v, want no card: neither parser opens an `ask` here", card, found)
+}
+
+// A line the reader opens no `ask` container on opens none here either: another directive's name,
+// a name the colons run into, a line the opener does not end, attributes no `}` closes, and an
+// opener a fenced code block or an indented line holds, which both parsers read as text.
+func TestFindDecisionCardFindsNoCardWhereNoAskOpens(t *testing.T) {
+	for _, test := range []struct{ name, markdown string }{
+		{name: "another directive's name", markdown: ":::note\nA note.\n:::\n"},
+		{name: "a name the colons run into", markdown: ":::asks\nShip it?\n:::\n"},
+		{name: "a name ending in a dash", markdown: ":::ask-\nShip it?\n:::\n"},
+		{name: "a longer name", markdown: ":::ask-now{#b1}\nShip it?\n:::\n"},
+		{name: "two colons", markdown: "::ask\nShip it?\n:::\n"},
+		{name: "text after the name", markdown: ":::ask it\nShip it?\n:::\n"},
+		{name: "a space before the attributes", markdown: ":::ask {#b1}\nShip it?\n:::\n"},
+		{name: "attributes no brace closes", markdown: ":::ask{#b1\nShip it?\n:::\n"},
+		{name: "a label no bracket closes", markdown: ":::ask[Which?\nShip it?\n:::\n"},
+		{name: "an opener in a fenced code block", markdown: "Write it so:\n\n```\n:::ask\nShip it?\n:::\n```\n"},
+		{name: "an opener four columns in", markdown: "Context\n\n    :::ask\n    Ship it?\n    :::\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if card, found := FindDecisionCard(test.markdown); found {
+				t.Fatalf("FindDecisionCard() = %+v, %v, want no card: the reader opens no `ask` here",
+					card, found)
+			}
+		})
+	}
+}
+
+// The one opener the rule does not reach: a body whose lines end in a lone carriage return. The
+// browser's parser ends a line there and opens the `ask`; goldmark ends none, so it reads the
+// body as one line and makes no block of it however the opener is written - the rewrite below
+// spells it exactly as this parser's grammar reads an opener, and the tree still holds no `ask`.
+// What parts the two is the line ending itself and not the opener, so no spelling closes it.
+func TestFindDecisionCardMissesAnOpenerALoneCarriageReturnEnds(t *testing.T) {
+	for _, markdown := range []string{
+		":::ask\rShip it?\r:::\r",
+		":::ask{}\rShip it?\r:::\r",
+	} {
+		if card, found := FindDecisionCard(markdown); found {
+			t.Fatalf("FindDecisionCard(%q) = %+v, %v, want the measured miss", markdown, card, found)
+		}
 	}
 }
 

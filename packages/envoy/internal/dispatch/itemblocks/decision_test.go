@@ -114,13 +114,11 @@ func TestTheDecisionBlockRefusalReadsAsWritten(t *testing.T) {
 }
 
 // A body holding the text of a decision block inside a fenced code block is stored: the fence is
-// how a writer shows the block as an example, and the reader draws no card for it. So is a body
-// the parser refuses whose lines the reader draws as text rather than as a card, which is a body
-// holding no `ask` its parser reads as a typed directive: a container directive no block type
-// claims and nothing stands in, and the four-colon body of
-// packages/dispatch/e2e/unknown-directive.stub.e2e.ts:50, whose `::::ask` carries no attributes,
-// so neither parser opens an `ask` on it. A refused parse stores nothing by itself: every other
-// refused body is read for the card it draws (decisionRefusalRows).
+// how a writer shows the block as an example, and the reader opens no `ask` on a line of code. So
+// is a body the parser refuses that holds no decision block at all, such as a container directive
+// no block type claims. A refused parse stores nothing by itself: every refused body holding a
+// line the reader opens an `ask` container on is refused for it, whatever that ask holds
+// (decisionRefusalRows).
 func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 	for _, test := range []struct{ name, body string }{
 		{
@@ -130,10 +128,6 @@ func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 		{
 			name: "an unknown container directive",
 			body: "Some **bold** text\n\n:::note\nA note with **inner** words\n:::\n",
-		},
-		{
-			name: "a four-colon ask whose content the schema refuses",
-			body: "Lead **bold**\n\n::::ask\nWhich option?\n\n- first\n\n:::note\nA note line\n:::\n::::\n",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

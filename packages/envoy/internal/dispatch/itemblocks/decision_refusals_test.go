@@ -17,31 +17,44 @@ func tablePastThePaddingBudget(columns, rows int) string {
 		strings.Repeat("| x |\n", rows)
 }
 
-// decisionRefusalRows are the 33 bodies measured for INFRA-1201: every distinct reason
+// decisionRefusalRows are the 44 bodies measured for INFRA-1201: every distinct reason
 // pmdoc/refusals.go and the parse around it refuse a body for, each with a decision block standing
-// in it, and the two bodies whose decision block neither parser reads as a typed directive. Each
-// row is named by the reason its trigger raises, so a reader of a failure reads the class of body
-// that broke, and carries what the browser reader was measured to draw for that body: cards is how
-// many decision cards it drew, and position and blockType the top-level block the card stands in.
+// in it, and every spelling of a decision block's opening line the browser reader opens an `ask`
+// container on where this parser's own grammar reads no typed directive. Each row is named by the
+// reason its trigger raises, so a reader of a failure reads the class of body that broke, and
+// carries what the browser reader was measured to draw for that body: cards is how many decision
+// cards it drew, and position and blockType the top-level block the refusal names.
+//
+// None of these bodies is stored. Each one holds an opening line the reader opens an `ask`
+// container on, which is the whole of the rule: where the parse stands, the rule reads the `ask`
+// in the tree that parse left, and where the parse refuses the body, it reads the reader's own
+// opener off the body's lines (pmdoc.FindDecisionCard). Three bodies are refused with no card
+// drawn, since the reader's container rule is the floor of the refusal and the ask's own content
+// rule decides nothing here - a question nobody can answer stands in the body whether or not a
+// card is finally drawn for it. A body that is still stored holds no such opener at all: a
+// decision block's text inside a fenced code block, or a container directive of another name
+// (TestCheckStoresABodyTheReaderDrawsNoCardFor).
 //
 // A body too long to read as a literal is built here as the measurement built it: the 33 nested
 // callouts of the typed-nesting bound, the headings past the element cap, and the 110-column table
 // over 95 one-cell rows whose padding passes what one write may add.
 var decisionRefusalRows = []struct {
-	// reason is the refusal the body's trigger raises, "no refusal" for the control.
+	// reason is the refusal the body's trigger raises, "no refusal" where the parse reads it.
 	reason string
 	// trigger is what was written into the body beside the decision block.
 	trigger string
 	body    string
-	// cards is how many decision cards the browser reader drew for the body: 1 for every body
-	// holding an `ask` its parser makes a node for, 0 for the two it reads as text.
+	// cards is how many decision cards the browser reader drew for the body: 1 for each body
+	// whose `ask` it draws as a card, 0 for the three it draws in place as text. It is the
+	// measurement the rule was built on, and no longer the verdict.
 	cards int
-	// position and blockType are the top-level block the card stands in, which the refusal names;
-	// both are zero where no card is drawn.
+	// position and blockType are the top-level block the refusal names, which is the block the
+	// card stands in wherever the reader draws one.
 	position  int
 	blockType string
-	// parsed says the server's parse read the body: true for the control alone, since every other
-	// row exists to drive the rule over a body the parse refuses.
+	// parsed says the server's parse read the body: the control, and the two bodies the browser
+	// reader draws no card for though both parses read their decision block. Every other row
+	// exists to drive the rule over a body the parse refuses.
 	parsed bool
 }{
 	{
@@ -296,10 +309,16 @@ var decisionRefusalRows = []struct {
 		blockType: "ask",
 	},
 	{
-		reason:  "unsupportedDirective: malformedDirectiveReason (a ::::ask with no attributes, which opens no typed directive)",
+		reason:  "unsupportedDirective: malformedDirectiveReason (a ::::ask with no attributes, whose ask the rewrite opens)",
 		trigger: "the four-colon ask of packages/dispatch/e2e/unknown-directive.stub.e2e.ts:50, holding a :::note after its list",
 		body:    "Lead **bold**\n\n::::ask\nWhich option?\n\n- first\n\n:::note\nA note line\n:::\n::::\n",
-		cards:   0,
+		// The browser draws no card here, and the rule refuses the body all the same: the 0
+		// cards come from the ask's content rule, which the drawn `:::note` breaks, and not from
+		// an opener that opens nothing. The reader's container rule opens the ask, which is what
+		// is refused.
+		cards:     0,
+		position:  2,
+		blockType: "ask",
 	},
 	{
 		reason:  "unsupportedDirective: malformedDirectiveReason (an unknown :::note container)",
@@ -314,28 +333,119 @@ var decisionRefusalRows = []struct {
 		position:  3,
 		blockType: "ask",
 	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (an opening line carrying no attributes)",
+		trigger:   "a decision block whose opening line carries no attributes",
+		body:      ":::ask\nWhich one?\n\n- A: first\n- B: second\n:::\n",
+		cards:     1,
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (an opening line of four colons)",
+		trigger:   "a decision block opened with four colons and no attributes",
+		body:      "::::ask\nWhich one?\n\n- A: first\n- B: second\n::::\n",
+		cards:     1,
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (the production probe of INFRA-1201)",
+		trigger:   "the attribute-less decision block written into production to measure what it does",
+		body:      ":::ask\nDoes production refuse this?\n\n- Yes: refused\n- No: stored\n:::\n",
+		cards:     1,
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line in a quote)",
+		trigger:   "a quoted decision block whose opening line carries no attributes",
+		body:      "Lead text.\n\n> :::ask\n> Which one?\n>\n> - A: first\n> - B: second\n> :::\n",
+		cards:     1,
+		position:  2,
+		blockType: "blockquote",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line in a callout)",
+		trigger:   "a decision block inside a callout whose opening line carries no attributes",
+		body:      ":::callout{#c1 kind=\"note\"}\nA note.\n\n:::ask\nWhich one?\n\n- A: first\n- B: second\n:::\n:::\n",
+		cards:     1,
+		position:  1,
+		blockType: "callout",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line in a list item)",
+		trigger:   "a decision block inside a list item whose opening line carries no attributes",
+		body:      "Lead text.\n\n- Context for the question\n\n  :::ask\n  Which one?\n  :::\n",
+		cards:     1,
+		position:  2,
+		blockType: "bullet_list",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (an attribute-less opening line with no closing fence)",
+		trigger:   "a decision block carrying no attributes and left unclosed at the body's end",
+		body:      ":::ask\nWhich one?\n\n- A: first\n- B: second\n",
+		cards:     1,
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (a space after the attributes)",
+		trigger:   "a decision block whose opening line ends in a space",
+		body:      ":::ask{#b1} \nWhich one?\n\n- A: first\n- B: second\n:::\n",
+		cards:     1,
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		reason:    "unsupportedDirective: malformedDirectiveReason (a label before the attributes)",
+		trigger:   "a decision block whose opening line carries a directive label",
+		body:      ":::ask[Q]{#b1}\nWhich one?\n\n- A: first\n- B: second\n:::\n",
+		cards:     1,
+		position:  1,
+		blockType: "ask",
+	},
+	{
+		reason:  "no refusal: a decision block holding a heading",
+		trigger: "a heading inside the decision block, which the browser reader draws no card for",
+		body:    ":::ask{#b1}\n# A heading\n\nWhich one?\n:::\n",
+		cards:   0,
+		// The browser editor's `ask` takes `paragraph+ bullet_list?`, so its reader draws this
+		// block's lines in place as text rather than as a card, where the server's parse reads
+		// the block and the rule refuses the body for the ask standing in it: the content of an
+		// ask the reader opens decides nothing (INFRA-1201).
+		position:  1,
+		blockType: "ask",
+		parsed:    true,
+	},
+	{
+		reason:    "no refusal: a decision block whose paragraph follows its list",
+		trigger:   "a paragraph after the decision block's list, which the browser reader draws no card for",
+		body:      ":::ask{#b1}\nWhich one?\n\n- A: first\n- B: second\n\nAfter the list\n:::\n",
+		cards:     0,
+		position:  1,
+		blockType: "ask",
+		parsed:    true,
+	},
 }
 
 // decisionRefusalReasons is how many bodies the measurement answers for, counted here so that a
 // row dropped from the table fails rather than passes in silence.
-const decisionRefusalReasons = 33
+const decisionRefusalReasons = 44
 
-// Every one of the measured bodies is answered as the browser reader draws it: one the reader
-// draws a decision card for is refused with a *DecisionBlock naming the top-level block the card
-// stands in, and one it draws no card for is stored. The parse's own verdict decides nothing. Each
-// row but the control is a body the parse refuses, so the tree the rule reads is the one that
-// refusal leaves behind (pmdoc.FindDecisionCard); the row asserts that refusal still stands, since
-// a body the parse came to read would stop driving the reason its name carries.
-func TestCheckAnswersEveryMeasuredBodyAsTheReaderDrawsIt(t *testing.T) {
+// Every one of the measured bodies is refused with a *DecisionBlock naming the top-level block
+// the decision block stands in, which is the block the browser reader draws its card in wherever
+// it draws one. The parse's own verdict decides nothing, and neither does the ask's content rule:
+// a body the reader opens an `ask` container in is refused whatever that ask holds. Each row but
+// the control is a body the parse refuses, so the tree the rule reads is the one that refusal
+// leaves behind (pmdoc.FindDecisionCard); the row asserts that refusal still stands, since a body
+// the parse came to read would stop driving the reason its name carries.
+func TestCheckRefusesEveryMeasuredBodyTheReaderOpensAnAskIn(t *testing.T) {
 	for _, test := range decisionRefusalRows {
 		t.Run(test.reason, func(t *testing.T) {
 			if _, doc := split(test.body); (doc != nil) != test.parsed {
 				t.Fatalf("the parse reads the body = %v, want %v: the row no longer drives %q (%s)",
 					doc != nil, test.parsed, test.reason, test.trigger)
-			}
-			if test.cards == 0 {
-				requirePasses(t, test.reason, test.body)
-				return
 			}
 			err := requireRefusal(t, test.reason, test.body,
 				decisionRefusal("body", test.position, test.blockType))

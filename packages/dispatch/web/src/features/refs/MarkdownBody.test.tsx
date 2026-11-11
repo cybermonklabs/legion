@@ -678,6 +678,28 @@ test("a well-formed ask block in a body keeps its record and says the question i
   }
 });
 
+// The reader opens an `ask` container on an opening line carrying no attributes, as it does on
+// one carrying urgency, and draws the same card for it. The server refuses every body it opens
+// one in (INFRA-1201), so this is what a reader meets in a body stored before that rule stood.
+test("an ask block in a body whose opening line carries no attributes draws the card and its one line", async () => {
+  const view = render(withAskCard(<MarkdownBody markdown={`:::ask\n${askBody}`} />));
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Decision")).toBeDefined();
+    const [first, second] = await findRecordRows(shell);
+    expect(within(first as HTMLElement).getByText("A")).toBeDefined();
+    expect(within(second as HTMLElement).getByText("B")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+    expect(line?.textContent).toBe(textOnlyLine);
+    expect(answerControls(shell)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a malformed ask block in a body says the question is text, where it drew nothing before", async () => {
   const view = render(
     withAskCard(

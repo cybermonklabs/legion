@@ -2,9 +2,10 @@
 // where it stands, so the server refuses every body that holds one: 400 DECISION_BLOCK_IN_BODY
 // on a comment, a reply, a message and a broadcast alike (INFRA-1201). A browser row that has
 // to read such a card therefore writes the body straight into Postgres, the way a bulk thread
-// is seeded (`e2e/inbox-threads.ts`): into `comments`, never into an index table. The triggers
-// of migrations 0142 to 0144 owe the comment its block index themselves, and the card is drawn
-// from the body's Markdown by the read-only engine, so no caller here writes an index row.
+// is seeded (`e2e/inbox-threads.ts`): into `comments` and `messages`, never into an index table.
+// The triggers of migrations 0142 to 0144 owe the row its block index themselves, and the card
+// is drawn from the body's Markdown by the read-only engine, so no caller here writes an index
+// row.
 import { expect, type Locator } from "@playwright/test";
 
 import type { Actor } from "../web/src/api/types";
@@ -60,6 +61,32 @@ export async function seedDecisionBody({
       insert into comments (issue_key, author, body, ask_id, reply_to, turn)
       values (${literal(issueKey)}, ${authorLiteral(author)}, ${literal(body)},
               ${uuidLiteral(askId)}, ${uuidLiteral(replyTo)}, ${turn})
+      returning id
+    )
+    select id from seeded
+  `);
+  return seeded.trim();
+}
+
+/**
+ * One message on `issueKey` by `author` whose `body` holds a decision block, written as one
+ * `insert into messages`, and the new message's id, which the Conversation draws its turn by
+ * (`data-turn="message:<id>"`). It is a root message of the issue, as a message written through
+ * the API with no target and no `in_reply_to` is.
+ */
+export async function seedDecisionMessage({
+  author,
+  body,
+  issueKey,
+}: {
+  author: Actor;
+  body: string;
+  issueKey: string;
+}): Promise<string> {
+  const seeded = await sql(`
+    with seeded as (
+      insert into messages (issue_key, author, body)
+      values (${literal(issueKey)}, ${authorLiteral(author)}, ${literal(body)})
       returning id
     )
     select id from seeded
