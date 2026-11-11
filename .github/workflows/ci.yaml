@@ -2442,13 +2442,15 @@ jobs:
     # What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the
     # one case that still drives the real ladder measured 63 s inside it.
     #
-    # THIS CHANGE ADDS TEN STEPS TO THAT SUM AND NO TIME A READER WOULD NOTICE: eight marks,
-    # one before each install with nowhere to go, each a single `echo` which measured 0 s in
-    # jobs 130015112773, 129940828354 and 129966328215 and at most 1 s in job 130289341628 at
-    # the merge of main, and the machine watch's start and its report, at 5 s and 0 s in the
-    # first three. The watch itself is a
-    # sampler beside the job rather than a step of it, so those two steps are its whole cost
-    # to this budget (dispatch://INFRA-2605).
+    # THIS CHANGE ADDS TEN STEPS TO THAT SUM, AND NINE OF THEM COST NOTHING A READER WOULD
+    # NOTICE: eight marks, one before each install with nowhere to go, each a single `echo`
+    # which measured 0 s in jobs 130015112773, 129940828354 and 129966328215 and at most 1 s
+    # in job 130289341628 at the merge of main, and the watch's report, 0 s in all four. The
+    # tenth is the watch's start, which spawns the sampler and reads the file system it will
+    # watch: 3 s, 5 s and 4 s in those three jobs and 9 s in job 130306447638, so it is the
+    # one added step whose cost a reader can see, and the item above allows for it. The watch
+    # itself is a sampler beside the job rather than a step of it, so those two steps are its
+    # whole cost to this budget (dispatch://INFRA-2605).
     #
     # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
     # and the twenty-four installs whose control accepts a failure are timed as well, against

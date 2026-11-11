@@ -74,10 +74,16 @@ import sys
 import time
 
 # How often the sampler re-reads the machine, in whole seconds, and the least step between one
-# tick's own second and the next. The steps it watches run for minutes, so a second is often
-# enough to catch the trough and fine enough to put a reading either side of every step
-# boundary. It costs one line of the series; the state file is written only when a reading is
-# worse than one already held, which most seconds are not.
+# tick's own second and the next. It costs one line of the series; the state file is written
+# only when a reading is worse than one already held, which most seconds are not.
+# WHAT A SECOND BUYS AND WHAT IT DOES NOT: it is fine enough to show what the machine was
+# doing over a job and across the steps that last, and to catch a trough while one runs. It is
+# not fine enough to put a reading either side of every step boundary, and the job this watch
+# was written for stopped being one where it could: since the ladders stopped sleeping
+# (dispatch://INFRA-2621) most of its steps cost a second or less, so in job 130306447638 the
+# 212 boundary stamps of 106 steps fall on 41 distinct seconds and 67 of those steps begin and
+# end inside one second. A reader lines a step up against the series to see the machine it ran
+# on, not to price the step, which the job record already gives to the second.
 SAMPLE_SECONDS = 1
 
 # The sampler gives up after this long on its own, so a job that is cancelled between the two
