@@ -267,3 +267,5 @@ func forget[K comparable, V any](held map[K]V, seen map[K]struct{}) {
 		return !ok
 	})
 }
+
+// INFRA-1413 selection probe, never merged.
