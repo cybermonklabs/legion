@@ -327,7 +327,7 @@ LADDER_CEILING=150
 # the blob of the copy the `crane` row names as its second source, which ci_tools__fetch_ghcr
 # asks for one after the other (.github/scripts/ci-tools.sh:770, 775). Merge_group run
 # 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read those three
-# as records 19 to 21 of its listing, at 63 s, 0 s and 1 s.
+# as records 18 to 20 of its listing, at 63 s, 0 s and 1 s.
 # A retry adds no record, because ci_tools_curl is one curl process with `--retry 7` and the
 # stand-in writes one line for each time it is called; a redirect is followed inside that same
 # process, so it adds none either. Of the five second-source words only `ghcr-mirror` costs two

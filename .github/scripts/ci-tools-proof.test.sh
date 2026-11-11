@@ -37,11 +37,13 @@ repeat() {
   for ((i = 0; i < $1; i++)); do printf '%s\n' "$2"; done
 }
 
-# legitimate_log: the 65 records of a run that must pass, in the order the listing holds them.
-# This is the shape merge_group run 42975857631, job 130374882879 (`tool-fallback`, success,
-# head 9300f28b1c) read on a runner: 18 refusals of the faulted release host, then the three
-# records of the one case that keeps the pinned ladder, then 11 refusals of the dead address,
-# then the 33 fetches of the npm copy. Every case below is built from this one log.
+# legitimate_log: 65 records of a run that must pass. Merge_group run 42975857631, job
+# 130374882879 (`tool-fallback`, success, head 9300f28b1c) read 65 records on a runner, and the
+# three that carry the name are the one case that keeps the pinned ladder, at 63 s, 0 s and 1 s
+# (records 18 to 20 of its listing). This log keeps those three as they are and puts the other
+# 62 in three shapes that no refusal of the verb reads: 18 refusals of the faulted release host,
+# 11 refusals of the dead address and 33 fetches that served the bytes. That listing mixes its
+# hosts in another order; the verb reads no order. Every case below is built from this one log.
 legitimate_log() {
   repeat 18 "seconds=0 decision=shortened host=github.com exit=22 full-ladder=none"
   printf '%s\n' \
