@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  A person's agent pin is the server's, beside their Clear and their read mark: the new
+  `user_agent_pin` table holds one row per pinned session, `GET /api/v1/me/agents/state` answers
+  `pinned_at` for each, and `PUT /api/v1/me/agents/{session_id}/state` takes `pinned` — true pins
+  the session, false unpins it, and neither touches the Clear or the read mark. The pin is keyed
+  on the canonical login, as the read mark is, and stamped with the server's clock, since what it
+  decides is the order a person's sidebar draws their pinned agents in, oldest first. The write is
+  announced to the caller's other tabs as a Clear or a read mark is, so a second browser of the
+  same person draws the pin with no reload, and a session that is only pinned is in the state
+  answer too.

@@ -118,7 +118,10 @@ claim once written. `recordDeliveredFor(sessionID, frame)` records the same way 
 frame was delivered in while the host shuts down: it writes while the host's optional
 `writeSessionID()` still names that session, once `sessionID()` already answers none, and the
 ledger holds the frame from the call on (Oh My Pi records every BTW's event id so, before its side
-turn and before any reply is posted).
+turn and before any reply is posted). It answers whether the write that keeps the record reached
+the host — a write queued behind earlier ones, so a host that moved while it waited answers
+false, as a write that failed does — so a host that has moved on can report what that session's
+record lost rather than drop it without a word.
 
 The state holds each followed subject's `since` and `after`, or `from_start` on the session's own
 agent subject while its first sweep still owes it from the oldest message the stream holds, the
@@ -133,7 +136,9 @@ state at any age. A write carries the state only when it changed; a sweep that h
 and only moved its cursors to the stream's end goes with the next write, or once the state last
 written is an hour old (`REPLAY_STATE_REFRESH_MS`). A frame the host fails to show is retried, and
 on its third failure the host shows a notice naming it instead (`showFailureNotice`); a host whose
-live path failed a frame calls `liveFailed(followed, envelope, error, receivedAt)`, which shows
+live path failed a frame calls `liveFailed(sessionID, followed, envelope, error, receivedAt)`, naming the
+session the frame was addressed to, which shows nothing and records nothing once the host no longer
+serves that session, and otherwise shows
 that notice at once unless a sweep will show the stream's copy, which it will not for a frame
 received before its subject's cursor started (a new follow, a new session, or a reset after a
 stream recreation), since that cursor can start past it. A host stamps `receivedAt` when the
@@ -220,6 +225,26 @@ the freeze: the connection nats.js dials in place of the frozen one subscribes t
 again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message sent
 during the freeze and one sent after it are each shown once, neither as a replay. A test that
 uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
+
+`@legion/envoy-client/test/dispatch-stack` (Bun only, not built, in `test/`) is the same shape for
+a real Dispatch server: it builds `./cmd/dispatch` with `go build` from `packages/envoy` into its
+own scratch directory, makes a database of its own on the server `DISPATCH_TEST_DATABASE_URL`
+names and drops it at the end, starts the server, which migrates that database as it boots, and
+answers its URL and the agent bearer token it minted for the run. `src/__tests__/design-gate-advice.live.test.ts`
+is what runs on it: the real CLI entry `bin/dispatch.ts` writing to that server, which is the one
+check that proves the design-gate clause end to end, the server's record and the client's sentence
+together. A test that uses this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs
+`DISPATCH_TEST_DATABASE_URL` and `go` on `PATH`; with the variable set it fails rather than skips.
+So, to run it here:
+
+```sh
+cd packages/envoy-client
+LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
+  bun test src/__tests__/design-gate-advice.live.test.ts
+```
+
+CI runs it in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
+both a PostgreSQL and a Go.
 
 ## HTTP transport
 

@@ -3,6 +3,8 @@
 // the Conversation, the Inbox's ask card and a hover card, and `nested-directive.e2e.ts`, whose
 // rows draw the two bodies that froze a reader's tab - so both read a hold the same way and
 // against the same bound (sjawhar/legion#2612).
+import { relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, type Page, test } from "@playwright/test";
 
 declare global {
@@ -29,6 +31,70 @@ export interface Measured {
   readonly held: number;
 }
 
+// The row's file as the list reporter prints it, relative to the package (`packageRoot` in
+// e2e/measure-reporter.ts holds that reading, in the comment above it) rather than to the run's
+// cwd or to Playwright's rootDir, which is this directory: the command the refusal below prints
+// is run from the package.
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+
+/**
+ * Fails the row when the run has more than one worker, because what the row would report is not
+ * what it claims to measure: the gap counts whatever the other lanes ran. A failure and not a
+ * skip - a wall-clock row that passes out of sight reads as coverage this suite then does not
+ * have.
+ *
+ * This reaches only the rows that call `measureDraw`. The rows of
+ * `agent-workspace-timing.e2e.ts` read a wall clock of their own and never call it, so what
+ * holds them to one worker is the command that runs them, which names `--workers=1`
+ * (`e2e/playwright.config.ts`, above `aloneProjects`). The other rows of the `-alone` projects
+ * read no clock, never call it, and run at any worker count with every assertion they have.
+ *
+ * The count is the one the run asked for, which is what the reader controls, and not the number
+ * of workers Playwright went on to start: a run holding fewer jobs than workers starts fewer and
+ * reports that smaller number (`metadata.actualWorkers = Math.min(config.workers, ...)`,
+ * `playwright/lib/runner/index.js:6735`), while `config.workers` keeps what was asked. So a run
+ * of one row that said `--workers=4` fails here and prints `using 1 worker` above the failure.
+ * The per-project cap of the `-alone` projects is no answer either: it holds a project's own
+ * rows to one at a time and lets every other project the command selected run beside them.
+ *
+ * One worker is what this can ask for, and it is less than quiet: a one-worker run started
+ * beside another run, a build or a browser on the same machine reads that work in the gap just
+ * the same. The `dependencies` that ordered these projects before dispatch://INFRA-1280 left
+ * exactly the same hole, since they ordered this suite's own projects and nothing else on the
+ * machine.
+ */
+function refuseASharedRun(): void {
+  const info = test.info();
+  const workers = info.config.workers;
+  if (workers <= 1) {
+    return;
+  }
+  // The runner process's own `process.argv`, snapshotted by the `playwright test` command
+  // (`cliOverrides.argv = process.argv`, `lib/cli/testActions.js:43`) and carried into every
+  // worker inside the serialized config (`argv: configCLIOverrides.argv ?? []`,
+  // `lib/common/index.js:506`), so it reads here as `config.argv`, "Snapshot of `process.argv`
+  // captured in the runner process." (playwright/types/test.d.ts:2105). Playwright parses none of
+  // it and sets it on no other path, so a run started from the test server, the UI or an editor
+  // leaves it empty; then the printed commands are all the reader gets.
+  const commandLine = info.config.argv.join(" ");
+  // The command comes first and alone, as the wall-clock refusal in `e2e/playwright.config.ts`
+  // prints it, so the line a reader is shown beside the failed row is the one that fixes it. It
+  // names its own `--workers=1`, because dispatch://INFRA-1280/spec#b-r2 has every command
+  // that measures a wall-clock row state the one worker its reading rests on, rather than
+  // take it from the configuration's default (`workers: 1`, e2e/playwright.config.ts).
+  const file = relative(packageRoot, info.file);
+  throw new Error(
+    `bun run e2e -- --project=${info.project.name} ${file} --workers=1` +
+      `\n\nThat is how this row is measured, and this run has ${workers} workers. The hold it ` +
+      "reads is the longest gap between two ticks of a heartbeat on the page's main thread, " +
+      "and that gap is the page's own work only on a machine the run is not sharing: with " +
+      `${workers} workers, what the other workers run goes into it as well, which is how a ` +
+      "300 ms draw read 1,632 ms in CI run 41370867411 (sjawhar/legion#2612). To measure every " +
+      "wall-clock row in all three engines, run `bun run e2e:clock`." +
+      (commandLine === "" ? "" : `\n\nThis run's command line: ${commandLine}`)
+  );
+}
+
 /**
  * Installs a heartbeat before the page's own scripts - a `setTimeout(0)` loop whose gap between
  * ticks a parse holding the main thread widens to the parse's length - and starts the record
@@ -45,9 +111,12 @@ export interface Measured {
  * (sjawhar/legion#2612).
  *
  * So the rows that read a gap are given the machine instead of a correction for sharing it. They
- * run in the `-alone` projects (`e2e/playwright.config.ts`), which Playwright starts only once
- * every other project has finished and which run one row at a time, so nothing of the suite is
- * beside them and a gap is the page's own work. Two instruments stood here before and told that
+ * run in the `-alone` projects (`e2e/playwright.config.ts`), which name no dependency and are
+ * out of the default selection, so a command names them, and each caps its own workers at one,
+ * which keeps its own rows from running four at a time. What leaves nothing of the suite beside
+ * them is the run being one worker wide, and `refuseASharedRun` above is what holds a reading to
+ * that: a measuring row in a run of more than one worker fails rather than reporting the other
+ * lanes' work as this page's. Two instruments stood here before and told that
  * work from the machine's - a witness thread of the renderer's own process, which counted a gap
  * only in the time it was itself running, and a yardstick job timed on the main thread, which
  * said what that thread was running at - and both cost the bound its sensitivity: a 3.3 ms job
@@ -81,6 +150,9 @@ export async function measureDraw(
     readonly reset: RegExp;
   }
 ): Promise<Measured> {
+  // Before the page is touched at all, so no work is done for a reading that would not be kept.
+  refuseASharedRun();
+
   await page.addInitScript(() => {
     let last = performance.now();
     window.__mainThreadLongestGap = 0;
