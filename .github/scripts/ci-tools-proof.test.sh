@@ -111,6 +111,12 @@ run_report "$(repeat 65 "seconds=63 decision=full host=github.com exit=22 full-l
 check "exits 1" "$(is "$status" 1)"
 check "names the count it read and the bound" \
   "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to, and the names they carried it under are: crane-head")"
+# The verb's header and the ladder-report step's comment say the count prints on every run that
+# reads the log through, whether that reading passes or refuses. The legitimate case holds the
+# passing half; this assertion holds the refusing half, and it is what reddens when that line
+# moves onto the pass path.
+check "prints the count it read beside the bound, on a run that refuses" \
+  "$(contains "$out" "65 of those fetches carried CI_TOOLS_PROOF_FULL_LADDER, and this rig holds that count to 3")"
 check "prints no closing sentence" "$(is "$(contains "$out" "$closing")" false)"
 check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 
