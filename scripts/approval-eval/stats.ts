@@ -4,7 +4,8 @@ import type { CaseVerdict } from "./build-corpus";
  * The arithmetic the readouts of this directory are written in: an exact one-sided
  * Clopper-Pearson bound on a failure rate, the risk and coverage curve a confidence threshold is
  * chosen off, the largest band of cases that holds no disagreement at all, the baseline an arm is
- * worth measuring against, and the rule that keeps a bound off a bin too small to carry one.
+ * worth measuring against, the exact paired test and interval two readings of one set of cases
+ * are compared by, and the rule that keeps a bound off a bin too small to carry one.
  *
  * Every function here is pure: it reads no file, opens no socket and prints nothing, so a readout
  * can be recomputed from a corpus alone and a test can hold each number by hand.
@@ -107,6 +108,44 @@ export interface ThresholdOptions {
   /** The disagreement rate the bound must be at or under, from 0 to 1. */
   rate: number;
   confidence?: number;
+}
+
+/** Both ends of a two-sided interval, each tail taking half of what the confidence leaves. */
+export interface Interval {
+  lower: number;
+  upper: number;
+}
+
+/** One case as a paired comparison sees it: whether each of the two readings matched the person. */
+export interface PairedCase {
+  /** Whether the arm's verdict matched the person's. */
+  armAgreed: boolean;
+  /** Whether the reading it is compared with, which is the baseline, matched the person's. */
+  otherAgreed: boolean;
+}
+
+/** What `mcnemarExact` answers: the paired table, the exact test over it, and the difference. */
+export interface PairedComparison {
+  /** How many cases both readings saw, which is the only set a paired comparison is read over. */
+  counted: number;
+  /** Cases both readings matched the person on. */
+  bothAgreed: number;
+  /** Cases the arm matched and the other did not, which is McNemar's b. */
+  armOnly: number;
+  /** Cases the other matched and the arm did not, which is McNemar's c. */
+  otherOnly: number;
+  /** Cases neither matched. */
+  neither: number;
+  armShare: number;
+  otherShare: number;
+  /** armShare - otherShare, which is (b - c) / counted. */
+  difference: number;
+  /** b + c: the pairs the two differ on, which are the only ones that carry any information. */
+  discordant: number;
+  /** The exact two-sided p of McNemar's test, and 1 where the two never differ. */
+  pValue: number;
+  /** The exact conditional interval of the paired difference. */
+  interval: Interval;
 }
 
 /** Where the continued fraction gives up: it converges in far fewer steps at every count here. */
@@ -221,6 +260,32 @@ export function clopperPearsonUpper(failures: number, trials: number, confidence
   return betaQuantile(confidence, failures + 1, trials - failures);
 }
 
+/**
+ * The one-sided Clopper-Pearson lower bound on the rate of `successes` in `trials`: the smallest
+ * rate under which what was seen is not yet improbable at `confidence`. It is the upper bound
+ * read from the other end, since what is a success here is a failure there.
+ */
+export function clopperPearsonLower(successes: number, trials: number, confidence: number): number {
+  return 1 - clopperPearsonUpper(trials - successes, trials, confidence);
+}
+
+/**
+ * The two-sided exact interval on the rate of `successes` in `trials`, each tail taking half of
+ * what `confidence` leaves. It is what a reading carries where two readings are compared for
+ * overlap, which a one-sided bound cannot answer.
+ */
+export function clopperPearsonInterval(
+  successes: number,
+  trials: number,
+  confidence: number = DEFAULT_CONFIDENCE
+): Interval {
+  const tail = (1 + confidence) / 2;
+  return {
+    lower: clopperPearsonLower(successes, trials, tail),
+    upper: clopperPearsonUpper(successes, trials, tail),
+  };
+}
+
 /** The cases an arm decides at `threshold`: the ones its judgements agreed on at least that far. */
 export function decidedAt(judgements: readonly Judgement[], threshold: number): Judgement[] {
   return judgements.filter((one) => one.confidence >= threshold);
@@ -328,4 +393,47 @@ export function binReport(bins: readonly Bin[], options: BinOptions = {}): BinLi
         decided >= minimumDecided ? clopperPearsonUpper(disagreements, decided, confidence) : null,
     };
   });
+}
+
+/**
+ * McNemar's exact test over the cases both readings saw, with the exact conditional interval of
+ * the paired difference. Only the pairs the two answered differently carry anything about which
+ * is better, so those are read as a binomial draw at one half; the exact interval on the share
+ * of them the arm won is then carried across to the difference by how many of all the cases
+ * those pairs are. A comparison over the same cases is paired, and an unpaired interval over
+ * two readings of one set of cases is wider than the evidence is.
+ */
+export function mcnemarExact(
+  cases: readonly PairedCase[],
+  confidence: number = DEFAULT_CONFIDENCE
+): PairedComparison {
+  const counted = cases.length;
+  const bothAgreed = cases.filter((one) => one.armAgreed && one.otherAgreed).length;
+  const armOnly = cases.filter((one) => one.armAgreed && !one.otherAgreed).length;
+  const otherOnly = cases.filter((one) => !one.armAgreed && one.otherAgreed).length;
+  const discordant = armOnly + otherOnly;
+  let pValue = 1;
+  let interval: Interval = { lower: 0, upper: 0 };
+  if (discordant > 0) {
+    const fewer = Math.min(armOnly, otherOnly);
+    // P(X <= k) for a binomial of n draws at one half is I_0.5(n - k, k + 1), and the two-sided
+    // p of a test at one half is twice that tail, which at b = c runs past 1 and is held to it.
+    pValue = Math.min(1, 2 * regularizedIncompleteBeta(0.5, discordant - fewer, fewer + 1));
+    const share = clopperPearsonInterval(armOnly, discordant, confidence);
+    const weight = discordant / counted;
+    interval = { lower: (2 * share.lower - 1) * weight, upper: (2 * share.upper - 1) * weight };
+  }
+  return {
+    counted,
+    bothAgreed,
+    armOnly,
+    otherOnly,
+    neither: counted - bothAgreed - armOnly - otherOnly,
+    armShare: counted === 0 ? 0 : (bothAgreed + armOnly) / counted,
+    otherShare: counted === 0 ? 0 : (bothAgreed + otherOnly) / counted,
+    difference: counted === 0 ? 0 : (armOnly - otherOnly) / counted,
+    discordant,
+    pValue,
+    interval,
+  };
 }
