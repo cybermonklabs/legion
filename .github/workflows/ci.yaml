@@ -2735,7 +2735,8 @@ jobs:
               - *bun_install
               - *go_workspace
               # Its unit step tests every package of the envoy module, and
-              # internal/dispatch/api/lock_level_test.go:133-146 walks every .go file under it.
+              # internal/dispatch/api/module_source_test.go:72-92, which the source guards of
+              # internal/dispatch/api read the module through, walks every .go file under it.
               - 'packages/envoy/**'
               # pmdoc's tests run pmdoc/gen, which imports the editor
               # (internal/dispatch/pmdoc/update_test.go:236-239), whose src/block-pointers.ts

@@ -324,8 +324,9 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
 ]
 PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", CONTRACTS_SRC, "package.json", "bun.lock", "patches/**"]
 BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "cmd/broker", "cmd/agent-secrets")
-MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/lock_level_test.go's moduleSources walks every non-test .go file "
-                                      "under packages/envoy (infra included); used by :89, event_insert_guard_test.go:44, "
+MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/module_source_test.go:72 walks every non-test .go file "
+                                      "under packages/envoy (infra included), for the tests that ask it for the "
+                                      "module's sources: lock_level_test.go:85, event_insert_guard_test.go:44, "
                                       "review_write_guard_test.go:51")]
 
 
