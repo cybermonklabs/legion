@@ -1017,17 +1017,31 @@ func relatedRecordRetryable(err error) bool {
 }
 
 // persistSuggestions records every item a check offered, so the outcome sweep has something to
-// resolve and a later count has something to count, in one round trip (store.Pool.SendBatch):
-// up to three rows, one per related item. A row that cannot be inserted is only logged.
+// resolve and a later count has something to count, in one round trip (store.Pool.SendBatch): up
+// to five rows, one per item. The check's own project's items come first, up to three under the
+// role `related`, then the answered questions of the other projects, up to two under the role
+// `other_project` (Suggestions.OtherProjects), each ranked in the order it stands in. A row that
+// cannot be inserted is only logged.
+//
+// recordRelatedChecks calls this for an issue source and an ask source alone, so an ask create's
+// cross-project offers are recorded, on an issue and on a project document alike, and a new
+// decision block's offers reach no row. That is what the table admits: it keys such a row by the
+// ask the offer was made on (source_ask_id, which every row of an ask source holds), and a
+// decision block's check holds the document block's own id and no ask id. So the role is written
+// for an ask create alone, which is what lets the records route count the writes that offered
+// one by that column (relatedChecksOffersQuery).
 func (s *server) persistSuggestions(ctx context.Context, source suggestionSource, suggestions *model.Suggestions) {
 	type row struct {
 		role string
 		rank int
 		item model.WriteSuggestion
 	}
-	rows := make([]row, 0, len(suggestions.Related))
+	rows := make([]row, 0, len(suggestions.Related)+len(suggestions.OtherProjects))
 	for i, item := range suggestions.Related {
 		rows = append(rows, row{role: "related", rank: i, item: item})
+	}
+	for i, item := range suggestions.OtherProjects {
+		rows = append(rows, row{role: "other_project", rank: i, item: item})
 	}
 	if len(rows) == 0 {
 		return
