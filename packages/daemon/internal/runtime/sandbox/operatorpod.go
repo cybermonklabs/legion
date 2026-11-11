@@ -49,9 +49,9 @@ type setter struct {
 // which it tells a Claude role alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
 // image (imageEnv), every launch's spec (the role App's git identity, and each launch secret's
-// `<NAME>_FILE` pointer), the pod baseline, the settings overlays this runtime composes for each
-// role (roleOperatorEnv), and the operator's own pod env. The first setter of a name is the one
-// named.
+// `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
+// of the operator's own value (composed, roleOperatorEnv: the settings overlays and the spend
+// attributes), and the operator's own pod env. The first setter of a name is the one named.
 func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
@@ -71,6 +71,12 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 		add(name, claude, false)
 	}
 	add(claudelaunch.SessionVariable, claude, false)
+	// The spend attributes are this runtime's to compose as well, from the operator's own value
+	// and the launch's issue and role (runtime.SpendResourceAttributes, roleOperatorEnv): the
+	// operator writes the attributes its whole deployment is billed under, and the runtime writes
+	// the launch's after them, so a pod's spend splits by the issue it was spent on. A provider
+	// key of that name would be exported over a value every role's agent already starts with.
+	add(runtime.SpendAttributesVariable, "the runtime composes in every pod from the operator's own attributes and the launch's issue and role", true)
 	for _, name := range slices.Sorted(maps.Keys(runtimeOwned)) {
 		add(name, "Legion's runtime sets in every pod", false)
 	}
