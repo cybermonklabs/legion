@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   kindOrder,
   REF_PICKER_HEADINGS,
@@ -23,7 +21,7 @@ import {
   SESSION_TITLE,
   seedReferenceWorld,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -49,10 +47,6 @@ function headingsFor(door: RefPickerDoor, present: readonly string[]): string[] 
     .map((kind) => REF_PICKER_HEADINGS[kind])
     .filter((heading) => present.includes(heading));
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the one reference world - three projects, fifteen issues, the host's question
 // blocks settling into asks, the architecture source sync and the live session - and then the

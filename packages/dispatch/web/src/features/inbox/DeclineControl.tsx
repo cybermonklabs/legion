@@ -1,6 +1,6 @@
-import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
+import { DISPATCH_EVENT_BODY_MAX, dispatchWritingBox } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
@@ -12,7 +12,6 @@ import {
   card,
   cardHoverBorder,
   dangerText,
-  inputClasses,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -22,32 +21,41 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { useDialog } from "../shell/useDialog";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 
 /**
  * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
- * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) and adds the
+ * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) - the shared
+ * field and the picker in it, so a note names a party as every other box does - and adds the
  * count of what they may still write, in the UTF-16 units the server counts
  * (`DISPATCH_EVENT_BODY_MAX`). The field stops at that bound, which is where the count reaches
  * zero, so a long note meets the bound here rather than as a refusal from the server.
  */
 function DeclineDialog({
   error,
+  issueKey,
   onClose,
   onSubmit,
+  project,
   saving,
 }: {
   /** What the server answered the last decline with, or null while none was refused. */
   error: Error | null;
+  /** The issue the question was asked on, where it has one: the picker offers that issue's
+   *  people and the Legion roles nobody is running. */
+  issueKey?: string;
   onClose: () => void;
   onSubmit: (note: string) => void;
+  /** The project of the document the question hangs from, whose components the picker offers. */
+  project?: string;
   saving: boolean;
 }): ReactNode {
   const [note, setNote] = useState("");
-  const noteId = useId();
-  const countId = `${noteId}-left`;
+  // The dialog moves the focus into the box it opens over, which the field hands back as its
+  // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Every way out of the dialog is this one: Cancel, Escape (`useDialog`) and the backdrop. While
   // the decline is out it closes nothing, as the disabled Cancel button already refused to: the
@@ -79,27 +87,28 @@ function DeclineDialog({
             The question closes with no answer. Dispatch tells the agent that asked to decide
             without one.
           </p>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`} htmlFor={noteId}>
-            Note (optional)
-            <textarea
-              aria-describedby={countId}
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              disabled={saving}
-              id={noteId}
-              maxLength={DISPATCH_EVENT_BODY_MAX}
-              onChange={(event) => setNote(event.target.value)}
-              onKeyDown={(event) =>
-                submitOnModifiedEnter(event, {
-                  onFormlessSubmit: () => {
-                    if (!saving) onSubmit(note.trim());
-                  },
-                })
-              }
-              ref={textareaRef}
-              value={note}
-            />
-          </label>
-          <p className={`text-xs ${textMutedOnSurface}`} id={countId}>
+          <MentionField
+            body={note}
+            className="text-sm"
+            disabled={saving}
+            fieldRef={(handle) => {
+              textareaRef.current = handle?.textarea() ?? null;
+            }}
+            issueKey={issueKey}
+            label="Note (optional)"
+            maxLength={DISPATCH_EVENT_BODY_MAX}
+            onChange={(change) => setNote(change.body)}
+            onKeyDown={(event) =>
+              submitOnModifiedEnter(event, {
+                onFormlessSubmit: () => {
+                  if (!saving) onSubmit(note.trim());
+                },
+              })
+            }
+            project={project}
+            writing={dispatchWritingBox("ask-decline-note", "ask-decline")}
+          />
+          <p className={`text-xs ${textMutedOnSurface}`}>
             {left} {left === 1 ? "character" : "characters"} left
           </p>
           {error === null ? null : (
@@ -195,11 +204,13 @@ export function DeclineControl({
       {open ? (
         <DeclineDialog
           error={write.isError ? write.error : null}
+          issueKey={ask.issue_key ?? undefined}
           onClose={() => {
             write.reset();
             setOpen(false);
           }}
           onSubmit={(note) => submitGuard.guard(() => write.mutate(note === "" ? {} : { note }))}
+          project={ask.anchor_artifact?.project}
           saving={write.isPending}
         />
       ) : null}

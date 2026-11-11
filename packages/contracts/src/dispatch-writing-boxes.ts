@@ -34,6 +34,7 @@ export type DispatchWritingBox =
   | "ask-option-label"
   | "ask-option-description"
   | "ask-answer"
+  | "ask-decline-note"
   | "ask-thread-reply"
   | "decisions-change"
   | "create-issue-spec"
@@ -54,6 +55,8 @@ export type DispatchWritingBox =
  * - `ask`: a new ask, with its options.
  * - `ask-answer`: an answer to an ask, which reaches whoever asked it.
  * - `ask-back`: a question back at the asker, which is a comment on the ask.
+ * - `ask-decline`: a person's note on declining to answer an ask, which closes it with no
+ *   answer; the note is stored on the ask's resolution and read by whoever asked.
  * - `message-reply`: a reply in an issue's message thread, delivered to the thread's target.
  * - `agent-message`: a message to one agent's session.
  * - `broadcast`: one message to each selected agent.
@@ -71,6 +74,7 @@ export type DispatchWriting =
   | "ask"
   | "ask-answer"
   | "ask-back"
+  | "ask-decline"
   | "message-reply"
   | "agent-message"
   | "broadcast"
@@ -384,6 +388,21 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     issueRows: true,
     reach: "[data-ask-answer]",
     write: "ask-back",
+  },
+  // The note on declining to answer, which the ask card's own Decline to answer opens and
+  // which is the person's to leave empty. It is written onto the ask's resolution, where the
+  // asking agent reads it beside the sentences Dispatch writes there; the decline route
+  // resolves no party out of it, as only the comment route does, so a party picked here is a
+  // link for a reader and nobody is told.
+  {
+    box: "ask-decline-note",
+    covered: true,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/inbox/DeclineControl.tsx"],
+    hint: DISPATCH_WRITING_HINT_QUIET,
+    issueRows: true,
+    reach: "Note (optional)",
+    write: "ask-decline",
   },
   {
     box: "ask-thread-reply",

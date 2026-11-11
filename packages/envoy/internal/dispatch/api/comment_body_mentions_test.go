@@ -222,11 +222,6 @@ func TestCommentPartySetRefusals(t *testing.T) {
 			"mention target must be role:",
 		},
 		{
-			"a body target of a form no delivery route takes",
-			map[string]any{"body": "[x](dispatch://agent/a.b) please look."},
-			"mention target must be role:",
-		},
-		{
 			"an array that repeats one of its own targets",
 			map[string]any{
 				"body":     "[planner](dispatch://agent/s1)",

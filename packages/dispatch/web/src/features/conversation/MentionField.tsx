@@ -77,6 +77,7 @@ export function MentionField({
   label,
   labelClassName,
   labelHidden = false,
+  maxLength,
   onChange,
   onDrop,
   onKeyDown,
@@ -121,6 +122,9 @@ export function MentionField({
    *  grid row, a flex form - dresses this rather than the textarea. */
   readonly labelClassName?: string;
   readonly labelHidden?: boolean;
+  /** The most the box takes, in the UTF-16 units the server counts, where the write has a bound
+   *  a host says so at the box rather than leaving it to a refusal (the decline note's). */
+  readonly maxLength?: number;
   readonly onChange: (change: MentionFieldChange) => void;
   readonly onDrop?: (event: DragEvent<HTMLTextAreaElement>) => void;
   /** The host's own keys - a submit on Ctrl/Cmd+Enter, an ask option on Enter - which the keys
@@ -261,6 +265,7 @@ export function MentionField({
           aria-label={label}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface} ${className ?? ""}`}
           disabled={disabled}
+          maxLength={maxLength}
           onChange={(event) => changed(event.target.value, event.target.selectionStart)}
           onDrop={onDrop}
           onInput={

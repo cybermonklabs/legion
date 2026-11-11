@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, editArtifact, patchIssue } from "./api";
 import { documentEditor } from "./editor";
 import {
@@ -7,7 +5,7 @@ import {
   UNKNOWN_PERSON_LOGIN,
   UNKNOWN_PERSON_REFERENCE,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -25,10 +23,6 @@ import { asUser } from "./users";
  */
 
 const WORDS = "the warm one";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The comment's Conversation card, expanded. A collapsed card draws the inert one-line
  *  preview, whose references are spans rather than links (`reference-titles.e2e.ts` reads the

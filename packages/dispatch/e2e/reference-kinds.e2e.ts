@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
 import { commentField, refPicker } from "./ref-picker";
@@ -16,7 +14,7 @@ import {
   SESSION_TITLE,
   seedReferenceWorld,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -87,10 +85,6 @@ function blockOf(address: string): string {
   if (id === undefined) throw new Error(`${address} names no block`);
   return id;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the one reference world - three projects, fifteen issues, the host's question
 // blocks settling into asks, the architecture source sync and the live session - then fourteen

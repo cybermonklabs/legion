@@ -1,9 +1,7 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { getSentMessages, plannerMention, plannerSession, setLiveSessions } from "./agents";
 import { createComment, createIssue, createProject, listComments } from "./api";
 import { commentField, pickReference } from "./ref-picker";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -36,10 +34,6 @@ async function send(page: Page, issueKey: string) {
     .click();
   return await answer;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the pick's own read of the registry, the send, and the delivery the fake listener
 // takes before the stored comment can be read back.

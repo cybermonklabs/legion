@@ -3,10 +3,9 @@ import {
   type DispatchWritingBox,
   dispatchWritingBox,
 } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { agentRow } from "./agents";
+import { agentRow, getSentMessages } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
@@ -24,8 +23,8 @@ import {
 } from "./editor";
 import { askCard, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { commentField, pickerRows, refPicker } from "./ref-picker";
-import { resetDatabase } from "./seed";
+import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 import {
   ANCHOR,
@@ -68,26 +67,17 @@ import {
 
 test.setTimeout(120_000);
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 /** The box's hint, the people it lists and what it says it does with a picked party, which are
- *  what its own row of the list decides. `drawn` is the write whose row the box hands the
- *  shared field, which is `write` itself but for a field that serves two writes the reader
- *  chooses between after typing: the ask card's one box hands the field its `ask-answer` row
- *  and offers Answer and Ask back under it, so its `ask-back` row's own claim is not one any
- *  state of that field draws. */
+ *  what its own row of the list decides. */
 async function expectRow(
   page: Page,
   field: Locator,
   box: DispatchWritingBox,
-  write: DispatchWriting,
-  drawn: DispatchWriting = write
+  write: DispatchWriting
 ): Promise<void> {
   await expectHint(page, field, box, write);
   await expectIssueRows(field, dispatchWritingBox(box, write).issueRows);
-  await expectDeliveryClaim(field, box, drawn);
+  await expectDeliveryClaim(field, box, write);
 }
 
 /** How one box is reached and driven. `seed` runs before the browser opens. */
@@ -218,10 +208,39 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // One box, two writes: the reader chooses there whether it answers or asks back, so both
       // rows of the list carry the one line it shows. The field itself is handed the
       // `ask-answer` row (`AskCard.tsx`, `writing={dispatchWritingBox("ask-answer",
-      // "ask-answer")}`), so that row's claim is the one its party list draws, and the hint,
-      // which both rows share, is what tells the reader that asking back does deliver.
+      // "ask-answer")}`), so that row's claim is the one its party list draws.
       await expectRow(page, field, "ask-answer", "ask-answer");
-      await expectRow(page, field, "ask-answer", "ask-back", "ask-answer");
+      // The `ask-back` row's own words and people, which the same field draws under that
+      // write: the hint both rows share is what tells the reader that asking back delivers.
+      await expectHint(page, field, "ask-answer", "ask-back");
+      await expectIssueRows(field, dispatchWritingBox("ask-answer", "ask-back").issueRows);
+      // And that row's `delivers`, which no state of the field draws, is driven instead: a
+      // question back with a party picked in it is a comment on the ask, so the party is told,
+      // and the fake listener takes one frame for it carrying the body the reader wrote.
+      const before = (await getSentMessages()).length;
+      await keyboardOnly(field);
+      await pickReference(field, `@${QUERY}`, new RegExp(`^${SESSION.title}`));
+      await field.press("End");
+      const back = " which window does it replay?";
+      await field.pressSequentially(back);
+      const body = `[${SESSION.title}](dispatch://agent/${SESSION.session_id})${back}`;
+      await expect(field).toHaveValue(body);
+      await card.getByRole("button", { exact: true, name: "Ask back" }).click();
+      await expect
+        .poll(async () => (await getSentMessages()).slice(before))
+        .toMatchObject([{ message: body, target_session: SESSION.session_id }]);
+    },
+  },
+  "ask-decline-note": {
+    drive: async (page, world) => {
+      await page.goto("/");
+      const card = await askCard(page, world.ask);
+      await card.getByRole("button", { exact: true, name: "Decline to answer" }).click();
+      const dialog = page.getByRole("dialog", { name: "Decline to answer" });
+      const field = dialog.getByRole("textbox", { name: "Note (optional)" });
+      await expect(field).toBeVisible();
+      await walkBox(field, world);
+      await expectRow(page, field, "ask-decline-note", "ask-decline");
     },
   },
   "ask-option-description": {
