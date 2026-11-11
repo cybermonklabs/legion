@@ -550,10 +550,28 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // Real time, at natsLossGrace: the cut is of a TCP proxy in front of a live NATS server, which no
 // synctest bubble can hold.
 //
-// Serial: it measures the process, waiting for the cut process to release the publisher hold
-// within natsLossGrace and a little, and a measurement that shares the machine with the rest of a
-// parallel batch reads that batch's load rather than the grace (dispatch://INFRA-1075; the same
-// reason this file's other measurements give).
+// The grace is held from below and not from above. Below, the release may not come before
+// natsLossGrace has run since the cut: the holder reads its client disconnected and arms one
+// timer of that grace (lease.go:500-503), and only that timer firing with the client still down
+// ends the turn as NATS lost (lease.go:551-557), so a release inside the grace is a holder that
+// gave the hold up early. Load can only make that bound safer, since a loaded machine delays the
+// release and never hastens it. Above there is nothing honest to hold it to: the cut closes the
+// connection, so the loss is reported by the client's own connection event (bus.Client.Connected
+// reads the connection's status, nats.go:573-577) and nothing polls on an interval, which leaves
+// the longest release the grace plus a run of goroutine wakes - the client's callback, the
+// holder's wake, the timer, serve's return and publish's clearing of the hold
+// (lease.go:443-451) - every one of which a batch on the next core stretches, and a reconnect
+// that lands and drops again arms the grace afresh. So the wait on the release is this package's
+// hang guard, eventWait, which fails on a release that never comes at all, and the 500 ms of
+// slack it replaces is what ran out under CI's eight concurrent go test calls (run 42949344199,
+// dispatch://INFRA-1075).
+//
+// Serial: it measures the process - the bound below is on how long something took
+// (docs/testing.md). It is the lower bound that needs the machine to itself: a holder whose
+// renewals are starved for the 4 s from a confirmed renewal to the loss deadline
+// (publisherHoldOptions, TTL less Margin) reports the hold lost and ends its turn before the
+// grace runs out, and the row would then be reading a parallel batch's load rather than the
+// product.
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
@@ -562,17 +580,24 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
 	cut := startProcess(t, "cut", database, proxied, counter)
-	waitFor(t, 10*time.Second, "the first process taking the publisher hold", cut.outbox.Publishing)
+	waitFor(t, eventWait, "the first process taking the publisher hold", cut.outbox.Publishing)
 	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
 
-	proxy.Cut()
+	// Read before the cut, so the grace is armed after this moment and the bound below holds
+	// whatever the scheduler does between the two statements.
 	downAt := time.Now()
-	waitFor(t, natsLossGrace+500*time.Millisecond, "the cut process releasing the publisher hold", func() bool {
+	proxy.Cut()
+	waitFor(t, eventWait, "the cut process releasing the publisher hold", func() bool {
 		return cut.outbox.hold.Load() == nil
 	})
-	t.Logf("the cut process released the publisher hold %s after the cut", time.Since(downAt).Round(time.Millisecond))
+	released := time.Since(downAt)
+	t.Logf("the cut process released the publisher hold %s after the cut", released.Round(time.Millisecond))
+	if released < natsLossGrace {
+		t.Fatalf("the cut process released the publisher hold %s after the cut, inside the %s it gives a connection that is down: a holder that gives the hold up early stops publishing for an outage its connection may still come back from (natsLossGrace)",
+			released.Round(time.Millisecond), natsLossGrace)
+	}
 	event := writeMessage(t, working, "after the cut")
-	waitForPublished(t, 10*time.Second-time.Since(downAt), database, counter, event)
+	waitForPublished(t, eventWait, database, counter, event)
 	if !working.outbox.Publishing() || cut.outbox.Publishing() {
 		t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(cut, working))
 	}
@@ -771,10 +796,20 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 		t.Fatal("the holder scanned while its client read disconnected")
 	}
 	publisher.connected.Store(true)
+	// The grace's timer is the only thing that can wake this holder - no connection event is
+	// reported here - so a scan is the reading that it ran the grace out, read the client's
+	// status and served on. The wait is a hang guard, eventWait: how long after the grace the
+	// scan lands is this machine's to say, and the row asserts that it happened at all and that
+	// serve never returned, never that it landed inside a second of the grace's end
+	// (dispatch://INFRA-1075). serve ending settles the wait too, so the row fails as what it
+	// is rather than at the guard.
+	waitFor(t, eventWait, "the holder scanning once the grace ended with its client connected", func() bool {
+		return outbox.claims.Load() > 0 || len(ended) > 0
+	})
 	select {
 	case end := <-ended:
 		t.Fatalf("the holder stopped serving (%s) though its client read connected when the grace ended", end)
-	case <-time.After(natsLossGrace + time.Second):
+	default:
 	}
 	if outbox.claims.Load() == 0 {
 		t.Fatal("the holder did not scan once it found its client connected at the grace's end")
