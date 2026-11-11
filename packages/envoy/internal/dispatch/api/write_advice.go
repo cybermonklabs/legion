@@ -473,11 +473,17 @@ type decisionBlockCheck struct {
 
 // supersededApproval is what a document write reports when the version it stored replaced the
 // version a person had approved: that approval is now stale, and nothing but a person's review of
-// the new version restores it. Legion's design gate is exactly such an approval - a person's
-// approval of a root issue's spec at a version - so a write that supersedes it closes that gate,
-// and every READY in the tree is refused until a person approves again. The writer is the only
-// one who can be told in time, and only the write that superseded the approval is told: a write
-// on a document whose approval was already stale closed nothing.
+// the new version restores it. Every write that supersedes an approval is reported, whatever the
+// document is: the approval it made stale is a fact about that document and nothing else. The
+// writer is the only one who can be told in time, and only the write that superseded the approval
+// is told: a write on a document whose approval was already stale closed nothing.
+//
+// Whether a Legion design gate was among the things that approval held open is what DesignGates
+// answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
+// PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
+// kept to the gates that hold a READY back: the issue is in the workflow there, and the project's own
+// list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
+// this write closed no gate anyone here knows of.
 type supersededApproval struct {
 	// ApprovedVersion is the version a person approved, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
@@ -485,6 +491,20 @@ type supersededApproval struct {
 	Version int `json:"version"`
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
+	// DesignGates are the design gates Dispatch's record says this document is: one entry per
+	// issue and step, kept to the issues still in the workflow whose step the project gates.
+	// Omitted when empty, and empty is also what a failed gate read leaves
+	// (supersededApprovalAdvice), because an absent list and an empty one say the one thing a
+	// client acts on - Dispatch names no gate here.
+	DesignGates []supersededApprovalGate `json:"design_gates,omitempty"`
+}
+
+// supersededApprovalGate is one design gate the written document records: the issue whose gate
+// records it and the step it records there, the pair design_gates is keyed by. The document is
+// the one the advice is about, so the row names it nowhere.
+type supersededApprovalGate struct {
+	Issue string `json:"issue"`
+	Step  string `json:"step" enum:"decisions,criteria,spec"`
 }
 
 // supersededApprovalAdvice reports the approval the write of version just made stale, or nil when
@@ -513,8 +533,73 @@ func (s *server) supersededApprovalAdvice(
 ) *supersededApproval {
 	return boundedAdviceRead(ctx, s, tx, route, issueKey, "superseded_approval",
 		func(ctx context.Context, adviceTx pgx.Tx) (*supersededApproval, error) {
-			return newestReviewAsApproval(ctx, adviceTx, artifactID, version)
+			approval, err := newestReviewAsApproval(ctx, adviceTx, artifactID, version)
+			if err != nil || approval == nil {
+				// A write that superseded no approval asks no question about gates, so there
+				// is no gate read either: the clause the gates qualify is the one this read
+				// did not write.
+				return approval, err
+			}
+			// The gates run on the savepoint the approval read ran on, under the
+			// statement_timeout boundedAdviceRead set: one more statement on a connection the
+			// write already holds. A failed or timed-out read of them costs the gate list
+			// alone - never the write, which commits as it always does, and never the first
+			// sentence, since the approval this write superseded is true whatever Dispatch
+			// holds about gates. So the failure is logged here and the approval answered,
+			// rather than handed back as an error, which would cost the whole field.
+			gates, err := supersededApprovalGates(ctx, adviceTx, artifactID)
+			if err != nil {
+				s.logAdviceError(route, issueKey, "superseded_approval", err)
+				return approval, nil
+			}
+			approval.DesignGates = gates
+			return approval, nil
 		})
+}
+
+// supersededApprovalGates reads Dispatch's record of which issues' design gates record this
+// document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the rows
+// that hold a READY back and no others. Two things decide that, and the row alone says neither.
+//
+// The issue must be in the workflow, which is every status but the four that take it out
+// (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree parked in `backlog` or `icebox`,
+// refuse no READY, and an issue still in `triage` runs nothing either. Nothing clears a parked
+// issue's gate rows - the daemon suspends its claims and deletes none, and its boot republishes
+// them for as long as it stays parked - so the rows outlive the tree that ran, and only the
+// re-admission that brings it back clears them.
+//
+// The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
+// written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes
+// these rows). A daemon records a gate row for a step it does not gate - with `gates.design: off`
+// the registration records the spec step, approves it, and no later event ever moves it - and
+// that gate refuses nothing. A project whose daemon has published no list gates nothing it holds,
+// and prints no clause, which is the direction this whole change takes: a reader told nothing
+// asks the architect, where a reader told a gate that is not there stops working.
+//
+// The order is the issue's key and then the order a gate runs the steps in ($2,
+// model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
+func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
+	rows, err := q.Query(ctx, `
+		select g.issue, g.step
+		from design_gates g
+		join issues i on i.key = g.issue
+		join projects p on p.key = i.project_key
+		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any(p.gated_steps)
+		order by g.issue, array_position($2::text[], g.step)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
+	if err != nil {
+		return nil, fmt.Errorf("read the design gates this document records: %w", err)
+	}
+	defer rows.Close()
+	var gates []supersededApprovalGate
+	for rows.Next() {
+		var gate supersededApprovalGate
+		if err := rows.Scan(&gate.Issue, &gate.Step); err != nil {
+			return nil, err
+		}
+		gates = append(gates, gate)
+	}
+	return gates, rows.Err()
 }
 
 // newestReviewAsApproval is supersededApprovalAdvice's rule, over whatever queryer the caller
