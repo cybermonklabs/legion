@@ -87,15 +87,22 @@ const (
 	rulePlannerProvider   = "plannerpane"
 )
 
+// The three sentences both readers are given word for word. Each is a literal of this file, so a
+// reworded rule fails this proof rather than passing on a text the driver derived from the same
+// files it is reading.
+const (
+	ruleSandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
+	ruleEveryRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
+	ruleCIsWork                 = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
+)
+
 // podRuleForPhaseWorker is the pod memory rule as a phase worker's prompt carries it
-// (packages/daemon/internal/prompts/roles/mechanics/headless.md), sentence by sentence. Each is a
-// literal of this file, so a reworded rule fails this proof rather than passing on a text the
-// driver derived from the same files it is reading.
+// (packages/daemon/internal/prompts/roles/mechanics/headless.md), sentence by sentence.
 var podRuleForPhaseWorker = []string{
 	"In an issue pod every role of this issue runs in one container and shares its memory limit",
-	"where that pod's sandbox ends the whole container rather than the one process that filled it",
-	"a command that fills the limit ends every role's turn and not only yours",
-	"A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request",
+	ruleSandboxEndsTheContainer,
+	ruleEveryRolesTurn,
+	ruleCIsWork,
 	"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
 	"Every other heavy run goes where your deployment's instructions say",
 	"instructions that name no such route are a gap you report to the architect that owns your issue",
@@ -107,9 +114,9 @@ var podRuleForPhaseWorker = []string{
 // architect starts rather than for the architect's own commands.
 var podRuleForRootArchitect = []string{
 	"Your subagents run their commands in your own issue pod",
-	"where that pod's sandbox ends the whole container rather than the one process that filled it",
-	"a command that fills the limit ends every role's turn and not only yours",
-	"A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request",
+	ruleSandboxEndsTheContainer,
+	ruleEveryRolesTurn,
+	ruleCIsWork,
 	"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
 	"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 }
@@ -118,12 +125,11 @@ var podRuleForRootArchitect = []string{
 // two claims whose own command lines it reads.
 type rolePromptRuleLive struct {
 	liveAgentProof
-	built *built
 	// issue is the tree's root and this proof's only issue: its own root architect works it, and
 	// it stands in planning, so its planner works it too.
 	issue string
-	// panes is each live claim's own pane: the role it holds and the stand-in it talks to.
-	panes map[claim.Token]*rulePane
+	// panes is each live claim's own model stand-in, the one thing its pane talks to.
+	panes map[claim.Token]*paneStandin
 	// home and profile are the Oh My Pi home and profile both panes run under.
 	home, profile string
 	// overlays is each claim's PI_CONFIG_FILES, in order.
@@ -131,13 +137,6 @@ type rolePromptRuleLive struct {
 	// launched is what step 1 read out of each claim's own process: its pid and the one
 	// `--append-system-prompt` word it was started with.
 	launched map[claim.Token]launchedPrompt
-}
-
-// rulePane is one live claim of the proof: the role it holds and the model stand-in its Oh My Pi
-// talks to.
-type rulePane struct {
-	role  claim.Role
-	stand *paneStandin
 }
 
 // ruleRole is one of the proof's two claims as the seed and the profile name it: the role, and the
@@ -178,9 +177,8 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	proof := newLiveProof(t, "scripts/e2e/role-prompt-rule.sh")
 	r := &rolePromptRuleLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
-		built:          &built{},
 		issue:          proof.cfg.Project + "-1",
-		panes:          map[claim.Token]*rulePane{},
+		panes:          map[claim.Token]*paneStandin{},
 		launched:       map[claim.Token]launchedPrompt{},
 	}
 	version, err := exec.Command(omp, "--version").Output()
@@ -197,7 +195,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	r.profile = "legion-role-prompt-rule-" + strings.ToLower(r.cfg.Project)
 	installProofPlugins(t, root, work, r.home, r.profile, omp)
 	for _, seeded := range r.seededRoles() {
-		r.panes[r.token(seeded.role)] = &rulePane{role: seeded.role, stand: newPaneStandin(t, seeded.provider)}
+		r.panes[r.token(seeded.role)] = newPaneStandin(t, seeded.provider)
 	}
 	r.writeOmpProfile()
 	r.overlays = r.writeOverlays(work)
@@ -240,9 +238,6 @@ func (r *rolePromptRuleLive) overrides() overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.built.mu.Lock()
-			defer r.built.mu.Unlock()
-			r.built.conns, r.built.address = listener, address
 			r.rt.conns, r.rt.stream = listener, address
 			return r.rt, nil
 		},
@@ -340,6 +335,12 @@ func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
 // prompt that role's process was launched with, and prints where each one was found. A sentence it
 // cannot find ends the proof naming the role, its pid and the sentence, since that line is the
 // whole evidence of a negative control's run.
+//
+// The match is of the argv's own bytes, where the composed-prompt unit test folds whitespace
+// first (prompts_test.go's foldWhitespace). That is the stronger claim and the one this proof is
+// for: the sentence stands in the command line word for word. The cost is that a reflow of either
+// paragraph across a line break would fail here while the unit test stayed green, and the reader
+// of that failure is told the sentence it could not find.
 func (r *rolePromptRuleLive) carriesTheRule(what string, token claim.Token, sentences []string) {
 	t := r.t
 	t.Helper()
@@ -385,8 +386,11 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 			path, token, err, r.rt.paneLogs)
 	}
 	argv := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
-	for i, word := range argv {
-		if word != promptWord {
+	// From the end, because Oh My Pi applies the last such word. A launch builds exactly one, so
+	// the two readings agree today; this one is the word the process runs under whatever the argv
+	// carries.
+	for i := len(argv) - 1; i >= 0; i-- {
+		if argv[i] != promptWord {
 			continue
 		}
 		if i+1 == len(argv) {
@@ -400,13 +404,14 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 }
 
 // argvSummary is an argv as a failure names it: every word, each quoted, with a word longer than
-// argvWordShown cut to its first characters and its length given.
+// argvWordShown cut to its first runes and its length given. The cut is of runes rather than
+// bytes, since a role prompt carries `—` and `…` and half a rune reads as an escape.
 func argvSummary(argv []string) string {
 	words := make([]string, 0, len(argv))
 	for _, word := range argv {
 		shown := word
-		if len(shown) > argvWordShown {
-			shown = fmt.Sprintf("%s… (%d bytes)", shown[:argvWordShown], len(word))
+		if runes := []rune(word); len(runes) > argvWordShown {
+			shown = fmt.Sprintf("%s… (%d bytes)", string(runes[:argvWordShown]), len(word))
 		}
 		words = append(words, strconv.Quote(shown))
 	}
@@ -429,7 +434,7 @@ func (r *rolePromptRuleLive) writeOmpProfile() {
 	var models, enabled strings.Builder
 	models.WriteString("# Written by packages/daemon/internal/daemon/role_prompt_rule_live_test.go.\nproviders:\n")
 	for _, seeded := range r.seededRoles() {
-		stand := r.panes[r.token(seeded.role)].stand
+		stand := r.panes[r.token(seeded.role)]
 		fmt.Fprintf(&models, "  %s:\n    baseUrl: %s\n    api: anthropic-messages\n    apiKey: a-literal-key-no-endpoint-checks\n"+
 			"    models:\n      - id: %s\n        name: %s\n        contextWindow: 200000\n        maxTokens: 8192\n",
 			seeded.provider, stand.url, seeded.provider+standinModelID, seeded.provider)

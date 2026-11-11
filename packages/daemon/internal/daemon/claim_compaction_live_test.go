@@ -7,7 +7,8 @@
 // under the real daemon. scripts/e2e/claim-compaction.sh builds this driver with `-tags e2e` and
 // owns the nats-server and the PostgreSQL it runs against.
 //
-// It is a sibling of provider_error_retry_live_test.go, and what the two share is the live-proof
+// It is a sibling of provider_error_retry_live_test.go and role_prompt_rule_live_test.go, and
+// what the three share is the live-proof
 // base that sits beside them (live_agent_proof_test.go): liveAgentProof's reads of a claim and
 // of the daemon's own log, the recording log handler, the model stand-in, the overlay writers,
 // the run's own database and the two plugins packed from this checkout. The local runtime that
