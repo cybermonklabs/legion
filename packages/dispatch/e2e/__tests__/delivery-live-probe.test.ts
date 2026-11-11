@@ -566,3 +566,18 @@ test(
   },
   PROCESS_TEST_MS
 );
+
+test(
+  "a blank --reconnect-spread-ms is a usage error, exit 2",
+  async () => {
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    // `Number("  ")` is 0, and finite: without the guard's trim a blank value reads as a zero
+    // spread, which means reopen at once — the option silently honoured as something the caller
+    // never asked for.
+    const run = runProbe([...args(dispatch, TOKEN, "0.01"), "--reconnect-spread-ms", "  "]);
+    expect(await run.exited()).toBe(2);
+    expect(run.stderr.join("\n")).toContain("--reconnect-spread-ms");
+    expect(dispatch.upgrades).toEqual([]);
+  },
+  PROCESS_TEST_MS
+);
