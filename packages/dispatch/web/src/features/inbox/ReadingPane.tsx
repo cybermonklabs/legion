@@ -152,17 +152,13 @@ function ApprovalBody({
   /** Where "Next change" stands in the marked blocks, and the question it stands in: another
    *  question is read from its first marked block, not from where the last one was left. */
   const nextChangeAt = useRef({ askId: ask.id, at: 0 });
-  /** The request the column has already been sent to the start of, so that it is sent there
-   *  once for each of them. A version read that lands, goes and lands again - a new version of
-   *  the document under approval, or a read of the document that fails and recovers - would
-   *  otherwise write the column a second time and take the reader off the text they were on. */
-  const openedFor = useRef<string | undefined>(undefined);
-  /** This column's hold while the request opens. The write below is a placement for an opened
-   *  item, so it is the reader's to end like every other: the request's own question is drawn
-   *  from the first frame, and the column stands there while the document settles and its
-   *  artifact and version are read, which is long enough for a reader to scroll in. No
-   *  `drawing()` is ever called on it, so neither of its clocks starts and it holds until the
-   *  reader presses, scrolls, touches or types in the column. */
+  /** This column's hold while the request opens, and the one thing that decides its write. The
+   *  write is a placement for an opened item, so it is the reader's to end like every other:
+   *  the request's own question is drawn from the first frame, and the column stands there
+   *  while the document settles and its artifact and version are read, which is long enough
+   *  for a reader to scroll in. No `drawing()` is ever called on it, so neither of its clocks
+   *  starts: it holds until the reader presses, scrolls, touches or types in the column, or
+   *  until the write below lets it go. */
   const hold = useRef<SectionHold | undefined>(undefined);
   const settled = useSettled(artifactId);
   const approvedVersion = approval.approved?.version;
@@ -235,13 +231,8 @@ function ApprovalBody({
   }, [ask.id]);
   useEffect(() => {
     const column = scroller.current;
-    if (opened === undefined || column === null || openedFor.current === opened) {
-      return;
-    }
-    // Once for each request, whether or not the write lands: a reader who has moved this column
-    // keeps it, and the version read landing again for the same request writes nothing either.
-    openedFor.current = opened;
-    if (hold.current?.writes() !== true) {
+    const held = hold.current;
+    if (opened === undefined || column === null || held?.writes() !== true) {
       return;
     }
     // Keyed on the request and not on the version number: a later version of the same request
@@ -252,6 +243,10 @@ function ApprovalBody({
     // the move against the drawn rects, and where nothing is laid out every rect is zero and
     // the move computes to nothing.
     column.scrollTop = 0;
+    // Once for each request, and the hold is what says so: let go here, it answers no to every
+    // later pass of this request - a new version of the document, or a read that failed and
+    // recovered - and the next request the reader opens arms a hold of its own.
+    held.release();
   }, [opened]);
 
   const marked = useMarkedBlocks(content);

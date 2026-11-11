@@ -601,6 +601,57 @@ test("a second approval request opens the column at its own start, wherever the 
   }
 });
 
+/** A request on a document this harness cannot read, so the column falls back to its card and
+ *  writes nothing: what the reader steps through on the way back to the first request. */
+const UNREADABLE_REQUEST: Partial<InboxRow> = {
+  approval: {
+    approved: undefined,
+    artifact_id: "artifact-2",
+    documents: null,
+    name: "runbook.md",
+    requested_version: 1,
+    version: 1,
+  },
+  approval_artifact: { name: "runbook.md", primary: false, project: "CORE", slug: "runbook" },
+  id: "ask-b",
+  question: "Approve runbook.md at version 1?",
+};
+
+test("a request the reader comes back to opens at the start of the column again", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const first = approvalAsk();
+  const { rerender, view } = renderPane({
+    ask: first,
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+
+    // A request between the two that the column cannot draw: it falls back to the card and
+    // writes nothing, and the reader reads down that card.
+    rerender(approvalAsk(undefined, UNREADABLE_REQUEST));
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    scroller.scrollTop = 240;
+
+    // The first request again is a request the pane shows anew, so its version is drawn from
+    // the start of the column rather than at the offset the card between them left.
+    rerender(first);
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    expect(screen.getByTestId("inbox-pane-scroller")).toBe(scroller);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("an approval on a document that cannot be read leaves the column where the reader left it", async () => {
   // `getArtifact` is refused by default, so the column reads no version and falls back to the
   // card: there is no version drawn to put the reader at the start of.
