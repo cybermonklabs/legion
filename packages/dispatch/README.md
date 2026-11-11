@@ -486,6 +486,21 @@ and `--path` and `--content` each still make a document. Each passing assertion 
 the end writes `all <n> assertions passed` as the one line on stdout, so a run cut short fails a
 reader that reads that line.
 
+`e2e/acceptance/with-harness.sh` runs one command against a stack of its own, for a driver that
+has no server to speak to: it starts `e2e/harness-up.ts`, waits for the stack's exports, applies
+them, runs the command with `DISPATCH_E2E_PORT` and the rest in its environment, and stops the
+stack when the command ends, exiting with the command's own status. From `packages/dispatch`:
+
+```bash
+DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harness.sh \
+  bash -c 'DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
+    bash e2e/acceptance/create-document.sh'
+```
+
+`e2e-token` is the agent bearer the harness pins. Until cybermonklabs/legion#3435 the same thing
+was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
+stacks through Playwright's own global setup now, which no shell driver can reach.
+
 All four source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
