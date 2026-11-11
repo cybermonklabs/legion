@@ -25,8 +25,9 @@ import (
 // The nodes the reads under test are taken on. probe is one node among tens of thousands, whose
 // own tuples are a handful out of a log of more than a million: that is the shape a current read
 // has in production, and the shape the five read indexes exist for. crowded is the node with a
-// long inbox, where TuplesIntoNode naming its kinds reads one index scan per kind and naming
-// none has no kind to scan by and falls to a scan of the log.
+// long inbox, where TuplesIntoNode naming its kinds reads one index scan per kind and stops at
+// the limit, and naming none has no kind to scan by and reads that whole inbox - as a scan of
+// the log where the planner sees the node's values, as one index range sorted where it does not.
 const (
 	probeKind   = "block"
 	probeID     = "GRAPH/seed#probe"
@@ -71,6 +72,13 @@ const longValueBytes = 3 * 1024
 // inboxLimit is the bound the inbox reads under test take.
 const inboxLimit = 50
 
+// planCacheModes are the two plans Postgres holds one prepared statement to, and every read
+// below is explained under both. pgx prepares the statements this package sends, so the plan
+// production settles on is the generic one, built without the values a call binds; the custom
+// plan is the one built for one call's own values. A read that reaches its index only while the
+// planner can see its values scans in production, and either mode alone hides that.
+var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
+
 // TestEveryCurrentStoreReadRunsThroughTheTupleIndexes holds the five read indexes of the first
 // migration to carrying every read the package states, against a log of more than a million
 // tuples. It explains each read as the package itself sends it (recordedQueryer), so a statement
@@ -79,6 +87,20 @@ const inboxLimit = 50
 // answers fewer rows than the log holds fails here rather than passing as a faster plan; and it
 // reads the migration files themselves, so an index moved to a later migration - where an
 // existing deployment would build it on a full table - fails too.
+//
+// Each read is explained under both plan-cache modes (planCacheModes), and each plan of each
+// mode is held to one rule: it reads graph_tuples through one of the five read indexes, that
+// scan carries an index condition, and no plan scans that table sequentially. The index
+// condition is the whole of it. An index that exists, and is even named for the column a read
+// binds, can still fail to serve that read - through the expression it is keyed on, or through
+// the order columns it lacks - and the scan then reads the index whole and drops what it does
+// not want with a filter. A node that reads as an index scan and narrows on nothing is the
+// whole-table read under a better name, so the rule is read off the plan and never off the
+// index list.
+//
+// The one read held to the opposite is the inbox read naming no kind (requireWholeInbox), the
+// control: with no kind to scan by it reads the crowded node's whole inbox under either mode,
+// which is what naming the kinds buys.
 //
 // It also reports the bytes a row the store costs at this size, which the issue's growth
 // projection is read off.
@@ -111,48 +133,98 @@ func TestEveryCurrentStoreReadRunsThroughTheTupleIndexes(t *testing.T) {
 
 	keys := explaintest.NewIndexKeys(pool)
 	for _, read := range storeReads(t, ctx, pool, reference) {
-		plan, text := explainRecorded(t, ctx, pool, read.name, read.statement)
-		t.Logf("%s:\n%s", read.name, text)
-		if explaintest.SeqScansRelation(t, plan, "graph_tuples") != read.wantScan {
-			if read.wantScan {
-				t.Errorf("%s does not scan graph_tuples, which is what naming no kind is supposed to cost:\n%s", read.name, text)
-			} else {
-				t.Errorf("%s scans graph_tuples:\n%s", read.name, text)
-			}
-		}
-		if read.wantScan {
-			continue
-		}
-		scans := readIndexScans(t, plan)
-		if len(scans) < read.wantIndexScans {
-			t.Errorf("%s reads graph_tuples through %d index scans, want %d, one for each kind it names:\n%s",
-				read.name, len(scans), read.wantIndexScans, text)
-		}
-		for _, scan := range scans {
-			if !slices.Contains(graphTupleReadIndexes, scan.Index) {
-				t.Errorf("%s reads graph_tuples through %s, which is no read index of the first migration (%v):\n%s",
-					read.name, scan.Index, graphTupleReadIndexes, text)
-			}
-		}
-		if len(scans) == 0 {
-			t.Errorf("%s reads graph_tuples through no index at all:\n%s", read.name, text)
-		}
-		keys.RequireIndexKeyed(t, plan, explaintest.AnyIndex, read.name, explaintest.CondOptional)
-		if read.wantMergedInTime && !planHolds(t, plan, "Merge Append") {
-			t.Errorf("%s does not merge its kinds in time order (no Merge Append node):\n%s", read.name, text)
+		for _, mode := range planCacheModes {
+			requireReadRunsThroughTheIndexes(t, ctx, pool, keys, read, mode)
 		}
 	}
 }
 
+// requireReadRunsThroughTheIndexes explains one read under one plan-cache mode and holds that
+// plan to the rule the test's own comment states. Every failure names the read and the mode,
+// because a read that is served under one mode and lost under the other is the failure this
+// check exists for, and prints the plan it read.
+func requireReadRunsThroughTheIndexes(
+	t *testing.T, ctx context.Context, pool *store.Pool, keys *explaintest.IndexKeys, read storeRead, mode string,
+) {
+	t.Helper()
+	plan, text := explainRecorded(t, ctx, pool, read.name, mode, read.statement)
+	subject := read.name + " under " + mode
+	t.Logf("%s:\n%s", subject, text)
+	if read.wantWholeInbox {
+		requireWholeInbox(t, subject, plan, text)
+		return
+	}
+	if explaintest.SeqScansRelation(t, plan, "graph_tuples") {
+		t.Errorf("%s scans graph_tuples:\n%s", subject, text)
+	}
+	scans := readIndexScans(t, plan)
+	if len(scans) < read.wantIndexScans {
+		t.Errorf("%s reads graph_tuples through %d index scans, want %d, one for each kind it names:\n%s",
+			subject, len(scans), read.wantIndexScans, text)
+	}
+	if len(scans) == 0 {
+		t.Errorf("%s reads graph_tuples through no index at all:\n%s", subject, text)
+	}
+	for _, scan := range scans {
+		if !slices.Contains(graphTupleReadIndexes, scan.Index) {
+			t.Errorf("%s reads graph_tuples through %s, which is no read index of the first migration (%v):\n%s",
+				subject, scan.Index, graphTupleReadIndexes, text)
+		}
+		requireIndexCondition(t, subject, scan, text)
+	}
+	keys.RequireIndexKeyed(t, plan, explaintest.AnyIndex, subject, explaintest.CondOptional)
+	if read.wantMergedInTime && !planHolds(t, plan, "Merge Append") {
+		t.Errorf("%s does not merge its kinds in time order (no Merge Append node):\n%s", subject, text)
+	}
+}
+
+// requireWholeInbox holds the read that names no kind to what naming none costs: the crowded
+// node's whole inbox, every row of it read and all but inboxLimit of them thrown away. How the
+// planner reaches those rows differs by mode and is its own business - a sequential scan of the
+// log where it sees the node's own values and knows the inbox is long, the whole of one index
+// range sorted where it does not - so what is held here is the rows the plan read out of
+// graph_tuples rather than the node it read them with.
+func requireWholeInbox(t *testing.T, subject string, plan json.RawMessage, text string) {
+	t.Helper()
+	// EXPLAIN reports a parallel node's rows per loop and rounds them to two places, so a whole
+	// inbox of 400,000 read by three workers reads back as 399,999.99. One row of slack covers
+	// that rounding, and a plan that read any less than the inbox falls short of it by thousands.
+	if rows := tupleRowsRead(t, plan); rows+1 < seedCrowdedInbox {
+		t.Errorf("%s reads %.0f rows of graph_tuples, and naming no kind is supposed to cost the whole inbox of %d rows:\n%s",
+			subject, rows, seedCrowdedInbox, text)
+	}
+}
+
+// requireIndexCondition holds one index scan of graph_tuples to narrowing the index on a
+// condition, which is the only thing that makes it read part of that index rather than all of
+// it. A scan carrying no condition fails in one of two ways, and the failure says which: its
+// only predicate is a filter, which is every row of the index read and most of them thrown away
+// - the whole-table read under a better name - or it carries no predicate at all, which is the
+// index read end to end. The read, the mode and the plan node are all in the message, so the
+// reader knows what to fix without explaining the statement again.
+func requireIndexCondition(t *testing.T, subject string, scan planNode, text string) {
+	t.Helper()
+	if scan.Cond != "" {
+		return
+	}
+	if scan.Filter != "" {
+		t.Errorf("%s reads graph_tuples through %s under no index condition: its only predicate is the filter `%s`, and an index scan that filters every row is the whole-table read under a better name:\n%s",
+			subject, scan.scanName(), scan.Filter, text)
+		return
+	}
+	t.Errorf("%s reads graph_tuples through %s under no index condition and no filter either, which is the whole of that index read end to end:\n%s",
+		subject, scan.scanName(), text)
+}
+
 // storeRead is one read under test: what it is called, the statement and arguments the package
-// sent for it, whether its plan may scan graph_tuples, how many index scans of graph_tuples it
-// must hold and whether those are merged in time order. The answer each read gave is compared
-// with the reference walk before the plan is explained, so a read that is wrong fails on its
-// answer rather than on its plan.
+// sent for it, whether its plan is the whole-inbox read that naming no kind costs, how many
+// index scans of graph_tuples it must hold and whether those are merged in time order. The
+// answer each read gave is compared with the reference walk before the plan is explained, so a
+// read that is wrong fails on its answer rather than on its plan.
 type storeRead struct {
 	name             string
 	statement        recordedStatement
-	wantScan         bool
+	wantWholeInbox   bool
 	wantIndexScans   int
 	wantMergedInTime bool
 }
@@ -160,15 +232,15 @@ type storeRead struct {
 // storeReads runs each read the package states, checks its answer against the reference walk and
 // returns the statement each one sent. The six reads are the five current and as-of reads of one
 // node and the inbox read of the crowded node; the seventh, the inbox read naming no kind, is
-// the negative control that shows the kind list is what keeps that read off a scan.
+// the negative control that shows the kind list is what keeps that read off the whole inbox.
 func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference logReference) []storeRead {
 	t.Helper()
 	recorder := &recordedQueryer{Queryer: pool}
 	reads := make([]storeRead, 0, 7)
-	record := func(name string, wantScan bool, wantIndexScans int, merged bool) {
+	record := func(name string, wantWholeInbox bool, wantIndexScans int, merged bool) {
 		t.Helper()
 		reads = append(reads, storeRead{
-			name: name, statement: recorder.last(t), wantScan: wantScan,
+			name: name, statement: recorder.last(t), wantWholeInbox: wantWholeInbox,
 			wantIndexScans: wantIndexScans, wantMergedInTime: merged,
 		})
 	}
@@ -263,68 +335,182 @@ func (r *recordedQueryer) last(t *testing.T) recordedStatement {
 	return statement
 }
 
-// explainRecorded explains one recorded statement, as JSON for the checks and as text for the
-// report, under EXPLAIN (ANALYZE, BUFFERS) with every plan type left enabled: the plans read
-// here are the ones the planner really takes at this size, not ones a pin forced on it.
+// explainRecorded explains one recorded statement under one plan-cache mode, as JSON for the
+// checks and as text for the report, under EXPLAIN (ANALYZE, BUFFERS) with every plan type left
+// enabled: the plans read here are the ones the planner really takes at this size, not ones a
+// pin forced on it.
+//
+// The statement is prepared and executed rather than explained with the read's arguments bound,
+// because a plan-cache mode is what Postgres does with a prepared statement and an EXPLAIN that
+// binds its own parameters has no plan cache to set a mode on. The parameter types are the ones
+// Postgres infers from the statement itself, which is what pgx's own parse leaves it to; EXECUTE
+// binds no parameter, so the arguments the read sent are written into it as literals. The
+// transaction is rolled back, which is what deallocates the prepared statement.
 func explainRecorded(
-	t *testing.T, ctx context.Context, pool *store.Pool, name string, statement recordedStatement,
+	t *testing.T, ctx context.Context, pool *store.Pool, name, mode string, statement recordedStatement,
 ) (json.RawMessage, string) {
 	t.Helper()
-	var planJSON []byte
-	if err := pool.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement.sql, statement.args...).Scan(&planJSON); err != nil {
-		t.Fatalf("explain %s: %v", name, err)
-	}
-	rows, err := pool.Query(ctx, "explain (analyze, buffers) "+statement.sql, statement.args...)
+	transaction, err := pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("explain %s as text: %v", name, err)
+		t.Fatalf("begin the transaction %s's plan is read in: %v", name, err)
+	}
+	defer transaction.Rollback(ctx)
+	if _, err := transaction.Exec(ctx, "set local plan_cache_mode = "+mode); err != nil {
+		t.Fatalf("set %s for %s: %v", mode, name, err)
+	}
+	prepared := preparedStatementName(name, mode)
+	if _, err := transaction.Exec(ctx, "prepare "+prepared+" as "+statement.sql); err != nil {
+		t.Fatalf("prepare %s: %v", name, err)
+	}
+	execute := "execute " + prepared + argumentLiterals(t, statement.args)
+	var planJSON []byte
+	if err := transaction.QueryRow(ctx, "explain (analyze, buffers, format json) "+execute).Scan(&planJSON); err != nil {
+		t.Fatalf("explain %s under %s: %v", name, mode, err)
+	}
+	rows, err := transaction.Query(ctx, "explain (analyze, buffers) "+execute)
+	if err != nil {
+		t.Fatalf("explain %s under %s as text: %v", name, mode, err)
 	}
 	defer rows.Close()
 	var lines []string
 	for rows.Next() {
 		var line string
 		if err := rows.Scan(&line); err != nil {
-			t.Fatalf("read a plan line of %s: %v", name, err)
+			t.Fatalf("read a plan line of %s under %s: %v", name, mode, err)
 		}
 		lines = append(lines, line)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("explain %s as text: %v", name, err)
+		t.Fatalf("explain %s under %s as text: %v", name, mode, err)
 	}
 	return explaintest.OnePlan(t, planJSON), strings.Join(lines, "\n")
 }
 
-// readIndexScans names every index scan of graph_tuples in plan, which is what a read of one
-// node must reach the log through.
-func readIndexScans(t *testing.T, plan json.RawMessage) []explaintest.IndexScan {
+// preparedStatementName is the name one read's plan is prepared under: the read's own name and
+// the mode, written as an identifier, so the two plans of one read are two prepared statements
+// and neither settles on the other's cached plan.
+func preparedStatementName(name, mode string) string {
+	return "plan_" + notAnIdentifier.ReplaceAllString(strings.ToLower(name), "_") + "_" + mode
+}
+
+// notAnIdentifier matches what a read's name holds that an identifier cannot.
+var notAnIdentifier = regexp.MustCompile(`[^a-z0-9]+`)
+
+// argumentLiterals writes the arguments a read bound as the literal list EXECUTE takes in their
+// place, empty for a statement that binds none.
+func argumentLiterals(t *testing.T, args []any) string {
 	t.Helper()
-	var scans []explaintest.IndexScan
-	for _, scan := range explaintest.IndexScans(t, plan) {
-		if scan.Relation == "graph_tuples" {
-			scans = append(scans, scan)
+	if len(args) == 0 {
+		return ""
+	}
+	literals := make([]string, 0, len(args))
+	for _, argument := range args {
+		literals = append(literals, asLiteral(t, argument))
+	}
+	return "(" + strings.Join(literals, ", ") + ")"
+}
+
+// asLiteral writes one bound argument as the literal EXECUTE takes. These are the shapes this
+// package's reads bind: a node address or a kind as text, a kind list or the null that stands
+// for every kind, a moment, and a row bound. Each literal is written untyped, since the
+// prepared statement's own parameter type is what Postgres reads it as.
+func asLiteral(t *testing.T, argument any) string {
+	t.Helper()
+	switch value := argument.(type) {
+	case nil:
+		return "null"
+	case string:
+		return quoted(value)
+	case []string:
+		quotedValues := make([]string, 0, len(value))
+		for _, element := range value {
+			quotedValues = append(quotedValues, quoted(element))
+		}
+		return "array[" + strings.Join(quotedValues, ", ") + "]"
+	case int:
+		return strconv.Itoa(value)
+	case time.Time:
+		return quoted(value.UTC().Format(time.RFC3339Nano))
+	default:
+		t.Fatalf("a read bound %T, which this test cannot write as a literal", argument)
+		return ""
+	}
+}
+
+// quoted writes one value as a SQL string literal, the one quote of it doubled.
+func quoted(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+
+// planNode is what the checks here read of one node of EXPLAIN (ANALYZE, FORMAT JSON): its
+// type, the relation and the index it names, the two predicates it may carry, the rows it
+// answered and the times it ran, and its children. Both predicates are kept, because the rule
+// is read off the pair: an index condition is what makes a scan read part of an index, and a
+// filter is what the scan does with rows it has already read. A parallel node answers its rows
+// once per loop, so the rows it read are the two numbers multiplied.
+type planNode struct {
+	NodeType    string            `json:"Node Type"`
+	Relation    string            `json:"Relation Name"`
+	Index       string            `json:"Index Name"`
+	Cond        string            `json:"Index Cond"`
+	Filter      string            `json:"Filter"`
+	ActualRows  float64           `json:"Actual Rows"`
+	ActualLoops float64           `json:"Actual Loops"`
+	Plans       []json.RawMessage `json:"Plans"`
+}
+
+// scanName names one scan node as a failure message cites it.
+func (n planNode) scanName() string { return n.NodeType + " using " + n.Index }
+
+// planNodes flattens plan - one "Plan" node of EXPLAIN (FORMAT JSON) - into every node of the
+// tree under it, each node before its children. Every check below is a filter over this one
+// walk, so the tree is descended in one place rather than once per check.
+func planNodes(t *testing.T, plan json.RawMessage) []planNode {
+	t.Helper()
+	var node planNode
+	if err := json.Unmarshal(plan, &node); err != nil {
+		t.Fatalf("decode plan node: %v", err)
+	}
+	nodes := []planNode{node}
+	for _, child := range node.Plans {
+		nodes = append(nodes, planNodes(t, child)...)
+	}
+	return nodes
+}
+
+// readIndexScans names every index scan of graph_tuples in plan, which is what a read of one
+// node must reach the log through. A node naming the relation and an index is an index scan of
+// it; a bitmap's own index node names no relation, so a plan that reaches the log through a
+// bitmap holds none of these and fails as a read through no index at all.
+func readIndexScans(t *testing.T, plan json.RawMessage) []planNode {
+	t.Helper()
+	var scans []planNode
+	for _, node := range planNodes(t, plan) {
+		if node.Relation == "graph_tuples" && node.Index != "" {
+			scans = append(scans, node)
 		}
 	}
 	return scans
 }
 
+// tupleRowsRead is how many rows of graph_tuples the plan read: every node that names the
+// relation, its rows times the times it ran. It is what tells a read of a page of an index from
+// a read of the whole log, whichever node either one took.
+func tupleRowsRead(t *testing.T, plan json.RawMessage) float64 {
+	t.Helper()
+	var rows float64
+	for _, node := range planNodes(t, plan) {
+		if node.Relation == "graph_tuples" {
+			rows += node.ActualRows * node.ActualLoops
+		}
+	}
+	return rows
+}
+
 // planHolds reports whether plan holds a node of the named type at any depth.
 func planHolds(t *testing.T, plan json.RawMessage, nodeType string) bool {
 	t.Helper()
-	var node struct {
-		NodeType string            `json:"Node Type"`
-		Plans    []json.RawMessage `json:"Plans"`
-	}
-	if err := json.Unmarshal(plan, &node); err != nil {
-		t.Fatalf("decode plan node: %v", err)
-	}
-	if node.NodeType == nodeType {
-		return true
-	}
-	for _, child := range node.Plans {
-		if planHolds(t, child, nodeType) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(planNodes(t, plan), func(node planNode) bool {
+		return node.NodeType == nodeType
+	})
 }
 
 // reportBytesARow prints what one tuple costs the database at this size: the row count, the
