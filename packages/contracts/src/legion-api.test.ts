@@ -834,6 +834,77 @@ test("an operator's claim carries what the daemon last saw its agent do", () => 
   expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
 });
 
+// Contract 75: a claim the daemon holds a cause for says why it failed — the one word of
+// `supervise.FailureCause`, the sentence beside it, the moment and the counts it failed with —
+// and a held issue says which phase its hold stopped, beside the reason the hold may have. The
+// state golden carries LEGION-210, held from implementing after its implementer failed, and the
+// forget-session golden carries the operator's shape of the same record. A claim that never
+// failed carries no `failure`, a backfilled one carries no `at`, and a word the seven do not
+// name is refused rather than read.
+test("a failed claim carries its cause", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        holdReason?: string;
+        heldFrom?: string;
+        workers: Record<string, { claim: { failure?: Record<string, unknown> } }>;
+      }
+    >;
+  };
+  const held = state.issues["LEGION-210"];
+  const failed = held?.workers.implementer?.claim;
+  if (held === undefined || failed === undefined) {
+    throw new Error("state fixture lacks LEGION-210's implementer");
+  }
+  expect({ holdReason: held.holdReason, heldFrom: held.heldFrom }).toEqual({
+    holdReason: "escalated",
+    heldFrom: "implementing",
+  });
+  const record = {
+    cause: "died" as const,
+    detail: "launch failures ran out",
+    at: "2026-09-22T08:47:03Z",
+    attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
+  };
+  expect(failed.failure).toEqual(record);
+
+  // Both keys survive the parse: the answer side strips what it does not name, so a reader of
+  // the state sees them only because `legion-api.ts` names both.
+  const parsed = LegionStateResponse.parse(state).issues["LEGION-210"];
+  expect(parsed?.heldFrom).toBe("implementing");
+  expect(parsed?.workers.implementer?.claim.failure).toEqual(record);
+
+  // A failure the migration backfilled carries no moment, and the record outlives the claim's
+  // retirement; a cause outside the seven words, or a held phase outside the workflow's, is
+  // refused.
+  failed.failure = {
+    cause: "unrecorded",
+    detail: "launch failures ran out",
+    attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
+  };
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+  failed.failure = { ...failed.failure, cause: "exploded" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  failed.failure = undefined;
+  held.heldFrom = "unrecorded";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  held.heldFrom = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  const claim = fixture("operator-forget-session.json") as { failure?: Record<string, unknown> };
+  expect(claim.failure).toEqual({
+    cause: "launch_refused",
+    detail: "launch failures ran out: resume the pane: the session table holds no such session",
+    at: "2026-09-22T09:28:41Z",
+    attempts: { launchFailures: 3, deaths: 0, promptFailures: 0, promptRetires: 0 },
+  });
+  claim.failure = { cause: "died", detail: "it died" };
+  expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
+  claim.failure = undefined;
+  expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
+});
+
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
 // leave it out, since its grant names its own.
 test("a backward move may name its issue", () => {

@@ -956,4 +956,43 @@ package api
 // rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 68
+//
+// 75: INFRA-3083 -- a claim says why it failed, and a held issue says which phase its hold
+// stopped. A claim view of `GET /legion/v1/state` — a worker's, an architect's — carries
+// `failure` once the daemon holds a cause for that claim: `cause`, one of the seven words of
+// `supervise.FailureCause` (`launch_refused`, `died`, `never_registered`, `stale_plugin`,
+// `prompt_retires_exhausted`, `provider_error`, `unrecorded`); `detail`, the sentence the site
+// that failed the claim wrote beside it, which is what the daemon kept until now; `at`, the
+// moment it failed, absent for a claim whose record carries none; and `attempts`, the four
+// counts it failed with, which the limits in `settings` are read against. The claim of the
+// operator routes (`POST /legion/v1/operator/claims` and
+// `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`, and the listing behind
+// `legion claims list`) carries the same `failure`. Each issue of the state carries `heldFrom`,
+// the phase the hold took it out of, beside the `holdReason` it already had; unlike the reason,
+// which is suppressed while the issue's tree lingers, the phase is shown whatever the tree is
+// doing, so every issue at `phase: held` names the phase that stopped. One sentence covered
+// four events until now, so an agent reading a failed claim could not tell a dead process from
+// an agent that never came up, and no surface said which phase a hold ended.
+// `packages/contracts/src/legion-api.ts` names all three on the answer side, and that schema
+// strips a key it does not name rather than refusing it: a plugin built after
+// sjawhar/legion#2788 and before this contract loses the keys, not the body. The daemon keeps
+// the two apart anyway — a caller in a pod whose plugin declares a contract below 75 is served
+// the state with neither key (`failureRecordContract`, `withoutFailureRecord`) — because a
+// plugin older than that strict-to-stripping change refuses a body carrying a key it does not
+// name. The daemon ships store migration `20261111212544_claim_failure_cause.up.sql` with it,
+// which adds the three columns the record is kept on (`claims.failure_cause`,
+// `claims.failed_at`, `claims.pending_cause`) and backfills the cause of every claim the store
+// holds in `failed` from the sentence it already wrote, `unrecorded` where that sentence names
+// no one event and a null `failed_at` throughout, since the release this upgrades from recorded
+// the moment nowhere. An older daemon binary put back on this schema names those columns in no
+// statement and serves no `failure` and no `heldFrom`, so the keys go and every other key of
+// the body stands. (The number is a reading of `const DaemonAPIVersion` at refs/pull/<n>/head
+// for every open pull request of this repository on 2026-11-11, not of a file list: GitHub cuts
+// a pull request's file list short, so one that changes more files than the page holds answers
+// without this path. The base declares 68, the entry right above this one, and the open heads
+// declare 69 through 74, so this change takes 75, the lowest number no open head declares. Read
+// the base's own number and every open pull request again at the next merge rather than from
+// this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 75

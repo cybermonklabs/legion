@@ -172,9 +172,41 @@ const legionStepView = z.object({
   endedAt: timestamp.optional(),
 });
 
+/** `api.ClaimFailureView` — why a claim failed: `cause`, the one word the site that failed it
+ * chose (`supervise.FailureCause`), `detail`, the sentence that site wrote beside it, `at`, the
+ * moment it failed, and `attempts`, the four counts it failed with, which the limits in
+ * `settings` are read against (`launch_failure_limit` and the rest).
+ *
+ * `at` is absent for a claim whose record carries no moment, which is every failure the
+ * migration that added the columns backfilled; `detail` is a plain string for the same reason,
+ * since a backfilled failure the store held no sentence for carries an empty one and the body
+ * must still read. A claim carries the record from its failure until it launches again, because
+ * nothing else clears it: a claim an operator retired after it failed carries it still, which is
+ * what lets an agent reading a retired claim say why it is there. */
+const legionClaimFailureView = z.object({
+  cause: z.enum([
+    "launch_refused",
+    "died",
+    "never_registered",
+    "stale_plugin",
+    "prompt_retires_exhausted",
+    "provider_error",
+    "unrecorded",
+  ]),
+  detail: z.string(),
+  at: timestamp.optional(),
+  attempts: z.object({
+    launchFailures: z.number().int().nonnegative(),
+    deaths: z.number().int().nonnegative(),
+    promptFailures: z.number().int().nonnegative(),
+    promptRetires: z.number().int().nonnegative(),
+  }),
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
- * absent while no process runs (queued, suspended, failed, retired), and `capabilities` is absent
- * until a session of the claim reports on `claims/ready` (the controller's never does). */
+ * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
+ * until a session of the claim reports on `claims/ready` (the controller's never does), and
+ * `failure` is absent for a claim the daemon holds no cause for. */
 const legionClaimView = z.object({
   session: z.string(),
   state: z.enum(LEGION_CLAIM_STATES),
@@ -196,6 +228,11 @@ const legionClaimView = z.object({
    * contract below 57 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
+  /** Why the claim failed, and absent for a claim the daemon holds no cause for: one that never
+   * failed, and one whose launch cleared the record. A caller in a pod whose plugin declares a
+   * contract below 75 is served the state with no such key at all (the daemon's
+   * `withoutFailureRecord`), so every reader takes it as optional. */
+  failure: legionClaimFailureView.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -458,8 +495,16 @@ const legionIssue = z.object({
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
-   * the controller. Absent while the issue's tree lingers or is closed, until it is re-admitted. */
+   * the controller. `heldFrom` beside it is the phase the hold took the issue out of, and is
+   * absent for an issue that is not held. The linger suppression is `holdReason`'s alone: the
+   * reason is absent while the issue's tree lingers or is closed, until it is re-admitted, since
+   * it is a decision someone must act on and a lingering tree has none; the phase is a fact of
+   * the record that costs one word, so every issue at `phase: held` names the phase that
+   * stopped, whatever its tree is doing. A caller in a pod whose plugin declares a contract
+   * below 75 is served every issue without `heldFrom` (the daemon's `withoutFailureRecord`), so
+   * every reader takes it as optional. */
   holdReason: z.literal("escalated").optional(),
+  heldFrom: z.enum(LEGION_WORKFLOW_PHASES).optional(),
   architect: legionClaimView.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView),
   pullRequest: legionPullRequestView.optional(),
@@ -989,6 +1034,11 @@ export const LegionOperatorClaimResponse = z.object({
    * controller's record reaches: the state puts the controller's claim on no issue, so no claim
    * view of it carries one. */
   step: legionStepView.optional(),
+  /** Why the claim failed, and absent for a claim the daemon holds no cause for: one that never
+   * failed, and one a launch has run again since, which is the only thing that clears the
+   * record. It stands on a claim an operator retired after it failed, which is what lets the
+   * seat reading the listing say why that worker is gone. */
+  failure: legionClaimFailureView.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;

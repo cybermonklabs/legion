@@ -638,6 +638,49 @@ test("read_record hands on the place of an issue standing in the admission line"
   expect(holding.record).not.toHaveProperty("waitingLine");
 });
 
+// Contract 75: the daemon's state says why a claim failed and which phase a hold stopped, and
+// both seats read them through the one parse this client makes (`LegionStateResponse`): a key
+// the schema does not name is stripped before the agent sees it, so a record the daemon serves
+// reaches a worker only because `packages/contracts/src/legion-api.ts` names it. The body here
+// is the Go golden itself, not an object written beside it, so this row is red until the
+// daemon's own fixture carries the keys.
+test("a failed claim carries its cause", async () => {
+  const { ops } = runtime();
+  const golden = daemonFixture("state.json") as { issues: Record<string, Record<string, unknown>> };
+  const failure = {
+    cause: "died" as const,
+    detail: "launch failures ran out",
+    at: "2026-09-22T08:47:03Z",
+    attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
+  };
+
+  const answered = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-210" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(answered.record).toEqual(golden.issues["LEGION-210"]);
+  const held = answered.record as {
+    heldFrom?: string;
+    holdReason?: string;
+    workers: Record<string, { claim: { failure?: Record<string, unknown> } }>;
+  };
+  expect(held.workers.implementer?.claim.failure).toEqual(failure);
+  expect({ heldFrom: held.heldFrom, holdReason: held.holdReason }).toEqual({
+    heldFrom: "implementing",
+    holdReason: "escalated",
+  });
+
+  // The controller's read_state is this same body whole, the record beside the limits in
+  // `settings` that its counts are read against.
+  const state = await ops.daemon.state();
+  expect(state.issues["LEGION-210"] as unknown).toEqual(golden.issues["LEGION-210"]);
+  expect(state.issues["LEGION-210"]?.workers.implementer?.claim.failure).toEqual(failure);
+  expect(state.settings).toMatchObject({
+    launch_failure_limit: 4,
+    prompt_failure_limit: 5,
+    prompt_retire_limit: 3,
+  });
+});
+
 /** A window the daemon served: three releases — one woken five minutes later, one woken three
  * hours later and one still released — three resumes of them, the last with no first turn, and
  * two holds of two reasons. */
