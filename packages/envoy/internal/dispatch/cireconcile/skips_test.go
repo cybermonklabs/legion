@@ -89,8 +89,8 @@ func TestARenamedMappingIsReconciledUnderTheNameItHasNow(t *testing.T) {
 	if got := number(t, line, "heads"); got != 1 {
 		t.Errorf("the pass read %d heads, want the one head of the repository both rows name: %v", got, line)
 	}
-	if sent := h.github.countPath("/repos/" + gitHubRepository + "/pulls"); sent != 1 {
-		t.Errorf("the open pull requests of %s were read %d times, want once for two rows naming it", gitHubRepository, sent)
+	if asked := h.queriesFor(gitHubRepository); asked != 1 {
+		t.Errorf("%s was queried %d times, want once for two rows naming it", gitHubRepository, asked)
 	}
 }
 
