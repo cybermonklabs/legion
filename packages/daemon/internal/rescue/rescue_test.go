@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
@@ -392,5 +393,59 @@ func TestTheTestsEnvironmentReachesNoNetworkRemote(t *testing.T) {
 	}
 	if n := requests.Load(); n != 0 {
 		t.Errorf("the loopback server received %d requests, want none", n)
+	}
+}
+
+// Every push passes the leak guard before it is made: a push the shared public leak check
+// refuses fails the workspace, leaving the remote without the branch it would have created,
+// and the same push passes and is made once the check clears it. The check the guard runs is
+// the disk's stand-in (rescuetest.Passes, rescuetest.Refuses), the real one being a script no
+// clone of this repository holds.
+func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.LeakCheck(rescuetest.Refuses)
+	d.Write(d.Workspace, "feature.txt", "work the guard reads before it is pushed\n")
+	d.JJ("commit", "-m", "work the guard reads before it is pushed")
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	before := d.RemoteBranches()
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Failed || len(w.Branches) != 0 || !strings.Contains(w.Error, "LEAK CHECK: refusing") {
+		t.Fatalf("the check reported %+v, want the guard's refusal and no branch", w)
+	}
+	if held := d.RemoteBranch(prefix + "-1"); held != "" {
+		t.Errorf("the remote holds %s-1 at %s, want no such branch", prefix, held)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+	}
+
+	d.LeakCheck(rescuetest.Passes)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+}
+
+// The guard's call keeps a reserve of the workspace's bound for the push it clears, and that
+// reserve now holds two things: the push itself, and the second run of the shared check that a
+// pod's pre-push hook makes inside it (GuardReserve, 150 s, and the gitPins comment for why the
+// hook runs at all). A workspace bound that cannot hold the reserve is refused before the guard
+// runs at all, with nothing pushed — the fail-closed answer, and the reason a workspace's own
+// bound is six minutes (WorkspaceTimeout, derived from the reserve). The minute a bound was
+// here before is now such a bound, which is what this reads.
+func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, "feature.txt", "work a bound too small never carries\n")
+	d.JJ("commit", "-m", "work a bound too small never carries")
+	before := d.RemoteBranches()
+
+	checked := rescue.Run(context.Background(), rescue.Request{
+		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
+		WorkspaceTimeout: time.Minute, Deadline: time.Now().Add(2 * time.Minute),
+	})
+	w := only(t, d, checked)
+	if w.Status != rescue.Failed || len(w.Branches) != 0 || !strings.Contains(w.Error, "has no time left to check this push in") {
+		t.Fatalf("the check reported %+v, want a refusal naming the bound and no branch", w)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
 	}
 }

@@ -126,6 +126,14 @@ type bootConfig struct {
 	// zero for the server's own twelve seconds; only DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under
 	// the test hooks, sets it.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter is how long a pending event-horizon observation waits before the process
+	// logs its stall warning, and HorizonWarnEvery how often every event-horizon warning repeats
+	// - that stall warning, the failed-observation warning and the failed-persist warning - both
+	// zero for the horizon's own five and thirty seconds; only DISPATCH_TEST_HORIZON_STALL_AFTER
+	// and DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks, set them, since a test whose
+	// wait keys on the stall warning cannot sit out either.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes, zero for the document service's own 30 s; only
 	// DISPATCH_TEST_EDIT_NOTICE_QUIET, under the test hooks, sets it.
@@ -1098,6 +1106,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_UNRECORDED_MARK_TTL", &boot.UnrecordedMarkTTL},
 		{"DISPATCH_TEST_ROUTE_ROSTER_TTL", &boot.RouteRosterTTL},
 		{"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW", &boot.ListenerTakeoverWindow},
+		{"DISPATCH_TEST_HORIZON_STALL_AFTER", &boot.HorizonStallAfter},
+		{"DISPATCH_TEST_HORIZON_WARN_EVERY", &boot.HorizonWarnEvery},
 		{"DISPATCH_TEST_EDIT_NOTICE_QUIET", &boot.EditNoticeQuiet},
 		{"DISPATCH_TEST_CI_RECONCILE_INTERVAL", &boot.CIReconcileInterval},
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
@@ -1532,6 +1542,8 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
+	built.HorizonStallAfter = boot.HorizonStallAfter
+	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.DevSignIn = boot.DevSignIn
 	return built
