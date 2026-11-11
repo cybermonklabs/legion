@@ -802,6 +802,37 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 	if err != nil {
 		return nakOutcome("retryable intake processing failure", "nak intake processing failure", err)
 	}
+	// Nothing records how often JetStream delivers a fact a second time: a duplicate is dropped
+	// with no trace, since ApplyFact answers Result{Duplicate: true} before any handler runs
+	// (facts.go) and the message is acknowledged like an applied one. This line is that rate. It
+	// comes before the refusal branch and returns the acknowledgement on its own, because a
+	// duplicate carries no refusal: no handler ran to make one.
+	//
+	// The line counts more than redeliveries. A copy of the listener's mention fan-out reaches it
+	// too: a review or a comment that mentions the trigger is published on three topics as one
+	// fact under one dedupe key (decode.go, factID), so two of the three are dropped here.
+	// `delivered` is the field that tells the two apart — above 1 for a JetStream redelivery, 1
+	// for a fan-out copy.
+	if result.Duplicate {
+		// The metadata is read here, inside the branch, as consumeMessage reads it for its
+		// outlived and cut lines: the read tokenizes the acknowledgement subject and allocates,
+		// and this line is not the ordinary message's, so the applied fact's path pays nothing
+		// for it. A read that fails leaves the consumer empty and the count zero, and the line is
+		// written all the same, since the duplicate happened and a line without its metadata is
+		// better evidence than no line.
+		var consumer string
+		var delivered uint64
+		if metadata, metadataErr := message.Metadata(); metadataErr == nil {
+			consumer, delivered = metadata.Consumer, metadata.NumDelivered
+		}
+		logMessage(spec.Logger, slog.LevelInfo, "an intake fact was delivered again and dropped as already applied", message,
+			"consumer", consumer,
+			"source", decoded.Source,
+			"event_id", decoded.EventID,
+			"delivered", delivered,
+		)
+		return ackOutcome()
+	}
 	if result.Refusal != nil {
 		logMessage(spec.Logger, slog.LevelWarn, "committed refusal", message,
 			"event_id", decoded.EventID,
