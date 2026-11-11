@@ -27,6 +27,9 @@ import {
   LegionHandoffCompleteResponse,
   LegionInstant,
   LegionIssueStatusRequest,
+  LegionMergeHoldsRequest,
+  LegionMergeJumpClearRequest,
+  LegionMergeJumpRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
   LegionPhaseBackwardRequest,
@@ -86,6 +89,12 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
+  // The controller's three merge-mark writes (contract 63), each a fact route that answers an
+  // empty object: the jump mark it sets on one issue, the clearing of that mark, and the whole
+  // merge hold list it replaces.
+  "merge-jump.json": LegionEmptyResponse,
+  "merge-jump-clear.json": LegionEmptyResponse,
+  "merge-holds.json": LegionEmptyResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
@@ -189,7 +198,7 @@ test("every Go-written fixture parses to a value equal to the file", () => {
 // brought it and the fixture above. Every answer schema the module exports must therefore be the
 // schema of some golden, and the roster is derived (`exportedSchemas`), so the next answer
 // schema added with no fixture fails here by its own name. `LegionEmptyResponse` is the schema
-// of eight fact-route goldens, so it is a value of the map eight times over and passes as any
+// of eleven fact-route goldens, so it is a value of the map eleven times over and passes as any
 // other does.
 test("every answer schema the module exports is the schema of a golden", () => {
   const held = new Set(Object.values(schemas));
@@ -951,6 +960,33 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
     ],
     ["child", LegionChildRequest, { grantId: "grant-208", issue: "LEGION-209" }],
+    // The controller's merge marks (contract 63): the jump mark, its clearing, and the whole
+    // hold list, which carries one hold with every field the route takes.
+    [
+      "merge jump",
+      LegionMergeJumpRequest,
+      { grantId: "grant-208", issue: "LEGION-208", reason: "the release blocker goes in first" },
+    ],
+    [
+      "merge jump clear",
+      LegionMergeJumpClearRequest,
+      { grantId: "grant-208", issue: "LEGION-208" },
+    ],
+    [
+      "merge holds",
+      LegionMergeHoldsRequest,
+      {
+        grantId: "grant-208",
+        holds: [
+          {
+            paths: ["packages/daemon/"],
+            repository: "acme/widgets",
+            reason: "the release window runs until 20:00",
+            endsAt: "2026-09-22T20:00:00Z",
+          },
+        ],
+      },
+    ],
     // The claim wire's own bodies (contracts 21 and 46), read from the goldens the Go side
     // writes rather than invented here.
     ["ready", LegionReadyRequest, ready],
@@ -1717,6 +1753,162 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
     },
   ];
   expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
+});
+
+// The controller's merge marks (contract 63): the golden names LEGION-210's jump mark, the two
+// holds of the project's list — one of a repository it serves, one of every repository it serves
+// — the issue a hold is keeping back, and the newest jump of two repositories, one GitHub took
+// and one it refused with its queue unread. A state with none of them carries four empty lists
+// rather than none.
+test("the state golden carries the controller's merge marks", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.mergeJumps).toEqual([
+    {
+      issue: "LEGION-210",
+      reason: "the release blocker goes in first",
+      session: "ses_controller",
+      setAt: "2026-09-22T09:17:00Z",
+    },
+  ]);
+  expect(state.mergeHolds).toEqual([
+    {
+      paths: ["packages/daemon/", "packages/contracts/"],
+      repository: "acme/widgets",
+      reason: "the release window runs until 20:00",
+      endsAt: "2026-09-22T20:00:00Z",
+      session: "ses_controller",
+      setAt: "2026-09-22T09:10:00Z",
+    },
+    {
+      paths: ["migrations/"],
+      repository: "",
+      reason: "the migration lands by hand",
+      endsAt: "2026-09-22T22:00:00Z",
+      session: "ses_controller",
+      setAt: "2026-09-22T09:10:00Z",
+    },
+  ]);
+  expect(state.mergeHeld).toEqual([{ issue: "LEGION-211", dueAt: "2026-09-22T20:01:00Z" }]);
+  expect(state.mergeJumpRecords).toEqual([
+    {
+      repository: "acme/widgets",
+      issue: "LEGION-207",
+      number: 412,
+      head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992",
+      at: "2026-09-22T08:55:00Z",
+      reason: "the hotfix goes in first",
+      entries: [
+        {
+          number: 401,
+          position: 1,
+          jump: false,
+          state: "QUEUED",
+          enqueuedAt: "2026-09-22T08:40:00Z",
+        },
+        {
+          number: 404,
+          position: 2,
+          jump: true,
+          state: "MERGEABLE",
+          enqueuedAt: "2026-09-22T08:51:00Z",
+        },
+      ],
+      entriesTotal: 2,
+      entriesUnknown: false,
+      refused: false,
+      refusal: "",
+    },
+    {
+      repository: "zeta/tools",
+      issue: "LEGION-209",
+      number: 77,
+      head: "9f1c0b7e2a6d4c3b8e5f0a1d2c3b4a5e6f708192",
+      at: "2026-09-22T09:02:00Z",
+      reason: "the revert goes in first",
+      entries: [],
+      entriesTotal: 0,
+      entriesUnknown: true,
+      refused: true,
+      refusal: "GitHub refused the jump: the merge queue of zeta/tools takes no jump",
+    },
+  ]);
+
+  const stage3 = LegionStateResponse.parse(fixture("state-stage3.json"));
+  expect(stage3.mergeJumps).toEqual([]);
+  expect(stage3.mergeHolds).toEqual([]);
+  expect(stage3.mergeHeld).toEqual([]);
+  expect(stage3.mergeJumpRecords).toEqual([]);
+});
+
+// None of the four keys is required: the route leaves all four off the body it serves a caller
+// in a pod whose claims record a contract below 63 (`api.stateFor`, `withoutMergeMarks`), and a
+// reader of that body loses the marks rather than the whole state. What is refused is a mark the
+// daemon would never write: a jump with no reason, a hold whose path is blank, a held issue with
+// no due time, and a jump record whose queue entry names no state.
+test("the merge-mark keys may be absent, and a mark the daemon would not write is refused", () => {
+  const stripped = fixture("state.json") as Record<string, unknown>;
+  for (const key of ["mergeJumps", "mergeHolds", "mergeHeld", "mergeJumpRecords"]) {
+    delete stripped[key];
+  }
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.mergeJumps).toBeUndefined();
+  expect(served.data?.mergeHolds).toBeUndefined();
+  expect(served.data?.mergeHeld).toBeUndefined();
+  expect(served.data?.mergeJumpRecords).toBeUndefined();
+
+  const reasonless = fixture("state.json") as { mergeJumps: Record<string, unknown>[] };
+  const jump = reasonless.mergeJumps[0];
+  if (jump === undefined) {
+    throw new Error("state fixture lacks a jump mark");
+  }
+  jump.reason = "";
+  expect(LegionStateResponse.safeParse(reasonless).success).toBeFalse();
+
+  const blankPath = fixture("state.json") as { mergeHolds: Record<string, unknown>[] };
+  const hold = blankPath.mergeHolds[0];
+  if (hold === undefined) {
+    throw new Error("state fixture lacks a merge hold");
+  }
+  hold.paths = [""];
+  expect(LegionStateResponse.safeParse(blankPath).success).toBeFalse();
+
+  const undated = fixture("state.json") as { mergeHeld: Record<string, unknown>[] };
+  delete undated.mergeHeld[0]?.dueAt;
+  expect(LegionStateResponse.safeParse(undated).success).toBeFalse();
+
+  const stateless = fixture("state.json") as {
+    mergeJumpRecords: { entries: Record<string, unknown>[] }[];
+  };
+  const entry = stateless.mergeJumpRecords[0]?.entries[0];
+  if (entry === undefined) {
+    throw new Error("state fixture lacks a jump record's queue entry");
+  }
+  entry.state = "";
+  expect(LegionStateResponse.safeParse(stateless).success).toBeFalse();
+});
+
+// The hold list's own value checks, which the daemon makes too: a hold names at least one path,
+// each path is a non-empty string, the reason is required, the repository may be left out (the
+// hold then holds its paths in every repository the project serves), and `endsAt` is an RFC 3339
+// time with seconds, which the daemon's decode requires. An empty list is the request that
+// clears every hold, so it parses.
+test("a merge hold names its paths, its reason and when it ends", () => {
+  const hold = {
+    paths: ["packages/daemon/"],
+    reason: "the release window runs until 20:00",
+    endsAt: "2026-09-22T20:00:00Z",
+  };
+  const request = (holds: unknown[]) => LegionMergeHoldsRequest.safeParse({ grantId: "g", holds });
+
+  expect(request([]).success).toBeTrue();
+  expect(request([hold]).success).toBeTrue();
+  expect(request([{ ...hold, repository: "acme/widgets" }]).success).toBeTrue();
+  expect(request([{ ...hold, paths: [] }]).success).toBeFalse();
+  expect(request([{ ...hold, paths: [""] }]).success).toBeFalse();
+  expect(request([{ ...hold, reason: "" }]).success).toBeFalse();
+  expect(request([{ ...hold, endsAt: "2026-09-22T20:00Z" }]).success).toBeFalse();
+  expect(request([{ ...hold, repository: "" }]).success).toBeFalse();
 });
 
 // The daemon's resolved legion.yaml (contract 35): the golden carries the file's

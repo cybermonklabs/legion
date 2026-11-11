@@ -2,6 +2,7 @@ import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LegionGateRegisterRequest,
   type LegionGrant,
+  LegionInstant,
   type LegionPhase,
 } from "@legion/contracts/legion-api";
 import {
@@ -64,7 +65,15 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status", "fresh_session", "compact"],
+  controller: [
+    "read_state",
+    "set_status",
+    "fresh_session",
+    "compact",
+    "set_merge_jump",
+    "clear_merge_jump",
+    "set_merge_holds",
+  ],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -80,7 +89,14 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
+  set_merge_jump: ["issue", "reason"],
+  clear_merge_jump: ["issue"],
+  set_merge_holds: ["holds"],
 };
+
+/** One hold of the list `set_merge_holds` sends, as the daemon client takes it
+ * (`contracts`' `LegionMergeHoldsRequest`). */
+type MergeHoldInput = Parameters<LegionDaemonClient["mergeHolds"]>[0]["holds"][number];
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 
@@ -124,6 +140,19 @@ function toolSchema(pi: PiApi): unknown {
     round: phase.round,
     status: z.enum(ISSUE_STATUSES).optional(),
     role: z.enum(LEGION_ROLES).optional(),
+    holds: z
+      .array(
+        z.object({
+          paths: z.array(z.string()),
+          repository: z.string().optional(),
+          reason: z.string(),
+          endsAt: z.string(),
+        })
+      )
+      .describe(
+        "set_merge_holds' whole hold list, which replaces the list that stands. Each hold names paths, one or more regular expressions matched unanchored against the paths a pull request changes, a reason, and endsAt, an RFC 3339 time with seconds later than now. A hold may also name a repository as owner/name, one this project serves. A hold that names no repository holds its paths in every repository the project serves. An empty list clears every hold"
+      )
+      .optional(),
   });
 }
 
@@ -148,12 +177,61 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
   }
 }
 
+/** The holds `set_merge_holds` is to send, every value checked here before the grant is minted,
+ * as the daemon checks them before it redeems one (`api.server.holdList`). Each refusal names
+ * the hold by its place in the list the agent wrote, since a hold has no identifier the two
+ * sides share. A list with no hold in it is the request that clears every hold, so it passes. */
+function holdList(parameters: Record<string, unknown>): MergeHoldInput[] {
+  const holds = parameters.holds;
+  if (!Array.isArray(holds)) throw new Error("set_merge_holds requires holds");
+  return holds.map((hold, index) => {
+    const where = `hold ${index + 1} of set_merge_holds`;
+    if (typeof hold !== "object" || hold === null || Array.isArray(hold)) {
+      throw new Error(`${where} is no hold: name its paths, its reason and when it ends`);
+    }
+    const named = hold as Record<string, unknown>;
+    const paths = named.paths;
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new Error(`${where} names no path: a hold with no path keeps back nothing`);
+    }
+    const taken: string[] = [];
+    for (const path of paths) {
+      if (typeof path !== "string" || path.trim() === "") {
+        throw new Error(
+          `${where} names an empty path, which matches every file of every pull request`
+        );
+      }
+      taken.push(path);
+    }
+    const reason = requiredString(named, where, "reason");
+    const endsAt = LegionInstant.safeParse(named.endsAt);
+    if (!endsAt.success) {
+      throw new Error(
+        `${where} needs endsAt, an RFC 3339 time with seconds, as 2026-11-02T09:00:00Z is`
+      );
+    }
+    const repository = named.repository;
+    if (repository !== undefined && (typeof repository !== "string" || repository.trim() === "")) {
+      throw new Error(
+        `${where} names an empty repository: name one this project serves, or leave it out to hold its paths in every one of them`
+      );
+    }
+    return {
+      paths: taken,
+      ...(repository === undefined ? {} : { repository }),
+      reason,
+      endsAt: endsAt.data,
+    };
+  });
+}
+
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
  * that writes mints its own grant in-process and posts it with the request; nothing is written
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
  * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state` and `set_status` belong to the controller. */
+ * first (`handoffReport`); `read_state`, `set_status`, the two claim recoveries and the three
+ * merge marks belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -245,7 +323,34 @@ export function createLegionTool(deps: {
         "and for role controller. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
-        "read_state. ",
+        "read_state. " +
+        "set_merge_jump (issue, reason) marks one issue so that the next merge the daemon submits for it goes in at the " +
+        "head of GitHub's merge queue, ahead of the pull requests already in it. The reason stays in the record of the " +
+        "jump after the mark is spent, so the account of a pull request that went ahead of the queue names the decision. " +
+        "One issue carries at most one mark, and a second set of the same issue replaces the first. The merge the mark " +
+        "governs spends it, and the mark is then gone. The daemon refuses an issue it does not record " +
+        "(ISSUE_NOT_RECORDED) and a call that leaves the reason out. A jump GitHub refuses does not stop the merge: the " +
+        "daemon submits it without the jump and records what GitHub answered. " +
+        "clear_merge_jump (issue) takes an issue's mark off before the merge it was about is submitted. It answers the " +
+        "same whether a mark went or no mark was there, and the daemon refuses an issue it does not record " +
+        "(ISSUE_NOT_RECORDED). " +
+        "set_merge_holds (holds) replaces the project's whole merge hold list. While a hold stands, the daemon submits " +
+        "no merge whose pull request changes a file one of that hold's paths matches, and the issue waits in " +
+        "awaiting_merge with its architect told which hold holds it. A hold has no identifier of its own, so one call " +
+        "carries the whole list: send the list without a hold to drop that hold, and an empty list to clear every hold. " +
+        "Each hold names paths, regular expressions matched unanchored against the paths the pull request changes " +
+        "(HOLD_WITHOUT_PATH for a hold that names none, INVALID_HOLD_PATH for a path that is no regular expression), a " +
+        "reason, which the architect of a held issue is told (HOLD_WITHOUT_REASON), and endsAt, an RFC 3339 time later " +
+        "than now (HOLD_ALREADY_ENDED). A hold may also name a repository as owner/name, and this project must serve it " +
+        "(REPOSITORY_NOT_SERVED). A hold that names no repository holds its paths in every repository the project " +
+        "serves. A hold ends by itself at endsAt, and taking a hold off makes every merge it was holding back due at " +
+        "once. The daemon checks every hold before it writes anything, so a list with one bad hold in it leaves the list " +
+        "that stands exactly as it was. " +
+        "All three need the controller's grant, which this session mints, and the daemon refuses a call without one " +
+        "(CONTROLLER_REQUIRED). Each answers an empty object, and read_state reads back what they wrote: mergeJumps the " +
+        "marks that still stand, mergeHolds the hold list, mergeHeld the issues those holds are keeping back, and " +
+        "mergeJumpRecords the newest jump of each repository, with the queue it displaced and GitHub's answer where it " +
+        "refused one. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -291,8 +396,30 @@ export function createLegionTool(deps: {
         const client = daemon();
         if (active.kind === "controller") {
           if (operation === "read_state") return jsonSuccess(await client.state());
-          // The controller's three writes: each validated whole before its grant is minted.
+          // The project's whole hold list, which names no issue: every hold is checked before
+          // the grant is minted, as the daemon checks them before it redeems one, so a list with
+          // one bad hold in it writes nothing. The daemon's answer is an empty object.
+          if (operation === "set_merge_holds") {
+            const holds = holdList(parameters);
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.mergeHolds({ grantId, holds }));
+          }
+          // The controller's writes of one issue: each validated whole before its grant is
+          // minted.
           const issue = requiredString(parameters, operation, "issue");
+          if (operation === "set_merge_jump") {
+            // The reason outlives the mark: the record of the jump keeps it after the merge
+            // spends the mark, so a jump the daemon made names the decision behind it.
+            const reason = requiredString(parameters, operation, "reason");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.mergeJump({ grantId, issue, reason }));
+          }
+          if (operation === "clear_merge_jump") {
+            // The daemon answers the same whether a mark went or none was there: the controller
+            // asked for an issue with no mark, and that is what it has.
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.mergeJumpClear({ grantId, issue }));
+          }
           if (operation === "fresh_session" || operation === "compact") {
             const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
             if (role === undefined) {
