@@ -38,6 +38,7 @@ function issueWith(children: readonly IssueChild[]): IssueDetails {
     created_at: "2026-11-05T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     decisions_artifact_id: "",
+    design_gates: [],
     external_links: [],
     holder_state: null,
     key: "CORE-1",

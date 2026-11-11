@@ -32,3 +32,5 @@ Stand (Medium unless noted):
 - IssuePage:443 two address models: accept as structure, routed by architect.
 
 R1 expanded (architect 15:05Z): second hole: c-tree row issue-layout.e2e.ts:352 has no @phone tag, run line --project=chromium only, while 12 other rows in that file carry @phone, so 'no row truncates a word' never ran at <=1024. Expected at next head, verify all three: (1) page cuts one-line row at word boundary/sentence end with ellipsis; (2) cutsAWord (:339) applied to one-line rows beside assertFitsItsBox, false :1606 comment corrected; (3) the row runs at phone width (@phone tag or separate row). Verification doc c-tree run line/negative_control updated by architect.
+
+Approval scope (architect 16:35Z): any approval must say what it covers and name what was NOT read: visual baselines (no docker), merge-group shard timing, the fold's main-side content read as main's, re-recorded fixtures I did not regenerate myself.

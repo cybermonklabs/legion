@@ -2894,6 +2894,18 @@ var IssueStatuses = []string{
 	"done",
 }
 
+// IssueStatusesOutOfWorkflow is every status of that lifecycle a Legion deployment runs nothing
+// in: an issue holding one is parked, closed, or not yet decided on, and the deployment's
+// workflow neither starts a phase for it nor refuses a READY on its behalf. Only `todo`, which
+// admits, and the four the workflow itself writes are left out.
+//
+// The daemon holds its own copy of this rule (packages/daemon/internal/record/project.go,
+// OutOfWorkflow): the two are separate values in separate Go modules that have to be changed
+// together, not one shared list, as the `legion` label already is (api/issue_parent.go). It is
+// named here because a write's advice reads it, to say whether a design gate recorded on an
+// issue holds any READY back (api.supersededApprovalGates).
+var IssueStatusesOutOfWorkflow = []string{IssueStatusTriage, "icebox", "backlog", "done"}
+
 var issueStatusSet = func() map[string]struct{} {
 	statuses := make(map[string]struct{}, len(IssueStatuses))
 	for _, status := range IssueStatuses {

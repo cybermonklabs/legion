@@ -2171,6 +2171,17 @@ func (s projectRecords) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row recor
 	return nil
 }
 
+// EnqueueDesignGates wakes the issue's board lane as Enqueue does. The enqueue writes its row
+// with a statement of its own rather than through Enqueue (record.Postgres.EnqueueDesignGates),
+// so this is the one place that can tell the lane a gate change left a publication due.
+func (s projectRecords) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish record.DesignGatesPublish, nextAt time.Time) error {
+	if err := s.Store.EnqueueDesignGates(ctx, tx, publish, nextAt); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, record.OutboxRow{Issue: publish.Issue, Kind: record.OutboxKindDesignGatesPublish})
+	return nil
+}
+
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction
 // commits. A grant writes a slots row and no outbox row, so nothing would otherwise tell the
 // lane that anything changed — and the thing the grant releases is an outbox row: the worker

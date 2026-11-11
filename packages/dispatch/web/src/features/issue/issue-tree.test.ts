@@ -59,6 +59,7 @@ function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
     components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
     created_at: "2026-11-05T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
+    design_gates: [],
     external_links: [],
     key: KEY,
     labels: [],
