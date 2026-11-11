@@ -32,6 +32,7 @@ function summary(key: string, labels: string[]): IssueSummary {
     title: key,
     updated_at: "2026-09-09T00:00:00Z",
     created_by: null,
+    closed_at: null,
     created_at: "2026-09-09T00:00:00Z",
   };
 }

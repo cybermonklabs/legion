@@ -38,6 +38,7 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     progress: { tasks: null, children: null },
     primary_artifact_id: "spec",
     created_by: { kind: "user", id: "alice" },
+    closed_at: null,
     created_at: "2026-09-10T00:00:00Z",
     updated_at: "2026-09-10T00:00:00Z",
     ...overrides,

@@ -14,6 +14,7 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     blocked_by: [],
     claim: null,
     components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+    closed_at: null,
     created_at: "2026-09-10T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     key,

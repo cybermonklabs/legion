@@ -32,6 +32,7 @@ function issue(key: string): IssueSummary {
     blocked_by: [],
     claim: null,
     components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+    closed_at: null,
     created_at: "2026-11-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     key,

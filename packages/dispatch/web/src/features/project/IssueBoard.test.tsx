@@ -53,6 +53,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     title: "Plan the work",
     updated_at: "2026-09-13T00:00:00Z",
     created_by: null,
+    closed_at: null,
     created_at: "2026-09-13T00:00:00Z",
     ...overrides,
   };

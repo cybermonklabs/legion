@@ -62,6 +62,7 @@ const summary: IssueSummary = {
   title: issue.title,
   updated_at: issue.updated_at,
   created_by: issue.created_by,
+  closed_at: null,
   created_at: issue.created_at,
 };
 const mappings: RepoProject[] = [

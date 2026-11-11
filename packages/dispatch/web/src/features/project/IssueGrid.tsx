@@ -78,6 +78,7 @@ function stubItem(key: string): Item {
       blocked_by: [],
       claim: null,
       components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+      closed_at: null,
       created_at: "",
       created_by: null,
       key,

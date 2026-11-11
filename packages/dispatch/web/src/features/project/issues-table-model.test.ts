@@ -45,6 +45,7 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     last_seq: 1,
     primary_artifact_id: "spec",
     created_by: null,
+    closed_at: null,
     created_at: "2026-09-10T00:00:00Z",
     updated_at: "2026-09-10T00:00:00Z",
     ...overrides,

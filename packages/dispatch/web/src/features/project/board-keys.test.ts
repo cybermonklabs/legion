@@ -29,6 +29,7 @@ function issue(key: string, status: IssueStatus): IssueSummary {
     title: key,
     updated_at: "2026-09-15T00:00:00Z",
     created_by: null,
+    closed_at: null,
     created_at: "2026-09-15T00:00:00Z",
   };
 }

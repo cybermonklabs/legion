@@ -1043,6 +1043,7 @@ const coreIssue: IssueSummary = {
   title: "Core work",
   updated_at: "2026-09-14T00:00:00Z",
   created_by: null,
+  closed_at: null,
   created_at: "2026-09-14T00:00:00Z",
 };
 
