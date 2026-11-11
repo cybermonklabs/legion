@@ -2156,3 +2156,5 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 		})
 	}
 }
+
+// INFRA-1413 selection probe, never merged.
