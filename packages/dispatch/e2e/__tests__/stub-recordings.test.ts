@@ -358,6 +358,20 @@ describe("every committed recording answers the display tree of every stored tex
     ]);
   });
 
+  // The event branch below is reached through `isEventList`, and that is derived from the
+  // document too: `eventRefs` is every schema declaring a `payload` beside the `trees` map, and
+  // a list of events is an array whose items `$ref` one of them. A generator that renamed the
+  // map, or wrapped the list in an envelope of its own, would leave the branch matching nothing
+  // and every recording would pass it in silence - the drift the row above refuses for the
+  // demand. So the ref it keys on is named here, as the pairs are.
+  test("the contract declares which schema an event is", () => {
+    expect([...eventRefs].sort()).toEqual(["#/components/schemas/Event"]);
+  });
+
+  /** How many events the rows below read, over every committed recording: a branch that read
+   *  none would hold no recording to anything, however well the refs above are named. */
+  let checkedEvents = 0;
+
   for (const file of files) {
     test(file, () => {
       const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
@@ -395,6 +409,7 @@ describe("every committed recording answers the display tree of every stored tex
         // The list answered the schema above, so each of its entries holds the members an event
         // declares; what it answers beside them is whatever the recorded server sent.
         for (const event of answered as RecordedEvent[]) {
+          checkedEvents += 1;
           for (const at of eventTextPaths(event.payload, "payload", [])) {
             expect(
               holdsContent(event.trees?.[at]),
@@ -406,4 +421,11 @@ describe("every committed recording answers the display tree of every stored tex
       }
     });
   }
+
+  // This is the sum of what the rows above read, so it stands last: bun runs a file's rows in
+  // the order they were registered. Run alone - under a `-t` filter that leaves the rows out -
+  // it reds, because none of them counted anything.
+  test("the rows above read the events the recordings answer", () => {
+    expect(checkedEvents).toBeGreaterThan(0);
+  });
 });

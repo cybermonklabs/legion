@@ -279,17 +279,33 @@ function* paintBlockInSlices(
  * references too, and link where they name something (`useTextReferences`). A caller names the
  * record this text is in `source`, and the server says which document its `#id`s resolve
  * against; text that is no record's passes nothing and gets no `#id` links, which is right.
+ * The text those references are read from is `markdown`, unless the caller names another in
+ * `referenceText`.
  */
 export function MarkdownBody({
   markdown,
   onRendered,
+  referenceText = markdown,
   softBreaks = "space",
   source,
   tree,
   variant = "block",
 }: {
+  /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
+   *  element as its literal characters where neither the tree nor the markdown could be drawn -
+   *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
+   *  So it is this element's own text and no more of its field than that: a caller drawing one
+   *  block of a longer text passes that block's text here, or the fallback writes the whole
+   *  field once for every block of it. */
   markdown: string;
   onRendered?: () => void;
+  /** The text whose references this body links, where that is not the text it draws: the whole
+   *  field a caller is drawing one block of. The references belong to the field - a link's
+   *  target and the backticks that end a key are in its markdown, and a block of it holds
+   *  neither - while what this element draws is the block alone, so the two are different texts
+   *  and each is read for its own thing. Defaults to `markdown`, which is every caller drawing
+   *  a whole field. */
+  referenceText?: string;
   /** What a single newline inside a paragraph becomes: `"space"` for a document (hard-wrapped
    *  Markdown is one paragraph), `"line"` for text whose author meant its lines as lines, such
    *  as a model's streamed turn (`SoftBreaks`). Read only for a text with no `tree`: a stored
@@ -311,7 +327,7 @@ export function MarkdownBody({
   const blockRoot = useRef<HTMLDivElement>(null);
   const inlineRoot = useRef<HTMLSpanElement>(null);
   const inline = variant === "inline";
-  const references = useTextReferences(markdown, source);
+  const references = useTextReferences(referenceText, source);
   const { isFallback, isPending, portals } = useRenderedMarkdown(
     inline ? inlineRoot : blockRoot,
     markdown,

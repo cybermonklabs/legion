@@ -12,6 +12,7 @@ import type {
   Comment,
   Decision,
   DecisionKeep,
+  DisplayTree,
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
@@ -365,6 +366,56 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
     await user.click(within(waiting).getByRole("button", { name: "Change" }));
     expect(within(waiting).getByTestId("decision-quote").textContent).toBe("A log is enough.");
   } finally {
+    read.mockRestore();
+  }
+});
+
+/** The reading of `text` with a mark no schema of this build carries over each of its blocks,
+ *  which `engine.draw` refuses as it refuses any tree its schema does not fit
+ *  (`markdown-serializer.ts`): a pod of a later build reads a text under its own schema, and a
+ *  mark that schema grew is one this page cannot draw. A body that cannot draw its tree shows
+ *  the text it was handed instead (`useRenderedMarkdown`), which is what this row reads. */
+function refusedTree(text: string): DisplayTree {
+  const tree = displayTree(text);
+  const blocks = tree?.content as readonly DisplayTree[] | undefined;
+  if (tree === undefined || blocks === undefined) {
+    throw new Error("the engine read no tree for the decision's text");
+  }
+  return {
+    ...tree,
+    content: blocks.map((node) => ({ ...node, marks: [{ type: "aMarkOfALaterSchema" }] })),
+  };
+}
+
+// A block whose tree cannot be drawn shows the text that body was handed, so each body is
+// handed its own block's text and no more: the decision's whole text in every one of them
+// would draw that text once per block, heading line and all.
+test("a block whose tree the engine refuses shows its own text alone", async () => {
+  const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({ heading: "Keep a log", text, text_tree: refusedTree(text) })
+  );
+  // The engine reports every tree it refuses, one report per block drawn.
+  const logged = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    const fallbacks = await waitFor(() => {
+      const found = waiting.querySelectorAll<HTMLElement>("[data-markdown-fallback]");
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect([...fallbacks].map((body) => body.textContent)).toEqual([
+      "A log is enough.",
+      "Unsure: the index may be slow.",
+    ]);
+    // The heading is the card's own line, never a line of a body, and the text below it is
+    // drawn once however many blocks it holds.
+    expect(waiting.textContent).not.toContain("#");
+    expect(waiting.textContent?.split("A log is enough.")).toHaveLength(2);
+    expect(logged).toHaveBeenCalled();
+  } finally {
+    logged.mockRestore();
     read.mockRestore();
   }
 });

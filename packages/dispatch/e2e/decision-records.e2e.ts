@@ -188,3 +188,51 @@ test("a decision written as a list keeps its link and its key, and anchors its C
     })
     .toMatchObject({ block_id: listBlock, orphaned: false, quote: words });
 });
+
+// The same decision from a server that answers no reading of its text, which is what a pod of
+// the build before this one serves during a rolling deploy: every `*_tree` member is taken out
+// of the answers, as `parse-count.e2e.ts`'s own control takes them out. The tab then splits the
+// markdown itself, as it did before this change and as the margin card still does, so each
+// block is drawn once, with its own text and nothing else. The reading this row refuses is the
+// one two rounds of this change got wrong: a body handed a text that is not its own draws that
+// whole text in every slot.
+// @pr: The Decisions tab of an answer with no reading draws each block once, with its own text.
+test("a decision whose answer carries no reading is drawn block by block @pr", async ({ page }) => {
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "Notices are lost today.\n",
+    title: "Decisions with no reading",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `## ${LISTED}\n\nNotices live in a table.\n\nUnsure: the index may be slow.\n`,
+    name: "decisions.md",
+  });
+
+  await page.route(/\/api\/v1\//, async (route) => {
+    const response = await route.fetch();
+    const body = (await response.text()).replaceAll(/"[a-z_]+_tree":/g, '"dropped_tree":');
+    const headers = { ...response.headers() };
+    delete headers["content-encoding"];
+    delete headers["content-length"];
+    await route.fulfill({ body, headers, status: response.status() });
+  });
+
+  await page.goto(`/issues/${issue.key}/decisions`);
+  const card = page
+    .getByRole("region", { name: "Waiting for your review" })
+    .locator("[data-decision]");
+  await expect(card.getByRole("heading", { name: LISTED })).toBeVisible();
+
+  // Two blocks below the heading, each drawn once and holding its own text: the doubt in the
+  // accented slot, the rest outside it, and the heading line nowhere in the body.
+  await expect(card.getByTestId("decision-unsure")).toHaveText("Unsure: the index may be slow.");
+  await expect(card.getByText("Notices live in a table.")).toHaveCount(1);
+  await expect(card).not.toContainText("##");
+
+  // The Change still has a quote on this path: the first block's own markdown, which is what
+  // the browser has when the server sent it no reading to flatten.
+  await card.getByRole("button", { name: "Change" }).click();
+  await expect(
+    page.getByRole("form", { name: `Change ${LISTED}` }).getByTestId("decision-quote")
+  ).toHaveText("Notices live in a table.");
+});
