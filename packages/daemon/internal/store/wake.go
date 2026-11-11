@@ -288,15 +288,20 @@ func RecordPodWakeTx(ctx context.Context, tx pgx.Tx, res PodResume) (int64, erro
 // LatestPodRelease is the newest release of issue that suspended a role, or 0 when none is: the
 // release a wake of that pod ends, which is what pairs a resume with the release it measures.
 //
-// A release that suspended no role is passed over, and the filter on a roles column that is
-// not empty is what says so: the release of a pod no claim of the issue can use
-// (workflow.UnownedPodRelease) changes no claim, saves no bundle and records its roles empty
-// (pod_releases.roles). Nothing of it comes back on a wake — its pod comes back at the next
-// start of a claim of the issue — so no wake ends it, and a wake that paired with it would
-// leave the release it really ends with no woken moment of its own: the pod hours of that
-// release would run from its own moment to every later read, for ever, and the woken share
-// would count it as a release nothing ever woke. The claim a wake is for was suspended by the
-// release it pairs with, and that release named a role.
+// A release that suspended no role is passed over, whichever rule wrote it, and the filter on a
+// roles column that is not empty is what says so. Two releases record their roles empty: every
+// release of a pod no claim of the issue can use (workflow.UnownedPodRelease), which changes no
+// claim and saves no bundle, and the rare idle release whose every role stop found a claim that
+// had failed or retired since the mark, which suspends nobody and so records nobody
+// (pod_releases.roles, written from the set ReleaseSuspendedClaim accumulated). Neither comes
+// back on a wake — the first's pod comes back at the next start of a claim of the issue, and
+// the second suspended no claim for a wake to resume — so no wake ends either, and a wake that
+// paired with one would leave the release it really ends with no woken moment of its own: the
+// pod hours of that release would run from its own moment to every later read, for ever, and
+// the woken share would count it as a release nothing ever woke. The claim a wake is for was
+// suspended by the release it pairs with, and that release named a role. So the filter is of
+// what a release did and never of which rule wrote it: narrowing it to the second rule would
+// pair a wake with an idle release that ended nothing.
 func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `select id from pod_releases where project = $1 and issue = $2

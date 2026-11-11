@@ -320,7 +320,11 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 // have one. The idle rule's bundle hold is not a conjunct here either, because this release
 // takes no bundle: it asks the pod for nothing and stores nothing, so an issue whose last
 // release saved work no pod has restored is still this rule's to release, with that bundle left
-// as it is for the pod a later start makes.
+// as it is for the pod a later start makes. Nor is the idle rule's hold for a root waiting on a
+// person (IdleHoldAwaitingPerson): that hold keeps the pod of a root whose architect is live and
+// idle, so the answer reaches the session it is waiting in, and a root this rule reads has no
+// live architect to answer in any pod. The answer promotes the root and the daemon queues the
+// architect's start, which builds the Sandbox, the pod and the workspace again.
 //
 // The pod is released only when all of these hold, and the first that does not is the hold the
 // decision reports:

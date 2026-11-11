@@ -166,12 +166,15 @@ func (s *Store) StuckPodResumes(ctx context.Context, project string, before time
 // rather than one a wake never brought back. Reading those too would list a role as stranded
 // the moment its next release was recorded.
 //
-// A release that suspended no role is no such later release, and the subquery's filter on a
-// roles column that is not empty is what keeps it out. The release of a pod no claim of the
-// issue can use (workflow.UnownedPodRelease) changes no claim: a role an earlier release left
-// `released` is still released after it, still woken and still without a first turn, which is
-// the stranded claim this read is for. Counting it as the pod's newest release would drop
-// exactly those rows from the report's released-claim arm.
+// A release that suspended no role is no such later release, whichever rule wrote it, and the
+// subquery's filter on a roles column that is not empty is what keeps it out. Two releases
+// record their roles empty: every release of a pod no claim of the issue can use
+// (workflow.UnownedPodRelease), which changes no claim, and the rare idle release whose every
+// role stop found a claim that had failed or retired since the mark. After either one a role an
+// earlier release left `released` is still released, still woken and still without a first
+// turn, which is the stranded claim this read is for, and counting either as the pod's newest
+// release would drop exactly those rows from the report's released-claim arm. So the filter is
+// of what a release did and never of which rule wrote it.
 func (s *Store) UnfinishedPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
 	return s.podResumesWithoutAFirstTurn(ctx, project, before, false)
 }
