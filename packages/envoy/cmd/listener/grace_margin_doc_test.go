@@ -107,3 +107,5 @@ func TestDocumentedGraceMarginIsTheListenerGraceMargin(t *testing.T) {
 			files, graceMarginFiles, sentences, graceMarginSentences)
 	}
 }
+
+// INFRA-1413 selection probe, never merged.
