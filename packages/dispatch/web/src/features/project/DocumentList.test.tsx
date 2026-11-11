@@ -1,10 +1,12 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { DocumentList } from "./DocumentList";
@@ -135,7 +137,8 @@ test("New document makes an empty document and opens its document page", async (
 // to open, so the form closes, says what was made and the list is read again - and the form opened
 // again starts empty, so a second press makes no second document.
 test("New document answered KEY_COMMITTED closes the form, says it was made, and a second press sends nothing", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const { listProjectArtifacts, view } = renderList([]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
@@ -161,9 +164,10 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
     expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Title" }).value).toBe("");
     // An empty form submitted on its own, which no control of it offers: Create is disabled.
     fireEvent.submit(screen.getByRole("form", { name: "New document" }));
-    await Bun.sleep(20);
+    await tick(20);
     expect(uploadArtifact).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     view.unmount();
     listProjectArtifacts.mockRestore();
     uploadArtifact.mockRestore();

@@ -2970,6 +2970,48 @@
         ]
       }
     },
+    "/api/v1/ci-reconcile/passes": {
+      "get": {
+        "description": "The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends.",
+        "operationId": "getApiV1CiReconcilePasses",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PassRecord"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/comments/{id}": {
       "get": {
         "description": "Read one comment with its thread.",
@@ -20853,6 +20895,129 @@
         "required": [
           "kind",
           "to_id"
+        ],
+        "type": "object"
+      },
+      "PassCounts": {
+        "properties": {
+          "graphql_points": {
+            "type": "integer"
+          },
+          "graphql_queries": {
+            "type": "integer"
+          },
+          "heads": {
+            "type": "integer"
+          },
+          "heads_known": {
+            "type": "integer"
+          },
+          "heads_over_rest": {
+            "type": "integer"
+          },
+          "records": {
+            "type": "integer"
+          },
+          "rest_not_modified": {
+            "type": "integer"
+          },
+          "rest_requests": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graphql_queries",
+          "graphql_points",
+          "rest_requests",
+          "rest_not_modified",
+          "heads_over_rest",
+          "records",
+          "heads",
+          "heads_known"
+        ],
+        "type": "object"
+      },
+      "PassCursor": {
+        "properties": {
+          "counted": {
+            "type": "boolean"
+          },
+          "from": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "number": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "rest": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "repository",
+          "from",
+          "number",
+          "rest",
+          "counted"
+        ],
+        "type": "object"
+      },
+      "PassRecord": {
+        "properties": {
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PassCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PassCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "instance",
+          "started_at",
+          "ended_at",
+          "state",
+          "counts",
+          "cursor"
         ],
         "type": "object"
       },

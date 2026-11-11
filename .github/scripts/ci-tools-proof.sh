@@ -147,7 +147,8 @@
 #       Writes the control file the origin reads, with those rows or with none, and prints what
 #       it wrote.
 #       It also marks where both logs stand, so the `report` after it prints the lines of its own
-#       case and of no other.
+#       case and of no other, and the second it ran in, so that `report` reads how long the
+#       install between the two took.
 #       Every case calls it, the cases that corrupt nothing included: the control file is one
 #       file for the whole job, and a case that did not empty it would read the case before it.
 #
@@ -183,6 +184,13 @@
 #       holds, so a case about the bytes mise installed would spend the outage downloading
 #       through a 504, and the job that proves the outage survivable would fail in it.
 #
+#   install-bound
+#       The seconds no timed install may reach, printed and nothing else.
+#       INSTALL_BOUND below is the one place that number is written, and the `tool-fallback`
+#       job's control over its eight installs with nowhere to go reads it through this verb, so
+#       the bound the rig holds the sixteen corrupted cases to and the bound that step holds
+#       those eight installs to cannot drift apart.
+#
 #   report <case> --outcome <the step's outcome> --row <row>
 #          [--expect-source <name>] [--expect-untried <name>]
 #       Prints the case, the outcome the install step reached, the lines the origin logged for
@@ -192,9 +200,11 @@
 #       stopping at the first install that refuses.
 #       Every case of this job is a refusal, so the outcome it holds the step to is `failure`;
 #       the row the case is about is given rather than worked out of the case's name.
-#       It fails when the step did not fail, when `--expect-source` names a source this case's
-#       reading does not, and when `--expect-untried` names a source the origin served for this
-#       case's row after all.
+#       It fails when the step did not fail, when the install took INSTALL_BOUND seconds or more
+#       — the reading that tells a step the runner ended at its `timeout-minutes` from a step
+#       that refused the payload, since both leave `outcome=failure` behind them — when
+#       `--expect-source` names a source this case's reading does not, and when
+#       `--expect-untried` names a source the origin served for this case's row after all.
 #
 #   ladder-report
 #       Every fetch the stand-in above measured, printed as the host, the decision, curl's exit
@@ -310,6 +320,27 @@ RESERVED_SUFFIX=".invalid"
 # all, which is the reading the probe refuses the job for.
 PROBE_BOUND=15
 
+# The seconds no timed install may reach, read by `report` over the mark `corrupt` wrote. The
+# twenty-four installs whose control accepts a failure are the timed ones; the head's own eight,
+# which no control lets fail, are not checked against it.
+# Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
+# step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
+# `report` holds a case to, so a hung install would otherwise pass as a refusal.
+# A step held to its bound takes about 660 to 672 s. The longest single install measured over
+# 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
+# sleeping (dispatch://INFRA-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
+# over the slowest healthy install there has been and at least 60 s under the fastest a held
+# step can be, and it reads no ladder's length. Since the ladders stopped sleeping, the slowest
+# timed install is far shorter: 42 s, the Bun second-source case, in job 130289341628.
+# It is the one wall-clock bound `report` and the control step judge an install by, and this line
+# is the one place it is written. Two other bounds are not it: `timeout-minutes: 11`, which the
+# runner enforces on the step rather than reading after it, and `PROBE_BOUND` above, which
+# bounds the probe's two requests. The `tool-fallback` job holds its eight
+# installs with nowhere to go to the same seconds, and its control step reads them from here
+# through the `install-bound` verb rather than writing a second number that nothing keeps equal
+# to this one.
+INSTALL_BOUND=600
+
 # shellcheck source=.github/scripts/ci-tools.sh
 . "$root/.github/scripts/ci-tools.sh"
 
@@ -357,7 +388,6 @@ with the row it belongs to and whether it was corrupted.
 """
 
 import http.server
-import io
 import json
 import os
 import re
@@ -375,6 +405,8 @@ document = yaml.safe_load(manifest.read_text()) or {}
 ROWS = document.get("tools") or []
 GHCR_BLOB = re.compile(r"^/ghcr/v2/(?P<path>.+)/blobs/sha256:(?P<digest>[0-9a-f]{64})$")
 NPM_TARBALL = re.compile(r"^/npm/(?P<package>.+)/-/(?P<file>[^/]+\.tgz)$")
+# The size of one read of a payload, which is the size of one write to the socket.
+CHUNK = 64 * 1024
 
 
 # The source words each route is reached by, which is what decides the row a request is about:
@@ -454,23 +486,27 @@ def corrupted_rows():
     return set(control.read_text().split())
 
 
-def member_data_end(body, member):
+def member_data_end(file, member):
     """Where that member's own stored bytes end inside that zip, or None where the archive
     holds no such member. The local header is read for its two length fields, because the extra
-    field a writer puts there is not the one the central directory carries."""
+    field a writer puts there is not the one the central directory carries.
+    The archive is read from the open file rather than from a body in memory, because a payload
+    is never held whole here."""
     try:
-        with zipfile.ZipFile(io.BytesIO(body)) as held:
+        with zipfile.ZipFile(file) as held:
             info = held.getinfo(member)
-        head = body[info.header_offset:info.header_offset + 30]
+        file.seek(info.header_offset)
+        head = file.read(30)
         name_length, extra_length = struct.unpack("<HH", head[26:30])
         return info.header_offset + 30 + name_length + extra_length + info.compress_size
     except (KeyError, OSError, struct.error, zipfile.BadZipFile):
         return None
 
 
-def corrupted_body(row, name, body):
-    """That body with one byte changed: the smallest edit that moves the sha256 of what the
-    reader of these bytes is held to.
+def corrupted_offset(row, name, file, size):
+    """The one byte a corrupted case changes, as an offset into the payload file: the smallest
+    edit that moves the sha256 of what the reader of these bytes is held to, and None for a file
+    of no bytes, which has no byte to change.
     For most names it is the last byte of the file, which is what the row's digest is of, and
     for a gzipped tarball it is part of the framing `tar -xz` reads, so the member read refuses
     it before any digest does.
@@ -481,11 +517,13 @@ def corrupted_body(row, name, body):
     row's `digest` answers for, and python3's zipfile then hands over no member at all, because
     the CRC the archive carries for it no longer matches what it holds.
     """
+    if size == 0:
+        return None
     if name.endswith((".whl", ".zip")):
-        end = member_data_end(body, str(row.get("second_member") or ""))
+        end = member_data_end(file, str(row.get("second_member") or ""))
         if end is not None:
-            return body[: end - 1] + bytes([body[end - 1] ^ 0x01]) + body[end:]
-    return body[:-1] + bytes([body[-1] ^ 0x01])
+            return end - 1
+    return size - 1
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -501,20 +539,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not file.is_file():
             self.answer(404, b"ci-tools-proof: the rig staged no payload for this row\n", row["name"], "no")
             return
-        body = file.read_bytes()
         corrupt = row["name"] in corrupted_rows()
-        if corrupt:
-            body = corrupted_body(row, name, body)
-        self.answer(200, body, row["name"], "yes" if corrupt else "no")
+        with open(file, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            flip = corrupted_offset(row, name, handle, size) if corrupt else None
+            handle.seek(0)
+            self.serve(handle, size, flip, row["name"], "yes" if corrupt else "no")
 
     def answer(self, status, body, row, corrupt):
+        """One of the small answers this program holds in memory: the ghcr token and the two
+        refusals."""
+        self.log_served(status, len(body), row, corrupt)
+        self.send_headers(status, len(body))
+        self.wfile.write(body)
+
+    def serve(self, file, size, flip, row, corrupt):
+        """That payload, copied from the file to the socket a chunk at a time and never held
+        whole, with the one byte a corrupted case changes flipped in the chunk that carries it.
+        It is read this way because the largest payload this manifest pins is 119816773 bytes:
+        one request for it held those bytes twice, the body read whole and the corrupting
+        path's copy of it, while the fault proxy in front of this origin relays 64 KiB at a
+        time."""
+        self.log_served(200, size, row, corrupt)
+        self.send_headers(200, size)
+        sent = 0
+        while sent < size:
+            chunk = file.read(min(CHUNK, size - sent))
+            if not chunk:
+                break
+            if flip is not None and sent <= flip < sent + len(chunk):
+                chunk = bytearray(chunk)
+                chunk[flip - sent] ^= 0x01
+            self.wfile.write(chunk)
+            sent += len(chunk)
+
+    def log_served(self, status, count, row, corrupt):
         with open(logfile, "a") as log:
-            log.write(f"GET {self.path} row={row} corrupt={corrupt} status={status} bytes={len(body)}\n")
+            log.write(f"GET {self.path} row={row} corrupt={corrupt} status={status} bytes={count}\n")
+
+    def send_headers(self, status, count):
         self.send_response(status)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(count))
         self.send_header("Content-Type", "application/octet-stream")
         self.end_headers()
-        self.wfile.write(body)
 
     def log_message(self, *args):
         """The log above is the one this rig reads, one line per request and in its own words."""
@@ -1317,10 +1384,12 @@ corrupt() {
   done
   printf '%s\n' "$*" > "$control"
   # Where both logs stand now, so the `report` of this case prints its own lines and no earlier
-  # case's. Every case calls this verb, so every case has a mark of its own.
+  # case's, and when this case began, so that `report` reads how long its install took.
+  # Every case calls this verb, so every case has a mark of its own.
   {
     printf 'origin=%s\n' "$([ -f "$origin_log" ] && wc -l < "$origin_log" || echo 0)"
     printf 'fault=%s\n' "$([ -f "$fault_log" ] && wc -l < "$fault_log" || echo 0)"
+    printf 'started=%s\n' "$(date +%s)"
   } > "$mark"
   if [ "$#" -eq 0 ]; then
     note "the origin now serves every row whole"
@@ -1333,9 +1402,9 @@ corrupt() {
 
 # flip_last_byte <file>: that file with its last byte changed, and the sha256 it has afterwards.
 # It is the origin's own corruption rule for a file nothing takes a member out of (write_origin
-# above), applied to a file on the runner rather than to a body in memory: the smallest edit
-# that moves the sha256 of the whole file, and the one that leaves an archive's own framing
-# alone until the digest is read.
+# above), applied to a file that stays on the runner rather than to one the origin serves: the
+# smallest edit that moves the sha256 of the whole file, and the one that leaves an archive's own
+# framing alone until the digest is read.
 # The cases whose corrupted bytes are a binary on the runner rather than a body the origin
 # serves use it.
 flip_last_byte() {
@@ -1409,6 +1478,15 @@ seed_mise_jj() {
   install -m 0755 -- "$file" "$dir/jj"
   note "mise's install of $jj_tool is now $dir/jj"
   sha256sum -- "$dir/jj"
+}
+
+# ---------------------------------------------------------------- install-bound
+
+# install_bound: the bound above, printed and nothing else, for the one reader outside this
+# script: the step of the `tool-fallback` job that holds the eight installs with nowhere to go
+# to the same seconds `report` holds a case's install to.
+install_bound() {
+  printf '%s\n' "$INSTALL_BOUND"
 }
 
 # ---------------------------------------------------------------- report
@@ -1485,6 +1563,20 @@ report() {
   # Every case of this job is a refusal, so this is the one outcome a case is held to.
   local wanted=failure problems=0
 
+  # How long this case's install took, read from the mark its own `corrupt` wrote immediately
+  # before it. The time is read here rather than given as an argument, so that the reading can
+  # never drift away from the step it measures.
+  # A mark whose started= line is missing or unreadable stops the rig: a case read with no clock
+  # is exactly the case this clock exists to catch, so it may not pass quietly.
+  local started elapsed
+  started=$(sed -n 's/^started=//p' "$mark")
+  case $started in
+    '' | *[!0-9]*)
+      die "report: the mark of case '$name' holds '${started:-no started= line}', so this rig cannot read how long that install took, and that reading is the one thing that tells an install the runner ended at its timeout-minutes from an install that refused the payload"
+      ;;
+  esac
+  elapsed=$(($(date +%s) - started))
+
   local served asked
   served=$(case_lines "$origin_log" origin)
   asked=$(case_lines "$fault_log" fault)
@@ -1501,9 +1593,14 @@ report() {
   else
     echo "    nothing: this case asked no faulted host"
   fi
+  echo "  the install of this case took ${elapsed}s, against the ${INSTALL_BOUND}s no timed install may reach"
 
   if [ "$outcome" != "$wanted" ]; then
     echo "::error::ci-tools-proof: case $name: the install step's outcome is $outcome, and this case is the proof that the install reaches $wanted: read the step's own log above for what it did instead." >&2
+    problems=$((problems + 1))
+  fi
+  if [ "$elapsed" -ge "$INSTALL_BOUND" ]; then
+    echo "::error::ci-tools-proof: case $name: the install took ${elapsed}s, which reaches the ${INSTALL_BOUND}s no timed install may, so the runner ended that step at its own timeout-minutes rather than the step refusing the payload: a step the runner ends leaves outcome=failure behind it, which the reading above accepts, so the wall time is the only reading that tells the two apart; read this job's step record (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and that step's log for 'The action has timed out.'" >&2
     problems=$((problems + 1))
   fi
   if [ -n "$expect_source" ]; then
@@ -1627,7 +1724,7 @@ ladder_report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|shorten-ladder|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|report|ladder-report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|shorten-ladder|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|install-bound|report|ladder-report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
@@ -1644,7 +1741,8 @@ case $verb in
   flip-last-byte) flip_last_byte "$@" ;;
   payload-path) payload_path "$@" ;;
   seed-mise-jj) seed_mise_jj "$@" ;;
+  install-bound) install_bound "$@" ;;
   report) report "$@" ;;
   ladder-report) ladder_report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, shorten-ladder, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, report, ladder-report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, shorten-ladder, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, install-bound, report, ladder-report)" ;;
 esac
