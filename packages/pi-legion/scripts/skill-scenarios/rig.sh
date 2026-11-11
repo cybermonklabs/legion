@@ -308,10 +308,15 @@ work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
 # The worker world (worker_fixture below), which tester-proof, reviewer-text-findings and
-# threads-closed share: its repository, and the run's own issue, which each scenario's runner
-# sets once seed.ts has filed it.
+# threads-closed share: its repository and default branch, and the run's own issue, which each
+# scenario's runner sets once seed.ts has filed it. The repository and the branch are written
+# here and read everywhere the world states them — the remote and the checkout fixture_open
+# opens, the pull request fixture_write serves, the daemon stand-in's record and the pane's own
+# addressing (worker_boot) — so no part of the rig can name a repository or a branch the world
+# has not got.
 worker_key=''
 worker_repo=example/widgets
+worker_base=main
 
 note() { printf 'skill-scenarios: %s\n' "$*"; }
 fail() {
@@ -1649,8 +1654,11 @@ review_world() {
 # answers as GitHub answers a role with write access: success. It encodes no verdict of its own —
 # a stand-in that refused the mutation would prove the claim the scenario is there to measure —
 # and the day a live reviewer finds GitHub refusing it, this answer and the rule change together
-# on that evidence. The base branch is protected by nothing, so no route serves its protection and
-# the stand-in's 404 is GitHub's own answer for a branch that requires no check; `gh pr checks` is
+# on that evidence. The base branch is protected by nothing, which GitHub answers with 200 at
+# both reads the merge gate prescribes — an empty list of rules, and a branch with
+# `protected: false` and no required check — and fixture_write serves both, since a 404 there is
+# a refused read, which the rule has a reviewer report and never guess around (the batch of
+# 2026-11-10 holds 91 refused reads of this kind). `gh pr checks` is
 # green at the head, and `gh pr diff` is the diff of the run's own remote at the call, so the
 # reviewer reads the fix the implementer pushed and no world freezes a diff of its own
 # (gh-standin.ts). The `reviewThreads` route is the fixture's own answer and no record of the run:
@@ -1744,21 +1752,21 @@ $entries"
 
 # fixture_open INDEX START opens the run's remote and its checkout: the pull request's number and
 # URL (1000 plus INDEX), the date of this world's commits (INDEX seconds after START), a bare
-# remote whose post-receive hook logs every push, and $src on main with the README every world
-# carries.
+# remote whose post-receive hook logs every push, and $src on the world's default branch
+# ($worker_base) with the README every world carries.
 fixture_open() {
   local index=$1 start=$2
   worker_pr=$((1000 + index))
   worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
   when="@$((start + index)) +0000"
-  git init -q --bare -b main "$R/remote.git"
+  git init -q --bare -b "$worker_base" "$R/remote.git"
   cat >"$R/remote.git/hooks/post-receive" <<EOF
 #!/bin/sh
 while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
 EOF
   chmod +x "$R/remote.git/hooks/post-receive"
   src=$R/src
-  git init -q -b main "$src"
+  git init -q -b "$worker_base" "$src"
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
 }
 
@@ -1775,11 +1783,12 @@ fixture_docs_before() {
   printf '# The widgets CLI\n\n`bun hello.ts` prints a fixed greeting. A command exits 0 when it printed and 2 when it could not.\n' >"$src/docs/cli.md"
 }
 
-# fixture_first_commit commits what $src holds, pushes main and opens legion/<key> on it: the base
-# the implementer's own commit sits above, and the other side of the diff the gh stand-in serves.
+# fixture_first_commit commits what $src holds, pushes the world's default branch and opens
+# legion/<key> on it: the base the implementer's own commit sits above, and the other side of the
+# diff the gh stand-in serves.
 fixture_first_commit() {
   fixture_git add -A && fixture_git commit -qm "init"
-  fixture_git push -q "$R/remote.git" main
+  fixture_git push -q "$R/remote.git" "$worker_base"
   fixture_git checkout -qb "legion/$worker_key"
 }
 
@@ -1845,20 +1854,24 @@ jobs:
 EOF
 }
 
-# fixture_head_commit commits the implementer's change as $C1, pushes legion/<key> and makes the
-# three records the score reads a worker run's doings from: the push log, emptied so the only
-# pushes it holds are the run's own, and the gh and bun stand-ins' calls (calls.jsonl) and the
-# daemon stand-in's answers (daemon.log), each created empty before the first agent runs. The
-# three are made together because the score tells an empty record from a missing one: an empty one
-# says no call, no push and no move, each of which a passing run shows, while a missing one is a
-# record the harness never wrote and a rig error naming it (score.ts's `unscored`).
+# fixture_head_commit commits the implementer's change as $C1, pushes legion/<key> and empties
+# the push log, so the only pushes it holds are the run's own: the fixture's own two pushes are
+# the world being built and no act of the run. It creates nothing else. The run's other two
+# records — the gh and bun stand-ins' calls (calls.jsonl) and the daemon stand-in's answers
+# (daemon.log) — are each written by the stand-in that keeps it, so a stand-in that wrote
+# nothing leaves no file, and the score reads that absence as the record nobody wrote rather
+# than as no call and no move, which is what a passing run shows (score.ts's `unscored`: a
+# missing record is a rig error naming it, an empty one a reading of the run the row names).
+# Creating them here cost that distinction: the audit of 2026-11-10 deleted all three from a
+# recorded failing run and it scored a pass, and a code-defect head whose gh stand-in never ran
+# passed on an empty calls.jsonl. The push log stays emptied because the post-receive hook has
+# already written the fixture's own pushes into it, so the empty file is the reading "no push",
+# which is what a review round leaves.
 fixture_head_commit() {
   fixture_git add -A && fixture_git commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
   C1=$(fixture_git rev-parse HEAD)
   fixture_git push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
-  : >"$R/calls.jsonl"
-  : >"$R/daemon.log"
 }
 
 # fixture_implement CHANGED writes the implement handoff as the implementer records it with
@@ -1935,14 +1948,28 @@ $2
 # it. The world has exactly one open pull request and its head is `legion/<key>`, so that one
 # pull request is GitHub's answer to any listing of this world's open ones; no role of these
 # scenarios lists another head.
+#
+# The base branch's two reads are shared routes for the same reason: the merge gate prescribes
+# both of them by name (skill://legion-worker/references/merge-gate.md, "the base branch's
+# rulesets' required checks and its branch protection's"), and that rule has a refused read
+# reported to the architect and never guessed, so a 404 stops a reviewer where GitHub would have
+# answered it — the batch of 2026-11-10 holds 91 refused reads of this kind. Nothing protects
+# this world's base, which GitHub answers on a public repository with 200 twice: an empty list
+# of rules, and the branch itself with `protected: false` and no required check. The bodies hold
+# the fields that answer those two reads and leave out the commit and link fields no reader of
+# this gate reads. Both are ahead of the check-runs route, which matches the word `status`
+# anywhere in the call, and the jq the rule writes for the protection read holds it
+# (`required_status_checks`); the rules route is ahead of the branch route, whose regex matches
+# the rules path too. The stand-in answers from the first route that matches the whole call.
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --argjson number "$worker_pr" --argjson extra "$1" \
+    --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
+    --argjson number "$worker_pr" --argjson extra "$1" \
     --argjson decision "$2" --argjson reviews "$3" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
-     headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
+     headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
      reviewDecision:$decision, reviews:$reviews, latestReviews:$reviews,
-     head:{sha:$head, ref:$ref}, base:{ref:"main"},
+     head:{sha:$head, ref:$ref}, base:{ref:$base},
      statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
                         {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
     | {routes:($extra + [
@@ -1953,12 +1980,18 @@ fixture_write() {
       {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
       {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
       {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
+      {match:("^gh api .*/rules/branches/" + $base), stdout:[]},
+      {match:("^gh api .*/branches/" + $base),
+       stdout:{name:$base, protected:false,
+         protection:{enabled:false, required_status_checks:{enforcement_level:"off", contexts:[], checks:[]}},
+         protection_url:("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection")}},
       {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
       {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
       {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
     ])}' >"$R/fixtures.json"
-  jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
-    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), base:"main", head:$head}' >"$R/world.json"
+  jq -n --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
+    --argjson pr "$worker_pr" --arg head "$C1" \
+    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), base:$base, head:$head}' >"$R/world.json"
 }
 
 # run_project SCENARIO CASE LABEL N [BATCH] prints the Legion project token of one worker run.
@@ -1991,7 +2024,9 @@ run_project() {
 # silently, since the recorder would subscribe to one project's topics while the agents published
 # on another's and every send would read as never made. PHASE is the phase the issue stands in
 # while this agent runs, empty for the phase the role's own worker is started in (the daemon
-# stand-in's default); threads-closed passes `accepting`, where the daemon starts no phase.
+# stand-in's default); threads-closed passes `accepting`, which is no phase of either half's
+# role, so the stand-in refuses a completion there as the daemon refuses one of a phase the
+# role does not run (daemon-standin.ts, HANDOFF_NOT_CURRENT_PHASE).
 #
 # A run that boots a second agent calls this again with that agent's role, after writing its
 # prompt: the two run one after the other on the one run directory, so the second reads the gh
@@ -2041,8 +2076,13 @@ worker_boot() {
   standins
   # The pane the label's checkout's daemon would give that role, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
-  # recording stand-in, as the pane's real gh.
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co"
+  # recording stand-in, as the pane's real gh. The repository and default branch are the world's
+  # own ($worker_repo and $worker_base), as the daemon stand-in's are: the addressing the pane's
+  # system prompt carries then names the repository the agent's gh calls reach and the one the
+  # architect's note in its prompt gives, where an addressing of its own sent a recorded run's
+  # review to a repository the world has not got.
+  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" "$role" "$co" \
+    "$worker_repo" "$worker_base"
   {
     cat "$R/worker.env" "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
@@ -2160,7 +2200,9 @@ reviewer_wake() {
 # Both halves are booted in `accepting`: the round ended on the reviewer's approval, and that is
 # where the issue stands while the architect reads it (review-threads.md step 1). So each half's
 # `read_record` answers `accepting`, and the daemon stand-in refuses either half's
-# `handoff_complete` as the daemon does, since no run of any phase serves it there.
+# `handoff_complete` as the daemon does: `accepting` is the architect's phase, which neither an
+# implementer nor a reviewer runs, so the workflow refuses the completion 409
+# HANDOFF_NOT_CURRENT_PHASE (packages/daemon/internal/workflow/engine.go, RoleFor).
 run_threads_closed() {
   local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake
   start_recorder "$project"

@@ -7,13 +7,28 @@
 //   system-args  the pane's one `--append-system-prompt` argument, as shell text
 //
 //   worker-pane.ts <run dir> <base env file> <daemon port> <profile> <project> <issue> <role>
-//                  <checkout>
+//                  <checkout> <repository> <default branch>
+//
+// <repository> and <default branch> are the run's own world's (rig.sh's $worker_repo and
+// $worker_base): the pane's addressing names them, so the repository a worker is told to work in
+// is the one its gh stand-in serves and the one the architect's note in its prompt gives.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
 import { workerPane } from "./daemon-pane";
 
-const [runDir, baseEnvFile, port, profile, project, issue, role, checkout] = Bun.argv.slice(2);
+const [
+  runDir,
+  baseEnvFile,
+  port,
+  profile,
+  project,
+  issue,
+  role,
+  checkout,
+  repository,
+  defaultBranch,
+] = Bun.argv.slice(2);
 if (
   runDir === undefined ||
   baseEnvFile === undefined ||
@@ -22,10 +37,12 @@ if (
   project === undefined ||
   issue === undefined ||
   role === undefined ||
-  checkout === undefined
+  checkout === undefined ||
+  repository === undefined ||
+  defaultBranch === undefined
 ) {
   console.error(
-    "usage: worker-pane.ts <run dir> <base env file> <daemon port> <profile> <project> <issue> <role> <checkout>"
+    "usage: worker-pane.ts <run dir> <base env file> <daemon port> <profile> <project> <issue> <role> <checkout> <repository> <default branch>"
   );
   process.exit(2);
 }
@@ -46,7 +63,7 @@ for (const line of readFileSync(baseEnvFile, "utf8").split("\n")) {
 const pane = workerPane(
   { rig: runDir, port: Number(port), profile },
   base,
-  { project, issue, role },
+  { project, issue, role, repository, defaultBranch },
   // The pane's real gh is the recording stand-in rig.sh's standins writes to $R/bin/gh, named as
   // an operator names one with LEGION_GH_PATH: it is a script, which the daemon's own resolution
   // on PATH refuses.

@@ -45,7 +45,9 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot
- * (daemon-pane.go's paneRequest). `ghToken` stands in for the claim's GitHub App token: it is
+ * (daemon-pane.go's paneRequest). `repository` and `defaultBranch` are the run's own world's,
+ * which the pane's addressing names and whose owner the claim's gh bundle is the directory of.
+ * `ghToken` stands in for the claim's GitHub App token: it is
  * rendered into the claim's gh bundle under `<stateDir>/secrets/<claim>-gh`, the pane's
  * `LEGION_GH_OWNERS_DIR`, whose one owner's directory is its `GH_CONFIG_DIR`, and its
  * `LEGION_GH_PATH` is `ghPath` when the rig names one (its recording stand-in), else the real gh as
@@ -55,6 +57,8 @@ interface PaneRequest {
   readonly project: string;
   readonly issue: string;
   readonly role: string;
+  readonly repository: string;
+  readonly defaultBranch: string;
   readonly stateDir: string;
   readonly workspace: string;
   readonly daemonUrl: string;
@@ -86,11 +90,19 @@ export interface WorkerLaunch {
   readonly profile: string;
 }
 
-/** The claim a worker pane is launched for: its project, issue and role. */
+/** The claim a worker pane is launched for: its project, issue and role, and the repository and
+ * default branch of the run's own world (rig.sh's `$worker_repo` and `$worker_base`), which the
+ * pane's addressing names and whose owner the claim's gh bundle is the directory of. The world's
+ * are passed rather than a placeholder of this rig's own, because an addressing naming another
+ * repository sends the agent's work to one the world has not got: a run recorded on 2026-11-10
+ * followed an addressing of skills-rig/project and posted its review to
+ * repos/skills-rig/project/pulls/1006/reviews, which the world never saw. */
 export interface WorkerClaim {
   readonly project: string;
   readonly issue: string;
   readonly role: LegionRole;
+  readonly repository: string;
+  readonly defaultBranch: string;
 }
 
 /** Where a pane's daemon is read from: a checkout's daemon module (`DAEMON_MODULE` for this one),
@@ -116,7 +128,8 @@ export interface PaneSource {
  * `PI_SHELL_PREFIX`, the four XDG base directories, the boot token pointer
  * (`<state>/secrets/boot`, the file the stand-in checks), and PATH with the launcher directory
  * first; no grant file, since the `legion` tool mints its grants in-process and no agent runs
- * `legion` from bash; and, with `systemPrompt`, the system prompt argument. An inherited
+ * `legion` from bash; and, with `systemPrompt`, the system prompt argument, whose addressing
+ * names `claim.repository` and `claim.defaultBranch`, the world's own. An inherited
  * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value and the caller's own GitHub
  * variables are dropped first. The profile's agent directory, and so its envoy.json, is under the
  * inherited `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound

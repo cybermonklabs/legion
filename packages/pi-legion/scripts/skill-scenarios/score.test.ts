@@ -3860,10 +3860,11 @@ reviewRun("reviewer-text-findings-text-only-head-49", {
   ),
 });
 // head-51, head-52 and head-53: the round that passes as head-1 does, each missing one of the
-// three records rig.sh writes with the world. A missing record reads as an empty one (`lines`),
-// which says no call, no push and no move — all three what a passing run shows — so each run is a
-// rig error naming the file it has not got, and head-52, whose only fault is the push log the
-// harness did not write, would otherwise score a pass.
+// three records a worker run leaves. Nothing in the rig creates them: each is written by the
+// thing that keeps it, so an absent one is a record nothing ever wrote. It reads as an empty
+// one (`lines`), which says no call, no push and no move — all three what a passing run shows
+// — so each run is a rig error naming the file it has not got, and head-52, whose only fault is
+// a push log nothing wrote, would otherwise score a pass.
 for (const [name, file] of [
   ["head-51", "calls.jsonl"],
   ["head-52", "pushes.log"],
@@ -3874,9 +3875,10 @@ for (const [name, file] of [
     "calls.jsonl": calls([submission(approval())]),
     [file]: null,
   });
-// head-54: the three records present and empty, which is a reading of the run and not a gap in
-// the rig: it made no call, pushed nothing and moved nothing, so it scores, and it fails for
-// having submitted no review.
+// head-54: the three records present and empty, which is the other reading — it made no call,
+// pushed nothing and moved nothing — so it scores, its row names each empty record, and it
+// fails for having submitted no review. Every other review run here holds an empty pushes.log,
+// which is what a review round leaves, and names it the same way.
 reviewRun("reviewer-text-findings-text-only-head-54", {
   "case.txt": "text-only\n",
   "calls.jsonl": "",
@@ -6021,31 +6023,40 @@ test("reviewer-text-findings: a review submitted to another repository is no sub
     /reviewer-text-findings-text-only-head-50\tpass=false\t.*event=none .*submissions=0 /
   );
 });
-// Catches: a scorer that reads a record the harness never wrote as a record of nothing having
-// happened. The three files rig.sh writes with the world say what the run did, and an absent one
-// reads as no call, no push and no move, each of which a passing run shows, so the absence is a
-// rig error naming the file: head-52's only fault is the push log the harness did not write, and
-// it would otherwise pass.
+// Catches: a scorer that reads a record nothing ever wrote as a record of nothing having
+// happened. Each of the three files says what the run did, nothing in the rig creates them, and
+// an absent one reads as no call, no push and no move, each of which a passing run shows, so
+// the absence is a rig error naming the file and what the run left no record of: head-52's only
+// fault is a push log nothing wrote, and it would otherwise pass.
 test("reviewer-text-findings: a missing stand-in record is a rig error", () => {
-  for (const [name, file] of [
-    ["head-51", "calls.jsonl"],
-    ["head-52", "pushes.log"],
-    ["head-53", "daemon.log"],
+  for (const [name, file, reads] of [
+    ["head-51", "calls.jsonl", "its gh and bun calls"],
+    ["head-52", "pushes.log", "the pushes its remote took"],
+    ["head-53", "daemon.log", "its daemon stand-in's answers"],
   ]) {
     expect(out).toContain(
-      `reviewer-text-findings-text-only-${name}\trig error: <run>/${file} is missing`
+      `reviewer-text-findings-text-only-${name}\trig error: <run>/${file} is missing: nothing wrote it, so the run left no record of ${reads} rather than a record of none`
     );
     expect(out).not.toContain(`reviewer-text-findings-text-only-${name}\tpass=`);
   }
 });
-// Catches: a reader that takes an empty record for a missing one, which would make a rig error of
-// every run that called no gh, pushed nothing or moved nothing — the three the rig writes empty
-// and most runs leave that way. head-54 holds all three empty, which is a reading of the run.
-test("reviewer-text-findings: an empty stand-in record is a reading of the run and scores", () => {
+// Catches: a reader that takes an empty record for a missing one, which would make a rig error
+// of every run that called no gh, pushed nothing or moved nothing — readings most runs of these
+// two scenarios leave. head-54 holds all three empty. And catches a row that says nothing about
+// which of the two it read: the file is there and holds no line, and the row names it, so no
+// reader has to guess whether a count of zero is the run's answer or a record nobody wrote.
+test("reviewer-text-findings: an empty stand-in record is a reading of the run, named in its row", () => {
   expect(out).toMatch(/reviewer-text-findings-text-only-head-54\tpass=false\t/);
   expect(out).not.toContain("reviewer-text-findings-text-only-head-54\trig error");
-  // And the round that passes leaves an empty push log, as every review round does.
+  expect(rowOf("reviewer-text-findings-text-only-head-54")).toContain(
+    "  empty records: calls.jsonl, pushes.log, daemon.log — there, and holding no line"
+  );
+  // And the round that passes leaves an empty push log, as every review round does, which its
+  // own row names and nothing else of it does.
   expect(out).toMatch(/reviewer-text-findings-text-only-head-1\tpass=true\t.*pushes=0 /);
+  expect(rowOf("reviewer-text-findings-text-only-head-1")).toContain(
+    "  empty records: pushes.log — there, and holding no line"
+  );
 });
 // Catches: a scorer that takes the empty answer of a `git diff` the run's own remote refused for
 // a push that carried no file. head-33's push names a commit the remote does not hold.

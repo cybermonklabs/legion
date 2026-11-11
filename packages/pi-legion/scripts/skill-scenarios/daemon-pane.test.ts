@@ -44,17 +44,26 @@ const inherited = {
   PATH: `${outerBin}:/usr/bin`,
 };
 
+/** The claim every row asks for a pane of: the rig's project and issue, and the repository and
+ * default branch of the world rig.sh builds ($worker_repo and $worker_base). They are the
+ * world's own because the pane's addressing names them, and the claim's gh bundle is the
+ * directory of that repository's owner. */
+const claim = {
+  project: "skillsrig",
+  issue: "LWEVAL-1",
+  role: "tester",
+  repository: "example/widgets",
+  defaultBranch: "main",
+} as const;
+
 // The pane environment comes from the daemon's own functions, compiled and run by `go run`, which
 // can take minutes on a cold build cache.
 test.skipIf(skip)(
   "strips an inherited Anthropic key and GitHub token, and gives the pane the claim's gh files and no grant file",
   () => {
-    const workerEnv = workerPane(
-      { rig, port: 13399, profile: "rig-profile" },
-      inherited,
-      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-      { daemonModule: DAEMON_MODULE }
-    ).env;
+    const workerEnv = workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
+      daemonModule: DAEMON_MODULE,
+    }).env;
 
     expect(workerEnv).not.toHaveProperty("ANTHROPIC_API_KEY");
     expect(workerEnv).not.toHaveProperty("LEGION_GRANT");
@@ -65,7 +74,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_GIT_PATH");
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
-    const ghConfigDir = `${ghRoot}/skills-rig`;
+    const ghConfigDir = `${ghRoot}/example`;
     expect(workerEnv).toMatchObject({
       GEMINI_API_KEY: "gemini-key",
       OPENAI_API_KEY: "openai-key",
@@ -117,7 +126,7 @@ test.skipIf(skip)(
     const workerEnv = workerPane(
       { rig, port: 13399, profile: "rig-envoy-profile" },
       inherited,
-      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+      claim,
       { daemonModule: DAEMON_MODULE }
     ).env;
 
@@ -155,7 +164,7 @@ test.skipIf(skip)(
       workerPane(
         { rig, port: 13399, profile: "rig-seed-profile" },
         { ...inherited, ENVOY_NATS_URL: "nats://other-nats.internal.example:4222" },
-        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+        claim,
         { daemonModule: DAEMON_MODULE }
       )
     ).toThrow(
@@ -178,12 +187,9 @@ test.skipIf(skip)(
     );
 
     expect(() =>
-      workerPane(
-        { rig, port: 13399, profile: "rig-no-nats-profile" },
-        inherited,
-        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-        { daemonModule: DAEMON_MODULE }
-      )
+      workerPane({ rig, port: 13399, profile: "rig-no-nats-profile" }, inherited, claim, {
+        daemonModule: DAEMON_MODULE,
+      })
     ).toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
   },
   600_000
@@ -196,7 +202,6 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "refuses a script as the first gh on PATH and takes the gh the rig names",
   () => {
-    const claim = { project: "skillsrig", issue: "LWEVAL-1", role: "tester" } as const;
     const launch = { rig, port: 13399, profile: "rig-profile" };
     const shimmed = { ...inherited, PATH: `${scriptBin}:${outerBin}:/usr/bin` };
     expect(() => workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })).toThrow(
@@ -207,6 +212,32 @@ test.skipIf(skip)(
       ghPath: path.join(scriptBin, "gh"),
     }).env;
     expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
+  },
+  600_000
+);
+
+// Catches: a pane whose addressing names a repository and a branch of the rig's own rather than
+// the world's. It named `skills-rig/project` on `trunk` while every world rig.sh builds is
+// `example/widgets` on `main`, and a worker follows its addressing: one of the runs recorded on
+// 2026-11-10 posted its review to repos/skills-rig/project/pulls/1006/reviews, which the
+// scorer's repository rule read as no review at all, and its agent wrote that the architect's
+// note gave the repository as example/widgets while the addressing line said
+// skills-rig/project. The gh bundle is the same fact: its one directory is the owner of that
+// repository, so no part of the pane names a second one.
+test.skipIf(skip)(
+  "the addressing names the world's own repository and default branch",
+  () => {
+    const pane = workerPane({ rig, port: 13399, profile: "rig-profile" }, inherited, claim, {
+      daemonModule: DAEMON_MODULE,
+      systemPrompt: true,
+    });
+    expect(pane.systemPromptArgument).toContain(
+      "Your issue's repository is example/widgets (default branch main); the project's repositories are example/widgets."
+    );
+    expect(pane.systemPromptArgument).not.toContain("skills-rig");
+    expect(pane.env.GH_CONFIG_DIR).toBe(
+      `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh/example`
+    );
   },
   600_000
 );

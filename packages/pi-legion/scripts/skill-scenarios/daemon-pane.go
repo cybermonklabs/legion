@@ -104,6 +104,17 @@ type paneRequest struct {
 	// Path is the PATH the daemon would start under; the pane's PATH is it behind the pane's
 	// launcher directory (workerbin.Path).
 	Path string `json:"path"`
+	// Repository is the GitHub repository of the run's own world (rig.sh's $worker_repo, the name
+	// its world.json, its gh stand-in and its daemon stand-in all carry) and DefaultBranch the
+	// branch that world opens its pull request against. The pane's addressing names them, as a
+	// real pane's names its issue's, and its gh bundle is the directory of this repository's
+	// owner. They are the world's and not this program's own, because an addressing naming
+	// another repository sends the agent's work to a repository the world has not got: a run
+	// recorded on 2026-11-10 followed an addressing of skills-rig/project and posted its review
+	// to repos/skills-rig/project/pulls/1006/reviews, which the world never saw, and its agent
+	// wrote that the architect's note and the addressing line named two repositories.
+	Repository    string `json:"repository"`
+	DefaultBranch string `json:"defaultBranch"`
 	// GHPath is the real gh the rig names for the pane, as an operator names one with
 	// LEGION_GH_PATH: its recording stand-in. "" is the daemon's own resolution, the first gh on
 	// Path, refused when that is a script.
@@ -128,11 +139,19 @@ func pane() error {
 	if err := decoder.Decode(&req); err != nil {
 		return fmt.Errorf("read the request: %w", err)
 	}
+	repository, err := ghrepo.Parse("the rig's repository", req.Repository)
+	if err != nil {
+		return err
+	}
+	if req.DefaultBranch == "" {
+		return errors.New("the rig's world names no default branch, which the pane's addressing names")
+	}
 	role := claim.Role(req.Role)
 	token, err := claim.NewToken(req.Project, req.Issue, role)
 	if err != nil {
 		return err
 	}
+	owner := repository.Owner()
 	ghRoot, gh := "", ""
 	if req.GHToken != "" {
 		// ghconfig's one writer of a role's gh bundle, so the rig's directory is the daemon's layout;
@@ -141,7 +160,7 @@ func pane() error {
 		// alone, where a daemon serving more holds a `<owner>/<repo>` directory beside it per sibling
 		// repository.
 		ghRoot = runtime.GHConfigDir(req.StateDir, token)
-		bundle := ghconfig.Bundle{Default: rigOwner, Dirs: map[string]ghconfig.Rendered{rigOwner: ghconfig.Render(req.GHToken, "", time.Time{})}}
+		bundle := ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: ghconfig.Render(req.GHToken, "", time.Time{})}}
 		if _, err := ghconfig.WriteBundle(ghRoot, bundle); err != nil {
 			return fmt.Errorf("write the claim's gh files: %w", err)
 		}
@@ -152,7 +171,7 @@ func pane() error {
 	spec := runtime.SpawnSpec{Claim: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1}
 	variables, err := tmux.PaneVariables(spec, tmux.PaneInputs{
 		StateDir: req.StateDir, Workspace: req.Workspace, DaemonURL: req.DaemonURL, EnvoyURL: req.EnvoyURL,
-		NATSURLs: req.NATSURLs, GHOwnersDir: ghRoot, GHDefault: rigOwner, GH: gh,
+		NATSURLs: req.NATSURLs, GHOwnersDir: ghRoot, GHDefault: owner, GH: gh,
 	}, []runtime.SecretFile{{Variable: "LEGION_BOOT_TOKEN", Path: req.BootTokenFile}})
 	if err != nil {
 		return err
@@ -163,24 +182,12 @@ func pane() error {
 		res.Env[name] = value
 	}
 	if req.SystemPrompt {
-		if res.SystemPromptArgument, err = systemPromptArgument(req, token); err != nil {
+		if res.SystemPromptArgument, err = systemPromptArgument(req, token, repository); err != nil {
 			return err
 		}
 	}
 	return json.NewEncoder(os.Stdout).Encode(res)
 }
-
-// rigOwner is the one GitHub owner of the rig's project, a placeholder whose directory of the gh
-// bundle holds the rig's token.
-const rigOwner = "skills-rig"
-
-// rigRepository and rigDefaultBranch are the repository and default branch a rig worker's
-// addressing names, as a real pane's does for its issue; the branch is not `main`, since the skills
-// tell a worker never to assume one.
-const (
-	rigRepository    = rigOwner + "/project"
-	rigDefaultBranch = "trunk"
-)
 
 // realGH is the real gh the pane is told as LEGION_GH_PATH: named, the gh the rig names (its
 // stand-in, as an operator's LEGION_GH_PATH is taken as given), else the daemon's resolution at
@@ -226,8 +233,11 @@ func firstBytes(path string, n int) ([]byte, error) {
 }
 
 // systemPromptArgument composes the pane's role prompt as the daemon does (specs.SpawnSpec): the
-// role prompts snapshotted under the state directory, the role's parts, then its addressing.
-func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
+// role prompts snapshotted under the state directory, the role's parts, then its addressing. The
+// addressing names `repository`, the world's own, and the world's default branch, so the
+// repository a worker is told to work in is the one its gh calls reach and the one the
+// architect's note in its prompt names.
+func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.Repository) (string, error) {
 	role := claim.Role(req.Role)
 	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
 		return "", errors.New("a tree architect is also told its design gate policy, which the rig does not stand in for")
@@ -240,14 +250,10 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	repository, err := ghrepo.Parse("the rig's repository", rigRepository)
-	if err != nil {
-		return "", err
-	}
 	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
 		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
-	}, repository, rigDefaultBranch, api.RepositoriesView{
-		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
+	}, repository, req.DefaultBranch, api.RepositoriesView{
+		Mapped: []api.MappedRepositoryView{{Repo: repository.String(), Default: true}},
 	})
 	if err != nil {
 		return "", err

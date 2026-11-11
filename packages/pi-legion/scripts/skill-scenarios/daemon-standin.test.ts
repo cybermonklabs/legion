@@ -206,21 +206,26 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a stand-in that accepts a completion of a phase no run of the issue serves. The real
-// daemon refuses one it can attribute to no run, 409 HANDOFF_NO_RUN
-// (packages/daemon/internal/api/handoff.go, noRunCompletion), and the loop after an approval
-// holds no task at all: a stand-in answering 200 there teaches an agent that a phase it is in no
-// phase of completes, and the refusal the rule has it quote to its architect never arrives.
+// Catches: a stand-in that accepts a completion of a phase its role does not run, and one that
+// refuses it with an answer the daemon does not give. The workflow refuses such a completion
+// 409 HANDOFF_NOT_CURRENT_PHASE, "the <role> does not run phase <phase> of <issue>; this
+// completion changed nothing" (packages/daemon/internal/workflow/engine.go, RoleFor). The
+// route's earlier HANDOFF_NO_RUN fence is not what a rig half meets: each half is a live
+// registered worker serving generation 1, so the route attributes the completion to a run and
+// the phase is the workflow's to refuse. A stand-in answering 200 here teaches an agent that a
+// phase it is in no phase of completes, and a stand-in answering some other refusal teaches it
+// to quote its architect a code and a sentence the daemon never sends.
 test.skipIf(skip)(
-  "a completion in a phase the role works no run of is refused as the daemon refuses it",
+  "a completion of a phase the role does not run is refused as the daemon refuses it",
   async () => {
     const daemon = await standin("implementer", "accepting");
     try {
       const refused = await daemon.complete(false);
       expect(refused.status).toBe(409);
-      expect(await refused.json()).toMatchObject({
-        code: "HANDOFF_NO_RUN",
-        error: expect.stringContaining("belongs to no run of LWEVAL-1"),
+      expect(await refused.json()).toEqual({
+        code: "HANDOFF_NOT_CURRENT_PHASE",
+        error:
+          "the implementer does not run phase accepting of LWEVAL-1; this completion changed nothing",
       });
       // Nothing moved: the issue stands where it stood, as the refusal says.
       expect(await daemon.phase()).toBe("accepting");
@@ -232,11 +237,12 @@ test.skipIf(skip)(
 );
 
 // Catches: a stand-in whose record names a repository the run's world has not got. Agents read
-// the record for the repository their `gh` calls name, so a second name is a second world: six of
-// the forty runs of 2026-11-10 submitted their review to `sjawhar/legion-smoke`, which this
-// stand-in named while the world was rig.sh's `worker_repo`, and the queries of the other
-// answered 404. The repository is the world's own, read from rig.sh here so the two cannot
-// disagree.
+// the record for the repository their `gh` calls name, so a second name is a second world: six
+// of the forty runs of 2026-11-10 submitted their review to a repository their world does not
+// name, four of them to `sjawhar/legion-smoke`, which this stand-in named while the world was
+// rig.sh's `worker_repo`, and the queries of the other answered 404 (the other two followed the
+// pane's own addressing, which named `skills-rig/project`: daemon-pane.go). The repository is
+// the world's own, read from rig.sh here so the two cannot disagree.
 test.skipIf(skip)(
   "the record names the repository the run's world is on, in the issue and in the mapping",
   async () => {

@@ -692,21 +692,27 @@ describe("scenario_case", () => {
 });
 
 // The three records a worker run's score reads what the run did from: the pushes, the gh and bun
-// stand-ins' calls, and the daemon stand-in's answers. The fixture makes all three, because the
-// score tells an empty record from a missing one — an empty one says no call, no push and no
-// move, which is what a passing run shows, and a missing one is a rig error (score.ts's
-// `unscored`). Catches: a rig that leaves one of them to the first call that writes it, so a run
-// that made none leaves no record where the score reads one.
+// stand-ins' calls, and the daemon stand-in's answers. The fixture leaves the push log empty,
+// because the remote's post-receive hook has already written its own two pushes into it and
+// those are the world being built, not acts of the run; it creates neither of the other two,
+// because each is written by the stand-in that keeps it and an absent one is the score's way of
+// saying nothing wrote it (score.ts's `unscored`: a missing record is a rig error naming it, an
+// empty one a reading of the run). Catches: a rig that pre-creates a record, which made a
+// stand-in that never ran read as a run that called nothing — a code-defect head passed on an
+// empty calls.jsonl, and the missing-file rig error fired only for a run that never got a
+// world.
 describe("fixture_head_commit", () => {
-  test("it makes the push log, the call log and the daemon log", () => {
+  test("it empties the push log and creates no record of its own", () => {
     const dir = freshDir("fixture-records");
+    writeFileSync(path.join(dir, "pushes.log"), "the fixture's own push\n");
     const result = bash(
       `${fn("fixture_head_commit")}\nfixture_git() { :; }\nR=$1 worker_key=LWEVAL-1\nfixture_head_commit`,
       [dir]
     );
     expect(result.code).toBe(0);
-    for (const file of ["pushes.log", "calls.jsonl", "daemon.log"])
-      expect(existsSync(path.join(dir, file))).toBe(true);
+    expect(readFileSync(path.join(dir, "pushes.log"), "utf8")).toBe("");
+    for (const file of ["calls.jsonl", "daemon.log"])
+      expect(existsSync(path.join(dir, file))).toBe(false);
   });
 });
 
@@ -778,15 +784,18 @@ describe("round_world and the worlds' own text findings", () => {
   });
 });
 
-// What worker_boot hands the daemon stand-in. Catches: a project computed a second time here
+// What worker_boot hands the daemon stand-in and the pane. Catches: a project computed a second
+// time here
 // rather than taken from the run (the recorder would subscribe to one project's topics while the
 // agents published on another's, and every send would read as never made); a record naming a
 // repository the world has not got, which had agents query two repositories and the second
-// answer 404; and a boot that names no phase, which serves the role's own phase to a loop the
-// daemon starts no phase for.
+// answer 404; a pane whose addressing names a repository or a branch of its own, which sent a
+// recorded run's review to repos/skills-rig/project; and a boot that names no phase, which
+// serves the role's own phase to a loop the daemon starts no phase for.
 describe("worker_boot", () => {
   /** worker_boot for ROLE in PHASE, with every process it starts stubbed, on a run whose world
-   * fixture_write wrote: what it handed the daemon stand-in, and that world's own repository. */
+   * fixture_write wrote: what it handed the daemon stand-in, what it handed the pane
+   * (worker-pane.ts, through the stubbed `bun`), and that world's own repository. */
   function boot(role: string, phase: string) {
     const dir = freshDir(`worker-boot-${role}`);
     mkdirSync(path.join(dir, "logs"), { recursive: true });
@@ -802,8 +811,8 @@ describe("worker_boot", () => {
         "base_env() { :; }",
         "standins() { :; }",
         "launch() { :; }",
-        "bun() { :; }",
-        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 booted='' daemon_pid=''",
+        'bun() { printf "%s\\n" "$*" >>"$R/bun-args"; }',
+        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 worker_base=main booted='' daemon_pid=''",
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "services_env=$R/services.env work=$R/work dispatch_port=1 profile=$R/p co=$R/c",
@@ -815,6 +824,7 @@ describe("worker_boot", () => {
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return {
       started: readFileSync(path.join(dir, "started-daemon"), "utf8").trim(),
+      pane: readFileSync(path.join(dir, "bun-args"), "utf8").trim(),
       world: JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")),
     };
   }
@@ -830,6 +840,19 @@ describe("worker_boot", () => {
     ]);
     // The record the agent reads and the world its gh calls reach name one repository.
     expect(started.split(" ").at(-3)).toBe(world.repo);
+  });
+
+  // The pane's addressing is the world's own, as the stand-in's record is: worker-pane.ts is
+  // given the repository and the default branch last, and a worker follows the addressing its
+  // system prompt carries. The pane named skills-rig/project on trunk while every world is
+  // example/widgets on main, and two of the forty runs recorded on 2026-11-10 posted their
+  // review to the repository the addressing named, where the scorer's repository rule read it
+  // as no review at all.
+  test("the pane is given the world's own repository and default branch", () => {
+    const { pane, world } = boot("reviewer", "accepting");
+    expect(pane.split(" ").slice(-2)).toEqual(["example/widgets", "main"]);
+    expect(pane.split(" ").at(-2)).toBe(world.repo);
+    expect(pane.split(" ").at(-1)).toBe(world.base);
   });
 
   // A boot that names no phase leaves the phase to the stand-in, which serves the role's own.
@@ -958,14 +981,18 @@ describe("run_threads_closed", () => {
 // Catches: a world with no `gh pr list` route, so a role with no pull request number reads
 // `gh: Not Found (HTTP 404)` where the worker skill has it find the one open pull request of its
 // branch (`gh pr list --repo <repo> --head legion/<KEY> --state open --json number`), which reads
-// as a branch with no pull request open on it.
+// as a branch with no pull request open on it; and a world that answers neither of the two
+// base-branch reads the merge gate prescribes, where GitHub answers both and the rule has a
+// refused read reported rather than guessed around (91 of them in the batch of 2026-11-10).
 describe("fixture_write", () => {
-  test("the world answers a listing of the pull requests open on its branch", () => {
+  /** The world fixture_write writes under a directory of its own, and `gh <args…>` answered out
+   * of it by the stand-in. */
+  function world() {
     const dir = freshDir("fixture-routes");
     const result = bash(
       [
         fn("fixture_write"),
-        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "fixture_write '[]' '\"\"' '[]'",
@@ -973,25 +1000,56 @@ describe("fixture_write", () => {
       [dir]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    const listed = Bun.spawnSync(
-      [
-        "bun",
-        path.join(import.meta.dir, "gh-standin.ts"),
-        "gh",
-        "pr",
-        "list",
-        "--repo",
-        "example/widgets",
-        "--head",
-        "legion/LWEVAL-1",
-        "--state",
-        "open",
-        "--json",
-        "number",
-        "--jq",
-        ".[0].number",
-      ],
-      { env: { ...childEnv, SKILL_SCENARIO_RUN: dir } }
+    return (...args: string[]) =>
+      Bun.spawnSync(["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args], {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      });
+  }
+
+  // The two reads of skill://legion-worker/references/merge-gate.md, each with the jq that rule
+  // writes: an unprotected base answers an empty list of rules and a branch whose required
+  // checks are none, so both print nothing and exit 0. A 404 at either is a refused read, which
+  // the rule has the reviewer report to the architect and never guess around.
+  test("the world answers the base branch's rulesets and its protection, as GitHub does", () => {
+    const gh = world();
+    const rules = gh(
+      "api",
+      "--paginate",
+      "repos/example/widgets/rules/branches/main",
+      "--jq",
+      '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+    );
+    expect([rules.exitCode, rules.stdout.toString()]).toEqual([0, ""]);
+    const branch = gh(
+      "api",
+      "repos/example/widgets/branches/main",
+      "--jq",
+      ".protection.required_status_checks.checks[].context"
+    );
+    expect([branch.exitCode, branch.stdout.toString()]).toEqual([0, ""]);
+    // And the branch read answers the branch itself, as GitHub answers an unprotected one.
+    const read = gh("api", "repos/example/widgets/branches/main");
+    expect(JSON.parse(read.stdout.toString())).toMatchObject({
+      name: "main",
+      protected: false,
+      protection: { enabled: false, required_status_checks: { checks: [] } },
+    });
+  });
+
+  test("the world answers a listing of the pull requests open on its branch", () => {
+    const listed = world()(
+      "pr",
+      "list",
+      "--repo",
+      "example/widgets",
+      "--head",
+      "legion/LWEVAL-1",
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--jq",
+      ".[0].number"
     );
     expect(listed.stdout.toString().trim()).toBe("1001");
     expect(listed.exitCode).toBe(0);
@@ -1036,7 +1094,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         ].map(fn),
         'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
         "fixture_workspace() { :; }",
-        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
         `${world} 1 100 "$2"`,
       ].join("\n"),

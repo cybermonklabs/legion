@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -54,15 +54,19 @@ function runDir(options: { fixture: boolean }): { dir: string; first: string; se
       JSON.stringify({ key: "LWEVAL-1", branch: "legion/LWEVAL-1", base: "main", head: first })
     );
   }
+  // The routes rig.sh's fixture_write writes, in the shapes it writes them: the pull request as
+  // one object for `gh pr view`, the same object in a list for `gh pr list`, which is GitHub's
+  // answer to a listing of the open pull requests of a branch, the frozen diff, and the edit
+  // route a body edit needs a match of before the stand-in keeps the new body.
+  const pull = { number: 1001, headRefOid: first, head: { sha: first }, body: "a body" };
   writeFileSync(
     path.join(dir, "fixtures.json"),
     JSON.stringify({
       routes: [
-        {
-          match: "^gh pr view",
-          stdout: { number: 1001, headRefOid: first, head: { sha: first }, body: "a body" },
-        },
+        { match: "^gh pr view", stdout: pull },
+        { match: "^gh pr list", stdout: [pull] },
         { match: "^gh pr diff", stdout: "the frozen diff\n" },
+        { match: "^gh pr edit", stdout: "https://example.invalid/pull/1001#issuecomment-1" },
       ],
     })
   );
@@ -212,4 +216,79 @@ test("a comparison the run's remote cannot resolve is 404, as GitHub answers it"
   );
   expect(call.exitCode).toBe(1);
   expect(call.stderr.toString()).toContain("gh: Not Found (HTTP 404)");
+});
+
+// Catches: a comparison whose files carry no `patch`, which is the field a reviewer reads the
+// change out of. It was absent through the batch of 2026-11-10 — a reviewer that asked for the
+// patch got `null` and one fell back to `jj file show`, working around the rig on the read step
+// 3 of review-threads.md rests on. GitHub's `patch` is the file's hunks alone, with no
+// `diff --git` or `index` header above them.
+test("each file of a comparison carries the hunks of its own diff", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const patch = answer(dir, [
+    "api",
+    `repos/example/widgets/compare/${first}...${second}`,
+    "--jq",
+    ".files[0].patch",
+  ]);
+  expect(patch).toStartWith("@@ -0,0 +1 @@");
+  expect(patch).toContain("+the text fix");
+});
+
+// Catches: a stand-in with no answer for the diff media type, which the API documents for this
+// same comparison and which a reviewer asks for when it wants the change rather than the
+// counts. The answer is the diff itself, never the JSON.
+test("a comparison asked for as a diff is the unified diff", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const diff = answer(dir, [
+    "api",
+    "-H",
+    "Accept: application/vnd.github.v3.diff",
+    `repos/example/widgets/compare/${first}...${second}`,
+  ]);
+  expect(diff).toStartWith("diff --git a/docs.md b/docs.md");
+  expect(diff).toContain("+the text fix");
+});
+
+// Catches: a compare ref handed to `git` as it was written. A ref is argv, and `git` reads a
+// leading `-` as an option wherever it falls: measured on 2026-11-11, `git -C <bare> diff
+// --no-renames "--output=<path>...<sha>"` created the file `<path>...<sha>` while it parsed
+// its options and only then failed for want of a work tree, so the ref wrote a file of the
+// caller's choosing. The diff media type is the call that reaches `git diff` first. The
+// stand-in refuses such a ref instead, and the call falls to the routes, whose 404 is GitHub's
+// answer for a ref it has not got.
+test("a compare ref that reads as an option is refused, not run", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const written = path.join(dir, "ref-wrote-this");
+  const call = Bun.spawnSync(
+    [
+      "bun",
+      STANDIN,
+      "gh",
+      "api",
+      "-H",
+      "Accept: application/vnd.github.v3.diff",
+      `repos/example/widgets/compare/--output=${written}...${first}`,
+    ],
+    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+  );
+  expect(call.exitCode).toBe(1);
+  expect(call.stderr.toString()).toContain("gh: Not Found (HTTP 404)");
+  expect(existsSync(`${written}...${first}`)).toBe(false);
+});
+
+// Catches: a stand-in that answers a listing with the fixture's own object untouched. `gh pr
+// list` answers a list of the objects `gh pr view` answers one of (rig.sh's fixture_write), and
+// the worker skill has a role with no pull request number find it that way, so a role that
+// listed the pull request after a fix push read the head the fixture froze — the very head the
+// rule has it compare its push against — and a listing after a body edit read the body before
+// it. Every rule over an answer's object is a rule over a listed one.
+test("a listing's elements each carry the run's own head, the kept body and the chosen fields", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const listed = (fields: string) => answer(dir, ["pr", "list", "--json", fields, "--jq", "@json"]);
+  expect(JSON.parse(listed("number,headRefOid"))).toEqual([{ number: 1001, headRefOid: first }]);
+  git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
+  expect(JSON.parse(listed("headRefOid"))).toEqual([{ headRefOid: second }]);
+  answer(dir, ["pr", "edit", "1001", "--body", "the edited body"]);
+  expect(JSON.parse(listed("body"))).toEqual([{ body: "the edited body" }]);
 });

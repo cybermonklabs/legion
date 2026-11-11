@@ -161,6 +161,19 @@ function branchDiff(nameOnly: boolean): string | undefined {
  * append. A ref may carry dots, and `...` is the separator, so each side is everything up to the
  * last `...`. */
 const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]+)\.\.\.([^?]+)(?:\?.*)?$/;
+/** Whether the call asks for the comparison as a diff rather than as JSON: `gh api -H "Accept:
+ * application/vnd.github.v3.diff"`, the media type the API documents for a diff, and the
+ * `vnd.github.diff` spelling GitHub takes for the same answer. */
+const DIFF_MEDIA_TYPE = /application\/vnd\.github(?:\.v3)?\.diff/;
+/** A ref this stand-in will hand `git`. A compare ref is argv the caller wrote, and `git` reads
+ * a leading `-` as an option wherever it falls, so a ref such as `--output=<path>...main` would
+ * write a file; `--end-of-options`, which `git diff` does not take, cannot close that, so a ref
+ * that starts with `-` is refused instead. There is no privilege boundary in this rig — the
+ * agent that writes the ref already runs shell commands of its own — so this is a guard against
+ * a ref that reads as an option and no sandbox. A refused ref is no comparison of this world,
+ * and the call falls through to the routes, whose 404 is GitHub's answer for a ref it has
+ * not got. */
+const REF = /^[^-]/;
 /** What GitHub answers for `gh api repos/<o>/<r>/compare/<base>...<head>`, read from the run's
  * own remote at the call, or undefined when this call is no such comparison or the remote cannot
  * resolve both refs. The rule has the implementer read that comparison to show its push changes
@@ -173,17 +186,31 @@ const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]+)\.\.\.([^?]+)(?:\?.*)?
  * whatever the run pushed, where the two heads a comparison names are the run's own. `ahead_by`
  * and `behind_by` are the commits each side holds that the other has not, `status` is GitHub's
  * word for that pair, and `files` is the diff from the merge base, which is the change the head
- * carries. Renames are not detected, so a moved file reads as one added and one removed, as
+ * carries, each file carrying the hunks of its own diff as `patch`, which is the field the
+ * reviewer reads a change out of a comparison with and which this answered as `null` through
+ * the recorded batch of 2026-11-10: a reviewer that asked for `.patch` got nothing and one fell
+ * back to `jj file show`, working around the rig on the read step 3 of review-threads.md rests
+ * on. The patch of each file is read with a `git diff` of its own path, since splitting one
+ * combined diff on its `diff --git` headers would have to undo git's own quoting of a path; a
+ * world of this rig holds four changed files. A call that asks for the diff media type
+ * (DIFF_MEDIA_TYPE) is answered with the unified diff itself, as the API answers that `Accept`
+ * header, and never with the JSON. Renames are not detected, so a moved file reads as one
+ * added and one removed, as
  * GitHub's own answer does when it finds no rename. A ref the remote cannot resolve is no
  * comparison of this world, and the call falls through to the routes, whose 404 is GitHub's own
  * answer for a comparison of refs a repository has not got. */
-function comparison(): Record<string, unknown> | undefined {
+function comparison(): string | Record<string, unknown> | undefined {
   if (as !== "gh" || args[0] !== "api") return undefined;
   if (/(^|\s)(-X|--method)\s?(POST|PATCH|PUT|DELETE)(\s|$)/.test(joined)) return undefined;
   const named = args.map((arg) => COMPARE.exec(arg)).find((match) => match !== null);
   const [, base = "", head = ""] = named ?? [];
   if (base === "" || head === "") return undefined;
+  if (!REF.test(base) || !REF.test(head)) return undefined;
   const range = [`${base}...${head}`];
+  // The diff media type asks for the comparison as the diff itself, which is what the run's own
+  // remote prints for the range; a remote that cannot resolve the two refs prints nothing and
+  // the call falls through to the routes.
+  if (DIFF_MEDIA_TYPE.test(joined)) return fromRemote("diff", "--no-renames", ...range);
   const ahead = fromRemote("rev-list", "--count", `${base}..${head}`);
   const behind = fromRemote("rev-list", "--count", `${head}..${base}`);
   const counts = fromRemote("diff", "--numstat", "--no-renames", ...range);
@@ -218,12 +245,17 @@ function comparison(): Record<string, unknown> | undefined {
       // A binary file's counts are `-` in numstat, and GitHub reports 0 for one.
       const additions = Number(added) || 0;
       const deletions = Number(deleted) || 0;
+      // GitHub's `patch` is the file's hunks alone, with no `diff --git` or `index` header, and
+      // it is absent for a file git prints no hunk for, as GitHub leaves it out for a binary.
+      const diff = fromRemote("diff", "--no-renames", ...range, "--", filename) ?? "";
+      const hunks = diff.search(/^@@/m);
       return {
         filename,
         status: statusOf.get(filename) ?? "modified",
         additions,
         deletions,
         changes: additions + deletions,
+        ...(hunks < 0 ? {} : { patch: diff.slice(hunks) }),
       };
     });
   return { status, ahead_by: aheadBy, behind_by: behindBy, total_commits: aheadBy, files };
@@ -244,36 +276,56 @@ if (!route && compared === undefined && diffed === undefined) {
   console.error(as === "gh" ? "gh: Not Found (HTTP 404)" : `unknown command: ${args.join(" ")}`);
   exit(1);
 }
+/** `answer` with `shape` applied to it, or to each of its elements when the answer is a list.
+ * `gh pr list` answers the open pull requests as a list of the objects `gh pr view` answers one
+ * of (rig.sh's fixture_write), so every rule over an answer's object is a rule over a listed
+ * one: while the head, the field selection and the kept body reached the object alone, a role
+ * that listed the pull request after a fix push read the head the fixture froze, and a listing
+ * after a body edit read the body before it. A value that is no object is its own answer. */
+function eachAnswer(answer: unknown, shape: (one: Record<string, unknown>) => unknown): unknown {
+  const one = (value: unknown) =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? shape(value as Record<string, unknown>)
+      : value;
+  return Array.isArray(answer) ? answer.map(one) : one(answer);
+}
 if (body !== undefined) {
-  const edited = routes.map((candidate) =>
-    typeof candidate.stdout === "object" && candidate.stdout !== null && "body" in candidate.stdout
-      ? { ...candidate, stdout: { ...candidate.stdout, body } }
-      : candidate
-  );
+  const edited = routes.map((candidate) => {
+    const stdout = eachAnswer(candidate.stdout, (one) => ("body" in one ? { ...one, body } : one));
+    return stdout === candidate.stdout ? candidate : { ...candidate, stdout };
+  });
   writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
   kept = body;
 }
 // The comparison, where the call asked for one, is the answer; every other call is its route's.
 let output: unknown = compared ?? route?.stdout ?? "";
-if (typeof output === "object" && output !== null && "headRefOid" in output) {
+// What GitHub answers for a pull request's head is read from the run's own remote, and only for
+// an answer that carries one: the tip is a `git` call, which a call answered by any other route
+// never makes.
+if (
+  (Array.isArray(output) ? output : [output]).some(
+    (one) => typeof one === "object" && one !== null && "headRefOid" in one
+  )
+) {
   const tip = branchTip();
-  if (tip !== undefined) {
-    const nested =
-      "head" in output && typeof output.head === "object" && output.head !== null
-        ? { head: { ...output.head, sha: tip } }
-        : {};
-    output = { ...output, headRefOid: tip, ...nested };
-  }
+  if (tip !== undefined)
+    output = eachAnswer(output, (one) => {
+      if (!("headRefOid" in one)) return one;
+      const nested =
+        "head" in one && typeof one.head === "object" && one.head !== null
+          ? { head: { ...one.head, sha: tip } }
+          : {};
+      return { ...one, headRefOid: tip, ...nested };
+    });
 }
 // An empty diff is GitHub's own answer for a pull request whose branch carries no change, so it
 // stands as the answer rather than falling back to the route's.
 if (diffed !== undefined) output = diffed === "" ? "" : `${diffed}\n`;
 const jsonIndex = args.indexOf("--json");
-if (jsonIndex >= 0 && typeof output === "object" && output !== null && !Array.isArray(output)) {
-  const record: Record<string, unknown> = { ...output };
+if (jsonIndex >= 0) {
   const fields = (args[jsonIndex + 1] ?? "").split(",");
-  output = Object.fromEntries(
-    fields.filter((field) => field in record).map((field) => [field, record[field]])
+  output = eachAnswer(output, (one) =>
+    Object.fromEntries(fields.filter((field) => field in one).map((field) => [field, one[field]]))
   );
 }
 let text = typeof output === "string" ? output : JSON.stringify(output);

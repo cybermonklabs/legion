@@ -150,15 +150,34 @@ export const TestHandoff = z.looseObject({
 });
 
 /** Every line of `file` that is not blank, and no line at all for a file that is not there. A
- * missing file reads here exactly as an empty one, so a caller reading one of the records the rig
- * writes — calls.jsonl, pushes.log, daemon.log — would read its absence as no call, no push and
- * no move, each of which is what a passing run looks like. `unscored` makes a missing one a rig
- * error of the scenarios that have them, so no caller below has to tell the two apart. */
+ * missing file reads here exactly as an empty one, so a caller reading one of the three records
+ * a worker run leaves (RECORDS) would read its absence as no call, no push and no move, each of
+ * which is what a passing run looks like. `unscored` makes a missing one a rig error of the
+ * scenarios that have them, so no caller below has to tell the two apart. */
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "");
+}
+/** The three records a worker run leaves of what it did, each named by what it holds: the gh
+ * and bun stand-ins' calls, the pushes the run's own remote logged, and the daemon stand-in's
+ * answers. Nothing creates them for the run — each is written by the thing that keeps it, and
+ * rig.sh only empties the push log of the pushes its own fixture made (fixture_head_commit) —
+ * so a record that is there and holds no line is the run's own reading, and a record that is
+ * absent is one nothing ever wrote, which is a rig error (`unscored`). */
+const RECORDS: Record<string, string> = {
+  "calls.jsonl": "its gh and bun calls",
+  "pushes.log": "the pushes its remote took",
+  "daemon.log": "its daemon stand-in's answers",
+};
+/** The records of `runDir` that are there and hold no line. The row prints them, so a reader
+ * can tell a run that called nothing, pushed nothing or moved nothing from one whose record the
+ * score never read: a missing record is a rig error of its own and no row at all. */
+function emptyRecords(runDir: string): string[] {
+  return Object.keys(RECORDS).filter(
+    (file) => existsSync(path.join(runDir, file)) && lines(path.join(runDir, file)).length === 0
+  );
 }
 /** Each line of a JSONL file, parsed as `schema`; a line that does not parse is the rig's fault. */
 function parsed<T>(file: string, schema: z.ZodType<T>): T[] {
@@ -898,9 +917,13 @@ type Submission = {
  * deep pass of 2026-11-10 moved a recorded submission to
  * `repos/sjawhar/legion-smoke/pulls/1/reviews` and the run still scored one. The stand-in matches
  * its routes on the pull request's number alone, so it answers such a call as GitHub would answer
- * the right one, and the agent is never told: six of the 40 runs recorded on 2026-11-10 submitted
- * to a repository their world does not name, four to sjawhar/legion-smoke and two to
- * skills-rig/project, where every world of those runs names example/widgets. */
+ * the right one, and the agent is never told: six of the 40 runs recorded on 2026-11-10
+ * submitted to a repository their world does not name, where every world of those runs names
+ * example/widgets. Four named sjawhar/legion-smoke, which nothing of the rig gave them. The
+ * other two named skills-rig/project, which the rig's own addressing gave them: the pane's
+ * system prompt said "Your issue's repository is skills-rig/project (default branch trunk)"
+ * (daemon-pane.go, until that addressing was made the world's own), so those two followed the
+ * rig and this rule read their review as none. */
 function reviewsRoute(arg: string, repo: string): boolean {
   return /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/.exec(arg)?.[1] === repo;
 }
@@ -4034,13 +4057,17 @@ function median(values: number[]): number {
  *     recorder missed is unknown; or a message of one of this run's topics it could not read
  *     (`unreadable`), so what reached that topic is unknown.
  *   - for a scenario whose score reads what the stand-ins recorded (RECORDED), one of the three
- *     records the rig writes for such a run is missing: calls.jsonl, pushes.log or daemon.log.
- *     `lines` reads a file that is not there as no line at all, which is what no call, no push and
- *     no move look like, and each of those is an answer a passing run gives, so a run whose record
- *     the harness never wrote would be scored on the harness's own silence — the audit of
- *     2026-11-10 deleted the three from a recorded failing run and it scored a pass. rig.sh makes
- *     all three with the world (fixture_head_commit), so a missing one is the rig's fault, while
- *     an empty one is a reading of its own and scores;
+ *     records a worker run leaves is missing: calls.jsonl, pushes.log or daemon.log (RECORDS).
+ *     Each is written by the thing that keeps it — the gh and bun stand-ins, the remote's
+ *     post-receive hook, the daemon stand-in — and the rig creates none of them, emptying only
+ *     the push log, of the pushes its own fixture made, so an absent
+ *     one is a record nothing ever wrote. `lines` reads it as no line at all, which is what no
+ *     call, no push and no move look like, and each of those is an answer a passing run gives,
+ *     so such a run would be scored on silence nobody made: the audit of 2026-11-10 deleted the
+ *     three from a recorded failing run and it scored a pass. A record that is there and holds
+ *     no line is the other reading — the run made no call, pushed nothing, moved nothing — and
+ *     it scores, with the row naming each empty record (`emptyRecords`) so a reader can tell
+ *     which of the two the score saw;
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
@@ -4098,15 +4125,17 @@ function unscored(
     if (refused !== null)
       return `${role === "" ? "the run's own agent" : `the ${role} half`} had a daemon answer refused by its own checkout's contract: ${refused[1]} ${refused[2]}`;
   }
-  // The three records the stand-ins and the run's own remote leave of what it did: the gh and bun
-  // calls, the pushes, and the daemon stand-in's answers. Each is read as a fact of the run, and
-  // an absent one reads as the fact not happening (`lines`), so a run the harness never wrote one
-  // for is a rig error naming it rather than a row scored on a file nobody wrote. An empty record
-  // is a reading and scores.
+  // The three records a worker run leaves of what it did (RECORDS). Each is written by the
+  // thing that keeps it and by nothing else — rig.sh creates none of them, and empties only the
+  // push log, of the pushes its own fixture made — so an absent one
+  // is a record nothing wrote: `lines` would read it as no call, no push and no move, each of
+  // which a passing run shows, so it is a rig error naming the file rather than a row scored on
+  // a file nobody wrote. A record that is there and holds no line is the other reading, and the
+  // row names it (`emptyRecords`).
   if (RECORDED.includes(scenario)) {
-    for (const file of ["calls.jsonl", "pushes.log", "daemon.log"]) {
+    for (const [file, reads] of Object.entries(RECORDS)) {
       if (!existsSync(path.join(runDir, file)))
-        return `<run>/${file} is missing: rig.sh writes it with the world, so its absence is no reading of the run`;
+        return `<run>/${file} is missing: nothing wrote it, so the run left no record of ${reads} rather than a record of none`;
     }
   }
   // What each agent sent is Envoy's own record of this run (`publishes`), and a record is read
@@ -4481,6 +4510,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
                 ),
               ]),
         ];
+        // A record that is there and holds no line is a reading of the run and not a gap in the
+        // rig (a missing one never reaches here: `unscored` makes it a rig error), so the row
+        // says which it saw rather than leaving a reader to guess why a count is zero.
+        const empty = RECORDED.includes(scenario) ? emptyRecords(dir) : [];
         const [first = "", ...rest] = scored.notes.split("\n");
         const row = {
           ...scored,
@@ -4488,6 +4521,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
           notes: [
             `${first}${flags.map((flag) => flag.inline).join("")}`,
             ...rest,
+            ...(empty.length === 0
+              ? []
+              : [`  empty records: ${empty.join(", ")} — there, and holding no line`]),
             ...flags.flatMap((flag) => flag.lines.map((line) => `  ${line}`)),
           ].join("\n"),
         };

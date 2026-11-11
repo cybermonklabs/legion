@@ -15,13 +15,21 @@
  * tool's grant request, its completion, and the state document. The grant rule mirrors the real
  * daemon's: a grant lives for 60 seconds and redeems any number of times while it lives; an
  * unknown or expired grant id answers 403 `{"error":"Invalid or expired grant"}`. Nothing is
- * single-use. A completion is served only while the issue stands in the phase this stand-in's
- * role works: started in any other phase, every `handoff_complete` is refused 409
- * `HANDOFF_NO_RUN`, as the daemon refuses a completion it can attribute to no run of the issue
- * (`packages/daemon/internal/api/handoff.go`, `noRunCompletion`). That is the loop after an
- * approval, which runs in `accepting`, where the daemon starts no phase and the claim holds no
- * task at all. A completion of a phase that ends with a handoff record (daemon-pane.go's handoff
- * word for the role's phase) must name one, `handoffId` and a positive `handoffVersion`, and is
+ * single-use. A completion is served only while the issue stands in the first phase this
+ * stand-in's role works, the one `daemon-pane.go`'s `phase <role>` gives it: started in any
+ * other phase, every `handoff_complete` is refused 409 `HANDOFF_NOT_CURRENT_PHASE`, as the
+ * workflow refuses a completion of a phase the completing role does not run
+ * (`packages/daemon/internal/workflow/engine.go`, `RoleFor(issue.Phase) != fact.Role`, whose
+ * refusal `effects.go`'s `refused` makes a 409). That is the loop after an approval, which runs
+ * in `accepting`: the architect's phase, which neither the implementer nor the reviewer runs.
+ * The real daemon's earlier fence, the 409 `HANDOFF_NO_RUN` of a completion it can attribute to
+ * no run (`internal/api/handoff.go`, `noRunCompletion`), is not the one a rig half meets: both
+ * halves are live registered workers serving generation 1, so the route finds a run and the
+ * refusal is the workflow's. The rule compares the issue's phase with the role's first phase
+ * alone, which is narrower than the daemon, whose implementer also runs retro; no run of this
+ * rig stands in retro. A completion of a phase that ends with a handoff record
+ * (daemon-pane.go's handoff word for the role's phase) must name one, `handoffId` and a
+ * positive `handoffVersion`, and is
  * refused 400 `HANDOFF_RECORD_REQUIRED` otherwise; a completion of a phase that ends with none
  * and names one is refused 409 `HANDOFF_RECORD_MISMATCH`; both as the real daemon refuses them
  * (`L/api/handoff.go`). Any other completion answers `{}`. A backward move answers `{}` once its
@@ -281,19 +289,21 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       if (!parsed.success) return { response: json(400, { error: parsed.error.message }) };
       const refused = resolveGrant(parsed.data.grantId);
       if (refused) return { response: refused };
-      // The daemon attributes a completion to a run of the issue's own generation and phase, and
-      // refuses one it can attribute to none (`noRunCompletion`, with `heldTaskNotCurrent`'s
-      // reason for the task the claim holds). A worker started in a phase its role does not work
-      // holds no task at all: the loop after an approval runs in `accepting`, where the daemon
-      // starts no phase, so neither of its halves may complete one. The message is the daemon's,
+      // The workflow refuses a completion of a phase the completing role does not run:
+      // `RoleFor(issue.Phase) != fact.Role` answers 409 HANDOFF_NOT_CURRENT_PHASE
+      // (packages/daemon/internal/workflow/engine.go). The loop after an approval runs in
+      // `accepting`, whose role is the architect, so neither of its halves may complete there.
+      // The earlier HANDOFF_NO_RUN fence of the route is not reached: a rig half is a live
+      // registered worker serving generation 1, so the route attributes its completion to a run
+      // and leaves the phase to the workflow. The comparison is with ROLE_PHASE, the role's
+      // first phase, which is every phase a rig run stands in. The message is the daemon's,
       // because the skill has the worker quote it to its architect.
       if (PHASE !== ROLE_PHASE) {
-        const held = `this claim holds no task at all, and ${issue} is on generation 1 in ${PHASE}`;
         return {
           response: failure(
             409,
-            "HANDOFF_NO_RUN",
-            `this completion belongs to no run of ${issue}: ${held}; nothing was recorded. Push nothing further, end this turn without completing and tell the architect; if the daemon queues this claim a generation-1 ${PHASE} task (none may: this run's phase can be another claim's) and its work and handoff are already done, call the same handoff_complete in that task's turn, and never redo the work or write a second handoff`
+            "HANDOFF_NOT_CURRENT_PHASE",
+            `the ${role} does not run phase ${PHASE} of ${issue}; this completion changed nothing`
           ),
         };
       }
