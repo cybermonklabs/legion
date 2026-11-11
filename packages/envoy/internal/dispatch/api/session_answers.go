@@ -24,9 +24,9 @@ const (
 // listSessionAnswers answers GET /api/v1/agents/{session_id}/answers: what people wrote that
 // Dispatch delivered to one session since the window's start (sessionanswers.List), newest
 // first, with total counting every item in the window. With max_chars the list stops after the
-// item whose text takes the running sum of text lengths, in UTF-16 units as an agent host counts
-// its cap, past max_chars: a superset of what fits under the host's cap, and a body bounded at
-// about that cap plus one item.
+// item whose words take the running sum past max_chars, in UTF-16 units as an agent host counts
+// its cap: a superset of what fits under the host's cap, and a body bounded at about that cap
+// plus one item.
 func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -84,12 +84,15 @@ func parseSessionAnswersSince(query url.Values, now time.Time) (time.Time, error
 	return since, nil
 }
 
-// sessionAnswersWithin is items up to and including the one whose text takes the running sum of
-// text lengths past maxChars, or every item when the sum never passes it.
+// sessionAnswersWithin is items up to and including the one whose words take the running sum
+// past maxChars, or every item when the sum never passes it. An item's words are every word it
+// serves the agent: the person's own text and, on a decline, the sentences Dispatch wrote beside
+// it, which are about 200 units and the whole of a decline the person wrote no note with, so a
+// window of declines would otherwise answer far past what the caller asked for.
 func sessionAnswersWithin(items []model.SessionAnswer, maxChars int) []model.SessionAnswer {
 	sum := 0
 	for index, item := range items {
-		sum += itemblocks.Units16(item.Text)
+		sum += itemblocks.Units16(item.Text) + itemblocks.Units16(item.DispatchWords)
 		if sum > maxChars {
 			return items[:index+1]
 		}
