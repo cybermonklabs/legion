@@ -125,6 +125,43 @@ function renderedDocument(markdown: string): ProseMirrorNode {
   return parsed;
 }
 
+/** The first question block of `markdown`, as the engine parses it: the node the editor's own
+ *  `ask` node view is constructed from. */
+function askNodeOf(markdown: string): ProseMirrorNode {
+  let found: ProseMirrorNode | undefined;
+  renderedDocument(markdown).descendants((node) => {
+    if (found === undefined && node.type.name === "ask") {
+      found = node;
+    }
+    return found === undefined;
+  });
+  if (found === undefined) throw new Error(`the engine parsed no question block in "${markdown}"`);
+  return found;
+}
+
+/** Draws the question block of `markdown` in the version's editor, as the real editor draws one
+ *  for every `ask` node of the text it holds: the fake editor installs the host's node views but
+ *  constructs none itself, so the test constructs the one the version needs (`Inbox.test.tsx`
+ *  does the same for a live document). The block is appended as the text lands, since
+ *  `setMarkdown` replaces everything in the editor's root.  */
+function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
+  return (inner) => async (root, options) => {
+    const handle: EditorHandle = await inner(root, options);
+    const nodeViews = handle.view.props.nodeViews as Record<
+      string,
+      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+    >;
+    const construct = nodeViews.ask;
+    if (construct === undefined) throw new Error("the ask node view was not installed");
+    const written = handle.setMarkdown;
+    handle.setMarkdown = (text: string) => {
+      written(text);
+      root.append(construct(askNodeOf(markdown)).dom);
+    };
+    return handle;
+  };
+}
+
 /** Records what the version draws over its rendered document, and gives the fake handle the
  *  document the real editor would hold: the fake view's state carries none (`VersionView.test`).
  *  With `paintMarks`, it also puts a marked block into the editor's root where the version drew
@@ -231,12 +268,11 @@ function decisionAsk(overrides: Partial<InboxRow> = {}): InboxRow {
 }
 
 /** The approval request for `spec.md` at version 4; `approved` is the approval it follows, which
- *  a first request has none of. */
-function approvalAsk(approved?: {
-  at: string;
-  by: { id: string; kind: "user" };
-  version: number;
-}): InboxRow {
+ *  a first request has none of, and `overrides` tells two requests on one document apart. */
+function approvalAsk(
+  approved?: { at: string; by: { id: string; kind: "user" }; version: number },
+  overrides: Partial<InboxRow> = {}
+): InboxRow {
   return issueAsk({
     approval: {
       approved,
@@ -249,6 +285,7 @@ function approvalAsk(approved?: {
     approval_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
     kind: "approval",
     question: "Approve spec.md at version 4?",
+    ...overrides,
   });
 }
 
@@ -509,6 +546,123 @@ test("an approval that falls back to the card draws the question once, as the ca
     expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
     expect(screen.queryByTestId("pane-approval-question")).not.toBeInTheDocument();
     expect(screen.getAllByText("Approve spec.md at version 4?")).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The one scroller is the column's, not the row's: it outlives every question the reader steps
+// through. These four rows pin where an approval request leaves it.
+
+const SECOND_REQUEST: Partial<InboxRow> = {
+  id: "ask-b",
+  question: "Approve spec.md at version 4, after the rewrite?",
+};
+
+test("a second approval request opens the column at its own start, wherever the first was left", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  // Both requests are about this one document at this one version, so the column keeps the
+  // version it drew and only the question above it changes.
+  const { rerender, view } = renderPane({
+    ask: approvalAsk(),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    // Where this reader read down to, which the next question would otherwise open at.
+    scroller.scrollTop = 240;
+    expect(scroller.scrollTop).toBe(240);
+
+    rerender(approvalAsk(undefined, SECOND_REQUEST));
+
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    expect(await screen.findByTestId("pane-approval-question")).toHaveTextContent(
+      "Approve spec.md at version 4, after the rewrite?"
+    );
+    // The same element throughout: the column was scrolled, not rebuilt.
+    expect(screen.getByTestId("inbox-pane-scroller")).toBe(scroller);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval on a document that cannot be read leaves the column where the reader left it", async () => {
+  // `getArtifact` is refused by default, so the column reads no version and falls back to the
+  // card: there is no version drawn to put the reader at the start of.
+  const { rerender, view } = renderPane({ ask: approvalAsk() });
+
+  try {
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    scroller.scrollTop = 240;
+
+    rerender(approvalAsk(undefined, SECOND_REQUEST));
+
+    await screen.findByText("Approve spec.md at version 4, after the rewrite?");
+    expect(scroller.scrollTop).toBe(240);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval whose version cannot be read leaves the column where the reader left it", async () => {
+  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockRejectedValue(
+    new Error("VERSION_UNREADABLE")
+  );
+  // The document reads, and the version it names does not: nothing is seeded under the version
+  // key, so both readers of it take the refusal.
+  const { rerender, view } = renderPane({
+    ask: approvalAsk(),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] })
+      ),
+  });
+
+  try {
+    expect(await screen.findByText("Could not load this document version.")).toBeDefined();
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    scroller.scrollTop = 240;
+
+    rerender(approvalAsk(undefined, SECOND_REQUEST));
+
+    await screen.findByText("Approve spec.md at version 4, after the rewrite?");
+    expect(scroller.scrollTop).toBe(240);
+  } finally {
+    view.unmount();
+    getArtifactVersion.mockRestore();
+  }
+});
+
+test("an approval draws the ask card of a question block in the version it shows", async () => {
+  await warmMarkdownRenderer();
+  const latest = '# Plan\n\n:::ask{urgency="high"}\nShip behind a flag?\n:::\n';
+  const { view } = renderPane({
+    ask: approvalAsk(),
+    createEditor: drawAskBlock(latest),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    const drawn = await screen.findByLabelText("Document version 4");
+    // The card the block's own node view hosts, drawn as a stored version draws it: the urgency
+    // the block carries, with no composer under it.
+    expect(await within(drawn).findByText("Decision")).toBeDefined();
+    expect(drawn.querySelector('[data-dispatch-ask-pill="high"]')).not.toBeNull();
   } finally {
     view.unmount();
   }

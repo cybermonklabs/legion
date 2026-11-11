@@ -183,6 +183,41 @@ function ApprovalBody({
   // A document the column cannot read, and a request on a document that holds no version to
   // show, both fall back to the card.
   const failed = artifactQuery.isError || (artifact !== undefined && latestVersion === undefined);
+  // The version the column draws, read under the key `VersionView` reads it by: both readers
+  // share the one cache entry, so naming it here costs the page no second request, and the
+  // answer tells the column when the text it shows has landed.
+  const versionQuery = useQuery({
+    enabled: settled && latestVersion !== undefined,
+    queryFn: () => {
+      if (latestVersion === undefined) {
+        throw new Error("A version read needs the latest version.");
+      }
+      return api.getArtifactVersion(artifactId, latestVersion);
+    },
+    queryKey: ["artifact", artifactId, "version", latestVersion],
+  });
+  /** The request the column has read a version for, which is what the start of the column is
+   *  written for: the one scroller outlives the row, so a second request on a document opens
+   *  where the first one was left unless the column is sent back. The write waits for the
+   *  version's text, so it lands with the question and the version below it rather than into an
+   *  empty skeleton; a version the column could not read, and a document it could not read,
+   *  each hold no text and write nothing, which leaves the reader where they were. */
+  const opened = isText(versionQuery.data) ? ask.id : undefined;
+  useEffect(() => {
+    const column = scroller.current;
+    if (opened === undefined || column === null) {
+      return;
+    }
+    // Keyed on the request and not on the version number: a later version of the same request
+    // is a redraw of what the column already holds, drawn from its own start, so it is left
+    // alone and a reader reading one is not pulled back up.
+    //
+    // The start is written straight rather than through `scrollElementToTop`: that one measures
+    // the move against the drawn rects, and where nothing is laid out every rect is zero and
+    // the move computes to nothing.
+    column.scrollTop = 0;
+  }, [opened]);
+
   const marked = useMarkedBlocks(content);
 
   const askId = ask.id;
