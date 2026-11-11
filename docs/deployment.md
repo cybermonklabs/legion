@@ -638,6 +638,14 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `github_apps.<app>.token_command` | rebuild | `github-apps` |
 | `github_apps.implement` | rebuild | `github-apps` |
 | `github_apps.review` | rebuild | `github-apps` |
+| `hooks` | fixed | — |
+| `hooks[].every` | fixed | — |
+| `hooks[].moves` | fixed | — |
+| `hooks[].name` | fixed | — |
+| `hooks[].on` | fixed | — |
+| `hooks[].prompt` | fixed | — |
+| `hooks[].prompt_file` | fixed | — |
+| `hooks[].roles` | fixed | — |
 | `instructions` | launch | `launch-specs` |
 | `launch_failure_limit` | decision | — |
 | `linger_hours` | decision | — |
@@ -775,3 +783,5 @@ Each line below is the reason the route answers with, for the keys it names.
 - `worker_wakes_per_minute`, `worker_wake_burst` — the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it.
 
 - `worker_stall_backstop_hours` — the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it.
+
+- `hooks` and every key under it — the words of every hook that names a `prompt_file` are read once, at boot, into the one map the engine's hook list is built from, keyed by the hook's name (internal/daemon's readBoot and engineHooks), and nothing reads a file again: a hook this route added, renamed or repointed would stand in front of its roles with no words at all.

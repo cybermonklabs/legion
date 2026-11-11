@@ -96,7 +96,22 @@
     },
     "worker_backends": {},
     "role_config_files": {},
-    "repository_renames": []
+    "repository_renames": [],
+    "hooks": [
+      {
+        "name": "work-back",
+        "on": "work_back",
+        "moves": [
+          "any"
+        ],
+        "every": 5,
+        "roles": [
+          "implementer",
+          "tester",
+          "reviewer"
+        ]
+      }
+    ]
   },
   "settingSources": {},
   "consumers": []

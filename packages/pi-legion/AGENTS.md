@@ -94,10 +94,13 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 60's setting provenance
+number is the one `DaemonAPIVersion` declares, last bumped by contract 63's setting provenance
 (`GET /legion/v1/state` carries `settingSources`, `daemon.commit` and each pull request's
-`requiresChecks`, which a strict reader before 60 refuses, so a caller from a pod below 60 is
-served the state without them), after contract 59's end of fix-attempt counting and its two
+`requiresChecks`, which a strict reader before 63 refuses, so a caller from a pod below 63 is
+served the state without them), after contract 62's counts of the moves back (each worker of that
+state carries `backwardMoves`, the `<from>-<to>` pair to its count, absent for an issue that has
+had no move back, and a caller from a pod below 62 is served the workers without it), after
+contract 59's end of fix-attempt counting and its two
 recovery operations (the settings block of `GET /legion/v1/state` no longer
 carries `max_fix_attempts` and each pull request in it loses `fixAttempts`, which the strict
 reader every worker's `read_record` parses the state through requires, so the boot gate and

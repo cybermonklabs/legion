@@ -168,7 +168,11 @@
               "startedAt": "2026-09-22T09:17:12Z"
             }
           },
-          "rounds": 2
+          "rounds": 2,
+          "backwardMoves": {
+            "reviewing-implementing": 1,
+            "testing-implementing": 1
+          }
         },
         "planner": {
           "claim": {
@@ -745,6 +749,21 @@
         "from": "acme/widgets-legacy",
         "to": "acme/widgets"
       }
+    ],
+    "hooks": [
+      {
+        "name": "back-to-implementing",
+        "on": "work_back",
+        "moves": [
+          "reviewing-implementing",
+          "testing-implementing"
+        ],
+        "every": 2,
+        "roles": [
+          "implementer"
+        ],
+        "prompt_file": "/etc/legion/hooks/back-to-implementing.md"
+      }
     ]
   },
   "settingSources": {
@@ -838,6 +857,38 @@
       "at": "2026-09-22T09:15:02Z"
     },
     "github_apps.review": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks[].every": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks[].moves": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks[].name": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks[].on": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks[].prompt": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks[].prompt_file": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "hooks[].roles": {
       "source": "file",
       "at": "2026-09-22T09:15:02Z"
     },

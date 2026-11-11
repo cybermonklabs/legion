@@ -118,7 +118,7 @@ func startedAgainDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides, 
 // merge's check is opened for), over the repositories these tests serve. A fact applied through
 // it writes what the daemon's own handlers would.
 func startedAgainEngine(cfg config.Config) *workflow.Engine {
-	engineCfg := engineConfig(&cfg, "")
+	engineCfg := engineConfig(&cfg, "", nil)
 	engineCfg.Repositories = testRepositories
 	return workflow.New(record.NewStore(), engineCfg, quietLogger())
 }

@@ -653,9 +653,11 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return false, nil
 }
 
-// recordRound counts the implementer one round for a move back to an earlier phase, and, when the
-// round is one the cap counts, posts the cap's message and its pr-blocked notice once the counted
-// rounds reach review_round_cap.
+// recordRound counts the implementer one round for a move back to an earlier phase, counts the
+// move itself under its own pair, tells the architect once for each value review_round_cap
+// holds, and fires the deployment's hooks that stand on the move (fireWorkBackHooks). Everything
+// it writes it writes in the move's own transaction, so a move the record holds and a prompt
+// nobody wrote cannot happen.
 //
 // Rounds rises for every backward move, whatever its cause: a completion's key is built from it
 // (api/handoff.go's handoffPosition), so two passes through one phase that counted the same
@@ -668,32 +670,60 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // which two were conflicts. The message names both numbers, so an architect woken by it reads
 // how many rounds were counted against the cap and how many were excused.
 //
-// A move that raised the conflict count posts neither the message nor the notice, whatever the
-// counted rounds stand at: it leaves that number as the round before it left it, and a notice is
-// itself a way of counting, waking the architect to decide a round nobody spent. The counted
-// round that reached the cap posted it, and the next counted round posts it again, naming the
-// conflict rounds as they stand then.
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
+// BackwardMoves rises as well, under the move's own "<from>-<to>" pair, spelled as
+// phase.BackwardPairs() spells the pairs (phase.Pair): a review that sends the work back and a
+// test that sends it back are two counts and never one.
+//
+// A move that raised the conflict count raises no pair and fires no hook: nobody sent the work
+// back, so there is no move of a kind for a hook to count. It posts neither the cap's message
+// nor its notice either, whatever the counted rounds stand at: it leaves that number as the
+// round before it left it, and a notice is itself a way of counting, waking the architect to
+// decide a round nobody spent.
+//
+// The cap's message and its pr-blocked notice go once for each value the cap holds, and not on
+// every counted round at or above it: the round that tells writes the cap it read into
+// record.PhaseRow.CapTold, and a later round compares the two. The comparison is != and never <,
+// because a cap lowered under a row that already told a higher value must tell once at the new
+// value, which < would never do. A raised cap tells again at its new number, and a new
+// generation tells again from its own first crossing, because clearGeneration clears the mark.
+//
+// Nothing here holds the move back: the transition starts the next role whatever the counts read
+// and whatever a hook said. A write that fails is still an error of the move's transaction, as
+// every other write of that transaction is, and is returned rather than swallowed.
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, pr *record.PullRequest) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	row.Rounds++
-	conflict := pr != nil && classify.ConflictRound(*pr)
-	if conflict {
+	if pr != nil && classify.ConflictRound(*pr) {
+		// A conflict round ends here: it raises no pair, tells nobody and fires nothing, so the
+		// write of the two counts is all it has to do.
 		row.ConflictRounds++
+		return e.store.PutPhase(ctx, tx, row)
+	}
+	if row.BackwardMoves == nil {
+		row.BackwardMoves = make(map[string]int, 1)
+	}
+	row.BackwardMoves[phase.Pair(from, to)]++
+	counted := row.Rounds - row.ConflictRounds
+	roundCap := e.settings().ReviewRoundCap
+	tell := counted >= roundCap && row.CapTold != roundCap
+	if tell {
+		row.CapTold = roundCap
 	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
-	counted := row.Rounds - row.ConflictRounds
-	if conflict || counted < e.settings().ReviewRoundCap {
-		return nil
+	if tell {
+		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
+			roundCap, counted, row.ConflictRounds)
+		if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
+			return err
+		}
+		if err := e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
+			return err
+		}
 	}
-	message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
-		e.settings().ReviewRoundCap, counted, row.ConflictRounds)
-	if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
-		return err
-	}
-	return e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message})
+	return e.fireWorkBackHooks(ctx, tx, issue, from, to, row.BackwardMoves, pr)
 }

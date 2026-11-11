@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -99,6 +100,38 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	stamped := cfg.Projects["WIDGETS"].CommitIssueTrailerRepos
 	if len(stamped) != 1 || stamped[0].String() != "acme/widgets" {
 		t.Errorf("the WIDGETS commit_issue_trailer_repos = %v, want acme/widgets alone", stamped)
+	}
+}
+
+// The example's first commented hook is the hook a file that names no `hooks:` key runs, its
+// words included, so an operator reads the shipped default in the file it edits. Uncommented, it
+// loads as exactly that hook: a default changed in one place and not the other would have the
+// example teach a hook no daemon runs. The example's second hook names a `prompt_file`, a path
+// only an operator has, whose words the check reads, so it is covered no more than the memory
+// block's `instructions` is.
+func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
+	config := checkShippedExample(t, func(example string) string {
+		return uncommentExample(t, example,
+			"# hooks:",
+			"#   - name: work-back",
+			"#     on: work_back",
+			"#     moves: any",
+			"#     every: 5",
+			"#     roles: [implementer, tester, reviewer]",
+			"#     prompt: >-",
+			"#       We read no progress on this issue: its work has gone back the number of times recorded",
+			"#       below. Report to the architect what is in your way, in your own words. The architect",
+			"#       takes a step back, reads what each of you says, and decides the path. Carry on with the",
+			"#       work while you wait, and say so if you read it as on track.",
+		)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := configpkg.DefaultHooks()
+	if !reflect.DeepEqual(cfg.Hooks, want) {
+		t.Errorf("the hooks of the example's first hook uncommented = %+v, want the shipped default %+v", cfg.Hooks, want)
 	}
 }
 
