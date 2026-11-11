@@ -803,22 +803,30 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes and admin, and of the fingerprint of each one's airlock
-	// entry: equal versions are equal policies. A request records the version it was decided
-	// under, so a live grant is re-evaluated only once the policy changed.
+	// github-owners, requesters, scopes, admin and shape, and of the fingerprint of each one's
+	// airlock entry: equal versions are equal policies. A request records the version it was
+	// decided under, so a live grant is re-evaluated only once the policy changed. The shape tag
+	// is in it because the airlock proxy holds a grant's released values per pod and reads them
+	// again only when one of the grant's names is reread or this version moves
+	// (internal/broker/airlockproxy/bound.go): a shape retag a console or an infra-applier made
+	// reaches a pod that already holds values by no other road, and that pod would go on
+	// spending the untrimmed value.
 	Version string
 	Secrets map[string]Secret
 }
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets
 // (keyed by Name) as its Secrets. A secret with no max-grant, no github-owners, no requesters, no
-// scopes and no admin tag writes the pre-kind digest bytes,
+// scopes, no admin and no shape tag writes the pre-kind digest bytes,
 // "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a kind secret's kind is in its Source); one with any of
 // them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
-// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>" and
-// "\tadmin=true", in that order, for each of those three it carries. A secret the airlock's rules
-// name adds one line more, "<Name>\tairlock=<digest>\n", rather than a field of the line above
-// it, so every line a deployment with no rules file writes is byte-identical to the one it writes
+// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>",
+// "\tadmin=true" and "\tshape=<word>", in that order, for each of those four it carries. The
+// shape tag is written only by a secret that carries one, so the secrets of a deployment that
+// tags none write the bytes they wrote before the tag existed and no deployed version shifts. A
+// secret the airlock's rules name adds one line more, "<Name>\tairlock=<digest>\n", rather than a
+// field of the line above it, so every line a deployment with no rules file writes is
+// byte-identical to the one it writes
 // today and its Version does not shift. Entries are ascending by the secret's name in the store
 // (the slug) — the exact order Load wrote before NewSet existed, so deployed plain-secret digests
 // do not shift. (Sorting by the uppercased Name would NOT be equivalent: '-' is 0x2D, '_' is
@@ -847,13 +855,17 @@ func NewSet(secrets map[string]Secret) *Set {
 		if s.secret.Admin {
 			admin = "\tadmin=true"
 		}
+		shape := ""
+		if s.secret.Shape != "" {
+			shape = "\tshape=" + s.secret.Shape
+		}
 		switch {
-		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin:
+		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && s.secret.Shape == "":
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source)
 		case s.secret.SessionDefault:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape)
 		default:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, shape)
 		}
 		if s.secret.AirlockDigest != "" {
 			fmt.Fprintf(digest, "%s\tairlock=%s\n", s.secret.Name, s.secret.AirlockDigest)

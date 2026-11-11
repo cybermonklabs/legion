@@ -285,10 +285,10 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 		s.Source = KindSource(kind, ls.Source)
 	}
 	// Read after max-grant and kind, both of which the tag rules weigh: Secret.Kind reads the kind
-	// back off the Source the branch above froze it into. The admin and scopes tags are read here
-	// too, since the rules weigh them against the kind, the tier and the requesters alike. A kind
-	// whose own rules demand a list is refused for a missing one, so TagRules runs whether the
-	// tags are there or not.
+	// back off the Source the branch above froze it into. The admin, scopes and shape tags are
+	// read here too, since the rules weigh them against the kind, the tier and the requesters
+	// alike. A kind whose own rules demand a list is refused for a missing one, so TagRules runs
+	// whether the tags are there or not.
 	if raw, tagged := ls.Tags[TagRequesters]; tagged {
 		if s.Requesters, err = ParseRequesters(raw, l.Services); err != nil {
 			return Secret{}, ReasonRequestersMalformed, nil
@@ -305,12 +305,17 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 			return Secret{}, ReasonScopesMalformed, nil
 		}
 	}
+	// The shape tag is carried as the store holds it, unparsed: TagRules is the one reader that
+	// says which words it may hold, and it refuses a value that is neither (ReasonShapeMalformed),
+	// so a secret whose tag says nothing the broker knows is never served.
+	s.Shape = ls.Tags[TagShape]
 	if reason := TagRules(TagSet{
 		Kind:         s.Kind(),
 		Owner:        s.Owner,
 		Tier:         s.Tier,
 		Requesters:   s.Requesters,
 		Scopes:       s.Scopes,
+		Shape:        s.Shape,
 		Admin:        s.Admin,
 		MaxGrant:     s.MaxGrant,
 		BoundAccount: l.ServiceAccounts[s.Name],
