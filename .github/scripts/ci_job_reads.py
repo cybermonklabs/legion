@@ -1149,14 +1149,15 @@ GATES = [
     # the multiprocess job's sign-in step, and that package is in the entry's closure too.
     gate("dispatch_browser", BROWSER_JOB, exact=[
         # Every binary this run executes, and the dashboard beside them, built once in the
-        # binaries job and downloaded by the six jobs that run them: this is the closure that
-        # build compiles and no other. The step names an output (-o), pins CGO_ENABLED on the
-        # line, and runs three builds as background jobs it waits on, none of which the simple
-        # form reduces, so the step is pinned whole; the Run carries that CGO_ENABLED, since the
-        # closure go lists without cgo is the one this build compiles. Its directory is the
-        # repository root, which is where the step runs - the go command `cd`s into
-        # packages/envoy inside the pinned script, and the Run below names that directory, which
-        # is where the closure is listed.
+        # binaries job and downloaded by the five jobs that run them - shard, alone,
+        # multiprocess, embedder and visual - which is six machines, the shard job having two
+        # legs: this is the closure that build compiles and no other. The step names an output
+        # (-o), pins CGO_ENABLED on the line, and runs three builds as background jobs it waits
+        # on, none of which the simple form reduces, so the step is pinned whole; the Run carries
+        # that CGO_ENABLED, since the closure go lists without cgo is the one this build
+        # compiles. Its directory is the repository root, which is where the step runs - the go
+        # command `cd`s into packages/envoy inside the pinned script, and the Run below names
+        # that directory, which is where the closure is listed.
         pinned_step(BROWSER_BINARIES, BROWSER_BINARIES_STEP, ".", BROWSER_BINARIES_SCRIPT, [
             (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
              "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
@@ -1194,6 +1195,13 @@ GATES = [
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs")
       + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)
+      # The multiprocess job keeps its actions/setup-go and its go cache restore where the
+      # embedder and visual jobs lost theirs: e2e/run-signin-issuer.sh builds
+      # ./cmd/dev-oidc-issuer inside that job's sign-in step, which is the one go command of this
+      # workflow outside the binaries job's own build. A job that reads go.mod through
+      # actions/setup-go has that read cited here, and dropping the citation while the step
+      # stands left the table silent about a read that job really makes (dispatch://INFRA-1109).
+      + setup_go(BROWSER_MP, f"{ENVOY}/go.mod", BROWSER_SITE)
       + bun_job(BROWSER_SHARD, BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF),
 

@@ -294,6 +294,20 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 // zero value, which the response encodes as null, and the dashboard reads that part from the
 // route it stands in for. The failure is logged with the part's name, so an operator reading the
 // log sees which read failed on a landing that answered 200.
+//
+// Every name below is prefixed with the arm of the answer it belongs to - `shell.`, `issue.`,
+// `board.`, `inbox.`, and `document.` for a project document's page - and nothing else is. That
+// is a change to what the log line says (dispatch://INFRA-1109): the issue page's own primary
+// document and the project document page both read a document, and both logged
+// `document.artifact`, `document.text` and `document.blocks`, so an operator could not tell
+// which of the two pages had failed. One prefix per arm answers that for every part at once -
+// the issue page's document is `issue.document.artifact` - rather than renaming the three
+// colliding names and leaving the next pair to collide.
+//
+// The value is returned as it was read, so a part is the same whether it is logged or not. The
+// zero value a failure returns is the nil the response encodes as null, which is why each caller
+// assigns what this answers straight into its field: on an error the field is set to the nil it
+// already held.
 func landingPart[T any](name string, value T, err error) T {
 	if err == nil {
 		return value
@@ -309,16 +323,16 @@ func (s *server) landingShell(ctx context.Context, caller model.Actor) landingSh
 
 	// The inbox as the dashboard reads it on every page: no project and no assignee narrowing.
 	inbox, err := s.loadInbox(ctx, caller, "", "", "")
-	shell.Inbox = landingPart("inbox", inbox, err)
+	shell.Inbox = landingPart("shell.inbox", inbox, err)
 
 	pinned, _, err := s.loadIssueListing(ctx, issueListRead{pinnedBy: caller.ID})
-	shell.PinnedIssues = landingPart("pinned_issues", pinned, err)
+	shell.PinnedIssues = landingPart("shell.pinned_issues", pinned, err)
 
 	projects, err := s.loadProjects(ctx)
-	shell.Projects = landingPart("projects", projects, err)
+	shell.Projects = landingPart("shell.projects", projects, err)
 
 	states, err := s.loadUserAgentStates(ctx, caller.ID, nil)
-	shell.AgentStates = landingPart("agent_states", states, err)
+	shell.AgentStates = landingPart("shell.agent_states", states, err)
 
 	// The badge's own read: one row of the unread state, whose total is every unread thread of
 	// both kinds. The row itself is thrown away, as the page throws it away.
@@ -326,15 +340,13 @@ func (s *server) landingShell(ctx context.Context, caller model.Actor) landingSh
 	replies, err := s.loadMyReplies(ctx, caller, myRepliesRead{
 		wantReply: true, wantAgent: true, state: myRepliesStateUnread, limit: &one,
 	})
-	if unread := landingPart("unread_replies", &replies.Total, err); unread != nil {
-		shell.UnreadReplies = unread
-	}
+	shell.UnreadReplies = landingPart("shell.unread_replies", &replies.Total, err)
 
 	shell.CredentialRequests = s.landingCredentialRequests(ctx, caller)
 
 	if s.deps.Envoy != nil {
 		agents, _, err := s.loadAgents(ctx)
-		shell.Agents = landingPart("agents", agents, err)
+		shell.Agents = landingPart("shell.agents", agents, err)
 	}
 	return shell
 }
@@ -350,11 +362,11 @@ func (s *server) landingCredentialRequests(ctx context.Context, caller model.Act
 	}
 	body, err := s.deps.AgentSecrets.Pending(ctx, model.CanonicalLogin(caller.ID))
 	if err != nil {
-		return landingPart[*wire.PendingResponse]("credential_requests", nil, err)
+		return landingPart[*wire.PendingResponse]("shell.credential_requests", nil, err)
 	}
 	var pending wire.PendingResponse
 	if err := json.Unmarshal(body, &pending); err != nil {
-		return landingPart[*wire.PendingResponse]("credential_requests", nil,
+		return landingPart[*wire.PendingResponse]("shell.credential_requests", nil,
 			fmt.Errorf("decode the broker's pending list: %w", err))
 	}
 	return &pending
@@ -366,49 +378,52 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 	page := &landingIssuePage{}
 
 	read, err := s.loadIssueDetail(ctx, key)
-	if detail := landingPart("issue", &read, err); detail != nil {
-		page.Issue = detail
-	}
+	page.Issue = landingPart("issue.detail", &read, err)
 
 	state, err := s.loadUserState(ctx, caller.ID)
-	page.UserState = landingPart("user_state", state, err)
+	page.UserState = landingPart("issue.user_state", state, err)
 
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, issueOwner(key), "")
-	page.Comments = landingPart("comments", comments, err)
+	page.Comments = landingPart("issue.comments", comments, err)
 
 	asks, err := s.loadIssueAskRows(ctx, issueOwner(key), "all", true)
-	page.Asks = landingPart("asks", asks, err)
+	page.Asks = landingPart("issue.asks", asks, err)
 
-	subscribers, err := s.loadSubscribers(ctx, issueSubscriberBase(key))
-	page.Subscribers = landingPart("subscribers", subscribers, err)
+	// The subscribers are the listener's to answer, and loadSubscribers refuses with
+	// ENVOY_UNAVAILABLE where there is no listener configured. On such a deployment that refusal
+	// is not a failed read but the shape of the deployment, so it is not read at all: the guard
+	// is the one the shell above puts on its own listener part, and without it every issue
+	// landing of a listener-less deployment wrote a warn line for a part that could never be
+	// answered (dispatch://INFRA-1109). The part stays null either way, and the page reads the
+	// subscribers route itself, which answers that same refusal.
+	if s.deps.Envoy != nil {
+		subscribers, err := s.loadSubscribers(ctx, issueSubscriberBase(key))
+		page.Subscribers = landingPart("issue.subscribers", subscribers, err)
+	}
 
 	decisions, err := s.loadIssueDecisions(ctx, key)
-	if read := landingPart("decisions", &decisions, err); read != nil {
-		page.Decisions = read
-	}
+	page.Decisions = landingPart("issue.decisions", &decisions, err)
 
 	// Every repository mapping there is, which is what the repository control reads whatever the
 	// issue is: it needs no issue and is read even for a key that is none.
 	repos, err := s.loadRepoProjects(ctx)
-	page.RepoProjects = landingPart("repo_projects", repos, err)
+	page.RepoProjects = landingPart("issue.repo_projects", repos, err)
 
 	if page.Issue != nil {
 		// The coverage route answers 404 for an issue nobody has, so the landing reads it only
 		// for an issue it has already read; a key that is no issue leaves this part null and the
 		// page reads that 404 from the route itself.
 		coverage, err := s.issueCoverage(ctx, s.deps.Store.Pool, key)
-		if read := landingPart("coverage", &coverage, err); read != nil {
-			page.Coverage = read
-		}
+		page.Coverage = landingPart("issue.coverage", &coverage, err)
 
 		// The sources of the issue's own project. The project is in the issue read above, so the
 		// landing takes it from there rather than having the caller name it: a caller who named
 		// it could name a project that is not this issue's, and the page would seed the
 		// components line with another project's model.
 		sources, err := s.loadProjectArchitectureSources(ctx, page.Issue.Project)
-		page.ArchitectureSources = landingPart("architecture_sources", sources, err)
+		page.ArchitectureSources = landingPart("issue.architecture_sources", sources, err)
 
-		page.Document = s.landingIssueDocument(ctx, caller, *page.Issue)
+		page.Document = s.landingIssueDocument(ctx, caller, page.Issue)
 	}
 	return page
 }
@@ -417,35 +432,43 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 // `artifacts` whose id is its `primary_artifact_id`, which is the document the dashboard's own
 // primarySpec picks, so the two cannot open different documents. An issue with no primary
 // document has no document part at all.
-func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, issue issueDetail) *landingIssueDocument {
+//
+// The artifact itself is the row the issue read already carries, and is not read a second time
+// (dispatch://INFRA-1109). The two rows are the same row by construction, not by luck: readIssue
+// selects the issue's artifacts with issueArtifactsStatement and builds each through
+// collectArtifacts -> scanArtifact, queueing the detail batch queueArtifactDetails fills, while
+// loadArtifact selects one row and builds it through the same scanArtifact and then
+// loadArtifactDetails - the same columns, the same scan and the same details either way. So the
+// second read answered what this function was already holding, which is what its first sentence
+// says it answers.
+//
+// The issue arrives by pointer because this reads two of its fields and the detail behind them
+// is the whole issue: its artifacts, its labels, its relations and its events. Taken by value it
+// was all copied to read an id and a list.
+func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, issue *issueDetail) *landingIssueDocument {
 	primary := issue.PrimaryArtifactID
-	if primary == "" || !slices.ContainsFunc(issue.Artifacts, func(artifact model.Artifact) bool {
-		return artifact.ID == primary
-	}) {
+	if primary == "" {
 		return nil
 	}
-	document := &landingIssueDocument{}
-
-	artifact, err := s.loadArtifact(ctx, s.deps.Store.Pool, primary)
-	if read := landingPart("document.artifact", &artifact, err); read != nil {
-		document.Artifact = read
+	index := slices.IndexFunc(issue.Artifacts, func(artifact model.Artifact) bool {
+		return artifact.ID == primary
+	})
+	if index < 0 {
+		return nil
 	}
-	if document.Artifact == nil {
-		return document
-	}
+	// Into the issue's own slice, which the answer carries anyway, so the artifact is encoded
+	// twice and copied never.
+	artifact := &issue.Artifacts[index]
+	document := &landingIssueDocument{Artifact: artifact}
 
-	text, err := s.loadArtifactText(ctx, artifact)
-	if read := landingPart("document.text", &text, err); read != nil {
-		document.Text = read
-	}
+	text, err := s.loadArtifactText(ctx, *artifact)
+	document.Text = landingPart("issue.document.text", &text, err)
 
-	blocks, err := s.loadArtifactBlocks(ctx, artifact)
-	document.Blocks = landingPart("document.blocks", blocks, err)
+	blocks, err := s.loadArtifactBlocks(ctx, *artifact)
+	document.Blocks = landingPart("issue.document.blocks", blocks, err)
 
 	mark, err := s.loadDocumentRead(ctx, caller.ID, artifact.ID)
-	if read := landingPart("document.read", &mark, err); read != nil {
-		document.Read = read
-	}
+	document.Read = landingPart("issue.document.read", &mark, err)
 	return document
 }
 
@@ -460,7 +483,7 @@ func (s *server) landingBoardPage(ctx context.Context, caller model.Actor, proje
 	page.Inbox = landingPart("board.inbox", inbox, err)
 
 	state, err := s.loadUserState(ctx, caller.ID)
-	page.UserState = landingPart("user_state", state, err)
+	page.UserState = landingPart("board.user_state", state, err)
 
 	sources, err := s.loadProjectArchitectureSources(ctx, project)
 	page.ArchitectureSources = landingPart("board.architecture_sources", sources, err)
@@ -474,9 +497,7 @@ func (s *server) landingInboxPage(ctx context.Context, caller model.Actor) *land
 		wantReply: true, wantAgent: true, state: myRepliesStateInbox,
 	})
 	page := &landingInboxPage{}
-	if read := landingPart("inbox.threads", &threads, err); read != nil {
-		page.Threads = read
-	}
+	page.Threads = landingPart("inbox.threads", &threads, err)
 	return page
 }
 
@@ -487,17 +508,13 @@ func (s *server) landingDocumentPage(ctx context.Context, project, slug string) 
 	page := &landingDocumentPage{}
 
 	artifact, err := s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, artifactTarget{Project: project}, slug)
-	if read := landingPart("document.artifact", &artifact, err); read != nil {
-		page.Artifact = read
-	}
+	page.Artifact = landingPart("document.artifact", &artifact, err)
 	if page.Artifact == nil {
 		return page
 	}
 
 	text, err := s.loadArtifactText(ctx, artifact)
-	if read := landingPart("document.text", &text, err); read != nil {
-		page.Text = read
-	}
+	page.Text = landingPart("document.text", &text, err)
 
 	blocks, err := s.loadArtifactBlocks(ctx, artifact)
 	page.Blocks = landingPart("document.blocks", blocks, err)
@@ -505,8 +522,13 @@ func (s *server) landingDocumentPage(ctx context.Context, project, slug string) 
 	asks, _, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "all")
 	page.Asks = landingPart("document.asks", asks, err)
 
-	subscribers, err := s.loadSubscribers(ctx, documentSubscriberBase(artifact.Project, artifact.Slug))
-	page.Subscribers = landingPart("document.subscribers", subscribers, err)
+	// Guarded as the issue page's subscribers are, for the reason given there: a deployment with
+	// no listener has nothing to answer this part with, and reading it anyway wrote a warn line
+	// on every document landing (dispatch://INFRA-1109).
+	if s.deps.Envoy != nil {
+		subscribers, err := s.loadSubscribers(ctx, documentSubscriberBase(artifact.Project, artifact.Slug))
+		page.Subscribers = landingPart("document.subscribers", subscribers, err)
+	}
 
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "")
 	page.Comments = landingPart("document.comments", comments, err)

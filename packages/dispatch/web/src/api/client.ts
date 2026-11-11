@@ -268,6 +268,19 @@ export function isEventHeadUnavailable(error: unknown): boolean {
   );
 }
 
+/** Whether `error` is the sign-in check's other 503, `EVENT_HEAD_READ_FAILED`: Dispatch could
+ *  not read the event log's head at all, where `EVENT_HEAD_UNAVAILABLE` above says only that no
+ *  id is proven final yet. The page asks again a few times by this code and then shows its error
+ *  with a Retry (`api/query-client.ts`), because unlike the other one this does not end on its
+ *  own. It is a predicate of its own, beside the one per coded error this file already keeps, so
+ *  a caller reads the code in one place rather than spelling the status and the code out again
+ *  (`api/queries.ts`, `refusalIsTheAnswer`). */
+export function isEventHeadReadFailed(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 503 && error.code === "EVENT_HEAD_READ_FAILED"
+  );
+}
+
 /** Whether `error` is Dispatch's own answer that the caller is signed in to nobody
  *  (`401 AUTH_NO_IDENTITY`), rather than a 401 from something in front of Dispatch - an
  *  authenticating proxy refusing the request, which says nothing about the Dispatch session. A
@@ -1617,7 +1630,7 @@ export class DispatchApiClient {
    *  parts costs on its own. `page` names which part the answer carries, and `key`, `project`
    *  and `slug` name what that page is about; the route refuses a page it does not know and a
    *  page whose names are absent with `400 LANDING_INPUT`. A Dispatch older than the route
-   *  answers 404, which is what the caller falls back on (`api/landing.ts`). */
+   *  answers 404, which is what the caller falls back on (`api/queries.ts`, `readLanding`). */
   getLanding(read: Query<"/api/v1/landing", "get">) {
     return this.read("/api/v1/landing", {}, read);
   }

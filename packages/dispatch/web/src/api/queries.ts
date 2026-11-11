@@ -17,7 +17,7 @@ import { agentsQuery } from "../features/refs/agent-registry";
 import { parseIssuePath, parseProjectPath } from "../features/refs/routes";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { ApiError, api, isEventHeadUnavailable, isUnauthorized } from "./client";
+import { api, isEventHeadReadFailed, isEventHeadUnavailable, isUnauthorized } from "./client";
 import { liveSocketFor } from "./live-socket";
 import type { Query } from "./paths";
 import type {
@@ -33,7 +33,6 @@ import type {
   IssueDetails,
   LandingBoardPage,
   LandingDocumentPage,
-  LandingIssueDocument,
   LandingIssuePage,
   LandingResponse,
   LandingShell,
@@ -45,16 +44,38 @@ import type {
  *  is asked again for as long as that lasts (`queryRetry`), so the shell shows its skeleton,
  *  never the error page.
  *
- *  The read itself is the landing (at the end of this file): one request that answers the
- *  viewer, the shell and the page the browser is loading, and seeds each part under the key its
- *  own route already uses. `AuthGate` holds the tree behind this one pending query, so that read
- *  is the page's first wave and whatever the answer does not carry is its second. A Dispatch
- *  older than that route answers 404, and the read falls back to `/auth/whoami` and seeds
- *  nothing, which leaves every page reading as it read before. */
+ *  The COLD read is the landing (at the end of this file): one request that answers the viewer,
+ *  the shell and the page the browser is loading, and seeds each part under the key its own
+ *  route already uses. `AuthGate` holds the tree behind this one pending query, so that read is
+ *  the page's first wave and whatever the answer does not carry is its second. A Dispatch older
+ *  than that route answers 404, and the read falls back to `/auth/whoami` and seeds nothing,
+ *  which leaves every page reading as it read before.
+ *
+ *  A WARM read of this key is `/auth/whoami` and nothing more. This key is not only the cold
+ *  read: `AuthGate` keeps an observer on it for the whole session, under `refetchOnWindowFocus`
+ *  and a 30,000 ms `staleTime` (`main.tsx`), and it is the "am I still signed in?" probe that
+ *  `api/live-socket.ts` invalidates on a refused or closed socket, that
+ *  `features/writes/write-store.ts` invalidates twice - one of them awaited inline in a write's
+ *  401 path - and that `app.tsx` invalidates on a cross-tab sign-in change. Each of those used
+ *  to cost one `GET /auth/whoami`; while this key's `queryFn` was the landing, each cost a whole
+ *  landing instead - about twenty server-side reads and a re-seed of some twenty cache keys - to
+ *  answer a question the viewer's own route answers in one. The landing is the read a cold page
+ *  makes, which is what the route's own head calls it, so it is made where the client holds no
+ *  viewer yet and nowhere else.
+ *
+ *  What makes a read cold is this key holding no viewer, which is exactly the state a page load
+ *  starts in and the state a sign-out leaves behind: the sign-out's `resetQueries` on this key
+ *  drops its data and refetches at once (`app.tsx`), so the next person to sign in here lands on
+ *  a cold read and gets their own page seeded. A refetch of a key that still holds a viewer
+ *  keeps that data while it runs (TanStack Query leaves `data` in place during a refetch), so
+ *  the two cases cannot be confused. */
 export const whoAmIQuery = () =>
   queryOptions({
     queryKey: ["whoami"],
-    queryFn: ({ client }) => readLanding(client),
+    queryFn: ({ client, queryKey }) =>
+      client.getQueryData<AuthenticatedUser>(queryKey) === undefined
+        ? readLanding(client)
+        : api.whoAmI(),
   });
 
 /** Every ask the viewer can see, as the Inbox lists them. */
@@ -486,11 +507,7 @@ export function landingReadOf(pathname: string): LandingRead {
  * happen, and the page falls back to reading as it read before.
  */
 function refusalIsTheAnswer(error: unknown): boolean {
-  return (
-    isUnauthorized(error) ||
-    isEventHeadUnavailable(error) ||
-    (error instanceof ApiError && error.status === 503 && error.code === "EVENT_HEAD_READ_FAILED")
-  );
+  return isUnauthorized(error) || isEventHeadUnavailable(error) || isEventHeadReadFailed(error);
 }
 
 /**
@@ -604,10 +621,10 @@ function seedIssuePage(client: QueryClient, key: string, page: LandingIssuePage)
       page.architecture_sources
     );
   }
-  const document: LandingIssueDocument | null = page.document;
+  const document = page.document;
   if (document === null || document.artifact === null) return;
   const id = document.artifact.id;
-  seedDocument(client, id, document.artifact, document.text, document.blocks);
+  seedDocument(client, document.artifact, document.text, document.blocks);
   // Which version of this document the reader last read, which is what marks the blocks that
   // changed since (`features/doc/spec-marks.ts`).
   if (document.read !== null) client.setQueryData(["document-read", id], document.read);
@@ -640,7 +657,7 @@ function seedDocumentPage(client: QueryClient, reference: string, page: LandingD
   // The read the page gates on: it holds everything else until this one names the document's id
   // (`features/document/useProjectArtifact.ts`).
   client.setQueryData(["artifact-ref", reference], artifact);
-  seedDocument(client, artifact.id, artifact, page.text, page.blocks);
+  seedDocument(client, artifact, page.text, page.blocks);
   // The document's own asks (`features/doc/ProofDocument.tsx`), its subscribers
   // (`features/document/DocumentPage.tsx`) and its comments
   // (`features/margin/useMarginItems.ts`).
@@ -661,11 +678,11 @@ function seedDocumentPage(client: QueryClient, reference: string, page: LandingD
  *  for one document rather than one (`features/doc/ProofDocument.tsx`, `admit`). */
 function seedDocument(
   client: QueryClient,
-  id: string,
   artifact: Artifact,
   text: ArtifactText | null,
   blocks: ArtifactBlock[] | null
 ): void {
+  const id = artifact.id;
   client.setQueryData(["artifact", id], artifact);
   if (text !== null) client.setQueryData(["artifact", id, "text"], text);
   if (blocks !== null) client.setQueryData(artifactBlocksQuery(id).queryKey, blocks);

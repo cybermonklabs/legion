@@ -80,8 +80,10 @@ env:
 jobs:
   # Everything this run's other jobs execute, built once here and handed to them in two
   # artifacts: the Go commands the stacks run - the Dispatch server and the real broker's three -
-  # and the dashboard bundle every browser row reads. Six jobs download one or both and build
-  # nothing of their own (dispatch://INFRA-1109).
+  # and the dashboard bundle every browser row reads. Five jobs download one or both and build
+  # nothing of their own - shard, alone, multiprocess, embedder and visual - which is six
+  # machines, because the shard job runs two legs (dispatch://INFRA-1109). The merge job
+  # downloads neither: what it takes from the run is the legs' blob reports.
   #
   # Why the build is a job of this file rather than of each caller: an artifact is visible only
   # inside the run that uploaded it, and both callers run this file - ci.yaml's dispatch-browser
@@ -351,6 +353,7 @@ jobs:
     #   Make the downloaded binaries executable                1
     #   ./.github/actions/setup-bun                           19
     #   bun install --frozen-lockfile                         62
+    #   Build contracts for dispatch e2e                       0   (the visual job's figure)
     #   actions/download-artifact, the dashboard              5   (the binaries download's figure)
     #   Read the lanes' PostgreSQL and time its provider       5
     #   Start an S3-compatible server for uploaded files       1
@@ -377,12 +380,24 @@ jobs:
     # the install and the two downloads run, so the poll should answer at once, but 24 s is
     # what was measured and what the rule takes until a run at this head says otherwise.
     #
+    # `Build contracts for dispatch e2e` is in the table although the reading above holds no
+    # figure for it: the step ran on every one of those 24 legs and whoever wrote the table left
+    # its row out, so the sum below was taken over a list that was not every step without a
+    # budget (dispatch://INFRA-1109). It takes the one measurement this file has of that same
+    # step - the visual job's table further down, where `the contracts build` read 0 s in every
+    # column it ran in - which is what the dashboard download row does with the binaries
+    # download's figure. 0 s is also what the step is: `bun run build` over
+    # packages/contracts, whose output the rest of this job's install already made current. It
+    # therefore adds nothing to the sum, and the first run at this head replaces it with a
+    # reading of this job's own, as it replaces the download row.
+    #
     # Every step in that table runs once per leg whatever the leg count, so two legs pay the
     # same figures as four did. What the leg count moves is the browser step, whose budget is
     # derived above.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 190 s:
+    # that budget plus the maxima above of every step without one - the contracts row's 0 s
+    # among them, which leaves the figure where it was - which sum to 190 s:
     # 780 + 190 = 970 s, 16 min 10 s, rounded up to the 17 minutes below. That is a backstop
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
@@ -783,8 +798,12 @@ jobs:
     # what it cost was three container pulls, three checkouts, three Bun installs and three
     # dashboard builds for 139 s of rows - in run 42809067358 the three browser steps took 50,
     # 35 and 54 s inside jobs of 140, 134 and 153 s. The rows are read no differently here:
-    # one worker, one project at a time, `--no-deps`, and the sampler's two readings still say
-    # whether the machine was quiet while each of them ran.
+    # one worker, one project at a time, `--no-deps`. What the sampler's two readings cover did
+    # change: the three projects run inside ONE browser step now, which is one sampler run and
+    # one report, so the readings say whether the machine was quiet across the three together
+    # and no longer whether it was quiet while each of them ran. A reading that shows the
+    # machine busy therefore names the step and not the project, and which project was measured
+    # against a loaded machine is read from the row times in the report beside it.
     #
     # Its steps are the shard job's, with three differences - one worker rather than four, the
     # Playwright command below, and no file store on the machine - and their commands are kept
@@ -848,6 +867,7 @@ jobs:
     #   actions/download-artifact, the dashboard               5   (the binaries download's figure)
     #   ./.github/actions/setup-bun                           20
     #   bun install --frozen-lockfile                          9
+    #   Build contracts for dispatch e2e                       0   (the visual job's figure)
     #   Read the lanes' PostgreSQL and time its provider       3
     #   Browser-test dispatch dashboard                       69   (carries its own budget)
     #   upload-artifact, this leg's blob report                2
@@ -865,11 +885,21 @@ jobs:
     # and takes the binaries download's 5 s, the two artifacts being of a size; the first run at
     # this head replaces it, as it replaces the browser step's budget.
     #
+    # `Build contracts for dispatch e2e` is in the table although that reading holds no figure
+    # for it: this job runs Playwright itself, so the step ran on all nine legs, and the table
+    # was written without its row, which left the sum below taken over a list that was not every
+    # step without a budget (dispatch://INFRA-1109). It takes the one measurement this file has
+    # of that same step - the visual job's table further down, where `the contracts build` read
+    # 0 s in every column it ran in - as the dashboard row above takes the binaries download's
+    # figure. It adds nothing to the sum, and the first run at this head replaces it with this
+    # job's own reading.
+    #
     # The three uploads are three steps here too, and the sum below counts each of them:
     # 2 + 2 + 1, not 2.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 107 s:
+    # that budget plus the maxima above of every step without one - the contracts row's 0 s
+    # among them, which leaves the figure where it was - which sum to 107 s:
     # 480 + 107 = 587 s, 9 min 47 s, rounded up to the 10 minutes below. It is a backstop above
     # the sum of the step budgets, as this file's head says a job budget is.
     timeout-minutes: 10
@@ -1407,10 +1437,12 @@ jobs:
   # shape as the shard job's browser step.
   #
   # It writes no blob report. The merge job's row accounting reads legs out of the job names with
-  # a capture that knows `shard (N)` and `alone (P)` alone, and it fails the run when the merged
-  # report holds rows no leg printed; the multiprocess job writes none for the same reason. This
-  # job joins `merge`'s `needs:` and the verdict step's pair list instead, which is what makes a
-  # red visual job fail the workflow.
+  # a capture that knows `shard (N)` and the bare `alone` alone - `alone (P)` was a job name of
+  # the matrix this job's own change removed, and no run produces one now
+  # (dispatch://INFRA-1109) - and it fails the run when the merged report holds rows no leg
+  # printed; the multiprocess job writes none for the same reason. This job joins `merge`'s
+  # `needs:` and the verdict step's pair list instead, which is what makes a red visual job fail
+  # the workflow.
   #
   # The budgets below are measured, from these runs of this job, in seconds. Later runs do not
   # make this list stale: it names what the numbers were derived from, and a run that outran a
@@ -1585,10 +1617,12 @@ jobs:
   # own jobs for the same reason. The step-level `if: always()` inside this job are a different
   # thing and stay: a step's condition is about the steps before it, not about the run.
   merge:
-    # Every job of this workflow, the binaries job among them: a build that failed leaves the
-    # shard and alone jobs skipped and no blob report anywhere, and without it in this list the
-    # run would be reported as legs that uploaded nothing rather than as the build that never
-    # handed them anything. The verdict step below names it as it names the rest.
+    # Every job of this workflow, the binaries job among them: every other job of this file
+    # `needs: binaries`, so a build that failed leaves all five of them skipped and no blob
+    # report anywhere (dispatch://INFRA-1109 put the multiprocess, embedder and visual jobs on
+    # it too), and without it in this list the run would be reported as legs that uploaded
+    # nothing rather than as the build that never handed them anything. The verdict step below
+    # names it as it names the rest.
     needs: [binaries, shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
@@ -2027,7 +2061,7 @@ jobs:
           failed=0
           for pair in "binaries:${{ needs.binaries.result }}" "shard:${{ needs.shard.result }}" \
             "alone:${{ needs.alone.result }}" "multiprocess:${{ needs.multiprocess.result }}" \
-            "visual:${{ needs.visual.result }}"; do
+            "embedder:${{ needs.embedder.result }}" "visual:${{ needs.visual.result }}"; do
             case "${pair#*:}" in
               success | skipped) ;;
               *)

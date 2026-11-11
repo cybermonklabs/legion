@@ -227,6 +227,17 @@ function spendAskedChunkReload(): void {
 // nothing. So a failure while the entry's prefetch is still out and no route render is waiting on
 // a chunk is read as the prefetch's, and reloads nothing.
 //
+// WHAT THAT RULE RESTS ON, which is why `renderChunk` is on every chunk a render waits for and
+// not only on the three the entry prefetches. The suppression asks "is a reader waiting on any
+// chunk?", and it can only answer from the chunks that were started through these two functions.
+// A chunk a reader waits for and that was started some other way is invisible to it: it fails,
+// `renderedChunksOut` is still zero, a prefetch of some other chunk happens to be in flight, and
+// the page reloads nothing although the reader is in front of a page that cannot draw. That was
+// the state of it until dispatch://INFRA-1109 - eleven `lazy` routes of `app.tsx`, the machine
+// sign-in route, the margin, and the editor library and Yjs transport a mounting document awaits
+// were all started bare. So: a chunk a render waits on goes through `renderChunk`, a chunk
+// nothing waits on through `prefetchChunk`, and nothing imports a chunk through neither.
+//
 // `vite:preloadError` is dispatched from the rejection itself, before any `then` of the promise
 // these hold runs, so a render's failure always finds its own count still up.
 let prefetchedChunksOut = 0;
@@ -244,7 +255,9 @@ export function prefetchChunk(load: () => Promise<unknown>): void {
     });
 }
 
-/** Starts a chunk the router is rendering, which is a reader waiting on the download. */
+/** Starts a chunk a reader is waiting on: a route the router is rendering, or a library a mounted
+ *  component awaits before it can draw. While one of these is out, a chunk failure reloads from
+ *  the tab's budget however many prefetches are in flight beside it. */
 export function renderChunk<T>(load: () => Promise<T>): Promise<T> {
   renderedChunksOut += 1;
   const chunk = load();

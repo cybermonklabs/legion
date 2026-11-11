@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"testing"
@@ -124,7 +123,9 @@ func TestLandingBoardInboxAndDocumentPagesAnswerWhatTheirRoutesAnswer(t *testing
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	createTestProject(t, handler, "LAND")
 	addArchitectureSource(t, database, "LAND", "legion/land")
-	issue := createSpecIssue(t, handler, "LAND", "# Spec\n\nAn open issue for the board.\n")
+	// The board needs an open issue to list; nothing here reads the issue itself, and
+	// createSpecIssue already fails this test where the create did not answer.
+	createSpecIssue(t, handler, "LAND", "# Spec\n\nAn open issue for the board.\n")
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/LAND/artifacts", map[string]any{
 		"name": "rollout.md", "content": "# Rollout\n\nThe document page reads this.\n",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -150,9 +151,6 @@ func TestLandingBoardInboxAndDocumentPagesAnswerWhatTheirRoutesAnswer(t *testing
 		{"page.board.architecture_sources", board["architecture_sources"], "/api/v1/projects/LAND/architecture-sources"},
 	} {
 		assertSameJSON(t, part.part, part.body, readRouteBody(t, handler, part.route))
-	}
-	if issue.Key == "" {
-		t.Fatalf("the seeded issue has no key: %+v", issue)
 	}
 
 	inbox := readLanding(t, handler, "/api/v1/landing?page=inbox").partOf(t, "inbox")
@@ -313,7 +311,7 @@ func readLanding(t *testing.T, handler http.Handler, target string) landingBody 
 // readRouteBody reads one per-resource route as alice and fails unless it answered 200.
 func readRouteBody(t *testing.T, handler http.Handler, target string) []byte {
 	t.Helper()
-	var response *httptest.ResponseRecorder = dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET %s: status=%d body=%s", target, response.Code, response.Body.String())
 	}

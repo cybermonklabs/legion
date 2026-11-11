@@ -263,17 +263,21 @@ echo "case: the alone leg is the bare job name, and a shard leg's number is read
 # brackets after the job name; it runs the three on one machine now and writes one blob report,
 # so the leg is the word itself (dispatch://INFRA-1109). The filter admits the name with either
 # caller's prefix and with none at all, and both shapes must read the same leg: a leg absent
-# from reading one's list is a leg whose missing blob nothing reports. The shard capture still
-# takes a run of digits rather than one, so a tenth leg would be read whole.
+# from reading one's list is a leg whose missing blob nothing reports. The shard row with no
+# prefix is here because the shard capture wanted that leading space until
+# dispatch://INFRA-1109, where the `alone` test beside it did not: both read the same leg now,
+# whichever shape the caller's job name takes. The shard capture still takes a run of digits
+# rather than one, so a tenth leg would be read whole.
 fixture 0
 page "21|dispatch-browser / alone|success" "22|alone|success" \
-  "23|dispatch-browser / shard (10)|success"
+  "23|dispatch-browser / shard (10)|success" "24|shard (1)|success"
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
-check "reads the three jobs" "$(is "$(entries)" 3)"
+check "reads the four jobs" "$(is "$(entries)" 4)"
 check "the prefixed alone job is the alone leg" "$(is "$(field 21 .leg)" alone)"
 check "and so is one with no prefix" "$(is "$(field 22 .leg)" alone)"
 check "a two-digit shard leg is read whole" "$(is "$(field 23 .leg)" shard-10)"
+check "and a shard job with no prefix is its own leg" "$(is "$(field 24 .leg)" shard-1)"
 
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"

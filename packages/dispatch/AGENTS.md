@@ -1785,14 +1785,17 @@ A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the 
 run the `full` lane: all eight parallel projects and the two stubbed ones over those same two
 shards, the three `-alone` projects one after another on a single machine of their own with
 `--no-deps` and one worker, the two-process job, the fake-embedder job and the visual review.
-Seven jobs in all, and the first of them builds what the other six run: the `binaries` job
+Seven jobs in all, and the first of them builds what five of the rest run: the `binaries` job
 compiles the Go commands the stacks execute, builds the dashboard bundle every browser row
 serves and, on the full lane, the second rollout bundle beside it, and uploads the two as
 artefacts (dispatch://INFRA-1109).
-Every other job downloads what it needs of those two and builds no dashboard bundle and no Go
-command of its own, except the dev OIDC issuer the two-process job's sign-in step builds; the
-jobs that run Playwright themselves still build `@legion/contracts`, which their Node runner
-reads.
+The five that download them are the shard, alone, two-process, fake-embedder and visual jobs,
+which is six machines, the shard job running two legs; the seventh, `merge`, downloads the
+legs' blob reports and none of this.
+Each of those five downloads what it needs of the two artefacts and builds no dashboard bundle
+and no Go command of its own, except the dev OIDC issuer the two-process job's sign-in step
+builds; the jobs that run Playwright themselves still build `@legion/contracts`, which their
+Node runner reads.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
 line rather than in an `env:`, for the reason that job's head gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its

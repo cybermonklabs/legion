@@ -608,3 +608,69 @@ test("the landing is read for the page the address is on", async () => {
     client.clear();
   }
 });
+
+// `["whoami"]` is not only the cold read. `AuthGate` keeps an observer on it for the session and
+// refetches it on window focus (`main.tsx`), `api/live-socket.ts` invalidates it on a refused or
+// closed socket, `features/writes/write-store.ts` invalidates it twice - one of them awaited
+// inline in a write's 401 path - and `app.tsx` invalidates it on a cross-tab sign-in change.
+// Every one of those asks "am I still signed in?", which is one `GET /auth/whoami`; answering it
+// with a landing costs about twenty server-side reads and overwrites some twenty cache keys with
+// rows the page may have moved on from. So the landing is the read a page with no viewer makes,
+// and nothing else makes it.
+test("the landing is the cold read alone: a refetch that holds a viewer reads whoami", async () => {
+  const getLanding = spyOn(api, "getLanding").mockResolvedValue(issueLanding());
+  // A viewer of its own, so a read answered by this one cannot pass as the landing's.
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "42",
+    kind: "user",
+    login: "alice",
+  });
+  const reads = readsBehindTheLanding();
+  const client = dashboardClient();
+  window.history.pushState({}, "", "/issues/CORE-1");
+  try {
+    // Cold: the client holds no viewer, so this is the one read that draws the page.
+    const first = await client.fetchQuery(whoAmIQuery());
+
+    expect(first).toEqual({ event_head: "41", kind: "user", login: "alice" });
+    expect(getLanding).toHaveBeenCalledTimes(1);
+    expect(whoAmI).not.toHaveBeenCalled();
+    expect(client.getQueryData(issueQuery("CORE-1").queryKey)).toEqual(issue);
+
+    // Warm: the page has moved on from what that landing seeded - a write landed, an event came
+    // in - and then something asks whether the session still stands. The invalidation is what
+    // each of those callers makes; `AuthGate`'s observer is what refetches on it, and this read
+    // stands in for that observer.
+    client.setQueryData(issueQuery("CORE-1").queryKey, { ...issue, title: "Moved on" });
+    await client.invalidateQueries({ queryKey: ["whoami"] });
+    const again = await client.fetchQuery(whoAmIQuery());
+
+    expect(again).toEqual({ event_head: "42", kind: "user", login: "alice" });
+    expect(whoAmI).toHaveBeenCalledTimes(1);
+    expect(getLanding).toHaveBeenCalledTimes(1);
+    // Nothing was seeded: the issue the page holds is the one the page put there, not the one
+    // the landing's answer carries, and no other key was written either.
+    expect(client.getQueryData(issueQuery("CORE-1").queryKey)).toEqual({
+      ...issue,
+      title: "Moved on",
+    });
+    expect(reads.whatWentOut()).toEqual([]);
+
+    // A sign-out resets this key rather than invalidating it (`app.tsx`), which drops the viewer
+    // with it, so the next person to sign in here lands on a cold read and gets their own page
+    // seeded.
+    await client.resetQueries({ queryKey: ["whoami"] });
+    const afterSignOut = await client.fetchQuery(whoAmIQuery());
+
+    expect(afterSignOut).toEqual({ event_head: "41", kind: "user", login: "alice" });
+    expect(getLanding).toHaveBeenCalledTimes(2);
+    expect(whoAmI).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(issueQuery("CORE-1").queryKey)).toEqual(issue);
+  } finally {
+    window.history.pushState({}, "", "/");
+    getLanding.mockRestore();
+    whoAmI.mockRestore();
+    reads.restore();
+    client.clear();
+  }
+});
