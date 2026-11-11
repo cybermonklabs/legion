@@ -5,6 +5,7 @@ import type {
   DocumentWriteAdvice,
   SearchAsk,
   Suggestions,
+  SupersededApprovalGate,
   WriteAdvice,
   WriteSuggestion,
 } from "@legion/contracts";
@@ -1153,25 +1154,65 @@ describe("dispatch_doc_edit's decision block checks", () => {
 // on a document nobody approved, one whose approval was already stale, and one whose version
 // carried that approval forward (an answer to a decision block, or text the approved version held
 // exactly, an undo among them) all arrive here with the field absent, and print nothing.
+//
+// The gate clause between the two is printed from `design_gates` alone, the issues whose design
+// gate records this document: no field at all (what an older Dispatch answers), an empty list and
+// a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
-  const supersededLine =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since: a Legion design gate on this document is closed meanwhile, so every READY in its tree is refused. Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  const stored =
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since.";
+  const nextStep =
+    "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  const supersededLine = `${stored} ${nextStep}`;
   const superseded = { approved_version: 14, version: 15, approved_by: "alice" };
+  const editArgs = {
+    issue: "DSP-42",
+    artifact: "spec",
+    ops: [{ op: "replace", find: "a stale sentence", with: "" }],
+  };
+
+  async function editWithGates(design_gates: SupersededApprovalGate[]) {
+    return executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      advice({ superseded_approval: { ...superseded, design_gates } })
+    );
+  }
 
   test.each([
-    [
-      "dispatch_doc_edit",
-      {
-        issue: "DSP-42",
-        artifact: "spec",
-        ops: [{ op: "replace", find: "a stale sentence", with: "" }],
-      },
-    ],
+    ["dispatch_doc_edit", editArgs],
     ["dispatch_artifact", { issue: "DSP-42", name: "spec.md", content: "# Spec\n" }],
   ])("%s names the approval its version superseded, last", async (tool, args) => {
     const result = await executeWrite(tool, args, advice({ superseded_approval: superseded }));
 
     expect(result.text).toEndWith(supersededLine);
+    expect(result.text).not.toContain("design gate");
+  });
+
+  test("a record that names no gate prints the line without the clause", async () => {
+    const result = await editWithGates([]);
+
+    expect(result.text).toEndWith(supersededLine);
+    expect(result.text).not.toContain("design gate");
+  });
+
+  test("one gate names its issue and step", async () => {
+    const result = await editWithGates([{ issue: "INFRA-1503", step: "spec" }]);
+
+    expect(result.text).toEndWith(
+      `${stored} A Legion design gate records this document, so every READY in its tree is refused until that approval comes back: INFRA-1503, step spec. ${nextStep}`
+    );
+  });
+
+  test("two gates name both trees, in the order the server sent them", async () => {
+    const result = await editWithGates([
+      { issue: "INFRA-1503", step: "spec" },
+      { issue: "INFRA-2200", step: "criteria" },
+    ]);
+
+    expect(result.text).toEndWith(
+      `${stored} A Legion design gate records this document, so every READY in each tree is refused until that approval comes back: INFRA-1503, step spec; INFRA-2200, step criteria. ${nextStep}`
+    );
   });
 
   test("a write that superseded no approval says nothing about one", async () => {

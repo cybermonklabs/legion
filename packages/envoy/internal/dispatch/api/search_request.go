@@ -71,6 +71,17 @@ func (p searchParameters) numberScope() string {
 	return p.numberProject
 }
 
+// filtered is whether this search narrows by any of the three filters every leg carries
+// (searchRowFilters): the issue status a row belongs to, the actor that wrote the item it
+// names, and when that item was written. The meaning read path asks, because only one of its
+// three statements applies those filters inside the comment arm's candidate limit, and a
+// search that narrows by one of them has to run that statement whatever project it names
+// (meaningStatementFor). The project is no filter of this kind: it is what the three
+// statements differ over, and each of them carries it.
+func (p searchParameters) filtered() bool {
+	return p.status != "" || p.author != "" || p.since != nil
+}
+
 // queryReading is this search's text read as words and operators, which the search route reads
 // once for the whole request (the search handler sets reading from the text it has just
 // validated) and every later reader of it takes from here: the snippet window's first term

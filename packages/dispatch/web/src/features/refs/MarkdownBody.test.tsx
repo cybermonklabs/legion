@@ -533,6 +533,16 @@ function withAskCard(children: ReactNode): ReactNode {
   );
 }
 
+/** The one line the card draws under a decision block a reader meets in a body. */
+const textOnlyLine =
+  "This question is text: it must be opened as an ask before anyone can answer it.";
+
+/** What a reader could press to answer where the block stands: a card in a body draws none of
+ *  it, so the counts below are zero. */
+function answerControls(shell: HTMLElement): Element[] {
+  return Array.from(shell.querySelectorAll("button, input, textarea, select"));
+}
+
 const askBody = "Which one?\n\n- A: first\n- B: second\n:::\n";
 
 /** The `ask` shell a body drew, once it has drawn one. */
@@ -639,6 +649,78 @@ test("a malformed ask block in a body names why and keeps its source list, with 
     expect(view.container.textContent).not.toContain("re-activates");
     expect(shell).not.toHaveAttribute("data-dispatch-ask-options");
     expect(shell.querySelectorAll("[data-proof-block-content] ul li")).toHaveLength(2);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a well-formed ask block in a body keeps its record and says the question is text", async () => {
+  const view = render(
+    withAskCard(<MarkdownBody markdown={`:::ask{urgency="high"}\n${askBody}`} />)
+  );
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Decision")).toBeDefined();
+    expect(header.querySelector('[data-dispatch-ask-pill="high"]')?.textContent).toBe("High");
+    const [first, second] = await findRecordRows(shell);
+    expect(within(first as HTMLElement).getByText("A")).toBeDefined();
+    expect(within(second as HTMLElement).getByText("B")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+    expect(line?.textContent).toBe(textOnlyLine);
+    // The line stands under the record, which is the last thing the footer drew before it.
+    expect(line?.previousElementSibling).toBe(footer.querySelector("[data-dispatch-ask-record]"));
+    expect(answerControls(shell)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reader opens an `ask` container on an opening line carrying no attributes, as it does on
+// one carrying urgency, and draws the same card for it. The server refuses every body it opens
+// one in (INFRA-1201), so this is what a reader meets in a body stored before that rule stood.
+test("an ask block in a body whose opening line carries no attributes draws the card and its one line", async () => {
+  const view = render(withAskCard(<MarkdownBody markdown={`:::ask\n${askBody}`} />));
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Decision")).toBeDefined();
+    const [first, second] = await findRecordRows(shell);
+    expect(within(first as HTMLElement).getByText("A")).toBeDefined();
+    expect(within(second as HTMLElement).getByText("B")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+    expect(line?.textContent).toBe(textOnlyLine);
+    expect(answerControls(shell)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a malformed ask block in a body says the question is text, where it drew nothing before", async () => {
+  const view = render(
+    withAskCard(
+      <MarkdownBody
+        markdown={':::ask{urgency="high"}\nWhich one?\n\n- A: first\n- : no label\n:::\n'}
+      />
+    )
+  );
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Malformed")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    await waitFor(() => {
+      const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+      expect(line?.textContent).toBe(textOnlyLine);
+    });
+    expect(footer.querySelector("[data-dispatch-ask-record]")).toBeNull();
+    expect(view.container.textContent).not.toContain("re-activates");
+    expect(answerControls(shell)).toHaveLength(0);
   } finally {
     view.unmount();
   }

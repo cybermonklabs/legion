@@ -18,7 +18,9 @@ export const walkRoutes = [
   { page: "AgentsPage", path: "/agents" },
   { page: "BroadcastsPage", path: "/agents/broadcasts" },
   { page: "BroadcastPage", path: "/agents/broadcasts/:id" },
-  { page: "AgentConversationPage", path: "/agents/:sessionId/live" },
+  // The live route renders nothing of its own: the walk still loads the live view's chunk,
+  // which `MountedLiveViews` imports as the address brings that view up.
+  { page: "LiveViewRoute", path: "/agents/:sessionId/live" },
   { page: "AgentArtifactPage", path: "/agents/:sessionId/artifacts/:slug" },
   { page: "MachinesPage", path: "/machines" },
   { page: "MachinePage", path: "/machines/:machine" },

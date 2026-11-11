@@ -97,6 +97,22 @@ func windowFixture(t *testing.T) pgx.Tx {
 	return tx
 }
 
+// indexVersionAndWindow indexes one version of a document's blocks and writes the windows
+// those blocks stand in. A version write records the blocks alone: the block-index tick's
+// window arm writes a document's windows, in a transaction of its own over the markdown that
+// version holds (IndexBlocks, docs.windowDocument). This is that arm's write, run here in the
+// fixture's transaction.
+func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int, markdown string, blocks []model.ArtifactBlock, what string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil); err != nil {
+		t.Fatalf("index %s: %v", what, err)
+	}
+	if err := WriteDocumentWindows(ctx, tx, artifact, markdown, blocks); err != nil {
+		t.Fatalf("window %s: %v", what, err)
+	}
+}
+
 // A window's id is its owner's key and the first block it covers, its covers are the blocks
 // whose text it holds in order, and its text is the context and then those blocks: the
 // document's title and the heading above for a document, under the artifact id; the issue's
@@ -112,9 +128,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 		{"b3", "heading", "# Pieces"},
 		{"b4", "paragraph", "A long block becomes pieces."},
 	})
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index the document: %v", err)
-	}
+	indexVersionAndWindow(t, tx, artifact, 1, markdown, blocks, "the document")
 	document := windowRowsOf(t, tx, DocumentWindowKind, artifact)
 	if got := slices.Sorted(maps.Keys(document)); !slices.Equal(got, []string{"b1", "b3"}) {
 		t.Fatalf("the document's windows are %v, want one for each heading section", got)
@@ -138,6 +152,12 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
+	// An item's index writes no window: the block-index tick's window arm writes them in a
+	// transaction of its own (indexItemBlocks, WriteItemWindows). This is that arm's write,
+	// run here in the fixture's transaction, and what it writes is read below.
+	if written, err := WriteItemWindows(ctx, tx, ItemComment, comment); err != nil || !written {
+		t.Fatalf("window the comment = %v, %v; want the window arm to write them", written, err)
+	}
 	comments := windowRowsOf(t, tx, "comment_block", "comment/"+comment)
 	if got := slices.Sorted(maps.Keys(comments)); !slices.Equal(got, []string{"b1"}) {
 		t.Fatalf("the comment's windows are %v, want one covering both its blocks", got)
@@ -152,6 +172,9 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
 		t.Fatalf("index the ask's parts: %v", err)
 	}
+	if written, err := WriteItemWindows(ctx, tx, ItemAsk, ask.ID); err != nil || !written {
+		t.Fatalf("window the ask = %v, %v; want the window arm to write them", written, err)
+	}
 	parts := windowRowsOf(t, tx, "ask_part", "ask/"+ask.ID)
 	if got := slices.Sorted(maps.Keys(parts)); !slices.Equal(got, []string{"b1"}) {
 		t.Fatalf("the ask's windows are %v, want one covering its question and its option", got)
@@ -162,11 +185,51 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	}
 }
 
+// An item gone since the window arm listed it is no one's to window: WriteItemWindows answers
+// (false, nil) for it rather than an error. A comment's and a message's lock and window text
+// are one statement now (itemWindowText), so no row from that statement is the whole of what
+// says the item is gone, where it used to be no row from the lock; an ask still takes its lock
+// on its own and reads its parts after it.
+func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	body := "The comment deleted below."
+	var comment string
+	if err := tx.QueryRow(ctx, `
+		insert into comments (issue_key, author, body) values ('WIND-1', '{"kind":"user","id":"alice"}', $1) returning id::text
+	`, body).Scan(&comment); err != nil {
+		t.Fatalf("insert the comment: %v", err)
+	}
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, time.Now(), nil, nil); err != nil {
+		t.Fatalf("index the comment: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `delete from comments where id = $1::uuid`, comment); err != nil {
+		t.Fatalf("delete the comment: %v", err)
+	}
+	// A uuid no row of any of the three tables holds, which is the same case for a kind this
+	// test writes no row of.
+	never := "00000000-0000-0000-0000-0000000000ff"
+	for _, item := range []struct {
+		kind ItemKind
+		id   string
+		what string
+	}{
+		{ItemComment, comment, "a comment deleted after it was indexed"},
+		{ItemComment, never, "a comment that never existed"},
+		{ItemMessage, never, "a message that never existed"},
+		{ItemAsk, never, "an ask that never existed"},
+	} {
+		written, err := WriteItemWindows(ctx, tx, item.kind, item.id)
+		if written || err != nil {
+			t.Errorf("window %s = %v, %v; want (false, nil)", item.what, written, err)
+		}
+	}
+}
+
 // An edit rewrites the windows the edited block is in and leaves every other row untouched: a
 // reworded paragraph moves the hash of its own window alone, and an edited heading moves the
 // hash of every window of its section, since the heading is the context they embed.
 func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
-	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "notes-md")
 	parts := []part{
@@ -176,17 +239,13 @@ func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
 		{"b4", "paragraph", "A long block becomes pieces."},
 	}
 	markdown, blocks := documentOf(parts)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
-	}
+	indexVersionAndWindow(t, tx, artifact, 1, markdown, blocks, "version 1")
 	before := windowRowsOf(t, tx, DocumentWindowKind, artifact)
 
 	edited := slices.Clone(parts)
 	edited[1].text = "A window holds the blocks beside each other."
 	markdown, blocks = documentOf(edited)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index the edited paragraph: %v", err)
-	}
+	indexVersionAndWindow(t, tx, artifact, 2, markdown, blocks, "the edited paragraph")
 	after := windowRowsOf(t, tx, DocumentWindowKind, artifact)
 	if before["b1"].hash == after["b1"].hash {
 		t.Errorf("window b1 still embeds %q after its paragraph was reworded", after["b1"].text)
@@ -198,9 +257,7 @@ func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
 	edited = slices.Clone(edited)
 	edited[0].text = "# What a window is"
 	markdown, blocks = documentOf(edited)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 3, time.Now(), markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index the edited heading: %v", err)
-	}
+	indexVersionAndWindow(t, tx, artifact, 3, markdown, blocks, "the edited heading")
 	headed := windowRowsOf(t, tx, DocumentWindowKind, artifact)
 	if headed["b1"].hash == after["b1"].hash {
 		t.Errorf("window b1 still embeds %q after its heading was edited", headed["b1"].text)
@@ -216,7 +273,6 @@ func TestOneParagraphEditReEmbedsOnlyItsWindows(t *testing.T) {
 // A version that no longer holds a block leaves no window of it: the rows the new set does not
 // name are deleted, so a deleted section's window goes with it.
 func TestADeletedBlockTakesItsWindowRow(t *testing.T) {
-	ctx := context.Background()
 	tx := windowFixture(t)
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "notes-md")
 	parts := []part{
@@ -226,20 +282,14 @@ func TestADeletedBlockTakesItsWindowRow(t *testing.T) {
 		{"b4", "paragraph", "A long block becomes pieces."},
 	}
 	markdown, blocks := documentOf(parts)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index version 1: %v", err)
-	}
+	indexVersionAndWindow(t, tx, artifact, 1, markdown, blocks, "version 1")
 	markdown, blocks = documentOf(parts[:2])
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index the version without the second section: %v", err)
-	}
+	indexVersionAndWindow(t, tx, artifact, 2, markdown, blocks, "the version without the second section")
 	if got := slices.Sorted(maps.Keys(windowRowsOf(t, tx, DocumentWindowKind, artifact))); !slices.Equal(got, []string{"b1"}) {
 		t.Fatalf("the document's windows are %v, want the first section's alone", got)
 	}
 	markdown, blocks = documentOf(nil)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 3, time.Now(), markdown, blocks, nil, nil); err != nil {
-		t.Fatalf("index the empty version: %v", err)
-	}
+	indexVersionAndWindow(t, tx, artifact, 3, markdown, blocks, "the empty version")
 	if got := windowRowsOf(t, tx, DocumentWindowKind, artifact); len(got) != 0 {
 		t.Fatalf("the emptied document holds %d windows, want none", len(got))
 	}

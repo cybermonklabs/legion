@@ -396,12 +396,17 @@ var (
 	// oracle is for; a change to the rest moves both, which main's frozen meaning copy would have
 	// caught and this does not. That is the price of a meaning body whose rows main's own text
 	// cannot see.
-	// Each binds the acting credential where the statement it is the oracle of binds it, since
-	// both are this release's own body.
+	//
+	// Both are the scoped shape (meaningOneProject), because every caller of either binds a
+	// project as $2 - the fixture's own (documentSearchFixture.project) and the measurement
+	// subject's (statement_timing_test.go) - and that is the shape search and the check send for
+	// such a call (runMeaningSearch, relatedMeaningStatementFor). Each binds the acting
+	// credential where the statement it is the oracle of binds it, since both are this
+	// release's own body.
 	searchQueryMeaningOverMainsDocumentArm = searchQOpener(12) +
-		searchQueryMeaningBody(mainSearchKeywordLegsSQL, searchFusedSQL, "", searchMeaningSeenParam)
+		searchQueryMeaningBody(mainSearchKeywordLegsSQL, searchFusedSQL, "", searchMeaningSeenParam, meaningOneProject)
 	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(mainRelatedKeywordLegs, relatedFusedSQL, "", 14)
+		searchQueryMeaningBody(mainRelatedKeywordLegs, relatedFusedSQL, "", 14, meaningOneProject)
 )
 
 // mainRelatedProbeSQL is main's relatedProbeSQL, the fifth statement of R1.
