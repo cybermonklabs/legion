@@ -1272,3 +1272,5 @@ ci_tools_fetch_fallback() {
   fi
   ci_tools__second_source "$1" "$2" '' ''
 }
+
+# INFRA-1413 selection probe, never merged.
