@@ -78,6 +78,10 @@ const NO_ISSUE_KEY = "CORE-404";
  *  document, and proved on the rendered and preview surfaces; their exclusion is no gap in the
  *  grammar. */
 const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
+  "```\ndispatch://CORE-1":
+    "an unclosed fence, which in a document opens a block that swallows every row written after it",
+  "```a`b\ndispatch://CORE-1\n```":
+    "a backtick in a fence's info string, which CommonMark and both readers of a reference take for no fence at all and the document editor's own parser opens a block on, swallowing every row after it",
   ':::callout{#d1 affects="dispatch://CORE-1/spec#b-a dispatch://CORE-1/spec#b-b"}':
     "an unclosed directive, which in a document opens a block that swallows the text after it",
   ":::ask{#q2}\nWhich region first?\n:::":
