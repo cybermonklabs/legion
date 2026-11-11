@@ -56,8 +56,9 @@ const QUIET_AFTER_MS = 10 * 60_000;
  *  Design records for the row the page drew before this change ("its row is 42 pixels against
  *  today's 46"), and the row this change draws measures the same 46 at a laptop width. 126 is
  *  this change's own reading at 390, where the directory takes a line of its own and the
- *  controls wrap to lines a thumb can hit: the Design records no phone figure, so there is
- *  none to read against there. */
+ *  controls wrap to lines a thumb can hit. The Design records no phone figure; the page before
+ *  this change (f15619830b5a) drew this same fixture's row at 146 px there, so 126 is no taller
+ *  than today's row, and the bound pins this change's own height rather than today's. */
 const ROW_HEIGHT_PX = { laptop: 46, phone: 126 };
 
 /** One element's box on screen, in whole pixels: what a reader sees, rather than a fraction of
@@ -525,9 +526,10 @@ test("ticking two rows reads two selected, the composer names them, and a pill r
 // page draws here is 46 pixels at 1440 - today's figure exactly, not the prototype's 42 - so it
 // is no taller than the row the page drew before this change, with nothing to spare. At 390 the
 // directory takes a line of its own and the controls wrap to lines a thumb can hit, which is
-// the shape the page drew before this change at that width; the Design records no figure there,
-// so the 126 pixels below were measured on this change and are what a taller row is caught
-// against. The long-name row at both widths, against the heights the page before this change
+// the shape the page drew before this change at that width. The Design records no figure
+// there; the page before this change (f15619830b5a) drew this fixture's row at 146 pixels, and
+// the 126 pixels below were measured on this change, so the row is 20 pixels shorter than
+// today's and a taller row is caught against this change's own height. The long-name row at both widths, against the heights the page before this change
 // measured with those same fixtures, is `agents.e2e.ts`'s two-shape row.
 // SLOW(>=2s): one session seeded, one page load, then the row and two of its parts measured.
 test("an agent row stands at the height recorded for its width @phone", async ({
@@ -539,7 +541,7 @@ test("an agent row stands at the height recorded for its width @phone", async ({
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    // The width the Design's figures were read at; the phone project is 390 pixels already.
+    // The laptop width the Design's figure was read at; the phone project is 390 pixels already.
     if (!isPhone) await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto("/agents");
     const row = agentRow(page, TALKER);

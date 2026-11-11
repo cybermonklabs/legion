@@ -171,8 +171,9 @@ interface Walk<Reading> {
 
 /**
  * One timed row's walk: readings taken one at a time, up to `cap`, stopping at the first that
- * is `inside` the row's bounds. That one is the fastest of the walk, since every reading
- * before it was outside them, and it is the one judged. Where the cap runs out with none
+ * is `inside` the row's bounds, which is the one judged. For a row with one bound on `ms` it is
+ * also the fastest of the walk, since every reading before it was outside; for a row with two
+ * bounds it need not be, since an earlier reading can be faster on `ms` and outside the other. Where the cap runs out with none
  * inside, the judged reading is the one with the smallest `ms`, which is the floor the row
  * failed at and reports.
  *
