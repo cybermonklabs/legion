@@ -27,11 +27,20 @@ export interface RelatedCheckContext {
  * run instead. The likely duplicate an unforced create was nudged about, and the near copies a
  * forced create went past, follow the form.
  *
+ * A check whose write is a question also carries `other_projects`: answered question asks of
+ * projects other than the one that asks. They print under a heading of their own, after every
+ * item of the asking project, each row naming the project it is in. The heading says where the
+ * items come from and says nothing about whether they answer the question: the server ranks them
+ * by meaning alone, and the reader decides. A server that sends none prints no heading.
+ *
  * A server predating the forms sends less, and each of its shapes maps to one form: no result at
- * all, `missing`, items with no `outcome`, and nothing at all with no `outcome`.
+ * all, `missing`, items with no `outcome`, and nothing at all with no `outcome`. A server
+ * predating `other_projects` sends none, and one that still sends a field this client no longer
+ * reads has it ignored.
  *
  * It never throws: it rides on a write that already succeeded, so a result shaped as this client
- * does not expect still prints a form rather than costing the reader the write's own line.
+ * does not expect still prints a form rather than costing the reader the write's own line. Each
+ * block after the form holds its own failure the same way.
  */
 export function relatedCheckLines(
   suggestions: Suggestions | null | undefined,
@@ -47,6 +56,11 @@ export function relatedCheckLines(
     lines = [
       notMadeLine(`this client could not read the check result (${messageFor(error)})`, context),
     ];
+  }
+  try {
+    lines.push(...otherProjectLines(suggestions, context.configUrl));
+  } catch (error) {
+    lines.push(`The answers of other projects could not be shown: ${messageFor(error)}`);
   }
   try {
     const likely = suggestions.likely_duplicate;
@@ -129,9 +143,39 @@ function relatedCheckForm(suggestions: Suggestions, context: RelatedCheckContext
   ];
 }
 
-function relatedItemLines(item: WriteSuggestion, configUrl: string): string[] {
+/**
+ * The answered questions of other projects, under a heading of their own, after the items of the
+ * asking project. A server that offered none — the field absent, null, or an empty list — prints
+ * nothing, the heading with it, so a check that offered nothing reads as one.
+ */
+function otherProjectLines(suggestions: Suggestions, configUrl: string): string[] {
+  const items = suggestions.other_projects ?? [];
+  if (items.length === 0) return [];
+  return [
+    // The heading names where the items come from. It claims nothing about whether they answer
+    // the question the check read: the server ranks them by meaning, and the reader decides.
+    "Answered questions in other projects:",
+    ...items.flatMap((item) => relatedItemLines(item, configUrl, true)),
+  ];
+}
+
+/**
+ * One item's lines: the line that names it and links it, and, for an ask, where the ask stands.
+ * `namesProject` puts the item's project first, which an item of another project needs and an
+ * item of the asking project does not. An item whose owner names no project prints without one.
+ */
+function relatedItemLines(
+  item: WriteSuggestion,
+  configUrl: string,
+  namesProject = false
+): string[] {
   try {
-    const lines = [`- ${suggestionLabel(item)} → ${absoluteHref(item.href, configUrl)}`];
+    const project = item.owner.project;
+    const label =
+      namesProject && project !== undefined && project !== ""
+        ? `${project}: ${suggestionLabel(item)}`
+        : suggestionLabel(item);
+    const lines = [`- ${label} → ${absoluteHref(item.href, configUrl)}`];
     if (item.kind === "ask") {
       lines.push(...askLines(item.ask));
     }

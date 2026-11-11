@@ -641,6 +641,27 @@ function askItem(key: string, id: string, ask?: SearchAsk): WriteSuggestion {
   };
 }
 
+/** An answered question of another project, as the server offers it: an ask item whose owner
+ *  names the project the item is in. */
+function otherProjectAsk(
+  key: string,
+  id: string,
+  project: string,
+  answer: string
+): WriteSuggestion {
+  return {
+    kind: "ask",
+    owner: { kind: "issue", key, title: "Webhook retries", status: "done", project },
+    id,
+    snippet: "Should webhook deliveries back off?",
+    href: `/issues/${key}#ask-${id}`,
+    ask: {
+      state: "answered",
+      answer: { user: "sami", selected: [], text: answer, at: "2026-09-12T13:20:00Z" },
+    },
+  };
+}
+
 async function createIssue(suggestions: Suggestions | undefined, extra: Partial<WriteAdvice> = {}) {
   return executeWrite(
     "dispatch_issue",
@@ -1220,6 +1241,201 @@ describe("dispatch_related", () => {
 
     expect(result.text).toBe(
       "Related-item check searched (meaning and keywords) and found nothing."
+    );
+  });
+
+  test("prints the answered questions of other projects after its own project's items", async () => {
+    const { result } = await related(
+      { project: "DSP", title: "Retry failed webhook deliveries" },
+      {
+        outcome: "found",
+        search: "meaning_and_keywords",
+        related: [issueItem("DSP-7", "Webhook retries")],
+        other_projects: [otherProjectAsk("OPS-9", "a9", "OPS", "Back off exponentially.")],
+      }
+    );
+
+    expect(result.text).toBe(
+      [
+        "Related items (searched by meaning and keywords):",
+        "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
+        "Answered questions in other projects:",
+        "- OPS: OPS-9 [done] Webhook retries → http://dispatch.test/issues/OPS-9#ask-a9",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Back off exponentially.",
+      ].join("\n")
+    );
+  });
+});
+
+// The check of a write that is a question offers the answered questions of other projects. They
+// print under a heading of their own, after every item of the asking project, so the reader sees
+// which project each one is in and what was answered there.
+describe("the answered questions of other projects", () => {
+  const question = { issue: "DSP-42", question: "Should the billing service retry?" };
+  const ownItem = issueItem("DSP-9", "Billing retries", "in_progress");
+  const ownLines = [
+    "Related items (searched by meaning and keywords):",
+    "- DSP-9 [in_progress] Billing retries → http://dispatch.test/issues/DSP-9",
+  ];
+  const opsLines = [
+    "- OPS: OPS-9 [done] Webhook retries → http://dispatch.test/issues/OPS-9#ask-a9",
+    "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+    "  Answer text: Back off exponentially.",
+  ];
+  const opsItem = otherProjectAsk("OPS-9", "a9", "OPS", "Back off exponentially.");
+
+  test("dispatch_ask prints them under their heading, after its own project's items", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [
+            opsItem,
+            otherProjectAsk("WEB-3", "a3", "WEB", "Retry twice, then stop."),
+          ],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        ...opsLines,
+        "- WEB: WEB-3 [done] Webhook retries → http://dispatch.test/issues/WEB-3#ask-a3",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Retry twice, then stop.",
+        followsLine,
+      ].join("\n")
+    );
+  });
+
+  test("dispatch_doc_edit prints them under the new block's own items", async () => {
+    const result = await executeWrite(
+      "dispatch_doc_edit",
+      {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [
+          {
+            op: "insert",
+            after: "end",
+            markdown: ':::ask{urgency="med"}\nShould webhook deliveries back off?\n:::\n',
+          },
+        ],
+      },
+      advice({
+        decision_blocks_added: 1,
+        decision_block_checks: [
+          {
+            block_id: "ask-block-1",
+            question: "Should webhook deliveries back off?",
+            suggestions: {
+              outcome: "found",
+              search: "meaning_and_keywords",
+              related: [issueItem("DSP-7", "Webhook retries")],
+              other_projects: [opsItem],
+            },
+          },
+        ],
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        `Applied 1 ops (no new version) ${issueSuffix}`,
+        "Decision block ask-block-1:",
+        "Related items (searched by meaning and keywords):",
+        "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
+        "Answered questions in other projects:",
+        ...opsLines,
+        "Document token: sha256:edited",
+      ].join("\n")
+    );
+  });
+
+  test.each([
+    ["absent", {}],
+    ["null", { other_projects: null }],
+    ["an empty list", { other_projects: [] }],
+  ] as const)("a check that offered none (%s) prints no heading", async (_shape, offered) => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          ...offered,
+        } as unknown as Suggestions,
+      })
+    );
+
+    expect(result.text).toBe([askedLine, ...ownLines, followsLine].join("\n"));
+  });
+
+  test("an older server's past-decision field is ignored, and costs no line", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [opsItem],
+          // The field this client no longer reads. A deployment older than its deletion sends
+          // it, and the lines hold nothing of it.
+          decision: {
+            ...otherProjectAsk("OPS-4", "a4", "OPS", "Retry once."),
+            answered_by: "sami",
+            answered_at: "2026-09-01T09:00:00Z",
+          },
+        } as unknown as Suggestions,
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        ...opsLines,
+        followsLine,
+      ].join("\n")
+    );
+    expect(result.text).not.toContain("OPS-4");
+  });
+
+  test("a check whose own project found nothing says so, then prints them", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "none",
+          search: "meaning_and_keywords",
+          related: [],
+          other_projects: [opsItem],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        "Related-item check searched (meaning and keywords) and found nothing.",
+        "Answered questions in other projects:",
+        ...opsLines,
+        followsLine,
+      ].join("\n")
     );
   });
 });
