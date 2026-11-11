@@ -499,7 +499,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // keeps the slot it holds while it waits (workflow's enterAwaiting). The controller takes no issue for any of
 // the three (skill://legion-controller, "Free slots"). A tick is the daemon's periodic wake, whose
 // issue is the project key. An unslotted notice names a root admission found in the workflow with
-// neither a slot nor a place in the waiting line, which it took out of the workflow; its reason
+// neither a slot nor a place in the waiting line, which it then put in phase.Done; its reason
 // names the status the root stood at. An update-stalled notice names an issue whose pod the
 // daemon opened an update round over and cannot replace: a worker has not answered within
 // `pod_update_notice_hours`, a turn that will not end holds the replacement, or the replacement
@@ -511,9 +511,11 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // held and nothing is bounded, because a chain's bottom refusing deterministically costs one
 // request every ten minutes. A tree-stalled notice names a root of the daemon's own whose tree
 // has stopped: nothing of the tree has moved for longer than `stalled_tree_notice_hours`, no
-// claim of it is at work, and at least one issue of it waits by no rule of the daemon's own —
-// a tree every quiet issue of which waits by one of those rules is told to nobody (admit's
-// tellStalledTrees). Its issue is that root, and its Reason names the tree's quiet hours, each
+// claim of it is at work, and either at least one issue of it waits by no rule of the daemon's
+// own or the project's line can no longer move — a tree every quiet issue of which waits by one
+// of those rules is told to nobody while some issue of the project holds a slot and waits by
+// none of them, or some claim of the project is at work (admit's tellStalledTrees, lineCanMove).
+// Its issue is that root, and its Reason names the tree's quiet hours, each
 // issue the workflow still runs with its phase, the role whose turn it is and the state of its
 // pull request, and what the controller is to decide. It is told once for each stall: the
 // daemon marks the root with the movement the notice was told for, and tells again only once

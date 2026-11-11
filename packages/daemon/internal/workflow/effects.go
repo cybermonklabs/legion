@@ -362,11 +362,24 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // phase is the phase the issue stands in. The row carries its task while it waits, so the
 // delivery is made as soon as the slot comes and the worker is up.
 //
-// A start the rule leaves unmarked needs none of the owed-start machinery and takes none of it.
-// Store.ReplaceOwedStart and Store.OwedStarts both match a marked row alone, so a retro's or a
-// merger's start is coalesced with no older waiting row and stands in no waiting line: it is
-// claimable the moment it commits, and the outbox's own phase and generation fences still end a
-// stale one.
+// A start the rule leaves unmarked stands in no waiting line — Store.OwedStarts lists a marked
+// row alone, since that line is about slot-waiting — and it is coalesced like every other start
+// of a phase worker. Store.ReplaceOwedStart matches a pending supervise start that names a
+// phase, carries that phase's task and waits for what this start waits for, so a retro's or a
+// merger's start is written over the start the issue already holds rather than standing beside
+// it: two rows serving the phase the issue stands in, at its own generation, would start its
+// worker twice for one assignment, and no fence of the outbox's ends the second. That pair is
+// what an operator's retry of a held retro or merger writes, while the first start is still
+// queued. The one row is claimable the moment it commits, since no slot holds it back, and the
+// outbox's own phase and generation fences still end a stale one.
+//
+// A start that waits for a slot and one that waits for none are written over each other
+// nowhere, and need not be: the mark is read from the phase, so two such rows never name the
+// same phase, the issue stands in the newer one's, and the phase fence ends the older. What
+// keeping them apart keeps is the waiting line, whose place belongs to the row that waits and
+// is not a past-review row's to hand over, and the lane's own order behind a row that waits, a
+// close's suspend among it (admit's promotion of a re-admitted tree queues its start behind
+// that suspend, so the worker comes back after the stop rather than before it).
 //
 // A start with no task or no phase is refused here, before the mark. The two guards that would
 // otherwise catch it both read the mark or the phase: record.validateOutboxPayload asks a task
@@ -376,17 +389,21 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // phase to fence it on. Each of the three callers writes the phase on the record before it calls
 // and carries that phase's task — a transition's start (Engine.started), admission's start of a
 // mid-phase member and the boot's resume by rule — so the refusal rejects no start the daemon
-// writes today.
+// writes today. The task and the phase are also what tells a phase worker's start from the
+// issue's other supervise starts, which is how ReplaceOwedStart finds the one row an issue
+// holds (record's pendingPhaseStart), so a start written without them would stand beside that
+// row rather than over it.
 //
 // The row is written through Store.ReplaceOwedStart first and enqueued only when that replaced
 // nothing. ReplaceOwedStart matches by issue and not by role because the row's id and created_at
-// are the issue's place in the waiting line: an issue that already owes a start and has not had
-// its slot keeps that place and carries the later transition's task instead, so two transitions
-// before the slot start the worker once. The superseded role never starts, which is right —
-// the issue has left that phase, so that role never had work to do, while the role the later
-// transition names has it. Only when there is no such row — the first start, or one the lane has
-// already leased because the slot came — is a row of its own enqueued, which is what the daemon
-// has always done for back-to-back transitions.
+// are the issue's place in the waiting line: an issue that already holds a pending start of the
+// same wait keeps that place and carries the later transition's task instead, so two transitions
+// before the worker runs start it once. The superseded role never starts, which is right — the
+// issue has left that phase, so that role never had work to do, while the role the later
+// transition names has it. Only when there is no such row — the first start, one that waits for
+// something else, or one a lane already holds, which for a marked row means its slot came — is a
+// row of its own enqueued, which is what the daemon has always done for back-to-back
+// transitions.
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row

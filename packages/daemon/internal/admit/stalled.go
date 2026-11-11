@@ -53,13 +53,13 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // the daemon runs (record.RunningRoots), it has been quiet for longer than
 // `stalled_tree_notice_hours` (record.TreeQuiet.Quiet, UseStalledTreeNotice), no claim of it
 // is at work (record.TreeQuiet.AtWork), its newest movement stands after the stall its root
-// was last told about (record.Issue.TreeStalledToldAt), and either some issue of it waits by
-// no rule of the daemon's own (everyIssueWaitsByDesign) or the project's line can no longer
-// move (lineCanMove).
+// was last told about (record.Issue.TreeStalledToldAt), and either some issue of it is held by
+// nothing the daemon knows of (everyIssueWaitsByDesign over record.StartHoldsOf) or the
+// project's line can no longer move (lineCanMove).
 //
-// The four waits silence a tree only while the project's line can still move, which is the
-// whole of why lineCanMove is read here and not per tree: a project no work of which can start
-// again by itself has every tree of it named, however its members wait
+// The holds of the daemon's own silence a tree only while the project's line can still move,
+// which is the whole of why lineCanMove is read here and not per tree: a project no work of
+// which can start again by itself has every tree of it named, however its members wait
 // (dispatch://INFRA-2560, R5). The clause is a fact of the project and not of one tree, so it
 // is answered once for the pass beside the per-tree walk rather than inside it, where every
 // tree would ask the same question again.
@@ -91,15 +91,16 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     that no membership, reason or pull-request read is built for a notice that cannot be
 //     queued. wakeController still decides: it asks both again, and the mark is written only
 //     for a row that went into the outbox;
-//  4. the membership of the stalled trees, the places the waiting line holds for their members
-//     and one batched read of those members' pull requests (record.Store.PullRequestsOf), each
-//     built for the roots that are already candidates and for no other issue of the project.
+//  4. the membership of the stalled trees, why the daemon starts no issue of the project now
+//     (record.StartHoldsOf, one walk of the records this pass holds) and one batched read of
+//     those members' pull requests (record.Store.PullRequestsOf), each built for the roots that
+//     are already candidates and for no other issue of the project.
 //
-// The liveness clause adds no read of its own: its two terms are the slots this pass already
-// holds and the claims step 2 read (lineCanMove), and it is answered only once a root has
-// come through every refusal above.
+// The liveness clause adds no read of its own: its three terms are the slots this pass already
+// holds, the claims step 2 read and the holds step 4 wrote (lineCanMove), and it is answered
+// only once a root has come through every refusal above.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
-	facts record.LineFacts, line []record.LineEntry, slots []record.Slot,
+	facts record.LineFacts, slots []record.Slot,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -173,49 +174,35 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 		telling[root.Key] = struct{}{}
 	}
 	members := make(map[string][]record.Issue, len(unsent))
-	of := make(map[string]struct{}, len(unsent))
 	for _, issue := range issues {
 		if _, tells := telling[issue.Tree]; !tells || !record.TreeMember(issue) {
 			continue
 		}
 		members[issue.Tree] = append(members[issue.Tree], issue)
-		of[issue.Key] = struct{}{}
 	}
-	// The members the cap itself is holding: an issue of the waiting line whose entry answers
-	// Holds false, which is an issue standing in the line that held no slot row when the line
-	// was built. That is the whole of the fourth wait below, and it is read from the line
-	// because the line is the one list of that fact in the daemon's code (record.LineEntry.Holds):
-	// a rule that must say what the line says reads the fact the line carries rather than
-	// reading the slots a second time of its own. Only a member is ever asked for, so the set
-	// names no issue of another tree.
+	// Why the daemon does not start each issue of the project now, from the one pass that
+	// produces it (record.StartHoldsOf over the issues, this project's own slot rows and the
+	// facts the line was judged from, which is what the line itself was built from). The rule
+	// below asks that set and derives nothing from the line: the same term, read once from an
+	// owed start row, once from the line's membership and once from an issue's need of a slot,
+	// disagreed with itself three times inside one review of this change, each reading right
+	// about the shape in front of it (dispatch://INFRA-2560, R5).
 	//
-	// It is the line rather than the owed start row because the line is where both shapes of
-	// that wait stand. An issue whose work came back owes a start the outbox holds unclaimable
-	// while the slots table names no row of it (record.SuperviseRequest.NeedsSlot, the outbox's
-	// own outboxInOrder), and it is in the line's first part. An issue waiting for its first
-	// phase owes no row at all, because the start is written by the promotion that grants the
-	// slot (record.LineFirstPhase, Engine.StartFirstPhase), and it is in the line's second
-	// part. Read from the owed row alone, as this rule first was, the second shape is held by
-	// nothing and its tree is told as stopped — a root at admitted waiting for its children
-	// with one released child in the line, which is the commonest shape a tree waiting for the
-	// cap takes, and which eight trees of the INFRA deployment stood in at 2026-11-11T16:36Z.
-	capHolds := make(map[string]struct{}, len(of))
-	for _, entry := range line {
-		if _, member := of[entry.Issue.Key]; !member || entry.Holds {
-			continue
-		}
-		capHolds[entry.Issue.Key] = struct{}{}
-	}
-	// The four waits of the daemon's own silence a tree only while the project's line can still
-	// move (lineCanMove, dispatch://INFRA-2560, R5). The answer is one fact of the project, so
-	// it is taken once here and asked of every tree of the pass: where the line cannot move,
-	// nothing of the project can start again by itself and every tree of it is named, however
-	// its members wait, and the walk of the waits below is not made at all.
-	canMove := a.lineCanMove(issues, slots, facts, quiet)
+	// It is read here rather than handed over by the caller because it is a walk of the
+	// project's issues and no pass that can answer without it may pay for one: a deployment
+	// that sets no bound returns at the top of this method, and a pass of a working project
+	// returns at step 1.
+	holds := record.StartHoldsOf(issues, ownSlots(issues, slots), facts)
+	// A hold of the daemon's own silences a tree only while the project's line can still move
+	// (lineCanMove, dispatch://INFRA-2560, R5). The answer is one fact of the project, so it is
+	// taken once here and asked of every tree of the pass: where the line cannot move, nothing
+	// of the project can start again by itself and every tree of it is named, however its
+	// members wait, and the walk of the members below is not made at all.
+	canMove := a.lineCanMove(issues, slots, holds, quiet)
 	var stopped []record.Issue
 	named := 0
 	for _, root := range unsent {
-		if canMove && a.everyIssueWaitsByDesign(members[root.Key], capHolds, facts) {
+		if canMove && a.everyIssueWaitsByDesign(members[root.Key], holds) {
 			continue
 		}
 		stopped = append(stopped, root)
@@ -256,11 +243,68 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	return nil
 }
 
+// silencedTree is the measure's answer for every hold the daemon can have on an issue
+// (record.StartHold): whether an issue standing still for that hold is waiting by design, so
+// that a tree whose every quiet issue is held for such reasons has not stopped and is told to
+// nobody. It is the one table of those answers, and the rules below are two lookups in it:
+// nothing here derives a hold of its own from the waiting line, because the line and the holds
+// come out of one pass of the record package (record.StartHoldsOf) and a second derivation is
+// the fault dispatch://INFRA-2560 was filed for.
+//
+// The six that silence are R5's four waits by design, read as the holds the daemon's own pass
+// writes for them: a root waiting on a person, which only a person's act moves; an issue a
+// Dispatch blocked-by link holds; an issue the children-first rule holds; and the fourth, "an
+// issue that needs a slot and holds none, whatever holds its start", which is three holds of
+// the set rather than one, because the daemon keeps such an issue out of the line in three
+// ways: the cap's own hold on a member of the line, a member whose tree's root waits on a
+// person, and a member whose tree's design gate is closed. The test of that wait is the need
+// and not the mechanism: each earlier reading of it named a mechanism and missed a shape that
+// answers to the same cause.
+//
+// Two directions decide the rest, and they are different questions. A hold that means nothing
+// holds the issue (record.StartHoldNone) does not silence, and neither does a hold this table
+// does not know at run time, which a lookup that misses answers false for: an issue standing
+// still for no recorded reason is the thing this issue was filed about, so the default is to
+// name the tree. The other is a judgement about a known state: the cap's own hold silences a
+// member whose start the daemon never wrote at all — a fault rather than a wait, read from the
+// start row — and that is accepted rather than overlooked, because such an issue holds no
+// admission slot and so costs the project none of the capacity this measure exists to recover,
+// while its root, which does hold a slot, is judged by the other holds and is named when
+// nothing else of the tree moves.
+//
+// The holds that do not silence are each a tree's own work or a person's: an issue under an
+// accepted ancestor waits for that ancestor to close, a root a live tree has not released waits
+// for its architect, an issue of a tree that has left the workflow waits for a re-admission,
+// and an issue a person has taken out of the workflow waits for that person. None of them is
+// the daemon holding work it means to start, which is what a wait by design is.
+//
+// A hold with no row here fails admit's TestTheMeasureAnswersEveryStartHold, which reads the
+// set from the record package's own source: a hold added to the set and left out of this table
+// would otherwise be ignored quietly, which is the fault rather than a new place to hide it.
+var silencedTree = map[record.StartHold]bool{
+	record.StartHoldNone:         false,
+	record.StartHoldPerson:       true,
+	record.StartHoldRootPerson:   true,
+	record.StartHoldBlocker:      true,
+	record.StartHoldChildren:     true,
+	record.StartHoldDesign:       true,
+	record.StartHoldCap:          true,
+	record.StartHoldAccepted:     false,
+	record.StartHoldUnreleased:   false,
+	record.StartHoldTreeGone:     false,
+	record.StartHoldLeftWorkflow: false,
+}
+
+// silences says whether an issue the daemon holds for hold is waiting by design, from the one
+// table above. A hold the table does not name answers false, which is the default the table's
+// doc states: an issue standing still for a reason nothing has decided about is named.
+func silences(hold record.StartHold) bool { return silencedTree[hold] }
+
 // lineCanMove says whether the project's line can still move: whether any work of this project
 // can start again by itself. It is the liveness clause of the silencing rule
-// (dispatch://INFRA-2560, R5): the four waits the daemon makes on purpose leave a tree
-// unnamed only while this holds, because a wait is a wait for something, and a project where
-// nothing is coming waits for nothing.
+// (dispatch://INFRA-2560, R5): the waits the daemon makes on purpose leave a tree unnamed only
+// while this holds, because a wait is a wait for something, and a project where nothing is
+// coming waits for nothing.
 //
 // Why a project that fails both terms is stopped for good: a slot is freed by a phase or by a
 // status change, and both of those need a worker, and a worker needs a slot. So where no slot
@@ -280,15 +324,15 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 //     project's answer and not one tree's: an agent working anywhere in the project will free
 //     its slot when it is done, and that slot goes to the line;
 //  2. the slot term: some issue of the project holds one of the cap's slots and is silenced by
-//     none of the four waits — that issue's worker can finish, which frees the slot. The slots
-//     are the pass's own rows, the ones it judged the line from, so the fact is the slots
-//     table's and not a phase rule's reading of it: an issue holds a slot when a row names it.
-//     The table carries every project's rows while the cap counts this project's alone
-//     (ownSlots), and the walk below is over this project's own records, so a row of another
-//     project matches no issue here and says nothing about this line. Only three of the four
-//     waits are asked of a holder, because the fourth cannot hold one: the cap's own hold is
-//     an issue of the line that holds no slot (record.LineEntry.Holds), so a slot holder is
-//     never in it.
+//     no hold of the daemon's (silences over the pass's own holds) — that issue's worker can
+//     finish, which frees the slot. The slots are the pass's own rows, the ones it judged the
+//     line from, so the fact is the slots table's and not a phase rule's reading of it: an
+//     issue holds a slot when a row names it. The table carries every project's rows while the
+//     cap counts this project's alone (ownSlots), and the walk below is over this project's own
+//     records, so a row of another project matches no issue here and says nothing about this
+//     line. The holds are asked of a holder exactly as they are asked of a member, from the one
+//     table, and the cap's own hold is simply one a holder never carries: it is an issue of the
+//     line that holds no slot (record.StartHoldCap, record.LineEntry.Holds).
 //
 // The slot term is over every issue of the project, and never over the trees the pass is about
 // to tell. An issue of a tree nobody is telling — a tree inside the bound, a tree already
@@ -300,8 +344,8 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 //
 // It is answered once per pass, by the caller, and never per tree: the question is the
 // project's and its answer is the same for every tree of the pass.
-func (a *Admission) lineCanMove(issues []record.Issue, slots []record.Slot, facts record.LineFacts,
-	quiet map[string]record.TreeQuiet,
+func (a *Admission) lineCanMove(issues []record.Issue, slots []record.Slot,
+	holds map[string]record.StartHold, quiet map[string]record.TreeQuiet,
 ) bool {
 	for _, measure := range quiet {
 		if measure.AtWork {
@@ -313,16 +357,10 @@ func (a *Admission) lineCanMove(issues []record.Issue, slots []record.Slot, fact
 		holders[slot.Issue] = struct{}{}
 	}
 	for _, issue := range issues {
-		if _, holds := holders[issue.Key]; !holds {
+		if _, holdsSlot := holders[issue.Key]; !holdsSlot {
 			continue
 		}
-		if issue.AwaitingPerson() {
-			continue
-		}
-		if _, held := facts.Held[issue.Key]; held {
-			continue
-		}
-		if a.waitsForChildren(facts.ChildWaits, issue) {
+		if silences(holds[issue.Key]) {
 			continue
 		}
 		// This holder waits for nothing the daemon knows of: its worker can finish and give
@@ -332,9 +370,9 @@ func (a *Admission) lineCanMove(issues []record.Issue, slots []record.Slot, fact
 	return false
 }
 
-// everyIssueWaitsByDesign says whether every issue of a quiet tree stands in one of the four
-// waits the daemon makes on purpose, each of which is an issue that has not stopped but is
-// holding still for a reason the daemon itself knows.
+// everyIssueWaitsByDesign says whether every issue of a quiet tree is held by something the
+// daemon itself knows about: a hold of its own pass that silences a tree (silencedTree), which
+// is an issue that has not stopped but is holding still for a reason that will end.
 //
 // It answers one tree and is half of the silencing rule: a tree is left unnamed only where
 // this answers true and the project's line can still move (lineCanMove, which the caller asks
@@ -357,57 +395,22 @@ func (a *Admission) lineCanMove(issues []record.Issue, slots []record.Slot, fact
 // are the measure's own (record.TreeMember), and a tree always holds at least its root, so no
 // empty walk ever answers true here.
 //
-// The four waits:
-//
-//  1. a root waiting on a person (record.Issue.AwaitingPerson): the tree waits for an answer,
-//     and only a person's act moves it. Only a root ever stands in that phase, so this wait
-//     answers for the root alone and every member under it must stand in one of the other
-//     three;
-//  2. an issue a Dispatch blocked-by link holds where it stands (record.LineFacts.Held, the
-//     judgement blockers.LineWaitsOn reads), which the line passes over every pass;
-//  3. an issue the children-first rule holds (record.LineFacts.ChildWaits, waitsForChildren),
-//     whose own first phase waits for the open Dispatch children under it. It is that
-//     judgement and never record.ChildrenFirstCandidates, which names every issue at admitted
-//     under an open gate whether or not a child of it is open: taken for this, it would call
-//     the commonest quiet shape there is a wait, a tree whose root stands at admitted doing
-//     nothing;
-//  4. an issue the cap itself holds, which is an issue of the waiting line that holds no slot
-//     (capHolds, the pass's own line): the waiting line working as designed. The fact is the
-//     line's own — record.LineEntry.Holds, whether the issue held a slot row when the line was
-//     built — and it is read there because the line is the one list of it in the daemon's
-//     code, so this rule and the line it must agree with read the one fact. Both shapes of
-//     that wait stand in the line and neither is read from anywhere else: an issue whose work
-//     came back owes a start marked for its admission slot, which the outbox holds unclaimable
-//     while the slots table names no row of it, and an issue waiting for its first phase owes
-//     no start at all, because the promotion that grants the slot is what writes it. Read from
-//     the owed row alone, this rule called the second shape a tree that had stopped
-//     (dispatch://INFRA-2560, R5, and the case over the behaviour in
-//     TestAWaitByDesignIsNeverToldAsAStall).
-//
-// Only the cap's own hold is a wait of the daemon's here. A task, a notice or a message queued
-// for a role is none: a notice queued to a suspended role waits for a role nothing brings
-// back, so an issue with one in the outbox has stopped like any other. An issue in `held` and
-// an issue in `awaiting_merge` are no wait either — a held issue waits for its architect,
-// which is the tree's own work, and an issue awaiting its merge waits for GitHub, which is
-// nothing the daemon holds it for — so a tree holding one of them is told like any other
-// stall.
-func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, capHolds map[string]struct{},
-	facts record.LineFacts,
-) bool {
+// Which hold a member carries is no judgement of this rule's: the pass that reads the project's
+// issues, claims and slots writes it (record.StartHoldsOf) and the table beside it says what it
+// means, so a member held by something this measure has never heard of is named rather than
+// excused. A task, a notice or a message queued for a role is no hold of the daemon's at all: a
+// notice queued to a suspended role waits for a role nothing brings back, so an issue with one
+// in the outbox has stopped like any other, and nothing of the outbox reaches the set. An issue
+// in `held` and an issue in `awaiting_merge` are no wait either — a held issue waits for its
+// architect, which is the tree's own work, and an issue awaiting its merge waits for GitHub,
+// which is nothing the daemon holds it for — and the pass holds neither, so each answers
+// record.StartHoldNone and its tree is told like any other stall.
+func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds map[string]record.StartHold) bool {
 	for _, issue := range members {
-		if issue.AwaitingPerson() {
+		if silences(holds[issue.Key]) {
 			continue
 		}
-		if _, held := facts.Held[issue.Key]; held {
-			continue
-		}
-		if a.waitsForChildren(facts.ChildWaits, issue) {
-			continue
-		}
-		if _, waits := capHolds[issue.Key]; waits {
-			continue
-		}
-		// This issue stands in none of the four: it has stopped, and so has its tree.
+		// Nothing of the daemon's holds this issue: it has stopped, and so has its tree.
 		return false
 	}
 	return true

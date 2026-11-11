@@ -178,10 +178,12 @@ type Config struct {
 	PodUpdateNotice time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as the four keys above are): when a tree this daemon runs
-	// has been quiet for longer than this, nothing of that tree is at work, and at least one quiet
-	// issue of it waits by no rule of the daemon's own, the daemon tells the project's controller
-	// once for that tree (dispatch://INFRA-2560
-	// R5). The quiet time and the work are what `record.QuietTrees` measures — the tree's own now
+	// has been quiet for longer than this, nothing of that tree is at work, and either at least one
+	// quiet issue of it waits by no rule of the daemon's own or the project's line can no longer
+	// move, the daemon tells the project's controller once for that tree. The line can still move
+	// while some issue of the project holds a slot and waits by no such rule, or some claim of the
+	// project is at work (admit's lineCanMove, dispatch://INFRA-2560 R5). The quiet time and the
+	// work are what `record.QuietTrees` measures — the tree's own now
 	// less the newest movement of its root, of the issues under it the workflow still runs and of
 	// those issues' claims' steps — and it is the one measure both the admission pass and the
 	// state read, so a notice and a reported quiet time can never disagree. The pass that sends

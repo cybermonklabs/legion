@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -136,6 +137,23 @@ func passFacts(t *testing.T, pool *pgxpool.Pool) (record.LineFacts, []record.Slo
 		}
 	})
 	return facts, slots
+}
+
+// passHolds is why the daemon starts no issue of the project now, by issue key, read from the
+// one producer the admission pass reads it from (record.StartHoldsOf) over the facts and the
+// slots passFacts gave. A case that says a member of a tree is held by one of the daemon's own
+// holds reads that hold here rather than assuming which of them its fixture built.
+func passHolds(t *testing.T, pool *pgxpool.Pool, facts record.LineFacts, slots []record.Slot) map[string]record.StartHold {
+	t.Helper()
+	var holds map[string]record.StartHold
+	inTx(t, pool, func(tx pgx.Tx) {
+		issues, err := record.NewStore().LiveIssues(context.Background(), tx, testProject)
+		if err != nil {
+			t.Fatalf("list the live issues: %v", err)
+		}
+		holds = record.StartHoldsOf(issues, slots, facts)
+	})
+	return holds
 }
 
 // seedPullRequest records the pull request of issue in state, as a GitHub event records one.
@@ -429,6 +447,15 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 // for the cap takes — a root at admitted waiting for its children with one released child in
 // the line — and eight trees of the INFRA deployment stood in it at 2026-11-11T16:36Z.
 //
+// The test of that fourth wait is the need and not the mechanism, which is why two more trees
+// stand here that no row of the line names: a root waiting on a person with one released child
+// at admitted under it, and a tree whose design gate has closed again over a member at
+// admitted. The daemon keeps each of those members out of the waiting line itself — it starts
+// nothing of a tree whose root waits on a person, and nothing under a closed design gate — so
+// each needs a slot, holds none and stands in no entry of the line that could say so. Read
+// from the line alone, both trees were told as stopped although the daemon was holding their
+// members itself.
+//
 // The seven told beside them are the shapes a careless rule would silence with the four: an
 // issue with an open child of its own that is no children-first wait, because that rule holds
 // an issue whose first phase has not started and nothing else; a held issue and an issue
@@ -454,210 +481,282 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 // an admission pass past the bound and reads what the controller is told, so a later rule that
 // narrows a wait again fails it however the narrowing is spelled.
 func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
-	pool := migratedPool(t)
 	bound := deploymentBound(t, "")
 	if bound != 6*time.Hour {
 		t.Fatalf("a deployment that sets no bound of its own gives %s, want the six hours the loader defaults to", bound)
 	}
-	// The cap is exactly the slots the fixture holds, so the two issues below that hold none —
-	// the one owing its worker a start and the one waiting for its first phase — wait behind a
-	// full cap, which is the fourth wait in each of its shapes.
-	admission := quiet(t, 10)
-	admission.UseStalledTreeNotice(bound)
-	registerController(t, pool)
-	records := claimStore(t, pool)
-	idle := func(tree, issue string) {
-		t.Helper()
-		seedClaim(t, records, tree, issue, claim.RoleArchitect, supervise.StateIdle)
-	}
+	// The three readings below stand in subtests of their own, each on a database of its own,
+	// because a failure of one says nothing about the others: a t.Fatalf of the waits scenario
+	// ends its own subtest alone, where before it ended the function and left the liveness
+	// clause unread and reported under the waits' name. The test's own name is unchanged, since
+	// the issue's verification check runs it by that name.
 
-	// 1. A root waiting on a person. The tree waits for an answer and only a person moves it.
-	const awaiting = "LEGION-501"
-	seedQuietRoot(t, pool, awaiting, "A", phase.AwaitingPerson)
-	idle(awaiting, awaiting)
-
-	// 2. A child a Dispatch blocked-by link holds where it stands: the waiting line passes over
-	// it every pass until the issue it waits on is done. Its root waits for that child under
-	// the children-first rule — a blocker holds a child alone (blockers.Holdable), so a tree
-	// silent by this wait is one whose root waits too — and the child's own blocker is what
-	// carries it: take the blocked-by rule out of the four and this tree is told, because
-	// nothing would then stand between the child and a stall.
-	const blockedRoot, blockedChild, blocker = "LEGION-510", "LEGION-511", "LEGION-519"
-	seedQuietRoot(t, pool, blockedRoot, "B", phase.Admitted)
-	blockedApproved := 1
-	seedGate(t, pool, record.DesignGate{Issue: blockedRoot, ArtifactID: "artifact-510", LatestVersion: 1,
-		ApprovedVersion: &blockedApproved, EverOpened: true})
-	seedQuietChild(t, pool, blockedRoot, blockedChild, "B1", phase.Admitted, "todo")
-	seedMirror(t, pool, blockedRoot, "in_progress")
-	seedMirrorChild(t, pool, blockedChild, "todo", blockedRoot, blocker)
-	seedMirror(t, pool, blocker, "in_progress")
-	idle(blockedRoot, blockedRoot)
-
-	// 3. A root whose own first phase has not started while a Dispatch child of it is open: the
-	// children-first rule holds it until that child is released and leaves the workflow. Its
-	// design gate stands open, which is where that wait begins.
-	const childrenFirst, openChild = "LEGION-520", "LEGION-521"
-	seedQuietRoot(t, pool, childrenFirst, "C", phase.Admitted)
-	approved := 1
-	seedGate(t, pool, record.DesignGate{Issue: childrenFirst, ArtifactID: "artifact-520", LatestVersion: 1,
-		ApprovedVersion: &approved, EverOpened: true})
-	seedMirror(t, pool, childrenFirst, "in_progress")
-	seedMirrorChild(t, pool, openChild, "backlog", childrenFirst)
-	idle(childrenFirst, childrenFirst)
-
-	// 4. An issue whose start is marked for its admission slot while the slots table names no
-	// row of it: its worker waits for the cap to free one, which is the waiting line working.
-	const owedStart = "LEGION-530"
-	seedUnslottedRoot(t, pool, owedStart, "D", phase.Implementing)
-	inTx(t, pool, func(tx pgx.Tx) {
-		row, err := record.NewOutboxRow(owedStart, record.SuperviseRequest{Op: "start", Tree: owedStart,
-			Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
-			Task: "Implement the change.", NeedsSlot: true}, fixedNow)
-		if err != nil {
-			t.Fatalf("build the start %s is owed: %v", owedStart, err)
+	// The waits themselves, and the seven trees a careless rule would silence with them: the
+	// scenario this test is named for, read from one project whose line can still move.
+	t.Run("waits", func(t *testing.T) {
+		pool := migratedPool(t)
+		// The cap is exactly the slots the fixture holds, so the two issues below that hold none —
+		// the one owing its worker a start and the one waiting for its first phase — wait behind a
+		// full cap, which is the fourth wait in each of its shapes. The two trees the daemon holds
+		// itself, below, each add a slotted root and no slot of their own members.
+		admission := quiet(t, 12)
+		admission.UseStalledTreeNotice(bound)
+		registerController(t, pool)
+		records := claimStore(t, pool)
+		idle := func(tree, issue string) {
+			t.Helper()
+			seedClaim(t, records, tree, issue, claim.RoleArchitect, supervise.StateIdle)
 		}
-		if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
-			t.Fatalf("enqueue the start %s is owed: %v", owedStart, err)
+
+		// 1. A root waiting on a person. The tree waits for an answer and only a person moves it.
+		const awaiting = "LEGION-501"
+		seedQuietRoot(t, pool, awaiting, "A", phase.AwaitingPerson)
+		idle(awaiting, awaiting)
+
+		// 2. A child a Dispatch blocked-by link holds where it stands: the waiting line passes over
+		// it every pass until the issue it waits on is done. Its root waits for that child under
+		// the children-first rule — a blocker holds a child alone (blockers.Holdable), so a tree
+		// silent by this wait is one whose root waits too — and the child's own blocker is what
+		// carries it: take the blocked-by rule out of the four and this tree is told, because
+		// nothing would then stand between the child and a stall.
+		const blockedRoot, blockedChild, blocker = "LEGION-510", "LEGION-511", "LEGION-519"
+		seedQuietRoot(t, pool, blockedRoot, "B", phase.Admitted)
+		blockedApproved := 1
+		seedGate(t, pool, record.DesignGate{Issue: blockedRoot, ArtifactID: "artifact-510", LatestVersion: 1,
+			ApprovedVersion: &blockedApproved, EverOpened: true})
+		seedQuietChild(t, pool, blockedRoot, blockedChild, "B1", phase.Admitted, "todo")
+		seedMirror(t, pool, blockedRoot, "in_progress")
+		seedMirrorChild(t, pool, blockedChild, "todo", blockedRoot, blocker)
+		seedMirror(t, pool, blocker, "in_progress")
+		idle(blockedRoot, blockedRoot)
+
+		// 3. A root whose own first phase has not started while a Dispatch child of it is open: the
+		// children-first rule holds it until that child is released and leaves the workflow. Its
+		// design gate stands open, which is where that wait begins.
+		const childrenFirst, openChild = "LEGION-520", "LEGION-521"
+		seedQuietRoot(t, pool, childrenFirst, "C", phase.Admitted)
+		approved := 1
+		seedGate(t, pool, record.DesignGate{Issue: childrenFirst, ArtifactID: "artifact-520", LatestVersion: 1,
+			ApprovedVersion: &approved, EverOpened: true})
+		seedMirror(t, pool, childrenFirst, "in_progress")
+		seedMirrorChild(t, pool, openChild, "backlog", childrenFirst)
+		idle(childrenFirst, childrenFirst)
+
+		// 4. An issue whose start is marked for its admission slot while the slots table names no
+		// row of it: its worker waits for the cap to free one, which is the waiting line working.
+		const owedStart = "LEGION-530"
+		seedUnslottedRoot(t, pool, owedStart, "D", phase.Implementing)
+		inTx(t, pool, func(tx pgx.Tx) {
+			row, err := record.NewOutboxRow(owedStart, record.SuperviseRequest{Op: "start", Tree: owedStart,
+				Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
+				Task: "Implement the change.", NeedsSlot: true}, fixedNow)
+			if err != nil {
+				t.Fatalf("build the start %s is owed: %v", owedStart, err)
+			}
+			if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
+				t.Fatalf("enqueue the start %s is owed: %v", owedStart, err)
+			}
+		})
+		idle(owedStart, owedStart)
+
+		// 5. A child waiting in the line for the first slot of its first phase, under a root that
+		// waits for it: the other shape of the fourth wait, and the one no owed start row names.
+		// The root's design gate stands open, which is what puts its released child in the line.
+		const firstSlotRoot, firstSlot = "LEGION-760", "LEGION-761"
+		seedQuietRoot(t, pool, firstSlotRoot, "L", phase.Admitted)
+		firstSlotApproved := 1
+		seedGate(t, pool, record.DesignGate{Issue: firstSlotRoot, ArtifactID: "artifact-760", LatestVersion: 1,
+			ApprovedVersion: &firstSlotApproved, EverOpened: true})
+		seedQuietChild(t, pool, firstSlotRoot, firstSlot, "L1", phase.Admitted, "todo")
+		seedMirror(t, pool, firstSlotRoot, "in_progress")
+		seedMirrorChild(t, pool, firstSlot, "todo", firstSlotRoot)
+		idle(firstSlotRoot, firstSlotRoot)
+
+		// 6. A tree with none of those waits: the plain stopped tree.
+		const stopped = "LEGION-540"
+		seedQuietRoot(t, pool, stopped, "E", phase.Implementing)
+		idle(stopped, stopped)
+
+		// 7. An issue in implementing with an open Dispatch child of its own. The children-first
+		// rule holds an issue whose own first phase has not started, and this one is past that, so
+		// the open child is no wait of the daemon's: its tree has stopped.
+		const working, workingChild = "LEGION-550", "LEGION-551"
+		seedQuietRoot(t, pool, working, "F", phase.Implementing)
+		seedMirror(t, pool, working, "in_progress")
+		seedMirrorChild(t, pool, workingChild, "backlog", working)
+		idle(working, working)
+
+		// 8. A held issue. Its architect decides what becomes of it, which is the tree's own work.
+		const held = "LEGION-560"
+		seedQuietRoot(t, pool, held, "G", phase.Held)
+		idle(held, held)
+
+		// 9. An issue awaiting its merge. It waits for GitHub, which is nothing the daemon holds it
+		// for, and a merge that never lands is exactly the stall this rule was filed for.
+		const awaitingMerge = "LEGION-570"
+		seedQuietRoot(t, pool, awaitingMerge, "H", phase.AwaitingMerge)
+		idle(awaitingMerge, awaitingMerge)
+
+		// 10. A tree holding a notice queued to a role whose claim is suspended. Only a start held
+		// for a slot is a wait of the daemon's; a delivery queued to a role nothing brings back is
+		// a tree that has stopped with a message nobody will read.
+		const suspended = "LEGION-580"
+		seedQuietRoot(t, pool, suspended, "I", phase.Implementing)
+		seedClaim(t, records, suspended, suspended, claim.RoleImplementer, supervise.StateSuspended)
+		inTx(t, pool, func(tx pgx.Tx) {
+			row, err := record.NewOutboxRow(suspended, record.Notice{Kind: "held", Role: claim.RoleImplementer,
+				Phase: phase.Implementing, Reason: string(record.HoldEscalated)}, fixedNow)
+			if err != nil {
+				t.Fatalf("build the notice queued to %s's suspended role: %v", suspended, err)
+			}
+			if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
+				t.Fatalf("enqueue the notice queued to %s's suspended role: %v", suspended, err)
+			}
+		})
+
+		// 11. A tree whose root waits on a person over a child that has stopped. The first wait is
+		// the root's and the root's alone; the child in implementing is nobody's to move, and the
+		// tree is told.
+		const mixedAwaiting, mixedAwaitingChild = "LEGION-590", "LEGION-591"
+		seedQuietRoot(t, pool, mixedAwaiting, "J", phase.AwaitingPerson)
+		seedQuietChild(t, pool, mixedAwaiting, mixedAwaitingChild, "J1", phase.Implementing, "in_progress")
+		idle(mixedAwaiting, mixedAwaiting)
+
+		// 12. A tree whose child a Dispatch blocked-by link holds where it stands while its root
+		// has stopped in implementing. The second wait is the child's, and the root is told with
+		// it: the same mixture as the tree above, read from the other side of the tree and through
+		// another of the four.
+		const mixedBlocked, mixedBlockedChild, mixedBlocker = "LEGION-600", "LEGION-601", "LEGION-609"
+		seedQuietRoot(t, pool, mixedBlocked, "K", phase.Implementing)
+		seedQuietChild(t, pool, mixedBlocked, mixedBlockedChild, "K1", phase.Admitted, "todo")
+		seedMirror(t, pool, mixedBlocked, "in_progress")
+		seedMirrorChild(t, pool, mixedBlockedChild, "todo", mixedBlocked, mixedBlocker)
+		seedMirror(t, pool, mixedBlocker, "in_progress")
+		idle(mixedBlocked, mixedBlocked)
+
+		// 13. A root waiting on a person with one released child of its own standing at admitted.
+		// The daemon starts nothing of a tree whose root waits, so it keeps that child out of the
+		// waiting line itself: the child needs a slot, holds none, and the slot it waits for comes
+		// with its root's answer. Its tree's design gate stands open, so the root's wait is the
+		// only thing holding it.
+		const personRoot, personChild = "LEGION-610", "LEGION-611"
+		seedQuietRoot(t, pool, personRoot, "M", phase.AwaitingPerson)
+		personApproved := 1
+		seedGate(t, pool, record.DesignGate{Issue: personRoot, ArtifactID: "artifact-610", LatestVersion: 1,
+			ApprovedVersion: &personApproved, EverOpened: true})
+		seedQuietChild(t, pool, personRoot, personChild, "M1", phase.Admitted, "todo")
+		seedMirror(t, pool, personRoot, "in_progress")
+		seedMirrorChild(t, pool, personChild, "todo", personRoot)
+		idle(personRoot, personRoot)
+
+		// 14. A tree whose design gate has closed again over a member standing at admitted: its
+		// architect is revising the spec the tree's work must follow, and nothing of the tree
+		// starts until a person approves that version. The gate has opened before, so the root is
+		// no root waiting for its tree to be opened and the tree is one the daemon runs.
+		const gatedRoot, gatedChild = "LEGION-620", "LEGION-621"
+		seedQuietRoot(t, pool, gatedRoot, "N", phase.Admitted)
+		gatedApproved := 1
+		seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: "artifact-620", LatestVersion: 2,
+			ApprovedVersion: &gatedApproved, EverOpened: true})
+		seedQuietChild(t, pool, gatedRoot, gatedChild, "N1", phase.Admitted, "todo")
+		seedMirror(t, pool, gatedRoot, "in_progress")
+		seedMirrorChild(t, pool, gatedChild, "todo", gatedRoot)
+		idle(gatedRoot, gatedRoot)
+
+		// The fixture's own premise: each of the four is the wait it says it is, read from the
+		// facts the pass itself judges from. Without this, a tree left out for some other reason —
+		// a tree the daemon does not run, one that is not quiet — would read here as a wait
+		// honoured and prove nothing.
+		facts, slots := passFacts(t, pool)
+		if _, blocked := facts.Held[blockedChild]; !blocked {
+			t.Fatalf("%s is held by no Dispatch blocker: the pass's own facts hold %v", blockedChild, facts.Held)
+		}
+		if _, waits := facts.ChildWaits[blockedRoot]; !waits {
+			t.Fatalf("%s waits for no child of its own: its tree is silent only while both of its issues wait, the pass's own facts hold %v",
+				blockedRoot, facts.ChildWaits)
+		}
+		if _, waits := facts.ChildWaits[childrenFirst]; !waits {
+			t.Fatalf("%s waits for no child of its own: the pass's own facts hold %v", childrenFirst, facts.ChildWaits)
+		}
+		if _, owes := facts.Owed[owedStart]; !owes {
+			t.Fatalf("%s owes its worker no start marked for a slot: the pass's own facts hold %v", owedStart, facts.Owed)
+		}
+		for _, slot := range slots {
+			if slot.Issue == owedStart {
+				t.Fatalf("%s holds admission slot %d: the fourth wait is a start marked for a slot its issue does not hold", owedStart, slot.Index)
+			}
+		}
+		// The premise of the fourth wait's second shape, read the same way: the child owes no start
+		// row and holds no slot, so the owed-start half of the cap's hold does not name it, and it
+		// is held by the line alone.
+		if _, owes := facts.Owed[firstSlot]; owes {
+			t.Fatalf("%s owes a start row, so this fixture is not an issue waiting for its first phase: %v", firstSlot, facts.Owed)
+		}
+		for _, slot := range slots {
+			if slot.Issue == firstSlot {
+				t.Fatalf("%s holds one of the cap's rows, so it is not waiting in the line: %#v", firstSlot, slots)
+			}
+		}
+		if _, waits := facts.ChildWaits[firstSlotRoot]; !waits {
+			t.Fatalf("%s waits for no child of its own: its tree is silent only while its root waits for the child and the child waits for the cap, the pass's own facts hold %v",
+				firstSlotRoot, facts.ChildWaits)
+		}
+		if !issue(t, pool, awaiting).AwaitingPerson() {
+			t.Fatalf("%s does not wait on a person: the first wait is the root that does", awaiting)
+		}
+		if _, blocked := facts.Held[mixedBlockedChild]; !blocked {
+			t.Fatalf("%s is held by no Dispatch blocker: the mixed tree's premise is that one of its two issues waits by design, the pass's own facts hold %v",
+				mixedBlockedChild, facts.Held)
+		}
+		if !issue(t, pool, mixedAwaiting).AwaitingPerson() {
+			t.Fatalf("%s does not wait on a person: the mixed tree's premise is that its root does", mixedAwaiting)
+		}
+		// The premise of the two the daemon holds itself, read the same way and from the one
+		// producer of the holds (record.StartHoldsOf, which the measure reads them from): each
+		// member stands in no entry of the line and holds none of the cap's rows, so no reading
+		// of the line can say what holds it, and the producer names the hold that does. Each case
+		// is driven by a hold of its own, so neither stands in for the other.
+		holds := passHolds(t, pool, facts, slots)
+		line := waitingLine(t, pool, testProject, nil)
+		for _, member := range []struct {
+			key  string
+			hold record.StartHold
+		}{{personChild, record.StartHoldRootPerson}, {gatedChild, record.StartHoldDesign}} {
+			if slices.Contains(line, member.key) {
+				t.Fatalf("%s stands in the waiting line %v: the daemon keeps it out of the line, which is why no entry of the line names what holds it",
+					member.key, line)
+			}
+			for _, slot := range slots {
+				if slot.Issue == member.key {
+					t.Fatalf("%s holds admission slot %d: a member the daemon keeps out of its line holds none", member.key, slot.Index)
+				}
+			}
+			if got := holds[member.key]; got != member.hold {
+				t.Fatalf("the daemon holds %s for %q, want %q: this case is driven by that hold and by no other", member.key, got, member.hold)
+			}
+		}
+		if got := holds[personRoot]; got != record.StartHoldPerson {
+			t.Fatalf("the daemon holds %s for %q, want %q: the tree is silent only while its root waits on the person as well",
+				personRoot, got, record.StartHoldPerson)
+		}
+		if got := holds[gatedRoot]; got != record.StartHoldDesign {
+			t.Fatalf("the daemon holds %s for %q, want %q: the tree is silent only while the closed gate holds its root as well",
+				gatedRoot, got, record.StartHoldDesign)
+		}
+
+		settled := settleMovements(t, pool, awaiting, blockedRoot, blockedChild, childrenFirst, owedStart,
+			firstSlotRoot, firstSlot, stopped, working, held, awaitingMerge, suspended, mixedAwaiting,
+			mixedAwaitingChild, mixedBlocked, mixedBlockedChild, personRoot, personChild, gatedRoot, gatedChild)
+		admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
+
+		tick(t, pool, admission, "waits")
+
+		want := []string{stopped, working, held, awaitingMerge, suspended, mixedAwaiting, mixedBlocked}
+		if got := stalledRoots(t, pool); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the controller was told of %v, want %v: a tree is silent only where every quiet issue of it waits by design, the two mixed trees are told, and %s waits for its children while %s waits in the line for its first slot, which is the cap's own hold",
+				got, want, firstSlotRoot, firstSlot)
 		}
 	})
-	idle(owedStart, owedStart)
-
-	// 5. A child waiting in the line for the first slot of its first phase, under a root that
-	// waits for it: the other shape of the fourth wait, and the one no owed start row names.
-	// The root's design gate stands open, which is what puts its released child in the line.
-	const firstSlotRoot, firstSlot = "LEGION-760", "LEGION-761"
-	seedQuietRoot(t, pool, firstSlotRoot, "L", phase.Admitted)
-	firstSlotApproved := 1
-	seedGate(t, pool, record.DesignGate{Issue: firstSlotRoot, ArtifactID: "artifact-760", LatestVersion: 1,
-		ApprovedVersion: &firstSlotApproved, EverOpened: true})
-	seedQuietChild(t, pool, firstSlotRoot, firstSlot, "L1", phase.Admitted, "todo")
-	seedMirror(t, pool, firstSlotRoot, "in_progress")
-	seedMirrorChild(t, pool, firstSlot, "todo", firstSlotRoot)
-	idle(firstSlotRoot, firstSlotRoot)
-
-	// 6. A tree with none of those waits: the plain stopped tree.
-	const stopped = "LEGION-540"
-	seedQuietRoot(t, pool, stopped, "E", phase.Implementing)
-	idle(stopped, stopped)
-
-	// 7. An issue in implementing with an open Dispatch child of its own. The children-first
-	// rule holds an issue whose own first phase has not started, and this one is past that, so
-	// the open child is no wait of the daemon's: its tree has stopped.
-	const working, workingChild = "LEGION-550", "LEGION-551"
-	seedQuietRoot(t, pool, working, "F", phase.Implementing)
-	seedMirror(t, pool, working, "in_progress")
-	seedMirrorChild(t, pool, workingChild, "backlog", working)
-	idle(working, working)
-
-	// 8. A held issue. Its architect decides what becomes of it, which is the tree's own work.
-	const held = "LEGION-560"
-	seedQuietRoot(t, pool, held, "G", phase.Held)
-	idle(held, held)
-
-	// 9. An issue awaiting its merge. It waits for GitHub, which is nothing the daemon holds it
-	// for, and a merge that never lands is exactly the stall this rule was filed for.
-	const awaitingMerge = "LEGION-570"
-	seedQuietRoot(t, pool, awaitingMerge, "H", phase.AwaitingMerge)
-	idle(awaitingMerge, awaitingMerge)
-
-	// 10. A tree holding a notice queued to a role whose claim is suspended. Only a start held
-	// for a slot is a wait of the daemon's; a delivery queued to a role nothing brings back is
-	// a tree that has stopped with a message nobody will read.
-	const suspended = "LEGION-580"
-	seedQuietRoot(t, pool, suspended, "I", phase.Implementing)
-	seedClaim(t, records, suspended, suspended, claim.RoleImplementer, supervise.StateSuspended)
-	inTx(t, pool, func(tx pgx.Tx) {
-		row, err := record.NewOutboxRow(suspended, record.Notice{Kind: "held", Role: claim.RoleImplementer,
-			Phase: phase.Implementing, Reason: string(record.HoldEscalated)}, fixedNow)
-		if err != nil {
-			t.Fatalf("build the notice queued to %s's suspended role: %v", suspended, err)
-		}
-		if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
-			t.Fatalf("enqueue the notice queued to %s's suspended role: %v", suspended, err)
-		}
-	})
-
-	// 11. A tree whose root waits on a person over a child that has stopped. The first wait is
-	// the root's and the root's alone; the child in implementing is nobody's to move, and the
-	// tree is told.
-	const mixedAwaiting, mixedAwaitingChild = "LEGION-590", "LEGION-591"
-	seedQuietRoot(t, pool, mixedAwaiting, "J", phase.AwaitingPerson)
-	seedQuietChild(t, pool, mixedAwaiting, mixedAwaitingChild, "J1", phase.Implementing, "in_progress")
-	idle(mixedAwaiting, mixedAwaiting)
-
-	// 12. A tree whose child a Dispatch blocked-by link holds where it stands while its root
-	// has stopped in implementing. The second wait is the child's, and the root is told with
-	// it: the same mixture as the tree above, read from the other side of the tree and through
-	// another of the four.
-	const mixedBlocked, mixedBlockedChild, mixedBlocker = "LEGION-600", "LEGION-601", "LEGION-609"
-	seedQuietRoot(t, pool, mixedBlocked, "K", phase.Implementing)
-	seedQuietChild(t, pool, mixedBlocked, mixedBlockedChild, "K1", phase.Admitted, "todo")
-	seedMirror(t, pool, mixedBlocked, "in_progress")
-	seedMirrorChild(t, pool, mixedBlockedChild, "todo", mixedBlocked, mixedBlocker)
-	seedMirror(t, pool, mixedBlocker, "in_progress")
-	idle(mixedBlocked, mixedBlocked)
-
-	// The fixture's own premise: each of the four is the wait it says it is, read from the
-	// facts the pass itself judges from. Without this, a tree left out for some other reason —
-	// a tree the daemon does not run, one that is not quiet — would read here as a wait
-	// honoured and prove nothing.
-	facts, slots := passFacts(t, pool)
-	if _, blocked := facts.Held[blockedChild]; !blocked {
-		t.Fatalf("%s is held by no Dispatch blocker: the pass's own facts hold %v", blockedChild, facts.Held)
-	}
-	if _, waits := facts.ChildWaits[blockedRoot]; !waits {
-		t.Fatalf("%s waits for no child of its own: its tree is silent only while both of its issues wait, the pass's own facts hold %v",
-			blockedRoot, facts.ChildWaits)
-	}
-	if _, waits := facts.ChildWaits[childrenFirst]; !waits {
-		t.Fatalf("%s waits for no child of its own: the pass's own facts hold %v", childrenFirst, facts.ChildWaits)
-	}
-	if _, owes := facts.Owed[owedStart]; !owes {
-		t.Fatalf("%s owes its worker no start marked for a slot: the pass's own facts hold %v", owedStart, facts.Owed)
-	}
-	for _, slot := range slots {
-		if slot.Issue == owedStart {
-			t.Fatalf("%s holds admission slot %d: the fourth wait is a start marked for a slot its issue does not hold", owedStart, slot.Index)
-		}
-	}
-	// The premise of the fourth wait's second shape, read the same way: the child owes no start
-	// row and holds no slot, so the owed-start half of the cap's hold does not name it, and it
-	// is held by the line alone.
-	if _, owes := facts.Owed[firstSlot]; owes {
-		t.Fatalf("%s owes a start row, so this fixture is not an issue waiting for its first phase: %v", firstSlot, facts.Owed)
-	}
-	for _, slot := range slots {
-		if slot.Issue == firstSlot {
-			t.Fatalf("%s holds one of the cap's rows, so it is not waiting in the line: %#v", firstSlot, slots)
-		}
-	}
-	if _, waits := facts.ChildWaits[firstSlotRoot]; !waits {
-		t.Fatalf("%s waits for no child of its own: its tree is silent only while its root waits for the child and the child waits for the cap, the pass's own facts hold %v",
-			firstSlotRoot, facts.ChildWaits)
-	}
-	if !issue(t, pool, awaiting).AwaitingPerson() {
-		t.Fatalf("%s does not wait on a person: the first wait is the root that does", awaiting)
-	}
-	if _, blocked := facts.Held[mixedBlockedChild]; !blocked {
-		t.Fatalf("%s is held by no Dispatch blocker: the mixed tree's premise is that one of its two issues waits by design, the pass's own facts hold %v",
-			mixedBlockedChild, facts.Held)
-	}
-	if !issue(t, pool, mixedAwaiting).AwaitingPerson() {
-		t.Fatalf("%s does not wait on a person: the mixed tree's premise is that its root does", mixedAwaiting)
-	}
-
-	settled := settleMovements(t, pool, awaiting, blockedRoot, blockedChild, childrenFirst, owedStart,
-		firstSlotRoot, firstSlot, stopped, working, held, awaitingMerge, suspended, mixedAwaiting,
-		mixedAwaitingChild, mixedBlocked, mixedBlockedChild)
-	admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
-
-	tick(t, pool, admission, "waits")
-
-	want := []string{stopped, working, held, awaitingMerge, suspended, mixedAwaiting, mixedBlocked}
-	if got := stalledRoots(t, pool); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the controller was told of %v, want %v: a tree is silent only where every quiet issue of it waits by design, the two mixed trees are told, and %s waits for its children while %s waits in the line for its first slot, which is the cap's own hold",
-			got, want, firstSlotRoot, firstSlot)
-	}
 
 	// The liveness clause of the silencing rule, in both directions (dispatch://INFRA-2560,
 	// R5). The trees above are its first half: they stand in a project whose line can still
@@ -671,8 +770,10 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	// Dispatch child under it, holding a slot the third wait silences while that child stands
 	// in the line holding none, which is the fourth. The cap is exactly the two slots they
 	// hold, so the child in the line is offered neither. architect is the state of the parent's
-	// architect claim, which is the one fact the control changes.
-	deadlockedProject := func(architect supervise.ClaimState) (*pgxpool.Pool, *Admission) {
+	// architect claim, which is the one fact the control changes. t is the subtest's own, so
+	// the database it opens is closed with that subtest and a premise it refuses is refused
+	// there rather than in the test that owns neither.
+	deadlockedProject := func(t *testing.T, architect supervise.ClaimState) (*pgxpool.Pool, *Admission) {
 		t.Helper()
 		deadPool := migratedPool(t)
 		registerController(t, deadPool)
@@ -717,43 +818,47 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		return deadPool, deadAdmission
 	}
 
-	// 13. The deadlocked project. Every slot holder of it is silenced by one of the four waits
+	// 15. The deadlocked project. Every slot holder of it is silenced by one of the four waits
 	// and every claim of it is idle, so nothing of it can start again by itself, and every tree
 	// of it is named with its quiet hours whatever its members wait for.
-	deadPool, deadAdmission := deadlockedProject(supervise.StateIdle)
-	deadSettled := settleMovements(t, deadPool, deadAwaiting, deadParent, deadChild)
-	deadAdmission.now = func() time.Time { return deadSettled.Add(7 * time.Hour) }
+	t.Run("deadlocked", func(t *testing.T) {
+		deadPool, deadAdmission := deadlockedProject(t, supervise.StateIdle)
+		deadSettled := settleMovements(t, deadPool, deadAwaiting, deadParent, deadChild)
+		deadAdmission.now = func() time.Time { return deadSettled.Add(7 * time.Hour) }
 
-	tick(t, deadPool, deadAdmission, "deadlocked")
+		tick(t, deadPool, deadAdmission, "deadlocked")
 
-	const stillness = "The tree has been quiet for 7.0 hours. No agent of the tree is at work."
-	const decide = "\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can move an issue back a phase. You can park the tree."
-	wantDeadlocked := []stalledNotice{
-		{issue: deadAwaiting, reason: deadAwaiting + " has stopped. " + stillness + "\n" + deadAwaiting +
-			" is in awaiting_person. No role works this phase. The record holds no pull request." + decide},
-		{issue: deadParent, reason: deadParent + " has stopped. " + stillness + "\n" + deadParent +
-			" is in admitted. No role works this phase. The record holds no pull request.\n" + deadChild +
-			" is in admitted. No role works this phase. The record holds no pull request." + decide},
-	}
-	if got := stalledNotices(t, deadPool); !reflect.DeepEqual(got, wantDeadlocked) {
-		t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named however its members wait",
-			got, wantDeadlocked)
-	}
+		const stillness = "The tree has been quiet for 7.0 hours. No agent of the tree is at work."
+		const decide = "\nRead the tree and decide what it needs. You can ask a role what it waits on." +
+			" You can move an issue back a phase. You can park the tree."
+		wantDeadlocked := []stalledNotice{
+			{issue: deadAwaiting, reason: deadAwaiting + " has stopped. " + stillness + "\n" + deadAwaiting +
+				" is in awaiting_person. No role works this phase. The record holds no pull request." + decide},
+			{issue: deadParent, reason: deadParent + " has stopped. " + stillness + "\n" + deadParent +
+				" is in admitted. No role works this phase. The record holds no pull request.\n" + deadChild +
+				" is in admitted. No role works this phase. The record holds no pull request." + decide},
+		}
+		if got := stalledNotices(t, deadPool); !reflect.DeepEqual(got, wantDeadlocked) {
+			t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named however its members wait",
+				got, wantDeadlocked)
+		}
+	})
 
-	// 14. The control, which must stay silent: the same project with the parent's architect at
+	// 16. The control, which must stay silent: the same project with the parent's architect at
 	// work. That agent will give its slot back when it is done, so the project's line can still
 	// move and the four waits silence what they are there to silence — neither the tree waiting
 	// on a person nor the tree whose architect is working is told.
-	livePool, liveAdmission := deadlockedProject(supervise.StateWorking)
-	liveSettled := settleMovements(t, livePool, deadAwaiting, deadParent, deadChild)
-	liveAdmission.now = func() time.Time { return liveSettled.Add(7 * time.Hour) }
+	t.Run("line-moving", func(t *testing.T) {
+		livePool, liveAdmission := deadlockedProject(t, supervise.StateWorking)
+		liveSettled := settleMovements(t, livePool, deadAwaiting, deadParent, deadChild)
+		liveAdmission.now = func() time.Time { return liveSettled.Add(7 * time.Hour) }
 
-	tick(t, livePool, liveAdmission, "line-moving")
+		tick(t, livePool, liveAdmission, "line-moving")
 
-	if got := stalledRoots(t, livePool); got != nil {
-		t.Fatalf("the project with an agent at work was told of %v, want nothing: every tree of it waits by design and its line can still move", got)
-	}
+		if got := stalledRoots(t, livePool); got != nil {
+			t.Fatalf("the project with an agent at work was told of %v, want nothing: every tree of it waits by design and its line can still move", got)
+		}
+	})
 }
 
 // Every claim state that is work under way keeps its tree out of the report, however long the

@@ -23,8 +23,8 @@ The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that is
 its review — it stands in `accepting`, `retro`, `merging` or `awaiting_merge` — it is done, it
 left the workflow, or its tree closed or stopped running. An issue holds one of the cap's slots
 from the moment the daemon starts it until its work is past its review, until it is done, or
-until Dispatch takes it out of the workflow, so none of its waits up to that review sends this
-wake. A slot is one issue the daemon has started, a root or a
+until Dispatch shows it in `triage`, `icebox` or `backlog`, so none of its waits up to that
+review sends this wake. A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
@@ -63,7 +63,7 @@ take nothing for them.
 Either a root that waited for a slot was moved from `todo` to the status `reason` names, by a
 person or by another session, or a root waiting on a person (`awaiting_person`) could not be
 resumed — its `legion` label is gone, or a person or a session outside its tree took its Dispatch
-claim. Either way the daemon took it out of the workflow (`phase: done`) and starts nothing for it;
+claim. Either way the daemon set the root's `phase` to `done` and starts nothing for it;
 `reason` says which. Re-admit nothing, because the move was someone else's; `dispatch read` shows
 who claims it now. Tell the person in your summary: "<KEY> left Legion's workflow: <reason as the
 wake gives it>; `todo` with the `legion` label queues it again". Other admission states:
@@ -84,9 +84,15 @@ it happens however full the cap is. A lost label or a foreign Dispatch claim sen
 ## `tree-stalled on <KEY>` (`{kind: "tree-stalled", reason}`)
 
 A tree of your project has stopped: `<KEY>` is its root, nothing of the tree has moved for longer
-than `stalled_tree_notice_hours` (six by default), no agent of it is at work, and at least one
-issue of it waits by no rule of the daemon's own — a tree is silent only while every quiet issue
-of it waits on a person, on a Dispatch blocker, for an open child, or for a free slot. The
+than `stalled_tree_notice_hours` (six by default), and no agent of it is at work.
+The daemon tells you when at least one issue of it waits by no rule of the daemon's own, and when
+the project's line can no longer move.
+A tree is silent only while every quiet issue of it waits on a person, on a Dispatch blocker, for
+an open child, or for an admission slot it needs and does not hold, and only while the project's
+line can still move: some issue of the project holds a slot and waits by none of those rules, or
+some claim of the project is at work.
+Where neither holds, no work of the project can start again by itself, so every tree of it is
+named however its members wait. The
 `reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
 line for each issue of the tree the workflow still runs: the phase its record carries, the role
 whose turn that phase is or that no role works it, and the state of that issue's pull request or

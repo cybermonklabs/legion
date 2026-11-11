@@ -259,9 +259,14 @@ github_apps:
 #                                      # handoff, no start, no completion — and no agent of it steps,
 #                                      # so a turn that runs for a day keeps its tree moving. A tree
 #                                      # with a role at work is never told, and neither is one
-#                                      # waiting by design: a root awaiting a person, an issue a
-#                                      # blocked-by link holds, an issue held for its open children,
-#                                      # or one whose start waits for an admission slot. 6 by
+#                                      # whose every quiet issue waits by design — a root awaiting a
+#                                      # person, an issue a blocked-by link holds, an issue held for
+#                                      # its open children, or one that needs an admission slot and
+#                                      # holds none — while the project's line can still move: some
+#                                      # issue of the project holds a slot and waits by no such
+#                                      # rule, or some claim of the project is at work. Where that
+#                                      # line cannot move, the controller is told about every tree
+#                                      # of the project, however its members wait. 6 by
 #                                      # default, a decimal number of hours. No value turns the
 #                                      # notice off; a deployment that wants fewer notices raises
 #                                      # the number, to 596 at most, and 0, a negative number and a

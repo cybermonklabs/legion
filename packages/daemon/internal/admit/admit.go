@@ -1291,17 +1291,19 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	// Every tree of this project that has stopped is told to the controller here, after the
 	// releases and the line's judgement: the rule reads the facts this pass already holds —
-	// what a blocker holds, what waits for its children, the line itself, which carries both
-	// where every issue stands and whether it held a slot when the line was built, and the
-	// slot rows the line was judged from, which name every holder of the cap and not only the
-	// holders standing in the line — and no pass may read them twice. The slots are what the
-	// rule's liveness clause is read from: a project is stopped for good when no slot holder
-	// of it can finish and no agent of it is at work, and a holder in a phase of its own
-	// stands in no line (lineCanMove). They are this pass's own rows, read again after every
-	// release it made, so the rule judges the slots the project holds now. It runs before the
-	// cap check below, because a deployment whose cap admits nothing still runs the trees it
-	// opened before and still owes its controller the news that one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, line, slots); err != nil {
+	// what a blocker holds, what waits for its children, and the slot rows the line was judged
+	// from, which name every holder of the cap and not only the holders standing in the line —
+	// and no pass may read them twice. Why the daemon starts no issue of the project now is the
+	// rule's own reading of those three, taken from the one pass that produces the line itself
+	// (record.StartHoldsOf), so the measure and the line cannot disagree about what holds an
+	// issue. The slots are what the rule's liveness clause is read from: a project is stopped
+	// for good when no slot holder of it can finish and no agent of it is at work, and a holder
+	// in a phase of its own stands in no line (lineCanMove). They are this pass's own rows,
+	// read again after every release it made, so the rule judges the slots the project holds
+	// now. It runs before the cap check below, because a deployment whose cap admits nothing
+	// still runs the trees it opened before and still owes its controller the news that one has
+	// stopped.
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
@@ -1810,7 +1812,7 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if err := a.engine.LeaveUnslotted(ctx, tx, issue); err != nil {
 			return released, fmt.Errorf("release unslotted root %s: %w", issue.Key, err)
 		}
-		reason += "; the daemon took it out of the workflow and starts nothing for it; todo with the legion label queues it again"
+		reason += "; the daemon set its phase to done and starts nothing for it; todo with the legion label queues it again"
 		if err := a.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.UnslottedNotice, Reason: reason}, a.now()); err != nil {
 			return released, err
 		}

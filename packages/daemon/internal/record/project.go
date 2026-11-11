@@ -760,6 +760,24 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // is out of the line too: nothing of a tree that has left the workflow is started again until
 // its re-admission opens it.
 func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
+	line, _ := waitingLine(issues, slots, facts)
+	return line
+}
+
+// waitingLine is that line and, beside it, the one hold the walk has for every issue of the
+// project it reads (StartHold): why the daemon does not start that issue now. The two come out
+// of this one pass and of nothing else — Waiting takes the line and StartHoldsOf the holds — so
+// a rule that must agree with the line about why an issue stands still reads the walk's own word
+// for it rather than working the answer out again from the line's membership, which is the fix
+// for a term three readings of it disagreed about (dispatch://INFRA-2560, R5).
+//
+// Which part of the walk answers for an issue is the walk's own shape, since the part that would
+// start the issue is the part that knows what holds it: the queued-root walk answers for every
+// root waiting for its tree to be opened, the first-phase walk for every other issue standing at
+// admitted, and the walk of the issues whose work came back for the rest — every issue whose
+// first phase has already started, the roots waiting on a person among them. The three take
+// every issue read between them and no issue twice, so each one is written once.
+func waitingLine(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, map[string]StartHold) {
 	slotted := make(map[string]struct{}, len(slots))
 	for _, slot := range slots {
 		slotted[slot.Issue] = struct{}{}
@@ -779,6 +797,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 	for _, issue := range queued {
 		queuedKeys[issue.Key] = struct{}{}
 	}
+	holds := make(map[string]StartHold, len(issues))
 
 	// The tree of a candidate must be live and must not linger, and the root must be recorded:
 	// the whole line is work the daemon is about to start, and a tree that has left runs nothing.
@@ -798,17 +817,33 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 	}
 	var returned []timed
 	for _, issue := range issues {
+		_, waitingAsRoot := queuedKeys[issue.Key]
+		// writes says whether the skips of this walk answer why the daemon does not start this
+		// issue: a root waiting for its tree to be opened is the queued-root walk's below and an
+		// issue standing at admitted is the first-phase walk's, and each of those walks says
+		// what holds the issues it reads.
+		writes := !waitingAsRoot && issue.Phase != phase.Admitted
+		if issue.AwaitingPerson() {
+			// A root that handed its work to a person is held by that person, whether or not
+			// the answer has come back and whatever rows it holds: it keeps its slot throughout
+			// (KeepsSlot, the ruling on dispatch://INFRA-1909), so the skips below pass it over
+			// at a row that says nothing about why it stands still. Its hold is written here and
+			// they leave it alone. Such a root never stands at admitted and is no queued root
+			// (QueuedRoot refuses one), so this walk is always the walk that answers for it.
+			holds[issue.Key] = StartHoldPerson
+			writes = false
+		}
 		if issue.Answered() {
 			// An answered root belongs to this part whether or not its tree lifecycle still
 			// stands open, and whether or not it holds a slot row: its wait kept that row
 			// (KeepsSlot), and its place is the moment its work came back, which is its answer
 			// or, when a person's approval opened its gate later than that, the approval.
-			_, holds := slotted[issue.Key]
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds},
+			_, holdsSlot := slotted[issue.Key]
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holdsSlot},
 				at: later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())})
 			continue
 		}
-		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot {
+		if waitingAsRoot {
 			// A root whose tree is not open yet is in the second part whatever rows it owes: its
 			// promotion opens the tree, and the starts of a run it carries are queued then.
 			continue
@@ -818,6 +853,9 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// without the line, and a place in the line would only take a slot from an issue
 		// holding none.
 		if _, held := slotted[issue.Key]; held {
+			if writes {
+				holds[issue.Key] = StartHoldNone
+			}
 			continue
 		}
 		// The issue must need a slot where it stands (NeedsSlot), the same question the release
@@ -828,14 +866,25 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		root, recorded := byKey[issue.Tree]
 		_, running := live[issue.Tree]
 		if !recorded || !NeedsSlot(issue, root, running) {
+			if writes {
+				holds[issue.Key] = whyNoSlot(issue, root, recorded && running)
+			}
 			continue
 		}
 		owed, owes := facts.Owed[issue.Key]
 		if !owes {
+			// Nothing is owed and nothing holds it: a slot freed now would release no start of
+			// this issue, so the cap is not what it waits for.
+			if writes {
+				holds[issue.Key] = StartHoldNone
+			}
 			continue
 		}
 		// This issue holds no row: the skip above took every holder out of the line, so the
 		// entry says so and its promotion takes one for it.
+		if writes {
+			holds[issue.Key] = lineHold(false)
+		}
 		returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineReturning}, at: owed.CreatedAt, id: owed.ID})
 	}
 
@@ -861,32 +910,50 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// root of its own — so the carried row is the case this is written against rather than
 		// the usual one. It is the one statement of that reasoning: the doc above, QueuedRoot
 		// and WaitsForSlot each point here rather than repeating it.
-		_, holds := slotted[issue.Key]
-		if holds && issue.HandedOverFrom == "" {
+		_, holdsSlot := slotted[issue.Key]
+		if holdsSlot && issue.HandedOverFrom == "" {
+			// Its tree is open and the daemon has started it: nothing holds this root but the
+			// work its architect has in hand.
+			holds[issue.Key] = StartHoldNone
 			continue
 		}
 		if slices.ContainsFunc(issue.Ancestry, func(key string) bool {
 			_, under := live[key]
 			return under && key != issue.Key
 		}) {
+			holds[issue.Key] = StartHoldUnreleased
 			continue
 		}
-		starting = append(starting, LineEntry{Issue: issue, Kind: LineQueuedRoot, Holds: holds})
+		holds[issue.Key] = lineHold(holdsSlot)
+		starting = append(starting, LineEntry{Issue: issue, Kind: LineQueuedRoot, Holds: holdsSlot})
 	}
 	for _, issue := range issues {
-		if issue.Phase != phase.Admitted || issue.AwaitingPerson() || OutOfWorkflow(issue.Status) {
+		// An issue whose first phase has already started is the first walk's, the roots waiting
+		// on a person among them: such a root stands at no admitted phase, and the second term
+		// is that reading spelled out.
+		if issue.Phase != phase.Admitted || issue.AwaitingPerson() {
 			continue
 		}
-		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) {
+		if OutOfWorkflow(issue.Status) {
+			holds[issue.Key] = StartHoldLeftWorkflow
+			continue
+		}
+		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot {
+			continue
+		}
+		if !runs(issue) {
+			holds[issue.Key] = StartHoldTreeGone
 			continue
 		}
 		// A root that handed work to a person starts nothing of its tree while it waits: its
 		// members start with its resume (admit's promotion of the answered root).
 		if root := byKey[issue.Tree]; root.AwaitingPerson() {
+			holds[issue.Key] = StartHoldRootPerson
 			continue
 		}
 		gate := facts.Gates[issue.Tree]
 		if !gate.Open() {
+			holds[issue.Key] = StartHoldDesign
 			continue
 		}
 		// A child an unfinished Dispatch issue holds where it stands waits for that issue, not
@@ -894,6 +961,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// first phase would start on work its blocker has still to land. Its tree's architect is
 		// told when it starts, and the state names it under admission.blocked meanwhile.
 		if _, blocked := facts.Held[issue.Key]; blocked {
+			holds[issue.Key] = StartHoldBlocker
 			continue
 		}
 		// A parent whose own Dispatch children are still open does its work after theirs
@@ -902,6 +970,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// run of its tree when the wait begins (admit's tellChildrenFirst), and the state names
 		// it under admission.blocked meanwhile.
 		if _, waits := facts.ChildWaits[issue.Key]; waits {
+			holds[issue.Key] = StartHoldChildren
 			continue
 		}
 		// An issue beneath an ancestor the daemon has already accepted waits for that ancestor
@@ -911,10 +980,12 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// walked over the records above this pass's own as well, so that a parent already done
 		// does not hide the merging issue above it.
 		if HeldUnderAccepted(issue, chain) {
+			holds[issue.Key] = StartHoldAccepted
 			continue
 		}
-		_, holds := slotted[issue.Key]
-		entry := LineEntry{Issue: issue, Kind: LineFirstPhase, Holds: holds}
+		_, holdsSlot := slotted[issue.Key]
+		holds[issue.Key] = lineHold(holdsSlot)
+		entry := LineEntry{Issue: issue, Kind: LineFirstPhase, Holds: holdsSlot}
 		// A tree's own root has held a slot since its architect began the design and keeps it
 		// while its children do the work (KeepsSlot): its first phase is work coming back, so
 		// it stands in the first part at the moment the gate opened (TreeGate.OpenedAt), and
@@ -952,7 +1023,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 	for _, waiting := range returned {
 		line = append(line, waiting.entry)
 	}
-	return append(line, starting...)
+	return append(line, starting...), holds
 }
 
 // WaitingIssues is the issues of a waiting line, in its order: what a reader of the line that

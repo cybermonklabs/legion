@@ -1952,34 +1952,75 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 	return id, nil
 }
 
+// pendingPhaseStart is an issue's queued start of a phase worker: the supervise start row that
+// names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
+// refuses to write without either. $1 is the issue. It is the shape of the row this issue holds
+// one of, so it is what ReplaceOwedStart matches on; the slot mark cannot do that work any
+// more, since a start of a phase past its review carries none (PhaseKeepsSlot).
+//
+// The issue's other supervise starts name no phase or carry no task — the tree architect's
+// (admit's promotion), the roles brought back beside a member's phase worker (admit's
+// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled
+// idle release — and each of them is a start of its own that must still run. None of them is
+// ever written over here, which is what the mark used to keep this statement from doing.
+const pendingPhaseStart = `issue = $1 and kind = 'supervise'
+			and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
+
 // ReplaceOwedStart writes row's payload over the start the issue already owes its worker — its
-// oldest supervise start marked needsSlot that no live lease holds — and says whether it found
-// one. The caller enqueues row itself when it did not (workflow.StartOrOwe), which is the
-// back-to-back case the daemon has always had: two transitions before the worker runs leave one
-// start, the later one.
+// oldest pending start of a phase worker that no live lease holds and that waits for what row
+// waits for, the issue's admission slot or nothing — and says whether it found one. The caller
+// enqueues row itself when it did not (workflow.StartOrOwe), which is the back-to-back case the
+// daemon has always had: two transitions before the worker runs leave one start, the later one.
 //
-// It updates that row in place rather than deleting it and inserting a fresh one because the
-// row's id and created_at are the waiting line's own ordering key (OwedStart): the issue queued
-// when its work first came back, and a second transition arriving while it waits is the same
-// wait carrying a newer task, not a new turn at the back of the line. The earlier task is
-// already dead whichever path wrote it — the transition minted a new assignment onto the role's
-// phases row in its own transaction, so a completion of the earlier one is refused
-// HANDOFF_STALE_ASSIGNMENT — so no information is lost with it.
+// Two start rows of one issue that the outbox cannot tell apart start that issue's worker twice
+// for one assignment, and that is what this keeps to one row. The outbox's fences end a row
+// that serves a phase the issue has left or an older generation, and admission's repair takes
+// such a row away before the waiting line is judged (admit's finishFencedStarts); what no fence
+// reaches is two rows that serve the phase the issue stands in, at its own generation, which is
+// the pair an operator's retry of a held retro or merger writes while the first start is still
+// queued. The mark is no part of telling those two apart: a start of a phase past its review
+// carries none, and while every start carried one the mark could stand for the row's shape.
 //
-// A row under a live lease is not updated: its slot came, its lane has it, and the caller's own
-// row is the next start. A lapsed lease is no lane holding anything — the outbox's own due
-// predicate reads it as free (outboxUnleasedDue) and only a finished delivery takes the row
-// away — so such a row is still the start this issue is owed and is replaced like any other.
-// The lease is tested in the update's own where clause and not only in the sub-select that picks
-// the row: a lane claiming the row while this statement waits on its row lock would otherwise
-// have the task under it changed, and deliver the earlier task while the phases row already
-// carries the later assignment. It is ClaimRow's own shape — one conditional update, never a
-// read and then a write — because Postgres rechecks the quals against the row's new version once
-// the lock is released, so the claim's lease is seen and nothing is written. ClaimRow's advisory
-// lock is for the one rule of its own the row lock does not cover, a subquery over other rows;
-// this statement's lease test is on the row it writes, so it needs none. The moment the test is
-// made against is the one the caller is acting at, which rides in on the row it hands over
-// (NewOutboxRow's nextAt), so one transition reads one clock throughout.
+// The mark is part of what the row must match, because a start that waits for a slot and one
+// that waits for none are two different waits and neither may be written over the other. A
+// start that waits for a slot takes its place in the waiting line from the row it is written
+// over — the line is ordered by that row's created_at and id (OwedStart) — and a start of a
+// phase past its review stands in no line at all (OwedStarts lists a marked row alone), so the
+// issue would wait from the moment a row it never waited on was queued, ahead of issues that
+// came to wait before it. The other way round, a start that waits for nothing is claimable at
+// once, so writing one over a row that is waiting would move the start ahead of anything its
+// lane has still to run behind that row, a close's suspend among them (admit's promotion of a
+// re-admitted tree queues its own start behind that suspend, so the worker comes back after the
+// stop rather than before it).
+//
+// Two rows can stand together only where they were written for different phases: the mark is
+// read from the phase (PhaseKeepsSlot) and every caller writes the phase on the record before
+// it calls, so the issue stands in the newer row's phase and the older one serves a phase it
+// has left — which is exactly what the outbox's phase fence finishes without acting, and what
+// the repair takes away where the row waits in the line.
+//
+// It updates the row it keeps in place rather than deleting it and inserting a fresh one because
+// the row's id and created_at are that ordering key: the issue queued when its work first came
+// back, and a second transition arriving while it waits is the same wait carrying a newer task,
+// not a new turn at the back of the line. The earlier task is already dead whichever path wrote
+// it — the transition minted a new assignment onto the role's phases row in its own transaction,
+// so a completion of the earlier one is refused HANDOFF_STALE_ASSIGNMENT — so no information is
+// lost with it.
+//
+// A row under a live lease is not updated: a lane has it — it was claimable, which for a marked
+// row means its slot came — and the caller's own row is the next start. A lapsed lease is no lane
+// holding anything — the outbox's own due predicate reads it as free (outboxUnleasedDue) and only
+// a finished delivery takes the row away — so such a row is still the start this issue is owed
+// and is replaced like any other. The lease is tested in the update's own where clause and not
+// only in the sub-select that picks the row: a lane claiming the row while this statement waits
+// on its row lock would otherwise have the task under it changed, and deliver the earlier task
+// while the phases row already carries the later assignment. It is ClaimRow's own shape — one
+// conditional update, never a read and then a write — because Postgres rechecks the quals against
+// the row's new version once the lock is released, so the claim's lease is seen and nothing is
+// written. ClaimRow's advisory lock is for the one rule of its own the row lock does not cover, a
+// subquery over other rows; this statement's lease test is on the row it writes, so it needs none.
+// The moment the test is made against is the one the caller is acting at, which rides in on the
+// row it hands over (NewOutboxRow's nextAt), so one transition reads one clock throughout.
 //
 // A row whose lease has lapsed takes a fresh lease token with its new payload, in the shape the
 // ready_merge conflict already uses: the lane that wrote the lapsed lease may be slow rather
@@ -2007,12 +2048,17 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 	if !json.Valid(row.Payload) {
 		return false, fmt.Errorf("replace the owed start of %s: payload is not JSON", row.Issue)
 	}
+	// The row this start may be written over is one that waits for what it waits for, which is
+	// read from the payload the caller hands over rather than asked of the caller again: a
+	// payload that names no mark carries the mark's zero (SuperviseRequest.NeedsSlot is
+	// omitempty), which is a start that waits for no slot.
 	tag, err := tx.Exec(ctx, `update outbox set payload = $2, lease_until = null,
 			write_mark = nextval('outbox_write_mark_seq'),
 			lease_token = case when lease_token = '' then '' else gen_random_uuid()::text end
 		where id = (select id from outbox
-			where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-				and payload->>'needsSlot' = 'true' and (lease_until is null or lease_until <= $3)
+			where `+pendingPhaseStart+`
+				and coalesce(payload->>'needsSlot', 'false') = coalesce(($2::jsonb)->>'needsSlot', 'false')
+				and (lease_until is null or lease_until <= $3)
 			order by id limit 1)
 			and (lease_until is null or lease_until <= $3)`,
 		row.Issue, string(row.Payload), row.NextAt)

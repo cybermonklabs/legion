@@ -3,6 +3,7 @@ package admit
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // pastReviewRoot records key as a root of a live tree of its own, standing in stands with the
@@ -56,6 +58,37 @@ func theOneStart(t *testing.T, pool *pgxpool.Pool, issue string) midPhaseStart {
 	return starts[0]
 }
 
+// startPastReview writes one start of key's worker in the phase it stands in, through the path
+// every phase worker's start is written by (workflow.StartOrOwe). It is oweMemberStart with a
+// task and a role of the caller's, which is what tells the row a second start wrote from the
+// row it was written over.
+func startPastReview(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, role claim.Role, task string) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start",
+			Tree: key, Role: role, Generation: 1, Phase: stands, Task: task,
+			Assignment: "assignment-" + key}, fixedNow); err != nil {
+			t.Fatalf("write the start of %s: %v", key, err)
+		}
+	})
+}
+
+// leaseStart puts a live lease on the one start row issue holds, as the lifecycle lane does when
+// it takes that row to deliver the task on it.
+func leaseStart(t *testing.T, pool *pgxpool.Pool, issue string) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		tag, err := tx.Exec(context.Background(), `update outbox set lease_token = 'lane', lease_until = $2
+			where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`, issue, fixedNow.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("take the lane's lease on the start of %s: %v", issue, err)
+		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("the lane's lease took %d rows of %s, want the one start it holds", tag.RowsAffected(), issue)
+		}
+	})
+}
+
 // The phases past an issue's review run on no row of the cap's at all. The cap counts the issues
 // whose change is still to write, and the sign-off, the retro and the merge write no more of it
 // (record.KeepsSlot), so the start of each of those phases waits for no row (workflow.StartOrOwe
@@ -66,6 +99,15 @@ func theOneStart(t *testing.T, pool *pgxpool.Pool, issue string) midPhaseStart {
 // start of the issue whose architect sends its work back from accepting to implementing. That
 // one is delivered when a row frees and the pass grants it one, which is the mark reading the
 // phase the start is for.
+//
+// The subtests that close it read what such a start is written as. An issue holds one pending
+// start however many a worker past its review is written — an operator's retry of a held retro
+// goes over the queued row rather than beside it — because two rows would start that worker
+// twice for one assignment and no fence of the outbox's would end the second. The control
+// beside it is the row a lane already holds, which is left alone with the task it is
+// delivering. The last reads where the rule stops: a start that waits for a row is written over
+// no queued start that waits for none, since the place in the line belongs to the row that
+// waits, and the two never name one phase, so the outbox's phase fence ends the stale one.
 func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
@@ -160,6 +202,78 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 		t.Fatalf("the starts of %s = %+v on rows %#v, want its implementer's task claimable on the row the line gave it",
 			sentBack, startsOf(t, pool, sentBack), slots(t, pool))
 	}
+
+	// An operator's retry of a worker held past its review writes a second start while the first
+	// is still queued and no lane holds it, and the two are one row: the retry is written over
+	// the row the issue already holds, which waits for what it waits for — nothing
+	// (record.Store.ReplaceOwedStart). Two rows would start the worker twice for one assignment,
+	// and no fence of the outbox's would end the second — the phase and the generation fences
+	// end a row that serves a phase the issue has left or an older generation, and both of these
+	// serve the phase the issue stands in, at its own generation.
+	t.Run("a retry past the review is written over the queued start", func(t *testing.T) {
+		const retried = "LEGION-500"
+		pastReviewRoot(t, pool, retried, phase.Retro, "in_progress", "F")
+		startPastReview(t, pool, retried, phase.Retro, claim.RoleImplementer, "Run the retro.")
+		if start := theOneStart(t, pool, retried); start.task != "Run the retro." || start.needsSlot || !start.claimable {
+			t.Fatalf("the first start of %s = %+v, want the retro's task, marked for no row and claimable at once", retried, start)
+		}
+
+		startPastReview(t, pool, retried, phase.Retro, claim.RoleImplementer, "Run the retro again.")
+
+		start := theOneStart(t, pool, retried)
+		if start.role != claim.RoleImplementer || start.task != "Run the retro again." || start.needsSlot || !start.claimable {
+			t.Fatalf("the start of %s after the retry = %+v, want the one row the retry wrote over the queued one, carrying the later task: two rows start the retro's worker twice and no fence ends the second",
+				retried, start)
+		}
+	})
+
+	// The control the rule has always had, which this must leave standing: a row a live lease
+	// holds is left alone, because its lane is delivering the task under it, so the second start
+	// is a row of its own, behind the lane's while that lease is live (the outbox's own lane
+	// rule, store.go's outboxLaneFree).
+	t.Run("a row a live lease holds is not written over", func(t *testing.T) {
+		const leased = "LEGION-510"
+		pastReviewRoot(t, pool, leased, phase.Merging, "in_progress", "G")
+		startPastReview(t, pool, leased, phase.Merging, claim.RoleMerger, "Merge the change.")
+		leaseStart(t, pool, leased)
+
+		startPastReview(t, pool, leased, phase.Merging, claim.RoleMerger, "Merge the change again.")
+
+		starts := startsOf(t, pool, leased)
+		if len(starts) != 2 || starts[0].task != "Merge the change." || starts[1].role != claim.RoleMerger ||
+			starts[1].task != "Merge the change again." || starts[1].needsSlot || starts[1].claimable {
+			t.Fatalf("the starts of %s = %+v, want the lane's row carrying the task it is delivering and the second start as a row of its own behind it, marked for no row and held while that lease is live",
+				leased, starts)
+		}
+	})
+
+	// Where the rule stops: a start that waits for a row is written over no queued start of a
+	// phase past the review, and none over it. The two never name one phase, so the outbox's
+	// phase fence ends the one the issue has left; what writing over it would cost is the
+	// waiting line, whose place belongs to the row that waits, and the issue would stand in it
+	// from the moment a row it never waited on was queued, ahead of one that came to wait
+	// before it (record.Store.ReplaceOwedStart).
+	t.Run("a start that waits for a row is written over no queued one that waits for none", func(t *testing.T) {
+		const ahead, behind = "LEGION-520", "LEGION-530"
+		pastReviewRoot(t, pool, behind, phase.Retro, "in_progress", "H")
+		startPastReview(t, pool, behind, phase.Retro, claim.RoleImplementer, "Run the retro.")
+		pastReviewRoot(t, pool, ahead, phase.Implementing, "in_progress", "I")
+		oweMemberStart(t, pool, ahead, ahead, phase.Implementing)
+
+		// The architect sends the retro's work back to implementing, whose start waits for a row.
+		sentBack := issue(t, pool, behind)
+		sentBack.Phase, sentBack.Status, sentBack.DispatchStatus = phase.Implementing, "in_progress", "in_progress"
+		putIssue(t, pool, sentBack)
+		startPastReview(t, pool, behind, phase.Implementing, claim.RoleImplementer, "Write the change again.")
+
+		starts := startsOf(t, pool, behind)
+		if len(starts) != 2 || starts[0].task != "Run the retro." || starts[0].needsSlot ||
+			starts[1].task != "Write the change again." || !starts[1].needsSlot || starts[1].claimable {
+			t.Fatalf("the starts of %s = %+v, want the retro's row left where it was, which the phase fence ends, and its own row behind it, marked for a row and held while the cap has none",
+				behind, starts)
+		}
+		assertWaiting(t, pool, []string{ahead, behind})
+	})
 }
 
 // The repair of a worker that has lost its task reaches an issue standing past its review, which

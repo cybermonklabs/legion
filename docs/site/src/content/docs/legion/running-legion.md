@@ -596,7 +596,9 @@ What each part is for:
   absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
-  told, nor is one every quiet issue of which waits by design, and no value turns the notice off,
+  told, nor is one every quiet issue of which waits by design while the project's line can still
+  move — some issue of the project holds a slot and waits by no such rule, or some claim of it is
+  at work — and no value turns the notice off,
   so a deployment that wants fewer notices raises the number, to 596 at most),
   `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
@@ -1081,9 +1083,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
   issue holds one of the cap's slots from the moment the daemon starts it until its work is past
   its review — `accepting`, `retro`, `merging` and `awaiting_merge` hold none — or until it is
-  done or Dispatch takes it out of the workflow, so a tree of four issues at work holds four of
-  them, and the `live trees` count is the trees that run whether or not any issue of theirs holds
-  one.
+  done or Dispatch shows it in `triage`, `icebox` or `backlog`, so a tree of four issues at work
+  holds four of them, and the `live trees` count is the trees that run whether or not any issue
+  of theirs holds one.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
@@ -1213,6 +1215,6 @@ controller does through its `legion` tool's `set_status`:
 legion status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
 ```
 
-`backlog` or `icebox` takes the tree out of the workflow: its agents are suspended and the slots
+A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
 its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
 architect.
