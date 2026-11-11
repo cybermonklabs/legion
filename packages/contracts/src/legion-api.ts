@@ -513,11 +513,12 @@ const legionBlockedIssue = z.object({
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
  * `active` is every issue holding a slot and `waiting` the admission line, children as much as
- * roots, so one tree with three started children holds three slots. An issue takes its slot when
- * the daemon starts it and keeps it
- * until it is done, leaves the workflow or waits only for its merge, so `active` carries an issue
- * waiting on a person, one in `accepting`, one `held` and one whose `merging` waits on a closed
- * design gate, while an issue in `awaiting_merge` is in neither list. An issue holding a slot is
+ * roots, so one tree with three started children holds three slots. An issue holds one of the
+ * cap's slots from the moment the daemon starts it until its work is past its review —
+ * accepting, retro, merging and awaiting_merge hold none — or until it is done or Dispatch takes
+ * it out of the workflow, so `active` carries an issue at work, one `held` and one waiting on a
+ * person, while an issue in `accepting`, `retro`, `merging` or `awaiting_merge` is in neither
+ * list. An issue holding a slot is
  * in `waiting` as well while its work comes back to it, an answered root until the pass that
  * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
  * tree may hold no slot at all — the controller reads it where it read `active` as the running

@@ -855,14 +855,16 @@ pass
 primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
-  # person, keeping the admission slot it took at its admission: an issue holds its row from the
-  # moment the daemon starts it until it is done, leaves the workflow or waits only for its merge.
+  # person, keeping the admission slot it took at its admission: an issue holds one of the cap's
+  # slots from the moment the daemon starts it until its work is past its review — accepting,
+  # retro, merging and awaiting_merge hold none — or until it is done or Dispatch takes it out of
+  # the workflow.
   # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
   # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
-  # peak this lane needs under that rule: the two roots the daemon starts here hold both rows for
-  # as long as they run, each of the two waiting roots is admitted as one of them finishes — the
-  # first root at its merge, the no-change root at its close — and no scene of the run needs a
-  # third root at work beside them.
+  # peak this lane needs under that rule: the two roots the daemon starts here hold both rows while
+  # their work stands short of its review, each of the two waiting roots is admitted as one of them
+  # gives its row back — the first root when its architect accepts it, the no-change root at its
+  # close — and no scene of the run needs a third root at work beside them.
   drive_gate "$root_issue" "Stage 3 proof gate operation" 1800
   artifact_id=$gate_artifact
   note "architect registered $artifact_id version $gate_version and $root_issue waited on the person holding its admission slot; the human's approval answered it, the root resumed with no further slot, and the daemon moved it to planning"
@@ -1119,7 +1121,7 @@ primary_issue() {
   hold_smoke_main
   await_ready_merge "$repo" "$pr_number" --delete-branch
   # The merge closes the issue: awaiting_merge and a merged pull request write done, the daemon's
-  # one status write after retro. A root's close frees its slot and lingers the tree, every member's
+  # one status write after retro. A root's close frees any slot its tree's issues still hold and lingers the tree, every member's
   # claims suspended, and opens the production check on the merge commit, whose first look the
   # daemon hands the tester — the role this project's `production_check` names — in its live pane:
   # its claim alone comes back, resumed on its kept session, while the other five stay suspended.
@@ -1266,7 +1268,8 @@ else
 fi
 
 # no_change_close: a root whose human decides at the design gate that no change is needed. The
-# no-change root took the row the first root gave up at its merge, before that root's close; its
+# no-change root took the row the first root gave up at its acceptance, before that root's merge
+# and close; its
 # architect registered its own closed gate, and it has waited on a person since, keeping that row
 # while its architect stays live. The human requests changes saying no change is needed: that
 # answers the wait, and the root resumes at admitted on the next pass, taking no further slot (the
@@ -1332,7 +1335,7 @@ no_change_close() {
 restart_scenarios() {
   begin restart-mid-implementer
   # The fourth root waited in the line until the no-change root's close freed a row: with the cap
-  # at 2, the first root's merge let the no-change root in and that close lets this one in. Its
+  # at 2, the first root's acceptance let the no-change root in and that close lets this one in. Its
   # architect then registers its closed gate and the root waits on a person, keeping that row, so
   # the human's approval resumes it with no human status write and no further slot; this validates
   # the answered root's resume before exercising the mid-phase restart.

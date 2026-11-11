@@ -319,11 +319,11 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue keeps its slot from the moment the daemon starts it
-	// until it is done, leaves the workflow or waits only for its merge (record.KeepsSlot). So
-	// one tree with three started children holds three of these, and an issue waiting on a
-	// person, one in accepting, one held and one merging under a closed gate are each here,
-	// while one in awaiting_merge is in neither list.
+	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
+	// past its review — accepting, retro, merging and awaiting_merge hold none — or until it is
+	// done or Dispatch takes it out of the workflow (record.KeepsSlot). So one tree with three
+	// started children holds three of these, and an issue at work, one held and one waiting on
+	// a person are each here, while one past its review is in neither list.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch

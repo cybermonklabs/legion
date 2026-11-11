@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -70,6 +70,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
+| `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
 | `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
@@ -134,10 +135,10 @@ A free slot is no reason to take an issue: a labelled root in `todo` takes the n
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan ruling that names
 it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
-tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
-starts it and keeps it
-until it is done, leaves the workflow or waits only for its merge,
-so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
+tree: a tree of four issues at work holds four slots. An issue holds one of the cap's slots from
+the moment the daemon starts it until its work is past its review — `accepting`, `retro`,
+`merging` and `awaiting_merge` hold none — or until it is done or Dispatch takes it out of the
+workflow, so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
 roots of the live trees. The free slots are `admission.cap`, less every issue in
 `admission.active`, which is every issue holding a slot, and less again each issue of
 `admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the

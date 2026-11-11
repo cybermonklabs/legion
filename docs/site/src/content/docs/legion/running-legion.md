@@ -266,9 +266,9 @@ Dispatch read them, delete the files, then install every App from
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
-  the daemon has started rather than the pods, since an issue keeps its pod past the slot — on to
-  its own close — and an issue that only waits keeps both,
-  and an issue pod the pool cannot place stays `Pending` until
+  the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
+  its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
+  review keeps both, and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
@@ -1028,10 +1028,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
-  issue takes a slot when the daemon starts it and keeps it
-  until it is done, leaves the workflow or waits only for its merge,
-  so a tree of four started issues holds four of them, and the `live
-  trees` count is the trees that run whether or not any issue of theirs holds one.
+  issue holds one of the cap's slots from the moment the daemon starts it until its work is past
+  its review — `accepting`, `retro`, `merging` and `awaiting_merge` hold none — or until it is
+  done or Dispatch takes it out of the workflow, so a tree of four issues at work holds four of
+  them, and the `live trees` count is the trees that run whether or not any issue of theirs holds
+  one.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person

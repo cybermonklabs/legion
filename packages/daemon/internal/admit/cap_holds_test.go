@@ -32,8 +32,9 @@ func capMember(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.
 }
 
 // acceptingRoot moves a seeded root to accepting, where a parent whose own phases are behind it
-// waits while its children work. It keeps the row it took at its admission there, and its own
-// first phase is no longer in the waiting line.
+// waits while its children work. Its work stands past its review there, so the pass's release
+// takes back the row it took at its admission (record.KeepsSlot), and its own first phase is no
+// longer in the waiting line.
 func acceptingRoot(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	root := issue(t, pool, key)

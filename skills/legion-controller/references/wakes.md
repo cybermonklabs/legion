@@ -19,11 +19,12 @@ the same way and wakes nobody.
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
-The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue is done, it
-left the workflow, it reached `awaiting_merge`, or its tree closed or stopped running. An issue
-takes its slot when the daemon starts it and keeps it
-until it is done, leaves the workflow or waits only for its merge,
-so none of its own waits sends this wake. A slot is one issue the daemon has started, a root or a
+The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue's work is past
+its review — it stands in `accepting`, `retro`, `merging` or `awaiting_merge` — it is done, it
+left the workflow, or its tree closed or stopped running. An issue holds one of the cap's slots
+from the moment the daemon starts it until its work is past its review, until it is done, or
+until Dispatch takes it out of the workflow, so none of its waits up to that review sends this
+wake. A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
@@ -79,6 +80,26 @@ person's answer puts it in `admission.waiting` by itself, among the issues whose
 oldest first, and its promotion gives its architect the answer task, taking no further slot, so
 it happens however full the cap is. A lost label or a foreign Dispatch claim sends the separate
 `unslotted` wake.
+
+## `tree-stalled on <KEY>` (`{kind: "tree-stalled", reason}`)
+
+A tree of your project has stopped: `<KEY>` is its root, nothing of the tree has moved for longer
+than `stalled_tree_notice_hours` (six by default), no agent of it is at work, and no issue of it
+waits by design — on a person, on a Dispatch blocker, for an open child, or for a free slot. The
+`reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
+line for each issue of the tree the workflow still runs: the phase its record carries, the role
+whose turn that phase is or that no role works it, and the state of that issue's pull request or
+that the record holds none. It ends by telling you to read the tree and decide.
+
+Read `issues.<KEY>.treeMovedAt`, when the daemon last saw anything of the tree move, and
+`issues.<KEY>.quietHours`, how long the tree has been still at that read. Every issue of the tree
+carries the same pair, so read it on any of them. A tree the record shows no movement for reads
+`quietHours` 2562047.788, which means "it has never moved" and is no fault of its own.
+
+Read the tree and decide what it needs. Ask a role what it waits on (`envoy_publish` to its role
+topic). Move an issue back a phase where the phase it stands in has nobody to work it. Park the
+tree where its work should stop. The daemon starts nothing for this wake, and tells you once for
+each tree: the next movement of that tree is what lets it tell you again.
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 

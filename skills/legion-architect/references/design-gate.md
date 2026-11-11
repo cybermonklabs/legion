@@ -175,8 +175,9 @@ approval or changes request delivers your next task, and so does a newer spec ve
 Dispatch shows the request back on your turn. While the root waits on a question instead, the
 human's approval or changes request of the spec answers that wait too, and the task says how the
 spec stands. Your resume takes no slot, whether or not the gate opened, because the root holds
-one all along: an issue keeps its admission slot from the moment the daemon starts it
-until it is done, leaves the workflow or waits only for its merge. The answered root stands in
+one all along: an issue holds one of the cap's slots from the moment the daemon starts it until
+its work is past its review — `accepting`, `retro`, `merging` and `awaiting_merge` hold none — or
+until it is done or Dispatch takes it out of the workflow. The answered root stands in
 the admission line until the pass that resumes it, and nothing is sent to you about that wait:
 your record's `waitingLine` gives the live place in the line and the line's length, your resume
 task says what answered the wait, and you act on neither, because the daemon starts you again by

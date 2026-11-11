@@ -167,7 +167,8 @@ command (`legion controller start` ends the operator's Oh My Pi command line wit
 command, never from `session_start`; "The controller's start turn" below), after contract 40's
 `awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root whose
 architect waits on a person, and what it waits on; such a root holds its admission slot, as every
-issue does from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge;
+issue does from the moment the daemon starts it until its work is past its review, until it is done,
+or until Dispatch takes it out of the workflow;
 a 39 plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
 of an issue pod's role names container `roles`, and `settings` on `GET /legion/v1/state` gives
 `runtime.kubernetes.resources` as `{issue, controller}`), after contract 38's blocked issues on

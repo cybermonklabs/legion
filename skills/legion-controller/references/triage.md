@@ -12,7 +12,7 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    `child_of` parent. A `child_of` under `Referenced by:` is a child of this issue, not its parent.
 3. Leave a child whose `issues.<KEY>.tree` is a root in `admission.trees`, or that has an ancestor
    that is, because that tree's architect owns it. `admission.trees` is the live trees: a slot is
-   one issue the daemon has started, held until it is done, leaves the workflow or waits only for its merge, so a tree is live whether or not its root holds one.
+   one issue the daemon has started, held until its work is past its review, until it is done, or until Dispatch takes it out of the workflow, so a tree is live whether or not its root holds one.
 4. Every other row with no `issues.<KEY>` entry in `read_state` is a root to you, a child whose
    tree is not in `admission.trees` included. Read who set its label
    ("Triage a root", step 2). A root a person labelled is queued by the daemon and needs nothing

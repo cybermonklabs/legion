@@ -60,8 +60,10 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
-Your root holds its admission slot throughout, as every issue holds the one the daemon gave it
-until it is done, leaves the workflow or waits only for its merge, so that resume takes no slot
+Your root holds its admission slot throughout, as every issue holds one of the cap's slots from
+the moment the daemon starts it until its work is past its review — `accepting`, `retro`,
+`merging` and `awaiting_merge` hold none — or until it is done or Dispatch takes it out of the
+workflow, so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
 that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon
