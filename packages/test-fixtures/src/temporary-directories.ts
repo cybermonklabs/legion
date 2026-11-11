@@ -140,7 +140,15 @@ export function temporaryDirectory(
  * four copies of that suite ran at once, and the failure reads `(fail) (unnamed)` with
  * `a beforeEach/afterEach hook timed out for this test` and names neither the hook nor the
  * directory. A removal is not a test, so a bound that fails it says nothing about the code under
- * test; this one is long enough that only a removal that will never finish reaches it. */
+ * test; this one is long enough that only a removal that will never finish reaches it.
+ *
+ * It reaches every caller of this file, which on 2026-11-11 is 107 test files and harnesses
+ * across broker-client, claude-envoy, envoy-client, pi-envoy, pi-legion and dispatch's e2e
+ * harness, so the cost is worth naming once: a hook
+ * of one of those that genuinely hangs now fails after two minutes rather than five seconds, and
+ * Bun's message still names neither the hook nor its work. Raise this number only for a removal
+ * larger than the one it was measured against; a hook that reaches it is a hook to read rather
+ * than a bound to raise. */
 const HOOK_BOUND_MS = 120_000;
 /** `-`, the one character the name template trims from a caller's prefix. */
 const DASH = 45;
