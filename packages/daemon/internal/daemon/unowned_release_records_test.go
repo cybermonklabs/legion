@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -117,11 +116,7 @@ func saysNoRoleComesBack(t *testing.T, logs *syncBuffer, line, why string) {
 // records for work this release never saved.
 func (r *idleRig) earlierReleasesBundle(t *testing.T) int {
 	t.Helper()
-	saved := runtime.WorkspaceBundle{
-		Bundle: []byte("PACK the work an earlier release of " + r.issue.Key + " saved"),
-		Head:   "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		At:     time.Now().UTC().Add(-time.Hour), PodUID: idleRigEarlierPodUID,
-	}
+	saved := idleRigEarlierBundle(r.issue.Key, time.Now().UTC().Add(-time.Hour))
 	if err := r.st.PutWorkspaceBundle(context.Background(), r.issue.Key, idleRigEarlierRelease, saved); err != nil {
 		t.Fatalf("save the earlier release's bundle of %s: %v", r.issue.Key, err)
 	}

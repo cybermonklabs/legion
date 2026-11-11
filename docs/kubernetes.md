@@ -4506,7 +4506,7 @@ Those are the defaults, and release is on under `runtime: kubernetes` wherever t
 `idle_minutes: 0` turns both rules off, and the deployment's pods then live as they did before, from an issue's first role start to its close.
 The loader refuses a `backstop_minutes` below `idle_minutes`, which would wake a pod the daemon has only just released.
 Each of the two is at most 35791 minutes, about 24 days, the same 32-bit timer bound every duration key of the file carries.
-Whatever the setting says, the daemon releases nothing while the Envoy listener it uses does not report the role messages and direct messages of released sessions, since those two wakes would otherwise be lost.
+Whatever the setting says, the daemon releases no pod that has a live claim while the Envoy listener it uses does not report the role messages and direct messages of released sessions, since those two wakes would otherwise be lost.
 That gate holds the idle release alone.
 A release of a pod no claim owns runs whether or not the listener reports, because it suspends no claim and leaves no role waiting for a message in a pod that is gone.
 The two starts that build its pod again, an operator's retry and a start the daemon queues, read no listener.

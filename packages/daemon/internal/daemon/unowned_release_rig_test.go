@@ -57,6 +57,20 @@ const idleRigEarlierRelease = 1
 // makes (store.TakeWorkspaceBundleForRestore).
 const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
 
+// idleRigEarlierBundle is the workspace bundle an earlier release of the issue's pod saved, as
+// both rigs of this rule seed it (idleWakeRig.savedBundle, idleRig.earlierReleasesBundle): the
+// same body, the same head and the same source pod, at the moment its caller gives. That moment
+// is far enough back that a pod a later start builds is newer than the save and so the pod the
+// work is sent to. The body is bytes rather than a real git bundle, since what either rig reads
+// is which pod the daemon offered the work to and not what a launcher could do with it.
+func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
+	return runtime.WorkspaceBundle{
+		Bundle: []byte("PACK the work an earlier release of " + issue + " saved"),
+		Head:   "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		At:     at, PodUID: idleRigEarlierPodUID,
+	}
+}
+
 // A start made after the release of a pod no claim owns makes that pod again, with everything
 // the release took: the Sandbox, the pod and its disk. This is INFRA-1341's second release rule
 // over the whole daemon — the rig of TestIdleReleaseAndWake, the Sandbox runtime on a fake
@@ -71,7 +85,7 @@ const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
 // `--fresh-session`, which leaves that session behind; and the start the daemon queues for a
 // phase worker itself.
 //
-// Every pass here is made with the listener gate shut (idleWakeRig.shutListenerGate), which is
+// Every pass here is made with the listener gate shut (idleWakeRig.keepListenerGateShut), which is
 // this rule's own case and not a convenience. The idle release reads that gate before it takes a
 // pod, because a pod it releases comes back only for a role or an agent message the listener
 // reports; this release suspends no claim and leaves nothing waiting for a message, so it runs
@@ -82,11 +96,12 @@ const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
 func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testing.T) {
 	rig := newIdleWakeRig(t, idleRigOperatorRetry, idleRigFreshSession, idleRigQueuedStart)
 	rig.launchAll()
-	// From here no pod of the rig is released for being idle. The gate is shut before the first
-	// pass and again on every turn of every wait below, because the listener republishes a ready
-	// report every five minutes and the claim rows this test back-dates stay back-dated: a
-	// report landing mid-wait would open the gate on pods that are quiet.
-	rig.shutListenerGate()
+	// From here no pod of the rig is released for being idle. The gate is shut now and kept
+	// shut by a goroutine of the rig's for the rest of the test, because the listener
+	// republishes a ready report every five minutes and the claim rows this test back-dates
+	// stay back-dated: a report left standing for a tick of the daemon would open the gate on
+	// pods that are quiet.
+	rig.keepListenerGateShut()
 
 	t.Run("TheOperatorsRetryMakesThePodAgainInTheClaimsOwnSession", func(t *testing.T) {
 		issue := rig.issue(idleRigOperatorRetry)
@@ -218,19 +233,19 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 	rig.kube.requireServed(t)
 }
 
-// releasedWithNoLiveClaim is the pass each subtest asserts on: the listener gate is shut, the
-// daemon's own tick releases the pod of the issue whose claim is stopped, and the rig's other
-// pods — each one the idle rule would take but for that gate — stand as they were.
+// releasedWithNoLiveClaim is the pass each subtest asserts on: the listener gate is shut for the
+// whole test (idleWakeRig.keepListenerGateShut), the daemon's own tick releases the pod of the
+// issue whose claim is stopped, and the rig's other pods — each one the idle rule would take
+// but for that gate — stand as they were.
 //
 // The order is the whole of what it reads. The other pods are waited for as idle-release
 // candidates first, because a pod the idle rule would keep for a reason of its own says nothing
-// about the gate; the gate is shut next, and the count of the line the daemon logs at it is
-// taken from there, so the lines read after the release belong to the ticks that made it.
+// about the gate; the count of the line the daemon logs at the gate is taken after that wait,
+// so the lines read after the release belong to the ticks that made it.
 func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 	t.Helper()
 	others := idleRigOtherIssues(rig, issue)
 	idleRigAwaitIdleCandidates(t, rig, others)
-	rig.shutListenerGate()
 	gated := rig.logged(idleRigGateTooOld, nil)
 	teardowns := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key})
 
@@ -274,7 +289,6 @@ func idleRigAwaitIdleCandidates(t *testing.T, rig *idleWakeRig, issues []idleRig
 		}
 	}()
 	idleRigEventually(t, idleRigRecordWait, "the rig's other pods standing as pods the idle release would take", func() bool {
-		rig.shutListenerGate()
 		claims := rig.api.claims()
 		for _, issue := range issues {
 			state := listedClaim(t, claims, rig.token(issue)).State
@@ -316,9 +330,9 @@ func idleRigReleasable(state string) bool {
 // live. The pod's name is the claim's (sandbox.SandboxName), so a pod made again is the pod
 // whose name the release deleted.
 //
-// The listener gate is shut on every turn, for the reason the release's own wait shuts it: the
-// pods this test made quiet stay quiet while a pod comes up, and a listener report landing
-// inside this wait would open the gate on them (idleWakeRig.shutListenerGate).
+// The listener gate stays shut while this waits, as it does for the whole test: the pods this
+// test made quiet stay quiet while a pod comes up, and a listener report left standing for a
+// tick would open the gate on them (idleWakeRig.keepListenerGateShut).
 func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, registrations int) {
 	t.Helper()
 	token := rig.token(issue)
@@ -328,7 +342,6 @@ func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reg
 		}
 	}()
 	idleRigEventually(t, idleRigPodWait, "the pod of "+issue.key+" made again with its role registered", func() bool {
-		rig.shutListenerGate()
 		return rig.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
 			idleRigWorking(rig.api.claim(token).State)
 	})
@@ -369,18 +382,12 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 // nothing starts a role in the pod being released after this, which is what would otherwise
 // spend the attempt (internal/runtime/sandbox's start).
 //
-// The bundle's own moment is ten minutes back, which is what makes the pod a later start builds
-// newer than the save and so the pod the work is sent to; the body is bytes rather than a real
-// git bundle, since what is read here is which pod the daemon offered the work to and not what a
-// launcher could do with it.
+// The bundle's own moment is ten minutes back (idleRigEarlierBundle), which is what makes the
+// pod a later start builds newer than the save and so the pod the work is sent to.
 func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 	r.t.Helper()
 	ctx := context.Background()
-	saved := runtime.WorkspaceBundle{
-		Bundle: []byte("PACK the work an earlier release of " + issue.key + " saved"),
-		Head:   "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		At:     time.Now().UTC().Add(-10 * time.Minute), PodUID: idleRigEarlierPodUID,
-	}
+	saved := idleRigEarlierBundle(issue.key, time.Now().UTC().Add(-10*time.Minute))
 	st, err := store.Open(ctx, r.cfg.PostgresDSN)
 	if err != nil {
 		r.t.Fatalf("open the store to save the bundle of %s: %v", issue.key, err)

@@ -119,18 +119,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	if !marked {
 		detail := strings.Join(decision.HoldKinds, ",")
 		w.log.Debug("idle release: the pod is kept", "issue", issue, "hold", decision.Hold.String(), "detail", detail)
-		if !quiet || !recordableHold(decision.Hold) {
-			// The pod did something inside the idle period, or what kept it is nothing a
-			// deployment reads as a hold: either way no hold of it is running, so the streak it
-			// had ends and a later pass that holds it starts a new one. A pod with no streak is
-			// left alone — nearly every pass over a working pod is this one, and an update that
-			// matches no row costs a write transaction all the same.
-			if holding {
-				endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
-			}
-			return
-		}
-		recordIdleHold(ctx, w.idleStore, w.projectID, issue, decision.Hold, detail, now, w.log)
+		w.recordKeptPod(ctx, issue, decision.Hold, detail, quiet, holding, now)
 		return
 	}
 	w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
@@ -148,8 +137,13 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 // released and how many it held under each reason — whenever it decided at least one. That line
 // is what tells a reader of the daemon's log that this rule ran on a day it released nothing,
 // which a release line alone cannot say, and it is what a production check of this rule reads.
-// A pass with no candidate at all writes nothing, so a deployment whose issues are all working
-// pays no line a minute for it.
+// Nothing takes a released issue back out of the candidate answer, since this release changes
+// no claim: an issue whose pod it took stands there until a start makes a claim of it live or
+// the issue closes, and every later pass reads it again and holds it as unowned_sandbox_gone.
+// So a deployment holding released issues pays one line a minute, reading released=0 and those
+// holds, and that is what is wanted: the line is the one per-pass record that this rule ran on
+// a day it released nothing, which is what its production check reads. Only a pass with no
+// candidate at all writes nothing.
 func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
 	// The project is spelled two ways here, and the two are not the same string. The candidate
 	// answer is read from the issue records, whose project column holds the Dispatch project key
@@ -223,9 +217,11 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		if err != nil {
 			w.log.Warn("unowned release: could not read whether a hold streak of the pod is running",
 				"issue", issue, "error", err)
-		} else if holding {
-			endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
 		}
+		// There is no view here and so no quiet period to read, and none is needed:
+		// IdleHoldUnownedSandboxGone is no hold a deployment reads, so this pass ends the pod's
+		// streak whatever the pod was doing.
+		w.recordKeptPod(ctx, issue, workflow.IdleHoldUnownedSandboxGone, "", false, holding, now)
 		return workflow.IdleHoldUnownedSandboxGone, false
 	}
 	var decision workflow.IdleDecision
@@ -248,19 +244,9 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	if !marked {
 		w.log.Debug("unowned release: the pod is kept", "issue", issue, "hold", decision.Hold.String())
-		if !quiet || !recordableHold(decision.Hold) {
-			// The pod did something inside the quiet period, or what kept it is nothing a
-			// deployment reads as a hold: either way no hold of it is running, so the streak it
-			// had ends and a later pass that holds it starts a new one. A pod with no streak is
-			// left alone, for the reason the idle pass leaves one alone.
-			if holding {
-				endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
-			}
-			return decision.Hold, false
-		}
 		// This rule names one reason per pass and no kinds beside it, so its holds carry no
 		// detail, as the teardown's do not.
-		recordIdleHold(ctx, w.idleStore, w.projectID, issue, decision.Hold, "", now, w.log)
+		w.recordKeptPod(ctx, issue, decision.Hold, "", quiet, holding, now)
 		return decision.Hold, false
 	}
 	// The line that ends this release is the teardown's, and it is the one Info line of a
@@ -325,14 +311,37 @@ func recordableHold(hold workflow.IdleHold) bool {
 	return true
 }
 
+// recordKeptPod is the bookkeeping of a pod a pass kept, which is one policy and three passes:
+// the idle rule's (releaseIdlePod), the second rule's (releaseUnownedPod), and that rule's pass
+// over an issue whose Sandbox the runtime no longer holds, which reads no view at all. A pod
+// quiet for the whole period under a reason a deployment reads as a hold gets a row of its own
+// (recordIdleHold); anything else — a pod that did something inside the period, or a reason no
+// deployment reads — ends whatever streak the pod had, so a later pass that does hold it opens
+// a new one. A pod with no streak is left alone, since nearly every pass over a working pod is
+// that one and an update that matches no row costs a write transaction all the same.
+//
+// The caller logs its own line first and hands over what it read: the hold and the detail its
+// rule names ("" where it names none), whether the pod was quiet for the whole period, and
+// whether a streak of it is running.
+func (w *workflowRuntime) recordKeptPod(ctx context.Context, issue string, hold workflow.IdleHold,
+	detail string, quiet, holding bool, now time.Time) {
+	if !quiet || !recordableHold(hold) {
+		if holding {
+			endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
+		}
+		return
+	}
+	recordIdleHold(ctx, w.idleStore, w.projectID, issue, hold, detail, now, w.log)
+}
+
 // recordIdleHold records one pass of the idle rule that kept a pod past the idle period, under
 // the rule's own word for the reason and the detail that word leaves out ("" where there is
 // none), and ends every streak of that pod under another reason (store.RecordPodHold). It writes
-// every hold it is given: the idle pass reads recordableHold before it calls (releaseIdlePod), and
+// every hold it is given: the passes read recordableHold before they call (recordKeptPod), and
 // the teardown's holds come from releaseHold, which names only recordable ones. Ending a streak
-// is the idle pass's, which knows whether the pod has one. A
-// record that cannot be written is logged and nothing else: the records are a deployment's
-// measurement, and a release is a saving, so nothing waits on either.
+// is recordKeptPod's, which knows whether the pod has one. A record that cannot be written is
+// logged and nothing else: the records are a deployment's measurement, and a release is a
+// saving, so nothing waits on either.
 func recordIdleHold(ctx context.Context, st *store.Store, project, issue string, hold workflow.IdleHold, detail string, at time.Time, log *slog.Logger) {
 	if st == nil {
 		return

@@ -742,28 +742,71 @@ func (r *idleWakeRig) quiet() {
 	}
 }
 
-// shutListenerGate ages the project's `listener_reports` row past the window the daemon reads it
-// in, which shuts the one gate the idle release passes before it takes a pod
-// (workflowRuntime.listenerLive, listenerReadyWindow). The release of a pod no claim owns runs
-// outside that gate, so a pass made with the gate shut is the one case that tells the two rules
-// apart: it releases a pod no role can use and holds every idle one.
+// idleRigGateAgeing is how often the gate is shut again while a test keeps it shut: a tenth of
+// the rig's tick, so the daemon reads a report this test has aged on every pass it makes.
+const idleRigGateAgeing = idleRigTick / 10
+
+// keepListenerGateShut ages the project's `listener_reports` row past the window the daemon
+// reads it in, which shuts the one gate the idle release passes before it takes a pod
+// (workflowRuntime.listenerLive, listenerReadyWindow), and goes on ageing it until the test
+// ends. The release of a pod no claim owns runs outside that gate, so a pass made with the gate
+// shut is the one case that tells the two rules apart: it releases a pod no role can use and
+// holds every idle one.
 //
-// The rig runs a real Envoy listener and cannot leave it out — the listener owns the
-// notification stream the daemon binds its consumer on — and that listener publishes a ready
-// report every five minutes, so the row is aged immediately before each pass a test asserts on,
-// and again on each turn of the waits that follow it. The ageing is the one quiet makes of the
-// claim rows: the daemon reads this row against its own clock and nothing else.
-func (r *idleWakeRig) shutListenerGate() {
+// The ageing runs on a goroutine of its own, and that is what makes it sound. The rig runs a
+// real Envoy listener and cannot leave it out — the listener owns the notification stream the
+// daemon binds its consumer on — and that listener publishes a ready report every five minutes
+// into this very row, while the daemon decides every pod on a ticker of its own (idleRigTick).
+// Ageing the row on the test's own poll turns would leave the gate open from the moment a
+// report lands until the next turn, which is long enough for one idle pass to take the pods a
+// test has just waited to make idle-release candidates. Every idleRigGateAgeing the gate is
+// shut again instead, which no tick of the daemon fits inside. The ageing is the one quiet
+// makes of the claim rows: the daemon reads this row against its own clock and nothing else.
+func (r *idleWakeRig) keepListenerGateShut() {
 	r.t.Helper()
-	aged, err := r.pool.Exec(context.Background(),
-		`update listener_reports set ready_at = now() - interval '30 minutes' where project = $1`, r.project)
+	aged, err := r.ageListenerReport()
 	if err != nil {
 		r.t.Fatalf("age the Envoy listener's report of %s: %v", r.project, err)
 	}
-	if aged.RowsAffected() == 0 {
+	if aged == 0 {
 		r.t.Fatalf("there is no listener report of %s to age: the daemon has read none, so a pass made now is held by a gate this test did not shut",
 			r.project)
 	}
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ageing := time.NewTicker(idleRigGateAgeing)
+		defer ageing.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ageing.C:
+				if _, err := r.ageListenerReport(); err != nil {
+					r.t.Errorf("age the Envoy listener's report of %s: %v", r.project, err)
+					return
+				}
+			}
+		}
+	}()
+	// The pool is closed by a cleanup the rig's own boot registered, which runs after this one.
+	r.t.Cleanup(func() {
+		close(stop)
+		<-stopped
+	})
+}
+
+// ageListenerReport back-dates the project's listener report and answers how many rows it moved,
+// which is zero while the daemon has read no report at all. It is the one statement behind the
+// gate, run from the test's own goroutine and from the one that keeps the gate shut, so it
+// fails nothing itself: a `Fatalf` off the test's goroutine would stop the wrong one.
+func (r *idleWakeRig) ageListenerReport() (int64, error) {
+	aged, err := r.pool.Exec(context.Background(),
+		`update listener_reports set ready_at = now() - interval '30 minutes' where project = $1`, r.project)
+	if err != nil {
+		return 0, err
+	}
+	return aged.RowsAffected(), nil
 }
 
 // awaitReleased waits for every issue's claim to be suspended with the source `released` and its
@@ -842,11 +885,11 @@ func (r *idleWakeRig) claimLines(issue idleRigIssue) []string {
 // suspended, and this release suspends none — there is no live claim to stop, so no claim state
 // is a thing to wait for and the claims are what must not move.
 //
-// The listener's report is aged on every turn and the claim rows every couple of seconds, for
-// the reason awaitReleased back-dates those rows: each is a clock the daemon reads against its
-// own, and this rule's own case is a pass made with the listener gate shut (shutListenerGate,
-// quiet). A failure names where the pod stood when the wait last read it, beside the launchers'
-// log and the daemon's.
+// The claim rows are back-dated every couple of seconds, for the reason awaitReleased
+// back-dates them: they are the clock the daemon reads the quiet period against. The listener's
+// report is the other clock, and the test's own goroutine keeps it aged for as long as the test
+// runs (keepListenerGateShut), so this wait does nothing about it. A failure names where the
+// pod stood when the wait last read it, beside the launchers' log and the daemon's.
 func (r *idleWakeRig) awaitUnownedReleased(issue idleRigIssue) {
 	r.t.Helper()
 	before := r.claimLines(issue)
@@ -859,7 +902,6 @@ func (r *idleWakeRig) awaitUnownedReleased(issue idleRigIssue) {
 	}()
 	var quieted time.Time
 	idleRigEventually(r.t, idleRigReleaseWait, "the pod of "+issue.key+" released with every claim of it left as it was", func() bool {
-		r.shutListenerGate()
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
 			r.quiet()

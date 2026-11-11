@@ -70,22 +70,31 @@ const (
 // all stopped has no role to ask for a bundle and no claim to suspend, so there is nothing for a
 // release to do with it.
 func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) {
+	what := "list the pods of " + project
 	rows, err := s.pool.Query(ctx, `select distinct issue from claims
 		where project = $1 and state not in ('failed', 'retired', 'suspended') and issue <> '' order by issue`, project)
 	if err != nil {
-		return nil, fmt.Errorf("list the pods of %s: %w", project, err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
+	return issueKeys(rows, what)
+}
+
+// issueKeys reads a one-column answer of issue keys into a slice, under the sentence its caller
+// names whatever goes wrong by: the candidate lists of the two release rules are two statements
+// and one loop (IdlePods, UnownedPods). An answer of no rows is a nil slice, which is what a
+// caller reads as no candidate, and the rows are closed whichever way the read ends.
+func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 	defer rows.Close()
 	var issues []string
 	for rows.Next() {
 		var issue string
 		if err := rows.Scan(&issue); err != nil {
-			return nil, fmt.Errorf("list the pods of %s: %w", project, err)
+			return nil, fmt.Errorf("%s: %w", what, err)
 		}
 		issues = append(issues, issue)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list the pods of %s: %w", project, err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	return issues, nil
 }
@@ -114,10 +123,15 @@ func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) 
 // The reading behind that: on the INFRA deployment at 2026-11-10 19:39Z, 1,136 issues held
 // claims while 5 stood in the workflow under a live tree.
 //
-// It adds no index of its own. The answer is read once a minute, the partial index issues_live
-// (migrations/0062_live_issue_reads.up.sql) already serves the project's live rows, and claims
-// holds at most six rows per issue, so the two subqueries read a handful of rows each.
+// It adds no index of its own, and the answer is read once a minute. The partial index
+// issues_live (migrations/0062_live_issue_reads.up.sql) serves the issue rows: the query's
+// i.phase <> 'done' implies that index's predicate. Nothing serves the two subqueries over
+// claims, which carries the token primary key and claims_boot_token_hash and no index on issue
+// or project at all (migrations/0002_claims.up.sql), so each of them reads the whole of claims,
+// once a minute — the same relation, at the same rate, that IdlePods already scans whole for
+// its own answer.
 func (s *Store) UnownedPods(ctx context.Context, project string, outOfWorkflow []string) ([]string, error) {
+	what := "list the pods of " + project + " no claim owns"
 	rows, err := s.pool.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
 		where i.project = $1
 		and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
@@ -127,21 +141,9 @@ func (s *Store) UnownedPods(ctx context.Context, project string, outOfWorkflow [
 			and c.state not in ('failed', 'retired', 'suspended'))
 		order by i.key`, project, outOfWorkflow)
 	if err != nil {
-		return nil, fmt.Errorf("list the pods of %s no claim owns: %w", project, err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
-	defer rows.Close()
-	var issues []string
-	for rows.Next() {
-		var issue string
-		if err := rows.Scan(&issue); err != nil {
-			return nil, fmt.Errorf("list the pods of %s no claim owns: %w", project, err)
-		}
-		issues = append(issues, issue)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list the pods of %s no claim owns: %w", project, err)
-	}
-	return issues, nil
+	return issueKeys(rows, what)
 }
 
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
@@ -501,10 +503,10 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, err
 	}
 	view.BundleUnrestored = unrestored
-	if err := tx.QueryRow(ctx, `select exists (
-		select 1 from pod_holds where project = $1 and issue = $2 and not ended)`,
-		project, issue).Scan(&view.Holding); err != nil {
-		return pods.IdleView{}, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
+	holding, err := openPodHold(ctx, tx, project, issue)
+	if err != nil {
+		return pods.IdleView{}, err
 	}
+	view.Holding = holding
 	return view, nil
 }

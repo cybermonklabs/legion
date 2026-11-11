@@ -32,9 +32,12 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 
 // IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox
 // is called: the one name the six role claims of the issue share, which its pod carries too
-// (SandboxName, through issueSandboxName), read from the Sandbox the runtime's store holds. One
-// call answers both because the name is read off the same object the presence is, and a release
-// that takes the pod down records the name it took.
+// (SandboxName, through issueSandboxName), read from the Sandbox the runtime's store holds. The
+// name is built from the issue key and never read off the object, so presence is the whole of
+// what the store is asked, and the object is taken as the informer holds it (storedObject):
+// decoding a whole Sandbox to answer it would cost tens of kilobytes and hundreds of
+// allocations, once per pod per tick. A release that takes the pod down records the name it
+// took.
 //
 // It is the informer's store and never an API call: the idle pass asks this of every pod of the
 // project on every tick, and a read per pod against the API server would cost the apiserver a
@@ -48,8 +51,8 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	s, err := r.storedSandbox(name)
-	if err != nil || s == nil {
+	u, err := r.storedObject(name)
+	if err != nil || u == nil {
 		return "", false
 	}
 	return name, true

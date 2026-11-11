@@ -250,8 +250,16 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 // write and nothing else: a pod with no streak is left alone, since an update that matches no
 // row costs a write transaction all the same.
 func (s *Store) OpenPodHold(ctx context.Context, project, issue string) (bool, error) {
+	return openPodHold(ctx, s.pool, project, issue)
+}
+
+// openPodHold is that question as one statement, read through db: the pool for OpenPodHold's
+// own read, and the release's own transaction for the idle view it decides on (readIdleView,
+// pods.IdleView.Holding). One predicate for both, so a reader of a view's Holding and a reader
+// of the answer outside a transaction can never be reading two different questions.
+func openPodHold(ctx context.Context, db queryRower, project, issue string) (bool, error) {
 	var holding bool
-	if err := s.pool.QueryRow(ctx, `select exists (
+	if err := db.QueryRow(ctx, `select exists (
 		select 1 from pod_holds where project = $1 and issue = $2 and not ended)`,
 		project, issue).Scan(&holding); err != nil {
 		return false, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
