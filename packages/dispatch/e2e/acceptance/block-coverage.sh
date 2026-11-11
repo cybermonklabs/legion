@@ -25,11 +25,10 @@ require_env DISPATCH_URL
 require_commands curl jq
 read_bearer
 
+# shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 
-umask 077
-work="$(mktemp -d)"
-readonly work
+work_dir
 trap 'rm -rf "$work"' EXIT
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 

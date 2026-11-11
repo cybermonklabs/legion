@@ -115,6 +115,7 @@ if [[ -n "$database_url" ]]; then
     exit 2
   fi
   require_commands setsid ps tail
+  # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
   if [[ -n "${DISPATCH_URL:-}" ]]; then
     printf 'replace-blocks.sh: DATABASE_URL names the Dispatch to start, so the DISPATCH_URL in the environment is left alone.\n'
   fi
@@ -132,23 +133,18 @@ else
   own_instance=0
   require_env DISPATCH_URL
   read_bearer
+  # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
   base="${DISPATCH_URL%/}"
 fi
 readonly own_instance
 # No child process inherits the bearer from here: read_bearer has unset it from the environment,
 # curl reads it from a header file, and the CLI gets it in an environment this script builds.
 
-bun_bin="$(command -v bun)"
-readonly bun_bin
-readonly saved_path="$PATH"
-readonly saved_tmpdir="${TMPDIR:-}"
 session="replace-blocks-$(date +%s)-$$"
 readonly session
 
-umask 077
-work="$(mktemp -d)"
-readonly work
-mkdir "$work/home" "$work/state"
+work_dir
+cli_env
 
 # What the run started and wrote, for the trap below. The issue is closed from there, so a run
 # that fails a check closes it too.
@@ -204,41 +200,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
-fail() {
-  printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
-  exit 1
-}
-
-# The real `dispatch` CLI as an agent session runs it, in an environment holding only what this
-# driver names: nothing a calling shell exported (its Dispatch URL, token file or Envoy config)
-# reaches it.
-cli() {
-  (
-    set +x
-    local name
-    local -a exported
-    mapfile -t exported < <(compgen -e)
-    for name in "${exported[@]}"; do
-      unset "$name" 2>/dev/null || true
-    done
-    export PATH="$saved_path" HOME="$work/home" DISPATCH_STATE_DIR="$work/state"
-    if [[ -n "$saved_tmpdir" ]]; then
-      export TMPDIR="$saved_tmpdir"
-    fi
-    export DISPATCH_HOST=omp DISPATCH_SESSION_ID="$session" DISPATCH_URL="$base"
-    export DISPATCH_TOKEN="$token"
-    exec "$bun_bin" "$cli_entry" "$@"
-  )
-}
-
-# run SECTION WHAT ARGS...: runs the CLI with ARGS, its output in $work/out; a non-zero exit fails.
-run() {
-  local section="$1" what="$2"
-  shift 2
-  cli "$@" >"$work/out" 2>&1 || fail "$section" "$what" "dispatch $1 exited $?: $(<"$work/out")"
-}
 
 # start_instance starts `bun run dispatch:local` on DATABASE_URL, in the background and in a
 # session of its own, and sets $base to the base URL of the one line it prints with it. The wait
