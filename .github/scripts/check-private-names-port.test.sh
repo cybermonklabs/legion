@@ -843,3 +843,5 @@ else
 fi
 
 summary "the port of check-private-names.sh to private-names.toml"
+
+# INFRA-1413 selection probe, never merged.
