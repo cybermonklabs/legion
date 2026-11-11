@@ -18,6 +18,25 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// Hook is one hook of the deployment as the engine runs it: its words are the text, never a
+// path. The configuration holds the same hook with the path a deployment may have written
+// instead (config.Hook), and boot reads that file, so nothing here opens one.
+type Hook struct {
+	Name   string
+	On     string   // the event it stands on
+	Moves  []string // empty selects every backward move
+	Every  int
+	Roles  []claim.Role
+	Prompt string // the words, read at boot
+}
+
+// HookEventWorkBack is the one event a hook of this engine stands on: an issue's work went back
+// a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.BackwardPairs).
+// It is the word the configuration spells as well (config.HookEventWorkBack), written out again
+// here because this package imports no configuration: a hook reaches the engine with its event
+// as the operator wrote it, and recordRound fires the hooks that name this one.
+const HookEventWorkBack = "work_back"
+
 // Config supplies the project-scoped workflow limits and the clock used only to stamp durable
 // outbox deadlines. Zero limits take their shipped defaults.
 type Config struct {
@@ -84,6 +103,13 @@ type Config struct {
 	// the pacing and knows no limiter; what the rate and the burst were is the outbox's to log,
 	// where the wake runs (the daemon's wakeRan).
 	Reserve func(now time.Time) time.Time
+	// Hooks are the deployment's hooks (`hooks`, config.Config.Hooks), each put in front of the
+	// roles it names every Every moves back of what it selects. The empty list fires nothing:
+	// the one hook a deployment that writes no key runs is the configuration's default
+	// (config.DefaultHooks), never this engine's, so a deployment that configures none gets
+	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
+	// a path.
+	Hooks []Hook
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -551,7 +577,7 @@ func leftPhase(role claim.Role, at phase.Phase) phase.Phase {
 	case claim.RoleMerger:
 		return phase.Merging
 	case claim.RoleImplementer:
-		if phaseIndex(at) > phaseIndex(phase.Retro) {
+		if phase.MovesBack(at, phase.Retro) {
 			return phase.Retro
 		}
 		return phase.Implementing
@@ -1028,13 +1054,16 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// base (TriggerConflict). The pass tells each pass through a phase from the last
 	// (api/handoff.go): a move that counted none would give a completion reporting the last pass's
 	// carrying commit that pass's key, answered as already received instead of refused as a handoff
-	// not written anew. The round is the review's alone — it counts the review rounds
-	// review_round_cap bounds, so only a review that requested changes moves it, and a send-back
-	// for anything else leaves it where it stands. The pull request goes with the round because
-	// the cap reads it: a round opened while the record holds this head as conflicting with its
-	// base is a conflict round, which review_round_cap does not count (recordRound).
-	if movesBack(issue.Phase, row.To) {
-		if err := e.recordPass(ctx, tx, issue.Key); err != nil {
+	// not written anew. The move's two phases go with the pass, because the move is counted under
+	// its own pair and a hook of the deployment stands on that pair (recordPass,
+	// fireWorkBackHooks), so a hook sees every way the work goes back and not the review's alone.
+	// The round is the review's alone — it counts the review rounds review_round_cap bounds, so
+	// only a review that requested changes moves it, and a send-back for anything else leaves it
+	// where it stands. The pull request goes with both because each reads it: a move made while
+	// the record holds this head as conflicting with its base is a conflict round, which
+	// review_round_cap does not count and no pair counts either (recordRound, recordPass).
+	if phase.MovesBack(issue.Phase, row.To) {
+		if err := e.recordPass(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
 	}
@@ -1324,18 +1353,4 @@ func (e *Engine) ownPullRequest(ctx context.Context, tx pgx.Tx, pr *record.PullR
 // never from the project's whole record.
 func (e *Engine) treeMembers(ctx context.Context, tx pgx.Tx, root record.Issue) ([]record.Issue, error) {
 	return e.store.TreeIssues(ctx, tx, root.Tree)
-}
-
-func phaseIndex(value phase.Phase) int {
-	for index, candidate := range []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
-		if candidate == value {
-			return index
-		}
-	}
-	return -1
-}
-
-// movesBack says whether to is a workflow phase before from.
-func movesBack(from, to phase.Phase) bool {
-	return phaseIndex(to) >= 0 && phaseIndex(to) < phaseIndex(from)
 }

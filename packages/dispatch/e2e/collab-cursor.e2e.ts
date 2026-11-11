@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, documentEditor, placeCaret } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Every row here carries `@webkit`, the tag the `webkit` project selects by
@@ -17,10 +15,6 @@ function bobsCursorInCode(page: Page) {
 function bobsCursor(page: Page) {
   return documentEditor(page).locator(".proof-collab-cursor__label", { hasText: "bob" });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 const cases = [
   {

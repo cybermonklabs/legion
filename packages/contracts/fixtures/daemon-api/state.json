@@ -168,7 +168,11 @@
             }
           },
           "pass": 3,
-          "rounds": 2
+          "rounds": 2,
+          "backwardMoves": {
+            "reviewing-implementing": 1,
+            "testing-implementing": 1
+          }
         },
         "planner": {
           "claim": {
@@ -735,6 +739,21 @@
       {
         "from": "acme/widgets-legacy",
         "to": "acme/widgets"
+      }
+    ],
+    "hooks": [
+      {
+        "name": "back-to-implementing",
+        "on": "work_back",
+        "moves": [
+          "reviewing-implementing",
+          "testing-implementing"
+        ],
+        "every": 2,
+        "roles": [
+          "implementer"
+        ],
+        "prompt_file": "/etc/legion/hooks/back-to-implementing.md"
       }
     ]
   },

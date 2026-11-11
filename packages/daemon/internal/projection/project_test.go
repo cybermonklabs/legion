@@ -832,3 +832,42 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 			got.Admission.Waiting)
 	}
 }
+
+// A worker's view carries the counts of the moves back its issue has made, as the implementer's
+// row holds them, and a worker whose row counts none carries no counts at all rather than an
+// empty map: a reader of the fleet tells an issue that has had no move back from one whose
+// counts the daemon holds (api.PhaseView.BackwardMoves).
+//
+// This is the one read that joins the record's counts to the state route. The route's own proofs
+// build the view themselves, so a build that counted every move back and served none - the join
+// below left out - passes every one of them and serves a fleet with no counts in it at all.
+func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
+	implementer, tester := claim.Token("legion-208-implementer"), claim.Token("legion-208-tester")
+	counts := map[string]int{"testing-implementing": 4, "reviewing-implementing": 2}
+	store := projectionStore{
+		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing}},
+		phases: map[string][]record.PhaseRow{"LEGION-208": {
+			{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, Rounds: 7, ConflictRounds: 1, BackwardMoves: counts},
+			{Issue: "LEGION-208", Role: claim.RoleTester, Claim: tester},
+		}},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{
+		{Token: implementer, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_implementer"},
+		{Token: tester, Issue: "LEGION-208", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester"},
+	}, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+
+	workers := got.Issues["LEGION-208"].Workers
+	if !reflect.DeepEqual(workers[claim.RoleImplementer].BackwardMoves, counts) || workers[claim.RoleImplementer].Rounds != 7 {
+		t.Fatalf("the implementer's view counts %v over %d rounds, want %v over 7: the counts the record holds are what the route serves",
+			workers[claim.RoleImplementer].BackwardMoves, workers[claim.RoleImplementer].Rounds, counts)
+	}
+	if len(workers[claim.RoleTester].BackwardMoves) != 0 {
+		t.Fatalf("the tester's view counts %v, want none: the counts are kept on the implementer's row alone",
+			workers[claim.RoleTester].BackwardMoves)
+	}
+}

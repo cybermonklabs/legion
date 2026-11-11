@@ -937,21 +937,47 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 }
 
 // recordPass counts the implementer one more pass through the implementing, testing and reviewing
-// stretch, which every move back into an earlier phase opens. Nothing is bounded by it: it is the
-// counter the handoff completion key carries (api/handoff.go), and its whole job is to make a
-// completion at a commit an earlier pass reported a fact of its own.
-func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string) error {
+// stretch, which every move back into an earlier phase opens, counts the move itself under its
+// own pair, and fires the deployment's hooks that stand on the move (fireWorkBackHooks).
+//
+// The pass bounds nothing: it is the counter the handoff completion key carries
+// (api/handoff.go), and its whole job is to make a completion at a commit an earlier pass
+// reported a fact of its own. BackwardMoves is what a hook counts, under the move's own
+// "<from>-<to>" pair, spelled as phase.BackwardPairs() spells the pairs (phase.Pair): a review
+// that sends the work back and a test that sends it back are two counts and never one. Both rise
+// here, where every backward move passes, rather than beside the review round, which only a
+// review requesting changes opens (recordRound): a hook standing on that count would never see a
+// tester's fail or a worker's own move back.
+//
+// A move the record holds as a conflict with the base raises no pair and fires no hook: nobody
+// sent the work back, so there is no move of a kind for a hook to count, and the pass it still
+// raises is the completion key's alone. Everything is written in the move's own transaction, so
+// a move the record holds and a prompt nobody wrote cannot happen, and nothing here holds the
+// move back: the transition starts the next role whatever a hook said.
+func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, pr *record.PullRequest) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	row.Pass++
-	return e.store.PutPhase(ctx, tx, row)
+	if pr != nil && classify.ConflictRound(*pr) {
+		return e.store.PutPhase(ctx, tx, row)
+	}
+	if row.BackwardMoves == nil {
+		row.BackwardMoves = make(map[string]int, 1)
+	}
+	row.BackwardMoves[phase.Pair(from, to)]++
+	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+		return err
+	}
+	return e.fireWorkBackHooks(ctx, tx, issue, from, to, row.BackwardMoves, pr)
 }
 
 // recordRound counts the implementer one more review round, which only a review that requested
-// changes ends, and, when the round is one the cap counts, posts the cap's message and its
-// pr-blocked notice once the counted rounds reach review_round_cap.
+// changes ends, and tells the architect once for each value review_round_cap holds. The move's
+// own pair and the deployment's hooks are counted where every backward move passes (recordPass),
+// so a round and a move are counted apart: this one is the cap's, and everything it writes it
+// writes in the move's own transaction.
 //
 // What the cap reads is Rounds less the rounds a conflict with the base caused
 // (classify.ConflictRound, record.PhaseRow.ConflictRounds). A round opened while the record holds
@@ -962,32 +988,48 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string) error 
 // what it was excused, and the message names both numbers: an architect woken by it reads how
 // many rounds were counted against the cap and how many were not.
 //
-// A move that raised the conflict count posts neither the message nor the notice, whatever the
-// counted rounds stand at: it leaves that number as the round before it left it, and a notice is
-// itself a way of counting, waking the architect to decide a round nobody spent. The counted
-// round that reached the cap posted it, and the next counted round posts it again, naming the
-// conflict rounds as they stand then.
+// A conflict round posts neither the cap's message nor its notice, whatever the counted rounds
+// stand at: it leaves that number as the round before it left it, and a notice is itself a way
+// of counting, waking the architect to decide a round nobody spent.
+//
+// The cap's message and its pr-blocked notice go once for each value the cap holds, and not on
+// every counted round at or above it: the round that tells writes the cap it read into
+// record.PhaseRow.CapTold, and a later round compares the two. The comparison is != and never <,
+// because a cap lowered under a row that already told a higher value must tell once at the new
+// value, which < would never do. A raised cap tells again at its new number, and a new
+// generation tells again from its own first crossing, because clearGeneration clears the mark.
+//
+// Nothing here holds the move back: the transition starts the next role whatever the counts read. A write that fails is still an error of the move's transaction, as
+// every other write of that transaction is, and is returned rather than swallowed.
 func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	row.Rounds++
-	conflict := pr != nil && classify.ConflictRound(*pr)
-	if conflict {
+	if pr != nil && classify.ConflictRound(*pr) {
+		// A conflict round ends here: it tells nobody, so the write of the two counts is all it
+		// has to do.
 		row.ConflictRounds++
+		return e.store.PutPhase(ctx, tx, row)
+	}
+	counted := row.Rounds - row.ConflictRounds
+	tell := counted >= e.cfg.ReviewRoundCap && row.CapTold != e.cfg.ReviewRoundCap
+	if tell {
+		row.CapTold = e.cfg.ReviewRoundCap
 	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
-	counted := row.Rounds - row.ConflictRounds
-	if conflict || counted < e.cfg.ReviewRoundCap {
-		return nil
+	if tell {
+		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
+			e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
+		if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
+			return err
+		}
+		if err := e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
+			return err
+		}
 	}
-	message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
-		e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
-	if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
-		return err
-	}
-	return e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message})
+	return nil
 }

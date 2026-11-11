@@ -12,10 +12,10 @@
  *    selects, and the containerised `visual` job of the full lane runs this config where there
  *    is no bun to start it with (`e2e/__tests__/stub-web-server.test.ts` holds both directions).
  *  - **Is this run the stubbed layer alone?** Then it reaches no server of the harness - no Go
- *    server, no Postgres, no fake listener - so the config's harness refusals and its global
- *    setup are about a harness it does not want, and it is exempt from them. Every refusal
- *    keeps its sentence for every other run, so a person who forgets the harness still gets the
- *    line that fixes it.
+ *    server, no Postgres, no fake listener - so there is nothing for the global setup to start:
+ *    `globalSetup` reads this answer and returns before it makes a directory or starts a server
+ *    (`e2e/global-setup.ts`). Every other run gets its stacks, so a person who wanted the
+ *    harness and named a real-stack project still gets one.
  *  - **Are the stub projects declared at all?** The config leaves them out of a deployed run
  *    and out of two-process mode. It is not the second question's answer - a run naming
  *    `--project chromium` declares them and holds no stubbed row - but both are read here, so
@@ -40,13 +40,15 @@ export function stubRecording(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env[stubRecordVariable] ?? "") === "1";
 }
 
-/** Carries the stub-only decision to the workers. Every worker re-imports the config, and a
- *  worker's own argv is Playwright's (`.../workerMain.js`) rather than the command line, so a
- *  worker that read the selection itself would answer `false` and meet a refusal the run was
- *  exempt from. The process that reads the command line writes this, and Playwright gives each
- *  worker its environment. Setting it by hand is how a person runs this config against no
- *  harness at all; it exempts the whole run, real-stack projects included, so a run that
- *  selects one of those and sets this gets no refusal and no preflight either. */
+/** Tells `globalSetup` to start nothing. The hook reads this same selection
+ *  (`e2e/global-setup.ts`) and returns before it makes a directory or starts a server where the
+ *  answer is yes, since a run of the stubbed layer alone reaches none of those servers. The
+ *  reading that saw the command line writes this, so every later reading of the run answers
+ *  what that line said: the hook's own, and every worker's, since a worker re-imports the
+ *  config with Playwright's argv (`.../workerMain.js`) rather than the command line and would
+ *  otherwise answer `false`. Setting it by hand is how a person runs this config with no
+ *  harness started at all; it holds for the whole run, real-stack projects included, so a run
+ *  that selects one of those and sets this addresses servers nothing started. */
 export const stubOnlyVariable = "DISPATCH_E2E_STUB_ONLY";
 
 /** What one run wants of the stubbed layer. */
@@ -57,8 +59,7 @@ export interface StubSelection {
   readonly declared: boolean;
   /** The run holds at least one stubbed row, so it is given the static file server. */
   readonly holdsStubRow: boolean;
-  /** The run is the stubbed layer alone, so it is exempt from the harness refusals and the
-   *  global setup. */
+  /** The run is the stubbed layer alone, so `globalSetup` starts no stack for it. */
   readonly onlyStub: boolean;
 }
 
@@ -70,8 +71,8 @@ export interface StubSelection {
  *
  *  A `--project` value this cannot resolve - a `*` pattern, which Playwright expands against
  *  the config's own projects - is read as possibly naming any project: such a run may hold a
- *  stubbed row, so it gets the server, and it may hold a real-stack row, so it keeps every
- *  refusal and the preflight. */
+ *  stubbed row, so it gets the server, and it may hold a real-stack row, so `globalSetup` starts
+ *  this run's stacks as it does for any other. */
 export function stubSelection(options: {
   argv: readonly string[];
   env: NodeJS.ProcessEnv;

@@ -94,17 +94,17 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 60's waiting line
+number is the one `DaemonAPIVersion` declares, last bumped by contract 63's waiting line
 (INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
 `waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
 an issue the list does not name carries no such key, and a caller
-from a pod below 60 is served every issue without the field), with contract 60's claim step
+from a pod below 63 is served every issue without the field), with contract 63's claim step
 record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
 carries `step`, what the daemon last saw that claim's agent do — the turn it is in, the call it
 is in, and that call's argument length and fingerprint, never their text — and every pane and
 every pod's worker container is told `LEGION_STALL_CALL_BOUND_MS`, `LEGION_STALL_CALL_GRACE_MS`
 and `LEGION_STALL_STEP_MS` where the daemon's own environment holds them; a strict reader before
-60 refuses a state carrying `step`, so a caller from a pod below 60 is served the state without
+60 refuses a state carrying `step`, so a caller from a pod below 63 is served the state without
 it), after contract 59's end of fix-attempt counting and its two recovery operations
 (the settings block of `GET /legion/v1/state` no longer carries `max_fix_attempts` and each pull
 request in it loses `fixAttempts`, which the strict reader every worker's `read_record` parses

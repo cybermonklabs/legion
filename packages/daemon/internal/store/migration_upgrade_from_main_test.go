@@ -11,12 +11,15 @@ import (
 // not recorded; main carries every other version of the embedded set and nothing of its own beyond
 // mainsNewestMigration. Store.apply asks each migration whether its own version is recorded, so an
 // upgrade of a database main migrated applies exactly these, in version order, over main's rows —
-// the two that rewrite outbox_kind_check (20261105081500 and 20261107095842) after main's own
-// 20261108000545, which added the claim-release kind, and after both the head-arrival column and
-// the drop that takes it away again (20261109130413), which leaves the table as main has it. The
-// two versions of main's above the claim-death charge, the drop of the waiting-for-slot notice
-// (20261109060737) and the retirement's write mark (20261109191929), are main's own and are
-// applied as main's run applied them.
+// the three that rewrite outbox_kind_check (20261105081500, 20261107095842 and 20261108152000)
+// after main's own 20261108000545, which added the claim-release kind, and after main's
+// 20261110225246, which added the hook prompt's — so each of the three names that kind, since a
+// database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
+// after both the head-arrival column and the drop that takes it away again (20261109130413),
+// which leaves the table as main has it. The three versions of main's above the claim-death
+// charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
+// (20261109191929) and the backward-move counts with the hook prompt (20261110225246), are
+// main's own and are applied as main's run applied them.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -31,15 +34,31 @@ var thisBranchsMigrations = []int{
 // mainsNewestMigration is the newest version main carries, the write mark a claim's retirement
 // takes, which tells a start row written before a retirement from one written after it. Every
 // embedded version above it is this branch's own.
-const mainsNewestMigration = 20261109191929
+const mainsNewestMigration = 20261110225246
+
+// mainsKindCheck is the constraint main's own 20261110225246 wrote, which is what a database main
+// migrated carries. The embedded copy of that migration is the merged one — it names the kinds the
+// merged daemon writes, `role_message` among them and the merge lane's three out, since a branch
+// database with a pending role message would otherwise fail the upgrade on it — so main's own text
+// is written here and put back over the database this test upgrades. Without it the seeds below
+// could not be written at all, and the upgrade's one hard case, a merge-lane row of a release that
+// still merged, would go untested.
+const mainsKindCheck = `alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in (
+  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
+  'linger_close', 'workspace_remove', 'merge_queue_publish', 'issue_branch', 'issue_suspend',
+  'auto_merge_disable', 'ready_merge', 'check_wake', 'check_look', 'check_bound',
+  'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release',
+  'hook_prompt'))`
 
 // mainsOutboxKinds is every kind main's daemon writes, which is the list main's own
-// 20261108000545 admits. A database main migrated can carry a row of each at the upgrade.
+// 20261110225246 admits. A database main migrated can carry a row of each at the upgrade.
 var mainsOutboxKinds = []string{
 	"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 	"linger_close", "workspace_remove", "merge_queue_publish", "issue_branch", "issue_suspend",
 	"auto_merge_disable", "ready_merge", "check_wake", "check_look", "check_bound",
 	"phase_ended", "issue_bundle", "issue_release", "gated_steps_publish", "claim_release",
+	"hook_prompt",
 }
 
 // A daemon of this release is deployed over a database main migrated, and that database's outbox
@@ -86,6 +105,12 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 			t.Fatalf("%s is above main's newest version %d and thisBranchsMigrations does not name it: add it, or this test upgrades a database no deployment has",
 				migration.Name, mainsNewestMigration)
 		}
+	}
+
+	// The database now stands where main's run left it in every way but its kind constraint, which
+	// the embedded migration wrote as the merged list; main's own text goes back over it here.
+	if _, err := store.pool.Exec(ctx, mainsKindCheck); err != nil {
+		t.Fatalf("put main's own kind constraint back: %v", err)
 	}
 
 	queue := func(kind string) error {

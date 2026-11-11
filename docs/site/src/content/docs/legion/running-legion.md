@@ -108,8 +108,8 @@ implement and review Apps' permissions bound what Legion's agents can do on GitH
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues | metadata, packages |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages |
+| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages |
+| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -492,6 +492,25 @@ What each part is for:
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
   secret.
+- **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
+  issue whose work keeps going back. Each entry carries `name`, its own and named once in the
+  file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
+  has; `every`, a positive whole number of those moves; `roles`, the roles the words are written
+  to, one or more of `implementer`, `tester`, `reviewer`, `planner` and `merger` (`architect` is
+  refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
+  key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
+  name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases
+  (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, and the 18
+  other pairs the daemon counts), or the word `any`, which is also what a hook that leaves the
+  key out takes. A hook fires when the move is one it counts and the counts of the moves it
+  counts, added up, are then a whole multiple of its `every`
+  ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
+  hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every
+  `prompt_file` at boot, as it reads `instructions`, so an edited file reaches the workers at the
+  next start of the daemon and the daemon does not come up while one of them is missing,
+  unreadable or blank. A file that names no `hooks:` key runs one shipped hook: `work-back`, over
+  any move, every 5 of them, to the implementer, the tester and the reviewer. `hooks: []` runs
+  none.
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
 - **`runtime.kubernetes.session_store`** is required, and must name a store that keeps every
@@ -918,6 +937,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    `legion stop --config legion.yaml`) and start it again. `legion restart <PROJECT>` does both in
    the shell it runs in, from the configuration the stopped daemon recorded. The new daemon probes
    the new image before it serves.
+
+   **After the first upgrade to a release that counts the moves back by kind,** every issue starts
+   at no counts: the migration fills none in from the past. An issue already in flight therefore
+   reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
+   first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
@@ -1029,7 +1053,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   the slot it took when the daemon started it, how many of them a person
   answered and the published line still names — each standing
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
-  with what it waits on (`none` when no root waits). A daemon older than contract 60 serves no
+  with what it waits on (`none` when no root waits). A daemon older than contract 63 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
   cannot see the line, and a root of another Dispatch project, whose line this daemon does not
   publish, is counted by nobody. An
@@ -1094,15 +1118,16 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
-  `architect` and `workers` (each claim's `state`), `pullRequest` (`repo`, `number`, `head`,
-  `state`, `mergeState`, `reviewDecision`),
+  `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
+  count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
+  made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
   `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
   `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
-  read; a daemon below contract 60 serves none) and, for a closed
+  read; a daemon below contract 63 serves none) and, for a closed
   issue whose
   production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —
   the role the check recorded as the one that works it — `looks`,
@@ -1120,8 +1145,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and
   `unavailable`, present only when a NATS read failed),
-  `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`
-  and the rest as the daemon runs them — with every credential, credential source and credential
+  `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`,
+  `hooks` with each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file` but never its
+  words, and the rest as the daemon runs them — with every credential, credential source and credential
   file path left out, and a URL's userinfo masked as `xxxxx@`), and `agentSecretsLogin` when the
   broker is configured:
 

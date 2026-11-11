@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -414,6 +415,20 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close after the race = %t, %v; want it to act", act, err)
+	}
+}
+
+// The idle rule holds an issue's pod for every row of the role-message lane: each of those rows
+// speaks to a role of that pod, and a release stops the role that the row was written for. The
+// lane's own list is record.LaneKinds(record.LaneRoleMessage) and idleWaitingKinds writes its
+// kinds out as the strings the SQL compares, so nothing but this test holds the two together: a
+// kind added to the lane and left out of the idle list lets the daemon release the pod out from
+// under a row nobody has read yet.
+func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
+	for _, kind := range record.LaneKinds(record.LaneRoleMessage) {
+		if !slices.Contains(idleWaitingKinds, string(kind)) {
+			t.Errorf("the role-message kind %q stands in no idleWaitingKinds %v: a release would stop the role before it reads the row", kind, idleWaitingKinds)
+		}
 	}
 }
 

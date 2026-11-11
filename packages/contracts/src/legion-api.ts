@@ -149,7 +149,7 @@ const legionCapabilityReportView = z.object({
 });
 
 /** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
- * its worker stream (contract 60): `at`, when the daemon received that step; `turnStartedAt`,
+ * its worker stream (contract 63): `at`, when the daemon received that step; `turnStartedAt`,
  * when the turn it belongs to began; `tool` and `callId`, the call the agent is in, which the
  * start and end frames pair by; `argsBytes` and `argsHash`, the length of that call's arguments
  * and an eight-byte fingerprint of them; and `startedAt` and `endedAt`, when the daemon received
@@ -207,7 +207,7 @@ const legionClaimView = z.object({
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
-   * contract below 60 is served the state with no such key at all (the daemon's
+   * contract below 63 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
 });
@@ -220,16 +220,23 @@ const legionHandoffRecordView = z.object({
 });
 
 /** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
- * completion reported, the Dispatch handoff record it named), and the two counts the phase
+ * completion reported, the Dispatch handoff record it named), and the three counts the phase
  * carries: `pass`, the passes it has made through its stretch of the workflow, which every
- * backward move counts one of, and `rounds`, the review rounds, which only a review that
- * requested changes counts. */
+ * backward move counts one of, `rounds`, the review rounds, which only a review that requested
+ * changes counts, and `backwardMoves`, the counts of the moves back that made those rounds. */
 const legionPhaseView = z.object({
   claim: legionClaimView,
   handoffCommit: nonEmptyString.optional(),
   handoffRecord: legionHandoffRecordView.optional(),
   pass: z.number().int().nonnegative(),
   rounds: z.number().int().nonnegative(),
+  /** How many times the issue's work has gone back by each kind of move, keyed `<from>-<to>` as
+   * the daemon counts the pairs (`reviewing-implementing` and the rest). Absent, never `{}`, for
+   * a worker whose issue has had no move back, and absent from the whole state for a caller in a
+   * pod whose plugin declares a contract below 62 (the daemon's `withoutBackwardMoves`), so every
+   * reader takes it as optional. `rounds` beside it counts every round, a conflict round
+   * included, which no pair counts. */
+  backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
 /** `api.PullRequestView` — the pull request as the daemon observes it from GitHub.
@@ -241,7 +248,7 @@ const legionPhaseView = z.object({
  * No CI verdict and no fix-attempt count ride here: a CI result moves no issue, so the daemon
  * keeps neither (dispatch://INFRA-714/spec R1), and `mergeState` is what says whether a check the
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
- * until contract 60 removed the count. */
+ * until contract 63 removed the count. */
 const legionPullRequestView = z.object({
   /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
   repo: nonEmptyString,
@@ -489,8 +496,8 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
-  /** Where the issue stands in `admission.waiting` (contract 60): present only for an issue that
-   * list names, so every issue the line does not carry has none, and a daemon before contract 60
+  /** Where the issue stands in `admission.waiting` (contract 63): present only for an issue that
+   * list names, so every issue the line does not carry has none, and a daemon before contract 63
    * writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
@@ -601,7 +608,7 @@ const legionCapabilityState = z.object({
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
  * credential file path left out (contract 35). Its keys are legion.yaml's own; the two the spec
  * names are typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
- * contract change. `max_fix_attempts` was typed here until contract 60 removed the key, and
+ * contract change. `max_fix_attempts` was typed here until contract 63 removed the key, and
  * `review_round_cap` is the one cap left that blocks a pull request. */
 const legionSettings = z.looseObject({
   review_round_cap: z.number().int().positive(),

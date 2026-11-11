@@ -79,7 +79,7 @@ func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
 	})
 	var out lockedBuffer
 	refused := make(chan struct{}, 2)
-	conn, err := natsauth.Connect([]string{url}, seed, nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{url}, seed, t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(refused, make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1)))
 	if err != nil {
@@ -150,7 +150,7 @@ func fakeServer(t *testing.T, then string) string {
 func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 	var out lockedBuffer
 	closed := make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Unknown Protocol Operation'\r\n")}, "", nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Unknown Protocol Operation'\r\n")}, "", t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), closed))
 	if err != nil {
@@ -175,7 +175,7 @@ func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 func TestTheDaemonsOwnCloseAfterARefusalLogsNoClose(t *testing.T) {
 	var out lockedBuffer
 	refused, closed := make(chan struct{}, 1), make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Permissions Violation for Subscription to \"legion.denied\"'\r\n")}, "", nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{fakeServer(t, "-ERR 'Permissions Violation for Subscription to \"legion.denied\"'\r\n")}, "", t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(refused, make(chan struct{}, 1), make(chan struct{}, 1), closed))
 	if err != nil {
@@ -206,7 +206,7 @@ func TestAConnectionLostWithoutReconnectLogsOneClose(t *testing.T) {
 	proxy := dropProxy(t, strings.TrimPrefix(testnats.URL(t), "nats://"))
 	var out lockedBuffer
 	closed := make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", nats.Timeout(5*time.Second), nats.NoReconnect(),
+	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect(),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), closed))
 	if err != nil {
@@ -226,7 +226,7 @@ func TestAConnectionLostWithoutReconnectLogsOneClose(t *testing.T) {
 func TestAnAsynchronousErrorIsLoggedWithItsSubscriptionSubject(t *testing.T) {
 	var out lockedBuffer
 	asyncErr := make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{testnats.URL(t)}, "", nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{testnats.URL(t)}, "", t.Name(), nats.Timeout(5*time.Second),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(asyncErr, make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1)))
 	if err != nil {
@@ -263,7 +263,7 @@ func TestADisconnectAndItsReconnectAreLogged(t *testing.T) {
 	proxy := dropProxy(t, upstream)
 	var out lockedBuffer
 	disconnected, reconnected := make(chan struct{}, 1), make(chan struct{}, 1)
-	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", nats.Timeout(5*time.Second),
+	conn, err := natsauth.Connect([]string{"nats://" + proxy.addr}, "", t.Name(), nats.Timeout(5*time.Second),
 		nats.ReconnectWait(10*time.Millisecond), nats.ReconnectJitter(0, 0),
 		natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
 		signalled(make(chan struct{}, 1), disconnected, reconnected, make(chan struct{}, 1)))

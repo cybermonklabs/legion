@@ -1200,6 +1200,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   }),
   "ask.anchor_refreshed": event("ask.anchor_refreshed", { anchor: null, id: "ask-1" }),
   "ask.answered": event("ask.answered", { anchor: null, id: "ask-1" }),
+  "ask.asked_of": event("ask.asked_of", { anchor: null, id: "ask-1", asked_of: "bob" }),
   "ask.edited": event("ask.edited", { anchor: null, id: "ask-1" }),
   "ask.follower_added": event("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   "ask.follower_removed": event("ask.follower_removed", { ask_id: "ask-1", session_id: "s1" }),

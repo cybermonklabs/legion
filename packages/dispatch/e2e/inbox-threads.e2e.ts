@@ -1,10 +1,8 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
 import { hasReadingPane, inboxPane } from "./inbox-pane";
 import { replyRowId, seedCommentThread, seedTwelve, THREAD_SESSION } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -15,10 +13,6 @@ import { asUser } from "./users";
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // It is no stubbed row: it opens the Inbox and then navigates to another page while the shell's
 // `GET /api/v1/agents` is still in flight, so a recording of it holds that read cancelled, with

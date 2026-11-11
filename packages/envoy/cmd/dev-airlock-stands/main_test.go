@@ -277,3 +277,68 @@ func askTheModel(t *testing.T, url string) string {
 	}
 	return string(body)
 }
+
+// TestTheGitHubStandsAnswerIsSetWhileItRuns is the command's own half of the GitHub stand's
+// three answers: the route the report names sets what the stand answers each token request from
+// then on, which is how one check drives the ordinary mint, the refusal and the widened token
+// against one running stack, and a mode outside the three is refused rather than quietly leaving
+// the last answer in place. What each answer holds is the stand-in package's own rows.
+func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
+	out := startStands(t, "--dir", t.TempDir())
+	if out.GitHubAnswerURL != out.RecordsURL+"/answers/github" {
+		t.Fatalf("the report names the answer route %q; want it on the recording server at %s", out.GitHubAnswerURL, out.RecordsURL)
+	}
+	for _, c := range []struct {
+		name, mode string
+		want       int
+	}{
+		{name: "the answer it starts on", want: http.StatusCreated},
+		{name: "the refusal", mode: `{"mode":"refuse"}`, want: http.StatusUnprocessableEntity},
+		{name: "the token wider than asked", mode: `{"mode":"widen"}`, want: http.StatusCreated},
+		{name: "the ordinary answer again", mode: `{"mode":"ordinary"}`, want: http.StatusCreated},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.mode != "" {
+				if status, body := setTheAnswer(t, out.GitHubAnswerURL, c.mode); status != http.StatusOK {
+					t.Fatalf("setting %s answered %d %s; want 200", c.mode, status, body)
+				}
+			}
+			status, body := askForAToken(t, out.Stands[standGitHub].URL)
+			if status != c.want {
+				t.Fatalf("the token request answered %d %s; want %d", status, body, c.want)
+			}
+			if c.want != http.StatusCreated {
+				return
+			}
+			wider := strings.Contains(body, `"repository_selection":"all"`)
+			if wider != (c.mode == `{"mode":"widen"}`) {
+				t.Errorf("the token is %s; want one of the %s answer", body, c.name)
+			}
+		})
+	}
+	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"sometimes"}`); status != http.StatusBadRequest ||
+		!strings.Contains(body, "ordinary") || !strings.Contains(body, "refuse") || !strings.Contains(body, "widen") {
+		t.Errorf("a mode outside the three was answered %d %s; want 400 naming the three", status, body)
+	}
+}
+
+// askForAToken makes one access_tokens request against the GitHub stand, the call the broker's
+// minter makes, and answers its status and body.
+func askForAToken(t *testing.T, url string) (int, string) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		url+"/app/installations/7/access_tokens", strings.NewReader(`{"repositories":["proofs"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("ask the GitHub stand for a token: %v", err)
+	}
+	defer answer.Body.Close()
+	body, err := io.ReadAll(answer.Body)
+	if err != nil {
+		t.Fatalf("read the GitHub stand's answer: %v", err)
+	}
+	return answer.StatusCode, strings.TrimSpace(string(body))
+}

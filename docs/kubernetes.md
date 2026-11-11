@@ -5692,7 +5692,7 @@ The controller is the one Legion session a person talks to.
 `controller: daemon` needs `dispatch_url` (`controller: daemon needs dispatch_url: …`), and the loader refuses any value but the two.
 
 Under either mode a controller reads its daemon's resolved settings
-— `review_round_cap`, `worker_boot_timeout_seconds`, `admission_cap` and the rest of `legion.yaml`, with every credential, credential source and credential file path left out
+— `review_round_cap`, `worker_boot_timeout_seconds`, `admission_cap`, `hooks` (each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file`, and never the words it puts in front of its roles) and the rest of `legion.yaml`, with every credential, credential source and credential file path left out
 — from `read_state`'s `settings` (contract 35, LEGION-791), never from the ConfigMap in `legion-system`, which the account the project's pods run as may not read.
 
 ### Controller liveness

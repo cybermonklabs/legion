@@ -133,8 +133,8 @@ func TestTheWaitingLinePlaceIsStrippedBelowItsContract(t *testing.T) {
 // daemon's own contract is never below it: a caller at this contract is served the place.
 func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 	// main declared this field 58 and this branch, landing second each time, carries every release's
-	// shapes at 60: the number has to be above every number main declares (version.go).
-	const addedWaitingLine = 60
+	// shapes at 63: the number has to be above every number main declares (version.go).
+	const addedWaitingLine = 63
 	if waitingLineContract != addedWaitingLine {
 		t.Fatalf("waitingLineContract = %d, want %d, the contract whose entry in version.go added each waiting issue's place in the line",
 			waitingLineContract, addedWaitingLine)

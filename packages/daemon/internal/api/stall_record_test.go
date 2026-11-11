@@ -107,11 +107,11 @@ func TestTheStateServedToAPodBeforeTheStallRecordContractLeavesTheNextCallersSta
 // pod is ever served; one above the contract that added the record would keep it from pods whose
 // plugin parses it.
 func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
-	// main landed the record at 57, its own waiting line at 58 and the end of fix-attempt counting
-	// at 59, and this branch's shapes ride the first number above every number main declares, so
-	// the entry that adds `step` reaches a deployment as 60, the one number this release's shape
-	// changes share.
-	const addedStallRecord = 60
+	// main landed the record at 57, its own waiting line at 58, the end of fix-attempt counting
+	// at 59 and the counts of the moves back at 62, and this branch's shapes ride the first
+	// number above every number main declares, so the entry that adds `step` reaches a deployment
+	// as 63, the one number this release's shape changes share.
+	const addedStallRecord = 63
 	if stallRecordContract != addedStallRecord {
 		t.Fatalf("stallRecordContract = %d, want %d, the contract whose entry in version.go adds the claim views' `step`",
 			stallRecordContract, addedStallRecord)

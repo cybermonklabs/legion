@@ -32,6 +32,7 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { z } from "zod";
 
@@ -398,7 +399,7 @@ export function createLegionDaemonClient(
   baseUrl: string,
   fetchFn: typeof fetch = fetch
 ): LegionDaemonClient {
-  const endpoint = baseUrl.replace(/\/+$/, "");
+  const endpoint = withoutTrailingSlashes(baseUrl);
 
   /** The response's status and body once the daemon answered success; a refusal throws. */
   const call = async (

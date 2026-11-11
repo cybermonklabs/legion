@@ -12,9 +12,14 @@
 -- This migration is the last word of both: this release's eighteen kinds with `claim_release`. It
 -- is safe on a database ending at either one, since it drops the constraint if it exists before
 -- adding it, and it deletes no row.
+--
+-- `hook_prompt` is named here although main added it: main's 20261110225246 admits it and a
+-- database main migrated has recorded that version, so an upgrade runs this list over a hook's
+-- pending prompt row, which a list without it would refuse (SQLSTATE 23514), failing the upgrade
+-- and the daemon's boot. The merged daemon writes that kind itself (internal/record's lanes).
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
-  'gated_steps_publish', 'claim_release'));
+  'gated_steps_publish', 'claim_release', 'hook_prompt'));

@@ -24,7 +24,11 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   approver can decide on, and name in it the issue you work on, by its key (below). A request
   every name of which is granted at once reaches nobody and needs none.
 - `agent-secrets --help` holds the rest: the flags that narrow a GitHub App token
-  (`--github-owner`, `--github-repo`, `--github-read-only`), and how long a grant lasts.
+  (`--github-owner`, `--github-repo`, `--github-read-only`), the flag that hands the token over
+  alone (`--github-token`), and how long a grant lasts. With `--github-owner` and
+  `--github-token`, the secret's name holds that one account's token, the string an
+  `Authorization` header carries. Without `--github-token` the name holds the JSON object of
+  installations, and a command that sends that object to GitHub reads `401`.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
   a secret behind the airlock (below) and the broker refuses the release, naming that secret;
   nothing runs. Ask for the GitHub App secret in a run of its own, with no airlocked name beside
