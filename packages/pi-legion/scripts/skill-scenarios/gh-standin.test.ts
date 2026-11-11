@@ -83,6 +83,120 @@ const headOf = (dir: string) =>
     .stdout.toString()
     .trim();
 
+// Catches: a world that invents an approval at no head. GitHub's `POST …/pulls/<n>/reviews/<id>/
+// events` submits a review that is still pending: an already-submitted id answers 422, and a
+// pending one answers the review carrying the head it was left at. The rig's create route matched
+// that path too and answered `{id, html_url}` — a submission with no `commit_id` — and the score,
+// which reads the last submission as the one that stands, failed a run whose reviewer had
+// approved correctly at the head its push made (the text-fixes head arm of 2026-11-11, one run of
+// fifty-six; the artefact can only fail a run, never pass one, since no condition of either
+// scenario is satisfied by a submission that names no head).
+test("a submit of a review that is no longer pending is refused, as GitHub refuses it", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const routes = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
+    routes: unknown[];
+  };
+  routes.routes.unshift(
+    {
+      match: "^gh api (?=.*(-X|--method) ?POST).*pulls/1001/reviews/[0-9]+/events",
+      stderr: "gh: Unprocessable Entity (HTTP 422)\nCan not submit a review that is not pending.\n",
+      exit: 1,
+    },
+    {
+      match: "^gh api (?=.*(-X|--method) ?POST).*pulls/1001/reviews",
+      stdout: { id: 5002, html_url: "https://example.invalid/pull/1001#pullrequestreview-5002" },
+    }
+  );
+  writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify(routes));
+  const body = path.join(dir, "review.json");
+  writeFileSync(body, JSON.stringify({ commit_id: first, event: "APPROVE", body: "approved" }));
+  const approve = Bun.spawnSync(
+    [
+      "bun",
+      STANDIN,
+      "gh",
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews",
+      "--input",
+      body,
+    ],
+    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+  );
+  expect(approve.exitCode).toBe(0);
+  const again = Bun.spawnSync(
+    [
+      "bun",
+      STANDIN,
+      "gh",
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews/5002/events",
+      "-f",
+      "event=APPROVE",
+    ],
+    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+  );
+  expect(again.exitCode).toBe(1);
+  expect(again.stderr.toString()).toContain("422");
+  expect(again.stdout.toString()).not.toContain("5002");
+});
+// Catches: a stand-in that refuses every submit, including the one GitHub answers. A review
+// created with no `event` is pending, and the submit of that one answers the review itself,
+// carrying the head it was created at — which is what keeps the two-step route an agent may take
+// readable as the submission it is.
+test("a submit of a review the run left pending answers the review and its head", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const routes = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
+    routes: unknown[];
+  };
+  routes.routes.unshift(
+    {
+      match: "^gh api (?=.*(-X|--method) ?POST).*pulls/1001/reviews/[0-9]+/events",
+      stderr: "gh: Unprocessable Entity (HTTP 422)\nCan not submit a review that is not pending.\n",
+      exit: 1,
+    },
+    {
+      match: "^gh api (?=.*(-X|--method) ?POST).*pulls/1001/reviews",
+      stdout: { id: 5002, html_url: "https://example.invalid/pull/1001#pullrequestreview-5002" },
+    }
+  );
+  writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify(routes));
+  const body = path.join(dir, "pending.json");
+  writeFileSync(body, JSON.stringify({ commit_id: first, body: "two findings" }));
+  Bun.spawnSync(
+    [
+      "bun",
+      STANDIN,
+      "gh",
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews",
+      "--input",
+      body,
+    ],
+    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+  );
+  const submit = Bun.spawnSync(
+    [
+      "bun",
+      STANDIN,
+      "gh",
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1001/reviews/5002/events",
+      "-f",
+      "event=APPROVE",
+    ],
+    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+  );
+  expect(submit.exitCode).toBe(0);
+  expect(JSON.parse(submit.stdout.toString())).toMatchObject({ id: 5002, commit_id: first });
+});
 // Catches: a stand-in that answers the fixture's commit after the role pushed, so every pushing
 // role reads a head that is not its own and stops.
 test("the pull request's head is the tip of the run's own remote", () => {

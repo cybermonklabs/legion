@@ -1728,6 +1728,16 @@ $entries"
   # would create, ahead of the route that reads the reviews already there, which are the one
   # approval. Nothing here records what a run did: the score reads the calls the stand-in
   # recorded, never these answers.
+  #
+  # The submit route (`…/reviews/<id>/events`) answers before the create route and refuses, as
+  # GitHub refuses it here: that endpoint submits a review that is still pending, and every review
+  # of this world is submitted by the call that created it, so there is no pending review to
+  # submit and GitHub answers 422. Measured on 2026-11-11 in the text-fixes head arm: a reviewer
+  # approved correctly and then made that call again, the create route matched it, and the
+  # stand-in answered a review object with no `commit_id` — an approval at no head, which GitHub
+  # never writes and which the score then read as the submission that stands, failing a run whose
+  # reviewer had done its work. A world that answers what GitHub refuses is the same defect as a
+  # record naming another repository.
   extra=$(jq -n --argjson resolve "$resolve_route" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
     --argjson threads "$threads" --argjson reviews "$reviews" '[
     $resolve,
@@ -1739,6 +1749,9 @@ $entries"
      stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
        nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
          comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
+    {match:("^gh api (?=.*(-X|--method) ?POST).*pulls/" + ($number|tostring) + "/reviews/[0-9]+/events"),
+     stderr:"gh: Unprocessable Entity (HTTP 422)\nCan not submit a review that is not pending.\n",
+     exit:1},
     {match:("^gh api (?=.*(-X|--method) ?POST).*pulls/" + ($number|tostring) + "/reviews"),
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews}
