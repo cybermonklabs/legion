@@ -7,12 +7,11 @@
  *  cover, and each (route, scheme) prints one `A11Y …` line to stdout, so the shard legs' own job
  *  logs carry the counts and the run's report carries the whole axe result as an attachment. */
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
 
 import { type AccessibilityExclusion, accessibilityExclusions } from "./accessibility-exclusions";
 import { scannedRoutes, waitForRouteSettled } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { withAlice } from "./users";
 
 /** WCAG 2.0 and 2.1, levels A and AA: the tags the plan names, and the ones a reviewer of this
@@ -35,7 +34,7 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *
  *  The check is a hook and not a final row because no row can see the run. `--shard=N/5` splits
  *  this file's rows over five machines (.github/workflows/dispatch-browser.yaml's shard job) and
- *  the lane's four workers split each shard again, so a final row would sit in one process and
+ *  the run's four workers split each shard again, so a final row would sit in one process and
  *  judge entries whose routes another process ran. `afterAll` runs once in each worker, after
  *  the rows that worker ran, which is exactly the set it can judge - and judging only the routes
  *  this process scanned is what keeps a shard that ran none of an entry's route from failing
@@ -64,7 +63,6 @@ for (const route of scannedRoutes) {
   test(`${route.name} has no serious or critical accessibility violation in light or dark`, async ({
     browser,
   }, testInfo) => {
-    await resetDatabase();
     const seed = await seedReviewRoutes();
     await withAlice(browser, async (page) => {
       await page.goto(route.path(seed));

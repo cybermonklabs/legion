@@ -74,6 +74,9 @@ test("a page stops on Couldn't reach Dispatch. while whoami answers EVENT_HEAD_R
   // A minute of the page's own time, in which a retry tier the policy does not have would fire;
   // the margin is for such a request reaching the route above.
   await page.clock.fastForward(60_000);
+  // The margin that paragraph names: a fourth ask would leave the page inside the jump above,
+  // and this window in Node is for it to reach the route that counts it; an ask the policy never
+  // makes marks nothing else to wait on, so the window is the check.
   await sleep(100);
   expect(refused).toBe(shown);
 });

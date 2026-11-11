@@ -106,12 +106,12 @@ const seedPath = process.env.DISPATCH_E2E_VISUAL_SEED;
 
 const SKIP_REASON =
   "This layer compares baselines, which are only the same rendering inside the pinned " +
-  "Playwright image: run `bun e2e/run.ts -- e2e/visual-run.sh` from packages/dispatch, which " +
+  "Playwright image: run `e2e/visual-run.sh` from packages/dispatch, which " +
   "seeds on the host and takes every shot in that container. DISPATCH_E2E_VISUAL_SEED is unset.";
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it. The host's seed
-// runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/preflight.ts:73` resets the fake
-// Envoy when its sentinel check ends, so the sessions `seedWorkspace()` wrote are gone by the
+// runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/global-setup.ts:198` resets the
+// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace()` wrote are gone by the
 // time the first row opens a page: the Agents page then draws "No agents are connected." and
 // every shot of it would be a baseline of an empty registry. The database half of the corpus is
 // untouched by that reset, which is why only this half is written again here. `./agents` and

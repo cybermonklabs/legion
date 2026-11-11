@@ -1,4 +1,5 @@
 import { SESSION_HEARTBEAT_MS } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { bearerCredential, bearerSource, fileBearer, type RequestCredential } from "./bearer";
 import {
   type BrokerSessionName,
@@ -19,7 +20,6 @@ import {
 } from "./envoy-config";
 import { messageFor } from "./errors";
 import { readSecretFile } from "./secret-file";
-import { withoutTrailingSlashes } from "./trailing-slashes";
 
 /** The listener's address when neither `envoy.url` nor `ENVOY_URL` names one. */
 export const DEFAULT_ENVOY_URL = "http://127.0.0.1:9020";
@@ -380,7 +380,7 @@ export function envoySettings(
   // made here instead of making it again from the variable (`startNotice`, session-settings.ts).
   return {
     enabled: true,
-    url: normalizeEnvoyUrl(url),
+    url: withoutTrailingSlashes(url),
     credential,
     inbound,
     heartbeatMs,
@@ -394,8 +394,4 @@ export function envoySettings(
         ? namedPassDeadlineMs
         : undefined,
   };
-}
-
-export function normalizeEnvoyUrl(value: string): string {
-  return withoutTrailingSlashes(value);
 }

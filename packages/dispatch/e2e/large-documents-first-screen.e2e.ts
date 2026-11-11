@@ -465,6 +465,9 @@ test("the reads the first editable block needs none of go out after the editor's
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
     await expect(page.getByRole("button", { name: /^Subscribers/ })).toBeVisible();
     await expect(page.locator('[data-testid="issue-components"]')).toBeVisible();
+    // A read that never goes out cannot be awaited, so the row waits the settled window above:
+    // a read any of these panels was going to make would have gone out inside it
+    // (`settledWithTheSocketHeldMs`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
 
     const held = await readTheReads(page);
@@ -536,6 +539,8 @@ test("a reader who opens a panel before the first batch has its read started the
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
     const toggle = page.getByRole("button", { name: /^Subscribers/ });
     await expect(toggle).toBeVisible({ timeout: 120_000 });
+    // The settled window above: only time shows that the subscribers read nobody made is a read
+    // nobody made (`settledWithTheSocketHeldMs`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
     expect((await readTheReads(page)).reads.filter((read) => read.path === subscribers)).toEqual(
       []
@@ -790,6 +795,9 @@ test("the shell's parts and the page's chrome are drawn after the editor's first
       timeout: 120_000,
     });
     await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
+    // The settled window above: a first batch, or any chrome read behind it, would have gone
+    // out inside it, so what the row reads next is what the held page never asked for
+    // (`settledWithTheSocketHeldMs`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
 
     const heldReads = await readTheReads(page);
@@ -999,6 +1007,8 @@ test("a reader who reaches for the chrome before the batch has it then @phone", 
 
     const box = page.getByTestId("issue-tabs-box");
     await expect(box).toBeAttached({ timeout: 120_000 });
+    // The settled window above: with the socket held no batch ever comes, and this is how long
+    // the row gives it before it reads that none did (`settledWithTheSocketHeldMs`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
     expect((await readTheReads(page)).firstBatchMs).toBeUndefined();
     await expect(page.getByRole("tab", { name: /^Spec$/ })).toHaveCount(0);

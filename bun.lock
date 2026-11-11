@@ -45,6 +45,7 @@
       "name": "@legion/broker-client",
       "version": "0.1.0",
       "dependencies": {
+        "@legion/contracts": "workspace:*",
         "jose": "6.2.9",
         "openid-client": "6.8.7",
       },

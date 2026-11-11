@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { getArtifact, getInbox, resolveAsk } from "./api";
 import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
@@ -20,8 +18,8 @@ import {
   session,
   WINDOW_ANCHOR,
 } from "./inbox-reading-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,10 +30,6 @@ import { asUser } from "./users";
  * shapes of card, its keys and its address, and the widths that take it away - is in
  * `inbox-reading-pane.stub.e2e.ts`; the seed both files read is in `inbox-reading-pane.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the Inbox shows a decision block in the reading pane and answers it in two taps", async ({
   browser,

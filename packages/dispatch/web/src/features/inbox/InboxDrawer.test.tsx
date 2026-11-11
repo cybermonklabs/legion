@@ -108,8 +108,11 @@ test("picking an assignee inside the drawer lists that person there, writes noth
     // The five fields sit behind the bar's one **Filter** button.
     await user.click(within(dialog).getByRole("button", { name: "Filter" }));
     await user.click(within(dialog).getByRole("button", { name: "Filter by assignee" }));
-    // The popover is portalled onto the body, so it is reached from the screen, not the drawer.
-    await user.click(await screen.findByRole("option", { name: /bob/ }));
+    // The popover is portalled onto the body, so it is reached from the screen, not the drawer,
+    // and from its own listbox: every open ask's card carries a people picker of its own (the
+    // hand-on control), whose options name the same people.
+    const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
+    await user.click(await within(listbox).findByRole("option", { name: /bob/ }));
 
     await within(dialog).findByText("Bob's question?");
     expect(screen.getByTestId("location").textContent).toBe("");

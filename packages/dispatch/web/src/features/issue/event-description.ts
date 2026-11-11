@@ -55,6 +55,13 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return ["Ask edited: ", { markdown: event.payload.question }];
     case "ask.handed_back":
       return ["Ask handed back: ", { markdown: event.payload.question }];
+    case "ask.asked_of":
+      // Who the ask waits on now. The payload names no login where it was handed to the
+      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      return [
+        `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: `,
+        { markdown: event.payload.question },
+      ];
     case "comment.resolved":
       return "Comment resolved";
     case "comment.reopened":

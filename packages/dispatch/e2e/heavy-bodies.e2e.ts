@@ -12,7 +12,6 @@
 // here holds the main thread for is measured by `main-thread-hold.ts`, which
 // `nested-directive.e2e.ts` measures its own two rows with, so one instrument and one bound
 // answer for both (sjawhar/legion#2612).
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
 
 // `markdownWorkerThreshold` comes from the module that carries it and imports nothing: the
 // engine around it (`markdown-engine.ts`) is a browser module this spec's process cannot load.
@@ -32,7 +31,7 @@ import {
 } from "./heavy-bodies";
 import { expectSettled, markdownBody } from "./heavy-bodies-page";
 import { expectUnderTheBound, measureDraw, record } from "./main-thread-hold";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -137,10 +136,6 @@ async function seedIssue(title: string): Promise<{ key: string }> {
   await createProject({ key: "CORE", name: "Core" });
   return await createIssue({ project: "CORE", title });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 interface Row {
   /** The body an agent posts. */
@@ -448,7 +443,9 @@ async function atRest(
 }
 
 // The reader's place is proven in Chromium and WebKit: the compensation reads layout the two
-// engines measure and anchor differently.
+// engines measure and anchor differently, and Firefox was never measured on it. This row and
+// the two below it are the three `firefox-alone` leaves out, by the `readersPlaceRows` invert
+// in e2e/playwright.config.ts; every other row of this file runs in all three.
 // SLOW(>=2s): the row holds the body pending, reads the reader's place once the page has stopped
 // moving - 600 ms of one answer, since a deep link's own `New` marks relayout the document after
 // it lands (`atRest`) - and only then lets the 8,000 items format above that place. The late
@@ -456,11 +453,7 @@ async function atRest(
 // whole load.
 test("a long comment above the reader keeps the comment they are reading where it was when it formats", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
-    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
-  );
+}) => {
   const issue = await seedIssue("A late paint above the reader");
   for (let turn = 1; turn <= 12; turn += 1) {
     await createComment(issue.key, { body: `Turn ${turn} is short and already formatted.` }, agent);
@@ -543,11 +536,7 @@ async function scrollOnTheFirstBatch(page: Page, by: number): Promise<void> {
 // window it measures exists only while that draw runs, and a shorter body has no such window.
 test("a reader who scrolls while a long body above them formats keeps where they scrolled to", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
-    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
-  );
+}) => {
   const issue = await seedIssue("A reader scrolling through a late paint");
   for (let turn = 1; turn <= 12; turn += 1) {
     await createComment(issue.key, { body: `Turn ${turn} is short and already formatted.` }, agent);
@@ -616,11 +605,7 @@ async function underTheComposer(page: Page): Promise<number> {
 // 8,000 items formatting under the composer, which is a whole draw of 16,000 elements.
 test("Jump to latest keeps a newest long comment under the composer when it formats late", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
-    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
-  );
+}) => {
   const issue = await seedIssue("A late paint at the newest turn");
   for (let turn = 1; turn <= 12; turn += 1) {
     await createComment(issue.key, { body: `Turn ${turn} is short and already formatted.` }, agent);

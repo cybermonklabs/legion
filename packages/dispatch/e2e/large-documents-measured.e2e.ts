@@ -237,6 +237,8 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
       { timeout: 240_000 }
     );
     await expect(documentEditor(page)).toHaveCount(0);
+    // A window that stays open cannot be awaited: this is the hold above, long enough that a
+    // window closing at the page's own end would have closed inside it (`heldAfterTheDrawMs`).
     await page.waitForTimeout(heldAfterTheDrawMs);
     expect(
       closed,

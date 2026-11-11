@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, apiErrorMessage, type WriteBounds } from "../../api/client";
-import { inboxQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
   Ask,
@@ -18,13 +18,14 @@ import { isViewer } from "../refs/actor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
-import { askArtifactId, askCommentInput, postAskComment } from "./ask-comment";
+import { askCommentInput, postAskComment } from "./ask-comment";
 import {
   clearPendingAskThreadInvalidation,
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
 import { type Draft, draftTargets, EMPTY_DRAFT, emptyDraftRefusal } from "./draft-store";
 import { markAnswerOutstanding } from "./outstanding-answers";
+import { invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
@@ -245,7 +246,7 @@ export function useAskAnswerForm({
         void queryClient.invalidateQueries({ queryKey: ["me", "answers"] });
       }
       if (!changed) onAnswered?.(ask.id);
-      invalidateOwnerReads();
+      invalidateOwnerReads(queryClient, ask);
     },
   });
   // How long the Inbox's reading column keeps the question: while this answer is the reader's to
@@ -276,22 +277,9 @@ export function useAskAnswerForm({
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,
       // not just the Inbox.
-      invalidateOwnerReads();
+      invalidateOwnerReads(queryClient, ask);
     },
   });
-
-  /** The reads that carry this ask besides its own thread: the Inbox and its owner's lists. */
-  function invalidateOwnerReads(): void {
-    void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-    if (ask.issue_key === null) {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", askArtifactId(ask)] });
-      void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
-      return;
-    }
-    void queryClient.invalidateQueries({ queryKey: ["asks", ask.issue_key] });
-    void queryClient.invalidateQueries({ queryKey: ["issue", ask.issue_key] });
-    void queryClient.invalidateQueries({ queryKey: ["issues"] });
-  }
 
   // The thread read is the truth once the question changed under the draft, and once the ask
   // was answered or resolved elsewhere while this card still holds its open row (an Inbox row

@@ -1,3 +1,4 @@
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   type BearerSource,
   bearerCredential,
@@ -26,7 +27,6 @@ import {
   type SectionOff,
 } from "./envoy-config";
 import { messageFor } from "./errors";
-import { withoutTrailingSlashes } from "./trailing-slashes";
 
 /** Default dispatch server base URL, matching the Go server's listen address. */
 const DEFAULT_SERVER_URL = "http://localhost:8766";

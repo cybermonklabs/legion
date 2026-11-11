@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   createIssue,
@@ -11,7 +10,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 async function expectTouchTarget(locator: Locator): Promise<void> {
@@ -77,10 +76,6 @@ async function screenshot(page: Page, projectName: string, name: string): Promis
   const width = projectName === "iphone" ? "390" : "1280";
   await page.screenshot({ fullPage: true, path: `${dir}/${name}-${width}.png` });
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): one row for the whole Architecture page - the seeded model and its six issues, the
 // bars over them, a drill-down, a row's details, a status change that has to move a bar, and the
@@ -251,10 +246,9 @@ test("the architecture reason box writes a line on Enter and saves on Ctrl/Cmd+E
 // are touch-sized. Each claim is read where the page renders it, reached by its own URL. The
 // touch rule is the phone layout's alone (styles.css gives every control 44 px below 1280 px),
 // so the row runs on the phone and nowhere else.
-test("the Architecture page keeps its titles inside their links and its Unassigned controls touch-sized @phone", async ({
+test("the Architecture page keeps its titles inside their links and its Unassigned controls touch-sized @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "these are the phone layout's own measurements");
   const issues = await seedArchitecture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

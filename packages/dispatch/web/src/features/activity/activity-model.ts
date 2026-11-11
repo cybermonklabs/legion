@@ -153,6 +153,14 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return ['edited the question "', { markdown: event.payload.question }, '"'];
     case "ask.handed_back":
       return ["handed “", { markdown: event.payload.question }, "” back for approval"];
+    case "ask.asked_of":
+      // Who the ask waits on now. The payload names no login where it was handed to the
+      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      return [
+        "handed “",
+        { markdown: event.payload.question },
+        `” to ${event.payload.asked_of ?? "the issue's assignee"}`,
+      ];
     case "ask.answered":
       return event.payload.previous_answer === undefined
         ? ["answered “", { markdown: event.payload.question }, "”"]

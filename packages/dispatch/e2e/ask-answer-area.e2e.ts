@@ -258,6 +258,8 @@ test("a session picked in an Inbox ask's answer area goes out on Ask back, and n
     await answer.click({ force: true });
     await expect(answer).toBeFocused();
     await field.press("ControlOrMeta+Enter");
+    // Nothing being sent cannot be awaited: half a second is the window the answer would have
+    // reached the server in, by the click above or by this key.
     await page.waitForTimeout(500);
     expect(answers).toEqual([]);
 
@@ -426,6 +428,8 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
       await expect(card.getByText(reason, { exact: true })).toBeVisible();
       await button.click({ force: true });
     }
+    // Nothing being sent cannot be awaited: half a second is the window either press would have
+    // reached the server in, and every write this row makes lands well inside it.
     await page.waitForTimeout(500);
     expect(answers).toEqual([]);
     expect(comments).toEqual([]);
@@ -442,6 +446,8 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
     await expect(turn.getByText(EMPTY_DRAFT_REFUSAL, { exact: true })).toBeVisible();
     await reply.click({ force: true });
     await turn.getByLabel("Reply").press("ControlOrMeta+Enter");
+    // Nothing being sent cannot be awaited: half a second is the window a press that was going
+    // to post this reply would have posted it in.
     await page.waitForTimeout(500);
     expect(comments).toEqual([]);
   } finally {

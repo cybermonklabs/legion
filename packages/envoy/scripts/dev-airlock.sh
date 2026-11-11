@@ -6,13 +6,15 @@
 #
 #   - Postgres, dev-oidc-issuer and that script's own broker, by running scripts/dev-broker.sh
 #     and reading what it prints. Everything this script needs of a local stack but the airlock
-#     itself is there already - the five built binaries, the local token issuer with a pod's,
-#     a registrar's and two listed callers' tokens, the broker's own sign-in client, and the
-#     Postgres server - so this script starts none of it a second time. What that costs is one
-#     broker process this script does not use, on a database of its own; what it buys is that
-#     the identities, the token files and the issuer are the ones dev-broker.sh documents, and
-#     that a change there reaches both scripts. The airlock's own brokers get a database of
-#     their own (below), so they never share a policy or a secret store with that broker.
+#     itself is there already - the six built binaries, dev-airlock-stands among them, the local
+#     token issuer with a pod's, a registrar's and two listed callers' tokens, the broker's own
+#     sign-in client, and the Postgres server - so this script builds and starts none of it a
+#     second time. What that costs is two processes of dev-broker.sh's that this script never
+#     points at: its broker, on a database of its own, and the cmd/dev-airlock-stands it starts
+#     for its own github-app secrets. What it buys is that the identities, the token files and
+#     the issuer are the ones dev-broker.sh documents, and that a change there reaches both
+#     scripts. The airlock's own brokers get a database of their own (below), so they never
+#     share a policy or a secret store with that broker.
 #   - cmd/dev-airlock-stands: the two HTTPS services S and T, which record every request they
 #     get; the stand-in GitHub and Google endpoints a github-app and a google-login secret mint
 #     at; the stand-in Microsoft token endpoint the azure kind exchanges at, which also plays
@@ -86,7 +88,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 usage() {
   cat <<'EOF'
@@ -145,8 +146,6 @@ done
 
 # --- This run's own directory, under TMPDIR as dev-broker.sh's is. ---
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-secrets-airlock.XXXXXX")"
-BIN_DIR="$WORK_DIR/bin"
-STANDS_BIN="$BIN_DIR/dev-airlock-stands"
 STANDS_DIR="$WORK_DIR/stands"
 STANDS_JSON="$WORK_DIR/stands.json"
 STANDS_LOG="$WORK_DIR/stands.log"
@@ -306,7 +305,7 @@ trap cleanup EXIT
 
 echo "dev-airlock: workdir $WORK_DIR" >&2
 
-# --- dev-broker.sh: Postgres, dev-oidc-issuer, the five binaries and its own broker. Its output
+# --- dev-broker.sh: Postgres, dev-oidc-issuer, the six binaries and its own broker. Its output
 # is teed to a log of this run's own and to this script's stderr, so a human sees it live and
 # this script can read the identities and addresses out of it. tee ignores SIGTERM and SIGINT so
 # a signal to the process group reaches dev-broker.sh and tee together. ---
@@ -352,13 +351,14 @@ fi
 BASE_BIN_DIR="$BASE_DIR/bin"
 BROKER_BIN="$BASE_BIN_DIR/broker"
 AGENT_SECRETS_BIN="$BASE_BIN_DIR/agent-secrets"
+STANDS_BIN="$BASE_BIN_DIR/dev-airlock-stands"
 ACCOUNT_TOKEN_FILE="$BASE_DIR/account-token"
 LISTENER_TOKEN_FILE="$BASE_DIR/listener-token"
 REGISTRAR_TOKEN_FILE="$BASE_DIR/registrar-token"
 POD_TOKEN_FILE="$BASE_DIR/pod-token"
 SIGNIN_SECRET_FILE="$BASE_DIR/signin-client-secret"
-for needed in "$BROKER_BIN" "$AGENT_SECRETS_BIN" "$ACCOUNT_TOKEN_FILE" "$LISTENER_TOKEN_FILE" \
-  "$REGISTRAR_TOKEN_FILE" "$POD_TOKEN_FILE" "$SIGNIN_SECRET_FILE"; do
+for needed in "$BROKER_BIN" "$AGENT_SECRETS_BIN" "$STANDS_BIN" "$ACCOUNT_TOKEN_FILE" \
+  "$LISTENER_TOKEN_FILE" "$REGISTRAR_TOKEN_FILE" "$POD_TOKEN_FILE" "$SIGNIN_SECRET_FILE"; do
   if [ ! -s "$needed" ]; then
     echo "dev-airlock: dev-broker.sh left no $needed; this script reads its work directory" >&2
     exit 1
@@ -405,11 +405,6 @@ admin_psql -c "create database ${DB_NAME};"
 CREATED_DB=true
 echo "dev-airlock: created isolated database $DB_NAME" >&2
 DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
-
-# --- The one binary dev-broker.sh does not build: the stands, the fronts and the enrolment. ---
-echo "dev-airlock: building dev-airlock-stands..." >&2
-mkdir -p "$BIN_DIR"
-( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$STANDS_BIN" ./cmd/dev-airlock-stands )
 
 # --- The stand-ins. Each HTTPS stand's certificate carries the name the rules bind it to, since
 # the proxy verifies the name it dialled against the certificate the stand presents. The
@@ -746,7 +741,7 @@ dev-airlock: ready.
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
   export AIRLOCK_ENROLLMENT=$ENROLLMENT_ID
   export DEV_BROKER_DIR=$BASE_DIR
-  export PATH=$BIN_DIR:$BASE_BIN_DIR:\$PATH
+  export PATH=$BASE_BIN_DIR:\$PATH
 
 $BROKER_BANNER
   secrets:             $DEMO_SECRET and $SCOPED_SECRET (stored, bound to $S_HOST; $SCOPED_SECRET in

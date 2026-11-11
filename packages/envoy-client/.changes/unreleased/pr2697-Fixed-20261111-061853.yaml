@@ -1,5 +1,0 @@
-kind: Fixed
-body: A URL's trailing slashes are trimmed by one read of the string (`withoutTrailingSlashes`, a module that imports nothing) rather than by an unanchored `/\/+$/` replace, whose cost is quadratic in a run of slashes (CodeQL js/polynomial-redos).
-time: 2026-11-11T06:18:53.404448719Z
-custom:
-    Issue: pr2697
