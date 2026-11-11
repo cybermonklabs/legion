@@ -75,6 +75,15 @@ export async function expectRailViewState(
  *  page's own column. A rail link closes the sheet behind it, so a row that uses the rail twice
  *  at a phone width opens it again. */
 export async function openRail(page: Page): Promise<void> {
+  // Which of the two forms this width has can only be read once the shell is on screen, and a
+  // page that has just loaded is not there yet: `AuthGate` holds the whole tree - the phone's
+  // top bar, with the Menu control in it - behind the one landing read (`web/src/api/queries.ts`),
+  // and until that answers the page is the shell skeleton, which has no Menu control at any
+  // width. `isVisible` asks once and never waits, so a row that probed the skeleton would read
+  // "this width has no Menu", leave the sheet shut, and then spend its whole timeout waiting on
+  // rail rows that no form of the rail is drawing. Wait for the shell first, so the probe below
+  // reads the page the reader sees.
+  await expect(page.getByTestId("app-shell")).toBeVisible();
   const menu = page.getByRole("button", { name: "Open navigation" });
   if (!(await menu.isVisible())) return;
   const sheet = railSheet(page);
