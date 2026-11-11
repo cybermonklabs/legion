@@ -56,14 +56,20 @@ function recordingSchemaApi(): {
   };
 }
 
+/** The Dispatch skill's own text, read from the repository it ships in. */
+function dispatchSkill(): string {
+  const repoRoot = resolve(import.meta.dir, "../../..");
+  return readFileSync(resolve(repoRoot, "skills/dispatch/SKILL.md"), "utf8");
+}
+
 /** Every `## ` heading of the Dispatch skill, the names a tool description may point at. */
 function dispatchSkillHeadings() {
-  const repoRoot = resolve(import.meta.dir, "../../..");
-  const skill = readFileSync(resolve(repoRoot, "skills/dispatch/SKILL.md"), "utf8");
-  return skill.split("\n").flatMap((line) => {
-    const match = line.match(/^## (.+)$/u);
-    return match === null ? [] : [match[1]];
-  });
+  return dispatchSkill()
+    .split("\n")
+    .flatMap((line) => {
+      const match = line.match(/^## (.+)$/u);
+      return match === null ? [] : [match[1]];
+    });
 }
 
 function specFor(name: string) {
@@ -108,6 +114,32 @@ const ASK_RULE =
   "An ask is short and asks one thing; its reasoning goes in the document, not in the question.";
 /** A character count in words: a group of digits, then `character`. */
 const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
+
+/**
+ * The sentence `BODY_BLOCK_RULE` gives about a decision block in a body, written once in
+ * `dispatch-tools.ts` and carried by every tool that writes one: Dispatch refuses such a body
+ * (400 DECISION_BLOCK_IN_BODY), since the card it draws is one nobody can answer where it
+ * stands (INFRA-1201).
+ */
+const DECISION_BLOCK_RULE =
+  "A body holding a decision block (`:::ask`) is refused however short it is, since nobody can " +
+  "answer a question put in a comment or a message: ask the question in the issue's own " +
+  "document, as a decision block there, or open an ask with `dispatch ask`.";
+
+/** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
+const SKILL_DECISION_BLOCK_RULE =
+  "A comment, message or close reason holding a decision block is refused: ask in the issue's " +
+  "document, as a decision block, or with `dispatch ask`.";
+
+/** Every tool that writes a body, with the argument carrying that body: the close reason, the
+ *  comment, the suggestion, the message and the send to a session. */
+const BODY_WRITING_TOOLS = [
+  ["dispatch_issue_update", "reason"],
+  ["dispatch_comment", "body"],
+  ["dispatch_suggest", "body"],
+  ["dispatch_message", "body"],
+  ["dispatch_send_to_agent", "body"],
+] as const;
 
 const validCalls = {
   dispatch_issue: { project: "DSP", title: "Native workspace" },
@@ -1316,6 +1348,54 @@ describe("dispatchToolSpecs", () => {
         "Setup and the HTTP API",
       ])
     );
+  });
+
+  // R4 (INFRA-1201): the rule stands where the writer reads it, before the write. The skill a
+  // session reads before its first `dispatch` command says it too, in the section the ask blocks
+  // are defined in.
+  test("the Dispatch skill says a body holding a decision block is refused", () => {
+    expect(dispatchSkill(), "skills/dispatch/SKILL.md").toContain(SKILL_DECISION_BLOCK_RULE);
+  });
+
+  // R4 (INFRA-1201): and at the write, each tool that writes a body says it, so
+  // `dispatch comment --help` and its four siblings print where the question belongs before a
+  // writer puts one in a body. The names are asserted whole: an empty or shortened table would
+  // make the rows below assert nothing.
+  test("the five tools that write a body are the ones this table names", () => {
+    expect(BODY_WRITING_TOOLS.map(([name]) => name)).toEqual([
+      "dispatch_issue_update",
+      "dispatch_comment",
+      "dispatch_suggest",
+      "dispatch_message",
+      "dispatch_send_to_agent",
+    ]);
+  });
+
+  test.each(
+    BODY_WRITING_TOOLS
+  )("%s says a decision block in its %s is refused, and where the question belongs", (name, field) => {
+    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
+      string,
+      { description?: string; unwrap?: () => { description?: string } }
+    >;
+    const argument = fields[field];
+    const flag = argument?.description ?? argument?.unwrap?.().description ?? "";
+    expect(flag, `${name} --${field}`).toContain(DECISION_BLOCK_RULE);
+    const help = [specFor(name).description, ...argumentDescriptions(name)].join(" ");
+    expect(help, name).toContain(DECISION_BLOCK_RULE);
+  });
+
+  // The Go hosts show the generated copy of these specs, so the rule reaches a session there
+  // too; `bun run check:go` is what keeps the copy equal to the source above.
+  test("the generated Go copy of the tools carries the rule", () => {
+    const generated = resolve(
+      import.meta.dir,
+      "../../envoy/internal/contracts/dispatch_tools_generated.go"
+    );
+    expect(
+      readFileSync(generated, "utf8"),
+      "packages/envoy/internal/contracts/dispatch_tools_generated.go"
+    ).toContain(DECISION_BLOCK_RULE);
   });
 
   // Rules the Dispatch skill's references held move into the one command each is about, where
