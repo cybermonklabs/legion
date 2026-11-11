@@ -339,6 +339,9 @@ test("a card is let go when the page draws a dialog over the reference under a s
   const box = { bottom: 40, left: 0, right: 100, top: 20 };
   let restoreThePage = thePageDraws(reference, box);
   try {
+    // The reader's arrival, at a place of its own: the host tells a pointer the reader moved
+    // from the engine moved by the position changing, and `user-event` sends neither of those
+    // coordinates nor the `pointerOver` the hover-intent gate reads.
     fireEvent.pointerMove(reference, { clientX: 10, clientY: 30, pointerType: "mouse" });
     fireEvent.pointerOver(reference, { pointerType: "mouse" });
     act(() => {

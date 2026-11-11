@@ -774,16 +774,18 @@ export function AskCard({
             <EarlierApproval approval={displayedAsk.approval} />
           )}
         </div>
-        {/* Whose question it is now, and the one control that hands it to somebody else. An
-            ask that is not open waits on nobody, so it has none: a card whose ask is answered,
-            resolved or withdrawn draws its record instead, and the one case that reaches here
-            is a reader changing the answer of a closed ask. The ask is the fresher read and
-            the issue is the card's own prop: only an Inbox row carries one, and the ask reads
-            do not. */}
-        {displayedAsk.state === "open" ? (
-          <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
-        ) : null}
       </AskHeader>
+      {/* Whose question it is now, and the one control that hands it to somebody else, below the
+          provenance line rather than inside the header: a header's `children` are drawn between
+          the anchor and that line, where this control would sit between the reader and the
+          question's own answer. An ask that is not open waits on nobody, so it has none: a card
+          whose ask is answered, resolved or withdrawn draws its record instead, and the one case
+          that reaches here is a reader changing the answer of a closed ask. The ask is the
+          fresher read and the issue is the card's own prop: only an Inbox row carries one, and
+          the ask reads do not. */}
+      {displayedAsk.state === "open" ? (
+        <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+      ) : null}
       <AskEditHistory ask={displayedAsk} edits={edits} />
       {referencedByNode}
       {askChanged ? (

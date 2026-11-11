@@ -656,7 +656,15 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       label: "Open the inbox",
       run: () => {
         reachForTheShell();
-        setInboxDrawerOpen((open) => !open);
+        // Opening from the keyboard mounts the peek like every other way in: the drawer is
+        // mounted only once it has been opened (`inboxDrawerEverOpened`, so a reader who never
+        // peeks never downloads it), and a bare `setInboxDrawerOpen(true)` here would open a
+        // drawer that is not in the page.
+        if (inboxDrawerOpen) {
+          setInboxDrawerOpen(false);
+          return;
+        }
+        openTheInboxDrawer();
       },
       // The Inbox page already shows everything the drawer would, so a peek over itself is
       // never offered; `g i` still gets the reader there from anywhere else.
