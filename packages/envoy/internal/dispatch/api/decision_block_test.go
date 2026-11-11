@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,15 +43,15 @@ const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
 	"Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n:::"
 
 // decisionRefusal is the whole refusal a body is answered with for the decision block its block
-// at position, of type blockType, holds, named for the field the writer wrote it in. The wording
-// is spelled out here, as itemblocks/decision_test.go spells it out for the package that writes
-// it, rather than formatted from the string the server formats it from, so the text a writer
-// reads is read back against a text this test holds.
-func decisionRefusal(field string, position int, blockType string) string {
-	return fmt.Sprintf("%s block %d (%s) holds a decision block, which nobody can answer where it stands: "+
+// at position, of type blockType, holds. The wording is spelled out here, as
+// itemblocks/decision_test.go spells it out for the package that writes it, rather than
+// formatted from the string the server formats it from, so the text a writer reads is read back
+// against a text this test holds.
+func decisionRefusal(position int, blockType string) string {
+	return fmt.Sprintf("body block %d (%s) holds a decision block, which nobody can answer where it stands: "+
 		"ask the question in the issue's own document, as a decision block there, or open an ask with "+
 		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
-		field, position, blockType)
+		position, blockType)
 }
 
 // decisionPlacements are the places a decision block stands in a body - at the top, in a quote,
@@ -103,13 +104,13 @@ var decisionPlacements = []struct {
 // comment, the write this rule exists for and the one every writer reaches first.
 const decisionMatrixRoute = "POST /api/v1/issues/{key}/comments"
 
-// decisionFixture is one of everything the sixteen write paths write to or through: the issue,
+// decisionFixture is one of everything the fifteen write paths write to or through: the issue,
 // the project document a comment on a document stands on - an issue's own spec is commented on
 // through the issue's routes, not the document's (ARTIFACT_LINKED) - the comment the edit route
 // rewrites, the mention and the targeted message the live session replies to, the issue's own
-// spec, which is the document the header review reviews, the open ask a reply hangs under, and
-// alice's own agent token, which is how an agent writes on the three routes that require the
-// person scope.
+// spec, which is the document the review of the exempt route is written on, the open ask a
+// reply hangs under, and alice's own agent token, which is how an agent writes on the three
+// routes that require the person scope.
 type decisionFixture struct {
 	handler  http.Handler
 	database *store.Store
@@ -170,7 +171,7 @@ func decisionSessionActor() map[string]any {
 	return map[string]any{"kind": "session", "id": decisionSession}
 }
 
-// storedByTheWritePaths is everything the sixteen write paths store, read back as a reader reads
+// storedByTheWritePaths is everything the fifteen write paths store, read back as a reader reads
 // it and counted as rows of the store as well: the issue's comments and messages, the spec's
 // comments and its reviews, the session's messages and the broadcasts - a broadcast writes one
 // message per recipient, so a row written by either is counted twice over - with the edited
@@ -317,13 +318,13 @@ func assertDecisionBlockRefused(t *testing.T, request string, response *httptest
 	}
 }
 
-// Every route that stores a comment, a message, a broadcast body or a review's reason refuses a
-// decision block written into it, wherever it stands in that body and whoever writes it: 400
+// Every route that stores a comment, a message or a broadcast body refuses a decision block
+// written into it, wherever it stands in that body and whoever writes it: 400
 // DECISION_BLOCK_IN_BODY, worded once by itemblocks.DecisionBlock, the same text on every route
-// but for the field it names (INFRA-1201). Nothing is stored by a refusal: the issue's comments
-// and messages, the spec's comments and its reviews, the session's messages and the broadcasts
-// are counted before and after each row, as a reader reads them and as rows of the store, and
-// the edited comment's body is read back byte for byte.
+// (INFRA-1201). Nothing is stored by a refusal: the issue's comments and messages, the spec's
+// comments and its reviews, the session's messages and the broadcasts are counted before and
+// after each row, as a reader reads them and as rows of the store, and the edited comment's
+// body is read back byte for byte.
 func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
 	f := newDecisionFixture(t)
 	// Every write below is refused, so the store never moves: one snapshot before the first of
@@ -340,7 +341,7 @@ func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
 			for _, placement := range placements {
 				t.Run(placement.name, func(t *testing.T) {
 					assertDecisionBlockRefused(t, write.route+" as "+write.actor, write.send(t, f, placement.body),
-						decisionRefusal("body", placement.position, placement.blockType))
+						decisionRefusal(placement.position, placement.blockType))
 				})
 			}
 			if after := f.stored(t); after != before {
@@ -433,8 +434,8 @@ var decisionRefusedParse = []struct{ name, body string }{
 }
 
 // decisionAtTheTop is the whole refusal a body holding its decision block as its first block is
-// answered with, named for the field the writer wrote it in.
-func decisionAtTheTop(field string) string { return decisionRefusal(field, 1, "ask") }
+// answered with.
+func decisionAtTheTop() string { return decisionRefusal(1, "ask") }
 
 // A body the parser refuses is refused for its decision block too, in the same words and under
 // the same code: every write route answers one such body so, and the comment route answers one of
@@ -450,7 +451,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 	for _, write := range decisionWrites() {
 		t.Run(write.route+" as "+write.actor, func(t *testing.T) {
 			assertDecisionBlockRefused(t, write.route+" as "+write.actor,
-				write.send(t, f, onEveryRoute.body), decisionAtTheTop("body"))
+				write.send(t, f, onEveryRoute.body), decisionAtTheTop())
 			if after := f.stored(t); after != before {
 				t.Fatalf("%s as %s stored something: %+v, want the %+v it found",
 					write.route, write.actor, after, before)
@@ -461,7 +462,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 		t.Run("a comment holding "+refused.name, func(t *testing.T) {
 			assertDecisionBlockRefused(t, "POST /api/v1/issues/{key}/comments", dispatchRequest(t, f.handler,
 				http.MethodPost, "/api/v1/issues/"+f.issue+"/comments",
-				map[string]any{"body": refused.body}, "alice"), decisionAtTheTop("body"))
+				map[string]any{"body": refused.body}, "alice"), decisionAtTheTop())
 		})
 	}
 }
@@ -488,29 +489,47 @@ func TestACommentOfLoneCarriageReturnsIsStoredByteForByte(t *testing.T) {
 }
 
 // A review's reason is left alone, and this row records it rather than leaving the exemption to
-// a comment. While an approval request is open the header review answers it, and the decisions
-// document leaves an answer's text alone; the same reason reaches artifact_reviews unchecked
-// through the ask answer route besides. So a reason holding a decision block is stored, read
-// back whole, and draws a card on the approval chip that nobody can answer, which this issue
-// does not close (INFRA-1201).
+// a comment. The exemption's reason rests on the open-request branch — while an approval request
+// is open the review answers it, and the decisions document leaves an answer's text alone — so
+// both branches are driven here: a review written with no request open, and one that answers an
+// open request. The same reason reaches artifact_reviews unchecked through the ask answer route
+// besides. So a reason holding a decision block is stored, read back whole, and draws a card on
+// the approval chip that nobody can answer, which this issue does not close (INFRA-1201).
 func TestAReviewReasonHoldingADecisionBlockIsStored(t *testing.T) {
 	f := newDecisionFixture(t)
 	before := f.stored(t)
-	// The route trims the reason before it stores it (reviews.go), so the text sent carries no
+	// The route trims the reason before it stores it (reviews.go), so each text sent carries no
 	// line ending of its own and what is read back is what was written.
-	reason := "The transport is still open.\n\n" + theDecisionBlock
-	written := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.spec+"/reviews",
-		map[string]any{"state": "changes_requested", "reason": reason}, "alice")
-	if written.Code != http.StatusCreated {
-		t.Fatalf("the review answered %d %s, want the reason stored", written.Code, written.Body.String())
+	withNoRequest := "The transport is still open.\n\n" + theDecisionBlock
+	answering := "Answering the request.\n\n" + theDecisionBlock
+	write := func(reason string) {
+		t.Helper()
+		written := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+f.spec+"/reviews",
+			map[string]any{"state": "changes_requested", "reason": reason}, "alice")
+		if written.Code != http.StatusCreated {
+			t.Fatalf("the review answered %d %s, want the reason stored", written.Code, written.Body.String())
+		}
 	}
+	write(withNoRequest)
+	requested := sessionRequest(t, f.handler, http.MethodPost,
+		"/api/v1/artifacts/"+f.spec+"/approval-requests", map[string]any{"actor": decisionSessionActor()})
+	if requested.Code != http.StatusCreated {
+		t.Fatalf("requesting approval answered %d %s, want the request open", requested.Code, requested.Body.String())
+	}
+	write(answering)
 	reviews := decodeBody[[]model.ArtifactReview](t, dispatchRequest(t, f.handler,
 		http.MethodGet, "/api/v1/artifacts/"+f.spec+"/reviews", nil, "alice"))
-	if len(reviews) != 1 || reviews[0].Reason == nil || *reviews[0].Reason != reason {
-		t.Fatalf("the reviews list reads %+v, want the one review holding the reason byte for byte", reviews)
+	stored := make([]string, 0, len(reviews))
+	for _, review := range reviews {
+		if review.Reason != nil {
+			stored = append(stored, *review.Reason)
+		}
 	}
-	if after := f.stored(t); after.SpecReviews != before.SpecReviews+1 || after.ReviewRows != before.ReviewRows+1 {
-		t.Fatalf("the store holds %+v, want the one review more than the %+v it found", after, before)
+	if !slices.Contains(stored, withNoRequest) || !slices.Contains(stored, answering) {
+		t.Fatalf("the reviews list holds the reasons %q, want both byte for byte", stored)
+	}
+	if after := f.stored(t); after.SpecReviews != before.SpecReviews+2 || after.ReviewRows != before.ReviewRows+2 {
+		t.Fatalf("the store holds %+v, want the two reviews more than the %+v it found", after, before)
 	}
 }
 
@@ -540,7 +559,7 @@ func TestADocumentWriteStillTakesADecisionBlockTheBodyRoutesRefuse(t *testing.T)
 
 	assertDecisionBlockRefused(t, "POST /api/v1/issues/{key}/comments", dispatchRequest(t, handler,
 		http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
-		map[string]any{"body": content}, "alice"), decisionRefusal("body", 2, "ask"))
+		map[string]any{"body": content}, "alice"), decisionRefusal(2, "ask"))
 
 	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/DOCASK/artifacts",
 		map[string]any{"name": "refused.md", "content": decisionRefusedParse[0].body}, "alice")

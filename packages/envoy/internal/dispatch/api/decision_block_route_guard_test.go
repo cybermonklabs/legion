@@ -106,12 +106,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 		switch {
 		case exempt:
 			t.Logf("%s: exempt — %s", name, reason)
-			// Staleness is read for a route the walk itself reads, one carrying a `body`
-			// string: there a check reached is a check of that body. A route exempt for prose
-			// of its own reaches other writers' checks through what it calls — the review
-			// answers its approval ask, and the ask writes are walked with it — so a check
-			// found there says nothing about the route's own prose.
-			if checks && shaped && requestCarriesBody(shape.Request) {
+			if checks {
 				stale = append(stale, fmt.Sprintf("%s: runs the check now, so its exemption (%s) is no longer true", name, reason))
 			}
 		case !shaped:
@@ -244,11 +239,6 @@ func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lo
 // package api. A call is followed as the copy-lock graph resolves it, plus every function handed
 // to it as an argument, whatever the callee does with it; a function of another package is not
 // walked, since the helper is unexported and no path to it leaves this one.
-//
-// A handler reaches other writers' checks through what it calls — a review answers its approval
-// ask, and the ask's own writes are walked with it — so this answers that the check is reached
-// and not that the route's own prose is what it reads. The walk is asked only of a route the
-// table shows carrying a `body` string, where the two are the same question.
 func decisionBlockChecked(graph *lockGraph, handlers []*lockFunction) bool {
 	walked := map[*lockFunction]bool{}
 	var runs func(fn *lockFunction) bool
