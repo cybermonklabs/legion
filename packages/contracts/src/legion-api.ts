@@ -675,7 +675,12 @@ const legionMergeHold = z.object({
 /** `api.MergeHeldView` — one issue whose merge a hold is keeping back (contract 66): the issue,
  * and when its `ready_merge` row runs again, which is when the daemon reads the holds once more.
  * Nothing else of the row is here: the row's payload is the submission's own business, and a
- * reader of this key asks which merges the holds are costing and when each is tried next. */
+ * reader of this key asks which merges the holds are costing and when each is tried next.
+ *
+ * It is the merges a hold caught and not every merge a held path has. A hold stops a submission
+ * the daemon has not made yet, so a pull request already in the merge queue or already armed
+ * merges into the held path on GitHub's own clock and stands in no key of this state: the daemon
+ * sends no dequeue (the spec's R6). */
 const legionMergeHeld = z.object({
   issue: issueKey,
   dueAt: timestamp,
@@ -705,13 +710,16 @@ const legionMergeQueueEntry = z.object({
  * the issue whose mark was spent, the pull request's number and head, when the daemon submitted
  * it, the reason the mark carried, the queue as it stood before the jump (oldest entry first,
  * which is what names whose merge the jump displaced), how long that queue was, whether GitHub
- * answered no queue at all, and whether GitHub refused the jump, with its answer.
+ * answered no queue at all, and whether the jump went through, with what came back where it did
+ * not.
  *
  * `entriesTotal` and `entriesUnknown` are both here because `entries` alone cannot be read: it may
  * hold less of the queue than the queue had, and an empty `entries` is a queue of nothing only
  * when `entriesUnknown` is false. `refused` and `refusal` are here because the mark is spent
- * whether or not GitHub took the jump, and without them a refused jump would read as a merge that
- * went ahead of the queue; `refusal` is empty on a jump GitHub took. */
+ * whether or not the jump went through, and without them a jump that did not would read as a merge
+ * that went ahead of the queue; `refusal` is empty on a jump that did, and otherwise carries
+ * GitHub's own words where GitHub answered the mutation, or says that Legion could not deliver it
+ * where GitHub never answered at all — a network failure, a timeout, a 502. */
 const legionMergeJumpRecord = z.object({
   repository: nonEmptyString,
   issue: issueKey,

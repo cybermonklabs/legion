@@ -66,9 +66,12 @@ type MergeHold struct {
 // read, and EntriesUnknown says GitHub answered no queue at all, so an empty Entries is not
 // mistaken for an empty queue.
 //
-// Refused and Refusal carry a jump GitHub would not take: the mark is spent either way, and
-// without them a refused jump would read as a merge that went ahead of the queue. Refusal is
-// GitHub's own words, empty when nothing was refused.
+// Refused and Refusal carry a jump that did not go through: the mark is spent either way, and
+// without them such a jump would read as a merge that went ahead of the queue. Refusal is empty
+// where nothing was refused, and otherwise says which of the two happened: GitHub's own words
+// where GitHub answered the mutation, and a sentence naming the failure to deliver where GitHub
+// answered nothing at all (daemon's jumpRefusalRecorded). The record keeps no third column for
+// that, because the words are what a reader of the record reads.
 //
 // The record's Issue is not bound to the issue record. An issue is deleted when its tree is
 // cleaned up, and the account of what a jump displaced must outlive it, so the column carries the

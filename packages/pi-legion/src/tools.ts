@@ -330,28 +330,35 @@ export function createLegionTool(deps: {
         "requires no merge queue there is no queue to jump: the daemon submits that merge as it always does, and the " +
         "mark stands until clear_merge_jump takes it off or the issue leaves the workflow. " +
         "The daemon refuses an issue it does not record " +
-        "(ISSUE_NOT_RECORDED) and a call that leaves the reason out. A jump GitHub refuses does not stop the merge: the " +
-        "daemon submits it without the jump and records what GitHub answered. " +
+        "(ISSUE_NOT_RECORDED) and a call that leaves the reason out. A jump that does not go through does not stop the " +
+        "merge: the daemon submits it without the jump and records whether GitHub refused the jump or Legion could not " +
+        "deliver the request. " +
         "clear_merge_jump (issue) takes an issue's mark off before the merge it was about is submitted. It answers the " +
         "same whether a mark went or no mark was there, and the daemon refuses an issue it does not record " +
         "(ISSUE_NOT_RECORDED). " +
         "set_merge_holds (holds) replaces the project's whole merge hold list. While a hold stands, the daemon submits " +
         "no merge whose pull request changes a file one of that hold's paths matches, and the issue waits in " +
-        "awaiting_merge with its architect told which hold holds it. A hold has no identifier of its own, so one call " +
-        "carries the whole list: send the list without a hold to drop that hold, and an empty list to clear every hold. " +
+        "awaiting_merge with its architect told which hold holds it. A hold keeps back a merge the daemon has not " +
+        "submitted yet and reaches no merge GitHub already holds: a pull request already in the merge queue, or " +
+        "already armed, merges into the held path on GitHub's own clock, because the daemon sends no dequeue. A hold " +
+        "has no identifier of its own, so one call carries the whole list: send the list without a hold to drop that " +
+        "hold, and an empty list to clear every hold, which is the only way to clear it, since a body that names no " +
+        "list at all is refused (HOLD_LIST_REQUIRED). " +
         "Each hold names paths, regular expressions matched unanchored against the paths the pull request changes " +
         "(HOLD_WITHOUT_PATH for a hold that names none, INVALID_HOLD_PATH for a path that is no regular expression), a " +
         "reason, which the architect of a held issue is told (HOLD_WITHOUT_REASON), and endsAt, an RFC 3339 time later " +
         "than now (HOLD_ALREADY_ENDED). A hold may also name a repository as owner/name, and this project must serve it " +
         "(REPOSITORY_NOT_SERVED). A hold that names no repository holds its paths in every repository the project " +
-        "serves. A hold ends by itself at endsAt, and taking a hold off makes every merge it was holding back due at " +
-        "once. The daemon checks every hold before it writes anything, so a list with one bad hold in it leaves the list " +
-        "that stands exactly as it was. " +
+        "serves. A hold ends by itself at endsAt, and taking a hold off makes every merge a hold was holding back due " +
+        "at once, while a merge GitHub's own rate limit put off keeps the moment GitHub named. The daemon checks every " +
+        "hold before it writes anything, so a list with one bad hold in it leaves the list that stands exactly as it " +
+        "was. " +
         "All three need the controller's grant, which this session mints, and the daemon refuses a call without one " +
         "(CONTROLLER_REQUIRED). Each answers an empty object, and read_state reads back what they wrote: mergeJumps the " +
-        "marks that still stand, mergeHolds the hold list, mergeHeld the issues those holds are keeping back, and " +
-        "mergeJumpRecords the newest jump of each repository, with the queue it displaced and GitHub's answer where it " +
-        "refused one. ",
+        "marks that still stand, mergeHolds the hold list, mergeHeld the issues those holds are keeping back, which is " +
+        "the merges a hold caught and not every merge a held path has, and mergeJumpRecords the newest jump of each " +
+        "repository, with the queue it displaced and, where the jump did not go through, whether GitHub refused it or " +
+        "Legion could not deliver it. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
