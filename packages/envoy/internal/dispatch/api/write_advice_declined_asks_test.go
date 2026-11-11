@@ -9,10 +9,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // declinedAsksOf is the declined_asks part of a write's advice and whether the write carried the
@@ -247,4 +251,56 @@ func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
 			t.Fatalf("a failed read still emitted declined_asks %#v: %s", items, asked.Body.String())
 		}
 	})
+}
+
+// adviceBoundBytes is what the declined-ask reminder of one write may cost the wire. R6 asks
+// for every declined ask of the issue by name, so the count of them is not what bounds the
+// field; the text of each is. The one reader of the field prints the head of the question and
+// the head of the note (QUESTION_HEAD, 200 characters, in packages/envoy-client/src/
+// related-check.ts, whose own comment gives the reason: "a note runs to 32,000 units and the
+// field names every declined ask of the issue"), and the whole note stands at the ask's own
+// link, which the same line prints. So the advice carries heads, and a person's longest note
+// costs the next question nothing.
+const adviceBoundBytes = 64 * 1024
+
+// TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote holds the reminder to a size,
+// against the notes a person may actually write: ten declined asks, each note at the bound the
+// decline route takes (contracts.DispatchEventBodyMax). Measured on 4157f15c the write's
+// answer is 322,039 bytes, 321,506 of them the advice, because the read sends every note whole
+// (packages/envoy/internal/dispatch/api/write_advice.go, readDeclinedAsks), and the reader
+// prints 4,446 characters of it. Every write that opens a question on such an issue pays that,
+// and the cost grows with each decline.
+func TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote(t *testing.T) {
+	const declines = 10
+	handler := newTestHandler(t)
+	createAdviceProject(t, handler, "HEAVY")
+	spec := "# Ten refusals\n\nEach note is as long as a person may write one.\n"
+	issue := createAdviceIssue(t, handler, "HEAVY", "Ten long notes", &spec)
+	note := strings.Repeat("x", contracts.DispatchEventBodyMax)
+	for index := range declines {
+		question := fmt.Sprintf("Which store does exporter %d write to?", index)
+		declineTheAsk(t, handler, openAskAs(t, handler, issue.Key, "session-heavy", question), note)
+	}
+
+	asked := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": "Which window do we deploy in?", "actor": adviceSessionActor("session-heavy"),
+	})
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("the next ask: status=%d body=%s", asked.Code, asked.Body.String())
+	}
+	// R6 first: the bound is kept by cutting each ask's text, never by dropping an ask.
+	items, carried := declinedAsksOf(t, "the ask after ten long declines", asked.Body.String())
+	if !carried || len(items) != declines {
+		t.Fatalf("declined_asks named %d asks, want all %d of them", len(items), declines)
+	}
+	var envelope struct {
+		Advice json.RawMessage `json:"advice"`
+	}
+	if err := json.Unmarshal(asked.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode the next ask: %v body=%s", err, asked.Body.String())
+	}
+	if len(envelope.Advice) > adviceBoundBytes {
+		t.Fatalf("the advice of a write that opens a question is %d bytes, want at most %d: the reminder carries every note whole",
+			len(envelope.Advice), adviceBoundBytes)
+	}
 }
