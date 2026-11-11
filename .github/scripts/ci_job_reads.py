@@ -1408,9 +1408,15 @@ GATES = [
 
     gate("envoy_session_stall", STALL, runs=[
         script_run("packages/envoy-client/test/envoy-stack.ts",
-                   'const build = Bun.spawn(["go", "build", "-o", `${bin}${path.sep}`, ...packages], {',
-                   f"buildBinaries, run by {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
+                   'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
+                   f"buildGoBinaries, which both rigs of that directory call; this one's packages are the Envoy "
+                   f"stack's, built for {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
                    f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
+        script_run("packages/envoy-client/test/dispatch-stack.ts",
+                   'packages: ["./cmd/dispatch"],',
+                   f"the packages that rig hands buildGoBinaries, run by "
+                   f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')}",
+                   ENVOY, ["./cmd/dispatch"], mode="build"),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
         ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
