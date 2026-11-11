@@ -119,7 +119,17 @@ export interface RelayConnection {
     subject: string,
     payload: Uint8Array,
     options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
-  ): Promise<unknown>;
+  ): Promise<RelayReply>;
+}
+
+/**
+ * What a relay frame's answer holds of a NATS message: the bytes the session wrote, which are
+ * `received` for a frame it took and the `nak` a closed session sends for one it did not
+ * (`ConsumerDelivery`, packages/envoy-client/src/consumer-delivery.ts). A caller that only awaits
+ * the send reads none of it; one that holds the relay to what the session answered reads this.
+ */
+export interface RelayReply {
+  readonly data: Uint8Array;
 }
 
 /** What a relay frame needs of a NATS header set; `nats`'s `headers()` makes one. */
@@ -155,9 +165,11 @@ export interface RelayFrame {
  * subject. Sent as a request, whose answer is the session's own `received`: until that session
  * has subscribed the subject the server reports no responder, so the frame goes again, as the
  * one frame it is, and a copy of a frame the session already holds is answered and never shown
- * twice (`createConsumerDelivery`). Answers the session's reply.
+ * twice (`createConsumerDelivery`). Answers the session's own reply message, so a caller that
+ * reads what the session answered - `received`, or the `nak` a closed session sends - reads it
+ * from the message itself.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<unknown> {
+export async function sendRelayFrame(frame: RelayFrame): Promise<RelayReply> {
   const deadline = Date.now() + (frame.withinMs ?? 30_000);
   for (;;) {
     const headers = frame.newHeaders();

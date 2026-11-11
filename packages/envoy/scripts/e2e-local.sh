@@ -46,7 +46,8 @@
 # stop reads the floor, so the run asserts the re-offer case and a correct build fails it (1 ms
 # does, review round 33), and above 2500 a window's own waits run out on the injection. In the
 # no-delay case the ordering is not left to chance at all: the run waits until the server says the
-# session has acked everything it wrote (wait_for_acks_settled) before each delete.
+# consumer owes no ack for what the transport offered it (wait_for_acks_settled) before each
+# delete.
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
@@ -55,12 +56,15 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 
 # The delay this run was given, read once, refused here rather than inside the window it would
 # break. The two ends are the header's, held in constants the check and its refusal both read, and
-# the pattern takes a decimal written plainly: bash reads a leading zero as octal, so `08` is no
-# number to it at all and `02000` is 1024 where the stand-in would sleep 2000 ms (review round 34).
+# the pattern takes a decimal of at most four digits written plainly: bash reads a leading zero as
+# octal, so `08` is no number to it at all and `02000` is 1024 where the stand-in would sleep
+# 2000 ms, and a value of more digits than the range can hold wraps in bash's 64-bit arithmetic
+# while the stand-in reads it whole, so `18446744073709552616` would pass a check that read it as
+# 1000 and then sleep for about 1.8e19 ms (review rounds 34 and 35).
 readonly ack_delay_min_ms=1000
 readonly ack_delay_max_ms=2500
 readonly ack_delay_ms="${E2E_SESSION_ACK_DELAY_MS:-0}"
-if [[ ! "$ack_delay_ms" =~ ^(0|[1-9][0-9]*)$ ]] ||
+if [[ ! "$ack_delay_ms" =~ ^(0|[1-9][0-9]{0,3})$ ]] ||
   { ((ack_delay_ms != 0)) &&
     ((ack_delay_ms < ack_delay_min_ms || ack_delay_ms > ack_delay_max_ms)); }; then
   printf 'ERR: E2E_SESSION_ACK_DELAY_MS is %s; it must be 0, or a decimal from %s to %s written without a leading zero. Below %s the ack can reach the server before the clean stop reads the consumer floor, so this run would assert the re-offer case against a build that is right; above %s the windows own waits run out on the injection.\n' \
@@ -705,20 +709,24 @@ wait_for_consumer_frame_count() {
 # line that says what the session acked, and ends the run by name when the acks never settle, so
 # no caller carries a branch of its own.
 #
-# The target is the highest sequence of the session's offers file, which the stand-in writes as
-# each frame arrives and so before the frames wait that precedes this call returns. The cursor
-# file is not read here: the stand-in writes that one after it answers done, which is the very
-# event this waits for, so a target taken from it can lag a frame and let the wait pass on a
-# consumer that still owes an ack. An offers file this cannot read a sequence from ends the run
-# by name, since the wait would otherwise check nothing (review round 34).
+# What proves settlement is the consumer's own num_ack_pending standing at 0: while a frame it
+# delivered is unacked that count is 1 or more, whatever this wait was told to expect, so the
+# refusal below holds even against a target set too low. The target is the second check, and it
+# is the highest sequence of the session's offers file, which the stand-in writes as each frame
+# arrives and so before the frames wait that precedes this call returns; the cursor file is not
+# read here, since the stand-in writes that one after it answers done, which is the very event
+# this waits for. An offers file this cannot read a sequence from ends the run by name, since the
+# target would otherwise be a number this wait invented (review round 34).
 #
 # The observable is the consumer own state, read with a JetStream CONSUMER.INFO request over the
 # NATS connection this helper opens ($JS.API.CONSUMER.INFO.<stream>.<consumer>), which is the
 # request a monitoring endpoint answers from as well. It is read this way rather than from a
 # monitor port because it needs no second listening socket, no flag of natsd and no parse of a log
 # line for a port: the rig already speaks this protocol, and the answer is the consumer record
-# itself. A request that times out is asked again inside the one 15 s bound, so a slow answer
-# under load costs a retry rather than the run.
+# itself. Any failed request is asked again - a timeout, a server that answers nothing, a
+# connection that drops - so a slow or lost answer under load costs a retry rather than the run.
+# The deadline is read before each request and one already under way runs its own 2 s out, so the
+# wait ends between 15 and 17 seconds after it starts, by name rather than by hanging.
 wait_for_acks_settled() {
   local settle_session_id=$1
   local offers_file=$2
@@ -738,10 +746,9 @@ wait_for_acks_settled() {
 
       const url = process.env.E2E_NATS_URL;
       const sessionID = process.env.E2E_SESSION_ID;
+      // The target this reads is the one the shell refused anything but a plain sequence for,
+      // naming the file it came from, so there is no second rule for it here.
       const target = Number(process.env.E2E_TARGET_SEQ);
-      if (!Number.isInteger(target) || target < 1) {
-        throw new Error(`the sequence this wait was given for ${sessionID} is no frame: ${process.env.E2E_TARGET_SEQ}`);
-      }
       const codec = StringCodec();
       const connection = await connect({ servers: url, name: `envoy-e2e-acks-${sessionID}` });
       const subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.s-${sessionID}`;
@@ -752,7 +759,7 @@ wait_for_acks_settled() {
         try {
           reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
         } catch (error) {
-          // A slow answer is asked again inside this same bound; only the bound ends the wait.
+          // Any failure is asked again inside this same bound; only the bound ends the wait.
           last = `the consumer info request failed: ${String(error)}`;
           await Bun.sleep(100);
           continue;
@@ -1113,8 +1120,9 @@ jq -e --arg session_id "$session_id" '.session_id == $session_id' "$lapsed_role_
 # consumer away with its record, so a frame still in flight to that consumer would otherwise move
 # the cursor after the registration had read it.
 #
-# The delete must also follow those frames' acks, since the floor it records is the consumer ack
-# floor; the wait that makes it do so decides for itself which case this run is (below).
+# With no ack delay the delete must also follow those frames' acks, since the floor it records is
+# the consumer ack floor; under the delay it must land before them. The wait below decides which
+# of the two this run is and orders the delete itself (wait_for_acks_settled, above).
 wait_for_consumer_frame_count 5
 wait_for_acks_settled "$session_id" "$session_offers_file" "its deregistration"
 curl -fsS -X DELETE "${listener_url}/v1/sessions/${session_id}" >/dev/null

@@ -4451,8 +4451,8 @@ A role lane stays on core NATS and is never a session's subscription:
 the listener forwards a role message to the holder's agent subject, which the stream captures, so the holder's own consumer delivers it (sjawhar/legion#753, 2026-08-26, took the role topics out of the stream).
 
 Where the rule is still weaker than the grant behind it:
-a session user may subscribe to every session's relay subject (`notifications.envoy.deliver.*`), so it can read another session's relay frames and acknowledge its messages away, and to every session's presence probe (`notifications.envoy.presence.*`), so it can answer another's ("Trust" below);
-dispatch://INFRA-840 narrows both grants to the session's own.
+a session user may subscribe to every session's relay subject (`notifications.envoy.deliver.*`), so it can read another session's relay frames and acknowledge its messages away ("Trust" below);
+dispatch://INFRA-840 narrows that grant to the session's own.
 
 The listener has acknowledged a stored message without delivering it to a self-subscribed session since sjawhar/legion#729 (2026-08-15), which is why a message published while such a session was away was lost before its consumer carried it.
 
@@ -4614,11 +4614,9 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   the holder answers nothing and reads the stored copy from its own consumer (`forwardAndWait`, `startRoleForward`).
   A forward the stream did not store within the window is `delivery_failed`; no answer is `receipt_timeout` any more.
 
-- **Trust:** `core.SessionPermissions` subscribes to `notifications.envoy.deliver.*`, the presence subject `notifications.envoy.presence.*` and no other `notifications.` subject, so a client holding a session user can read any session's relay frames and publish `done` to a frame's reply subject (an `_INBOX.` subject, which every session user may publish to), which acknowledges that session's message away:
+- **Trust:** `core.SessionPermissions` subscribes to `notifications.envoy.deliver.*` and no other `notifications.` subject, so a client holding a session user can read any session's relay frames and publish `done` to a frame's reply subject (an `_INBOX.` subject, which every session user may publish to), which acknowledges that session's message away:
   it can remove a stored message from the consumer of a session that is away, so that session never sees it.
-  Nothing here publishes or subscribes to a presence subject: the grant is ahead of dispatch://INFRA-626, which has a listener probe a session before it reports a send delivered, so that change needs no grant change of its own.
-  No stream subject captures the subject and it carries no message; once that change lands, a session on a shared user will be able to answer another's probe, so a stopped session reads as live.
-  dispatch://INFRA-840 narrows both grants to the session's own subjects.
+  dispatch://INFRA-840 narrows that grant to the session's own subjects.
   A host user (`HostPermissions`), which a host's sessions share with its listener, still names `notifications.>`, so there a session reads every notification topic until that change lands.
 
 ## Keyed Dispatch writes

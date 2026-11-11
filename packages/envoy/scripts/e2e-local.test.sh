@@ -43,11 +43,13 @@ printf 'PASS: rejects unsupported arguments and starts no server\n'
 
 # The ack delay is the run's own control over which case it asserts, so a value the run cannot
 # honour is refused before anything is built or started, with exit 2 and the range named. The
-# values here are the three shapes that refusal exists for: one below the range, one above it, and
-# one bash would read as octal, which the pattern refuses as the number it is not (`08` is no
-# number at all to bash, and `02000` is 1024 where the stand-in would sleep 2000 ms). A run that
-# started on any of them would assert the wrong case and fail a build that is right.
-for delay in 1 5000 02000 abc; do
+# values here are the five shapes that refusal exists for: one below the range (`1`), one above it
+# (`5000`), one bash would read as octal (`02000`, which is 1024 to bash where the stand-in would
+# sleep 2000 ms), one of more digits than the range can hold (`18446744073709552616`, which wraps
+# to 1000 in bash's 64-bit arithmetic while the stand-in reads it whole), and one that is no
+# number at all (`abc`, which the arithmetic would read as the unset name it is, that is 0). A run
+# that started on any of them would assert the wrong case and fail a build that is right.
+for delay in 1 5000 02000 18446744073709552616 abc; do
   status=0
   E2E_SESSION_ACK_DELAY_MS="$delay" bash "$driver" >"$output_file" 2>&1 || status=$?
   [[ "$status" == 2 ]] || {
@@ -61,7 +63,7 @@ for delay in 1 5000 02000 abc; do
     exit 1
   }
 done
-printf 'PASS: refuses an ack delay outside its range, a leading-zero one included, and starts no server\n'
+printf 'PASS: refuses an ack delay outside its range, a leading-zero and an over-long one included, and starts no server\n'
 
 # An explicit port is used as given, so one already in use fails the run with "address already in
 # use"; the driver never moves to another port. The port here is held by this test's own greeter

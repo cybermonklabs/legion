@@ -17,6 +17,7 @@ import {
   messageStream,
   ompNatsGuard,
   ompRoot,
+  type RelayReply,
   type Request,
   sendRelayFrame,
   serveStandin,
@@ -950,7 +951,7 @@ test.skipIf(natsUrl === undefined && !onActions)(
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
     const codec = StringCodec();
-    const send = (sid: string): Promise<unknown> =>
+    const send = (sid: string): Promise<RelayReply> =>
       sendRelayFrame({
         connection,
         newHeaders: natsHeaders,
@@ -964,7 +965,10 @@ test.skipIf(natsUrl === undefined && !onActions)(
       });
 
     // A session takes the frame on its own deliver subject and answers it as a session does, so
-    // this half is what `await taken` means everywhere else in this file.
+    // this half is what `await taken` means everywhere else in this file. The answer itself is
+    // read, not only the fact that one came: a real session answers `nak` when it is closed
+    // (`ConsumerDelivery`, packages/envoy-client/src/consumer-delivery.ts), which is a frame it
+    // did not take, and `sendRelayFrame` hands back whatever reply arrives.
     const taker = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => taker.close());
     const heard = `heard-${randomUUID()}`;
@@ -973,7 +977,8 @@ test.skipIf(natsUrl === undefined && !onActions)(
       for await (const message of taken) message.respond(codec.encode("received"));
     })();
     await taker.flush();
-    await expect(send(heard)).resolves.toBeDefined();
+    const answer = await send(heard);
+    expect(codec.decode(answer.data)).toBe("received");
 
     const unheard = `nobody-${randomUUID()}`;
     await expect(send(unheard)).rejects.toThrow(
