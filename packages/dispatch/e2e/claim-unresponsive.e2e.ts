@@ -1,6 +1,4 @@
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
-import type { Locator } from "@playwright/test";
-import { expect, test } from "@playwright/test";
 
 import { agentRow, setLiveSessions, setSessionLastSeen, setSessionState } from "./agents";
 import {
@@ -11,7 +9,7 @@ import {
   mintAgentToken,
   patchIssue,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 // A session that has missed its heartbeats has not ended: it keeps the issue it is working, the
@@ -19,10 +17,6 @@ import { asUser } from "./users";
 // so rather than call it gone. The dashboard and the server answer the same question here - the
 // chip names the moment the claim comes free, and a second agent asking for it before that
 // moment is refused and after it granted (dispatch://INFRA-392, R5 and A5).
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 const ROLE = "claim-stalled-role";
 const holder = {
@@ -151,7 +145,11 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
     // a regression that listed it could pass this check unnoticed.
     const pickable = await createIssue({ project: "CORE", title: "Nobody's to pick up" });
     await page.goto("/projects/CORE/issues?unclaimed=1");
-    await expect(page.locator("[data-issue-row]").filter({ hasText: pickable.key })).toHaveCount(1);
+    await expect(
+      page
+        .getByRole("table", { name: "Project issues table" })
+        .locator(`[data-issue-row="${pickable.key}"]`)
+    ).toHaveCount(1);
     await expect(page.locator("[data-issue-row]").filter({ hasText: freed.key })).toHaveCount(1);
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveCount(0);
     await expect(page.locator("[data-issue-row]").filter({ hasText: issueKey })).toHaveCount(0);

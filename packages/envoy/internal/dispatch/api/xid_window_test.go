@@ -302,6 +302,38 @@ func TestXidWindowAskEditBlockText(t *testing.T) {
 	})
 }
 
+// Handing an open ask to another person (PUT /api/v1/asks/{id}/asked-of, putAskAskedOf) is
+// main's route, added by #3429 and brought here by the forward merge. It records
+// `ask.asked_of`, so it falls under A1, and this test is what declares the window it holds:
+// database statements only - the ask's own update, the batch appending the event, the two
+// reads that load the ask it answers with (askReadColumns and the opened event ids attached to
+// it) and the COMMIT ending them. No document render, no anchor walk, no reply planning and no
+// write advice runs among them. Everything the hand-on is decided on comes before the first of
+// them: the person it names, held to having signed in against the shared pool before the
+// transaction opens (allowedLogin); the ask read unlocked; its owner's lock, which is advisory
+// and assigns no transaction id (store.LockOwner, through requireOpenOwner); the ask read for
+// the transition under that lock, which takes no row lock of its own
+// (readAskForTransition); and the person it waited on beside its issue's assignee. The
+// `update asks ... returning asked_of_at` is the first statement that writes, so it is where
+// the window opens.
+func TestXidWindowAskedOf(t *testing.T) {
+	f := newXidFixture(t, testServerOptions{}, "")
+	created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/asks", map[string]any{
+		"question": "Who signs off on the migration section?",
+		"options":  []map[string]string{{"label": "Platform"}, {"label": "Product"}},
+		"anchor":   map[string]any{"artifact": "spec", "quote": f.spare[0]}, "actor": sessionActor(),
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("open the ask to hand on: status=%d body=%s", created.Code, created.Body.String())
+	}
+	ask := decodeBody[model.Ask](t, created)
+	f.measure(t, http.StatusOK, storetest.XidWindowOf(5,
+		"the ask row's own update, the batch appending ask.asked_of, the two reads that load the "+
+			"ask it answers with and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return handAskTo(t, h, ask.ID, "bob", "alice")
+	})
+}
+
 func TestXidWindowCommentReopen(t *testing.T) {
 	f := newXidFixture(t, testServerOptions{}, "")
 	f.resolveComment(t, f.comments[0])

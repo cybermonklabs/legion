@@ -1,6 +1,5 @@
-import { expect, type Page, test } from "@playwright/test";
 import { seedSessionGroupsFixture } from "./delivery-seed";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /** The Parent agent facet's option names, as the facet labels them (`<value>, <n> PR(s)`). */
@@ -19,10 +18,6 @@ async function parentAgentOptions(page: Page): Promise<string[]> {
 function utcDaysAgo(daysAgo: number): string {
   return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Live delivery: a session group is one Parent agent on the delivery page, which no other row reads.
 test("grouping two sessions makes them one Parent agent @pr", async ({ browser }) => {

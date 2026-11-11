@@ -603,6 +603,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/asks/{id}/asked-of": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Hand an open ask to another person {asked_of}, the email of somebody who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise): the ask waits on them from now on, wherever its issue goes, and the Inbox lists it under them. It needs the person scope, since handing a question on is one person asking another. An ask that is not open is 409 ASK_NOT_OPEN and one whose issue is closed 409 ISSUE_CLOSED. Naming the assignee of the ask's own issue empties the field instead, so the ask follows its issue again; either way the row records who handed it on and when (asked_of_by, asked_of_at), and one ask.asked_of event names the person it waited on before and the one it waits on now. Answers the ask. */
+    put: operations["putApiV1AsksByIdAskedOf"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/asks/{id}/followers": {
     parameters: {
       query?: never;
@@ -1209,7 +1226,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter (unassigned includes document asks; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
+    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
     get: operations["getApiV1Inbox"];
     put?: never;
     post?: never;
@@ -1952,7 +1969,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask the Inbox already lists on an open issue assigned to them; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
+    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
     get: operations["getApiV1MeReplies"];
     put?: never;
     post?: never;
@@ -2483,7 +2500,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -2502,6 +2519,23 @@ export interface paths {
     };
     /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. */
     get: operations["getApiV1SearchCoverage"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/search/results": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    get: operations["getApiV1SearchResults"];
     put?: never;
     post?: never;
     delete?: never;
@@ -3066,6 +3100,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -3085,6 +3123,7 @@ export interface components {
       state: string;
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     AskAnchorArtifact: {
       name: string;
@@ -3119,6 +3158,9 @@ export interface components {
       name: string;
       requested_version: number;
       version: number;
+    };
+    AskAskedOfInput: {
+      asked_of: string;
     };
     AskBlockArtifact: {
       id: string;
@@ -4269,6 +4311,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4294,6 +4340,7 @@ export interface components {
       thread: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     Issue: {
       assignee: null | string;
@@ -4335,6 +4382,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4356,6 +4407,7 @@ export interface components {
       thread?: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     IssueCheckResults: {
       checks: components["schemas"]["CheckBlock"][] | null;
@@ -4494,6 +4546,10 @@ export interface components {
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4514,6 +4570,7 @@ export interface components {
       state: string;
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     IssueProgress: {
       children: components["schemas"]["ProgressCount"] | null;
@@ -4550,6 +4607,9 @@ export interface components {
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       components: components["schemas"]["IssueComponents"];
+      /** Format: date-time */
+      created_at: string;
+      created_by: components["schemas"]["Actor"] | null;
       key: string;
       labels: string[] | null;
       last_seq: number;
@@ -4781,6 +4841,7 @@ export interface components {
       ref: string;
       urgency: string;
       waiting_on: string;
+      waiting_on_person: string;
     };
     OpenAskDocument: {
       name: string;
@@ -6875,6 +6936,44 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["AnswerAskInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Ask"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1AsksByIdAskedOf: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AskAskedOfInput"];
       };
     };
     responses: {
@@ -11650,11 +11749,6 @@ export interface operations {
       query?: {
         q?: string;
         project?: string;
-        number_project?: string;
-        status?: string;
-        author?: string;
-        updated_since?: string;
-        keywords_only?: boolean;
         limit?: number;
         offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -11705,6 +11799,47 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SearchCoverage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1SearchResults: {
+    parameters: {
+      query?: {
+        q?: string;
+        project?: string;
+        number_project?: string;
+        status?: string;
+        author?: string;
+        updated_since?: string;
+        keywords_only?: boolean;
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SearchResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12238,6 +12373,7 @@ export type AskAnswer = components["schemas"]["AskAnswer"];
 export type AskApproval = components["schemas"]["AskApproval"];
 export type AskApprovalApproved = components["schemas"]["AskApprovalApproved"];
 export type AskApprovalDocument = components["schemas"]["AskApprovalDocument"];
+export type AskAskedOfInput = components["schemas"]["AskAskedOfInput"];
 export type AskBlockArtifact = components["schemas"]["AskBlockArtifact"];
 export type AskEdit = components["schemas"]["AskEdit"];
 export type AskEditPrevious = components["schemas"]["AskEditPrevious"];

@@ -1,8 +1,9 @@
 /** `bun run dispatch:local`: the e2e harness, left running and seeded, with a signed-in URL.
- *  It starts the harness through e2e/harness-start.ts, the starter e2e/run.ts runs Playwright on,
- *  on ports the OS chooses (or those the port variables set), and prints them, so
- *  `DISPATCH_E2E_REUSE_SERVERS=1 <those ports> bunx playwright test ...` runs any spec against this
- *  instance — and empties its database and its fake Envoy, so restart it to reseed. */
+ *  It starts the harness through e2e/harness-start.ts, which a Playwright run's stack pool
+ *  (e2e/harness-pool.ts) starts too, on ports the OS chooses (or those the port variables set),
+ *  and prints them, so `DISPATCH_E2E_REUSE_SERVERS=1 <those ports> bunx playwright test ...` runs
+ *  any spec against this instance — and empties its database and its fake Envoy, so restart it
+ *  to reseed. */
 import { fileURLToPath } from "node:url";
 
 import { harnessVariables } from "./harness-ports";

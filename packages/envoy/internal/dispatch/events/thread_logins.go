@@ -32,16 +32,19 @@ func threadLoginsQuery(param string) string {
 // issueLoginsQuery is the status half of an issue event's thread_logins, for an event that
 // closed or reopened the issue (IssueThreadLogins, IssueLoginsOf), its issue key the parameter
 // param: every login with a Replies row on one of that issue's open asks, sorted and never nil.
-// The Replies list leaves out an open ask on an open issue assigned to that login
+// The Replies list leaves out an open ask on an open issue that waits on that login
 // (api/replies.go, myRepliesOwner), so a close or a reopen moves exactly those rows and no
 // other. It reads the asks through asks_open and their rows through user_threads_thread, so it
 // never scans user_threads.
 //
 // An issue event carries logins on an assignee move too, the old and the new assignee, since the
-// same rule moves an open ask's row out of one Inbox and into the other; the two sets are joined
-// by api/thread_logins.go's issueWriteThreadLogins, which is the whole of what an issue event
-// names, and by the `also` logins IssueLoginsOf unions into this query for a writer whose asks
-// are still queued.
+// same rule moves the row of an open ask nobody has handed on out of one Inbox and into the
+// other; the two sets are joined by api/thread_logins.go's issueWriteThreadLogins, which is the
+// whole of what an issue event names, and by the `also` logins IssueLoginsOf unions into this
+// query for a writer whose asks are still queued. An ask somebody handed on waits on the person
+// it was handed to wherever its issue goes, so no assignee move touches its row; the hand-on
+// itself names the two people instead (api/ask_asked_of.go, over api/thread_logins.go's
+// movedLogins).
 func issueLoginsQuery(param string) string {
 	return `
 		select coalesce(array_agg(distinct u.login order by u.login), '{}')

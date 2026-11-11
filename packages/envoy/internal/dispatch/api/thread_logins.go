@@ -26,19 +26,19 @@ func issueThreadLogins(ctx context.Context, tx pgx.Tx, issueKey string, closedMo
 	return events.IssueThreadLogins(ctx, tx, issueKey)
 }
 
-// movedAssigneeLogins is the canonical login of each assignee a write moved the issue between -
-// the one it took it from and the one it gave it to, either of which may be nil for an issue
-// nobody held or nobody holds - sorted and without a duplicate, and [] for a write that moved
-// none. The Replies list leaves out an open ask on an open issue assigned to the reader
-// (api/replies.go, myRepliesOwner), so moving the assignee takes those asks out of the new
-// assignee's list and puts them into the old one's.
-func movedAssigneeLogins(movedAssignees []*string) []string {
-	logins := []string{}
-	for _, assignee := range movedAssignees {
-		if assignee == nil {
+// movedLogins adds to logins the canonical login of each person a write moved an Inbox row
+// between, sorted and without a duplicate. A person may be nil - an issue nobody held, an ask
+// that waited on nobody - and naming the same person twice names them once. The result is never
+// nil, so an event that moved nobody's rows says so as [] rather than leaving the field out.
+func movedLogins(logins []string, moved ...*string) []string {
+	if logins == nil {
+		logins = []string{}
+	}
+	for _, person := range moved {
+		if person == nil {
 			continue
 		}
-		login := model.CanonicalLogin(*assignee)
+		login := model.CanonicalLogin(*person)
 		if login == "" || slices.Contains(logins, login) {
 			continue
 		}
@@ -46,6 +46,17 @@ func movedAssigneeLogins(movedAssignees []*string) []string {
 	}
 	slices.Sort(logins)
 	return logins
+}
+
+// movedAssigneeLogins is the canonical login of each assignee a write moved the issue between -
+// the one it took it from and the one it gave it to, either of which may be nil for an issue
+// nobody held or nobody holds - sorted and without a duplicate, and [] for a write that moved
+// none. The Replies list leaves out an open ask on an open issue that waits on the reader
+// (api/replies.go, myRepliesOwner), so moving the assignee takes the asks nobody has handed on
+// out of the new assignee's list and puts them into the old one's. An ask somebody handed on
+// waits on that person wherever its issue goes, so the move leaves its row where it is.
+func movedAssigneeLogins(movedAssignees []*string) []string {
+	return movedLogins(nil, movedAssignees...)
 }
 
 // issueWriteThreadLogins is the thread_logins of an issue.updated or issue.closed: every login
@@ -62,21 +73,15 @@ func movedAssigneeLogins(movedAssignees []*string) []string {
 func issueWriteThreadLogins(
 	ctx context.Context, tx pgx.Tx, issueKey string, statusMoved, closedMoved bool, movedAssignees []*string,
 ) ([]string, error) {
-	logins := movedAssigneeLogins(movedAssignees)
-	if !statusMoved {
-		return logins, nil
-	}
-	moved, err := issueThreadLogins(ctx, tx, issueKey, closedMoved)
-	if err != nil {
-		return nil, err
-	}
-	for _, login := range logins {
-		if !slices.Contains(moved, login) {
-			moved = append(moved, login)
+	logins := []string{}
+	if statusMoved {
+		moved, err := issueThreadLogins(ctx, tx, issueKey, closedMoved)
+		if err != nil {
+			return nil, err
 		}
+		logins = moved
 	}
-	slices.Sort(moved)
-	return moved, nil
+	return movedLogins(logins, movedAssignees...), nil
 }
 
 // commentThread is the thread the user_threads trigger files comment under (0095's

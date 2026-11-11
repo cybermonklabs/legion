@@ -1,4 +1,3 @@
-import { devices, expect, test } from "@playwright/test";
 import {
   agentIn,
   expectAgent,
@@ -17,7 +16,7 @@ import {
 } from "./agent-name";
 import { setLiveSessions, setSessionLive } from "./agents";
 import { askCard } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { devices, expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -27,10 +26,6 @@ import { asUser } from "./users";
  * draws over one fixed answer is in `agent-name.stub.e2e.ts`, and the three sessions both files
  * are read over are in `agent-name.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the seed's session writes and four page views - the issue, the Conversation, the
 // Inbox and the margin - which are the four places the row holds the component to.

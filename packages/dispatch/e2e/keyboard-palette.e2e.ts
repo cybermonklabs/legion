@@ -1,11 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, test } from "@playwright/test";
-
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
-import { openIssue } from "./keyboard-palette";
-import { resetDatabase } from "./seed";
+import { openIssue, searchPath } from "./keyboard-palette";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -16,10 +14,6 @@ import { asUser } from "./users";
  * the addresses its rows open and the way the list fits a window - is in
  * `keyboard-palette.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
   browser,
@@ -277,14 +271,11 @@ test("a query that holds a card move further in moves no card on Enter", async (
     // then would have taken the move to the next status before any answer came.
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await page.keyboard.press("Control+k");
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
@@ -471,14 +462,11 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     // Hold the search the way a slow network would, so the reader arrows before the hits arrive.
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await openIssue(page, issue.key, "Go held search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -530,14 +518,11 @@ test("an arrow pressed before the search answers reaches no action the query fin
     });
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await openIssue(page, issue.key, "Arrow before the issue search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -607,14 +592,11 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     await page.clock.fastForward("00:31");
     const release = Promise.withResolvers<void>();
     let held = 0;
-    await page.route(
-      (url) => url.pathname === "/api/v1/search",
-      async (route) => {
-        held += 1;
-        await release.promise;
-        await route.continue();
-      }
-    );
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.continue();
+    });
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     await input.fill("issue");
@@ -670,6 +652,9 @@ test("a row whose control has gone since the palette opened does nothing", async
     // is a round trip past it; the margin covers the request's dispatch alone.
     await reopen.click();
     await expect(dialog).toHaveCount(0);
+    // The margin the paragraph above describes: a PATCH the row might have written left in the
+    // task that closed the palette, so this window covers its dispatch alone, and the read below
+    // is the round trip that would have carried it.
     await sleep(100);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
     expect(patches).toBe(0);

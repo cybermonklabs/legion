@@ -257,6 +257,91 @@ func TestHorizonStallWarningNamesTheHolderAndNeverFailsSafe(t *testing.T) {
 	}
 }
 
+// The stall diagnosis scans pg_stat_activity on h.db, which for a server is the horizon pool:
+// the two connections the horizon's own observations use. One diagnosis is bounded by
+// horizonDiagnosisTimeout, so at the production warnEvery of 30 s it can never meet the next
+// one; a test process runs warnEvery an order of magnitude below that bound, where every
+// observation taken while a transaction stands would otherwise spawn a diagnosis of its own,
+// several at once would queue for those two connections, and the observation the waiting reader
+// needs would queue behind them. So one diagnosis is in flight at a time, and the next is due
+// once it has ended.
+func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
+	ctx := context.Background()
+	// The diagnosis hands over and then holds: it is in flight from the send until release
+	// closes, so a second one started meanwhile shows up as a second receive below.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var diagnoses atomic.Int32
+	db := &scriptedHorizonDB{holder: func(...any) error {
+		diagnoses.Add(1)
+		entered <- struct{}{}
+		<-release
+		return pgx.ErrNoRows
+	}}
+	const observations = 4
+	for i := range observations {
+		db.script = append(db.script, scriptedObservation{newest: 5, xmin: 10, xid: uint64(20 + i)})
+	}
+	logged := &storetest.LockedLog{}
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	horizon := NewHorizon(db)
+	horizon.now = func() time.Time { return now }
+	// Thresholds a test process runs: every observation here is a stall old enough to warn
+	// about, and none is held back by the rate limit, so only the diagnosis in flight can
+	// suppress a warning.
+	horizon.stallAfter = 0
+	horizon.warnEvery = 0
+	horizon.logger = slog.New(slog.NewTextHandler(logged, nil))
+
+	if safe, err := horizon.Safe(ctx); err != nil || safe != 0 {
+		t.Fatalf("Safe = %d, %v; want 0 and no error", safe, err)
+	}
+	<-entered // the first diagnosis is in flight, and stays so until release closes
+	for step := range 2 {
+		now = now.Add(time.Second)
+		if safe, err := horizon.Safe(ctx); err != nil || safe != 0 {
+			t.Fatalf("Safe at step %d, while a diagnosis is in flight, = %d, %v; want 0 and no error", step, safe, err)
+		}
+	}
+	select {
+	case <-entered:
+		t.Fatalf("a second stall diagnosis started while the first was in flight; %d have run", diagnoses.Load())
+	case <-time.After(100 * time.Millisecond): // let a diagnosis spawned by either observation reach its query
+	}
+
+	close(release)
+	if got := waitForStallWarnings(logged, 1); got != 1 {
+		t.Fatalf("stall warnings once the first diagnosis ended = %d, want 1; log:\n%s", got, logged.String())
+	}
+	// The flag is cleared in warnStall's defer, after the line is logged, so the next
+	// observation waits on the flag rather than on the log.
+	for ended := time.Now().Add(10 * time.Second); ; {
+		horizon.mu.Lock()
+		diagnosing := horizon.diagnosing
+		horizon.mu.Unlock()
+		if !diagnosing {
+			break
+		}
+		if time.Now().After(ended) {
+			t.Fatal("the first stall diagnosis logged its warning but never cleared the flag")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Suppression while one stands, not one warning for the whole stall: the next observation
+	// diagnoses again.
+	now = now.Add(time.Second)
+	if safe, err := horizon.Safe(ctx); err != nil || safe != 0 {
+		t.Fatalf("Safe once the first diagnosis ended = %d, %v; want 0 and no error", safe, err)
+	}
+	<-entered
+	if got := waitForStallWarnings(logged, 2); got != 2 {
+		t.Fatalf("stall warnings over %d stalled observations = %d, want 2; log:\n%s", observations, got, logged.String())
+	}
+	if got := diagnoses.Load(); got != 2 {
+		t.Fatalf("%d stalled observations ran %d diagnoses, want 2: one while each was in flight was suppressed", observations, got)
+	}
+}
+
 // A long-lived Await (the event relay, at the start of each generation of it) waits on a
 // lifetime, so an observation that fails every time (a horizon pool that cannot dial) must reach
 // its caller as an error to log and retry on once observations have failed for
@@ -776,7 +861,7 @@ func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
 		t.Fatalf("Safe: %v", err)
 	}
 	waitForStallWarnings(logged, 1)
-	warning := logged.Lines("event horizon held back")
+	warning := logged.Lines(StallWarning)
 	if warning == "" || strings.Contains(warning, "diagnosis_error") || !strings.Contains(warning, "pid=") {
 		t.Fatalf("stall warning does not name an open transaction:\n%s", logged.String())
 	}
@@ -788,7 +873,7 @@ func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
 func waitForStallWarnings(logged *storetest.LockedLog, want int) int {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		got := strings.Count(logged.String(), "event horizon held back")
+		got := strings.Count(logged.String(), StallWarning)
 		if got >= want || time.Now().After(deadline) {
 			return got
 		}
