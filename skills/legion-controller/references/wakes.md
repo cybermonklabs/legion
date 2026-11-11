@@ -215,3 +215,5 @@ the `Approve` control in that document's header, or the approval question the ar
 opened in the Inbox. The root's work starts when every one of those steps is approved. No
 operator command opens a gate; a project that wants no gate sets `gates.design` to the empty list
 (`design: []`) in `legion.yaml`.
+
+<!-- INFRA-1413 selection probe, never merged. -->
