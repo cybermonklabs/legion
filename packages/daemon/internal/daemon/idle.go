@@ -128,15 +128,29 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 }
 
 // recordableHold is whether a hold is one a deployment reads as "release would have taken this
-// pod and something stopped it". Four of workflow's values are not:
+// pod and something stopped it". Eleven of workflow's values are not. Five belong to the idle
+// rule:
 //   - IdleHoldNone is a release, not a hold;
 //   - IdleHoldNotIdle is a pod that is simply not idle yet, which is every working pod on nearly
 //     every tick and says nothing about release;
-//   - IdleHoldNoPod is an issue the record does not hold or one with no live claim, so there is
-//     no pod to have kept (such a view is never quiet either, since the quiet period is measured
-//     from the pod's own claims);
+//   - IdleHoldNoPod is an issue the record does not hold, so there is no pod to have kept;
+//   - IdleHoldNoLiveClaim is an issue whose claims have all stopped. Such a view is quiet, since
+//     the quiet period is measured from the pod's own claims and those claims stopped writing
+//     when they stopped, so a pass over one would record a hold every tick for as long as the
+//     record stands. It is no hold of the idle rule's anyway: the pod it names is the second
+//     rule's to decide, and that rule records what it finds;
 //   - IdleHoldReleasing is this daemon's own release already running on the lane, so recording it
 //     would count every release again, once per tick of its teardown.
+//
+// Six belong to the second rule, the release of a pod no claim owns: IdleHoldUnownedClaimLive,
+// IdleHoldUnownedNoClaim, IdleHoldUnownedSandboxGone, IdleHoldUnownedTreeNotLive,
+// IdleHoldUnownedReleasing and IdleHoldUnownedNotIdle. In none of the six does a pod stand idle
+// with nobody in it: the first names a pod a live claim still holds, which the idle rule decides
+// and records; the second and the third name an issue with no pod at all, one with no claim that
+// ever ran and one whose Sandbox is already gone; the fourth names a pod the close is stopping,
+// which the idle rule already reports as IdleHoldTreeNotLive for every pod that has a live claim;
+// and the last two name this rule's own release already running and a quiet period that has not
+// passed. A row for any of them would say a pod was kept where nothing was kept.
 //
 // The pass that reads one of them ends the pod's streaks instead of recording, which is the one
 // place a streak ends outside a hold of another reason (releaseIdlePod).
@@ -149,9 +163,19 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 // never decided at all. IdleHoldTreeNotLive is recorded too: a pod of an issue the workflow has
 // taken out is one the close is stopping, and a deployment that sees it every tick is seeing a
 // close that is stuck.
+//
+// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
+// and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
+// here: each names a pod that stands, past the quiet period, with no live claim in it, and such
+// a pod holds 3 CPU and 19 GiB for as long as it stands. A deployment that sees one of the three
+// every tick is reading capacity held by something that is not work.
 func recordableHold(hold workflow.IdleHold) bool {
 	switch hold {
-	case workflow.IdleHoldNone, workflow.IdleHoldNotIdle, workflow.IdleHoldNoPod, workflow.IdleHoldReleasing:
+	case workflow.IdleHoldNone, workflow.IdleHoldNotIdle, workflow.IdleHoldNoPod,
+		workflow.IdleHoldNoLiveClaim, workflow.IdleHoldReleasing,
+		workflow.IdleHoldUnownedClaimLive, workflow.IdleHoldUnownedNoClaim,
+		workflow.IdleHoldUnownedSandboxGone, workflow.IdleHoldUnownedTreeNotLive,
+		workflow.IdleHoldUnownedReleasing, workflow.IdleHoldUnownedNotIdle:
 		return false
 	}
 	return true

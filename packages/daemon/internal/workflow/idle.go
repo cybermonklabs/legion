@@ -47,7 +47,10 @@ const (
 	IdleHoldReminder
 	// IdleHoldNotIdle: the pod did something inside the idle period, so the period has not passed.
 	IdleHoldNotIdle
-	// IdleHoldNoPod: the record holds no such issue, or the issue has no live claim to release.
+	// IdleHoldNoPod: the record holds no such issue, so there is no pod of the workflow's to
+	// release at all. An issue the record does hold whose claims have all stopped is
+	// IdleHoldNoLiveClaim instead: a pod stands there, and this rule is simply not the one that
+	// decides it.
 	IdleHoldNoPod
 	// IdleHoldReleasing: a release of this pod is already in progress. It is the idle tick's own
 	// word for "my release is already running", never a release that stopped short: a release
@@ -74,6 +77,49 @@ const (
 	// lingers or its cleanup is reserved — so the teardown cancelled the release instead of
 	// deleting the pod (store.ReleaseCauseUnauthorized).
 	IdleHoldUnauthorized
+	// IdleHoldNoLiveClaim: the record holds the issue, and every claim of it has failed, been
+	// retired or been suspended, so this rule finds no live role to ask for a bundle and no
+	// claim to suspend. The pod stands all the same, with nobody in it: that is the state the
+	// second rule acts on (UnownedPodRelease), which is why it is a hold of its own rather than
+	// IdleHoldNoPod, whose name says there is no pod.
+	IdleHoldNoLiveClaim
+
+	// The nine holds below are the second rule's, the release of a pod no claim owns
+	// (UnownedPodRelease). Every one of their names carries the unowned_ prefix because a hold
+	// record holds the hold's name and nothing else, and a reader of one must be able to tell
+	// which of the two rules kept the pod.
+
+	// IdleHoldUnownedClaimLive: a claim of the pod is still live, so the pod is a role's to use
+	// and the idle rule's to decide. This rule takes only a pod every claim of which has
+	// stopped.
+	IdleHoldUnownedClaimLive
+	// IdleHoldUnownedNoClaim: the issue holds no claim at all, so there is no pod of its own
+	// that any claim of it ever ran in.
+	IdleHoldUnownedNoClaim
+	// IdleHoldUnownedSandboxGone: the cluster holds no Sandbox for the issue, so the pod this
+	// rule would release is already gone and nothing of it is reserved.
+	IdleHoldUnownedSandboxGone
+	// IdleHoldUnownedClaimProcess: a stopped claim of the pod still records a process in it
+	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a
+	// deletion would take it with the pod.
+	IdleHoldUnownedClaimProcess
+	// IdleHoldUnownedOperatorSuspended: an operator's own suspension holds a claim of the pod
+	// (pods.IdleClaim.OperatorSuspended), the one suspension no daemon rule undoes, and the
+	// operator's resume brings that role back into this pod.
+	IdleHoldUnownedOperatorSuspended
+	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
+	// the pod, and the delivery is what brings a role back into it.
+	IdleHoldUnownedDelivery
+	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow, or one of
+	// them lingers. Such a pod is a close's to stop, as it is for the idle rule
+	// (IdleHoldTreeNotLive).
+	IdleHoldUnownedTreeNotLive
+	// IdleHoldUnownedReleasing: a release of this pod is already in progress, so this rule's own
+	// release is already running on the lane.
+	IdleHoldUnownedReleasing
+	// IdleHoldUnownedNotIdle: the pod did something inside the quiet period, so the period has
+	// not passed and the pod is not this rule's to take yet.
+	IdleHoldUnownedNotIdle
 )
 
 var idleHoldNames = map[IdleHold]string{
@@ -96,6 +142,17 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldBundleSave:       "bundle_save_failed",
 	IdleHoldOvertaken:        "overtaken",
 	IdleHoldUnauthorized:     "unauthorized",
+	IdleHoldNoLiveClaim:      "no_live_claim",
+
+	IdleHoldUnownedClaimLive:         "unowned_claim_live",
+	IdleHoldUnownedNoClaim:           "unowned_no_claim",
+	IdleHoldUnownedSandboxGone:       "unowned_sandbox_gone",
+	IdleHoldUnownedClaimProcess:      "unowned_claim_process",
+	IdleHoldUnownedOperatorSuspended: "unowned_operator_suspended",
+	IdleHoldUnownedDelivery:          "unowned_delivery_waiting",
+	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
+	IdleHoldUnownedReleasing:         "unowned_releasing",
+	IdleHoldUnownedNotIdle:           "unowned_not_idle",
 }
 
 // String is the hold's recorded name, which a reader of the daemon's release records reads.
@@ -198,7 +255,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 		roles = append(roles, c.Role)
 	}
 	if len(roles) == 0 {
-		return IdleDecision{Hold: IdleHoldNoPod}
+		return IdleDecision{Hold: IdleHoldNoLiveClaim}
 	}
 	if !onConfiguredImage {
 		return IdleDecision{Hold: IdleHoldImage}

@@ -89,7 +89,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].State = supervise.StateRetired
 				return v
 			}(),
-			image: true, want: IdleHoldNoPod,
+			image: true, want: IdleHoldNoLiveClaim,
 		},
 		{
 			name:  "a release of the pod is already in progress",
@@ -282,7 +282,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 // it kept: two holds that printed the same would make the record unreadable.
 func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 	seen := map[string]IdleHold{}
-	for hold := IdleHoldNone; hold <= IdleHoldUnauthorized; hold++ {
+	for hold := IdleHoldNone; hold <= IdleHoldUnownedNotIdle; hold++ {
 		name := hold.String()
 		if name == "unknown" {
 			t.Fatalf("hold %d has no name", int(hold))
@@ -292,7 +292,7 @@ func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 		}
 		seen[name] = hold
 	}
-	if got := IdleHold(int(IdleHoldUnauthorized) + 1).String(); got != "unknown" {
+	if got := IdleHold(int(IdleHoldUnownedNotIdle) + 1).String(); got != "unknown" {
 		t.Fatalf("an unmapped hold prints %q, want unknown", got)
 	}
 }

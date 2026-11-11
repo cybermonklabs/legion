@@ -312,6 +312,57 @@ func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 	}
 }
 
+// UnownedPods is the other candidate list: the issues whose claims have all stopped and whose
+// pod no role can take a turn in, which is what the second release rule acts on. The claim
+// states alone are not the answer — every issue of the deployment whose roles ever stopped
+// would be one, and each candidate costs a transaction that takes the daemon's global fact
+// serializer — so the workflow filter is read here beside them: the member of a lingering tree,
+// the issue whose own phase is done and the one closed long ago all hold claims that have
+// stopped and are no candidates, and the pod with a live claim is the idle rule's.
+func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
+	const (
+		lingeringRoot = "LEGION-300"
+		unowned       = "LEGION-301"
+		underLinger   = "LEGION-302"
+		phaseDone     = "LEGION-303"
+		closedLongAgo = "LEGION-304"
+		stillLive     = "LEGION-305"
+	)
+	st := migratedStore(t)
+	ctx := context.Background()
+	if _, err := st.Pool().Exec(ctx, `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, linger_until, last_dispatch_seq) values
+		($1, $1, 'LEGION', 'a tree lingering after its close', 'done', 1, 'done', 'A', now() + interval '1 hour', 1),
+		($2, $2, 'LEGION', 'a pod whose claims have all stopped', 'implementing', 1, 'in_progress', 'B', null, 1),
+		($3, $1, 'LEGION', 'a member of the lingering tree', 'implementing', 1, 'in_progress', 'C', null, 1),
+		($4, $4, 'LEGION', 'an issue whose own phase is done', 'done', 1, 'in_progress', 'D', null, 1),
+		($5, $5, 'LEGION', 'an issue closed long ago', 'done', 1, 'done', 'E', null, 1),
+		($6, $6, 'LEGION', 'a pod a live claim still holds', 'implementing', 1, 'in_progress', 'F', null, 1)`,
+		lingeringRoot, unowned, underLinger, phaseDone, closedLongAgo, stillLive); err != nil {
+		t.Fatalf("seed the project's issues: %v", err)
+	}
+	for _, c := range []supervise.Claim{
+		{Token: claim.Token("legion-legion-legion-301-implementer"), Issue: unowned, Tree: unowned, Role: claim.RoleImplementer, State: supervise.StateFailed},
+		{Token: claim.Token("legion-legion-legion-301-tester"), Issue: unowned, Tree: unowned, Role: claim.RoleTester, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-302-implementer"), Issue: underLinger, Tree: lingeringRoot, Role: claim.RoleImplementer, State: supervise.StateRetired},
+		{Token: claim.Token("legion-legion-legion-303-implementer"), Issue: phaseDone, Tree: phaseDone, Role: claim.RoleImplementer, State: supervise.StateRetired},
+		{Token: claim.Token("legion-legion-legion-304-implementer"), Issue: closedLongAgo, Tree: closedLongAgo, Role: claim.RoleImplementer, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-305-implementer"), Issue: stillLive, Tree: stillLive, Role: claim.RoleImplementer, State: supervise.StateIdle},
+	} {
+		c.Project, c.TreeEpoch, c.Generation = "legion", 1, 1
+		if err := st.PutClaim(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidates, err := st.UnownedPods(ctx, "LEGION", record.OutOfWorkflowStatuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0] != unowned {
+		t.Fatalf("the candidates = %v, want %s alone: the pod no claim owns under a tree the workflow still runs", candidates, unowned)
+	}
+}
+
 // A cancel and a park of the same issue in flight together cannot end with a resume standing
 // above the close. The park is the act production runs: one fact transaction that takes the
 // issue out of the workflow and queues the close's own row together, under the shared

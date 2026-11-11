@@ -73,6 +73,60 @@ func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) 
 	return issues, nil
 }
 
+// UnownedPods is every issue of project whose pod no role can use, in key order: one that holds
+// at least one claim, holds no claim whose state is outside ('failed', 'retired', 'suspended')
+// — no live claim, that is — and whose own row and whose tree root's row both still stand in
+// the workflow. It is the candidate list of the second release rule
+// (workflow.UnownedPodRelease), beside IdlePods, which answers the other half: the pods a live
+// claim still holds. Such a pod stands with 3 CPU and 19 GiB reserved and no role that can take
+// a turn in it, which is what the rule releases.
+//
+// project is the issue record's own project (issues.project, the Dispatch project the records
+// carry), not the claim token's spelling IdlePods reads from claims. outOfWorkflow is the
+// workflow's list of statuses that take an issue out of it (record.OutOfWorkflowStatuses),
+// which the store does not restate: the gate every other path reads is a Go predicate
+// (pods.InWorkflowNotLingering) and a select cannot call one, so the rule arrives as a list and
+// the filter is this statement's three conditions per row — the status outside that list, the
+// phase short of done, and no linger.
+//
+// Those three conditions are what the filter is for, since the claim states alone would answer
+// every issue of the deployment whose roles ever stopped. Every candidate costs one transaction
+// of ReleaseIdleIssue, which opens by taking the daemon's global fact serializer
+// (treelifecycle.Serialize, pg_advisory_xact_lock(hashtext('legion.apply_fact'))) — the same
+// lock the intake takes for every fact, so a tick of candidates is a tick of facts not applied.
+// The reading behind that: on the INFRA deployment at 2026-11-10 19:39Z, 1,136 issues held
+// claims while 5 stood in the workflow under a live tree.
+//
+// It adds no index of its own. The answer is read once a minute, the partial index issues_live
+// (migrations/0062_live_issue_reads.up.sql) already serves the project's live rows, and claims
+// holds at most six rows per issue, so the two subqueries read a handful of rows each.
+func (s *Store) UnownedPods(ctx context.Context, project string, outOfWorkflow []string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
+		where i.project = $1
+		and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
+		and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+		and exists (select 1 from claims c where c.issue = i.key)
+		and not exists (select 1 from claims c where c.issue = i.key
+			and c.state not in ('failed', 'retired', 'suspended'))
+		order by i.key`, project, outOfWorkflow)
+	if err != nil {
+		return nil, fmt.Errorf("list the pods of %s no claim owns: %w", project, err)
+	}
+	defer rows.Close()
+	var issues []string
+	for rows.Next() {
+		var issue string
+		if err := rows.Scan(&issue); err != nil {
+			return nil, fmt.Errorf("list the pods of %s no claim owns: %w", project, err)
+		}
+		issues = append(issues, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the pods of %s no claim owns: %w", project, err)
+	}
+	return issues, nil
+}
+
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
 // decide, and when decide answers rows it writes them and the release's mark together, so the
 // view the decision rests on and the mark that records it are one atomic act.
