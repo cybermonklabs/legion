@@ -1,5 +1,7 @@
 kind: Added
-body: Nine more subpath exports - `./actor-label`, `./agent-stream`, `./claim-holds`, `./dispatch-block-ref`, `./dispatch-constants`, `./dispatch-href`, `./dispatch-text-references`, `./dispatch-text-rules` and `./related-forms` - so an importer takes the module it needs instead of the whole index. `ASK_URGENCIES` moved from `./dispatch-tools` to `./dispatch-constants`.
+body: |-
+    Nine more subpath exports - `./actor-label`, `./agent-stream`, `./claim-holds`, `./dispatch-block-ref`, `./dispatch-constants`, `./dispatch-href`, `./dispatch-text-references`, `./dispatch-text-rules` and `./related-forms` - so an importer takes the module it needs instead of the whole index. `ASK_URGENCIES` moved from `./dispatch-tools` to `./dispatch-constants`.
+    `answerSelected(answer)` reads an ask answer's selected options as a list, so that each reader stops writing its own `?? []`. It takes an answer whose `selected` is absent, `null` or `undefined`, which is what a package compiling with `exactOptionalPropertyTypes` hands it.
 time: 2026-11-11T06:19:10.934687845Z
 custom:
     Issue: pr2697

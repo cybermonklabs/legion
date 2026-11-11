@@ -110,7 +110,7 @@ export const DEFAULT_ISSUE_READ_EVENTS = 10;
  * ask's answer carry it under their own shapes.
  */
 export function answerSelected(
-  answer: Pick<AskAnswer, "selected"> | { readonly selected?: readonly string[] | null }
+  answer: Pick<AskAnswer, "selected"> | { readonly selected?: readonly string[] | null | undefined }
 ): readonly string[] {
   return answer.selected ?? [];
 }
