@@ -910,7 +910,7 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 	}
 	rows := map[string][]string{}
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER KIND MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
+	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER KIND SHAPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
 		t.Fatalf("header = %q", lines[0])
 	}
 	for _, line := range lines[1:] {
@@ -918,10 +918,10 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 		rows[fields[0]] = fields
 	}
 	want := map[string][]string{
-		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "no", "-", "-"},
-		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
-		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "session", "yes", "-", "-"},
-		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "yes", "-", "-"},
+		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "-", "no", "-", "-"},
+		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
+		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "-", "session", "yes", "-", "-"},
+		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "-", "yes", "-", "-"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %v, want exactly %v", rows, want)
@@ -1040,6 +1040,100 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	}
 	if _, _, code := runSecret("show", "MISSING_KEY"); code != 1 {
 		t.Fatalf("show of a secret Secrets Manager does not hold: exit %d, want 1", code)
+	}
+}
+
+// TestSecretShowAndListPrintTheShape: show prints a shape line holding the shape tag the store
+// holds, and "-" for a secret carrying none; list prints the same value in a SHAPE column, since
+// the shape is a one-word tag as the kind, the max grant and the default grant are. Each form's
+// --json carries the tag as the store holds it, "" for a secret carrying none, so a reader of
+// the JSON tells a secret tagged nothing from one tagged a word the broker refuses it for.
+func TestSecretShowAndListPrintTheShape(t *testing.T) {
+	oneLine := policytest.Secret("TOKEN_KEY", "ada@example.com", policy.TierAgent, "tok-abc")
+	oneLine.Tags[policy.TagShape] = policy.ShapeToken
+	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "-----BEGIN KEY-----\n")
+	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
+	untagged := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
+	local := secrets.NewLocal(oneLine, wholeFile, untagged)
+	startSecretBroker(t, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+
+	for _, tc := range []struct{ name, stored, printed string }{
+		{"TOKEN_KEY", policy.ShapeToken, policy.ShapeToken},
+		{"DOCUMENT_KEY", policy.ShapeDocument, policy.ShapeDocument},
+		{"PLAIN_KEY", "", "-"},
+	} {
+		stdout, stderr, code := runSecret("show", tc.name)
+		if code != 0 {
+			t.Fatalf("show %s: exit %d, stderr %q", tc.name, code, stderr)
+		}
+		if want := "shape: " + tc.printed + "\n"; !strings.Contains(stdout, want) {
+			t.Fatalf("show %s stdout %q must contain %q", tc.name, stdout, want)
+		}
+		jsonOut, stderr, code := runSecret("show", tc.name, "--json")
+		if code != 0 {
+			t.Fatalf("show %s --json: exit %d, stderr %q", tc.name, code, stderr)
+		}
+		var view struct {
+			Shape string `json:"shape"`
+		}
+		if err := json.Unmarshal([]byte(jsonOut), &view); err != nil {
+			t.Fatalf("show %s --json is not a secret: %v: %s", tc.name, err, jsonOut)
+		}
+		if view.Shape != tc.stored {
+			t.Fatalf("show %s --json shape = %q, want the tag the store holds, %q", tc.name, view.Shape, tc.stored)
+		}
+	}
+
+	stdout, stderr, code := runSecret("list")
+	if code != 0 {
+		t.Fatalf("list: exit %d, stderr %q; want 0", code, stderr)
+	}
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	header := strings.Fields(lines[0])
+	column := -1
+	for i, name := range header {
+		if name == "SHAPE" {
+			column = i
+		}
+	}
+	if column < 0 {
+		t.Fatalf("list header = %q, want a SHAPE column", lines[0])
+	}
+	shapes := map[string]string{}
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		shapes[fields[0]] = fields[column]
+	}
+	want := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": "-"}
+	if len(shapes) != len(want) {
+		t.Fatalf("list SHAPE column = %v, want exactly %v", shapes, want)
+	}
+	for name, shape := range want {
+		if shapes[name] != shape {
+			t.Fatalf("list %s SHAPE = %q, want %q", name, shapes[name], shape)
+		}
+	}
+
+	stdout, stderr, code = runSecret("list", "--json")
+	if code != 0 {
+		t.Fatalf("list --json: exit %d, stderr %q", code, stderr)
+	}
+	var views []struct {
+		Name  string `json:"name"`
+		Shape string `json:"shape"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &views); err != nil {
+		t.Fatalf("list --json is not a JSON array of secrets: %v: %s", err, stdout)
+	}
+	stored := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": ""}
+	if len(views) != len(stored) {
+		t.Fatalf("list --json = %s, want one row per secret", stdout)
+	}
+	for _, v := range views {
+		if v.Shape != stored[v.Name] {
+			t.Fatalf("list --json %s shape = %q, want the tag the store holds, %q", v.Name, v.Shape, stored[v.Name])
+		}
 	}
 }
 

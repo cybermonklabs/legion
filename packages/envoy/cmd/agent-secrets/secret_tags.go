@@ -28,9 +28,9 @@ func checkOwnerTier(owner, tier string) error {
 	return nil
 }
 
-// tagNone is the value of --kind, --github-owners, --requesters, --scopes, --admin, --max-grant
-// and --default-grant that removes the tag, the one the broker refuses as a github-owners login
-// (policy.TagRemoved).
+// tagNone is the value of --kind, --github-owners, --requesters, --scopes, --admin, --shape,
+// --max-grant and --default-grant that removes the tag, the one the broker refuses as a
+// github-owners login (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
 // checkKind is --kind's rule: a kind the broker mints (policy.ValidKind), or none.
@@ -188,12 +188,28 @@ func checkAdmin(admin string, orNone bool) error {
 	return usageErr{fmt.Errorf("--admin is %s, not %q, or the broker refuses the secret as %s; leave --admin off for a secret whose grant is no administrator's", adminTrue, admin, policy.ReasonAdminMalformed)}
 }
 
+// checkShape is --shape's rule: policy.ShapeToken or policy.ShapeDocument, the two words the
+// broker reads (policy.TagShape), or none where orNone allows it (retag) to remove the tag. Any
+// other value is refused here, before anything is read or written, as the broker refuses it on
+// the reread, policy.ReasonShapeMalformed, named as the broker names it: the tag says what the
+// stored value is, so a word the broker does not know leaves it unable to say what a release of
+// the secret would hand over, and a secret carrying one is served to nobody.
+func checkShape(shape string, orNone bool) error {
+	if shape == "" || shape == policy.ShapeToken || shape == policy.ShapeDocument || (orNone && shape == tagNone) {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--shape is %s, %s or %s, not %q, or the broker refuses the secret as %s", policy.ShapeToken, policy.ShapeDocument, tagNone, shape, policy.ReasonShapeMalformed)}
+	}
+	return usageErr{fmt.Errorf("--shape is %s or %s, not %q, or the broker refuses the secret as %s; leave --shape off to let the broker read the value's own trailing line ending", policy.ShapeToken, policy.ShapeDocument, shape, policy.ReasonShapeMalformed)}
+}
+
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
-// hold once a write lands — its kind, owner, tier, requesters, scopes, admin mark and max grant
-// — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write, a secret
-// the broker would then refuse to load. It builds the one policy.TagSet those rules weigh and
-// hands it, beside the reason they answered and the map it was built from, to tagRefusal, which
-// says that refusal as the flag that fixes it.
+// hold once a write lands — its kind, owner, tier, requesters, scopes, shape, admin mark and
+// max grant — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
+// a secret the broker would then refuse to load. It builds the one policy.TagSet those rules
+// weigh and hands it, beside the reason they answered and the map it was built from, to
+// tagRefusal, which says that refusal as the flag that fixes it.
 //
 // It reads those tags out of the map the write leaves behind — optionalTags with the owner and
 // tier create will send, the after map retag computes — rather than out of the flags, because
@@ -211,7 +227,10 @@ func checkAdmin(admin string, orNone bool) error {
 // max-grant-malformed before it weighs policy.TagRules at all. The admin mark is the tag being
 // adminTrue; a stored admin tag holding anything else is no rule of TagRules but
 // policy.ReasonAdminMalformed, which the broker answers to the reread that follows the write,
-// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The one
+// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The shape
+// is carried as the store holds it, unparsed, because a word that is neither token nor document
+// is a rule of TagRules itself, and the first one TagRules weighs, so a stored shape tag written
+// by hand as another word is refused here rather than left to that reread. The one
 // field of the set left empty is BoundAccount, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS
 // binding, which `agent-secrets` never sees, just as it never sees BROKER_SERVICES and so calls
 // ParseRequesterShapes rather than ParseRequesters: the rule it feeds, the one refusing a
@@ -224,6 +243,7 @@ func checkTagsFor(tags map[string]string) error {
 		Tier:         tags[policy.TagTier],
 		Requesters:   tags[policy.TagRequesters],
 		Scopes:       tags[policy.TagScopes],
+		Shape:        tags[policy.TagShape],
 		BoundAccount: "",
 		Admin:        tags[policy.TagAdmin] == adminTrue,
 		MaxGrant:     duration,
@@ -234,14 +254,14 @@ func checkTagsFor(tags map[string]string) error {
 // tagRefusal says one cross-tag refusal as the flag that fixes it: reason is what
 // policy.TagRules answered for set, and tags is the map set was built from. It answers nil for
 // "", the answer for a secret the rules allow, and a usage error for every other reason, so it
-// is this CLI's whole mirror of TagRules: an arm for policy.ReasonScopesKind,
-// policy.ReasonAdminTier, policy.ReasonAdminRequesters, policy.ReasonMaxGrantRequired and
-// policy.ReasonRequestersNotOwner, and one fallback refusal after the switch, which quotes the
-// reason TagRules gave. That reason is this binary's own TagRules answer, so a reason, or a
-// requesters fault, with no arm here is a gap in this build of agent-secrets, which the fallback
-// refuses the write for rather than leave it to be written and refused on the reread
-// (TestTagRefusalRefusesAReasonNoArmNames). A broker newer than this client, holding a rule this
-// client's TagRules does not know, is caught by that reread alone.
+// is this CLI's whole mirror of TagRules: an arm for policy.ReasonShapeMalformed,
+// policy.ReasonScopesKind, policy.ReasonAdminTier, policy.ReasonAdminRequesters,
+// policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner, and one fallback refusal
+// after the switch, which quotes the reason TagRules gave. That reason is this binary's own
+// TagRules answer, so a reason, or a requesters fault, with no arm here is a gap in this build
+// of agent-secrets, which the fallback refuses the write for rather than leave it to be written
+// and refused on the reread (TestTagRefusalRefusesAReasonNoArmNames). A broker newer than this
+// client, holding a rule this client's TagRules does not know, is caught by that reread alone.
 //
 // Every arm reads the set rather than a flag, so no message can name tags other than the ones
 // the rules judged; the max-grant arm reads tags as well, to quote the cap too long as whoever
@@ -251,6 +271,8 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 	switch reason {
 	case "":
 		return nil
+	case policy.ReasonShapeMalformed:
+		return usageErr{fmt.Errorf("the shape tag says what a secret's stored value is, so it is %s or %s, not %q: write --shape %s or --shape %s, or remove the tag with --shape none, in a retag of its own, or the broker refuses the secret as %s", policy.ShapeToken, policy.ShapeDocument, set.Shape, policy.ShapeToken, policy.ShapeDocument, policy.ReasonShapeMalformed)}
 	case policy.ReasonScopesKind:
 		holder := "a stored secret"
 		if set.Kind != "" {
@@ -309,11 +331,12 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 	return usageErr{fmt.Errorf("the broker refuses a secret carrying these tags as %s, and this agent-secrets has no message naming the flag that fixes it: write tags the broker accepts", reason)}
 }
 
-// optionalTags is the kind, github-owners, requesters, scopes, admin, max-grant and default-grant
-// tags the flags set: each flag's value when it names one, and nothing for one left unset or set
-// to none. A kind brings the rollback guard with it (policy.TagRollbackGuard), so a broker from
-// before kinds refuses the secret rather than serve its stored key or refresh token.
-func optionalTags(kind, githubOwners, requesters, scopes, admin, maxGrant, defaultGrant string) map[string]string {
+// optionalTags is the kind, github-owners, requesters, scopes, admin, shape, max-grant and
+// default-grant tags the flags set: each flag's value when it names one, and nothing for one
+// left unset or set to none. A kind brings the rollback guard with it (policy.TagRollbackGuard),
+// so a broker from before kinds refuses the secret rather than serve its stored key or refresh
+// token.
+func optionalTags(kind, githubOwners, requesters, scopes, admin, shape, maxGrant, defaultGrant string) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
 	if named(kind) {
@@ -331,6 +354,9 @@ func optionalTags(kind, githubOwners, requesters, scopes, admin, maxGrant, defau
 	}
 	if named(admin) {
 		tags[policy.TagAdmin] = admin
+	}
+	if named(shape) {
+		tags[policy.TagShape] = shape
 	}
 	if named(maxGrant) {
 		tags[policy.TagMaxGrant] = maxGrant
