@@ -13,6 +13,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+// A session's reply is accepted only once its own attempt row names it: replyComment reads
+// comment_deliveries by (comment, target, attempt) and refuses REPLY_FORBIDDEN while that row's
+// session_id is not the caller's (comment_delivery.go). The creation writes that column from a
+// lookup it bounds at mentionLookupTimeout (comment_create.go) and answers without one that
+// missed the bound, leaving session_id NULL; the mention sender resolves the target again after
+// the commit and records it on the claimed row (recordCommentDeliveryResolution), after the
+// response. So each case here waits for the deliveries its replies name to settle before it
+// replies, or a creation whose lookup lost that race would have the session answer a row that
+// does not name it yet.
 func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 	t.Parallel()
 	t.Run("different sessions", func(t *testing.T) {
@@ -34,12 +43,13 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 			}
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL)
+		handler, database := newTargetedMessageHandler(t, listener.URL)
 		issue := createInteractionIssue(t, handler, "TEST", "Mention reply targets", "before")
 		comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body":     "Both reviewers need to answer.",
 			"mentions": []map[string]any{{"target": "session:s1"}, {"target": "session:s2"}},
 		}))
+		settledCommentDeliveries(t, database, comment.ID)
 		for _, target := range []string{"session:s1", "session:s2"} {
 			sessionID := target[len("session:"):]
 			response := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
@@ -70,12 +80,13 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 			}
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL)
+		handler, database := newTargetedMessageHandler(t, listener.URL)
 		issue := createInteractionIssue(t, handler, "TEST", "Same-session mention reply targets", "before")
 		comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body":     "One session received two mention targets.",
 			"mentions": []map[string]any{{"target": "role:reviewer"}, {"target": "session:s1"}},
 		}))
+		settledCommentDeliveries(t, database, comment.ID)
 		for _, target := range []string{"role:reviewer", "session:s1"} {
 			response := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
 				"actor": map[string]any{"kind": "session", "id": "s1"}, "target": target, "attempt": 1,
