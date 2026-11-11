@@ -107,14 +107,24 @@ describe.skipIf(!dispatchStackEnabled)(
     const asMachine = <T>(method: string, route: string, body?: unknown): Promise<T> =>
       request<T>(method, route, body, { Authorization: `Bearer ${server().token}` });
 
-    const createIssue = (project: string, title: string, parent?: string): Promise<CreatedIssue> =>
-      asPerson<CreatedIssue>("POST", "/api/v1/issues", {
+    /** An issue in the workflow, which is where a tree whose gate holds a READY back stands: an
+     *  issue Dispatch still shows in `triage` is out of the workflow, and the advice names no
+     *  gate of one. */
+    const createIssue = async (
+      project: string,
+      title: string,
+      parent?: string
+    ): Promise<CreatedIssue> => {
+      const issue = await asPerson<CreatedIssue>("POST", "/api/v1/issues", {
         project,
         title,
         force: true,
         spec: "# Design\n\nThe design, as approved.\n",
         ...(parent === undefined ? {} : { parent }),
       });
+      await asPerson("PATCH", `/api/v1/issues/${issue.key}`, { status: "in_progress" });
+      return issue;
+    };
 
     /** The person's approval of a document's latest version, and the version it pinned. */
     async function approve(artifactId: string): Promise<number> {

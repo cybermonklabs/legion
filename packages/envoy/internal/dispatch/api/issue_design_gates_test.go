@@ -44,6 +44,32 @@ func recordedDesignGates(t *testing.T, handler http.Handler, issueKey string) []
 	}](t, response).DesignGates
 }
 
+// setIssueStatus moves an issue to one status of the lifecycle, as a person moves it in the
+// dashboard; closeIssue is the `done` case of it, with the answer's own check beside it.
+func setIssueStatus(t *testing.T, handler http.Handler, issueKey, status string) {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issueKey,
+		map[string]string{"status": status}, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("move %s to %s: status=%d body=%s", issueKey, status, response.Code, response.Body.String())
+	}
+}
+
+// createWorkingIssue is createAdviceIssue with the issue moved into the workflow, which is where
+// a tree whose gate holds a READY back stands. An issue Dispatch still shows in `triage` is out
+// of the workflow, so its gates hold nothing back and the advice names none of them: a row that
+// left its issue there would pass whatever the record said.
+func createWorkingIssue(t *testing.T, handler http.Handler, project, title string, spec *string) struct {
+	Key               string           `json:"key"`
+	PrimaryArtifactID string           `json:"primary_artifact_id"`
+	Advice            *testWriteAdvice `json:"advice"`
+} {
+	t.Helper()
+	issue := createAdviceIssue(t, handler, project, title, spec)
+	setIssueStatus(t, handler, issue.Key, "in_progress")
+	return issue
+}
+
 // issueEventTypes is the issue's activity as a reader of it sees it, by event type, so a publish
 // that moved that feed can be told from one that left it where it was.
 func issueEventTypes(t *testing.T, handler http.Handler, issueKey string) []string {
@@ -271,7 +297,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("a Verification document no gate records", func(t *testing.T) {
-		issue := createAdviceIssue(t, handler, "DGATE", "Approved verification", &spec)
+		issue := createWorkingIssue(t, handler, "DGATE", "Approved verification", &spec)
 		verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne check.\n")
 		approved := approveAdviceDocument(t, handler, verification.Artifact.ID)
 
@@ -280,7 +306,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("a plan a plan review approved, which no gate records", func(t *testing.T) {
-		issue := createAdviceIssue(t, handler, "DGATE", "Approved plan", &spec)
+		issue := createWorkingIssue(t, handler, "DGATE", "Approved plan", &spec)
 		plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nOne task.\n")
 		recorded := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews",
 			map[string]any{"actor": sessionActor(), "version": plan.Version.Number})
@@ -293,7 +319,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("a child issue's primary document no gate records", func(t *testing.T) {
-		parent := createAdviceIssue(t, handler, "DGATE", "Parent of the child", &spec)
+		parent := createWorkingIssue(t, handler, "DGATE", "Parent of the child", &spec)
 		child := createDesignGateChild(t, handler, "DGATE", parent.Key, "Child with its own spec")
 		approved := approveAdviceDocument(t, handler, child.PrimaryArtifactID)
 
@@ -302,7 +328,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("a live issue's gate names that issue and its step", func(t *testing.T) {
-		issue := createAdviceIssue(t, handler, "DGATE", "Gated spec", &spec)
+		issue := createWorkingIssue(t, handler, "DGATE", "Gated spec", &spec)
 		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
 		})
@@ -322,8 +348,8 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		createAdviceProject(t, handler, "GATEB")
 		publishGatedSteps(t, handler, "GATEA", []string{model.GatedStepSpec})
 		publishGatedSteps(t, handler, "GATEB", []string{model.GatedStepCriteria})
-		owner := createAdviceIssue(t, handler, "GATEA", "The issue the document belongs to", &spec)
-		other := createAdviceIssue(t, handler, "GATEB", "The issue handed that same document", &spec)
+		owner := createWorkingIssue(t, handler, "GATEA", "The issue the document belongs to", &spec)
+		other := createWorkingIssue(t, handler, "GATEB", "The issue handed that same document", &spec)
 		publishDesignGates(t, handler, owner.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: owner.PrimaryArtifactID},
 		})
@@ -343,8 +369,8 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("a done issue's gate beside a live one leaves the live one alone", func(t *testing.T) {
-		live := createAdviceIssue(t, handler, "DGATE", "The gate still open", &spec)
-		closed := createAdviceIssue(t, handler, "DGATE", "The gate that closed with its issue", &spec)
+		live := createWorkingIssue(t, handler, "DGATE", "The gate still open", &spec)
+		closed := createWorkingIssue(t, handler, "DGATE", "The gate that closed with its issue", &spec)
 		publishDesignGates(t, handler, live.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: live.PrimaryArtifactID},
 		})
@@ -361,9 +387,37 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		}
 	})
 
+	t.Run("a gate on an issue parked out of the workflow names none", func(t *testing.T) {
+		// Nothing clears a parked issue's gate rows: the daemon suspends its claims and deletes
+		// none, its boot republishes them for as long as it stays parked, and only the
+		// re-admission that brings the tree back clears them. Every status that takes an issue
+		// out of the workflow reads the same way here, done among them.
+		for _, status := range model.IssueStatusesOutOfWorkflow {
+			t.Run(status, func(t *testing.T) {
+				live := createWorkingIssue(t, handler, "DGATE", "The gate still open", &spec)
+				parked := createWorkingIssue(t, handler, "DGATE", "The gate of a tree that runs nothing", &spec)
+				publishDesignGates(t, handler, live.Key, []issueDesignGate{
+					{Step: model.GatedStepSpec, ArtifactID: live.PrimaryArtifactID},
+				})
+				publishDesignGates(t, handler, parked.Key, []issueDesignGate{
+					{Step: model.GatedStepCriteria, ArtifactID: live.PrimaryArtifactID},
+				})
+				setIssueStatus(t, handler, parked.Key, status)
+				approved := approveAdviceDocument(t, handler, live.PrimaryArtifactID)
+
+				superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, "A sentence only the open gate waits on.", approved)
+				want := []supersededApprovalGate{{Issue: live.Key, Step: model.GatedStepSpec}}
+				if !slices.Equal(superseded.DesignGates, want) {
+					t.Fatalf("design_gates = %#v, want %#v: a gate on an issue in %s holds no READY back",
+						superseded.DesignGates, want, status)
+				}
+			})
+		}
+	})
+
 	t.Run("a gate only a done issue records names none", func(t *testing.T) {
-		live := createAdviceIssue(t, handler, "DGATE", "The issue the document belongs to", &spec)
-		closed := createAdviceIssue(t, handler, "DGATE", "The only issue whose gate records it", &spec)
+		live := createWorkingIssue(t, handler, "DGATE", "The issue the document belongs to", &spec)
+		closed := createWorkingIssue(t, handler, "DGATE", "The only issue whose gate records it", &spec)
 		publishDesignGates(t, handler, closed.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: live.PrimaryArtifactID},
 		})
@@ -375,7 +429,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("a cleared record names none", func(t *testing.T) {
-		issue := createAdviceIssue(t, handler, "DGATE", "The gate the daemon withdrew", &spec)
+		issue := createWorkingIssue(t, handler, "DGATE", "The gate the daemon withdrew", &spec)
 		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
 		})
@@ -392,7 +446,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		// and such a gate refuses no READY. The project's own list is what says so.
 		createAdviceProject(t, handler, "GATEONE")
 		publishGatedSteps(t, handler, "GATEONE", []string{model.GatedStepSpec})
-		issue := createAdviceIssue(t, handler, "GATEONE", "Gated on its spec alone", &spec)
+		issue := createWorkingIssue(t, handler, "GATEONE", "Gated on its spec alone", &spec)
 		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
 			{Step: model.GatedStepCriteria, ArtifactID: issue.PrimaryArtifactID},
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
@@ -411,7 +465,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		// The empty list is what a deployment with `gates.design: off` publishes, and it is also
 		// what a project reads as before its daemon has published anything at all.
 		createAdviceProject(t, handler, "GATENONE")
-		issue := createAdviceIssue(t, handler, "GATENONE", "Recorded by a daemon that gates nothing", &spec)
+		issue := createWorkingIssue(t, handler, "GATENONE", "Recorded by a daemon that gates nothing", &spec)
 		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
 		})
@@ -422,7 +476,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	})
 
 	t.Run("a gate read that never answers costs the gate list and never the write", func(t *testing.T) {
-		issue := createAdviceIssue(t, handler, "DGATE", "Locked-out gate read", &spec)
+		issue := createWorkingIssue(t, handler, "DGATE", "Locked-out gate read", &spec)
 		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
 		})

@@ -285,7 +285,7 @@ type decisionBlockCheck struct {
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
 // PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
-// kept to the gates that hold a READY back: the issue is not done there, and the project's own
+// kept to the gates that hold a READY back: the issue is in the workflow there, and the project's own
 // list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
 // this write closed no gate anyone here knows of.
 type supersededApproval struct {
@@ -296,10 +296,10 @@ type supersededApproval struct {
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
 	// DesignGates are the design gates Dispatch's record says this document is: one entry per
-	// issue and step, kept to the live issues whose step the project gates. Omitted when empty,
-	// and empty is also what a failed gate read leaves (supersededApprovalAdvice), because an
-	// absent list and an empty one say the one thing a client acts on - Dispatch names no gate
-	// here.
+	// issue and step, kept to the issues still in the workflow whose step the project gates.
+	// Omitted when empty, and empty is also what a failed gate read leaves
+	// (supersededApprovalAdvice), because an absent list and an empty one say the one thing a
+	// client acts on - Dispatch names no gate here.
 	DesignGates []supersededApprovalGate `json:"design_gates,omitempty"`
 }
 
@@ -375,8 +375,12 @@ func (s *server) supersededApprovalAdvice(
 // document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the rows
 // that hold a READY back and no others. Two things decide that, and the row alone says neither.
 //
-// The issue must not be done: a gate on a closed issue holds no READY back, so reporting it
-// would send the writer to an issue with nothing to reopen.
+// The issue must be in the workflow, which is every status but the four that take it out
+// (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree parked in `backlog` or `icebox`,
+// refuse no READY, and an issue still in `triage` runs nothing either. Nothing clears a parked
+// issue's gate rows - the daemon suspends its claims and deletes none, and its boot republishes
+// them for as long as it stays parked - so the rows outlive the tree that ran, and only the
+// re-admission that brings it back clears them.
 //
 // The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
 // written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes
@@ -394,9 +398,9 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		from design_gates g
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
-		where g.artifact_id = $1 and i.status <> 'done' and g.step = any(p.gated_steps)
+		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any(p.gated_steps)
 		order by g.issue, array_position($2::text[], g.step)
-	`, artifactID, model.GatedStepsKnown)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates this document records: %w", err)
 	}
