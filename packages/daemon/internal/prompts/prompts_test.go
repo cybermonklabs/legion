@@ -38,9 +38,11 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		goParts  []string
 		contains []string
 	}{
-		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree.
-		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
-		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
+		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree,
+		// and which code each of the two pre-checked texts is refused with: its length, and the
+		// decision block it holds (INFRA-1201).
+		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`", "`READY_PACKET_DECISION_BLOCK`"}, architectOperations...)},
+		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`", "`READY_PACKET_DECISION_BLOCK`"}, architectOperations...)},
 		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
 		// A root with no code of its own pushes one empty commit to open its pull request. The
 		// implementer is also told the completion of implementing the handoff route refuses with no
@@ -53,10 +55,12 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"your approval of the head that commit made is read by no daemon check: READY reads `record.ApprovedHead`, which only a review submitted while the issue stands in `reviewing` writes", "`pullRequest.head` is the commit the pull request stands on"}},
-		// The merger is told how its over-long packet is refused, at the call that carries it.
+		// The merger is told how its over-long packet is refused, and how one holding a decision
+		// block is, at the call that carries it.
 		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "`ready: true`", "`READY_HEAD_CONFLICTS`: the pull request conflicts with its base",
 			"`READY_NOT_APPROVED`", "`READY_DISARM_PENDING`",
 			"refused at `handoff_complete` with `READY_PACKET_TOO_LONG`, which names the bound and how far over the packet is",
+			"refused there with `READY_PACKET_DECISION_BLOCK`",
 			"`READY_HEAD_MOVED`", "`READY_FILES_TRUNCATED`", "`READY_PULL_REQUEST_CLOSED`",
 			"`GITHUB_READ_FAILED`", "`DESIGN_GATE_CLOSED`", "`NO_PULL_REQUEST`", "`READY_REQUIRED`"}},
 	} {

@@ -5,6 +5,7 @@
 import { expect } from "@playwright/test";
 
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
+import { seedDecisionMessage } from "./decision-bodies";
 import { stubbed } from "./stub/stub-test";
 
 // The one family of this suite the markdown fixture table cannot hold, so this file keeps bodies
@@ -63,12 +64,17 @@ const test = stubbed(async () => {
   // Each broken body with the lines its card must still draw, so the loop below looks nothing up
   // a second time. The ask is created before the message, which is the order their turns stand
   // in the Conversation.
+  //
+  // The message's `::::ask` opens a decision block for the browser reader, so the server refuses
+  // a message carrying it (400 DECISION_BLOCK_IN_BODY) and its body is seeded straight into
+  // `messages` (`e2e/decision-bodies.ts`). The ask's question is no refused path: a decision
+  // block is what an ask is.
   const brokenAsk = await createAsk(issue.key, { question: brokenTypedBlocks.ask.body }, agent);
-  const brokenMessage = await createMessage(
-    issue.key,
-    { body: brokenTypedBlocks.message.body },
-    agent
-  );
+  const brokenMessage = await seedDecisionMessage({
+    author: agent.actor,
+    body: brokenTypedBlocks.message.body,
+    issueKey: issue.key,
+  });
   // A message body is stored as sent, so a lone carriage return still ends its lines and a
   // leading U+FEFF still reaches the parser: the drawn fence lines must be cut from the same text,
   // or the body is shown twice.
@@ -85,7 +91,7 @@ const test = stubbed(async () => {
   return {
     broken: [
       { lines: brokenTypedBlocks.ask.lines, turn: `ask:${brokenAsk.id}` },
-      { lines: brokenTypedBlocks.message.lines, turn: `message:${brokenMessage.id}` },
+      { lines: brokenTypedBlocks.message.lines, turn: `message:${brokenMessage}` },
     ],
     container,
     issue: issue.key,

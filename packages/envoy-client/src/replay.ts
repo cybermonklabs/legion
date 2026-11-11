@@ -382,23 +382,32 @@ export interface ReplayEngine {
    * shutting down: it records only while the host's `writeSessionID()` names `sessionID` and no
    * `restore` has moved the engine since, and the write goes ahead even once `sessionID()` answers
    * none. The ledger holds the frame from the call on, so a sweep passes it over before the write
-   * lands. It never rejects.
+   * lands. Answers whether the write that keeps the record reached the host: false says the host
+   * had moved by the call's turn in the write queue, or its write failed, so that session's
+   * record lost the frame and the loss is the caller's to report. A failed write's record goes
+   * with the next write, which keeps it only while that session is still the one written for. It
+   * never rejects.
    */
-  recordDeliveredFor(sessionID: string, frame: DedupeIdentity): Promise<void>;
+  recordDeliveredFor(sessionID: string, frame: DedupeIdentity): Promise<boolean>;
   /**
-   * The host failed to show a live frame on the followed subject `followed`, which it received at
-   * `receivedAt` (the engine's clock, `Date.now` unless `now` is given): shows its failure notice
-   * at once, and records it when shown, unless a sweep will show the stream's copy. A sweep will
-   * when the frame is no role forward (those stay live only), the latest replay call succeeded, a
-   * call since the last failed one answered `followed` without refusing it, `followed` has a
-   * cursor, and that cursor did not start after the frame was received: a cursor starts at the
-   * stream's end, which can be at or past a frame the live path still held, so no sweep reads that
-   * frame. Any other frame (a role forward after its receipt, a subject the stream does not keep,
-   * a listener that does not replay or refuses the subject, a subject with no cursor yet, or one
-   * whose cursor started, or started again after a stream recreation, since the frame arrived)
-   * gets its notice at once instead of being dropped silently. It never rejects.
+   * The host failed to show a live frame addressed to the session `sessionID` on the followed
+   * subject `followed`, which it received at `receivedAt` (the engine's clock, `Date.now` unless
+   * `now` is given): shows its failure notice at once, and records it when shown, unless a sweep
+   * will show the stream's copy. A sweep will when the frame is no role forward (those stay live
+   * only), the latest replay call succeeded, a call since the last failed one answered `followed`
+   * without refusing it, `followed` has a cursor, and that cursor did not start after the frame
+   * was received: a cursor starts at the stream's end, which can be at or past a frame the live
+   * path still held, so no sweep reads that frame. Any other frame (a role forward after its
+   * receipt, a subject the stream does not keep, a listener that does not replay or refuses the
+   * subject, a subject with no cursor yet, or one whose cursor started, or started again after a
+   * stream recreation, since the frame arrived) gets its notice at once instead of being dropped
+   * silently. The notice is the addressed session's: a frame that failed because the host moved
+   * on names a session that is no longer open, and nothing is shown or recorded for it then -
+   * the conversation the host moved to is told nothing of a message nobody sent it. It never
+   * rejects.
    */
   liveFailed(
+    sessionID: string,
     followed: string,
     envelope: ReplayNoticeEnvelope,
     error: unknown,
@@ -561,12 +570,19 @@ export function createReplayEngine(options: ReplayEngineOptions): ReplayEngine {
   // Without it, a change of nothing but the `after`s is the stream's end moving, held until the
   // state written is `REPLAY_STATE_REFRESH_MS` old. A change to the pending notices is a change of
   // more than the `after`s, so it is always written at once.
-  const flush = (alive: () => boolean, atOnce = false): Promise<void> => {
-    writes = writes.then(async () => {
-      if (!alive()) return;
+  //
+  // Answers whether what was owed when this call's turn came is in the host's hands: false says
+  // the session it is bound to had gone by then, or the host's write failed and the records it
+  // carried wait for the next write. True says the host took them, or that there was nothing left
+  // to write - an earlier queued write carried them, which is the same thing for the caller.
+  // `recordDeliveredFor` answers its caller with this, since the queue stands between the record
+  // and the write that keeps it.
+  const flush = (alive: () => boolean, atOnce = false): Promise<boolean> => {
+    const written = writes.then(async (): Promise<boolean> => {
+      if (!alive()) return false;
       const json = stateJSON();
       const delivered = unwritten;
-      if (json === writtenState && delivered.length === 0) return;
+      if (json === writtenState && delivered.length === 0) return true;
       const shape = stateJSON(false);
       if (
         delivered.length === 0 &&
@@ -575,7 +591,7 @@ export function createReplayEngine(options: ReplayEngineOptions): ReplayEngine {
         writtenAt !== undefined &&
         now() - writtenAt < REPLAY_STATE_REFRESH_MS
       ) {
-        return;
+        return true;
       }
       unwritten = [];
       const state = json === writtenState ? undefined : (JSON.parse(json) as ReplayState);
@@ -590,12 +606,15 @@ export function createReplayEngine(options: ReplayEngineOptions): ReplayEngine {
           writtenShape = shape;
           writtenAt = now();
         }
+        return true;
       } catch (error) {
         unwritten = [...delivered, ...unwritten];
         log("replay: could not persist the replay state; the next write carries it", error);
+        return false;
       }
     });
-    return writes;
+    writes = written.then(() => undefined);
+    return written;
   };
 
   const syncFollowed = () => {
@@ -1128,11 +1147,14 @@ export function createReplayEngine(options: ReplayEngineOptions): ReplayEngine {
     },
     async recordDeliveredFor(sessionID, frame) {
       const alive = bindTo(sessionID, writeSession)?.alive;
-      if (alive === undefined) return;
+      if (alive === undefined) return false;
       record(replayLedgerIdentity(frame));
-      await flush(alive);
+      // The write is queued behind the writes before it, and the host can move while it waits:
+      // the answer comes from the write itself, so a caller told true knows the record reached
+      // that session.
+      return await flush(alive);
     },
-    async liveFailed(followed, envelope, error, receivedAt) {
+    async liveFailed(sessionID, followed, envelope, error, receivedAt) {
       const started = cursorStarts.get(followed);
       if (
         !isRoleForward(envelope) &&
@@ -1142,8 +1164,16 @@ export function createReplayEngine(options: ReplayEngineOptions): ReplayEngine {
       ) {
         return;
       }
-      const alive = bind()?.alive;
-      if (alive === undefined) return;
+      // The notice belongs to the session the frame was addressed to, which is often the reason
+      // the frame failed: the host moved on, and that session is closed here now. Bound to it,
+      // nothing is shown and nothing is recorded, rather than a notice carded in the
+      // conversation the host moved to and a record of this frame in its transcript. The line
+      // below is what says here that nobody was told of the frame.
+      const alive = bindTo(sessionID, currentSession)?.alive;
+      if (alive === undefined) {
+        log("replay: a failed frame was not reported here; the session it names is closed");
+        return;
+      }
       try {
         await showFailureNotice(
           failureNotice(envelope, inboundTimestamp(envelope.issued_at), messageFor(error)),
