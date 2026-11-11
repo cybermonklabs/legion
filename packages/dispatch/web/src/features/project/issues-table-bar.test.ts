@@ -17,17 +17,16 @@ test("a segment is as wide as its share of the issues, and the segments fill the
   expect(widths.reduce((sum, width) => sum + width, 0)).toBeCloseTo(100, 6);
 });
 
-test("a count of one keeps a pressable width, and the bar is still exactly full", () => {
-  const widths = segmentWidths([997, 1, 1, 1]);
-  expect(widths.slice(1)).toEqual([3, 3, 3]);
+test("a one-issue segment keeps its proportional hairline width", () => {
+  const counts = [997, 1, 1, 1];
+  const widths = segmentWidths(counts);
+  expect(widths).toEqual(counts.map((count) => (100 * count) / 1000));
   expect(widths.reduce((sum, width) => sum + width, 0)).toBeCloseTo(100, 6);
-  // Fifteen phases, the most the Issues page draws: each is at least the floor of the bar, and
-  // the one big segment keeps the rest.
-  const many = segmentWidths([400, ...Array.from({ length: 14 }, () => 1)]);
-  expect(many.length).toBe(15);
-  expect(many.reduce((sum, width) => sum + width, 0)).toBeCloseTo(100, 6);
-  expect(Math.min(...many)).toBe(3);
-  expect(many[0]).toBeCloseTo(58, 6);
+  // On a 1,000 px bar each percentage point is 10 px, so this comparison is within one pixel.
+  const barWidth = 1000;
+  widths.forEach((width, index) => {
+    expect(Math.abs((width * barWidth) / 100 - counts[index])).toBeLessThanOrEqual(1);
+  });
 });
 
 test("an empty bar divides itself evenly rather than dividing by zero", () => {

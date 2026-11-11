@@ -256,28 +256,12 @@ export function Action({
   );
 }
 
-/**
- * Each segment's width as a percentage of the bar, from its row count. A segment is never below
- * `floorPercent`, while the remaining segments keep the rest in their original proportions.
- */
-export function segmentWidths(counts: readonly number[], floorPercent = 3): number[] {
+/** Each segment's width is its exact share of the counted rows. The legend remains the reachable
+ * control for a one-issue hairline. */
+export function segmentWidths(counts: readonly number[]): number[] {
   const total = counts.reduce((sum, count) => sum + count, 0);
   if (total <= 0) return counts.map(() => 100 / Math.max(counts.length, 1));
-  const widths = counts.map((count) => (100 * count) / total);
-  const atFloor = new Set<number>();
-  for (;;) {
-    const room = 100 - atFloor.size * floorPercent;
-    const rest = widths.reduce((sum, width, index) => (atFloor.has(index) ? sum : sum + width), 0);
-    const under = widths.findIndex(
-      (width, index) => !atFloor.has(index) && (rest <= 0 || (room * width) / rest < floorPercent)
-    );
-    if (under === -1) {
-      return widths.map((width, index) =>
-        atFloor.has(index) ? floorPercent : rest <= 0 ? room / widths.length : (room * width) / rest
-      );
-    }
-    atFloor.add(under);
-  }
+  return counts.map((count) => (100 * count) / total);
 }
 
 export function IssueTableStatus({
@@ -398,7 +382,7 @@ export function IssueTableStatus({
               data-count={count}
               key={value}
               onClick={() => pick(value)}
-              style={{ width: `${widths[index] ?? 0}%`, minWidth: 0, minHeight: 0 }}
+              style={{ width: `${widths[index] ?? 0}%`, minWidth: "1px", minHeight: 0 }}
               title={text}
               type="button"
             />
@@ -413,7 +397,7 @@ export function IssueTableStatus({
               <button
                 aria-label={detail === undefined ? `${label}: ${count}` : text}
                 aria-pressed={isPicked(value)}
-                className={`inline-flex min-h-11 items-center gap-1.5 rounded px-2 text-xs whitespace-nowrap md:min-h-7 ${surfaceMutedHoverBg} ${
+                className={`inline-flex min-h-11 min-w-0 items-start gap-1.5 rounded px-2 text-left text-xs whitespace-normal md:min-h-7 ${surfaceMutedHoverBg} ${
                   isPicked(value) ? `font-semibold ${textPrimaryOnCanvas}` : textSecondaryOnCanvas
                 } ${isLit(value) ? "" : "opacity-50"}`}
                 onClick={() => pick(value)}
@@ -421,9 +405,14 @@ export function IssueTableStatus({
               >
                 <span
                   aria-hidden="true"
-                  className={`size-3 shrink-0 rounded-sm ${stageClass(stage)}`}
+                  className={`mt-0.5 size-3 shrink-0 rounded-sm ${stageClass(stage)}`}
                 />
-                {text}
+                <span className="min-w-0">
+                  <span>{`${label} ${count}`}</span>
+                  {detail === undefined ? null : (
+                    <span className={`block ${textMutedOnCanvas}`}>{detail}</span>
+                  )}
+                </span>
               </button>
             </li>
           );
@@ -582,7 +571,9 @@ export function IssueTablePager<Row>({
       className={`flex min-w-0 grow flex-wrap items-center gap-x-3 gap-y-2 text-sm ${textSecondaryOnCanvas}`}
     >
       <span className="min-w-0">
-        {baseTotal > leafCount ? `${leafCount} of ${baseTotal}` : leafCount}{" "}
+        {baseTotal > leafCount
+          ? `${leafCount.toLocaleString()} of ${baseTotal.toLocaleString()}`
+          : leafCount.toLocaleString()}{" "}
         {baseTotal === 1 ? "issue" : "issues"}
         {grouping.length > 0 ? ` in ${groupCount} ${groupCount === 1 ? "group" : "groups"}` : ""}
       </span>

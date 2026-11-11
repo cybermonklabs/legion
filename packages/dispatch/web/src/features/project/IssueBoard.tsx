@@ -180,7 +180,9 @@ function IssueCard({ item, unread }: { item: Item; unread: boolean }): ReactNode
         {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
       >
         <span className="self-start font-semibold">{issue.key}</span>
-        <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
+        <span className={`mt-1 self-start line-clamp-2 break-words ${textPrimaryOnSurface}`}>
+          {issue.title}
+        </span>
       </Link>
       <CardLegion item={item} />
       <div className="mt-3 flex flex-wrap items-center gap-2">

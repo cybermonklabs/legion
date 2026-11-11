@@ -9,6 +9,7 @@ import {
   borderDefault,
   dangerText,
   focusVisibleRing,
+  stageClass,
   surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnCanvas,
@@ -61,7 +62,7 @@ import {
 import { layoutKeyOf, readPhaseMode, writePhaseMode } from "./issues-table-storage";
 import { useTableView } from "./issues-table-view";
 import { type BuiltInViewId, viewCount, viewOf } from "./issues-table-views";
-import { phaseHoursTotal } from "./PhaseHoursBar";
+import { PHASE_ORDER, phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread } from "./UnreadDot";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
@@ -77,6 +78,23 @@ const PHONE_PRIMARY: Record<BuiltInViewId, readonly ColumnId[]> = {
   finished: ["phase_hours", "work_hours"],
   mine: ["status"],
 };
+
+function FinishedPhaseLegend(): ReactNode {
+  return (
+    <ul
+      aria-label="Phase colours"
+      className="flex flex-wrap gap-x-3 gap-y-1 text-xs"
+      data-finished-phase-legend
+    >
+      {PHASE_ORDER.map((phase) => (
+        <li className="flex items-center gap-1" key={phase.id}>
+          <span aria-hidden className={`size-3 rounded-sm ${stageClass(`phase:${phase.id}`)}`} />
+          {phase.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 export function IssuesTable({
   project,
@@ -289,7 +307,7 @@ function IssuesTableContent({
     hasLegion,
     phase,
     timelineHref,
-    activeView.id === "waiting"
+    activeView.id === "waiting" || activeView.id === "in-flight"
   );
   const tableColumns = useMemo(
     () =>
@@ -738,6 +756,7 @@ function IssuesTableContent({
         />
       ) : (
         <>
+          {activeView.id === "finished" ? <FinishedPhaseLegend /> : null}
           <DataTable
             label="Project issues table"
             model={model}

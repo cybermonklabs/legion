@@ -7,10 +7,11 @@ import { InfoHint } from "../../components/InfoHint";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
-  borderDefault,
   checkboxAccent,
   linkHoverText,
   linkText,
+  surfaceMutedBg,
+  surfaceMutedStrongBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -363,7 +364,9 @@ const renderings = (
             {(["share", "hours"] as const).map((mode) => (
               <button
                 aria-pressed={phase.mode === mode}
-                className={`px-1 text-[0.625rem] ${phase.mode === mode ? borderDefault : ""}`}
+                className={`rounded px-1 text-[0.625rem] ${
+                  phase.mode === mode ? surfaceMutedStrongBg : surfaceMutedBg
+                }`}
                 key={mode}
                 onClick={() => phase.setMode(mode)}
                 type="button"
