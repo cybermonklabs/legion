@@ -67,6 +67,18 @@ const ASK_OPTIONS_CONTRACT =
   "Options carry the genuinely different approaches. Each option has a label, and its description " +
   "says what that approach costs.";
 
+/** Who an ask is for, written once so every text an agent reads says it the same way: the two
+ *  tool descriptions that open or edit one, and `skills/dispatch/SKILL.md`. An agent cannot
+ *  address an ask or hand one on, so neither this file nor a skill may tell it to. */
+export const ASK_IS_FOR_A_PERSON =
+  "An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.";
+
+/** Whom an open ask waits on, and who may move it: the companion of ASK_IS_FOR_A_PERSON, carried
+ *  by the same texts. The person it waits on is the server's `waiting_on_person`, which every ask
+ *  read carries. */
+export const ASK_WAITS_ON_THE_ASSIGNEE =
+  "An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.";
+
 const HUMAN_AGREED_TO_DOCUMENT = "the human has agreed to every point in the document";
 
 function documentOwnerValidation(
@@ -194,7 +206,7 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 };
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
@@ -211,6 +223,7 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly title?: unknown;
     readonly labels?: unknown;
     readonly priority?: unknown;
+    readonly assignee?: unknown;
     readonly external_links?: unknown;
     readonly route?: unknown;
     readonly parent?: unknown;
@@ -235,6 +248,8 @@ function issueUpdateProblem(value: unknown): string | undefined {
     Array.isArray(input.labels) ||
     typeof input.priority === "number" ||
     input.priority === null ||
+    typeof input.assignee === "string" ||
+    input.assignee === null ||
     Array.isArray(input.external_links) ||
     typeof input.route === "string" ||
     typeof input.parent === "string" ||
@@ -589,7 +604,8 @@ export const dispatchToolSpecs = [
     },
     description:
       "Update an existing issue: move its lifecycle status, retitle it, replace its labels, set " +
-      "its priority, link a URL (the pull request that delivers it, a run, a document), set its " +
+      "its priority, set or clear its assignee, link a URL (the pull request that delivers it, a " +
+      "run, a document), set its " +
       "route, set or clear its parent, replace the issues it is blocked by, attach it to " +
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
@@ -610,7 +626,10 @@ export const dispatchToolSpecs = [
       "a reopening status (any status but done), and an external_links write that adds no new " +
       "link (so a link can move to the issue that replaced it); everything else, priority " +
       "included, waits for the reopen. " +
-      "priority is yours to set and a human overrides it. before and after move the issue on " +
+      "priority is yours to set and a human overrides it. assignee is the person who answers " +
+      "this issue's asks, and every ask on it waits on them until a person hands that ask on. " +
+      "Passing null unassigns the issue. Set the assignee when a person said who owns the work, as you " +
+      "file the issue or hand it over. before and after move the issue on " +
       "its project's board: before puts it above that issue, after below, and both together " +
       "land it between them. A project's board order is one agent's to keep; in a Legion " +
       "deployment that is the controller. Never reassign an issue a person holds to get a " +
@@ -644,6 +663,13 @@ export const dispatchToolSpecs = [
         .nullable()
         .optional()
         .describe("Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."),
+      assignee: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); null unassigns the issue. Set it only when a person said who owns the issue, never to move a question off the person holding it."
+        ),
       external_links: z
         .array(z.string({ min: 1 }))
         .describe(
@@ -750,6 +776,7 @@ export const dispatchToolSpecs = [
       ],
     },
     description:
+      `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
       "live in. A question about the design an issue's document records is not this tool: write " +
       "it into that document as a decision block (dispatch doc-edit inserting an ask block at the " +
@@ -832,6 +859,7 @@ export const dispatchToolSpecs = [
       ],
     },
     description:
+      `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Edit an open question in place. Use it to correct or refine the same decision; retract the " +
       "old ask and open a new one when the decision itself changes. " +
       ASK_QUESTION_CONTRACT +
@@ -1085,6 +1113,52 @@ export const dispatchToolSpecs = [
       ),
     }),
     validation: messageValidation,
+  },
+  {
+    name: "dispatch_send_to_agent",
+    example: {
+      session: "01234567-0000-4000-8000-000000000001",
+      body: "DSP-1: the rota is nowhere written down. Please write it up.",
+      delivery: "aside",
+    },
+    description:
+      "Hand a piece of work to one agent session, in that session's own conversation, which belongs to no " +
+      "issue: the way to reach the agent already on the work - the session holding an issue's claim, or one " +
+      "you are working with. Name the issue in the body, because this message carries none. It is not how " +
+      "you reach a person (dispatch message, or dispatch ask for something only a person can do), and not a " +
+      "note on an issue (dispatch message --issue), which everyone reading that issue sees; this reaches that " +
+      "one session. It spends that session a turn, so send once and read the reply with " +
+      "dispatch read --message <id> rather than sending again. The call is answered once its first delivery " +
+      "attempt has settled. It needs a credential holding the person scope, and one without it is refused " +
+      `403 OAUTH_SCOPE_REQUIRED, naming the scope. ${BODY_BLOCK_RULE}`,
+    arguments: (z) => ({
+      session: z
+        .string({ min: 1 })
+        .describe(
+          "The session to send to, by its bare session id. An issue's claim names the session holding it, " +
+            "and dispatch whoami names this session's own."
+        ),
+      body: z
+        .string({ min: 1 })
+        .describe(
+          `The words the session reads. Name the issue they are about: this message carries none. ${BODY_BLOCK_RULE}`
+        ),
+      delivery: z
+        .enum(["btw", "aside", "steer"])
+        .describe(
+          "How the words reach the session: btw waits for its next turn, aside reaches it while a turn " +
+            "runs, and steer goes in as a keystroke at its terminal. A session advertises the modes it " +
+            "takes, and Dispatch sends the mode you name rather than another."
+        ),
+      in_reply_to: z
+        .string()
+        .describe(
+          "Optional id of a message in this same session-to-session conversation, threading this message " +
+            "under it; without it the message starts a conversation of its own."
+        )
+        .optional(),
+    }),
+    strict: true,
   },
   {
     name: "dispatch_doc_edit",

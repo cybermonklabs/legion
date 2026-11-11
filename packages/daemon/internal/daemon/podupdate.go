@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -623,13 +624,16 @@ func (s *supervision) replacementDue(issue, round, pod string, checked *pushChec
 }
 
 // The push check's bounds: one workspace's check and push, and the whole check of a pod's disk.
-// The whole bound is what replacePodForRound adds to the replacement's own, since the check runs
-// inside it. rescueAnswerMargin is what the shim's bound leaves of the time the replacement has
-// left, for the answer to cross the stream: a check bounded at the whole of that time would be
-// read as a failure the moment it finished, and would run on in the pod beside the next one.
+// Both are internal/rescue's own, derived there from the reserve the guard leaves the push
+// (rescue.GuardReserve, which holds the second run of the shared check a pod's pre-push hook
+// makes) — so a reserve that grows moves them, which a literal here would not. The whole bound
+// is what replacePodForRound adds to the replacement's own, since the check runs inside it.
+// rescueAnswerMargin is what the shim's bound leaves of the time the replacement has left, for
+// the answer to cross the stream: a check bounded at the whole of that time would be read as a
+// failure the moment it finished, and would run on in the pod beside the next one.
 const (
-	rescueWorkspaceTimeout = 2 * time.Minute
-	rescueTimeout          = 5 * time.Minute
+	rescueWorkspaceTimeout = rescue.WorkspaceTimeout
+	rescueTimeout          = rescue.Timeout
 	rescueAnswerMargin     = 30 * time.Second
 )
 

@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import type { Ask, Issue } from "../web/src/api/types";
 import {
   answerAsk,
@@ -18,7 +16,7 @@ import {
   listScrollTop,
   selectedRow,
 } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -29,10 +27,6 @@ const session = {
   },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Issue titles sharing no terms, so the server's duplicate check never refuses a seed. There
 // are enough of them to fill a list past the bottom of the viewport at 1280 px, where the rows
@@ -307,7 +301,8 @@ test("the reader's own Ask back leaves the view still and holds the row only whe
   }
 });
 
-test("the row at the viewport centre stays put when a P0 ask arrives above it", async ({
+// @pr: A delivery arriving: a P0 ask landing above the reader must not move the row they are reading.
+test("the row at the viewport centre stays put when a P0 ask arrives above it @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

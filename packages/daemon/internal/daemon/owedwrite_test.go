@@ -13,6 +13,13 @@ package daemon
 // rather than rebuilt because supervise.NewMachine copies the Deps it is given: a machine reads
 // the store it was built with for the whole of its life, so taking the database away under a
 // live claim means handing that one store another target.
+//
+// That same copying is why Timeouts.ClaimWrite is one value for every machine of a supervision,
+// and why what a row names there bounds the faults alone. The real store is handed out through
+// detachedWrites, which takes that deadline off every write that reaches the database, so a
+// figure a row names is measured against the store that withholds its answer and against nothing
+// else: a healthy write to a real database is not that store, and is never cut short by a bound
+// chosen to be short enough for a test to wait out.
 
 import (
 	"context"
@@ -51,6 +58,13 @@ const (
 	owedWriteFailedLine = "supervise: a claim write the database did not take"
 	owedWriteMadeLine   = "supervise: a claim write the database did not take was made"
 )
+
+// unmeasuredClaimWrite is Timeouts.ClaimWrite for the rows that put no withholding store in the
+// way of the write they drive. Such a row measures nothing against it, because every write that
+// reaches the database runs with that deadline off it (detachedWrites), so nothing in those
+// rows waits this out. It is named rather than written as a figure at each row so that no reader
+// takes it for a bound something there is waiting out.
+const unmeasuredClaimWrite = 250 * time.Millisecond
 
 // loggedMessage is how one of those lines is found in a machine's log: slog's message field,
 // whole. The made line begins with the failed one, so a search for the failed line's text alone
@@ -109,6 +123,73 @@ func (s *switchStore) RetireDelivery(ctx context.Context, c supervise.Claim, del
 
 func (s *switchStore) PutClaimStep(ctx context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
 	return s.now().PutClaimStep(ctx, token, step)
+}
+
+// detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs
+// with the claim-write deadline off it. The bound a row names is the bound of a store that
+// withholds its answer, and a healthy write to a real database is not that store. One value
+// cannot do both jobs: supervise.NewMachine copies its Deps, so every machine of a supervision
+// takes the same Timeouts.ClaimWrite and no row can change it for one write and not another. The
+// two jobs are therefore separated by store target rather than by row — the faults keep the
+// short bound, and what reaches the database runs under no deadline of the rig's.
+//
+// What the bound cost a healthy write, measured in this pod on 2026-11-10: 1,000 iterations of
+// TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp under four busy loops on two
+// CPUs with -race ran the bounded real PutClaim at min 4.8 ms, p50 10.9 ms, p90 33.0 ms, p99
+// 53.3 ms, p99.9 166.8 ms, max 271.9 ms. The one write that went over 250 ms failed its row with
+// "put claim legion-legion-legion-1132-architect: timeout: context deadline exceeded", which is
+// the incident's own message (merge-group run 42728062336, test job 129538832017).
+//
+// AdmitClaim and CheckLaunch are not overridden: they carry no deadline, by Machine.write's own
+// decision. Neither is PutClaimStep, which Machine.putStep calls on the store directly and so
+// never passes through Machine.write at all. The embedded store serves all three.
+type detachedWrites struct{ supervise.Store }
+
+func (s detachedWrites) PutClaim(ctx context.Context, c supervise.Claim) error {
+	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.PutClaim(ctx, c) })
+}
+
+func (s detachedWrites) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
+	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.PutDelivery(ctx, token, d) })
+}
+
+func (s detachedWrites) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
+	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.PutClaimAndDelivery(ctx, c, d) })
+}
+
+func (s detachedWrites) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
+	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.RetireDelivery(ctx, c, deliveryID) })
+}
+
+// withoutTheClaimWriteDeadline runs call on a context that keeps the values of ctx and drops
+// every deadline ctx carries. In these rows the only one is Timeouts.ClaimWrite, which
+// Machine.write installs, and not Deps.Clock, which this file also sets; a deadline of a parent
+// would go with it, and the guard below would not cancel on that one either.
+// context.WithTimeout is no alternative, whatever value it were given: it takes the earlier of
+// parent and child, so nothing lengthens a deadline the machine has already installed. The
+// deadline has to be left behind, and the cancellation picked up again, which is what the
+// AfterFunc does: a cancellation of the decision's context would still end the write under it at
+// once, as it did before the detach.
+//
+// No row here makes that cancellation. The rig's context is context.Background() and its stop
+// cancels nothing, so the only thing that ends a write's context in these rows is the machine's
+// own deadline, and the AfterFunc's cancel branch is never reached. The guard on
+// context.DeadlineExceeded is kept all the same: without it the AfterFunc would fire on that
+// deadline too and cancel the write, which is the whole of what this function takes off, and a
+// detach that dropped cancellation altogether would be a hole rather than a re-armed one.
+//
+// Its residue, for whoever does cancel: once a write has run past the claim-write deadline, a
+// cancellation of the parent no longer reaches it, because the AfterFunc has already run.
+func withoutTheClaimWriteDeadline(ctx context.Context, call func(context.Context) error) error {
+	writing, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancel()
+	stop := context.AfterFunc(ctx, func() {
+		if ctx.Err() != context.DeadlineExceeded {
+			cancel()
+		}
+	})
+	defer stop()
+	return call(writing)
 }
 
 // claimWriteFault is a fault on every claim write of one claim: the writes of that token answer
@@ -180,6 +261,61 @@ func brokenConnection() *pgconn.PgError {
 	return &pgconn.PgError{Code: "08006", Message: "server closed the connection unexpectedly", Severity: "FATAL"}
 }
 
+// slowClaimWrite is a database that is merely slow rather than away: one token's claim writes
+// wait by in the server before the store behind takes them, and every other call goes straight
+// through. The three it waits on are the three claimWriteFault answers for its token, so which
+// of them a decision makes decides nothing here. The wait is a real statement (pg_sleep) on the
+// write's own context rather than a timer beside it, so what the deadline meets is what it met
+// in the incident: a server that has taken a statement and not answered yet. A deadline that
+// fires there is pgconn's own timeout, so the row reads the incident's "timeout: context
+// deadline exceeded" rather than the bare "context deadline exceeded" that a context already
+// expired before the call gives. The "put claim <token>: " the incident's line carries as well
+// is store.Store.PutClaim's own wrap, which this error does not pass through.
+//
+// It stands behind a detach, nearest the database, because what it stands for is the database
+// call itself; in front of the detach it would run on the machine's own claim-write deadline and
+// be cut short whether or not the detach is there, which would prove nothing about either. A
+// cancellation of the write's context still ends the wait, because the statement runs on that
+// context.
+type slowClaimWrite struct {
+	supervise.Store
+	// pool is the test's own connection to the same database, which is what makes the wait a
+	// statement of the server's rather than a timer of the test's.
+	pool  *pgxpool.Pool
+	token claim.Token
+	by    time.Duration
+}
+
+// wait is the server holding this write, for the token's writes alone.
+func (s slowClaimWrite) wait(ctx context.Context, token claim.Token) error {
+	if token != s.token {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, "select pg_sleep($1)", s.by.Seconds())
+	return err
+}
+
+func (s slowClaimWrite) PutClaim(ctx context.Context, c supervise.Claim) error {
+	if err := s.wait(ctx, c.Token); err != nil {
+		return err
+	}
+	return s.Store.PutClaim(ctx, c)
+}
+
+func (s slowClaimWrite) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
+	if err := s.wait(ctx, c.Token); err != nil {
+		return err
+	}
+	return s.Store.PutClaimAndDelivery(ctx, c, d)
+}
+
+func (s slowClaimWrite) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
+	if err := s.wait(ctx, c.Token); err != nil {
+		return err
+	}
+	return s.Store.RetireDelivery(ctx, c, deliveryID)
+}
+
 // owedWriteRig is one supervision over a real store: the claims seeded in a database of the
 // test's own, restored as a boot restores them, each machine's events driven by hand.
 type owedWriteRig struct {
@@ -187,10 +323,12 @@ type owedWriteRig struct {
 	ctx context.Context
 	// pool is the test's own connection to the same database, for reading what the store holds
 	// without asking the supervision.
-	pool   *pgxpool.Pool
-	st     *store.Store
-	sup    *supervisor
-	store  *switchStore
+	pool  *pgxpool.Pool
+	st    *store.Store
+	sup   *supervisor
+	store *switchStore
+	// real is the real store as the rig hands it out, with the claim-write deadline off its writes.
+	real   supervise.Store
 	tokens map[claim.Role]claim.Token
 	// logs is what the machines wrote, which is where a write the database did not take is
 	// reported: the mark itself is supervise's own memory, and the log line is what internal/daemon
@@ -229,6 +367,7 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 	}
 	t.Cleanup(st.Close)
 	rig := &owedWriteRig{t: t, ctx: ctx, pool: pool, st: st, tokens: tokens, write: write}
+	rig.real = detachedWrites{Store: st}
 	rig.boot()
 	return rig
 }
@@ -240,7 +379,7 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 func (r *owedWriteRig) boot() {
 	r.t.Helper()
 	logs := &syncBuffer{}
-	switcher := &switchStore{target: r.st}
+	switcher := &switchStore{target: r.real}
 	sup := newSupervisor(r.ctx, r.st, owedProject, r.t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: switcher, Specs: outboxSpecs{},
@@ -318,19 +457,28 @@ func (r *owedWriteRig) stored(role claim.Role) supervise.ClaimState {
 // refuse puts a store in place that answers role's claim writes with err.
 func (r *owedWriteRig) refuse(role claim.Role, err error) {
 	r.t.Helper()
-	r.store.use(refusing(r.st, r.token(role), err))
+	r.store.use(refusing(r.real, r.token(role), err))
 }
 
 // block puts a store in place whose claim writes for role never answer.
 func (r *owedWriteRig) block(role claim.Role) {
 	r.t.Helper()
-	r.store.use(blocked(r.t, r.st, r.token(role)))
+	r.store.use(blocked(r.t, r.real, r.token(role)))
 }
 
 // answers puts the real store back: the database is reachable again.
 func (r *owedWriteRig) answers() {
 	r.t.Helper()
-	r.store.use(r.st)
+	r.store.use(r.real)
+}
+
+// slow puts a database that is merely slow in place of the real one: role's claim writes wait by
+// in the server, and the real store takes them after that. The slow store is composed under a
+// detach of its own, so it stands where the real store stands — behind the detach, nearest the
+// database — and never in front of it.
+func (r *owedWriteRig) slow(role claim.Role, by time.Duration) {
+	r.t.Helper()
+	r.store.use(detachedWrites{Store: slowClaimWrite{Store: r.st, pool: r.pool, token: r.token(role), by: by}})
 }
 
 // owedTurnStart is the measured incident over a real store: the agent's turn started, the claim
@@ -360,9 +508,11 @@ func (r *owedWriteRig) owedTurnStart(role claim.Role) {
 // which is what every other claim's event and every read of this claim then waits for
 // (TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken).
 func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t *testing.T) {
-	// The bound a decision is measured against, and the bound that catches a wait which is not
-	// bounded at all: the blocked store never answers, so an unbounded decision returns at no
-	// time this test could name.
+	// The bound this row measures, and the bound that catches a wait which is not bounded at all:
+	// the blocked store never answers, so an unbounded decision returns at no time this test
+	// could name. What claimWrite bounds is the write put to that blocked store and nothing
+	// else — what reaches the real database runs with that deadline off it (detachedWrites) —
+	// so it is free to be short enough for a test to wait out.
 	const claimWrite = 250 * time.Millisecond
 	const unbounded = 10 * time.Second
 	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
@@ -416,6 +566,9 @@ func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t
 // claim, a read of it, and the stop all wait on, and a decision that waits out the connection's
 // own patience holds every one of them for the length of the outage.
 func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T) {
+	// claimWrite is what the architect's blocked writes are measured by, and all that it is: the
+	// implementer's writes and this row's own repair reach the real database, which the rig hands
+	// out with the claim-write deadline off it (detachedWrites).
 	const claimWrite = 500 * time.Millisecond
 	// answered is what each wait here is measured against: several claim-write bounds, and far
 	// less than the outage, which never ends. The daemon's own stop allows its whole shutdown 15
@@ -508,8 +661,7 @@ func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T)
 // it. The next boot reads the stored row, takes the claim up from it, and the claim decides
 // again.
 func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T) {
-	const claimWrite = 250 * time.Millisecond
-	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
+	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
 	rig.refuse(claim.RoleArchitect, brokenConnection())
 	rig.owedTurnStart(claim.RoleArchitect)
 
@@ -537,6 +689,55 @@ func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T)
 	}
 }
 
+// No write that reaches the real database in this file is decided by a clock the rig sets, and
+// nothing else in the file pins that: every other row puts a store in the way that withholds its
+// answer, so the bound those rows name is measured against that store and never against the
+// database. Here the database is only slow — it answers, four times later than the bound the row
+// names — and the turn start whose write it takes must still be taken whole.
+//
+// This is the restart row with a slow database rather than a fresh rig with one, because that is
+// the shape CI met the defect in: the first decision write after a boot. The refusal, the stop
+// and the boot before the measured write cost a fifth of a second and leave the claim restored
+// ready, which a fresh rig would leave too.
+//
+// The row reads the clock as well as the claim, and that reading is the row's own guard: a turn
+// start that returns quickly never reached the slow database, so the write it made proves
+// nothing about a bound, and the row says so rather than passing. slowClaimWrite waits on all
+// three of a token's claim writes, so no decision of this shape can step past it, and the
+// reading catches a fourth path if one is ever added.
+//
+// The 250 ms is the incident's own figure, and this is the only row where it bounds a write a
+// real database takes: the 250 ms at unmeasuredClaimWrite is a figure nothing waits out, and the
+// one in TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering is measured
+// against a store that never answers. It is what makes this row red with the detach removed,
+// whatever bound the other rows name. A row taking production's own 5 s default instead would
+// swallow the delay and prove nothing.
+func TestARealWriteTheDatabaseIsSlowToTakeIsNotCutShortByTheRowsBound(t *testing.T) {
+	const claimWrite = 250 * time.Millisecond
+	const slow = 4 * claimWrite
+	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
+	rig.refuse(claim.RoleArchitect, brokenConnection())
+	rig.owedTurnStart(claim.RoleArchitect)
+
+	rig.sup.stop()
+	rig.boot()
+	rig.slow(claim.RoleArchitect, slow)
+
+	began := time.Now()
+	err := rig.handle(claim.RoleArchitect, rig.turnStart(claim.RoleArchitect))
+	took := time.Since(began)
+
+	if err != nil {
+		t.Fatalf("the restored architect's turn start, whose write the database took %s over = %v, want none: a bound of the rig's cut a healthy write short", slow, err)
+	}
+	if took < slow {
+		t.Fatalf("the restored architect's turn start returned after %s, sooner than the %s the slow database holds a claim write: its write never reached that database, so this row measured nothing", took, slow)
+	}
+	if got := rig.stored(claim.RoleArchitect); got != supervise.StateWorking {
+		t.Fatalf("the restored architect's row reads %s after a turn started, want working", got)
+	}
+}
+
 // The report a decision owed reaches the daemon itself, and not only the machine's callback. A
 // claim whose ready the store did not take tells the daemon nothing at the time — the fact the
 // daemon would act on is one the row does not hold — and once the repair has made the write, the
@@ -546,8 +747,7 @@ func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T)
 // did with the report: written in the transaction that applies the fact, keyed on the claim and
 // the generation the report named (terminalEventID), and never written by anything else.
 func TestTheOwedReportsReachTheDaemonOnceTheRepairLands(t *testing.T) {
-	const claimWrite = 250 * time.Millisecond
-	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateRegistered})
+	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateRegistered})
 	// The daemon's own durable-state path over the rig's real pool, as the workflow installs it
 	// on every machine of its supervisor (workflowRuntime.attach).
 	workflow := &workflowRuntime{pool: rig.pool, records: record.NewStore(), log: quietLogger()}

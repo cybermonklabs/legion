@@ -16,10 +16,10 @@ import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
-/** The Dispatch server a process of `env`'s lane addresses: the deployed server `env` names, else
- *  the harness server of that lane, whose port e2e/run.ts exports from the server's report before
- *  anything imports this module (e2e/harness-ports.ts). `e2e/preflight.ts` resolves another
- *  lane's the same way this one resolves its own. */
+/** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
+ *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
+ *  environment of every worker before the worker imports this module (e2e/harness-ports.ts).
+ *  `e2e/global-setup.ts` resolves another stack's the same way this one resolves its own. */
 export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
   return env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
 }
@@ -38,8 +38,9 @@ const seedActor: Actor = { kind: "session", id: "e2e-seed" };
 interface ApiOptions {
   actor?: Actor;
   as?: "agent" | "user";
-  /** The Dispatch server the call goes to; this module's `baseUrl`, the lane of the process that
-   *  imported it, when absent. Only e2e/preflight.ts names another: it checks every lane. */
+  /** The Dispatch server the call goes to; this module's `baseUrl`, the stack of the process
+   *  that imported it, when absent. Only e2e/global-setup.ts names another: it checks every
+   *  stack. */
   baseUrl?: string;
   /** The `Idempotency-Key` header the write carries, naming one intent: a repeat under it is
    *  answered what the first was answered. None when absent, which Dispatch handles unkeyed. */
@@ -435,6 +436,28 @@ export function recordCheckResult(
   options: ApiOptions = { as: "agent" }
 ) {
   return post("/api/v1/issues/{key}/results", { body: input, params: { key: issue } }, options);
+}
+
+/** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
+ *  document order, each with the results recorded against it. */
+export function getIssueResults(issue: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/results", { params: { key: issue } }, options);
+}
+
+/** `POST /api/v1/settings/new-issue/_test`: what the bar files a person's unmatched typed words
+ *  as, in place of what the server's environment set. Test-only endpoint (mounted when
+ *  DISPATCH_TEST_HOOKS=1, see run-server.sh); the server starts with both unset, and no
+ *  deployment setting can change while it runs. */
+export function setNewIssueSettings(
+  input: { label: string; session: string },
+  options: ApiOptions = {}
+): Promise<{ label: string; session: string }> {
+  return request<{ label: string; session: string }>(
+    "/api/v1/settings/new-issue/_test",
+    "POST",
+    input,
+    options
+  );
 }
 
 /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */

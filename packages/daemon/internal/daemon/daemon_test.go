@@ -284,8 +284,10 @@ func heldConsumers(consumers *intake.Consumers) *natsHolder {
 	return &natsHolder{consumers: consumers, log: quietLogger()}
 }
 
-// stillClock is time that never moves: the machines' timers are armed and never fire, so a test
-// sees only what it drove.
+// stillClock is a clock whose timers never fire: the machines arm them and nothing calls them
+// back, and a Sleep returns at once, so a test sees only what it drove. Its Now is the wall
+// clock, so what is due by the time of day — an outbox row's next_at — still comes due as the
+// run goes on.
 type stillClock struct{}
 
 func (stillClock) Now() time.Time { return time.Now() }
@@ -589,9 +591,9 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the retry = %+v, %v; want it accepted", result.Refusal, err)
 	}
-	// A phase worker's start is two outbox rows (workflow.StartOrOwe): the relaunch, which brings
-	// the held role's session back carrying no task, and the row that carries its task. Both are
-	// lifecycle rows of the issue, so the suspend under a live lease holds both of them.
+	// A phase worker's start is one outbox row, which brings the held role's session back and
+	// carries its task (workflow.StartOrOwe). It is a lifecycle row of the issue, so the suspend
+	// under a live lease holds it.
 	var starts []int64
 	rows, err := st.Pool().Query(ctx, "select id from outbox where issue = $1 and kind = $2 and payload->>'op' = 'start' order by id", issue, string(record.OutboxKindSupervise))
 	if err != nil {
@@ -608,14 +610,14 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the retry's start rows: %v", err)
 	}
-	if len(starts) != 2 {
-		t.Fatalf("the retry queued %d start rows, want its relaunch and its task", len(starts))
+	if len(starts) != 1 {
+		t.Fatalf("the retry queued %d start rows, want the one that carries its task", len(starts))
 	}
 
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	got := d.state().HeldOutboxRows
 	if len(got) != len(starts) {
-		t.Fatalf("heldOutboxRows = %+v, want the retry's two start rows alone", got)
+		t.Fatalf("heldOutboxRows = %+v, want the retry's one start row alone", got)
 	}
 	for i, id := range starts {
 		if got[i].WaitedSeconds < 0 {
@@ -931,7 +933,13 @@ func repositoriesGitHub(t *testing.T) string {
 	}})
 }
 
-// stop cancels the daemon and requires it to return cleanly.
+// stop cancels the daemon and requires it to return cleanly. What it waits for is a run that
+// never returns, not a measurement of how long the stop took: no row of its callers reads the
+// elapsed time, so the wait is stopHangGuard(stopBudget) rather than the contract itself,
+// stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
+// bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
+// few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
+// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -945,7 +953,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stopHangGuard(stopBudget)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }
@@ -1632,21 +1640,18 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 	return cfg
 }
 
-// workflowJetStream is the connect this package's stream helpers share: the client, closed when
-// t ends, and a JetStream handle on it. notificationsStreamOn is this plus the shape this
-// project's durable consumers are opened on. Other tests of the package still dial the server
-// themselves.
+// workflowJetStream is the connect this package's stream helpers share: the client the test
+// fixture names, closes when t ends and leak-checks (testnats.Connect), and a JetStream handle
+// on it. notificationsStreamOn is this plus the shape this project's durable consumers are
+// opened on. Other tests of the package still dial the server themselves.
 //
-// The connect is given 5 s, for every caller of this helper. A timeout is a bound and not a
-// wait, so the wider one costs a passing test nothing; the second it replaced here only decided
-// a server this pod is slow to answer, where a second is a flake and not a finding.
+// The connect is given 5 s, for every caller of this helper, which is the one option it passes
+// the fixture: the fixture leaves the dial's own budget to its caller. A timeout is a bound and
+// not a wait, so the wider one costs a passing test nothing; the second it replaced here only
+// decided a server this pod is slow to answer, where a second is a flake and not a finding.
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
-	conn, err := nats.Connect(natsURL, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the NATS server at %s: %v", natsURL, err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, natsURL, nats.Timeout(5*time.Second))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream on %s: %v", natsURL, err)

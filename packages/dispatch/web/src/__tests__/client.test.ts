@@ -803,6 +803,35 @@ test("API client searches with the documented query parameters", async () => {
     "/api/v1/search?q=astrolabe&project=LEGION&limit=5",
   ]);
 });
+test("a search of the members every build reads goes to /api/v1/search", async () => {
+  const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
+  const api = createApiClient(stub.fetch);
+
+  await api.search("astrolabe");
+  await api.search("astrolabe", { project: "LEGION", limit: 5, offset: 10 });
+
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/search?q=astrolabe",
+    "/api/v1/search?q=astrolabe&project=LEGION&limit=5&offset=10",
+  ]);
+});
+// The bar's own filters ask for a path of their own: a Dispatch released before them answers it
+// `404 no route`, which is a refusal, where it answers `/api/v1/search` `200` with the filter
+// dropped, which is unnarrowed rows under the filters a person chose.
+test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/search/results", async () => {
+  const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
+  const api = createApiClient(stub.fetch);
+
+  await api.search("astrolabe", { status: "in_progress" });
+  await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
+  await api.search("astrolabe", { author: "sami@theorem.dev", updated_since: "2026-11-01" });
+
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/search/results?q=astrolabe&status=in_progress",
+    "/api/v1/search/results?q=astrolabe&number_project=INFRA&keywords_only=true",
+    "/api/v1/search/results?q=astrolabe&author=sami%40theorem.dev&updated_since=2026-11-01",
+  ]);
+});
 test("API client reaches project artifact and owner-scoped document endpoints", async () => {
   const stub = stubFetch((request) =>
     request.path.startsWith("/api/v1/artifacts/artifact-1/asks?")

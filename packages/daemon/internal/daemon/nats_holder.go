@@ -231,13 +231,21 @@ func (h *natsHolder) close() {
 // openNATS is how the daemon opens a connection and this project's durable consumers from a
 // configuration: boot's own path (workflowRuntime.connect) and the holder's rebuild run it, so
 // the two can never settle differently. It reads the daemon's nkey seed again (readNATSConnection),
-// which is how a rotated seed reaches the connection.
+// which is how a rotated seed reaches the connection, and names the connection
+// `legion-daemon <project>`, so an operator reading /connz on the Envoy NATS can place every
+// connection this daemon holds, a rebuild's new one among them (natsauth.Connect).
+//
+// A failure closes whatever it opened and reports nothing half-open, so a later call — a boot
+// retried after an unreachable NATS, or the next rebuild — starts clean rather than leaking the
+// connection this one could not finish setting up. Close comes before natsauth.WithLastError on
+// both failure paths, never after: WithLastError only looks once the connection reports itself
+// closed, and Close does not clear what the connection last recorded.
 func openNATS(ctx context.Context, w *workflowRuntime, cfg config.Config, lookup func(string) (string, bool), spec intake.ConsumerSpec) (*nats.Conn, *intake.Consumers, error) {
 	nc, err := readNATSConnection(cfg, lookup)
 	if err != nil {
 		return nil, nil, err
 	}
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect Envoy NATS: %w", err)
 	}

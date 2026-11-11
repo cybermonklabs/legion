@@ -38,9 +38,9 @@ type setting struct {
 
 // settings is every Dispatch setting, in the order an operator meets them: storage, identity,
 // where the server listens and how many document rooms and connections it holds, NATS, the Envoy
-// listener, projects, the GitHub App, cookies, service-account tokens, the secrets broker, meaning
-// search's model service, the model the server generates text with, the dashboard, and local and
-// test runs.
+// listener, projects and the issues the search bar files, the GitHub App, cookies,
+// service-account tokens, the secrets broker, meaning search's model service, the model the
+// server generates text with, the dashboard, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
@@ -104,6 +104,10 @@ var settings = []setting{
 		Description: "Comma-separated `owner/repo=KEY` mappings seeded at startup; a mapping saved in the dashboard wins."},
 	{Name: "DISPATCH_DEFAULT_PROJECT", Required: "no",
 		Description: "Project an external issue from an unmapped repository is created in; it must already exist."},
+	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
+		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
+	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
+		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the bar sets the issue's route to it and posts the person's words to it as the issue's first message."},
 	{Name: "DISPATCH_APP_CLIENT_ID", Required: "no",
 		Description: "GitHub App client ID, which names the App in the JWT its private key signs. Set, the App comes from the `DISPATCH_APP_*` variables instead of `~/.local/share/dispatch/app.json`."},
 	{Name: "DISPATCH_APP_PEM_B64", Required: "no",
@@ -186,6 +190,10 @@ var settings = []setting{
 		Description: "How long a test process's stored listener answer serves issue reads' `route_status` and `GET /api/v1/agents`; a positive Go duration. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW", Default: "`12s`", Required: "no",
 		Description: "How long a test process's sender keeps trying a listener that is being replaced before a send to a session that is gone settles failed; a positive Go duration. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HORIZON_STALL_AFTER", Default: "`5s`", Required: "no",
+		Description: "How long a test process's pending event-horizon observation waits before the process logs its stall warning, in place of the five seconds a deployment waits; a positive Go duration, for an end-to-end test whose own wait keys on that warning. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HORIZON_WARN_EVERY", Default: "`30s`", Required: "no",
+		Description: "How often a test process repeats each of its three event-horizon warnings (the stall warning while the stall stands, the failed-observation warning and the failed-persist warning), in place of the thirty seconds a deployment repeats them at; a positive Go duration, for an end-to-end test whose own wait keys on the stall warning. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_EDIT_NOTICE_QUIET", Default: "`30s`", Required: "no",
 		Description: "How long a document stays quiet after a person's last settled version before its `artifact.human_edited` notice goes, for an end-to-end test process; a positive Go duration. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_ROSTER_UNCACHED", Required: "no",

@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   createAsk,
   createComment,
@@ -22,14 +20,10 @@ import {
   selectEditorText,
 } from "./editor";
 import { commentWithBody } from "./margin-helpers";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const initialMarkdown = "The quick brown fox";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Bob comments on "quick brown"; Alice starts a comment on "brown" and cancels it, then comments on
 // "brown". Each record mark keeps its own text in both browsers and in the server's reading of the
@@ -37,7 +31,8 @@ test.beforeEach(async () => {
 // than cutting it to "quick ".
 // SLOW(>=2s): two browser contexts, three composer round trips and the typed paragraph whose
 // settlement writes the version that refreshes both anchors - the refresh is the property.
-test("two readers' comments can cover the same text, and neither cuts the other's anchor", async ({
+// @pr: A two-context race: two readers' comments cover the same text, and the version's anchor refresh must cut neither.
+test("two readers' comments can cover the same text, and neither cuts the other's anchor @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

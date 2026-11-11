@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -123,11 +124,12 @@ func podQOS(spec corev1.PodSpec) corev1.PodQOSClass {
 // and memory and bursts past neither: each has a non-zero request for both, equal to its limit,
 // which is the kubelet's rule for the Guaranteed class — judged over every container of the pod,
 // the init containers included — and each is bounded on the node's disk, an ephemeral-storage
-// request under its limit. An issue pod's one container and its two init containers carry the
-// issue pod's reservation, whichever role's launch creates it; the controller's pod carries the
-// controller's on its one container; and the image probe's one container carries the probe's own,
-// which the daemon hands it. A deployment with no `resources` block therefore runs only Guaranteed
-// pods.
+// request under its limit. An issue pod's one container and its two init containers — three where
+// the deployment names a `skills_repository`, which TestASkillsRepositoryAddsTheSkillsInitContainer
+// proves — carry the issue pod's reservation, whichever role's launch creates it; the controller's
+// pod carries the controller's on its one container; and the image probe's one container carries
+// the probe's own, which the daemon hands it. A deployment with no `resources` block therefore runs
+// only Guaranteed pods.
 func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -895,6 +897,35 @@ func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
 	}
 }
 
+// Every role of every pod is told the shared public leak check its own pod installs, at one path:
+// the installer's constant (leakguard.InstalledCheck), under the scratch the roles of the pod
+// share. The runtime names the path and the shim's install writes it, so a constant of the
+// installer's is what keeps the two from drifting into a role told a check nothing ever put
+// there — every write path of that role resolves PUBLIC_LEAK_CHECK first and refuses when the
+// file is not there. It is under the scratch because that is the place of the pod's disk every
+// role is told the same of and nothing outlives the pod: a check that publishes as often as this
+// one is fetched per pod and never cached past it. The controller's pod is in the cases here
+// too: it writes to GitHub as a role does, and its one container mounts the same volume at
+// TreeRoot.
+func TestEveryRoleIsToldTheLeakCheckItsPodInstalls(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(leakguard.InstalledCheck, scratchRoot+"/") {
+		t.Errorf("the install puts the check at %s, want it under the issue's scratch %s", leakguard.InstalledCheck, scratchRoot)
+	}
+	for name, tc := range manifestCases(t) {
+		main := workerOf(t, r, tc.spec)
+		if told := envOf(main)["PUBLIC_LEAK_CHECK"]; told != leakguard.InstalledCheck {
+			t.Errorf("%s is told PUBLIC_LEAK_CHECK=%q, want the installed check %q", name, told, leakguard.InstalledCheck)
+		}
+		if mount := mountHolding(main, leakguard.InstallDir); mount == nil || mount.Name != issueVolume || mount.SubPath != "" {
+			t.Errorf("%s: the install directory %q is on mount %+v, want the pod's own volume mounted at %s", name, leakguard.InstallDir, mount, TreeRoot)
+		}
+	}
+}
+
 // Every directory the runtime tells a role to write in is one the shim makes, and every directory
 // the shim makes is one the runtime names. The shim reads its list from podsafety.ScratchVariables
 // and the runtime renders roleEnvironment, so without this the two could drift silently: a role
@@ -919,14 +950,17 @@ func TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes(t *testing.T) {
 			t.Errorf("the shim makes %s, which the runtime sets to %q; want an absolute path under %s", name, dir, TreeRoot)
 		}
 	}
-	// The runtime names these three on the issue's volume for a reason of their own and does not
-	// ask the shim to make them: LEGION_WORKSPACE is the issue's checkout, which workspace-init
-	// provisions before the pod's launcher container starts, and UV_PYTHON_INSTALL_DIR and UV_CACHE_DIR are
-	// uv's own, which uv makes and the tree's pods share by design
-	// (TestUvKeepsItsPythonsAndCacheOnTheIssueVolume). Every other path the runtime names there is
-	// a directory it tells the role to write in, so a fourth exemption has to be argued for rather
-	// than slipped in.
-	theirOwn := []string{"LEGION_WORKSPACE", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR"}
+	// The runtime names these four on the issue's volume for a reason of their own and does not
+	// ask the shim's EnsureScratch to make them: LEGION_WORKSPACE is the issue's checkout, which
+	// workspace-init provisions before the pod's launcher container starts; UV_PYTHON_INSTALL_DIR and
+	// UV_CACHE_DIR are uv's own, which uv makes and the tree's pods share by design
+	// (TestUvKeepsItsPythonsAndCacheOnTheIssueVolume); and PUBLIC_LEAK_CHECK is no directory a
+	// role writes in at all but a file the shim itself installs there, under its own lease and
+	// before it starts the agent (leakguard.Install), so a shim that could not make it fails the
+	// launch rather than leaving a role to meet it missing. Every other path the runtime names
+	// there is a directory it tells the role to write in, so a fifth exemption has to be argued
+	// for rather than slipped in.
+	theirOwn := []string{"LEGION_WORKSPACE", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR", "PUBLIC_LEAK_CHECK"}
 	for name, value := range env {
 		if !strings.HasPrefix(value, TreeRoot+"/") || slices.Contains(made, name) || slices.Contains(theirOwn, name) {
 			continue

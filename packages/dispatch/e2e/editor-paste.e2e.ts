@@ -1,19 +1,13 @@
-import { type Browser, expect, type Page, test } from "@playwright/test";
-
 import { getArtifactText } from "./api";
 import { documentEditor, openIssue, openWithCaret, paste } from "./editor";
 import { engineTables, goReadBack } from "./read-back";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Page, test } from "./test";
 
 // What is left of the clipboard matrix: the rows no headless test can make. Every other row
 // asserted the markdown the server stored for the document the paste built, and runs in a
 // fraction of the time in packages/proof-editor/tests/paste-matrix.test.ts, which rebuilds that
 // document headless and compares its own serializer's spelling of it - each column's alignment
 // included - against that same stored markdown (INFRA-1415).
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 const table = "| alpha one | beta two |\n| --- | --- |\n| gamma three | delta four |\n";
 
@@ -52,7 +46,8 @@ function drawnRows(page: Page) {
 // artifact and the reload, the one path that is not the editor's serializer alone. The same
 // clipboard's markdown is asserted headless; this row is the round trip.
 const copiedCells = "<table><tr><th>one</th><th>two</th></tr><tr><td>1</td><td>2</td></tr></table>";
-test("cells pasted onto a selection of cells are stored and read back after a reload", async ({
+// @pr: The live document: the one editor-paste row that goes through the clipboard, the document socket, the stored artifact and a reload.
+test("cells pasted onto a selection of cells are stored and read back after a reload @pr", async ({
   browser,
 }) => {
   const { alice, issue, page } = await openWithCellsSelected(browser, "alpha one", "delta four");

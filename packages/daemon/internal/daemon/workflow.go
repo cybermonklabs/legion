@@ -53,6 +53,13 @@ type workflowRuntime struct {
 	// nats is the NATS connection and its durable consumers behind their holder: a change of the
 	// server URLs or of either nkey seed opens a new connection, moves the consumers onto it and
 	// closes the old one (natsHolder). nil until connect opens the first one.
+	//
+	// Every reader takes the connection from the holder under the holder's own lock
+	// (natsHolder.connection, natsHolder.close), which is why no goroutine reads a bare field:
+	// the serving goroutine's workflowRuntime.stop, reconnectWatchdog and the intake loop read
+	// it while run can close it at the stop's budget (closeNATS), and internal/daemon runs under
+	// the race detector in CI (.github/workflows/ci.yaml, the step "Test the concurrent packages
+	// under the race detector").
 	nats *natsHolder
 	// keeper is the controller keeper and the controller tick's wake behind their holder; nil in
 	// a runtime a test built by hand, which runs no keeper.
@@ -722,11 +729,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 				// earlier send released it to the tree its issue moved to, or that tree's start or
 				// catch-up claimed or told it once its issue left (this delivery's hold is void
 				// there). Either way something else answers the person, and this task names it no
-				// longer. Dropping the mark here, before any send, is also what keeps the claim
-				// store's put-back (holdKeptDecisions) to its one case: every unconfirmed write of
-				// the delivery puts back a named decision whose row is missing in this tree, and
-				// the only such row is one this delivery's own confirmation told before the
-				// machine took that confirmation back.
+				// longer. What keeps the claim store's put-back (putBackARetakenConfirmation) to
+				// its one case is that write's own reading — it puts a row back only where this
+				// claim's confirmation told it and the machine is taking that confirmation back —
+				// and not this narrowing, which runs at a send and so never at all for a task the
+				// root cannot hear yet.
 				continue
 			}
 			issue, err := w.records.Issue(scoped, tx, mark.Issue)
@@ -1583,16 +1590,25 @@ func (w *workflowRuntime) releaseReadied(ctx context.Context) {
 	}
 }
 
-// stop closes the workflow's connections and ends every token_command its token manager still runs
-// (appauth.Manager.Close), waiting for each to exit, so a command waiting on a person's approval
-// does not outlive the daemon.
+// closeNATS closes the workflow's Envoy NATS connection and nothing else, so run can close it at
+// the stop's budget without waiting for the rest of stop. It is safe on a nil runtime, as stop is,
+// and safe to call more than once and from any goroutine: nats.Conn.Close is idempotent, and the
+// holder reads and clears the connection under its own lock (natsHolder.close).
+func (w *workflowRuntime) closeNATS() {
+	if w == nil || w.nats == nil {
+		return
+	}
+	w.nats.close()
+}
+
+// stop closes the workflow's connections (closeNATS) and ends every token_command its token
+// manager still runs (appauth.Manager.Close), waiting for each to exit, so a command waiting on a
+// person's approval does not outlive the daemon.
 func (w *workflowRuntime) stop() {
 	if w == nil {
 		return
 	}
-	if w.nats != nil {
-		w.nats.close()
-	}
+	w.closeNATS()
 	closeTokens(w.tokens)
 }
 
