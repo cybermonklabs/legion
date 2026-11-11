@@ -801,10 +801,10 @@ func seedForeignRows(t *testing.T, database *store.Store, project string) {
 
 // A misnamed Azure deployment answers every call 404 DeploymentNotFound, through the real
 // AzureClient. Until the configured embedder has answered, the pass leaves another identity's
-// vector and dead row exactly as they were, after one canary per pass and after Run for a while,
-// and the coverage report counts them lacking and failed as before; a throttled canary proves
-// nothing either. Once the deployment answers, a fresh process's first pass drops the vector and
-// re-admits the dead row, with one canary call.
+// vector and dead row exactly as they were, after one canary per pass and after a Run whose
+// boot pass sent its canary, and the coverage report counts them lacking and failed as before;
+// a throttled canary proves nothing either. Once the deployment answers, a fresh process's
+// first pass drops the vector and re-admits the dead row, with one canary call.
 func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -848,9 +848,12 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	requireUnchanged("a pass while the deployment is missing")
 	requireOneCanary("a pass while the deployment is missing")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	Run(ctx, deps)
-	cancel()
+	// Run's boot pass sends its canary from a goroutine of its own, and the fake records a
+	// request before it answers it, so the fact that the pass has sent the one request this row
+	// counts is the fake holding it; the run then stops, and what it left behind is read below.
+	stop := runQueue(t, deps)
+	eventually(t, eventWait, "the canary Run's boot pass sends", func() bool { return fake.served() >= 1 })
+	stop()
 	requireUnchanged("Run while the deployment is missing")
 	requireOneCanary("Run while the deployment is missing")
 

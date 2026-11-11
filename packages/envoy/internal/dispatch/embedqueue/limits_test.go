@@ -67,6 +67,15 @@ func (f *azureFake) take() [][]string {
 	return requests
 }
 
+// served is how many requests the fake has recorded since the last take, without taking them: a
+// test whose subject runs in a goroutine of its own waits for the request to arrive on this and
+// still reads its inputs afterwards, as a test of the fake embedder waits on canaryCalls.
+func (f *azureFake) served() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
+}
+
 // An Azure 429, through the real AzureClient, is a throttle: the whole batch is retried as one
 // request - never bisected, never confirmed with a canary - however many times it recurs, and
 // nothing is dead-lettered; once Azure answers, the batch is embedded under the Azure identity.

@@ -1440,9 +1440,11 @@ func eventually(t *testing.T, within time.Duration, what string, done func() boo
 	}
 }
 
-// runQueue runs Run with deps until the test ends, and fails the test if Run does not return
-// promptly once its context ends.
-func runQueue(t *testing.T, deps Deps) {
+// runQueue runs Run with deps until the test ends, or until the stop it returns is called, and
+// fails the test if Run does not return promptly once its context ends. A test that must observe
+// the state Run leaves behind, rather than the state it keeps working on, stops it itself and
+// reads afterwards; the cleanup stops it either way, and stopping twice waits once.
+func runQueue(t *testing.T, deps Deps) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -1450,7 +1452,7 @@ func runQueue(t *testing.T, deps Deps) {
 		defer close(done)
 		Run(ctx, deps)
 	}()
-	t.Cleanup(func() {
+	stop = sync.OnceFunc(func() {
 		cancel()
 		select {
 		case <-done:
@@ -1458,6 +1460,8 @@ func runQueue(t *testing.T, deps Deps) {
 			t.Errorf("Run did not return within %s of its context ending", eventWait)
 		}
 	})
+	t.Cleanup(stop)
+	return stop
 }
 
 // runHub runs hub until the test ends.
