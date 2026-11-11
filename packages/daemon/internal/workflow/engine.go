@@ -20,6 +20,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// Hook is one hook of the deployment as the engine runs it: its words are the text, never a
+// path. The configuration holds the same hook with the path a deployment may have written
+// instead (config.Hook), and boot reads that file, so nothing here opens one.
+type Hook struct {
+	Name   string
+	On     string   // the event it stands on
+	Moves  []string // empty selects every backward move
+	Every  int
+	Roles  []claim.Role
+	Prompt string // the words, read at boot
+}
+
 // Config supplies the project-scoped workflow limits and the clock used only to stamp durable
 // outbox deadlines. Zero limits take their shipped defaults. MergeQueueRole is the project's
 // `merge_queue_role`, the role the merger's READY is published to, and its withdrawal when the
@@ -84,6 +96,13 @@ type Config struct {
 	// the pacing and knows no limiter; what the rate and the burst were is the outbox's to log,
 	// where the wake runs (the daemon's wakeRan).
 	Reserve func(now time.Time) time.Time
+	// Hooks are the deployment's hooks (`hooks`, config.Config.Hooks), each put in front of the
+	// roles it names every Every moves back of what it selects. The empty list fires nothing:
+	// the one hook a deployment that writes no key runs is the configuration's default
+	// (config.DefaultHooks), never this engine's, so a deployment that configures none gets
+	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
+	// a path.
+	Hooks []Hook
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
