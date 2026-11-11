@@ -132,6 +132,9 @@ function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelive
 const baseAsk: Ask = {
   anchor: null,
   artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   block_id: null,
   answer: null,
   author: { id: "s1", kind: "session" },

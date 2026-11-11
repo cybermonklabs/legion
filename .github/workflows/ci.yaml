@@ -566,6 +566,7 @@ jobs:
               - 'packages/daemon/internal/githubrest/*'
               - 'packages/daemon/internal/intake/*'
               - 'packages/daemon/internal/launcher/*'
+              - 'packages/daemon/internal/leakguard/*'
               - 'packages/daemon/internal/lookpath/*'
               - 'packages/daemon/internal/memorygroup/*'
               - 'packages/daemon/internal/modeltoken/*'
@@ -1031,6 +1032,10 @@ jobs:
               # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
               # cites to a heading of that skill's SKILL.md.
               - 'skills/**'
+              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
+              # and its ALLOWED names lines of four of them, so rewording one of those lines
+              # fails that test and this job has to run for it.
+              - 'packages/*/AGENTS.md'
               # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
@@ -2136,6 +2141,9 @@ jobs:
       - name: Check the saved gh help is the worker image's gh
         run: .github/scripts/check-gh-version.sh
 
+      - name: Check the gitleaks the release lane fetches is the one the daemon links
+        run: .github/scripts/check-gitleaks-version.sh
+
       - name: Check image triggers cover every image input
         run: .github/scripts/check-image-trigger-paths.sh
 
@@ -2405,68 +2413,69 @@ jobs:
     needs: [changes, ci-images]
     if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # The budget, added up from the slowest this job has been rather than from the ladder
-    # arithmetic it was once derived from. Each figure below is the greatest that step reached
-    # over the 56 green runs of this job between 2026-11-09T19:38Z and 2026-11-10T10:51Z, read
-    # with `gh api repos/<owner>/<repo>/actions/runs/<id>/jobs?filter=all` over the 250 most
-    # recent ci.yaml runs, EXCEPT the two rows this change itself added, the marks and the
-    # machine watch: no run of that window carries them, so their figures are the greatest they
-    # reached over this pull request's own green runs of this job, jobs 130015112773,
-    # 129940828354 and 129966328215 (dispatch://INFRA-2605).
-    # EVERY STEP OF THIS JOB IS IN EXACTLY ONE ITEM, so a reader checks two sums rather than
-    # one: the seconds add to the stated total, and the step counts add to the steps this job
-    # declares.
-    #   steps  seconds
-    #       6     45 s  the two checkouts, the two steps that read the package and the
-    #                   manifest, `stage`, which moves about 341 MB of payloads over the
-    #                   network, and the origin's own start
-    #       7    866 s  the merge base's seven installs, each with nowhere to go: a ladder of
-    #                   `--retry-max-time 60` against each of its two sources, which is about
-    #                   126 s at the manifest's `max_time` of 60, with its Bun at 104 s. The
-    #                   sum prices each of the other six at 127 s, the greatest any of them
-    #                   reached in the window: 126 s is what the ladder costs, 127 s is what it
-    #                   has cost (127+127+127+104+127+127+127)
-    #       1    255 s  the head's docker plugin, the eighth install with nowhere to go
-    #       8   1141 s  the head's own eight installs, each reading the origin after one
-    #                   ladder; the Pulumi CLI is one of them, at 131 s
-    #      16   1142 s  the sixteen corrupted cases' installs
-    #       8      0 s  the eight marks the control below reads, one before each install with
-    #                   nowhere to go; each is one `echo`, and all eight measured 0 s in each
-    #                   of the three runs above
-    #       2      5 s  the machine watch's start, at 5 s, and its report, at 0 s
-    #      48     49 s  everything else: the fault and its probe, whose two requests are
-    #                   bounded at 15 s each, the sixteen readings, the corrupt steps, the step
-    #                   that changes the last byte of the installed Bun, the removals and the
-    #                   jj seed, the version check, the print step, the control of the eight,
-    #                   the stop-fault step and the ci-ok report
-    # 96 steps and 3503 s, so 59 minutes, and a job its own limit cuts off reports `cancelled`,
-    # which ci-ok fails, so the limit carries sixteen minutes over it.
-    # THREE STEPS, NOT TWO, run a ladder against a dead port rather than against the faulted
-    # host: the `pulumi-cli` row is the one row whose primary is get.pulumi.com, and the rig
-    # points that seam at a port nothing listens on. They are the merge base's Pulumi install
-    # at 127 s, the head's own at 131 s — the step that was running when this job lost its
-    # runner on 2026-11-10, and which no line item of this comment named until now — and the
-    # pulumi-cli second-source case at 128 s. The fourth step of that row, the pulumi-cli
-    # primary case, is served by the origin in a second and runs no ladder.
+    # The budget, added up from the slowest run this job can have, the way the tool-fallback-arm
+    # job below adds up its own: the job's set-up, the two checkouts and the runner's download of
+    # the actions (1), the two steps that read the package and the manifest, and `stage`, which
+    # fetches about 303 MB over the real sources while the network is whole and so keeps the
+    # pinned ladder (2), the jj-primary case, which runs before the fault (1), the fault and its
+    # probe, whose two requests are bounded at 15 s each (1), the one case that keeps the ladder,
+    # the head's own `install-crane`, which measured 64 s and which `--retry-max-time 60` bounds
+    # at a minute in which a new attempt may start plus one last attempt of the row's `max_time`
+    # of 60 s (2), the other steps whose primary the fault or a dead port holds, each now about
+    # a second because the stand-in shortens them: job 129874475871 made 65 fetches through the
+    # stand-in, and 29 of them were shortened — 19 of github.com, 9 of the dead address and 1 of
+    # get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
+    # ladder: the kept case's own fetch at 63 s, the probe's reserved control name, and the
+    # honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
+    # which took more than a second (1), the bytes the installs and the sixteen cases move, over
+    # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
+    # readings, the `ladder-report` step, the stop-fault step and the report (1).
+    # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+    # limit carries ten minutes over the sum.
+    # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
+    # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
+    # control costs, because it drives two ladders; the other fourteen of those steps drive one
+    # and cost about 64 s, so the old allowance was about twice what two thirds of them could
+    # cost. What
+    # one ladder costs, and how it is derived, is in the comment above ci_tools_curl of
+    # .github/scripts/ci-tools.sh.
+    # What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the
+    # one case that still drives the real ladder measured 63 s inside it.
     #
-    # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`.
-    # 2422 install steps ran on the green runs of those two jobs in that window: median 64 s,
-    # 99th percentile 128 s, maximum 326 s, which is `install-jj` on five slow runs. Eleven
-    # minutes is twice that maximum, rounded up to the minute the key takes, so no step that
-    # would have finished is ended by it. A step the runner ends at its bound costs about 672 s
-    # less that step's own greatest time, so between six minutes for the slowest install and
-    # eleven for the fastest; the sixteen minutes the declared limit carries over the budget
-    # above covers one of them, and a change to that budget moves this figure with it.
+    # THIS CHANGE ADDS TEN STEPS TO THAT SUM AND NO TIME A READER WOULD NOTICE: eight marks,
+    # one before each install with nowhere to go, each a single `echo` which measured 0 s in
+    # every green run of this pull request, and the machine watch's start and its report, at
+    # 5 s and 0 s (jobs 130015112773, 129940828354 and 129966328215). The watch itself is a
+    # sampler beside the job rather than a step of it, so those two steps are its whole cost
+    # to this budget (dispatch://INFRA-2605).
+    #
+    # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
+    # and the twenty-four installs whose control accepts a failure are timed as well, against
+    # the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
+    # runner ends at its own bound leaves `outcome=failure` behind it, which those controls
+    # accept, so the wall time is the only reading that tells a hang from the refusal the case
+    # expects.
+    # The eleven minutes is derived from the installs as they ran before the ladders stopped
+    # sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
+    # 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
+    # part of that window counted as well as the twenty-four it carries now — gave a median of
+    # 64 s, a 99th percentile of 128 s and a maximum of 326 s, which is `install-jj` on five
+    # slow runs. Eleven minutes is twice that maximum, rounded up to the minute the key takes,
+    # so no step that would have finished is ended by it, and an install costs less now than
+    # any of those figures.
     # THE BOUND WOULD HAVE CHANGED NOTHING IN THE INCIDENT THAT ASKED FOR IT, because a bound
     # the runner enforces needs a runner that is alive. It is here for the other failure: a
-    # command that hangs while the runner answers, where today the job's own ceiling is the
-    # only thing that ends it, and the ceiling costs the merge queue the pull request it holds.
+    # command that hangs while the runner answers, where without it the job's own ceiling is
+    # the only thing that ends it, and the ceiling costs the merge queue the pull request it
+    # holds.
     # That the runner does enforce it on a `uses:` step of a composite action is measured and
     # not assumed: on this change's own first run, an action sleeping 180 s under
-    # `timeout-minutes: 1` was ended after 72.5 s with `The action has timed out.`, and the
-    # steps after it ran (job 129786363688, step 3). The runner is about twelve seconds late,
-    # so a bound is a ceiling and not a stopwatch.
-    timeout-minutes: 75
+    # `timeout-minutes: 1` was ended after 72.5 s and the steps after it ran. THAT READING IS
+    # OF THE JOB RECORD AND NOT OF THE LOG: the record of that step (job 129786363688, step 3)
+    # carries `outcome=failure conclusion=success`, while the log carries the composite
+    # action's inner end-action line instead. The runner is about twelve seconds late, so a
+    # bound is a ceiling and not a stopwatch.
+    timeout-minutes: 22
     # contents: read is the two checkouts'; actions: read and checks: write are the
     # ci-ok-report step's. Every read of the package here is the anonymous one an install makes,
     # so this job needs no packages scope at all.
@@ -2622,6 +2631,48 @@ jobs:
       # whose later steps run what this job installed.
       - name: Take mise's install away again, so the faulted install must read the copy
         run: rm -rf "$HOME/.local/share/mise"
+
+      # The stand-in curl every step after this one runs, which shortens only a fetch this job
+      # arranged to fail. Every case of this job is a refusal this rig arranged, and each of
+      # those refusals rode a retry ladder nobody reads: job 129743677408 ran 1994 s and spent
+      # 1952 s in the steps that pay for them.
+      # Every other fetch keeps the pinned ladder, so that ladder still rides out a flap of
+      # npm, PyPI, get.pulumi.com or the local origin, each of which this job reaches through
+      # the fault proxy and none of which it faults. No case reading of this job counts
+      # requests or durations, so a shortened ladder takes no statement away: what a case
+      # proves is which source served its bytes and that the digest held, and the stand-in
+      # changes neither. The ladder-report step is the one reading of durations.
+      # One case keeps the pinned ladder, the head's own install-crane below, and the
+      # ladder-report step at the end of this job reads what that one measured. That install
+      # carries no seam, so its primary is the real faulted host and its second source the real
+      # package copy, and it drives the whole claim the shortened cases give up: a real ladder,
+      # then a second source, then the digest check. The negative controls cannot be that case,
+      # because a control ends in failure and proves no fall-through. The head's installs
+      # cannot move above the controls either, because .github/actions/setup-bun takes its
+      # existing-install branch when a Bun of the pinned version is already on the runner,
+      # which is exactly what the base-bun control must not find.
+      # It runs here, immediately before the fault comes up, and the window it may run in is
+      # the one between `stage` and that step. It cannot run above `stage`, because `stage`
+      # fetches about 303 MB from the real sources while the network is whole and must keep
+      # the pinned ladder for them, and because $GITHUB_PATH reaches the steps after the step
+      # that writes it and not that step itself.
+      # It cannot stay straight after `stage` either, which is where it ran before: the
+      # jj-primary case runs in that window, and its install-jj makes a real fetch of
+      # github.com through mise which succeeds. github.com is one of the hosts this rig
+      # faults, so a stand-in installed above that case shortened a fetch this job means to
+      # succeed and took the pinned ladder off it, while the fault that makes the shortening
+      # true was not up yet. In job 129841257239 that fetch is the first one the ladder-report
+      # step printed, `github.com: shortened, curl exit 0, 0s`: 2 attempts over 1 s where the
+      # pinned ladder gives 7 over 63 s, so one short failure of github.com would redden this
+      # required job where the pinned ladder rode it out.
+      # The step after this one starts the fault, so every fetch made from here goes through
+      # it and no fetch this job did not arrange to fail is ever shortened. The ladder-report
+      # step refuses the job for exactly that reading — a fetch that was shortened and then
+      # served the bytes — which is what holds this step at this position.
+      # The remedy is the position and not a guard in the stand-in on a state file the fault
+      # writes: a position cannot drift out of the truth it states, while such a guard can.
+      - name: Shorten the ladder of every fetch this job arranges to fail
+        run: .github/scripts/ci-tools-proof.sh shorten-ladder
 
       # The fault, and the routing of every later step through it, in one step: the rig starts
       # .github/scripts/ci-fault-proxy.py over the release hosts its own FAULT_HOSTS names, and
@@ -2906,8 +2957,13 @@ jobs:
       # fault: its `mise install` must reach the release asset mise fetches jj from, which the
       # fault holds, so that install fails and the action reads the copy. This step is therefore
       # the proof of jj's second source itself, rather than a warm directory answering for it.
+
+      # This install is the one case that keeps the pinned ladder, and the ladder-report step
+      # at the end of this job reads the measurement it leaves.
       - timeout-minutes: 11
         uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_PROOF_FULL_LADDER: crane-head
 
       - timeout-minutes: 11
         uses: ./.github/actions/install-changie
@@ -3347,6 +3403,17 @@ jobs:
           fi
           echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the sixteen corrupted payloads was installed"
 
+      # The reading of what the stand-in curl measured, before the fault stops, so that its own
+      # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
+      # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
+      # one did; for a kept measurement outside the window the rig holds it to; for a fetch
+      # that stayed on the ladder, spent one and then failed, which is a fault shape the
+      # stand-in's rule did not recognise; and for a fetch the stand-in shortened that then
+      # served the bytes, which is the reading that holds the shorten-ladder step at its
+      # position.
+      - name: Read what the stand-in curl measured of every fetch
+        run: .github/scripts/ci-tools-proof.sh ladder-report
+
       # `always()`, because the reading a reader wants most is the one from a job that failed.
       - name: Report what this job ran on
         if: always()
@@ -3414,17 +3481,28 @@ jobs:
     # (1), and the machine watch's start and its report (1). That is 15, and a job its own
     # limit cuts off reports `cancelled`, which ci-ok fails, so the limit is the next minute
     # up.
-    # What this job really costs is far less: over its 107 green runs in the window the
-    # tool-fallback job's comment names, the greatest each of its steps reached adds up to
-    # 68 s. The budget stays a worst case all the same, because a slow day on the 107 MB
-    # tarball is what it is there for.
+    # Measured, this job sits far inside that budget, and the ladder those two minutes allow for
+    # is not driven in the runs measured. In five green runs on 2026-11-10 it took 41 s, 41 s,
+    # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
+    # 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
+    # The reason is the shape of this job's faulted install. It reads ci_tools_fetch_fallback
+    # (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and
+    # tries no primary (.github/scripts/ci-tools.sh lines 1259 to 1268), and the primary it does
+    # not try is fetched by oven-sh/setup-bun, a Node action that calls no curl. The one fetch
+    # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
+    # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
+    # The two minutes above stay as the headroom of the run where npm does not answer at once.
+    # This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
+    # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
+    # drive no such ladder, must not move.
     # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
     # tool-fallback job's comment gives. Neither of them carries `continue-on-error`, so a held
     # install here is loud by itself: the bound fails the job at about 11.5 minutes, the steps
     # after it are skipped, and the job uploads its log. This job's own 16-minute limit reaches
     # that install first only when the steps before it took more than about five minutes, which
-    # the 68 s above says they do not. The reading either way is a job with a log, which is what
-    # the twenty-four installs of tool-fallback cannot give and why their clock exists.
+    # the 41 s to 50 s measured above says they do not. The reading either way is a job with a
+    # log, which is what the twenty-four installs of tool-fallback cannot give and why their
+    # clock exists.
     timeout-minutes: 16
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other
@@ -3663,6 +3741,9 @@ jobs:
       - name: Test the gh version check
         run: .github/scripts/check-gh-version.test.sh
 
+      - name: Test the gitleaks version check
+        run: .github/scripts/check-gitleaks-version.test.sh
+
       - name: Test the workflow path model the path checks import
         run: .github/scripts/workflow_paths.test.sh
 
@@ -3815,6 +3896,13 @@ jobs:
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
         run: .github/scripts/check-ts-filters.test.sh
+
+      # After setup-go, and not beside `Test release scripts` where the other .github/scripts
+      # suites sit: it builds the legion binary of this head out of packages/daemon and drives
+      # the leak guard through that binary, so it needs the Go the step above installs from that
+      # module's own go.mod.
+      - name: Test the private-name rules' port against the frozen script
+        run: .github/scripts/check-private-names-port.test.sh
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it.

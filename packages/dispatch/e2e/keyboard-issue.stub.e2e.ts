@@ -35,11 +35,17 @@ const bandsTest = stubbed(async () => {
     await patchIssue(issue.key, { status });
     return issue;
   };
-  await seed("Alpha", "backlog");
-  await seed("Bravo", "todo");
-  await seed("Mike", "in_progress");
-  await seed("Zulu", "done");
-  return { project: "CORE" };
+  const alpha = await seed("Alpha", "backlog");
+  const bravo = await seed("Bravo", "todo");
+  const mike = await seed("Mike", "in_progress");
+  const zulu = await seed("Zulu", "done");
+  return {
+    alpha: alpha.key,
+    bravo: bravo.key,
+    mike: mike.key,
+    project: "CORE",
+    zulu: zulu.key,
+  };
 });
 
 /** A closed issue, whose header disables most of what the shortcuts reach. */
@@ -53,14 +59,16 @@ const closedTest = stubbed(async () => {
 /** Two issues in two bands, both of which the reader collapses. */
 const collapsedTest = stubbed(async () => {
   await createProject({ key: "CORE", name: "Core" });
+  const keys: Record<string, string> = {};
   for (const [title, status] of [
     ["Alpha", "backlog"],
     ["Bravo", "todo"],
   ] as const) {
     const issue = await createIssue({ project: "CORE", title });
     await patchIssue(issue.key, { status });
+    keys[title.toLowerCase()] = issue.key;
   }
-  return { project: "CORE" };
+  return { bravo: keys.bravo ?? "", project: "CORE" };
 });
 
 /** One Todo issue, for the Board's own scope. */
@@ -76,7 +84,9 @@ listTest(
   async ({ page, scene }, testInfo) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`/projects/${scene.project}/issues`);
-    const rows = page.getByRole("list", { name: "Todo issues" }).getByRole("listitem");
+    const rows = page
+      .getByRole("table", { name: "Project issues table" })
+      .locator("[data-issue-row]");
     // The seeded order is the order the rows rove in, so assert it before roving over it.
     await expect(rows).toHaveText([/Alpha/, /Bravo/, /Charlie/]);
     await page.locator("body").focus();
@@ -119,49 +129,29 @@ bandsTest(
   "j and k cross a collapsed band instead of dead-ending in it, and reach its rows once it opens @pr",
   async ({ page, scene }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto(`/projects/${scene.project}/issues`);
-    // A closed `details` keeps its content out of the accessibility tree, so these are DOM
-    // locators: that a collapsed band's rows ARE in the DOM is the whole point here - rows the
-    // page never rendered would satisfy the assertions below for another reason entirely.
-    const rowsIn = (band: string) =>
-      page.locator(`ul[aria-label="${band} issues"] [data-issue-row]`);
-    const alpha = rowsIn("Backlog");
-    const bravo = rowsIn("Todo");
-    const mike = rowsIn("In progress");
-    const zulu = rowsIn("Done");
-    for (const row of [alpha, bravo, mike, zulu]) {
-      await expect(row).toHaveCount(1);
-    }
-    // Done is the one band the page renders closed; Todo is closed here by the reader, which
-    // puts a collapsed band between two open ones.
-    await expect(zulu).toBeHidden();
-    await page.getByRole("group", { name: "Todo (1)" }).locator("summary").click();
-    await expect(bravo).toBeHidden();
-    await leaveFocus(page);
-
+    // Grouped by status, sorted by key and with every status shown: the table's own shape for
+    // the bands this row was written against, where a group is a heading the reader collapses.
+    await page.goto(`/projects/${scene.project}/issues?group=status&sort=key&nofilter=1`);
+    const row = (key: string) => page.locator(`[data-issue-row="${key}"]`);
+    await expect(row(scene.zulu)).toBeVisible();
+    // A collapsed group between two open ones: its rows leave the page, and the keys step over
+    // the heading to the next group's rows rather than dead-ending in it.
+    await page.getByRole("button", { name: /Todo.*1 issue/ }).click();
+    await expect(row(scene.bravo)).toHaveCount(0);
+    await row(scene.alpha).focus();
     await page.keyboard.press("j");
-    await expect(alpha).toBeFocused();
+    await expect(row(scene.mike)).toBeFocused();
     await page.keyboard.press("j");
-    await expect(mike).toBeFocused();
-    await expect(bravo).not.toBeFocused();
-    // Nothing visible past Mike: the collapsed Done band is not a destination, so j holds, as
-    // it does at the end of the list.
-    await page.keyboard.press("j");
-    await expect(mike).toBeFocused();
+    await expect(row(scene.zulu)).toBeFocused();
     await page.keyboard.press("k");
-    await expect(alpha).toBeFocused();
-
-    // Opening a band puts its rows back in the order, between the two they sit between.
-    await page.getByRole("group", { name: "Todo (1)" }).locator("summary").click();
-    await expect(bravo).toBeVisible();
-    await alpha.focus();
+    await expect(row(scene.mike)).toBeFocused();
+    await page.keyboard.press("k");
+    await expect(row(scene.alpha)).toBeFocused();
+    // Opening it again puts its rows back between the two they sit between.
+    await page.getByRole("button", { name: /Todo.*1 issue/ }).click();
+    await row(scene.alpha).focus();
     await page.keyboard.press("j");
-    await expect(bravo).toBeFocused();
-    await page.getByRole("group", { name: "Done (1)" }).locator("summary").click();
-    await expect(zulu).toBeVisible();
-    await mike.focus();
-    await page.keyboard.press("j");
-    await expect(zulu).toBeFocused();
+    await expect(row(scene.bravo)).toBeFocused();
   }
 );
 
@@ -192,44 +182,30 @@ collapsedTest(
   "with every band collapsed j and k do nothing and ? greys them, and opening one restores both @pr",
   async ({ page, scene }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto(`/projects/${scene.project}/issues`);
-    const rows = page.locator("[data-issue-row]");
-    await expect(rows).toHaveCount(2);
-    for (const band of ["Backlog (1)", "Todo (1)"]) {
-      await page.getByRole("group", { name: band }).locator("summary").click();
-    }
-    await expect(rows.first()).toBeHidden();
-    await expect(rows.last()).toBeHidden();
+    await page.goto(`/projects/${scene.project}/issues?group=status`);
+    await expect(page.locator("[data-issue-row]")).toHaveCount(2);
+    for (const status of ["Backlog", "Todo"])
+      await page.getByRole("button", { name: new RegExp(`${status}.*1 issue`) }).click();
+    await expect(page.locator("[data-issue-row]")).toHaveCount(0);
     await leaveFocus(page);
-
-    // Nothing the reader can see is a step, so the keys move nothing …
     await page.keyboard.press("j");
     await page.keyboard.press("k");
     expect(await onBody(page)).toBe(true);
-
-    // … and `?` says so, as it does for the issue scope's disabled controls.
     await page.keyboard.press("?");
-    const dialog = page.getByRole("dialog", { name: "Keyboard shortcuts" });
-    const project = dialog.getByRole("region", { name: "Project", exact: true });
+    const section = page
+      .getByRole("dialog", { name: "Keyboard shortcuts" })
+      .getByRole("region", { name: "Project", exact: true });
     const roving = ["Next issue", "Previous issue"].map((label) =>
-      project.getByRole("listitem").filter({ hasText: label }).first()
+      section.getByRole("listitem").filter({ hasText: label }).first()
     );
-    for (const row of roving) {
-      await expect(row).toHaveAttribute("data-enabled", "false");
-    }
+    for (const listed of roving) await expect(listed).toHaveAttribute("data-enabled", "false");
     await page.keyboard.press("Escape");
-    await expect(dialog).toHaveCount(0);
-
-    // Opening one band gives them somewhere to go again.
-    await page.getByRole("group", { name: "Todo (1)" }).locator("summary").click();
-    await expect(rows.last()).toBeVisible();
+    await page.getByRole("button", { name: /Todo.*1 issue/ }).click();
     await leaveFocus(page);
     await page.keyboard.press("j");
-    await expect(rows.last()).toBeFocused();
+    await expect(page.locator(`[data-issue-row="${scene.bravo}"]`)).toBeFocused();
     await page.keyboard.press("?");
-    for (const row of roving) {
-      await expect(row).toHaveAttribute("data-enabled", "true");
-    }
+    for (const listed of roving) await expect(listed).toHaveAttribute("data-enabled", "true");
   }
 );
 
