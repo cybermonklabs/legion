@@ -314,12 +314,13 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 }
 
 // A rolling update of the listener pod runs two listeners of one machine id, and they share one
-// durable consumer (bus.ListenerDurable): the second is ready, answering /healthz 200 "starting",
-// for as long as the first holds it, and binds it once the first stops. That is why the pod's
-// readiness probe reads the status alone — a probe that passed on the 200 would take the new pod
-// for healthy and let the deployment stop the one still serving — and why the hand-over has to
-// land inside durableBindDeadline, the 135 s at which the second listener would give up its start
-// instead (cmd/listener/durable.go).
+// durable consumer (bus.ListenerDurable): only the pod holding the machine's delivery lease
+// receives from it, and the second runs as a standby, answering /healthz 200 with role
+// "standby" and the holder's instance for as long as the first holds the lease. It takes the
+// lease over within seconds of the first pod's stop. The pod's readiness probe reads the status
+// alone, so a standby is Ready, which is what lets the rolling update finish, and the hand-over
+// has to land well inside durableBindDeadline, the 135 s at which a listener that can reach
+// neither the lease nor the durable gives up its start (cmd/listener/durable.go).
 func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	binary := buildLiveListener(t)
 	ports := newLoopbackPorts()
@@ -337,28 +338,30 @@ func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	second, secondPort := startLiveListener(t, "the second listener", binary, natsURL, ports)
 	listeners++
 
-	// The second pod is up and serving while the first still holds the durable: 200, and a body
-	// that says "starting". Both are asserted, because the two say different things and the
-	// readiness probe reads only the second.
+	// The second pod is up and serving while the first holds the lease: 200, healthy, and a body
+	// that names its role as the standby of the first. All three are asserted, because the
+	// readiness probe reads only the status and the role is what says which pod delivers.
 	status, body, err := liveListenerHealthz(secondPort)
 	require.NoError(t, err)
 	answers++
 	require.Equal(t, http.StatusOK, status,
-		"the second listener's /healthz answered %d while the first held the durable: %s\n%s", status, body, second.Output.String())
-	require.Contains(t, body, `"status":"starting"`,
-		"the second listener claimed a status other than \"starting\" while the first held the durable: %s\n%s", body, second.Output.String())
+		"the second listener's /healthz answered %d while the first held the lease: %s\n%s", status, body, second.Output.String())
+	require.Contains(t, body, `"role":"standby"`,
+		"the second listener claimed a role other than \"standby\" while the first held the lease: %s\n%s", body, second.Output.String())
+	require.Contains(t, body, `"active_instance"`,
+		"the second listener's standby answer names no active instance: %s\n%s", body, second.Output.String())
 	select {
 	case <-second.Exited:
 		t.Fatalf("the second listener exited while the first held the durable:\n%s", second.Output.String())
 	default:
 	}
-	t.Logf("the second listener's /healthz while the first holds the durable: %d %s", status, strings.TrimSpace(body))
+	t.Logf("the second listener's /healthz while the first holds the lease: %d %s", status, strings.TrimSpace(body))
 
-	// The hand-over: the first stops as a deploy stops it, and the second binds the durable it
-	// let go.
+	// The hand-over: the first stops as a deploy stops it, and the second takes the lease and
+	// the durable it let go.
 	first.Terminate(t)
 	first.WaitExit(t, "SIGTERM")
-	handover, body, reads := awaitListenerStatus(t, second, secondPort, `"status":"healthy"`, clusteredHubListenerHandoverWindow)
+	handover, body, reads := awaitListenerStatus(t, second, secondPort, `"role":"active"`, clusteredHubListenerHandoverWindow)
 	answers += reads
 	require.NotZero(t, reads, "no /healthz answer was read while waiting for the hand-over")
 	t.Logf("the hand-over took %.1fs: %s", handover.Seconds(), strings.TrimSpace(body))
