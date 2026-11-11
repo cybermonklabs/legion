@@ -754,31 +754,31 @@ func parseBlock(node ast.Node, source []byte, footnotes map[int]string, depth in
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "doc", Children: children}, nil
+		return &Node{Type: blockType(current), Children: children}, nil
 	case *ast.Paragraph:
 		children, err := parseInline(current, source, nil, footnotes)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "paragraph", Children: children}, nil
+		return &Node{Type: blockType(current), Children: children}, nil
 	case *ast.TextBlock:
 		children, err := parseInline(current, source, nil, footnotes)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "paragraph", Children: children}, nil
+		return &Node{Type: blockType(current), Children: children}, nil
 	case *ast.Heading:
 		children, err := parseInline(current, source, nil, footnotes)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "heading", Attrs: Attrs{"level": current.Level, "id": ""}, Children: children}, nil
+		return &Node{Type: blockType(current), Attrs: Attrs{"level": current.Level, "id": ""}, Children: children}, nil
 	case *ast.Blockquote:
 		children, err := parseBlocks(current, source, footnotes, depth)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "blockquote", Children: emptyParagraphFirst(children, false)}, nil
+		return &Node{Type: blockType(current), Children: emptyParagraphFirst(children, false)}, nil
 	case *ast.List:
 		return parseList(current, source, footnotes, depth)
 	case *ast.ListItem:
@@ -790,24 +790,24 @@ func parseBlock(node ast.Node, source []byte, footnotes map[int]string, depth in
 			value = language
 		}
 		return &Node{
-			Type:     "code_block",
+			Type:     blockType(current),
 			Attrs:    Attrs{"language": value},
 			Children: fencedCodeText(current, source),
 		}, nil
 	case *ast.CodeBlock:
 		return &Node{
-			Type:     "code_block",
+			Type:     blockType(current),
 			Attrs:    Attrs{"language": nil},
 			Children: codeBlockText(current.Lines(), source),
 		}, nil
 	case *ast.ThematicBreak:
-		return &Node{Type: "hr"}, nil
+		return &Node{Type: blockType(current)}, nil
 	case *extensionast.Footnote:
 		children, err := parseBlocks(current, source, footnotes, depth)
 		if err != nil {
 			return nil, err
 		}
-		return &Node{Type: "footnote_definition", Attrs: Attrs{"label": decodeMarkdownText(current.Ref)}, Children: emptyParagraphFirst(children, false)}, nil
+		return &Node{Type: blockType(current), Attrs: Attrs{"label": decodeMarkdownText(current.Ref)}, Children: emptyParagraphFirst(children, false)}, nil
 	case *typedDirective:
 		return parseTypedDirective(current, source, footnotes, depth)
 	case *extensionast.Table:
@@ -824,6 +824,44 @@ func parseBlock(node ast.Node, source []byte, footnotes map[int]string, depth in
 		// refuseBlocks refuses every block outside convertedBlocks before conversion starts.
 		panic(fmt.Sprintf("conversion reached a %s block, which refuseBlocks passed and parseBlock does not convert (convertedBlocks)", node.Kind()))
 	}
+}
+
+// blockType names the Proof node the conversion makes of one of goldmark's blocks: the name
+// parseBlock writes into the node it builds, read from one place so that a second reader of these
+// names cannot drift from the conversion (decision_card.go, which names the block a refused body's
+// decision card stands in). A typed block is its own type, declared by the schema or not, since
+// that is the block its author wrote. A block the conversion refuses rather than converts is named
+// by its goldmark kind, which is what a reader outside the conversion is left with; parseBlock
+// never reads that name, since refuseBlocks refuses such a block before the conversion starts.
+func blockType(block ast.Node) string {
+	switch current := block.(type) {
+	case *ast.Document:
+		return "doc"
+	case *ast.Paragraph, *ast.TextBlock:
+		return "paragraph"
+	case *ast.Heading:
+		return "heading"
+	case *ast.Blockquote:
+		return "blockquote"
+	case *ast.List:
+		if current.IsOrdered() {
+			return "ordered_list"
+		}
+		return "bullet_list"
+	case *ast.ListItem:
+		return "list_item"
+	case *ast.FencedCodeBlock, *ast.CodeBlock:
+		return "code_block"
+	case *ast.ThematicBreak:
+		return "hr"
+	case *extensionast.Footnote:
+		return "footnote_definition"
+	case *extensionast.Table:
+		return "table"
+	case *typedDirective:
+		return current.Name
+	}
+	return block.Kind().String()
 }
 
 func parseBlocks(parent ast.Node, source []byte, footnotes map[int]string, depth int) ([]*Node, error) {
@@ -872,14 +910,12 @@ func opensWithAParagraph(name string) bool {
 // recorded none, from goldmark's looseness: a loose list's items holding more than one block are
 // spread, and the list is spread when none of them is.
 func parseList(list *ast.List, source []byte, footnotes map[int]string, depth int) (*Node, error) {
-	nodeType := "bullet_list"
 	browserSpread, browser := list.Attribute(browserSpreadAttr)
 	attrs := Attrs{"spread": !list.IsTight}
 	if browser {
 		attrs["spread"] = browserSpread
 	}
 	if list.IsOrdered() {
-		nodeType = "ordered_list"
 		attrs["order"] = list.Start
 	}
 	children := make([]*Node, 0, list.ChildCount())
@@ -903,7 +939,7 @@ func parseList(list *ast.List, source []byte, footnotes map[int]string, depth in
 		}
 		children = append(children, parsed)
 	}
-	return &Node{Type: nodeType, Attrs: attrs, Children: children}, nil
+	return &Node{Type: blockType(list), Attrs: attrs, Children: children}, nil
 }
 
 func parseListItem(item *ast.ListItem, source []byte, footnotes map[int]string, depth int) (*Node, error) {
@@ -915,7 +951,7 @@ func parseListItem(item *ast.ListItem, source []byte, footnotes map[int]string, 
 	if err != nil {
 		return nil, err
 	}
-	return &Node{Type: "list_item", Attrs: attrs, Children: emptyParagraphFirst(children, true)}, nil
+	return &Node{Type: blockType(item), Attrs: attrs, Children: emptyParagraphFirst(children, true)}, nil
 }
 
 // emptyParagraphFirst is a container's blocks as the browser editor's parser reads them: a
@@ -953,7 +989,7 @@ func parseTable(table *extensionast.Table, source []byte, footnotes map[int]stri
 	if len(children) == 1 {
 		children = append(children, &Node{Type: "table_row"})
 	}
-	return &Node{Type: "table", Children: children}, nil
+	return &Node{Type: blockType(table), Children: children}, nil
 }
 
 func parseTableRow(row ast.Node, header bool, source []byte, footnotes map[int]string) (*Node, error) {

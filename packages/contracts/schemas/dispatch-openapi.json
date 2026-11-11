@@ -7484,7 +7484,7 @@
     },
     "/api/v1/me/agents/state": {
       "get": {
-        "description": "The caller's per-agent conversation state: cleared_before, read_through, and unread_replies (the session's replies to the caller's direct messages newer than both and not read by id).",
+        "description": "The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list).",
         "operationId": "getApiV1MeAgentsState",
         "parameters": [
           {
@@ -7526,7 +7526,7 @@
     },
     "/api/v1/me/agents/{session_id}/state": {
       "put": {
-        "description": "Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), and/or mark some of its replies read by id (read_replies, the session's own messages); answers the session's state.",
+        "description": "Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), mark some of its replies read by id (read_replies, the session's own messages), and/or pin it to the caller's sidebar (pinned: true pins it, false unpins it, and neither touches the Clear); answers the session's state.",
         "operationId": "putApiV1MeAgentsBySessionIdState",
         "parameters": [
           {
@@ -24249,6 +24249,9 @@
           "cleared_before": {
             "type": "string"
           },
+          "pinned_at": {
+            "type": "string"
+          },
           "read_through": {
             "type": "string"
           },
@@ -24267,6 +24270,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "pinned": {
+            "type": [
+              "null",
+              "boolean"
             ]
           },
           "read_replies": {
