@@ -4422,8 +4422,11 @@ A start inside the idle period therefore finds the workspace as the stopped role
 
 Of the reasons that hold such a pod past the idle period, the daemon writes three to its hold records, each under a name of its own:
 a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), and a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`).
-The other reasons are read in the per-pass line of the daemon's log and in no record:
-a pod whose issue or tree root has left the workflow or lingers (`unowned_tree_not_live`), one whose release is already running (`unowned_releasing`), and one a live claim holds again (`unowned_claim_live`) each stand past that period with no hold row of their own.
+The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
+the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
+`unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
+Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, for as long as the record holds the issue.
+A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
 
