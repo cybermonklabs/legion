@@ -1558,6 +1558,10 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *listener_command
+              # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
+              # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
+              - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
+              - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
               - 'packages/envoy/internal/broker/helper/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
