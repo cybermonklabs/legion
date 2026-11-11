@@ -22,9 +22,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// askNamespace is the uuid namespace every ask id this rig writes is derived under (askID), so
+// the ids are deterministic, are this rig's own, and read as the uuid every reader of an ask
+// casts them to.
+var askNamespace = uuid.MustParse("6f1b4b0e-2f1a-4a5f-9a3d-8c7c1f0b2d41")
 
 const (
 	// defaultProject is the project a Spec that names none is written under. The key is what
@@ -367,10 +374,22 @@ func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
 
 // ask writes one ask of the issue that the role's session opened and a person answered, which is
 // the stretch the facts count as waiting on a person.
+//
+// The id is a uuid, because every reader of an ask casts it to one: refs/ask_blocks.go's
+// askPartRows reads `where s.ask_id = any($1::uuid[])`, and the event stream relay runs that for
+// each event it carries, so an id of any other shape stops the relay on every event of this
+// history and no event reaches a subscribed page again. It is derived from the issue key rather
+// than drawn fresh, so two seedings of one history write one id and a test can name it.
 func (s *seeding) ask(issue, role string, opened, answered time.Time) {
-	payload := fmt.Sprintf(`{"id":"ask-%s"}`, issue)
+	payload := fmt.Sprintf(`{"id":%q}`, askID(issue))
 	s.roleEvent(issue, role, "ask.opened", payload, opened)
 	s.event(issue, "ask.answered", person, payload, answered)
+}
+
+// askID is the id of the one ask this rig writes for an issue: a uuid derived from the issue's
+// key under askNamespace, so it is this rig's own and no deployment's ask can carry it.
+func askID(issue string) string {
+	return uuid.NewSHA1(askNamespace, []byte(issue)).String()
 }
 
 // handoff writes one phase handoff of the issue. A handoff is Legion phase work of its own, so
