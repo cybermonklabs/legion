@@ -295,16 +295,18 @@ Check, in order:
    person or another session already holds the claim, the architect starts nothing and asks the
    holder, on the issue, to release it or take the issue back; the tree keeps its slot meanwhile.
 
-**When none of those six is it, read the held list.** Every issue the daemon's record holds in
-the workflow stands in `admission.active`, in `admission.waiting` or in `admission.held`. The
-third list is the issues that hold no slot and stand in no line, one row each for why the daemon
-left this one where it is:
+**The held list names the cause directly, the six causes above included.** Every issue the
+daemon's record holds in the workflow stands in `admission.active`, in `admission.waiting` or in
+`admission.held`. The third list is the issues that hold no slot and stand in no line, one row
+each for why the daemon left this one where it is:
 
 ```sh
 legion state --config legion.yaml --json | jq '.admission.held'
 ```
 
-Find the row whose `issue` is the key. Its `reason` is one word of eleven, the first of them the
+Find the row whose `issue` is the key. No row, and the key in neither other list, means the
+daemon holds no record of the issue at all: that is one of checks 1 to 3 above, not a hold. Its
+`reason` is one word of eleven, the first of them the
 daemon found true of the issue, and `heldBy` names the issues that hold it, absent where no other
 issue holds the one that waits. An issue in this list holds no slot, so it counts for nothing
 against `admission_cap`: a slot falling free is not what starts it. The word says what does, and
@@ -312,13 +314,13 @@ the table reads in the order the daemon reads the words:
 
 | `reason` | `heldBy` | What ends the hold |
 | --- | --- | --- |
-| `tree_closed` | the tree root | The root carries the Dispatch status `done`, or its tree lingers. **No pass of the daemon ends this hold:** an architect of a live tree takes the issue, by writing its Dispatch parent to an issue of that tree and then releasing it, which adopts it into that tree at the phase `admitted`, with its repository unchanged and its generation one higher. |
-| `tree_parked` | the tree root | The root left the workflow to `backlog` or `icebox`. **No pass of the daemon ends this hold:** a person parked that tree, and a person's own `todo` on that root is what moves it. |
+| `tree_closed` | the tree root | The root carries the Dispatch status `done`, or its tree lingers. While it lingers, the linger's own expiry hands every member it leaves at `todo` or `admitted` to Legion as a root of its own, which starts it, so wait for that. Past the linger, **no pass of the daemon ends this hold:** an architect of a live tree takes the issue, by writing its Dispatch parent to an issue of that tree and then releasing it, which adopts it into that tree at the phase `admitted`, with its repository unchanged and its generation one higher. |
+| `tree_parked` | the tree root | The root left the workflow to `backlog` or `icebox`. **No pass of the daemon ends this hold:** a person's `todo` on that root moves it, and so does the controller where the park was its own hold and a person's decision gives the work a next step ([A parked tree did not come back after a decision](#a-parked-tree-did-not-come-back-after-a-decision)). The one member the daemon moves itself is a child at `awaiting_merge` whose pull request is still open, which a parked root's linger hands over as a tree of its own so its merge can close it. |
 | `label_off` | absent | The record says the `legion` label on this root is off. **No pass of the daemon ends this hold:** a person took the issue out of Legion, and a person putting the label back is what moves it. |
-| `ancestry` | the live root its chain reaches | The issue is that tree's unreleased work. Its architect releases the issue or its parent, or no live tree is left on its Dispatch chain. |
+| `ancestry` | the live root its chain reaches | The issue is that tree's unreleased work. That root's architect releases the issue, or the unreleased child above it on the Dispatch chain, or no live tree is left on that chain. |
 | `root_awaiting_person` | the tree root | A person answers the root, which resumes it ([A tree waits on a person](#a-tree-waits-on-a-person)). |
 | `design_gate` | the tree root | A person approves that root's spec, which opens the gate. |
-| `dispatch_blocker` | the unfinished blockers | The last issue a Dispatch `blocked_by` link names is `done`. |
+| `dispatch_blocker` | the unfinished blockers | The last issue a Dispatch `blocked_by` link names reaches `done`, or that link is taken off, by a person or by the tree's architect. A blocker parked in `backlog` or `icebox` counts as unfinished, so for that one the link is the only way out. |
 | `children_first` | the open children | Each open child Dispatch shows under the issue is done or leaves the workflow. |
 | `accepted_ancestor` | the accepted ancestor | That ancestor closes, and the issue starts at its close. |
 | `at_work` | absent | Nothing, and nothing is wrong: the issue stands in a phase that holds no admission slot and that the line does not carry, such as `awaiting_merge`. The workers of such a phase run as they did before, and the word says nothing about them. |

@@ -1058,7 +1058,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
-  admission.held: 5 issues hold no slot; 2 ancestry, 1 design_gate, 1 children_first, 1 at_work
+  admission.held: 5 issues hold no slot; 2 ancestry, 1 design_gate, 1 tree_parked, 1 at_work
   blocked on Dispatch links: none
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
@@ -1164,9 +1164,9 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a
   slot, `waiting` the issues in the line, `held` the issues in neither of those two lists, each row
-  with `issue`, `reason` — the first of the eleven words of the `admission.held` line above that is
-  true of the issue — and `heldBy`, the issues that hold it, absent where no other issue holds the
-  one that waits, `trees` the roots of the live trees, and `blocked`), each
+  carrying `issue`, `reason` — the first of the eleven words of the `admission.held` line above
+  that is true of the issue — and `heldBy`, the issues that hold it, absent where no other issue
+  holds the one that waits; then `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has made none), `pullRequest` (`repo`, `head`, `checksVerdict`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
