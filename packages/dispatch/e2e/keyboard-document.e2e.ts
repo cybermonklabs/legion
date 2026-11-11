@@ -1,5 +1,3 @@
-import { devices, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, createProjectDocument, listArtifactComments } from "./api";
 import {
   composer,
@@ -11,14 +9,10 @@ import {
 } from "./editor";
 import { nextFrames } from "./frames";
 import { commentWithBody } from "./margin-helpers";
-import { resetDatabase } from "./seed";
-import { asUser, signIn } from "./users";
+import { devices, expect, type Locator, type Page, test } from "./test";
+import { asUser } from "./users";
 
 const initialMarkdown = "The quick brown fox";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The provisional or recorded comment marks in `page`'s editor. */
 function commentMarks(page: Page): Locator {
@@ -115,16 +109,14 @@ test("Ctrl+Alt+M comments on a project document", async ({ browser }) => {
 test.describe("under a Mac user agent", () => {
   test.use({ userAgent: devices["iPhone 13"].userAgent });
 
-  test("Cmd+Option+M comments on a project document on a Mac user agent", async ({
-    context,
-    page,
-  }) => {
+  // The one row of this file that reads Playwright's own page, so alice's sign-in is the `test`
+  // this file imports (e2e/test.ts) rather than a call of its own.
+  test("Cmd+Option+M comments on a project document on a Mac user agent", async ({ page }) => {
     await createProject({ key: "CORE", name: "Core" });
     await createProjectDocument("CORE", {
       content: "# Handbook\n\nThe quick brown fox\n",
       name: "Handbook",
     });
-    await signIn(context, "alice");
     await page.goto("/projects/CORE/documents/handbook");
     await expect(documentEditor(page)).toContainText("The quick brown fox");
     await expect(connectedDot(page)).toHaveText("connected");

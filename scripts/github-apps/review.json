@@ -7,7 +7,8 @@
     "issues": "write",
     "metadata": "read",
     "packages": "read",
-    "pull_requests": "write"
+    "pull_requests": "write",
+    "security_events": "write"
   },
   "description": "Legion architect, planner, tester and reviewer: reviews pull requests and posts check runs."
 }

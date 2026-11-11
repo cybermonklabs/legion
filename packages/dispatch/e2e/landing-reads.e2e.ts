@@ -259,6 +259,11 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
       performance.now() < deadline &&
       measured.some((read) => !Number.isFinite(read.respondedAt))
     ) {
+      // Polling a value no assertion can wait on: these reads are the ones this row measures,
+      // and nothing on the page changes when one of them answers, so there is no state to make
+      // a web-first assertion against. 50 ms is a fortieth of the settle window above, which
+      // leaves the waterfall's answer times read to the tenth of a millisecond they are printed
+      // at while costing the row at most that much past the last answer.
       await tab.waitForTimeout(50);
     }
     return { landing, reads: measured, waves: wavesOf(measured) };

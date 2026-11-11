@@ -1,11 +1,6 @@
-import { expect, test } from "@playwright/test";
 import { createAsk, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Escape belongs to the layer the reader is in. Every popover in Dispatch hangs off one
 // `AnchoredPanel`, which listens for Escape at the document's capture phase: without a check on
