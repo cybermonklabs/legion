@@ -6,7 +6,7 @@
 #
 #   - Postgres, dev-oidc-issuer and that script's own broker, by running scripts/dev-broker.sh
 #     and reading what it prints. Everything this script needs of a local stack but the airlock
-#     itself is there already - the five built binaries, the local token issuer with a pod's,
+#     itself is there already - the six built binaries, the local token issuer with a pod's,
 #     a registrar's and two listed callers' tokens, the broker's own sign-in client, and the
 #     Postgres server - so this script starts none of it a second time. What that costs is one
 #     broker process this script does not use, on a database of its own; what it buys is that
