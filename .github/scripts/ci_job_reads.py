@@ -329,6 +329,15 @@ RULES = {
         (f"{ENVOY}/cmd/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files"),
         (f"{ENVOY}/internal/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files")),
     f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:191,436,480")),
+    f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
+        (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:18"),
+        (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:19"),
+        (f"{ENVOY}/AGENTS.md", "cmd/listener/grace_margin_doc_test.go:20")),
+    f"{ENVOY}/cmd/listener/infra_stop_budget_test.go": reads(
+        (f"{INFRA}/gcp/clusteredhub_listener.go", "cmd/listener/infra_stop_budget_test.go:18")),
+    f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
+        (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
+        (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:573")),
     f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:161")),
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
@@ -1399,8 +1408,8 @@ GATES = [
         (".github/scripts/repo-paths.sh",
          f"{at('envoy-smoke', SCHEMA_STEP)}: it derives the download URL the build stamps in"),
         (".github/scripts/disk_watch.py",
-         f"{at('envoy-smoke', 'Start the disk watch over the live tests')} and "
-         f"{at('envoy-smoke', 'Report the disk the live tests used')} run it"),
+         f"{at('envoy-smoke', 'Start the machine watch over the live tests')} and "
+         f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + CI_SELF),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
@@ -1420,9 +1429,15 @@ GATES = [
 
     gate("envoy_session_stall", STALL, runs=[
         script_run("packages/envoy-client/test/envoy-stack.ts",
-                   'const build = Bun.spawn(["go", "build", "-o", `${bin}${path.sep}`, ...packages], {',
-                   f"buildBinaries, run by {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
+                   'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
+                   f"buildGoBinaries, which both rigs of that directory call; this one's packages are the Envoy "
+                   f"stack's, built for {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
                    f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
+        script_run("packages/envoy-client/test/dispatch-stack.ts",
+                   'packages: ["./cmd/dispatch"],',
+                   f"the packages that rig hands buildGoBinaries, run by "
+                   f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')}",
+                   ENVOY, ["./cmd/dispatch"], mode="build"),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
         ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
@@ -1525,8 +1540,9 @@ GATES = [
         (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
                                         "bytes through it, and the two steps above source it for a row's fields"),
         (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
-                                              "of this job that drives the proof does; this job and tool-fallback-arm "
-                                              "are its only callers"),
+                                              "of this job that drives the proof does; tool-fallback-arm drives it "
+                                              "too, and the test job runs its ladder-report verb over logs of its "
+                                              "own"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                               "of GitHub's release assets"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "

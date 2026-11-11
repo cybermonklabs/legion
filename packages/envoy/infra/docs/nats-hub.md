@@ -891,15 +891,24 @@ file would keep the old limit, and the reload that later lowers it would be refu
 reload after it. A disk growth whose limit follows `diskSizeGb` therefore rolls the pods too,
 unless `maxFileStoreGb` holds the limit the hub runs with (the README's disk-growth steps).
 
-### Routes, guarded by the NetworkPolicy alone
+### Two ports, guarded by the NetworkPolicy alone
 
 The servers' routes carry no credential: any process that reaches a hub pod's port 6222 can join
 the cluster as a server. The NetworkPolicy `<n>` admits 6222 from the hub pods alone, and that is
-the routes' only guard, so the hub needs a cluster that enforces NetworkPolicy, as GKE Autopilot
-does with GKE Dataplane V2. The policy's rules are pinned by the unit tests
-(`TestClusteredNatsHubNetworkPolicy`); the local cluster test runs its three servers on loopback
-with no policy at all, so it proves the routes and the rendered configuration, never the policy's
-enforcement, which is the cluster's.
+the routes' only guard.
+
+The session listener's `/v1` on 9020 is the second port a policy guards. That listener carries
+`ENVOY_API_ALLOW_UNAUTHENTICATED=1` and no `ENVOY_API_TOKEN`, and the component takes no token
+input for it, so its `/v1` answers with no credential at all. The NetworkPolicy `<n>-listener`
+admits TCP 9020 from the tailnet hosts' pods alone, and that is what keeps every other pod of the
+cluster off `/v1` ([The session listener](#the-session-listener)).
+
+Both guards need a cluster that enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane
+V2. A cluster whose network plugin does not enforce it accepts both objects and admits every
+caller, and the deployment looks healthy either way. The two policies' rules are pinned by the
+unit tests (`TestClusteredNatsHubNetworkPolicy` and `TestClusteredNatsHubListenerNetworkPolicy`);
+the local cluster test runs its three servers on loopback with no policy at all, so it proves the
+routes and the rendered configuration, never the policy's enforcement, which is the cluster's.
 
 ### The tailnet hosts
 
@@ -943,11 +952,11 @@ How it is reached. Each host forwards the Tailscale Service's port 9020 to the S
 tailnet hosts' pods alone, and every other port of the listener's pod is admitted to nobody. The
 listener binds `0.0.0.0` and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is what lets its
 `/v1` answer with no credential off loopback. It carries no `ENVOY_API_TOKEN`: the NetworkPolicy
-is what keeps `/v1` to the hosts. The listener answers 421 to every `Host` that is neither a
-loopback name or address nor one of `ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its
-own name rather than a caller the NetworkPolicy admits, since such a caller reaches `/v1` with
-`Host: localhost`. The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the
-hosts.
+is what keeps `/v1` to the hosts, and it keeps it only where the cluster enforces NetworkPolicy.
+The listener answers 421 to every `Host` that is neither a loopback name or address nor one of
+`ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its own name rather than a caller the
+NetworkPolicy admits, since such a caller reaches `/v1` with `Host: localhost`. The hub's own
+NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
 `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness
@@ -957,11 +966,15 @@ for the durable from the moment the new pod's container starts, and the old pod 
 only once the new pod is Ready, so the window where both exist is the new pod's time to its first
 `/healthz` answer plus the old pod's 33 seconds: it keeps answering for 5 seconds, the time its
 removal from the Service's endpoints takes to reach every node's proxy, and then stops in 28
-seconds, inside its grace period of 35. What has to hold that whole window is the new pod's own
-135-second bind deadline, counted from its own start, not the old pod's grace. A new pod that
-never becomes Ready leaves the old one serving: nothing stops it, and the new one restarts on its
-bind deadline. The Tailscale Service's port 9020 refuses connections while no listener pod is
-ready, and its port 4222 serves through it.
+seconds, inside its grace period of 40. That is a margin of 7 seconds (`listenerGraceMargin`),
+which covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
+container's teardown and a late tick on a loaded node. It does not cover a listener that runs
+over its own deadlines. What has to hold that whole window is the new pod's own 135-second bind
+deadline, counted from its own start, not the old pod's grace. A hung old pod holds its durable
+for all 40 seconds, which leaves the new pod 95 seconds to its first `/healthz` answer. A new
+pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one
+restarts on its bind deadline. The Tailscale Service's port 9020 refuses connections while no
+listener pod is ready, and its port 4222 serves through it.
 
 What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
 listener answers 204 without reading the bus, and which exits 0 whatever the HTTP status, so a

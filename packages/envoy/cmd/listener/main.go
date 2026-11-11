@@ -528,7 +528,8 @@ type healthAnswer struct {
 // are each still 503, since a listener that receives nothing is not the case the 200 is for. That
 // answer is 200 "degraded" and not 503, because the probes act on /healthz: the ECS container
 // health check is curl -sf /healthz, every 30 s with 3 retries
-// (infra/aws/rendering/listener.go:202-203), and GKE's readiness probe reads it too
+// (infra/aws/rendering/listener.go, the healthCheck entry of
+// ListenerContainerDefinitions), and GKE's readiness probe reads it too
 // (infra/gcp/dispatch_kube.go, readyProbe). A 503 would unroute, or replace, a pod whose caches
 // still hold what they warmed up with, and its replacement rebuilds into the same failing rewatch
 // with cold caches that warm up empty, whose fanout then acknowledges general-topic messages as
@@ -1992,6 +1993,40 @@ type listenerParts struct {
 	stopWakes func()
 }
 
+// The listener's stop budget: the deadlines shutdownListener spends after SIGTERM, one after
+// another. A runtime's termination grace period, less the pre-stop wait it spends before SIGTERM,
+// has to cover stopBudget, and a pod of this listener grants listenerGraceMargin above it;
+// TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
+const (
+	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
+	// opens, in this order - the relays' stop, the HTTP server's shutdown, the consumer deletes
+	// still in flight, the session-consumer drain, the wait for a self-health rebuild still
+	// running (loops.monitorDone) and the wait for each KV bucket pass still running
+	// (loops.kvLoopsDone). The last two are the ones that most plausibly spend it on a loaded
+	// node, so whoever sizes this number reads them too.
+	stopHTTPGrace = 10 * time.Second
+	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
+	stopLaneDrain = 3 * time.Second
+	// stopLaneGrace is the role lane's whole stop: stopLaneDrain for its client, then
+	// roleReceiptTimeout, which roleLane.drain waits the handed-over forwards out for after it.
+	stopLaneGrace = stopLaneDrain + roleReceiptTimeout
+	// stopClientDrain bounds the main client's drain: 10 s for the deliveries in their handlers,
+	// as before the drain hooks, and the hooks' 3 s on top (bus's drainHookReserve).
+	stopClientDrain = 13 * time.Second
+	// stopBudget is the whole stop, the three deadlines added, and is inside every runtime's
+	// 30 s after the pre-stop wait.
+	stopBudget = stopHTTPGrace + stopLaneGrace + stopClientDrain
+	// listenerGraceMargin is what a pod of this listener grants above its pre-stop wait and
+	// stopBudget: it covers the kubelet's own latency between the pre-stop hook's return and
+	// SIGTERM, the container's teardown and a late tick on a loaded node, and never a listener
+	// that runs over its own deadlines, which it cannot. It is the one place this number is
+	// decided: every sentence that states the margin cites this constant, the two listener pod
+	// components render their grace as their pre-stop wait plus the budget plus it, and
+	// TestListenerPodGracesCoverTheStopBudget holds each rendered pod's grace less its pre-stop
+	// wait less stopBudget equal to it, so a pod that grants more or less reds.
+	listenerGraceMargin = 7 * time.Second
+)
+
 // shutdownListener is the ordered shutdown every end of a start that serves /v1 comes to, a
 // signal, a fatal error or a bind that did not complete, and exits non-zero so the runtime's
 // restart policy restores the listener.
@@ -2003,7 +2038,7 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	loops.stop()
 	parts.stopWakes()
 
-	// 2. Stop receiving the durable, inside the 10 s budget the relays and the HTTP stop share:
+	// 2. Stop receiving the durable, inside stopHTTPGrace, the budget the relays and the HTTP stop share:
 	// the term's end stops this pod's session relays (durableReceiver.end), the holder-only
 	// loops stop, the handler takes no more messages, the message in hand gets inflightGrace
 	// (3 s) before its handling is cancelled and it is NAKed, with a second for the handler to
@@ -2025,7 +2060,7 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// connection. So a longer grace period in the runtime keeps no mark, and the next holder
 	// then settles at its 7 s cap, as it does after any stop that wrote none. HTTP keeps serving
 	// meanwhile.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
 	loops.receiver.Stop(shutdownCtx)
 
@@ -2066,18 +2101,17 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 		logger.Warn("self-health monitor still running at shutdown")
 	}
 	// The role lane drains before the main client: a delivery still in its handler, and each role
-	// forward, publishes through the main client and reads the caches stopped below. It gets 3 s
-	// for its handler and the receipt window on top for the forwards it handed over
-	// (roleLane.drain), 5 s. Core NATS retries nothing, so a delivery still blocked at the
-	// deadline is lost, as one sent while no listener runs is.
-	parts.lane.drain(logger, 3*time.Second)
+	// forward, publishes through the main client and reads the caches stopped below. Core NATS
+	// retries nothing, so a delivery still blocked at the deadline is lost, as one sent while no
+	// listener runs is.
+	parts.lane.drain(logger, stopLaneDrain)
 	for _, c := range parts.caches {
 		c.cache.StopWatch()
 	}
 	// 10 s for the deliveries in their handlers, as before the drain hooks, and the hooks' 3 s on
 	// top (bus's drainHookReserve): with the 10 s the receive stop, the relays' settle and the
 	// HTTP stop share and the role lane's 5 s side by side, 28 s, inside every runtime's 30 s.
-	if err := parts.client.Drain(13 * time.Second); err != nil {
+	if err := parts.client.Drain(stopClientDrain); err != nil {
 		logger.Warn("nats drain error", slog.String("error", err.Error()))
 	}
 
