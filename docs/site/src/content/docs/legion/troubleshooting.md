@@ -595,14 +595,35 @@ legion state --config legion.yaml --json | jq '.wakesWaiting'
 ```
 
 `legion state` prints the same as a `wakes waiting:` line, and prints no such line when nothing
-waits. Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
-process about to start; `plugin-task`, the update task a stale-plugin round queues to a session
-that already runs; `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing gave it, which is when it runs. An empty array says the wave has
-gone out; the last `dueAt` in it says when the last of the wave goes. A claim on that list needs
-nothing from you: its wake is reserved and it runs at the moment named. Your own requests are what
+waits.
+Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
+process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
+earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
+`catch-up`, the notice a start writes to an architect that is already running)
+and `dueAt`, the moment the pacing gave it, which is when it runs.
+An empty array says the wave has
+gone out; the last `dueAt` in it says when the last of the wave goes.
+A claim on that list needs
+nothing from you: its wake is reserved and it runs at the moment named.
+Your own requests are what
 drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
 back, so nothing you ask for waits for a turn.
+
+After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
+lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
+worth and what it has left is `.claimsToRefresh` of the same body.
+
+```sh
+legion state --config legion.yaml --json | jq '.claimsToRefresh'
+```
+
+That is how many sessions are still on an earlier plugin and waiting for the lane to relaunch
+them, one paced wake each.
+It falls to 0 as the wave drains, and a number that stands still over several minutes while no
+`plugin-refresh` wake waits is the one reading worth acting on: the daemon can relaunch no
+session onto a plugin at all, and its log says so once per claim at boot
+(`this daemon knows no plugin versions to relaunch it onto`), which under Kubernetes means
+`runtime.kubernetes.plugins` names no plugin pair.
 
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, and a tree's

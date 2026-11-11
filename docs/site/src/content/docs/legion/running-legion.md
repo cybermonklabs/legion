@@ -1071,13 +1071,23 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   The `wakes waiting` line appears only while the daemon's pacing is holding a wake
   (`worker_wakes_per_minute`, above): how many wait, and each by claim token with the kind of wake
-  it is — `launch`, a role process about to start; `plugin-task`, the update task a stale-plugin
-  round queues to a session that already runs; `catch-up`, the notice a start writes to an
+  it is — `launch`, a role process about to start; `plugin-refresh`, the relaunch of a session
+  whose plugin speaks an earlier daemon contract, which the daemon replaces at that one wake and
+  asks nothing of first; `catch-up`, the notice a start writes to an
   architect that is already running — and the moment the pacing gave it (`wakes waiting: 2 —
-  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`). Nothing waits
-  outside a restart, a re-admission or a plugin wave, which is why an ordinary read has no such
-  line. It is what says whether a wave is still going out, and the last `due` on it is when the
-  last of that wave goes.
+  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`).
+  Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
+  ordinary read has no such line.
+  It is what says whether a wave is still going out, and the last `due` on it is when
+  the last of that wave goes.
+
+  The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
+  does: `legion state --json | jq .claimsToRefresh` is how many sessions the lane still has to
+  relaunch onto this daemon's plugin.
+  The lane holds at most one minute of the pacing at a time, so its `plugin-refresh` wakes are
+  the claims it has already reserved and that count is the claims still to come.
+  It is 0 whenever no session is on an earlier plugin, which is every moment but the minutes
+  after a boot onto a new plugin contract.
 
   The `consumer` lines are the lag of the daemon's durable consumers on the
   `ENVOY_NOTIFICATIONS` stream: `legion-go-<project>-dispatch` (Dispatch's issue events and the

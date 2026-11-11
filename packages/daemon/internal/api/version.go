@@ -602,7 +602,9 @@ package api
 // that pace is holding until their turn: an array, never null, of `{claim, issue, role, kind,
 // dueAt}`, beside `strandedClaims` and `heldOutboxRows`, one row per wake of the three lanes it
 // paces — `launch`, a role process it is about to start, `plugin-task`, the update task a
-// stale-plugin round queues to a session already running, both held in the claim's machine, and
+// stale-plugin round queues to a session already running (60 below deletes that round and names
+// the relaunch it became `plugin-refresh`, so no daemon from 60 on writes this kind), both held
+// in the claim's machine, and
 // `catch-up`, the notice a start writes to an architect already running, which waits on its own
 // outbox row — in claim order, and empty at every moment outside a restart, a re-admission wave or
 // a plugin wave. A strict reader before 53 refuses a state carrying the key, empty as surely as
@@ -845,4 +847,46 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 60: INFRA-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
+// readable. `api.State` gains `claimsToRefresh`, how many claims the lane still has to relaunch
+// onto this daemon's plugin: a claim with a recorded session, whose process holds a capability,
+// whose recorded plugin contract is not this number, that is in no update round, and whose
+// launch installs a plugin — the set the daemon's own pass walks (`internal/daemon`'s
+// refreshStalePlugins), counted where that rule lives and carried through the body the route
+// then cuts to its caller. It is always a number and never null, 0 when the lane has nothing
+// left, which is every moment outside a wave; on a daemon that can relaunch onto no plugin at
+// all it stands at what that lane cannot act on, beside the Error line such a daemon already
+// writes for each of those claims. `wakesWaiting` alone could not say it: the lane now holds at
+// most one minute of the pacing at a time (`supervise.RefreshGate`), so its waiting wakes are
+// what it has been admitted, never what it has left — at the INFRA wave of 2026-11-10 one
+// reading counted 395 live processes on the old contract against about 600 of the lane's wakes,
+// and nothing in the body reconciled them. A strict reader before 60 refuses a state carrying
+// the key, 0 as surely as a number, so for the one window the pairing leaves open — a pod of the
+// contract before this one still being replaced — the route serves a caller whose pod records a
+// contract below 60 a body with no `claimsToRefresh` key at all (api's stateFor,
+// withoutClaimsToRefresh), as it serves a caller below 58 the issues without their place in the
+// line, one below 57 the claim views with no `step`, one below 56 the stranded report without
+// its retired entries, one below 55 the issues without the gated steps, one below 53 a body with
+// no `wakesWaiting` and one below 46 the claim views without their update rounds; the nine
+// compose. The key is left off that body rather than zeroed, so it is left off the body a pod
+// whose claims cannot be read is served as well, which may be a pod at this contract, and that
+// is why `packages/contracts/src/legion-api.ts` declares `claimsToRefresh` optional, as it
+// declares `wakesWaiting`. A caller the daemon cannot place in a pod — the operator's `legion
+// state`, a tmux pane — is served the count.
+// The same change moves the wire's wake kinds. `plugin-task`, the update task the stale-plugin
+// round queued a running session, is gone with that round: the lane relaunches a stale process
+// at one paced wake and asks its worker nothing, and no daemon from 60 on opens such a round or
+// sends such a task. The relaunch the lane's own gate admits waits under `plugin-refresh`
+// instead (`supervise.WakePluginRefresh`), a kind no other launch carries, so a reader of
+// `wakesWaiting` tells the refresh of a fleet from the launches that start a tree's work; the
+// relaunch a stale registration raises keeps `launch`, being one claim's own launch. That half
+// needs no shaping of its own, because the schema leaves `kind` an unconstrained string, and
+// every reader of the kinds — `packages/contracts/src/legion-api.ts`, `docs/kubernetes.md`, the
+// two site guides and `scripts/wake-windows.py` — names the new one. This change adds no store
+// migration. (main held 59 at `9aa7844fcde09b6f4abc98dcae80dc310314dccb`, INFRA-956's removal of
+// fix-attempt counting, which carries none of these shapes, so this branch takes the number
+// above it, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. Read main's own number again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 60

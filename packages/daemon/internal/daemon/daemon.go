@@ -1720,6 +1720,46 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 	}
 }
 
+// claimsToRefresh is how many of claims the stale-plugin lane still has to relaunch onto this
+// daemon's plugin, which the state serves as `claimsToRefresh` (api.State.ClaimsToRefresh,
+// contract 60): a reader of a running wave can then tell what the lane has left from what it
+// has already admitted into the pacing, which `wakesWaiting` alone cannot say now that the gate
+// holds no more than a minute of that pacing at a time (dispatch://INFRA-2712 R4).
+//
+// The set is the one refreshStalePlugins walks, read from the same four facts: a recorded
+// session, a process that holds a capability, a recorded contract that is not this daemon's,
+// and no update round — the pass skips a pod round and the boot ends every plugin round it
+// finds (endPluginRounds), so either round left on a claim is a claim the lane passes over at
+// this read — with noPluginInstall for the fifth, the one term the claim does not carry. It is
+// computed here, where the lane's own rule lives, rather than in internal/api, which does not
+// own that rule and which cuts the body to its caller only after it is built (api's stateFor).
+//
+// Whether this daemon can relaunch onto a plugin at all is deliberately not a term of it
+// (plan.pluginRelaunchable). On a daemon that cannot, the pass posts nothing and writes one
+// Error line per stale claim at boot, and this count is what that gap costs, standing at the
+// claims the lane cannot act on beside those lines. A count zeroed there would read as a lane
+// with nothing left, which is the one thing such a daemon is not.
+//
+// noPluginInstall nil is every launch installing a plugin: the daemon's own source is given the
+// rule at the literal that builds it (serve), and nil is what a source a test builds by hand
+// holds, which is true under tmux, where no role's plugin is beyond an install's reach.
+func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Claim) bool) int {
+	left := 0
+	for _, c := range claims {
+		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) {
+			continue
+		}
+		if c.UpdateRound != "" {
+			continue
+		}
+		if noPluginInstall != nil && noPluginInstall(c) {
+			continue
+		}
+		left++
+	}
+	return left
+}
+
 // correctRefreshGate puts the gate's count of what the lane holds right from the wakes the
 // machines actually have waiting, before the pass asks it for anything: the refresh wakes of the
 // published views, counted by the lane's own kind, which is the one kind only this lane parks
@@ -2082,6 +2122,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			caches:       repositoryCachesOf(s.runtime),
 			gatedSteps:   cfg.Gates.Steps(),
 			settings:     api.SettingsOf(cfg),
+			// The same rule the lane itself reads, over the same configuration, so the count
+			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
+			// and the NoPluginInstall option three lines below).
+			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -2226,6 +2270,12 @@ type source struct {
 	// settings is the resolved configuration as the state shows it, built once here: Load reads
 	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
 	settings api.Settings
+	// noPluginInstall is whether a claim's launch installs no plugin at all (the package's
+	// noPluginInstall over this daemon's configuration), the one term of the stale-plugin lane's
+	// own rule that the claim itself does not carry, which State needs to count what that lane
+	// has left (api.State.ClaimsToRefresh). Nil is every launch installing a plugin: that is
+	// what a tmux daemon has, and what a source a test builds by hand reads as.
+	noPluginInstall func(supervise.Claim) bool
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -2388,6 +2438,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		held = s.wakes()
 	}
 	state.WakesWaiting = api.WakesWaitingOf(held, paced)
+	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,
