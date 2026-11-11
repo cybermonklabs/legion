@@ -4842,13 +4842,13 @@ jobs:
     # itself, in both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not
     # more than roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
     #
-    # The job's own bound is the larger of its pair's two measured times, read from the runs'
-    # jobs API - 725 s on attempt 1 (run 43007295244, job 130477949633) against 607 s on
-    # attempt 2 - 12.08 minutes, plus the largest of those limits, 17 minutes, plus 6: 12.08 +
-    # 17 + 6 = 35.08, so 36. A bound is met when it is at least what the head's own pair asks
-    # for; a later pair can ask for a larger one, because a job that varies by 120 seconds does
-    # not settle inside a one-minute band. The eight calls of the unit step run at the same
-    # time, so the step's own worst case is the longest of them rather than their sum.
+    # The job's own bound follows the largest measured time this branch has of it, 725 s (run
+    # 43007295244, job 130477949633), 12.08 minutes, plus the largest of those limits, 17
+    # minutes, plus 6: 12.08 + 17 + 6 = 35.08, so 36. A bound is met when it is at least what
+    # the head's own pair asks for, and it follows the largest reading rather than the newest,
+    # because a job of this lane varies by two minutes between two attempts of one commit and
+    # does not settle inside a one-minute band. The eight calls of the unit step run at the
+    # same time, so the step's own worst case is the longest of them rather than their sum.
     timeout-minutes: 36
     services:
       postgres:
@@ -5550,15 +5550,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers take the larger of this head's pair for their own reading (attempt 1, run
-    # 43007295244; attempt 2, run 43015711475; dispatch://INFRA-1075, check 6224bb0e). The
-    # step's -timeout is the smallest whole minute at which its slowest package takes at most
-    # half of it: internal/bus, 446.9 s on attempt 2, 446.9 / 30 = 14.90, so 15m, which it
-    # fills to 49.7 per cent (14m it would fill to 53.2). The job's own bound is its larger
-    # measured time - 572 s on attempt 2, job 130506232898, against 514 s on attempt 1 - 9.53
-    # minutes, plus that largest -timeout plus 6: 9.53 + 15 + 6 = 30.53, so 31. The limit must fire before the runner cancels the job, so a
-    # hung test prints the dump that names it.
-    timeout-minutes: 31
+    # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
+    # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
+    # package takes at most half of it: internal/bus, 446.9 s, 446.9 / 30 = 14.90, so 15m,
+    # which it fills to 49.7 per cent (14m it would fill to 53.2). The job's own bound follows
+    # its largest measured time, 604 s in run 43110298200 (job 130824310054), 10.07 minutes,
+    # plus that largest -timeout plus 6: 10.07 + 15 + 6 = 31.07, so 32, where 31 was right for
+    # the 572 s of the pair before it. A job of this lane varies by a minute between two
+    # attempts of one commit, so a bound follows the largest reading rather than the newest.
+    # The limit must fire before the runner cancels the job, so a hung test prints the dump
+    # that names it.
+    timeout-minutes: 32
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5743,14 +5745,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Both numbers take the larger of this head's pair for their own reading (attempt 1, run
-    # 43007295244; attempt 2, run 43015711475; dispatch://INFRA-1075, check 6224bb0e). The
-    # step's -timeout is the smallest whole minute at which its slowest package takes at most
-    # half of it: internal/dispatch/docs, this job's one package, 1634.3 s on attempt 2,
-    # 1634.3 / 30 = 54.48, so 55m, which it fills to 49.5 per cent (54m it would fill to 50.4).
-    # The job's own bound is its larger measured time - 1724 s on attempt 2, job 130506232865,
-    # against 1687 s on attempt 1 - 28.73 minutes, plus that largest -timeout plus 6: 28.73 +
-    # 55 + 6 = 89.73, so 90. The limit must fire before the runner cancels the job, so a hung
+    # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
+    # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
+    # package takes at most half of it: internal/dispatch/docs, this job's one package,
+    # 1634.3 s, 1634.3 / 30 = 54.48, so 55m, which it fills to 49.5 per cent (54m it would
+    # fill to 50.4). The job's own bound follows its largest measured time, 1724 s (run
+    # 43015711475, job 130506232865), 28.73 minutes, plus that largest -timeout plus 6:
+    # 28.73 + 55 + 6 = 89.73, so 90. The limit must fire before the runner cancels the job, so a hung
     # test prints the dump that names it.
     timeout-minutes: 90
     services:
