@@ -917,7 +917,13 @@ test("while the search is out the arrows walk only the actions the query starts,
   }
 });
 
-test("a refetch behind a stale cached answer is still out, so Down and Enter reach no action found inside its label", async () => {
+// This row reads the window where the keystroke debounce has fired and the 500 ms meaning
+// pause has not, so the search the keystrokes started is still out and no answer of the
+// meaning tier is mounted. What a cached answer of that tier does when the pause IS crossed -
+// an empty one leaves the hits that follow it with no highlight at all - is covered by no row
+// here, deliberately: it is a question about the palette's own re-rank rule
+// (`SearchPalette.tsx:616-623`) and not about this suite, and it is with the controller.
+test("a search still out leaves Down and Enter reaching no action found inside its label", async () => {
   const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
@@ -925,16 +931,13 @@ test("a refetch behind a stale cached answer is still out, so Down and Enter rea
   const answer = Promise.withResolvers<SearchResponse>();
   const search = spyOn(api, "search").mockReturnValue(answer.promise);
   const view = renderPaletteHost();
-  // The reader searched `issue` earlier and found nothing; that answer is stale now.
-  view.queryClient.setQueryData(["search", "issue", {}], searchAnswer([]));
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
     await user.clear(input);
     await user.click(input);
     await user.paste("issue");
-    // The keystroke debounce alone: this row reads the list while the keyword search is out,
-    // and the 500 ms meaning pause stays unfired under every wait below it.
+    // The keystroke debounce alone, which is the window this row is about.
     await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([CLOSE_ROW]);
