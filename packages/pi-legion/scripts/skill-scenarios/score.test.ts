@@ -1,5 +1,14 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -4981,12 +4990,19 @@ const toldArchitectOfHead = (commit: string, at = "2026-09-30T17:42:00.000Z") =>
  * environment isolation is what the suite pins instead, below: the same seed built under a
  * hostile identity gives the same ids.
  *
- * It is built in the module body because the fixtures below name its commits as they are read,
- * before any hook runs, and it is removed on exit however this process ends, so a
- * `bun test -t <pattern>` that selects no row of this file leaves nothing behind. The clones go
- * to the runs that asked for them in the staging, where the runs directory exists. */
-const fixDir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-threads-"));
-process.on("exit", () => rmSync(fixDir, { recursive: true, force: true }));
+ * It is built in the module body, because the fixtures below name its commits as they are read
+ * and no hook has run by then, and it is built at **one path per content** rather than in a
+ * fresh directory: `skill-scenarios-seed-<sha of the recipe>` under the temporary directory,
+ * made by renaming a finished build into place. A process that finds it already there uses it
+ * and builds nothing. That is what keeps the module body from leaving a directory behind,
+ * measured on 2026-11-11: a removal registered on `process.on("exit")` never ran under the test
+ * runner, and sixteen `skill-scenarios-threads-*` directories had collected by the time it was
+ * read — one per run of the file, including the `bun test -t <pattern>` runs that select no row.
+ * One cache shared by every run grows no further, and a change to the recipe below makes a new
+ * path rather than reusing the old one. The clones go to the runs that asked for them in the
+ * staging, where the runs directory exists. */
+const seedRecipe = (steps: string[]) =>
+  createHash("sha256").update(steps.join("\u0000")).digest("hex").slice(0, 16);
 /** The date every commit of that repository is authored and committed at, in git's own raw
  * format, so two runs of this file on one host make one repository rather than two. */
 const FIX_DATE = "@1759251600 +0000";
@@ -5029,39 +5045,76 @@ const seedGit = (dir: string, env: Record<string, string | undefined>, args: str
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.toString().trim();
 };
-const fixGit = (...args: string[]) => seedGit(fixDir, process.env, args);
-const fixWrite = (file: string, text: string) => {
-  mkdirSync(path.dirname(path.join(fixDir, file)), { recursive: true });
-  writeFileSync(path.join(fixDir, file), text);
-};
-const fixCommits = (() => {
-  fixGit("init", "-q", "-b", "legion/LWEVAL-1", "--object-format=sha1");
-  fixWrite("greet.ts", 'export const greet = (name: string) => "Hello, " + name.trim() + "!";\n');
-  fixWrite("docs/cli.md", "It prints the name exactly as it was given, spaces and all.\n");
-  fixWrite(
+/** The steps of the seed, as the recipe its path is named for: one line per write and per git
+ * command, so a change to any of them is a different path and never a reused repository. */
+const SEED_STEPS: [kind: "write" | "git", ...parts: string[]][] = [
+  ["git", "init", "-q", "-b", "legion/LWEVAL-1", "--object-format=sha1"],
+  ["write", "greet.ts", 'export const greet = (name: string) => "Hello, " + name.trim() + "!";\n'],
+  ["write", "docs/cli.md", "It prints the name exactly as it was given, spaces and all.\n"],
+  [
+    "write",
     ".github/workflows/greet.yml",
-    "# Runs on every pull request and on every push to main.\n"
-  );
-  fixGit("add", "-A");
-  fixGit("commit", "-qm", "the approved head");
-  const approved = fixGit("rev-parse", "HEAD");
-  fixWrite("docs/cli.md", "It trims the spaces around the name.\n");
-  fixWrite(".github/workflows/greet.yml", "# Runs on every pull request.\n");
-  fixGit("commit", "-qam", "docs: the two text fixes");
-  const fixed = fixGit("rev-parse", "HEAD");
-  fixWrite("greet.ts", 'export const greet = (name: string) => "Hi, " + name.trim() + "!";\n');
-  fixGit("commit", "-qam", "feat: and the code too");
-  const withCode = fixGit("rev-parse", "HEAD");
+    "# Runs on every pull request and on every push to main.\n",
+  ],
+  ["git", "add", "-A"],
+  ["git", "commit", "-qm", "the approved head"],
+  ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
+  ["write", ".github/workflows/greet.yml", "# Runs on every pull request.\n"],
+  ["git", "commit", "-qam", "docs: the two text fixes"],
+  ["write", "greet.ts", 'export const greet = (name: string) => "Hi, " + name.trim() + "!";\n'],
+  ["git", "commit", "-qam", "feat: and the code too"],
   // A commit of its own above the approved head that fixes one of the two documents: the push
   // whose diff is a subset of the threads' files, which is a run that left a thread's sentence
   // false. It is made on a branch of its own, so its diff against the approved head is that one
   // file and no other.
-  fixGit("checkout", "-q", "-b", "one-file", approved);
-  fixWrite("docs/cli.md", "It trims the spaces around the name.\n");
-  fixGit("commit", "-qam", "docs: one of the two text fixes");
-  const docOnly = fixGit("rev-parse", "HEAD");
-  fixGit("checkout", "-q", "legion/LWEVAL-1");
-  return { approved, fixed, withCode, docOnly };
+  ["git", "checkout", "-q", "-b", "one-file", "HEAD~2"],
+  ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
+  ["git", "commit", "-qam", "docs: one of the two text fixes"],
+  ["git", "checkout", "-q", "legion/LWEVAL-1"],
+];
+/** Builds the seed in `dir`, under `env`, and answers its four commits. The `one-file` branch
+ * starts at `HEAD~2`, the approved head two commits below the tip, so the recipe names no id of
+ * its own and a change to it is a change of the recipe's own text. */
+const buildSeed = (dir: string, env: Record<string, string | undefined>) => {
+  for (const [kind, ...parts] of SEED_STEPS) {
+    if (kind === "write") {
+      const [file, text] = parts as [string, string];
+      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      writeFileSync(path.join(dir, file), text);
+    } else seedGit(dir, env, parts);
+  }
+  const at = (revision: string) => seedGit(dir, env, ["rev-parse", revision]);
+  return {
+    approved: at("legion/LWEVAL-1~2"),
+    fixed: at("legion/LWEVAL-1~1"),
+    withCode: at("legion/LWEVAL-1"),
+    docOnly: at("one-file"),
+  };
+};
+/** The seed every run of this file shares, at one path per recipe. A process that finds it there
+ * reads its commits and builds nothing; one that does not builds into a fresh directory and
+ * renames it into place, so a reader never meets a half-built repository and two processes
+ * racing leave one of the two builds behind under `rename`'s own rules. */
+const fixDir = path.join(tmpdir(), `skill-scenarios-seed-${seedRecipe(SEED_STEPS.flat())}`);
+const fixGit = (...args: string[]) => seedGit(fixDir, process.env, args);
+const fixCommits = (() => {
+  if (!existsSync(path.join(fixDir, ".git"))) {
+    const building = mkdtempSync(path.join(tmpdir(), "skill-scenarios-seed-building-"));
+    buildSeed(building, process.env);
+    try {
+      renameSync(building, fixDir);
+    } catch {
+      // Another process of the same recipe got there first, which is the one answer its own
+      // build would have given too.
+      rmSync(building, { recursive: true, force: true });
+    }
+  }
+  return {
+    approved: fixGit("rev-parse", "legion/LWEVAL-1~2"),
+    fixed: fixGit("rev-parse", "legion/LWEVAL-1~1"),
+    withCode: fixGit("rev-parse", "legion/LWEVAL-1"),
+    docOnly: fixGit("rev-parse", "one-file"),
+  };
 })();
 /** Each run that asked for a clone of that repository, which the staging below gives a bare one
  * of in its own directory, as rig.sh's worker_fixture leaves one. Each run names itself through
@@ -5083,18 +5136,16 @@ stagings.push(() => {
 // a caller passes, and a Legion pane exports all of them, so a seed that inherits its process's
 // environment makes a different commit on every host: measured on 2026-11-11, `a4d68ec975261ac0…`
 // in one pod, `b50d021dc49f9cd8…` on a GitHub runner and `3d06d7372cdfc7c5…` in a second pod,
-// from one tree and one date. This builds the same seed twice under two hostile environments and
-// requires one answer from both, which is the property the fixtures rest on: the ids are the
-// repository's own, so what must hold is that the repository is the same wherever it is built.
+// from one tree and one date. This builds the seed twice, under a hostile identity and under an
+// environment with no `GIT_*` in it at all, and requires one answer from both: the fixtures read
+// the repository's own commits, so what must hold is that the repository is the same wherever it
+// is built. It also catches a cache that answers for another recipe: both builds go to
+// directories of their own and neither reads the shared one.
 test("the seed's commits are the same under any environment its host carries", () => {
   const built = (env: Record<string, string | undefined>) => {
-    const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-seed-"));
+    const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-seed-built-"));
     try {
-      seedGit(dir, env, ["init", "-q", "-b", "legion/LWEVAL-1", "--object-format=sha1"]);
-      writeFileSync(path.join(dir, "greet.ts"), "the seed's one file\n");
-      seedGit(dir, env, ["add", "-A"]);
-      seedGit(dir, env, ["commit", "-qm", "the approved head"]);
-      return seedGit(dir, env, ["rev-parse", "HEAD"]);
+      return buildSeed(dir, env);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -5112,8 +5163,28 @@ test("the seed's commits are the same under any environment its host carries", (
   const bare = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))
   );
-  expect(built(hostile)).toBe(built(bare));
-}, 60_000);
+  expect(built(hostile)).toEqual(built(bare));
+  // And the shared seed this file's fixtures name is that same repository, whichever process
+  // built it: a cache read as a repository of its own would pass the two builds above and still
+  // hand the fixtures another commit.
+  expect(fixCommits).toEqual(built(bare));
+}, 120_000);
+// Catches: a module body that leaves a directory behind. The seed is built as this file is read,
+// before any hook runs, so no `afterAll` removes it and `process.on("exit")` never ran under the
+// test runner — sixteen `skill-scenarios-threads-*` directories had collected by 2026-11-11, one
+// per run of the file, the `bun test -t <pattern>` runs that select no row among them. One path
+// per recipe is what bounds it: a second run of any recipe makes no second directory. This reads
+// the one directory the seed uses and requires that it is the recipe's own.
+test("the seed is one directory per recipe, whatever a run selects", () => {
+  expect(path.basename(fixDir)).toBe(`skill-scenarios-seed-${seedRecipe(SEED_STEPS.flat())}`);
+  expect(path.dirname(fixDir)).toBe(tmpdir());
+  const before = readdirSync(tmpdir()).filter((name) => name.startsWith("skill-scenarios-seed-"));
+  const again = path.join(tmpdir(), `skill-scenarios-seed-${seedRecipe(SEED_STEPS.flat())}`);
+  expect(again).toBe(fixDir);
+  expect(readdirSync(tmpdir()).filter((name) => name.startsWith("skill-scenarios-seed-"))).toEqual(
+    before
+  );
+});
 const pushed = (sha: string) =>
   `2026-09-30T17:35:00.000Z refs/heads/legion/LWEVAL-1 ${fix.approved} ${sha}\n`;
 /** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,

@@ -82,7 +82,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  });
+  }, HOOK_BOUND_MS);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -126,13 +126,22 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  });
+  }, HOOK_BOUND_MS);
   afterAll(() => {
     removeTree(directory);
-  });
+  }, HOOK_BOUND_MS);
   return directory;
 }
 
+/** The bound every hook of this file takes, in place of Bun's 5 s default. Removing a tree is
+ * work that grows with what a suite made and with what else the host is doing: measured on
+ * 2026-11-11, `packages/pi-legion/scripts/skill-scenarios/score.test.ts`, whose directory holds
+ * about ninety run directories each with a bare clone, had its removal killed at 5 s whenever
+ * four copies of that suite ran at once, and the failure reads `(fail) (unnamed)` with
+ * `a beforeEach/afterEach hook timed out for this test` and names neither the hook nor the
+ * directory. A removal is not a test, so a bound that fails it says nothing about the code under
+ * test; this one is long enough that only a removal that will never finish reaches it. */
+const HOOK_BOUND_MS = 120_000;
 /** `-`, the one character the name template trims from a caller's prefix. */
 const DASH = 45;
 
