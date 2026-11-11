@@ -87,7 +87,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     those members' pull requests (record.Store.PullRequestsOf), each built for the roots that
 //     are already candidates and for no other issue of the project.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
-	facts record.LineFacts,
+	facts record.LineFacts, line []record.LineEntry,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -169,20 +169,37 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 		members[issue.Tree] = append(members[issue.Tree], issue)
 		of[issue.Key] = struct{}{}
 	}
-	// The slots of those members, by issue, which the fourth wait below reads: a start marked
-	// for its issue's admission slot is a start the outbox holds unclaimable while the table
-	// names no row of that issue (record.Store's outboxInOrder), so the pair is the wait. Only a
-	// member is ever asked for, so no slot of another tree is mapped.
+	// The slots of those members and the places the waiting line holds for them, by issue,
+	// which the fourth wait below reads as one pair: an issue of the line that holds no slot is
+	// an issue the cap itself is holding. Only a member is ever asked for, so neither map names
+	// an issue of another tree.
+	//
+	// It is the line rather than the owed start row because the line is where both shapes of
+	// that wait stand. An issue whose work came back owes a start the outbox holds unclaimable
+	// while the slots table names no row of it (record.SuperviseRequest.NeedsSlot, the outbox's
+	// own outboxInOrder), and it is in the line's first part. An issue waiting for its first
+	// phase owes no row at all, because the start is written by the promotion that grants the
+	// slot (record.LineFirstPhase, Engine.StartFirstPhase), and it is in the line's second
+	// part. Read from the owed row alone, as this rule first was, the second shape is held by
+	// nothing and its tree is told as stopped — a root at admitted waiting for its children
+	// with one released child in the line, which is the commonest shape a tree waiting for the
+	// cap takes, and which eight trees of the INFRA deployment stood in at 2026-11-11T16:36Z.
 	slotted := make(map[string]struct{}, len(of))
 	for _, slot := range slots {
 		if _, member := of[slot.Issue]; member {
 			slotted[slot.Issue] = struct{}{}
 		}
 	}
+	waiting := make(map[string]struct{}, len(of))
+	for _, entry := range line {
+		if _, member := of[entry.Issue.Key]; member {
+			waiting[entry.Issue.Key] = struct{}{}
+		}
+	}
 	var stopped []record.Issue
 	named := 0
 	for _, root := range unsent {
-		if a.everyIssueWaitsByDesign(members[root.Key], slotted, facts) {
+		if a.everyIssueWaitsByDesign(members[root.Key], slotted, waiting, facts) {
 			continue
 		}
 		stopped = append(stopped, root)
@@ -257,18 +274,26 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 //     under an open gate whether or not a child of it is open: taken for this, it would call
 //     the commonest quiet shape there is a wait, a tree whose root stands at admitted doing
 //     nothing;
-//  4. an issue whose start row is marked for its admission slot while the slots table names no
-//     row of it (record.LineFacts.Owed with the pass's own slots): the worker waits for the cap
-//     to free a slot, which is the waiting line working as designed.
+//  4. an issue of the waiting line that holds no slot (the line of the pass, with the pass's
+//     own slots): the cap itself is holding it, which is the waiting line working as designed.
+//     Both shapes of that wait stand in the line and neither is read from anywhere else: an
+//     issue whose work came back owes a start marked for its admission slot, which the outbox
+//     holds unclaimable while the slots table names no row of it, and an issue waiting for its
+//     first phase owes no start at all, because the promotion that grants the slot is what
+//     writes it. Read from the owed row alone, this rule called the second shape a tree that
+//     had stopped (dispatch://INFRA-2560, R5, and the test over the behaviour in
+//     first_slot_wait_test.go).
 //
-// Only a start held that way is a wait of the daemon's. A task, a notice or a message queued
+// Only the cap's own hold is a wait of the daemon's here. A task, a notice or a message queued
 // for a role is none: a notice queued to a suspended role waits for a role nothing brings
 // back, so an issue with one in the outbox has stopped like any other. An issue in `held` and
 // an issue in `awaiting_merge` are no wait either — a held issue waits for its architect,
 // which is the tree's own work, and an issue awaiting its merge waits for GitHub, which is
 // nothing the daemon holds it for — so a tree holding one of them is told like any other
 // stall.
-func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, slotted map[string]struct{}, facts record.LineFacts) bool {
+func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, slotted, waiting map[string]struct{},
+	facts record.LineFacts,
+) bool {
 	for _, issue := range members {
 		if issue.AwaitingPerson() {
 			continue
@@ -279,7 +304,7 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, slotted map[
 		if a.waitsForChildren(facts.ChildWaits, issue) {
 			continue
 		}
-		if _, owes := facts.Owed[issue.Key]; owes {
+		if _, waits := waiting[issue.Key]; waits {
 			if _, holds := slotted[issue.Key]; !holds {
 				continue
 			}

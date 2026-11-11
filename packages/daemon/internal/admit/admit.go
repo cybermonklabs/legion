@@ -1291,11 +1291,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	// Every tree of this project that has stopped is told to the controller here, after the
 	// releases and the line's judgement: the rule reads the facts this pass already holds —
-	// the slots it has given back, what a blocker holds, what waits for its children and what
-	// each issue owes its worker — and no pass may read them twice. It runs before the cap
-	// check below, because a deployment whose cap admits nothing still runs the trees it
-	// opened before and still owes its controller the news that one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, slots, facts); err != nil {
+	// the slots it has given back, what a blocker holds, what waits for its children and the
+	// line itself, where every issue the cap is holding stands — and no pass may read them
+	// twice. It runs before the cap check below, because a deployment whose cap admits nothing
+	// still runs the trees it opened before and still owes its controller the news that one
+	// has stopped.
+	if err := a.tellStalledTrees(ctx, tx, issues, slots, facts, line); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {

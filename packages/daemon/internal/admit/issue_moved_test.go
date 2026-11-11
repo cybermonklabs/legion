@@ -32,8 +32,8 @@ const movedIssue = "LEGION-208"
 // record changed leaves the mark at that fact's own moment, and the daemon's own bookkeeping
 // leaves it where it stands.
 //
-// This test is in internal/admit because it is the one package that can show every half. Seven
-// of the ten write sites are in internal/workflow and three are admission's own — the
+// This test is in internal/admit because it is the one package that can show every half. Eight
+// of the eleven write sites are in internal/workflow and three are admission's own — the
 // re-admission, the resume of an answered root and the promotion of a root the line was
 // holding — and the boot's read of the Dispatch listing, which marks nothing of its own, is
 // Admission.Reconcile's; admit imports workflow, so an Engine and an Admission stand side by
