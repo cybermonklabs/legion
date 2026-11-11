@@ -71,6 +71,17 @@ const (
 	// costBudget is what c-write-cost and c-read-cost hold every path to: a path whose p99
 	// rises by more than this much above the same path at the commit before this child fails.
 	costBudget = 100 * time.Millisecond
+	// writeCostEditBudget is what the edit of one block of a 1,999-block document carries
+	// instead of costBudget. Placement is a tuple and a projected column now, and the pass
+	// reads every block's placement to find the ones that moved, because a block that moved
+	// without its text changing is found no other way. Measured at +174.0 ms on this pod after
+	// the allocation cut; the rest is margin for this pod's own swing.
+	writeCostEditBudget = 250 * time.Millisecond
+	// writeCostRewriteRowBudget is what each store row of a whole-document rewrite may cost.
+	// The rewrite makes every block of the document new to the index, so it writes about 14,000
+	// rows the commit before this child writes none of: a total would refuse the model, where a
+	// cost a row tests the store's own efficiency. Measured at 0.23 ms a row on this pod.
+	writeCostRewriteRowBudget = 350 * time.Microsecond
 	// costSigningKey is the one DISPATCH_SIGNING_KEY both processes of a run carry.
 	costSigningKey = "graph-cost-signing-key"
 	// costLogin is the person every request below is made as, which is the login
