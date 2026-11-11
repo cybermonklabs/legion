@@ -94,7 +94,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 63's launch spend
+number is the one `DaemonAPIVersion` declares, last bumped by contract 64's launch spend
 attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
 issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
 after the attributes the deployment's own `runtime.kubernetes.pod.env` or

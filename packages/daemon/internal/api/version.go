@@ -846,7 +846,7 @@ package api
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 63: INFRA-312 -- every Legion launch says which issue its dollars were spent on: the pane
+// 64: INFRA-312 -- every Legion launch says which issue its dollars were spent on: the pane
 // environment and a pod's worker container now carry `legion.issue`, the issue the launch serves,
 // and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`, written after the attributes
 // the operator's own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets (the one
@@ -869,10 +869,11 @@ package api
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
 // image whose pi-legion declares another, so no pane and no pod runs an agent of one contract
-// under a daemon of the other. (60 is declared by two open pull requests of this repository,
-// cybermonklabs/legion#2731 and #3511, 61 by #2230 and 62 by #3522, each open on 2026-11-11 when
-// this number was taken and none of them carrying these attributes, so this change takes the
-// number above them all, as
+// under a daemon of the other. (Read on 2026-11-11 at main's tip and over every open pull request
+// of this repository: main declares 59, and open pull requests declare 60
+// (cybermonklabs/legion#2731, #3511 and #3519), 61 (#2230), 62 (#3522) and 63 (#3534), each open
+// on that day and none of them carrying these attributes, so this change takes the number above
+// them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 63
+const DaemonAPIVersion = 64
