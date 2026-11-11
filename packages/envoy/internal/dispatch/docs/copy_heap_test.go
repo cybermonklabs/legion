@@ -740,3 +740,58 @@ func measureLoad(t *testing.T, load func() any) loadCost {
 	runtime.KeepAlive(kept)
 	return loadCost{took: took, allocated: allocated, peak: peak - base, held: int64(after.HeapAlloc) - int64(before.HeapAlloc)}
 }
+
+// A holder that already holds a grant keeps it and takes only the difference where its next copy
+// weighs more, so the pool holds the heaviest copy the grant covers and never the sum of the
+// copies made under it, and a copy lighter than the grant takes nothing at all
+// (dispatch://INFRA-179, review 5820480859's finding 10). One transaction's forks share the
+// first fork's grant (forkSlot) and every decode made under a carried one covers itself on it
+// (withLoadSlot), so a take that found the grant held and took nothing more charged a
+// transaction its first copy however heavy the copies after it: one transaction that edited a
+// resident 256-byte document and then a resident 2 MiB one was measured at "small fork weighs
+// 32676, big fork weighs 32148200" with the pool holding 32,676 bytes, which
+// Docs.WriteIssueAskStates does on every issue close, reopen and sweep.
+//
+// The two copies are weighed as every taker of the pool is (copyWeight), and what the pool holds
+// is read off its own accounting (loadSlots.held).
+func TestAHoldersHeavierCopyTakesTheDifferenceAndALighterOneTakesNothing(t *testing.T) {
+	// The measurement's two documents: the small one the transaction forked first, and the
+	// 2 MiB one it forked after it. Neither has been decoded where its grant is taken, so the
+	// state term alone weighs each (copyWeight).
+	small, large := copyWeight(256, 0), copyWeight(2<<20, 0)
+	if small >= large {
+		t.Fatalf("the two copies weigh %d and %d bytes of the pool, want the second the heavier", small, large)
+	}
+	slots := useLoadSlots(t, newLoadSlots(1))
+	grant := newLoadSlot()
+	t.Cleanup(grant.release)
+	for _, take := range []struct {
+		name string
+		// bytes is what the copy this take covers costs, and held what the pool holds once it
+		// has been taken.
+		bytes, held int64
+	}{
+		{name: "the transaction's first fork", bytes: small, held: small},
+		{name: "its second fork, which weighs more", bytes: large, held: large},
+		{name: "a third fork lighter than the grant covers", bytes: small, held: large},
+	} {
+		if err := grant.take(context.Background(), take.bytes); err != nil {
+			t.Fatalf("%s took %d bytes of the pool: %v", take.name, take.bytes, err)
+		}
+		if held := slots.held.Load(); held != take.held {
+			t.Fatalf("the pool holds %d bytes once the grant covers %s, a copy of %d bytes, want %d; the two copies together are %d",
+				held, take.name, take.bytes, take.held, small+large)
+		}
+	}
+	t.Logf("a grant taken for a %d-byte copy and then for a %d-byte one holds %d bytes of the pool, not %d",
+		small, large, slots.held.Load(), small+large)
+	// The difference is given back with the rest: the grant gives back exactly what it took.
+	grant.release()
+	if held := slots.held.Load(); held != 0 {
+		t.Fatalf("the released grant leaves %d bytes of the pool held, want none", held)
+	}
+	if !slots.semaphore().TryAcquire(slots.poolBytes()) {
+		t.Fatalf("the pool has less than its whole %d bytes free once the grant was released", slots.poolBytes())
+	}
+	slots.semaphore().Release(slots.poolBytes())
+}
