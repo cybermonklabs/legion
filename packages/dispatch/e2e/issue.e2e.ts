@@ -13,12 +13,15 @@ import {
   mintAgentToken,
   patchIssue,
   putRepoProject,
+  requestApproval,
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
+import { keptWrites } from "./keyed-writes";
 import { clearIssueCreator, resetDatabase } from "./seed";
-import { expect, type Locator, test } from "./test";
+import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -944,62 +947,394 @@ test("issue header gives the title the row's free space beside a short details l
   }
 });
 
+// The widths dispatch://INFRA-299/spec#b-r1 names, and what each of them is: 1024 and 1279 px
+// sit below `xl`, where the shell gives the page the whole window; at 1280 px the sidebar and
+// the margin column take 704 px of it, so a title wraps where it did not; and from 1536 px
+// (`2xl`) the header's title slot is content-sized (`2xl:basis-auto` in `IssueHeader.tsx`), so
+// the slot's width is the width of whichever of the heading and the editor is in it.
+const titleEditWidths = [1024, 1279, 1280, 1536, 1920] as const;
+
+// The title's line box: `leading-7` on both the heading and the editor (`IssueHeader.tsx`). A
+// row that needs a wrapped heading reads the real box against this rather than trusting a
+// string to be long enough for the width it runs at.
+const titleLineBox = 28;
+
+/** The box one control of the header occupies, under the name that control is reached by. */
+interface HeaderControl {
+  height: number;
+  name: string;
+  width: number;
+  x: number;
+  y: number;
+}
+
+/** Opens the title editor the way a person does, by clicking the heading. */
+async function openTitleEditor(page: Page): Promise<void> {
+  await page.getByTestId("issue-header").getByRole("heading", { level: 1 }).click();
+  await expect(page.getByLabel("Issue title")).toBeFocused();
+}
+
+/**
+ * A real click is mousedown then mouseup: the mousedown blurs the title editor, and the header
+ * must not re-lay out on that blur, or the mouseup lands on a different element and the browser
+ * delivers no click to the control the person pressed. `click()` is never used for a press that
+ * ends a title edit, because it finds the control again after the blur and hides the fault. The
+ * raw sequence skips `click()`'s actionability wait, so the control is waited for here: the pin
+ * and Close stay `disabled` while their previous write is in flight, and a browser drops a
+ * click on a disabled button.
+ */
+async function pressUnderPointer(page: Page, control: Locator): Promise<void> {
+  await expect(control).toBeEnabled();
+  const box = await control.boundingBox();
+  if (box === null) {
+    throw new Error("the control must be visible while the title is being edited");
+  }
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+}
+
+async function pressWhileEditingTitle(page: Page, control: Locator): Promise<void> {
+  await openTitleEditor(page);
+  await pressUnderPointer(page, control);
+}
+
+/** The heading's own box, read rather than guessed: how many line boxes of its own line height
+ *  it is tall, with that line height beside it, so a row that needs a wrapped heading fails
+ *  where its fixture stopped wrapping instead of measuring a one-line case a second time. */
+function headingLineBoxes(page: Page): Promise<{ lineHeight: number; lines: number }> {
+  return page.evaluate(() => {
+    const heading = document.querySelector("[data-testid=issue-header] h1");
+    if (heading === null) {
+      throw new Error("the issue header holds no h1 while its title shows");
+    }
+    const style = getComputedStyle(heading);
+    const text =
+      heading.getBoundingClientRect().height -
+      Number.parseFloat(style.paddingTop) -
+      Number.parseFloat(style.paddingBottom) -
+      Number.parseFloat(style.borderTopWidth) -
+      Number.parseFloat(style.borderBottomWidth);
+    const lineHeight = Number.parseFloat(style.lineHeight);
+    return { lineHeight, lines: Math.round(text / lineHeight) };
+  });
+}
+
+/** Every control of the header by the name it is reached by, with the box it occupies: what the
+ *  invariant of dispatch://INFRA-299/spec#b-r1 compares between the heading and the editor, and
+ *  what carries that requirement to the controls no row presses. The title element is the one
+ *  that changes and is left out; a control's name is its `aria-label`, its `title` or its own
+ *  text, which is what the rows of this file locate these controls by. */
+function headerControls(page: Page): Promise<HeaderControl[]> {
+  return page.evaluate(() => {
+    const header = document.querySelector("[data-testid=issue-header]");
+    if (header === null) {
+      throw new Error("the issue header is not on the page");
+    }
+    return [...header.querySelectorAll<HTMLElement>("a[href], button, input, select")]
+      .filter((control) => control.getAttribute("aria-label") !== "Issue title")
+      .map((control) => {
+        const box = control.getBoundingClientRect();
+        return {
+          height: Math.round(box.height),
+          name:
+            control.getAttribute("aria-label") ??
+            control.getAttribute("title") ??
+            (control.textContent ?? "").trim(),
+          width: Math.round(box.width),
+          x: Math.round(box.x),
+          y: Math.round(box.y),
+        };
+      });
+  });
+}
+
+/** The pin, the unpin and then Close issue, each pressed straight out of an open title editor,
+ *  and the issue left unpinned and open again for the next width. `wrapped` is read before every
+ *  press: a fixture that stopped wrapping would otherwise press a one-line heading and pass
+ *  while measuring nothing. The measurement is a floor rather than an exact count, because what
+ *  dispatch://INFRA-299/spec#b-r2 asks of the fixture is that the heading wraps past the one line
+ *  the editor is, and how many lines a string takes is the font's business and the width's. */
+async function pinAndCloseFromTitleEdit(
+  page: Page,
+  issueKey: string,
+  width: number,
+  wrapped: boolean
+): Promise<void> {
+  const readHeading = async () => {
+    if (wrapped) {
+      const heading = await headingLineBoxes(page);
+      expect(heading.lineHeight, `the heading's line box at ${width}px`).toBe(titleLineBox);
+      expect(heading.lines, `the heading at ${width}px must wrap past one line`).toBeGreaterThan(1);
+    }
+  };
+  const pin = page.getByRole("button", { name: "Pin issue" });
+  const unpin = page.getByRole("button", { name: "Unpin issue" });
+  await readHeading();
+  await pressWhileEditingTitle(page, pin);
+  await expect(unpin, `the pin pressed out of a title edit at ${width}px`).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  await readHeading();
+  await pressWhileEditingTitle(page, unpin);
+  await expect(pin, `the unpin pressed out of a title edit at ${width}px`).toHaveAttribute(
+    "aria-pressed",
+    "false"
+  );
+  await readHeading();
+  await pressWhileEditingTitle(page, page.getByRole("button", { name: "Close issue" }));
+  await expect(
+    page.getByRole("button", { name: "Reopen issue" }),
+    `Close issue pressed out of a title edit at ${width}px`
+  ).toBeVisible();
+  await expect.poll(() => getIssue(issueKey)).toMatchObject({ status: "done" });
+  await patchIssue(issueKey, { status: "triage" });
+}
+
+// SLOW(>=2s): five widths, each a load of the issue and three presses out of an open title
+// editor, with the issue closed and opened again between them.
 test("issue header delivers the click that ends a title edit to the control under the pointer", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Short title" });
+  // 75 characters, the title dispatch://INFRA-299/spec#b-r1 names for these five widths: one
+  // line of the heading below 1280 px, and more than one from there.
+  const title = "Deliver the first press after a title edit to the control under the pointer";
+  const issue = await createIssue({ project: "CORE", title });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  // A real click is mousedown then mouseup: the mousedown blurs the title editor, and the header
-  // must not re-lay out on that blur, or the mouseup lands on a different element and the
-  // browser delivers no click to the control the user pressed. The raw mouse sequence skips
-  // `click()`'s actionability wait, so wait for the control ourselves: the pin and Close stay
-  // `disabled` while their previous write is in flight, and a browser drops a click on a
-  // disabled button.
-  const pressWhileEditingTitle = async (control: Locator) => {
-    await page.getByTestId("issue-header").getByRole("heading", { level: 1 }).click();
-    await expect(page.getByLabel("Issue title")).toBeFocused();
-    await expect(control).toBeEnabled();
-    const box = await control.boundingBox();
-    if (box === null) {
-      throw new Error("the control must be visible while the title is being edited");
-    }
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.mouse.up();
-  };
   try {
-    for (const width of [1024, 1279]) {
+    for (const width of titleEditWidths) {
       await page.setViewportSize({ height: 800, width });
       await page.goto(`/issues/${issue.key}`);
       await expect(
-        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Short title" })
+        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: title })
       ).toBeVisible();
-
-      const pin = page.getByRole("button", { name: "Pin issue" });
-      await pressWhileEditingTitle(pin);
-      await expect(page.getByRole("button", { name: "Unpin issue" })).toHaveAttribute(
-        "aria-pressed",
-        "true"
-      );
-      await pressWhileEditingTitle(page.getByRole("button", { name: "Unpin issue" }));
-      await expect(pin).toHaveAttribute("aria-pressed", "false");
-
-      await pressWhileEditingTitle(page.getByRole("button", { name: "Close issue" }));
-      await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
-      await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "done" });
-      if (width === 1024) {
-        const shot = testInfo.outputPath("issue-header-title-edit-click-1024.png");
+      await pinAndCloseFromTitleEdit(page, issue.key, width, false);
+      if (width === 1024 || width === 1536) {
+        const shot = testInfo.outputPath(`issue-header-title-edit-click-${width}.png`);
         await page.screenshot({ path: shot });
-        await testInfo.attach("close clicked straight out of a title edit (1024px)", {
+        await testInfo.attach(`close clicked straight out of a title edit (${width}px)`, {
           contentType: "image/png",
           path: shot,
         });
       }
-      await patchIssue(issue.key, { status: "triage" });
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): the same five widths on a reviewed issue, whose header carries the approval
+// chip's two actions and the GitHub link beside everything the row above presses.
+test("issue header delivers the click that ends a title edit beside the approval buttons and a GitHub link", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  // 41 characters beside the busiest state row the header draws: the primary document's
+  // approval chip with its Approve and Request changes actions, and the pull request the issue
+  // links, which is the second fixture of dispatch://INFRA-299/spec#b-r1.
+  const title = "Approve the header's press at every width";
+  const issue = await createIssue({ project: "CORE", spec: "The approach.", title });
+  await requestApproval(issue.primary_artifact_id, {}, session);
+  await patchIssue(issue.key, {
+    external_links: [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }],
+  });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    for (const width of titleEditWidths) {
+      await page.setViewportSize({ height: 800, width });
+      await page.goto(`/issues/${issue.key}`);
+      const header = page.getByTestId("issue-header");
+      await expect(header.getByRole("heading", { level: 1, name: title })).toBeVisible();
+      await expect(header.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+      await expect(header.getByRole("button", { name: "Request changes" })).toBeVisible();
+      await expect(header.getByRole("link", { name: "#1051 sjawhar/legion" })).toBeVisible();
+      await pinAndCloseFromTitleEdit(page, issue.key, width, false);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+test("issue header delivers the click that ends a title edit where the heading wraps past one line", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  // One fixture per width of dispatch://INFRA-299/spec#b-r2, each long enough to wrap there.
+  // Measured in this pod at 7974f2dd: the 55-character title below is three line boxes of the
+  // heading at 1280 px, and the 201-character one is more than one at 1920 px. Each press below
+  // reads the heading's own box first, so a fixture that stopped wrapping fails the row rather
+  // than measuring a one-line case a second time.
+  const laptopTitle = "A title that wraps to two lines on a laptop screen here";
+  const wideTitle =
+    "The header title that a reader keeps editing until it is long enough to wrap past the first line of a nineteen-twenty screen, where the sidebar and the review margin leave the title about a thousand px";
+  const laptop = await createIssue({ project: "CORE", title: laptopTitle });
+  const wide = await createIssue({ project: "CORE", title: wideTitle });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    for (const wrapped of [
+      { issue: laptop, title: laptopTitle, width: 1280 },
+      { issue: wide, title: wideTitle, width: 1920 },
+    ]) {
+      await page.setViewportSize({ height: 800, width: wrapped.width });
+      await page.goto(`/issues/${wrapped.issue.key}`);
+      await expect(
+        page.getByTestId("issue-header").getByRole("heading", { level: 1, name: wrapped.title })
+      ).toBeVisible();
+      await nextFrames(page);
+      await pinAndCloseFromTitleEdit(page, wrapped.issue.key, wrapped.width, true);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+test("issue header delivers the click that ends a title edit into a draft that has grown past one line", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Short title" });
+  // 98 characters typed over an 11-character title: the heading that returns at the blur is
+  // this draft, because the header renders `drafts.title`, so a box sized to the stored title
+  // alone still changes size under the press and still loses it.
+  const grown =
+    "Typed while the editor is open: a draft long enough to wrap the heading of a 1536 px screen in two";
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 800, width: 1536 });
+    await page.goto(`/issues/${issue.key}`);
+    const heading = page.getByTestId("issue-header").getByRole("heading", { level: 1 });
+    await expect(heading).toHaveText("Short title");
+    await openTitleEditor(page);
+    await page.getByLabel("Issue title").fill(grown);
+    await nextFrames(page);
+
+    await pressUnderPointer(page, page.getByRole("button", { name: "Pin issue" }));
+    await expect(
+      page.getByRole("button", { name: "Unpin issue" }),
+      "the pin pressed out of a title edit whose draft grew past one line"
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(heading).toHaveText(grown);
+    const returned = await headingLineBoxes(page);
+    expect(returned.lineHeight).toBe(titleLineBox);
+    expect(
+      returned.lines,
+      "the draft must wrap at 1536 px or this row measures no grown box"
+    ).toBeGreaterThan(1);
+    await expect.poll(() => getIssue(issue.key)).toMatchObject({ title: grown });
+  } finally {
+    await context.close();
+  }
+});
+
+test("issue header moves nothing between the heading and the editor, the invariant behind the press that ends a title edit", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  // The crowded header, so the invariant is read over every control the page draws rather than
+  // over the two this file presses: the approval chip with its actions, the GitHub link, the
+  // labels, a subscriber and the whose-turn indicator.
+  const title = "Deliver the first press after a title edit to the control under the pointer";
+  const issue = await createIssue({ project: "CORE", spec: "The approach.", title });
+  await requestApproval(issue.primary_artifact_id, {}, session);
+  await patchIssue(issue.key, {
+    external_links: [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }],
+    labels: ["Frontend", "api"],
+    priority: 1,
+  });
+  await createAsk(issue.key, { question: "Which layout?" }, session);
+  await subscribeSession(issue.key);
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 800, width: 1024 });
+    await page.goto(`/issues/${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    const editor = page.getByLabel("Issue title");
+    // Everything the header reads for asynchronously is on the page before the first
+    // measurement: an arrival between the two would move a control for a reason of its own.
+    await expect(header.getByRole("heading", { level: 1, name: title })).toBeVisible();
+    await expect(header.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(header.getByRole("link", { name: "#1051 sjawhar/legion" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
+    // Two asks wait on the reader here: the approval request above, and the question below it.
+    await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (2)");
+
+    // A pass of its own, which presses nothing: pressing the pin renames the control from
+    // `Pin issue` to `Unpin issue` and Close issue adds the closed callout, so a pass that
+    // presses cannot compare like with like.
+    for (const width of titleEditWidths) {
+      await page.setViewportSize({ height: 800, width });
+      await nextFrames(page);
+      const showing = await headerControls(page);
+      const names = showing.map((control) => control.name);
+      expect(names, `the header's controls at ${width}px`).toContain("Pin issue");
+      expect(names, `the header's controls at ${width}px`).toContain("Close issue");
+      await openTitleEditor(page);
+      await nextFrames(page);
+      // Soft, so one width that moves a control does not hide the four widths after it: the row
+      // still fails, and its report names every width the header moves at.
+      expect
+        .soft(await headerControls(page), `the header's controls at ${width}px`)
+        .toEqual(showing);
+      await editor.press("Escape");
+      await expect(editor).toHaveCount(0);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+test("issue header keeps one title element in the tree and the tab order, and the Tab that ends a title edit moves to the pin", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "One title element at a time";
+  const issue = await createIssue({ project: "CORE", title });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 800, width: 1536 });
+    await page.goto(`/issues/${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    const heading = header.getByRole("heading", { level: 1 });
+    const editor = page.getByLabel("Issue title");
+
+    // While the title shows, the heading is the header's one title element and the editor is
+    // not on the page.
+    await expect(heading).toHaveText(title);
+    await expect(editor).toHaveCount(0);
+    await expect(header.locator("h1")).toHaveCount(1);
+
+    // While the edit is open it is the other way round, and the header still holds one `h1`: a
+    // copy kept to hold the box's size is hidden from assistive software and is that same
+    // `h1`, never a second one, because the header's own measurement reads the first `h1` it
+    // finds (dispatch://INFRA-299/spec#b-r9).
+    await openTitleEditor(page);
+    await expect(heading).toHaveCount(0);
+    await expect(editor).toHaveCount(1);
+    await expect(header.locator("h1")).toHaveCount(1);
+
+    // Tab ends the edit as a press does, and the focus lands on the control after the editor,
+    // never on a copy of the title kept for the box's size, which is out of the tab order. A
+    // closed issue is outside this rule: its title cannot be edited and its heading is already
+    // out of the tab order (`tabIndex={isClosed ? -1 : 0}` in `IssueHeader.tsx`).
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Pin issue" })).toBeFocused();
+    await expect(heading).toHaveText(title);
+    await expect(editor).toHaveCount(0);
+    await expect(header.locator("h1")).toHaveCount(1);
   } finally {
     await context.close();
   }
@@ -1342,6 +1677,180 @@ test("the details rail fades its trailing edge only while it has somewhere to sc
       element.scrollLeft = 0;
     });
     await expect.poll(masked).toBe(true);
+  } finally {
+    await context.close();
+  }
+});
+
+/** The priority the issue below is seeded at, which the server keeps for as long as that row
+ *  holds its saves: a value that reaches the screen from the server shows as this one, so it is
+ *  never one of the reader's picks. */
+const HELD_SAVE_PRIORITY = 3;
+
+/** The three priorities that row's reader picks, in the order they are picked. */
+const HELD_SAVE_PICKS = [0, 1, 2] as const;
+
+/** The title the project's other issue is given mid-row. Every event of an issue refreshes its
+ *  project's list (`api/event-refresh.ts`), so this write is what starts the list read whose
+ *  answer lands while the first priority save is still held. */
+const RETITLED = "Another issue, retitled while a save was out";
+
+/** One priority save the page made, as the route handler was given it: the body it carried, and
+ *  the handle that answers it. */
+interface HeldPrioritySave {
+  body: unknown;
+  release: () => void;
+}
+
+/**
+ * Holds every `PATCH /issues/<key>` the page makes, in arrival order, each until its own release.
+ * The write store sends the writes of one issue one at a time (`web/src/features/writes/
+ * write-store.ts`, one line per `issue:<KEY>` target), so a held save keeps every save behind it
+ * off the wire: the handler is given the next one only once the one before it has been answered.
+ */
+async function holdPrioritySaves(page: Page, issueKey: string): Promise<HeldPrioritySave[]> {
+  const held: HeldPrioritySave[] = [];
+  await page.route(`**/api/v1/issues/${issueKey}`, async (route) => {
+    const request = route.request();
+    if (request.method() !== "PATCH") return route.fallback();
+    const answered = Promise.withResolvers<void>();
+    held.push({ body: request.postDataJSON(), release: answered.resolve });
+    await answered.promise;
+    return route.fallback();
+  });
+  return held;
+}
+
+/** The priority a save's body carries, and undefined for a body carrying none. */
+function prioritySaved(body: unknown): unknown {
+  return typeof body === "object" && body !== null && "priority" in body
+    ? body.priority
+    : undefined;
+}
+
+/** How many answers to a project's issue-list read (`GET /issues?project=<key>`, the read
+ *  `projectIssuesQuery` makes) the page has had, counted as each answer's body lands: what tells
+ *  a row that the list it reads is the server's answer and not the cache a pick wrote. */
+function countProjectListReads(page: Page, project: string): () => number {
+  let answered = 0;
+  page.on("requestfinished", (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "GET" &&
+      url.pathname === "/api/v1/issues" &&
+      url.searchParams.get("project") === project
+    ) {
+      answered += 1;
+    }
+  });
+  return () => answered;
+}
+
+// SLOW(>=2s): the project list and two issue pages loaded in turn, three picks around five
+// in-app navigations, and the held saves released one at a time against the real server.
+//
+// INFRA-299's two faults, driven as one reader's journey with one priority save held open:
+//  - A list answer puts an old value back on screen. Each of the three issue field controls
+//    writes through `web/src/features/issue/useIssueFieldWrite.ts`: it shows the pick in the
+//    issue detail, every project issue list and every Inbox row and cancels the reads in flight
+//    at that moment, and nothing holds a read that starts after it - `projectIssuesQuery`
+//    (`web/src/api/queries.ts`) waits only for a pending board move. So a list answer that
+//    lands while the PATCH is still out carries the priority the server still holds.
+//  - An older pick is stored last. A pick made while a save is out is held in two refs of the
+//    control that made it (`queued` and the submit guard in `useIssueFieldWrite`) and sent when
+//    that save settles, and `IssuePage` keys `IssueDetail` by the issue, so leaving the issue
+//    page and opening it again gives a fresh control whose own pick joins the write store at
+//    once - ahead of the pick made before it, or in place of it.
+//
+// The second pick is made on the control that made the first, since that is the only place a
+// queued pick lives; the list answer is read after it, with the same save still held.
+test("a pick stands while a list answers, and the newest pick is the one the server is sent last", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  await patchIssue(issue.key, { priority: HELD_SAVE_PRIORITY });
+  const [firstPick, secondPick, thirdPick] = HELD_SAVE_PICKS;
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const listReads = countProjectListReads(page, "CORE");
+    const held = await holdPrioritySaves(page, issue.key);
+    const listRow = page.locator(`[data-issue-row="${issue.key}"]`);
+    const listPriority = listRow.getByLabel(`Priority of ${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    const headerPriority = header.getByLabel(`Priority of ${issue.key}`);
+
+    // The project's list, read once, so every pick below is shown over an answer it holds.
+    await page.goto("/projects/CORE/issues");
+    await expect(listPriority).toHaveValue(String(HELD_SAVE_PRIORITY));
+
+    // The first pick, on the issue page. Its PATCH is held from here to the release below, so
+    // the server keeps the seeded priority for the whole journey.
+    await navigateInApp(page, `/issues/${issue.key}`);
+    await expect(headerPriority).toHaveValue(String(HELD_SAVE_PRIORITY));
+    await headerPriority.selectOption(String(firstPick));
+    await expect.poll(() => held.length).toBe(1);
+    await expect(headerPriority).toHaveValue(String(firstPick));
+
+    // The second pick, on the same control: no request of its own, because the control holds it
+    // until the save in flight settles.
+    await headerPriority.selectOption(String(secondPick));
+    await expect(headerPriority).toHaveValue(String(secondPick));
+    await nextFrames(page);
+    expect(held, "a pick made during a save is held by its control, not sent").toHaveLength(1);
+
+    // The list reads again while that save is still held, and its answer carries the priority
+    // the server still holds.
+    await navigateInApp(page, "/projects/CORE/issues");
+    await expect(listRow).toBeVisible();
+    const readsBefore = listReads();
+    await patchIssue(other.key, { title: RETITLED });
+    await expect.poll(listReads).toBeGreaterThan(readsBefore);
+    await expect(page.locator(`[data-issue-row="${other.key}"]`)).toContainText(RETITLED);
+    await nextFrames(page);
+    // The first fault: that answer must not put the server's priority back over the pick the
+    // reader made and can see.
+    await expect(listPriority).toHaveValue(String(secondPick));
+
+    // And the issue page stands on the same pick.
+    await navigateInApp(page, `/issues/${issue.key}`);
+    await expect(headerPriority).toHaveValue(String(secondPick));
+
+    // Another issue and back again: the control that holds the second pick is gone, and the
+    // third pick is made on the fresh one the return mounts, which joins the write store at once.
+    await navigateInApp(page, `/issues/${other.key}`);
+    await expect(header).toContainText(other.key);
+    await navigateInApp(page, `/issues/${issue.key}`);
+    await expect(headerPriority).toHaveValue(String(secondPick));
+    await headerPriority.selectOption(String(thirdPick));
+    await expect(headerPriority).toHaveValue(String(thirdPick));
+
+    // The release, one save at a time: the store sends this issue's writes one at a time, so the
+    // next save reaches the handler only once the one before it has been answered. A turn ends
+    // when the next save has arrived or the tab holds no unconfirmed write of its own, so a
+    // journey that sends two saves ends as surely as one that sends three.
+    for (let index = 0; index < held.length; index += 1) {
+      held[index]?.release();
+      await expect
+        .poll(async () => held.length > index + 1 || (await keptWrites(page)) === 0)
+        .toBe(true);
+    }
+
+    // The second fault: which values reached the server and in what order, read from the bodies
+    // the handler saw. The picks ascend (P0, then P1, then P2), so what the server was sent must
+    // read as those of them it was sent, in that order: nothing the reader never picked, and no
+    // pick behind one made after it. The last of them is the third pick, where the issue is left.
+    const saved = held.map(({ body }) => prioritySaved(body));
+    const inPickOrder = HELD_SAVE_PICKS.filter((pick) => saved.includes(pick));
+    expect(saved, "the picks the server was sent, in the order it was sent them").toEqual(
+      inPickOrder
+    );
+    expect(saved.at(0), "the save that was already out carries the first pick").toBe(firstPick);
+    expect(saved.at(-1), "the last value the server is sent is the third pick").toBe(thirdPick);
+    await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: thirdPick });
   } finally {
     await context.close();
   }
