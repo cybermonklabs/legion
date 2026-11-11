@@ -1792,6 +1792,11 @@ func (m *Machine) launch(ctx context.Context) error {
 // launch the tree lifecycle refuses charges no budget and so takes no token either, while a
 // launch that waits its turn keeps the process it still runs until that turn comes.
 //
+// Which lane the wake it reserves waits under is no part of what this path says: it is every
+// launch's, raised by a death, a resume, a retry, a repoint or the stale-plugin lane alike, so
+// the gate reads the lane off the intent that lane leaves on the machine rather than being told
+// one here (reserveWake, pluginIntent, markPluginRelaunch).
+//
 // Which retries pass this gate again, and which do not. The gate is taken once for the launch
 // that gets as far as the runtime: the loop's own retry of a start the runtime refused and the
 // turn the wake waited for both re-enter launchNow, which takes no second token. Two retries do
@@ -1809,7 +1814,7 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	return m.reserveWake(ctx, WakeLaunch, exempt, func(ctx context.Context) error {
+	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt)
 	}, again)
 }

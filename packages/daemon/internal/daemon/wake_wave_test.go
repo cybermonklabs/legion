@@ -1532,6 +1532,111 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 	}
 }
 
+// staleRelaunchHeldLine is the line a machine writes where it takes the lane's post over a claim
+// in a turn and holds the relaunch for that turn's end (supervise's holdStaleRelaunch). It is
+// how the case below reads that such a claim was posted at all: it parks no wake and relaunches
+// nothing until its turn ends, so the line is the only thing the post leaves behind.
+const staleRelaunchHeldLine = "supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end"
+
+// A stale claim the boot's snapshot shows in a turn is posted and takes no credit, and the
+// credits of that pass go to the claims the lane can relaunch now: "A claim in a turn takes no
+// admission; its turn's end asks the gate, so it is relaunched then if a credit is free and at
+// the next sweep otherwise" (requirement R2 of dispatch://INFRA-2712, afterTurn,
+// holdStaleRelaunch).
+//
+// What an admission for such a claim would cost is the whole of the gate's point. The machine
+// raises no relaunch for it, so the credit buys no wake, and it is held until the machine's own
+// release lands — which is after this pass has walked every claim, since the pass posts to each
+// claim's inbox and the decisions follow. A turn is minutes while the sweep is one, so the
+// same claim takes another credit at every tick of its turn; and the stale set grows richer in
+// claims in a turn as the wave drains, because a refreshed idle claim leaves the set and a
+// working one stays, so the last idle stragglers would wait sweeps behind credits that raised
+// nothing.
+//
+// The claims in a turn are still the lane's work, and both halves of that are read here: the
+// pass posts each of them, which is the line the machine writes as it holds the relaunch
+// (staleRelaunchHeldLine), and the count the state serves names them, because the lane has
+// them left to refresh (claimsToRefresh).
+//
+// The negative control is the skip reverted (the StateWorking branch of refreshStalePlugins
+// removed): the claims in a turn then take the credits of the boot pass, which this test reads
+// at the claims that pass says it left to a later sweep — the idle ones it should have
+// admitted among them.
+func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *testing.T) {
+	cfg := waveConfig(t)
+	// Twice the rate in a turn, so that a pass admitting them would run the gate dry before it
+	// reached an idle claim, and twice the rate idle, so that the gate is full and the claims it
+	// leaves are countable.
+	inATurn := waveClaimsFrom(t, cfg, claim.RoleImplementer, 1, 2*testWakeRate,
+		// liveClaim is working with a process of its own, which is the claim an earlier daemon
+		// left mid-turn and the one this boot's snapshot reads.
+		func(i int, token claim.Token) supervise.Claim {
+			return liveClaim(i, token, supervise.PodUpdateContract-1)
+		})
+	idle := waveClaimsFrom(t, cfg, claim.RoleImplementer, 2*testWakeRate+1, 2*testWakeRate, func(i int, token claim.Token) supervise.Claim {
+		c := liveClaim(i, token, supervise.PodUpdateContract-1)
+		c.State = supervise.StateIdle
+		return c
+	})
+	clock, logged := newWaveClock(), &syncBuffer{}
+	rt := newWaveRuntime(clock)
+
+	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+
+	// The boot pass left exactly the idle claims it had no credit for: a claim in a turn is in
+	// none of that count, since nothing refused it. It is read before the pacing is, because it
+	// is the first thing a pass that spent its credits on claims in turns says of itself.
+	var refusals []map[string]any
+	testwait.Eventually(t, "the boot pass to say how many claims it left to a later sweep", func() bool {
+		refusals = gateFullLines(t, logged)
+		return len(refusals) > 0
+	})
+	if boot := refusals[0]; boot["trigger"] != "boot" || boot["claims"] != float64(len(idle)-testWakeRate) {
+		t.Fatalf("the boot pass left %v claims of trigger %v, want %d of \"boot\": the %d claims in a turn take no admission, so the %d idle ones less the rate are all it leaves",
+			boot["claims"], boot["trigger"], len(idle)-testWakeRate, len(inATurn), len(idle))
+	}
+
+	// Every credit the pass granted went to a claim the lane can relaunch now.
+	first := awaitGate(t, d, testWakeRate)
+	working := claimsOfTokens(inATurn)
+	for _, wake := range first {
+		if working[wake.Claim] {
+			t.Fatalf("the refresh of %s is in the pacing, want none of the claims in a turn there: their relaunch waits for the turn's end and takes no wake now", wake.Claim)
+		}
+	}
+
+	// Each of them was posted all the same, and holds its relaunch for the end of its turn with
+	// its process untouched.
+	for _, token := range inATurn {
+		testwait.Eventually(t, fmt.Sprintf("%s to hold the relaunch the boot pass posted it", token), func() bool {
+			for _, line := range loggedLines(t, logged.String(), staleRelaunchHeldLine) {
+				if line["claim"] == string(token) && line["trigger"] == "boot" {
+					return true
+				}
+			}
+			return false
+		})
+		if got := rt.launchesOf(token); got != 0 {
+			t.Fatalf("%s was relaunched %d times while its turn runs, want none: the turn's end is what raises its relaunch", token, got)
+		}
+	}
+
+	// And the lane still has them to do, which is what the count the state serves says of a
+	// fleet whose claims are in turns (claimsToRefresh).
+	if left := d.state().ClaimsToRefresh; left < len(inATurn) {
+		t.Fatalf("the state says the lane has %d claims to refresh, want at least the %d in a turn: their relaunch is still owed", left, len(inATurn))
+	}
+}
+
+// claimsOfTokens is a set of the tokens given, for a membership test over a wave's own claims.
+func claimsOfTokens(tokens []claim.Token) map[claim.Token]bool {
+	set := make(map[claim.Token]bool, len(tokens))
+	for _, token := range tokens {
+		set[token] = true
+	}
+	return set
+}
+
 // A restart while the pacing still holds a wave loses no wake and runs none twice: the claims the
 // first daemon launched are re-adopted, the claims whose turn had not come are still launching
 // with no process recorded, and the second daemon raises them again as its own wave, at its own

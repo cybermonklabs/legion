@@ -77,11 +77,13 @@ const (
 	// being one sweep's worth of admissions run to their turns. The lane's own number is the
 	// claims it has to refresh divided by the rate — 118 at 8 is 15 — and this allows two thirds
 	// again on top of it, for the three things a round can spend on no relaunch: an admission
-	// granted for a claim in a turn, which that claim gives back after the pass has walked on
-	// (refreshPlugin's hold); the killed claim's own re-post; and a correction that keeps a
-	// credit one sweep longer because the claim views it reads lag a decision in flight (reading
-	// 6 and decision P2 of dispatch://INFRA-2712/artifact/plan-md). It is the drain assertion of
-	// check c-bound: a lane that admitted one claim a sweep would need 118 of these rounds.
+	// granted for a claim the pass read idle that has started a turn since, which that claim
+	// gives back after the pass has walked on (refreshPlugin's hold, the one window in which a
+	// claim in a turn holds a credit at all); the killed claim's own re-post; and a correction
+	// that keeps a credit one sweep longer because the claim views it reads lag a decision in
+	// flight (reading 6 and decision P2 of dispatch://INFRA-2712/artifact/plan-md). It is the
+	// drain assertion of check c-bound: a lane that admitted one claim a sweep would need 118
+	// of these rounds.
 	refreshWaveRounds = 25
 	// refreshNoInstallRole is the role whose launch installs no plugin on these daemons: a Claude
 	// Code role under Kubernetes, whose plugin is the worker image's own claude-envoy and which
@@ -451,9 +453,10 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		c.State = supervise.StateIdle
 		switch {
 		case i <= refreshWaveTurns:
-			// In a turn from the boot: the lane admits none of these at all, and the end of the
-			// turn is what asks the gate (holdStaleRelaunch, afterTurn). The boot token is what
-			// lets this test's own agent say the turn is running and, later, that it is over.
+			// In a turn from the boot: the pass posts each of these with no credit at all and
+			// the end of the turn is what asks the gate (refreshStalePlugins,
+			// holdStaleRelaunch, afterTurn). The boot token is what lets this test's own agent
+			// say the turn is running and, later, that it is over.
 			c.State = supervise.StateWorking
 			c.BootTokenHash = supervise.HashBootToken(bootTokenOf(i))
 		case i == refreshWaveRounded:

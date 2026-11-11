@@ -137,9 +137,14 @@ const PodUpdateContract = 46
 // that raises no relaunch gives it straight back, because the lane gave up nothing by it and the
 // next sweep will decide this claim again: the contract already current, a wake already held,
 // no process to replace, and the turn this relaunch waits out, whose own end asks the gate anew.
-// The controller's claim is admitted nothing and takes nothing — its wake is outside the pacing
-// (reserveWake) — and a decision reached with no credit releases nothing, so the same calls
-// stand for both.
+//
+// Two of the pass's posts carry no credit at all, and a decision reached with none releases
+// nothing, so the same calls stand for every post. The controller's claim is admitted nothing
+// because its wake is outside the pacing (reserveWake). A claim the pass read in a turn is
+// admitted nothing because its relaunch takes no wake now and its turn's end is what asks the
+// gate (holdStaleRelaunch, R2); the credit such a post does carry is the window where the
+// pass's snapshot and this machine disagree — a claim read idle that has started a turn since —
+// and the hold's own return gives it back.
 func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bool) error {
 	if admitted {
 		m.refreshCredit = true
@@ -175,10 +180,19 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // tick while its turn runs, so only the first of them logs; the rest replace the trigger and say
 // nothing.
 //
-// A claim in a turn takes no admission of the refresh gate: the credit its pass took is given
-// back at the return below this call, and the turn's end asks the gate for one of its own
-// (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and holding a credit
-// through it would spend one of the K the lane has on a claim that is doing nothing with it.
+// A claim in a turn takes no admission of the refresh gate, and the turn's end is what asks for
+// one (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and a credit held
+// through it is one of the K the lane has spent on a claim that raises nothing with it: at a
+// fleet whose stale claims are mostly working, the lane would admit its whole minute of the
+// pacing and relaunch nobody.
+//
+// The daemon's own pass posts such a claim with no credit at all, reading the state its
+// snapshot of the claims holds (refreshStalePlugins in internal/daemon). That snapshot and this
+// machine can disagree — the claim it read idle can have started a turn by the time the post is
+// decided here, and one it read working can have ended its turn — so a post that reaches this
+// call carrying a credit is exactly that window, and the return below this call gives the
+// credit straight back (releaseRefresh). The window costs the claim one sweep, which is what an
+// imperfect skip costs the pass everywhere else it makes one.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
@@ -453,38 +467,56 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	return claim.StalePluginContract(got, m.deps.PluginContract)
 }
 
-// staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because
-// its plugin is stale, and it is what holds a pending delivery back (sendPending). It and
-// internal/api's staleClaim must answer the same question, because what the hold rests on is
-// exactly that refusal: a task handed to a claim whose every `legion` call is refused buys a
-// model turn in which the worker can read the task and do nothing with it — no grant, no
-// handoff, no phase op — and the turn puts the claim in a turn, which postpones the one thing
-// the claim is waiting for, the relaunch this lane holds until that turn ends
-// (refreshPlugin, holdStaleRelaunch). So the set is recomputed here from the Deps the machine
-// already holds rather than asked of internal/api, which imports this package and not the
-// other way round.
+// StaleRefusesCalls is the stale-plugin refusal's own rule, held in one place because two
+// packages decide by it: whether a daemon speaking daemonContract would refuse this claim's own
+// `legion` calls for the contract its process speaks. pluginRelaunchable is whether that daemon
+// can relaunch onto a plugin at all (Deps.PluginRelaunchable, api.Options.PluginRelaunchable)
+// and noPluginInstall whether this claim's own launch installs one (Deps.NoPluginInstall,
+// api.Options.NoPluginInstall); nil is every launch installing a plugin, which is what a tmux
+// daemon and a harness that builds neither hold.
 //
-// The set is staleClaim's: the recorded contract is not this daemon's, the claim is in no
-// update round — a round's whole point is that the daemon serves the claim on its contract of
-// before the round until the round ends — this daemon can relaunch onto a plugin at all
-// (PluginRelaunchable), and the claim's own launch installs one (NoPluginInstall false).
-// staleClaim's fifth term, that the claim is in no turn, is answered before this is asked:
-// sendPending hands nothing to a claim that is not ready or idle, so every claim that reaches
-// this is out of a turn, which is the claim staleClaim refuses.
+// The terms are the three a stale claim is refused by: the recorded contract is not this
+// daemon's, the claim is in no update round — a round's whole point is that the daemon serves
+// the claim on its contract of before the round until the round ends — and a relaunch onto this
+// daemon's plugin can reach it at all. Two claims no relaunch can ever bring forward are
+// therefore served rather than refused. A claim whose launch installs no plugin — a Claude Code
+// role's in a pod, whose plugin is the image's own claude-envoy — is served on whatever
+// contract it records, at this release's own or below it, because nothing but a new image moves
+// that plugin; and on a daemon that can relaunch onto no plugin (LEGION-164's degraded
+// Kubernetes mode) every stale claim is served, since no relaunch is coming for any of them.
+// Refused there, such a worker would wait on a replacement process that is never started.
 //
-// Two claims the lane can never refresh hold nothing back, and both fall out of the set rather
-// than being named again here. A claim whose launch installs no plugin — a Claude Code role's
-// in a pod, whose plugin is the image's own claude-envoy — is served on whatever contract it
-// records, at this release's own or below it, because nothing but a new image moves that
-// plugin; and on a daemon that can relaunch onto no plugin (LEGION-164's degraded Kubernetes
-// mode) every stale claim is served rather than refused, since no relaunch is coming for any of
-// them. Held there, a task would wait for a replacement process that is never started.
-func (m *Machine) staleRefusesClaim() bool {
-	if m.deps.NoPluginInstall != nil && m.deps.NoPluginInstall(m.claim) {
+// Each caller adds the term that is its own, and neither may copy the other's. internal/api's
+// staleClaim adds that the claim is in no turn, because a worker in a turn is served so that it
+// can push what that turn holds before the relaunch its end releases (holdStaleRelaunch);
+// staleRefusesClaim below adds nothing, because the one place it is asked has answered that
+// term already (sendPending). Holding the three shared terms here is what keeps the two from
+// drifting apart: drift one way and a task is held back for a claim the API serves, which waits
+// for a relaunch nothing is making; drift the other and a task reaches a claim whose every
+// `legion` call is refused, which buys a model turn the worker can do nothing in and puts the
+// claim in a turn, postponing the very relaunch it is waiting for.
+func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noPluginInstall func(Claim) bool) bool {
+	if noPluginInstall != nil && noPluginInstall(c) {
 		return false
 	}
-	return m.deps.PluginRelaunchable && m.claim.PluginContract != m.deps.PluginContract &&
-		m.claim.UpdateRound == ""
+	return pluginRelaunchable && c.PluginContract != daemonContract && c.UpdateRound == ""
+}
+
+// staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because
+// its plugin is stale, and it is what holds a pending delivery back (sendPending): a task handed
+// to a claim whose every `legion` call is refused buys a model turn in which the worker can read
+// the task and do nothing with it — no grant, no handoff, no phase op — and the turn puts the
+// claim in a turn, which postpones the one thing the claim is waiting for, the relaunch this
+// lane holds until that turn ends (refreshPlugin, holdStaleRelaunch).
+//
+// It is the shared rule over the Deps this machine already holds (StaleRefusesCalls, which
+// states the rule and what each caller adds to it), rather than a second copy of it or a
+// question put to internal/api, which imports this package and not the other way round.
+// staleClaim's fourth term, that the claim is in no turn, is answered before this is asked:
+// sendPending hands nothing to a claim that is not ready or idle, so every claim that reaches
+// this is out of a turn, which is the claim staleClaim refuses.
+func (m *Machine) staleRefusesClaim() bool {
+	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)
 }
 
 // NoPluginSourceMessage is logged whenever a daemon that can relaunch nothing onto a plugin

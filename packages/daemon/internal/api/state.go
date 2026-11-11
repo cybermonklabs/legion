@@ -299,16 +299,23 @@ type AgentSecretsLoginView struct {
 // or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
 // contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
 // carries no key of that name at all, and is marshaled through a value whose own field of that
-// name, being empty and `omitempty`, shadows the embedded one and so is written by nothing,
-// which is how Admission.MarshalJSON leaves off `trees`. `claimsToRefresh` is shadowed by a nil
-// pointer rather than by a zero int, because the count the route hides is as often a number as
-// it is 0 and `omitempty` would keep the former.
+// name shadows the embedded one, which is how Admission.MarshalJSON leaves off `trees`.
 //
-// The two compose, so there are four shapes and not two: a caller below wakesWaitingContract
-// (53) is below claimsToRefreshContract (60) as well, and the body it is served must carry
-// neither key. A shape for each pair, rather than one value carrying both shadows always,
-// because a shadow with `omitempty` cannot write `wakesWaiting` as the empty array every other
-// body carries.
+// One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
+// nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
+// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane. A
+// `[]WakeWaiting` field could not write the empty array, since an empty slice is what
+// `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
+// its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
+// two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
+// (69) as well and is served neither key; a third banded key is one more field here, not four
+// more shapes.
+//
+// A body that hides neither key is marshaled through the embedded value alone. The shadow's own
+// fields are declared after the embedded one, so encoding/json writes a key that comes from them
+// after every other key of the body, and the fixtures under `packages/contracts/fixtures/daemon-api`
+// pin bodies that hide nothing: marshaling those through the shadow would move both keys to the
+// end of each pinned body.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
 	out := wire(s)
@@ -330,30 +337,24 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.Consumers == nil {
 		out.Consumers = []ConsumerLagView{}
 	}
-	if s.wakesWaitingHidden {
-		out.WakesWaiting = nil
-	} else if out.WakesWaiting == nil {
+	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	switch {
-	case s.wakesWaitingHidden && s.claimsToRefreshHidden:
-		return json.Marshal(struct {
-			wire
-			WakesWaiting    []WakeWaiting `json:"wakesWaiting,omitempty"`
-			ClaimsToRefresh *int          `json:"claimsToRefresh,omitempty"`
-		}{wire: out})
-	case s.wakesWaitingHidden:
-		return json.Marshal(struct {
-			wire
-			WakesWaiting []WakeWaiting `json:"wakesWaiting,omitempty"`
-		}{wire: out})
-	case s.claimsToRefreshHidden:
-		return json.Marshal(struct {
-			wire
-			ClaimsToRefresh *int `json:"claimsToRefresh,omitempty"`
-		}{wire: out})
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden {
+		return json.Marshal(out)
 	}
-	return json.Marshal(out)
+	shadow := struct {
+		wire
+		WakesWaiting    *[]WakeWaiting `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh *int           `json:"claimsToRefresh,omitempty"`
+	}{wire: out}
+	if !s.wakesWaitingHidden {
+		shadow.WakesWaiting = &shadow.wire.WakesWaiting
+	}
+	if !s.claimsToRefreshHidden {
+		shadow.ClaimsToRefresh = &shadow.wire.ClaimsToRefresh
+	}
+	return json.Marshal(shadow)
 }
 
 // DaemonInfo is the running daemon itself: which project it coordinates, the schema its store is

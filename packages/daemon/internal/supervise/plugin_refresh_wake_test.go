@@ -289,3 +289,68 @@ func TestAnOperatorsDeliveryOverTheRefreshsParkedRelaunchRunsItNow(t *testing.T)
 		t.Fatalf("the prompts are %+v, want the operator's task at the process the relaunch started", sent)
 	}
 }
+
+// The retry a refused refresh leaves waiting is still the lane's. A wake whose turn the
+// lifecycle recheck cannot be answered for starts nothing and leaves the launch owing, retried
+// at the probe interval from the top (runWake, relaunchRefused, relaunchLater), and that retry
+// re-enters the gate: the intent the wake carried goes back to the machine for it, so the wake
+// it parks waits under the lane's own kind rather than under the launch kind every other launch
+// takes (retryOf, reserveWake). Counted by its kind — which is the whole reason the kind exists
+// — a lane that lost its refreshes to `launch` there would under-count exactly the claims whose
+// refresh is in trouble, while the count of what the lane has left still named them, and the two
+// numbers an operator reads a wave by would disagree in the one case they are read for
+// (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh). The mark follows the intent and is
+// written by the launch that starts the process replacing the stale one, and by nothing before
+// it: the refusal marks nothing, and the retry's own launch marks the claim as it starts
+// (launchNow, commitPluginRelaunch).
+//
+// The refusal leaves a retry only over a claim that records no process and is live
+// (relaunchRefused's first branch, which hands the error back for every other claim), and no
+// decision of this machine parks a refresh that way: the lane relaunches a claim that holds a
+// capability, so it records its process, and every path that lets a process go drops the wake
+// with it (letGo, refreshPlugin). So the claim is put in that window here rather than driven
+// into it, and what the case holds is the rule that answers whatever reaches it — a retry of
+// this lane's launch is this lane's.
+//
+// The negative control is the wrapping reverted (runWake handed waiting.again itself): the
+// retry then parks under `launch`, which this test reads at the kind of the wake waiting.
+func TestTheRetryOfARefusedRefreshWaitsUnderTheLanesOwnKind(t *testing.T) {
+	h, waiting := refreshParked(t)
+	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	h.m.deps.Store = store
+	// The window the refusal's retry answers: the claim live with no process of its own, which
+	// is where a park that launched nothing leaves one (parkWake).
+	h.m.claim.State, h.m.claim.Locator = StateLaunching, nil
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	h.wantStarts(h.token, 1)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the refused refresh names wake %+v, want none: its wake is spent and its retry waits on the probe interval", held)
+	}
+	if got := h.claim().PluginRelaunchFor; got != 0 {
+		t.Fatalf("the claim after the refused refresh is marked for %d, want no mark: the refusal started no process", got)
+	}
+
+	// The store answers again and the retry runs, with a wave of a daemon's own claims in the
+	// queue ahead of it: the retry is a launch from the top and reserves afresh (launchAfter),
+	// so it waits a turn of its own, which is the wake this case reads the kind of. Without the
+	// queue the limiter has caught up over the probe interval and the retry runs where it is
+	// raised, which is no park at all.
+	store.failing = false
+	queueAhead(h, 4)
+	h.advance(testProbe)
+
+	retry := h.wantWaitingWake(WakePluginRefresh)
+	if got := h.claim().PluginRelaunchFor; got != 0 {
+		t.Fatalf("the claim whose retry waits its turn is marked for %d, want no mark until that turn starts the process", got)
+	}
+
+	h.advance(retry.At.Sub(h.clock.Now()))
+
+	h.wantStarts(h.token, 2)
+	if got := h.claim().PluginRelaunchFor; got != refreshContract {
+		t.Fatalf("the claim after the retry that ran is marked for %d, want %d: the retry is the relaunch this lane owed", got, refreshContract)
+	}
+	h.wantWakeLine(h.token, "kind=plugin-refresh", "waited=true")
+}

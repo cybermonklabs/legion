@@ -188,10 +188,12 @@ type StalePlugin struct {
 	// gate for this claim, which bounds how much of the wake pacing the lane holds at once
 	// (RefreshGate, dispatch://INFRA-2712 R1). The pass posts no refused claim at all — it
 	// re-reads every stale claim at the next sweep, so nothing is lost by the refusal — so what
-	// arrives here is admitted, except the project controller's claim, whose relaunch is exempt
-	// from the pacing and takes no credit (reserveWake), and a post a test or another daemon
-	// path makes with no gate behind it. The machine holds what it is handed until the relaunch
-	// runs or is abandoned (refreshPlugin, refreshCredit, releaseRefresh).
+	// arrives here is admitted but three: the project controller's claim, whose relaunch is
+	// exempt from the pacing and takes no credit (reserveWake); a claim the pass read in a
+	// turn, whose relaunch takes no wake until that turn's end asks the gate itself
+	// (holdStaleRelaunch, afterTurn, R2); and a post a test or another daemon path makes with
+	// no gate behind it. The machine holds what it is handed until the relaunch runs or is
+	// abandoned (refreshPlugin, refreshCredit, releaseRefresh).
 	Admitted bool
 }
 

@@ -602,8 +602,8 @@ package api
 // that pace is holding until their turn: an array, never null, of `{claim, issue, role, kind,
 // dueAt}`, beside `strandedClaims` and `heldOutboxRows`, one row per wake of the three lanes it
 // paces — `launch`, a role process it is about to start, `plugin-task`, the update task a
-// stale-plugin round queues to a session already running (60 below deletes that round and names
-// the relaunch it became `plugin-refresh`, so no daemon from 60 on writes this kind), both held
+// stale-plugin round queues to a session already running (69 below deletes that round and names
+// the relaunch it became `plugin-refresh`, so no daemon from 69 on writes this kind), both held
 // in the claim's machine, and
 // `catch-up`, the notice a start writes to an architect already running, which waits on its own
 // outbox row — in claim order, and empty at every moment outside a restart, a re-admission wave or

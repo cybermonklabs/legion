@@ -22,10 +22,16 @@ package supervise
 // re-read of the wakes the lane actually has waiting (Correct). The correction is there because
 // a credit can be lost to a path that gives none back: a machine that drops a parked wake with
 // the process it was parked over (letGo), a wake a second launch replaces (reserveWake), a post
-// to a claim this daemon no longer supervises (internal/daemon's supervisor.post). Release is the
-// fast path and Correct the backstop — without the correction a lane that lost K credits would
-// admit nothing ever again, and without Release a credit freed inside a minute would sit out the
-// rest of that minute for nothing.
+// to a claim this daemon no longer supervises (internal/daemon's supervisor.post), a wake whose
+// turn the tree lifecycle refuses the launch of (runWake's checkLaunch, whose retry re-enters
+// the gate without a credit of its own), a wake whose turn cannot take the running turn back
+// (runWake's interrupted, where the store refused the write), and a wake whose turn ends a
+// suspension held over the claim instead of launching (wakeNow, endHeld). The bound a reader
+// derives from this gate is read against that list: each of them costs the lane one credit, and
+// costs it only until the next sweep's correction. Release is the fast path and Correct the
+// backstop — without the correction a lane that lost K credits would admit nothing ever again,
+// and without Release a credit freed inside a minute would sit out the rest of that minute for
+// nothing.
 //
 // It lives in this package rather than in internal/daemon because Deps already carries the rest
 // of the lane's facts (PluginContract, PluginRelaunchable, NoPluginInstall, WakePace) and because
@@ -154,10 +160,17 @@ func (g *RefreshGate) Admit() bool {
 //
 // It lowers the admissions counted since the last correction with it, never below zero: that
 // count is of the credits of this window the sweep's reading may not have caught up with, and a
-// credit given back is one it need not hold a place for. A release of a credit admitted before
-// the last correction finds that count already at zero and lowers the held count alone, which is
-// right: the correction that reset it read that credit in the wakes waiting and took it into the
-// count it set (Correct).
+// credit given back is one it need not hold a place for.
+//
+// Neither count is told which window the credit it is giving back was admitted in, and one
+// admitted before the last correction is the case that costs: it lowers held, which is right,
+// and it lowers granted with it, which takes the floor of the window it did not belong to one
+// too low. The correction that reset granted had already read that credit in the wakes waiting
+// and taken it into the count it set (Correct), so the next correction can then set held below
+// what the lane really holds, and the lane can hold K and one for a sweep. It is bounded at
+// one such credit per window and it corrects itself at the sweep after, which is the same
+// bound every other reading the sweep lags by costs (RefreshGate). Carrying the window a
+// credit was admitted in would cost a field on every admission to save a sweep of one credit.
 func (g *RefreshGate) Release() {
 	if g.credits == 0 {
 		return
@@ -219,9 +232,11 @@ func (m *Machine) admitRefresh() bool {
 // it reserves, and the three places the wake's work is about to run (reserveWake's exempt and
 // straight-through paths, runWake). Every other way a relaunch can be lost — a wake dropped with
 // the process it was parked over (letGo), a wake a second launch replaced, a suspension that
-// ended it (endHeld), a post to a claim the daemon no longer supervises — gives nothing back
-// here and is taken back by the sweep's own correction instead (Correct, refreshStalePlugins),
-// which is one rule for all of them rather than a release at each.
+// ended it (endHeld), a lifecycle refusal or a refused take-back met at the wake's own turn
+// (runWake's checkLaunch, whose retry re-enters the gate as a launch of the lane with no credit
+// of its own, and runWake's interrupted), a post to a claim the daemon no longer supervises —
+// gives nothing back here and is taken back by the sweep's own correction instead (Correct,
+// refreshStalePlugins), which is one rule for all of them rather than a release at each.
 func (m *Machine) releaseRefresh() {
 	if !m.refreshCredit {
 		return

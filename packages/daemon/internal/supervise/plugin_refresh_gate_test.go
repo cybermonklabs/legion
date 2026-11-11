@@ -119,6 +119,12 @@ func gatedHarness(t *testing.T, rate int) (*harness, *fakeAdmitter) {
 // gate first, and the event is posted only where one was granted, carrying it (refreshStalePlugins
 // in internal/daemon, StalePlugin.Admitted). It answers whether the claim was posted at all, since
 // a refused claim is left to the next sweep and nothing reaches the machine.
+//
+// It is the pass over a claim the snapshot shows idle, which is the only claim that pass takes
+// a credit for: the controller's own and one the snapshot shows in a turn are posted with no
+// credit at all. A case here that drives a claim in a turn through this helper is the window
+// where the snapshot and the machine disagree — the claim was idle when the pass read it — and
+// says so where it does it.
 func (h *harness) refreshPass(gate *fakeAdmitter, trigger string) bool {
 	h.t.Helper()
 	if !gate.Admit() {
@@ -302,6 +308,11 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 			h.wantWaitingWake(WakePluginRefresh)
 		}, refreshAsks{asked: 2, granted: 2, released: 1}},
 		{"the claim is in a turn, and the relaunch waits for its end", func(h *harness, _ *fakeAdmitter) {
+			// The daemon's pass takes no credit for a claim its snapshot shows in a turn
+			// (refreshStalePlugins in internal/daemon), so the post that carries one here is
+			// the window where that snapshot and the machine disagree: the claim the pass read
+			// idle has started a turn by the time its post is decided. The credit is owed back
+			// at once, which is what this case reads.
 			h.reach(StateWorking)
 			h.m.deps.PluginContract = refreshContract
 		}, refreshAsks{asked: 1, granted: 1, released: 1}},
@@ -352,7 +363,10 @@ func TestARefreshOverAClaimWithNoProcessToReplaceGivesItsCreditBack(t *testing.T
 
 // The relaunch a claim's turn held is the gate's second asker: it took no credit while the turn
 // ran, so its turn's end asks for one and relaunches on it (afterTurn, holdStaleRelaunch,
-// dispatch://INFRA-2712 R1).
+// dispatch://INFRA-2712 R1). The pass here posts a credit with it, which is the window where
+// the pass's snapshot and the machine disagree (refreshPass): the credit is given back where
+// the relaunch is held, and the one the turn's end asks for is a second of its own, which is
+// what this case counts.
 //
 // The negative control is the ask removed from afterTurn (the held relaunch run through
 // refreshPlugin with no credit): the lane then relaunches one claim for every turn that ends,
