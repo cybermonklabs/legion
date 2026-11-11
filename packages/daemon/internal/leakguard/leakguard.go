@@ -226,3 +226,5 @@ func value(env []string, key string) string {
 	}
 	return ""
 }
+
+// INFRA-1413 selection probe, never merged.
