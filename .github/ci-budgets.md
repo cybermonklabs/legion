@@ -146,7 +146,9 @@ and the ci-ok report's `gh api` read (.github/scripts/ci-ok-report.sh) with the 
 A job's budget is rounded up to the whole minute too, and that rounding is what carries the step's margin:
 where the slowest step's arithmetic is not itself a whole number of minutes the job's round-up already covers the step's, and where it is
 — 300 s, 600 s, 2100 s — the step takes one more whole minute and the job takes it with it, so the job still outlives the step it names.
-The ci-ok report takes more than that one minute, and each of those steps says why.
+The ci-ok report takes more than that one minute, and this is the one place that says why, since every job of `.github/workflows/ci.yaml` carries that step:
+its arithmetic is `ci-ok-report.sh`'s `gh api` read and `post-check-run.sh`'s POST of the check run, 2 x (5 x 30 + 150) = 600 s, and its budget is 720 s rather than the 660 s rule 8 would take.
+That step posts the required `ci-ok` check, so a budget that cut it between those two ladders would lose the check run rather than report a failure, and the extra two minutes are what keep the report itself from being the thing that goes missing.
 
 That check holds a job's own budget above each of its steps' arithmetic too, which is the half of this derivation a check can make:
 it reads the attempts and not the measurement, and a job whose ceiling sits under one of its steps' ladders cuts that step before the step's own budget can name the site that failed.
