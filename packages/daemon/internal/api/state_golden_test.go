@@ -1026,3 +1026,10 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
+
+// The table of answers a plugin parses (answers.go): one row per response schema, the routes
+// that answer it, and the contract that answer arrived at. No route answers this fixture. It is
+// written out so that the plugin's own side reads the same rows the daemon shapes by.
+func TestAnswersGolden(t *testing.T) {
+	golden(t, "answers.json", Answers)
+}

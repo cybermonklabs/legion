@@ -643,7 +643,9 @@ package api
 // loosely, so that loss alone changes no strictly parsed shape. A plugin below this contract has
 // a strict reader that refuses a state whose check views carry `role`, and its `handoff_complete`
 // sends no `wakeAt`, which this daemon requires of a pending report, so the boot gate and `legion
-// probe-image` refuse the mixed pair. (This branch took 50 while main stood at 49;
+// probe-image` refuse the mixed pair. A caller below this contract is now served the state with
+// each check view's `role` left off (`withoutCheckRole`), so the boot gate is no longer the only
+// thing that covers such a reader. (This branch took 50 while main stood at 49;
 // sjawhar/legion#2731, dispatch://INFRA-1077, holds 50 on its own branch, and main has since
 // landed the admission cap at 51, the pane issue key at 52 (sjawhar/legion#2839) and INFRA-976's
 // wake pacing at 53 (sjawhar/legion#2805, merged as d43e0fe9 just before this one), so this
@@ -781,7 +783,9 @@ package api
 // without `max_fix_attempts` — but its strict pull-request reader refuses one without
 // `fixAttempts`, and every worker's `read_record` parses the state through it, which is what
 // this number is for: the boot gate and `legion probe-image` hold plugin and daemon equal, so
-// neither order of the two ever runs.
+// neither order of the two ever runs. A caller below this contract is now served
+// `pullRequest.fixAttempts` of 0 and `settings.max_fix_attempts` of 3 as stand-ins, so the boot
+// gate is no longer the only thing that covers such a reader.
 // The issue's other half, the provider-error retry, adds two controller routes, one operator
 // route and two tool operations. `POST /legion/v1/claims/fresh-session` (`api.ClaimRequest`:
 // `grantId`, `issue`, `role`) takes a controller grant and runs, for the claim on that role of
@@ -845,4 +849,25 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 59
+//
+// 60: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
+// own plugin speaks, so a roll that replaces one pod at a time leaves the `legion` tool working
+// in every pod it has not replaced yet. A request carries the caller's contract in the
+// `Legion-Plugin-Contract` header, and every answer carries this daemon's in
+// `Legion-Daemon-Contract`, so a caller is placed by what it declares and not by its address
+// alone. `GET /legion/v1/issues/{key}/record` is the per-issue record route, and it answers 404
+// `RECORD_NOT_FOUND` for an issue the daemon records nothing of. `GET /healthz` answers a typed
+// body, `api.Health` with `status` and `project`, in place of one untyped key, so a caller reads
+// which project the daemon it reached serves. `api.State` gains `lowestPluginContract`, the
+// lowest contract any claim of the project records. Every claim view gains `updateState`,
+// `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`. The two contracts the
+// boot gate alone covered are now served the shape their own entry describes: a caller below 54
+// is served the state with each check view's `role` left off (`withoutCheckRole`), and a caller
+// below 59 is served `pullRequest.fixAttempts` of 0 and `settings.max_fix_attempts` of 3 as
+// stand-ins. This entry is written while the change is in flight. It names the surfaces the
+// change moves, and it may be completed once every shape is settled. (main holds 59, and the
+// open pull requests declare 61 and 69, so this change takes 60, the free number above its base,
+// as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 60

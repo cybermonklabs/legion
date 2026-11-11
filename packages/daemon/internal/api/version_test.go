@@ -1,6 +1,9 @@
 package api
 
 import (
+	"os"
+	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -35,5 +38,58 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 	if supervise.PodUpdateContract > DaemonAPIVersion {
 		t.Fatalf("supervise.PodUpdateContract = %d, above DaemonAPIVersion %d: no claim could answer an update round",
 			supervise.PodUpdateContract, DaemonAPIVersion)
+	}
+}
+
+// entryHeader matches the head of one numbered entry of version.go's doc comment: `// <n>: `.
+var entryHeader = regexp.MustCompile(`(?m)^// (\d+): `)
+
+// numberedEntries is every contract version.go carries an entry for, read out of the file
+// itself. The test below runs in the package directory, so the file is beside it.
+func numberedEntries(t *testing.T) map[int]bool {
+	t.Helper()
+	source, err := os.ReadFile("version.go")
+	if err != nil {
+		t.Fatalf("read version.go: %v", err)
+	}
+	entries := map[int]bool{}
+	for _, match := range entryHeader.FindAllStringSubmatch(string(source), -1) {
+		number, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatalf("entry header %q: %v", match[0], err)
+		}
+		entries[number] = true
+	}
+	if len(entries) == 0 {
+		t.Fatal("version.go carries no numbered entry: the pattern this test reads them with no longer matches")
+	}
+	return entries
+}
+
+// SupportedContracts (answers.go) is the list of contracts this daemon describes a shape for,
+// and version.go's numbered entries are what say which contracts exist. The two are held
+// together in both directions: an entry between the floor and this daemon's own contract that
+// the list omits is a contract no answer is shaped for, and a number in the list that no entry
+// names is a contract nothing ever shipped under. 47 and 50 are the second case, which is why
+// they are in no list.
+func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
+	entries := numberedEntries(t)
+	listed := map[int]bool{}
+	for _, contract := range SupportedContracts {
+		listed[contract] = true
+	}
+	for contract := ServingFloor; contract <= DaemonAPIVersion; contract++ {
+		if entries[contract] && !listed[contract] {
+			t.Errorf("version.go has an entry for %d and SupportedContracts leaves it out", contract)
+		}
+	}
+	for _, contract := range SupportedContracts {
+		if contract < ServingFloor || contract > DaemonAPIVersion {
+			t.Errorf("SupportedContracts names %d, outside the floor %d and this daemon's own contract %d",
+				contract, ServingFloor, DaemonAPIVersion)
+		}
+		if !entries[contract] {
+			t.Errorf("SupportedContracts names %d and version.go has no entry for it", contract)
+		}
 	}
 }

@@ -107,6 +107,19 @@ const schemas: Record<string, z.ZodType> = {
       z.number().int().nonnegative()
     ),
   }),
+  // Nor this one: the table of answers a plugin parses (`internal/api/answers.go`), one row per
+  // response schema. `routes` are the routes that answer it, empty for the refusal body, which
+  // a client parses on every answer that is not a success. `since` is the contract the answer
+  // arrived at, never below the serving floor. `noBody` says the answer carries no body at all,
+  // which reads differently from a body whose set of key paths is empty.
+  "answers.json": z.array(
+    z.strictObject({
+      id: z.string().min(1),
+      routes: z.array(z.string().min(1)),
+      since: z.number().int().positive(),
+      noBody: z.boolean(),
+    })
+  ),
 };
 
 function fixture(name: string): unknown {

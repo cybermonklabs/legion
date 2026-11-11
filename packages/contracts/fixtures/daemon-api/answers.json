@@ -1,0 +1,122 @@
+[
+  {
+    "id": "state",
+    "routes": [
+      "GET /legion/v1/state"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "issue-record",
+    "routes": [
+      "GET /legion/v1/issues/{key}/record"
+    ],
+    "since": 60,
+    "noBody": false
+  },
+  {
+    "id": "health",
+    "routes": [
+      "GET /healthz"
+    ],
+    "since": 60,
+    "noBody": false
+  },
+  {
+    "id": "register",
+    "routes": [
+      "POST /legion/v1/claims/register"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "register-controller",
+    "routes": [
+      "POST /legion/v1/claims/register"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "no-content",
+    "routes": [
+      "POST /legion/v1/claims/ready",
+      "POST /legion/v1/claims/ready-for-update",
+      "POST /legion/v1/claims/exit",
+      "POST /legion/v1/claims/activity"
+    ],
+    "since": 46,
+    "noBody": true
+  },
+  {
+    "id": "release-records",
+    "routes": [
+      "POST /legion/v1/claims/release-records"
+    ],
+    "since": 48,
+    "noBody": false
+  },
+  {
+    "id": "grant",
+    "routes": [
+      "POST /legion/v1/grants"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "handoff-complete",
+    "routes": [
+      "POST /legion/v1/handoff/complete"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "empty-object",
+    "routes": [
+      "POST /legion/v1/issues/status",
+      "POST /legion/v1/gates/register",
+      "POST /legion/v1/phase/backward",
+      "POST /legion/v1/phase/retry",
+      "POST /legion/v1/signoff",
+      "POST /legion/v1/roots/close",
+      "POST /legion/v1/children/park",
+      "POST /legion/v1/children/rerun"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "fresh-session",
+    "routes": [
+      "POST /legion/v1/claims/fresh-session"
+    ],
+    "since": 59,
+    "noBody": false
+  },
+  {
+    "id": "compact",
+    "routes": [
+      "POST /legion/v1/claims/compact"
+    ],
+    "since": 59,
+    "noBody": false
+  },
+  {
+    "id": "wave-release",
+    "routes": [
+      "POST /legion/v1/waves/release"
+    ],
+    "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "refusal",
+    "routes": [],
+    "since": 46,
+    "noBody": false
+  }
+]
