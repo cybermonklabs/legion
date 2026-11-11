@@ -1,11 +1,19 @@
 // The driver of verification-results.sh: it drives a real envoy-dispatch over HTTP as one session
 // (the run's agent token, each write naming the session as `actor`) and one person (the dev
-// sign-in cookie), seeds the run's fake GitHub, and publishes each pull-request event as the
+// sign-in cookie), seeds the run's fake GitHub, publishes each pull-request event as the
 // normalized `pull_request` envelope on the run's own NATS, the one path Dispatch's delivery
-// intake reads.
+// intake reads, and reads two of its answers back through the `dispatch results` command of this
+// checkout as well as through the API.
 //
-//   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> bun scripts/e2e/verification-results.ts \
+//   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
+//     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun scripts/e2e/verification-results.ts \
 //     <dispatch-url> <nats-url> <fake-github-url>
+//
+// The database URL is the run's own, which the shell script resets before the server migrates it.
+// The driver writes SQL for one fixture and reads it for one answer: a stored pull request row of
+// the attribution rule before this build's, which no route of Dispatch can write, since every
+// write stamps the rule this build judges by; and the issue and the source that row holds now,
+// which no route answers either.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
 // follows, and the exit status is 1 when any case failed. The first case,
@@ -15,14 +23,24 @@
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
 // seed, the delivery settings, the probe issue) exits 2 naming it.
-import type { CheckBlock, CheckResult, CheckResultRecorded } from "@legion/contracts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { CheckBasis, CheckBlock, CheckResult, CheckResultRecorded } from "@legion/contracts";
 import { connect, StringCodec } from "nats";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
-if (dispatchUrl === undefined || natsUrl === undefined || githubUrl === undefined || !agentToken) {
+const databaseUrl = process.env.VERIFICATION_RESULTS_E2E_DATABASE_URL ?? "";
+if (
+  dispatchUrl === undefined ||
+  natsUrl === undefined ||
+  githubUrl === undefined ||
+  !agentToken ||
+  !databaseUrl
+) {
   process.stderr.write(
-    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n"
+    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n"
   );
   process.exit(2);
 }
@@ -63,6 +81,41 @@ const heldCommits = {
   diverged: "6".repeat(40),
   /** The head of the stranger's pull request. */
   fork: "9".repeat(40),
+  /** The bases case's first open pull request's head, which the quoted check calls A. */
+  comparedHeadA: "a1".repeat(20),
+  /** Its second open pull request's head, A2: the head of another pull request of the same
+   *  issue, which is what a run naming one head alone would miss. */
+  comparedHeadA2: "a2".repeat(20),
+  /** The head the event moves the first pull request to, A3. */
+  comparedHeadA3: "a3".repeat(20),
+  /** The head of that issue's merged pull request, whose base branch the fake holds no
+   *  commits for. */
+  comparedMergedHead: "a4".repeat(20),
+  /** The commit GitHub made when that pull request merged, which the merge itself proves the
+   *  base branch held. */
+  comparedMergeCommit: "a5".repeat(20),
+  /** The commit the default branch carries, which the after-merge result and the
+   *  default-branch result are both recorded at. */
+  comparedOnMain: "a6".repeat(20),
+  /** The commit the third before-merge result is at, which heads no pull request. */
+  comparedApart: "a7".repeat(20),
+  /** The commit the bases case names to the command and to the API, which no result is at. */
+  comparedNamed: "a8".repeat(20),
+  /** The head of the attribution case's first pull request, the one its branch credits to the
+   *  child. */
+  attributionBranch: "c1".repeat(20),
+  /** The head that first pull request moves to, which moves no attribution with it. */
+  attributionBranchMoved: "c2".repeat(20),
+  /** The head of the pull request its body credits. */
+  attributionBody: "c3".repeat(20),
+  /** The head of the pull request a person's link credits, against its branch. */
+  attributionLinkOverBranch: "c4".repeat(20),
+  /** The head of the pull request a person's link credits, against its title. */
+  attributionLinkOverTitle: "c5".repeat(20),
+  /** The head of the stored open row the reconcile re-judges. */
+  attributionStoredOpen: "c6".repeat(20),
+  /** The head of the stored merged row it re-judges with it. */
+  attributionStoredMerged: "c7".repeat(20),
 };
 
 /** Every commit the cases name: the ones that repository holds, and three it does not.
@@ -166,9 +219,13 @@ function issuePath(key: string, rest = ""): string {
 
 /** The checks of an issue's Verification document, each with the commits and branches its results
  *  are compared with, whether a pass of it stands, and every result recorded against it, as
- *  `GET /api/v1/issues/{key}/results` answers. */
-async function checksOf(key: string): Promise<readonly CheckBlock[]> {
-  const body = (await asSession("GET", issuePath(key, "/results"))) as { checks: CheckBlock[] };
+ *  `GET /api/v1/issues/{key}/results` answers. `at` names one commit (`?at=`), which becomes the
+ *  one basis of every check of the issue. */
+async function checksOf(key: string, at?: string): Promise<readonly CheckBlock[]> {
+  const query = at === undefined ? "" : `?at=${encodeURIComponent(at)}`;
+  const body = (await asSession("GET", issuePath(key, `/results${query}`))) as {
+    checks: CheckBlock[];
+  };
   return body.checks;
 }
 
@@ -258,6 +315,150 @@ async function publishPullRequest(payload: Record<string, string>): Promise<stri
   return subject;
 }
 
+/** One basis of a check, in the words a case compares with: the kind, the commit or the branch
+ *  it names, the pull request it is the head of, and when Dispatch learned it with the kind of
+ *  time that is (`read_at` is Dispatch's own read, `updated_at` is GitHub's update time as an
+ *  event carried it). */
+function basisOf(basis: CheckBasis): string {
+  const learned =
+    basis.learned_at === undefined ? "" : ` (${basis.learned_at.kind} ${basis.learned_at.at})`;
+  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
+  const number = basis.pull_request === undefined ? "" : ` of pull request #${basis.pull_request}`;
+  return `${basis.kind} ${(basis.commit ?? "").slice(0, 12)}${number}${learned}`;
+}
+
+/** What one check compares its results with, as a case prints and compares it: every basis in
+ *  the order the answer carries them, or the reason the check compared with nothing. */
+function comparedOf(check: CheckBlock): string {
+  const bases = check.compared_with ?? [];
+  if (bases.length > 0) return bases.map(basisOf).join(", ");
+  return `nothing: ${check.compared_nothing ?? "no reason"}`;
+}
+
+/** The `dispatch` command of this checkout (packages/envoy-client/bin/dispatch.ts), which the
+ *  bases case reads the same answers through: the surface a reviewer reads, beside the API the
+ *  rest of the proof reads. */
+const dispatchCommand = join(import.meta.dir, "../../packages/envoy-client/bin/dispatch.ts");
+
+/** Runs `dispatch results --issue <key> [--at <commit>]` against the run's own server, as the
+ *  run's session, and answers what it printed. The command is given a home of its own and the
+ *  three variables that name the server, so no envoy.json, token file or session state of the
+ *  caller's is read. */
+async function resultsCommand(key: string, at?: string): Promise<string> {
+  const home = mkdtempSync(join(tmpdir(), "verification-results-cli-"));
+  try {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        dispatchCommand,
+        "results",
+        "--issue",
+        key,
+        ...(at === undefined ? [] : ["--at", at]),
+      ],
+      {
+        env: {
+          DISPATCH_HOST: "omp",
+          DISPATCH_SESSION_ID: session,
+          DISPATCH_TOKEN: agentToken,
+          DISPATCH_URL: dispatchUrl,
+          HOME: home,
+          PATH: process.env.PATH ?? "",
+        },
+        stderr: "pipe",
+        stdout: "pipe",
+      }
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (code !== 0) {
+      throw new Error(`dispatch results --issue ${key} exited ${code}: ${stderr.trim()}`);
+    }
+    return stdout;
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+}
+
+/** The head line the command prints for each check: `- <block id> (<when>). Compared with …`,
+ *  which is where the command names the bases. */
+function commandHeadLines(printed: string): string[] {
+  return printed.split("\n").filter((line) => line.startsWith("- "));
+}
+
+/** Runs one statement against the run's own database and answers what psql printed, rows bare
+ *  and columns separated by `|` (`-tA`). The driver reads and writes one table this way,
+ *  pull_request_heads, for the one fixture and the one answer no route of Dispatch carries. */
+async function sql(statement: string): Promise<string> {
+  const child = Bun.spawn(
+    ["psql", databaseUrl, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-tA", "-c", statement],
+    { stderr: "pipe", stdout: "pipe" }
+  );
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (code !== 0) throw new Error(`psql exited ${code}: ${stderr.trim()}`);
+  return stdout.trim();
+}
+
+/** One stored pull request row, as pull_request_heads holds it: the issue it credits, the
+ *  source that decided that issue, its state, the head commit and the attribution rule that
+ *  judged it. "absent" where no row is stored yet. */
+async function storedHead(number: number): Promise<string> {
+  const row = await sql(
+    `select coalesce(issue_key, 'nobody'), attribution_source, state, head_sha, attribution_rule
+     from pull_request_heads where repo = '${repo}' and number = ${number}`
+  );
+  if (row === "") return "absent";
+  const [issue, source, state, head, rule] = row.split("|");
+  return `${issue} by ${source} (${state} at ${String(head).slice(0, 12)}, rule ${rule})`;
+}
+
+/** Waits, bounded, for the stored row of `number` to read as `want`, and answers what it last
+ *  read. The reconcile is the writer here, so this polls and writes nothing. */
+async function awaitStoredHead(number: number, want: string): Promise<string> {
+  const deadline = Date.now() + headWaitMs;
+  let seen = await storedHead(number);
+  while (seen !== want && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    seen = await storedHead(number);
+  }
+  return seen;
+}
+
+/** Every `issue.pull_request_attribution_changed` event on one issue, oldest first, in the
+ *  words a case compares with: the pull request, the issue it left, the issue it reached and
+ *  the source that decided the new one. */
+async function attributionMoves(key: string): Promise<string[]> {
+  const events = (await asSession("GET", issuePath(key, "/events?limit=200"))) as {
+    type: string;
+    payload: { number: number; from: string | null; to: string | null; source: string };
+  }[];
+  return events
+    .filter((event) => event.type === "issue.pull_request_attribution_changed")
+    .map(
+      (event) =>
+        `#${event.payload.number} ${event.payload.from ?? "nobody"} → ${event.payload.to ?? "nobody"} by ${event.payload.source}`
+    );
+}
+
+/** Waits, bounded, for one issue to carry `want` attribution events, and answers what it last
+ *  read. */
+async function awaitAttributionMoves(key: string, want: number): Promise<string[]> {
+  const deadline = Date.now() + headWaitMs;
+  let seen = await attributionMoves(key);
+  while (seen.length < want && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    seen = await attributionMoves(key);
+  }
+  return seen;
+}
+
 function note(line: string): void {
   console.log(`   ${line}`);
 }
@@ -289,8 +490,9 @@ function summarise(stopped?: string): never {
 // --- setup ---------------------------------------------------------------------------------------
 
 // The fake GitHub answers for two repositories: the one the proof's issues resolve to, whose
-// default branch holds the `behind` commit and ends at `mainHead`, and one the App is not
-// installed on, whose every read is GitHub's 404.
+// default branch holds the `behind` commit, the commit the bases case's branch checks are read
+// at, and ends at `mainHead`, and one the App is not installed on, whose every read is GitHub's
+// 404.
 //
 // The first is given `heldCommits` and no commit besides, so every commit a case records against
 // it is held and the one the refusal case drives earns the 422 GitHub answers for a commit a
@@ -300,22 +502,44 @@ function summarise(stopped?: string): never {
 // `commit_pulls` is empty on purpose: the record route's read-through asks GitHub which pull
 // requests name a result's commit, and with no answer there the only thing that can teach
 // Dispatch a head is the envelope the cases publish.
-const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
-  body: JSON.stringify({
-    [repo]: {
-      branch_commits: { main: [commits.behind, commits.mainHead] },
-      commits: Object.values(heldCommits),
-      contents: "read",
-      default_branch: "main",
-      installation_id: 256,
-      pull_requests: "read",
-    },
-    [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
-  }),
-  headers: { "Content-Type": "application/json" },
-  method: "PUT",
-}).catch((error: unknown) => setupFailed("fake GitHub seed", error));
-if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
+//
+// `pulls` is what GitHub answers about one pull request, which is read by one reader alone: the
+// reconcile's refresh of a stored head row. The attribution case seeds the two pull requests its
+// own stored rows name, since their titles name an issue this run creates, and the fixture route
+// replaces the whole map, so the seed is written here once and sent again with them.
+
+/** One pull request the fake answers for, as its single-pull-request route reads a fixture:
+ *  the head commit, the repository the head branch is in, the state and the title. */
+interface FakePullRequest {
+  readonly head_repo: string;
+  readonly head_sha: string;
+  readonly merged: boolean;
+  readonly state: string;
+  readonly title: string;
+}
+
+async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise<void> {
+  const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
+    body: JSON.stringify({
+      [repo]: {
+        actions: "read",
+        branch_commits: { main: [commits.behind, commits.comparedOnMain, commits.mainHead] },
+        commits: Object.values(heldCommits),
+        contents: "read",
+        default_branch: "main",
+        installation_id: 256,
+        pull_requests: "read",
+        pulls,
+      },
+      [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
+  }).catch((error: unknown) => setupFailed("fake GitHub seed", error));
+  if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
+}
+
+await seedRepositories({});
 
 for (const [key, name, mapped] of [
   ["VRF", "Verification results", repo],
@@ -345,9 +569,21 @@ await asSession("PUT", "/api/v1/settings/delivery", {
 /** Seeds one issue with a spec that marks one requirement and a Verification document holding
  *  `checks`, whose `%KEY%` is the issue's own key — a `serves` is refused unless it names a block
  *  that exists, so the requirement is written with the issue, before any check points at it — and
- *  answers that key. */
-async function seedIssue(project: string, title: string, checks: string): Promise<string> {
+ *  answers that key. `parent` makes it the child of another issue, which the attribution case
+ *  needs: a child's pull request answers for the child's own checks and for no check above it.
+ *
+ *  `force` is what every seed here needs: the run's issues are all about checks and pull
+ *  requests, so a create of the next one is answered 409 POSSIBLE_DUPLICATE naming the issues
+ *  a case before it seeded. */
+async function seedIssue(
+  project: string,
+  title: string,
+  checks: string,
+  parent?: string
+): Promise<string> {
   const issue = (await asPerson("POST", "/api/v1/issues", {
+    force: true,
+    parent,
     project,
     spec: `${title}.\n\n:::requirement{#r1}\nThe proof records a result against a check that serves this.\n:::\n`,
     title,
@@ -787,6 +1023,539 @@ The pre-merge check of the same unreadable repository.
   return passBeforeMerge === "unknown"
     ? undefined
     : `a pass of the before_merge check stands ${passBeforeMerge}, want unknown`;
+});
+
+// k-compared-commit. What each check compares its results with, read through the `dispatch
+// results` command and through the API: a `before_merge` check names the head of every pull
+// request of its issue, open or merged, an `after_merge` check names the branch the merge went
+// to and the default branch, and a `default_branch` check names the default branch alone. A
+// commit named to the command (`--at`) or to the API (`?at=`) replaces all of them, for every
+// check of the issue, and Dispatch reads GitHub for none of it.
+//
+// The case's negative control is the second open pull request: with no commit named, the result
+// at its head stands at that head, so a run that named one head alone would fail here.
+//
+// The last read is of an issue whose repository Dispatch cannot read, which says that rather
+// than saying it has nothing to compare with.
+await runCase("k-compared-commit-the-bases-each-check-names", async () => {
+  const basesIssue = await seedIssue(
+    "VRF",
+    "The bases each check compares its results with",
+    `:::check{#before serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}
+A before-merge result is compared with the head of every pull request of this issue.
+:::
+
+:::check{#after when="after_merge" surface="api" run="curl the production route"}
+An after-merge result is compared with the branch the merge went to and with the default branch.
+:::
+
+:::check{#branch when="default_branch" surface="api" run="curl the production route"}
+A default-branch result is compared with the default branch alone.
+:::
+`
+  );
+  const openPulls = [
+    { head: commits.comparedHeadA, number: 21, ref: `legion/${basesIssue}` },
+    { head: commits.comparedHeadA2, number: 22, ref: `legion/${basesIssue}-follow-up` },
+  ];
+  for (const pull of openPulls) {
+    await publishPullRequest({
+      action: "opened",
+      base_ref: "main",
+      body: `Proves ${basesIssue}.`,
+      head_ref: pull.ref,
+      head_repo: repo,
+      head_sha: pull.head,
+      kind: "pr",
+      merged: "false",
+      number: String(pull.number),
+      repo,
+      title: `${basesIssue} pull request #${pull.number}`,
+      updated_at: new Date(Date.now() - 60_000).toISOString(),
+      url: `https://github.com/${repo}/pull/${pull.number}`,
+    });
+  }
+  // The merged pull request's base branch is one the fake holds no commits for, as a repository
+  // that deletes a branch on the merge leaves it: the compare read says that branch does not
+  // carry the commit, and the default branch answers for the work. The envelope names no author
+  // of the delivery population, so the merge writes this head row and nothing else.
+  await publishPullRequest({
+    action: "closed",
+    base_ref: "release/old",
+    body: `Proves ${basesIssue}.`,
+    head_ref: `legion/${basesIssue}-merged`,
+    head_repo: repo,
+    head_sha: commits.comparedMergedHead,
+    kind: "pr",
+    merge_commit_sha: commits.comparedMergeCommit,
+    merged: "true",
+    number: "23",
+    repo,
+    title: `${basesIssue} merged pull request #23`,
+    updated_at: new Date(Date.now() - 60_000).toISOString(),
+    url: `https://github.com/${repo}/pull/23`,
+  });
+  note(`${basesIssue} has pull requests #21 and #22 open, and #23 merged into release/old`);
+
+  for (const commit of [commits.comparedHeadA, commits.comparedHeadA2, commits.comparedApart]) {
+    await record(basesIssue, {
+      check: "before",
+      commit,
+      observed: "the pre-merge run passed",
+      run: "bash scripts/e2e/verification-results.sh",
+      surface: "cli",
+    });
+  }
+  for (const check of ["after", "branch"]) {
+    await record(basesIssue, {
+      check,
+      commit: commits.comparedOnMain,
+      observed: "the production route answered",
+      run: "curl the production route",
+      surface: "api",
+    });
+  }
+  const atOwnHead = await awaitCommitStands(
+    basesIssue,
+    "before",
+    commits.comparedHeadA2,
+    "at_basis"
+  );
+  if (atOwnHead !== "at_basis") return `the result at A2 stands ${atOwnHead} before any read`;
+
+  // The command, with no commit named. Its head line is where it names the bases.
+  const printed = await resultsCommand(basesIssue);
+  for (const line of commandHeadLines(printed)) note(`dispatch results: ${line}`);
+  const wantedLines = [
+    `the head of pull request #21 at ${commits.comparedHeadA}`,
+    `the head of pull request #22 at ${commits.comparedHeadA2}`,
+    `the head of pull request #23 at ${commits.comparedMergedHead}`,
+    "branch release/old",
+    "branch main",
+  ];
+  for (const wanted of wantedLines) {
+    if (!printed.includes(wanted)) return `the command named no ${wanted}`;
+  }
+
+  // The API, with no commit named: the same bases, each with its pull request's number and the
+  // time Dispatch learned that head. A before-merge check names the head of every pull request
+  // of its issue, the merged one's among them.
+  const before = await checkOf(basesIssue, "before");
+  note(`the API's before check compares with ${comparedOf(before)}`);
+  const heads = new Map((before.compared_with ?? []).map((basis) => [basis.pull_request, basis]));
+  if (heads.size !== 3)
+    return `the before check compares with ${comparedOf(before)}, want the heads of #21, #22 and #23`;
+  for (const [number, head] of [
+    [21, commits.comparedHeadA],
+    [22, commits.comparedHeadA2],
+    [23, commits.comparedMergedHead],
+  ] as const) {
+    const basis = heads.get(number);
+    if (basis === undefined || basis.kind !== "pull_request" || basis.commit !== head) {
+      return `the basis of pull request #${number} is ${JSON.stringify(basis)}`;
+    }
+    if (basis.learned_at === undefined) {
+      return `the basis of pull request #${number} says no time Dispatch learned it`;
+    }
+  }
+  for (const [commit, number] of [
+    [commits.comparedHeadA, 21],
+    [commits.comparedHeadA2, 22],
+  ] as const) {
+    const result = before.results.find((row) => row.commit_sha === commit);
+    const stands = result === undefined ? "absent" : standsOf(result);
+    const stood = result?.commit_stands?.basis;
+    note(
+      `the result at ${commit.slice(0, 12)} stands ${stands}, at ${stood === undefined ? "no basis" : basisOf(stood)}`
+    );
+    if (stands !== "at_basis" || stood?.pull_request !== number) {
+      return `the result at ${commit.slice(0, 12)} stands ${stands}, want at_basis at the head of #${number}`;
+    }
+  }
+  note(
+    "each result stands at its own pull request's head, so a read naming one head alone fails this control"
+  );
+  const apart = await commitStandsAt(basesIssue, "before", commits.comparedApart);
+  note(
+    `the result at ${commits.comparedApart.slice(0, 12)}, which heads no pull request, stands ${apart}`
+  );
+  if (apart !== "other_commit") return `the result at the unrelated commit stands ${apart}`;
+
+  const after = await checkOf(basesIssue, "after");
+  note(`the API's after_merge check compares with ${comparedOf(after)}`);
+  const branches = (after.compared_with ?? []).map((basis) => `${basis.kind} ${basis.branch}`);
+  if (branches.join(", ") !== "branch release/old, branch main") {
+    return `the after_merge check compares with ${comparedOf(after)}`;
+  }
+  const merged = after.results.find((row) => row.commit_sha === commits.comparedOnMain);
+  const mergedStands = merged === undefined ? "absent" : standsOf(merged);
+  const mergedBasis = merged?.commit_stands?.basis;
+  if (mergedStands !== "at_basis" || mergedBasis?.branch !== "main") {
+    return `the after_merge result stands ${mergedStands} at ${JSON.stringify(mergedBasis)}, want the branch that carries it`;
+  }
+  note(`the after_merge result stands at ${basisOf(mergedBasis)}, the branch that carries it`);
+
+  const branchCheck = await checkOf(basesIssue, "branch");
+  note(`the API's default_branch check compares with ${comparedOf(branchCheck)}`);
+  if ((branchCheck.compared_with ?? []).map((basis) => basis.branch).join(", ") !== "main") {
+    return `the default_branch check compares with ${comparedOf(branchCheck)}`;
+  }
+
+  // A commit named: every check of the issue compares with that commit and nothing else.
+  for (const [named, what] of [
+    [commits.comparedHeadA, "A, the first pull request's head"],
+    [commits.comparedNamed, "B, a commit no result is at"],
+  ] as const) {
+    const printedAt = await resultsCommand(basesIssue, named);
+    for (const line of commandHeadLines(printedAt))
+      note(`dispatch results --at ${named.slice(0, 12)}: ${line}`);
+    if (!printedAt.includes(`the commit you named, ${named}`)) {
+      return `the command with --at ${what} named another basis`;
+    }
+    const checks = await checksOf(basesIssue, named);
+    for (const check of checks) {
+      const bases = (check.compared_with ?? []).map((basis) => `${basis.kind} ${basis.commit}`);
+      if (bases.join(", ") !== `named ${named}`) {
+        return `?at=${what}: check ${check.block_id} compares with ${comparedOf(check)}`;
+      }
+      for (const result of check.results) {
+        const stands = standsOf(result);
+        const wanted = result.commit_sha === named ? "at_basis" : "other_commit";
+        if (stands !== wanted) {
+          return `?at=${what}: the result at ${result.commit_sha.slice(0, 12)} stands ${stands}, want ${wanted}`;
+        }
+      }
+    }
+    note(
+      `with ${what} named, every check compares with that commit alone, and every result elsewhere reads at another commit`
+    );
+  }
+
+  // The event moves the first pull request's head. Its update time is a minute ahead of this
+  // write, so the row keeps the event's own time: the basis then names GitHub's update time and
+  // not a read of Dispatch's. Nothing reads GitHub between the two reads, since the new head is
+  // a head Dispatch holds.
+  const movedAt = new Date(Date.now() + 60_000).toISOString();
+  await publishPullRequest({
+    action: "synchronize",
+    base_ref: "main",
+    body: `Proves ${basesIssue}.`,
+    head_ref: `legion/${basesIssue}`,
+    head_repo: repo,
+    head_sha: commits.comparedHeadA3,
+    kind: "pr",
+    merged: "false",
+    number: "21",
+    repo,
+    title: `${basesIssue} pull request #21`,
+    updated_at: movedAt,
+    url: `https://github.com/${repo}/pull/21`,
+  });
+  const movedTo = await awaitCommitStands(
+    basesIssue,
+    "before",
+    commits.comparedHeadA,
+    "other_commit"
+  );
+  if (movedTo !== "other_commit") return `after the event the result at A stands ${movedTo}`;
+  const afterMove = await checkOf(basesIssue, "before");
+  note(`after the event the before check compares with ${comparedOf(afterMove)}`);
+  const moved = (afterMove.compared_with ?? []).find((basis) => basis.pull_request === 21);
+  if (moved?.commit !== commits.comparedHeadA3) {
+    return `the basis of pull request #21 is ${JSON.stringify(moved)}, want A3`;
+  }
+  if (moved.learned_at?.kind !== "updated_at") {
+    return `the basis of pull request #21 was learned ${JSON.stringify(moved.learned_at)}, want the pull request's update time`;
+  }
+  if (Date.parse(moved.learned_at.at) !== Date.parse(movedAt)) {
+    return `the basis names ${moved.learned_at.at}, want the event's own update time ${movedAt}`;
+  }
+  note(
+    `the basis of #21 names A3 at the event's own update time ${movedAt}, as the pull request's update time and not as a read of Dispatch's`
+  );
+
+  // The repository Dispatch cannot read says so, and marks no result.
+  const hiddenBases = await seedIssue(
+    "VRH",
+    "The bases of a check whose repository Dispatch cannot read",
+    `:::check{#unreadable serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}
+A check of an issue whose repository Dispatch cannot read compares with nothing it can name.
+:::
+`
+  );
+  await record(hiddenBases, {
+    check: "unreadable",
+    commit: commits.hidden,
+    observed: "the pre-merge run passed",
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+  const unreadable = await checkOf(hiddenBases, "unreadable");
+  const printedHidden = await resultsCommand(hiddenBases);
+  for (const line of commandHeadLines(printedHidden)) note(`dispatch results: ${line}`);
+  note(`the API says the check compared with ${comparedOf(unreadable)}`);
+  if (unreadable.compared_nothing !== "repository_unreadable") {
+    return `the unreadable repository's check compared with ${comparedOf(unreadable)}`;
+  }
+  if (!printedHidden.includes("Compared with nothing: Dispatch cannot read the repository")) {
+    return "the command did not say Dispatch cannot read the repository";
+  }
+  const passUnreadable = await passStandsOf(hiddenBases, "unreadable");
+  note(`a pass of it stands: ${passUnreadable}`);
+  return passUnreadable === "unknown"
+    ? undefined
+    : `a pass of it stands ${passUnreadable}, want unknown`;
+});
+
+// k-attribution. What decides a pull request's issue: the five ranked sources
+// (delivery/attribution.go), of which a person's link to the pull request's own URL ranks above
+// the head branch, and the head branch above a key in the title or the body. Five pull requests
+// drive it: one its branch credits to a child while its title names the parent first, one its
+// body credits, one whose link beats its branch, one whose link beats its title, and two stored
+// rows of the rule before this build's, which the reconcile re-judges.
+//
+// The case's negative controls are in it: the pull request whose body decides is on a branch
+// that names no issue, so the branch rule swallows no other source; the pull request a person
+// linked is on the child's own branch, so the link stands above it; and the last envelope moves
+// a head without moving its attribution, which appends no event, so an event marks a change and
+// never a pass.
+await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
+  // A check's id must be one among the issue and the issues above it: a result naming an id the
+  // child and the parent both carry is refused 409 CHECK_AMBIGUOUS, so each issue's check is
+  // named for the issue it proves.
+  const checkFor = (id: string, what: string): string =>
+    `:::check{#${id} serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}\n${what}\n:::\n`;
+  const parent = await seedIssue(
+    "VRF",
+    "The parent whose child carries the work",
+    checkFor("parent", "The parent's results are compared with the parent's own pull requests.")
+  );
+  const child = await seedIssue(
+    "VRF",
+    "The child that carries the work",
+    checkFor("child", "The child's results are compared with the child's own pull request."),
+    parent
+  );
+  const bodied = await seedIssue(
+    "VRF",
+    "The issue a pull request's body names",
+    checkFor("body", "A pull request whose branch names no issue is credited by its body.")
+  );
+  const linkedOverBranch = await seedIssue(
+    "VRF",
+    "The issue a person linked a pull request to, against its branch",
+    checkFor("link-over-branch", "A person's link to a pull request stands above its branch.")
+  );
+  const titled = await seedIssue(
+    "VRF",
+    "The issue a pull request's title names",
+    checkFor("title", "A key in a title is the weakest source but the commit messages.")
+  );
+  const linkedOverTitle = await seedIssue(
+    "VRF",
+    "The issue a person linked a pull request to, against its title",
+    checkFor("link-over-title", "A person's link to a pull request stands above its title.")
+  );
+  note(
+    `parent ${parent}, child ${child} of it; ${bodied}, ${linkedOverBranch}, ${titled} and ${linkedOverTitle} beside them`
+  );
+
+  // The two links a person wrote, before any envelope is published: the attribution reads them
+  // as it writes the row.
+  for (const [issue, number] of [
+    [linkedOverBranch, 43],
+    [linkedOverTitle, 44],
+  ] as const) {
+    await asPerson("PATCH", issuePath(issue), {
+      external_links: [{ url: `https://github.com/${repo}/pull/${number}` }],
+    });
+    note(`a person linked ${issue} to ${repo}#${number}`);
+  }
+
+  const envelopes = [
+    {
+      body: `This carries part of ${parent}, and ${child} is the issue it closes.`,
+      head: commits.attributionBranch,
+      head_ref: `legion/${child}`,
+      number: 41,
+      title: `${parent} and ${child}: the child's pull request`,
+      want: `${child} by branch`,
+    },
+    {
+      body: `This one proves ${bodied}.`,
+      head: commits.attributionBody,
+      head_ref: "work/no-key-in-this-branch",
+      number: 42,
+      title: "A pull request whose title names no issue",
+      want: `${bodied} by title_body`,
+    },
+    {
+      body: "A person linked this pull request to an issue of its own.",
+      head: commits.attributionLinkOverBranch,
+      head_ref: `legion/${child}`,
+      number: 43,
+      title: "A pull request on the child's branch that a person linked elsewhere",
+      want: `${linkedOverBranch} by external_link`,
+    },
+    {
+      body: "A person linked this pull request too.",
+      head: commits.attributionLinkOverTitle,
+      head_ref: "work/no-key-in-this-one-either",
+      number: 44,
+      title: `${titled} is the issue this title names`,
+      want: `${linkedOverTitle} by external_link`,
+    },
+  ];
+  for (const envelope of envelopes) {
+    await publishPullRequest({
+      action: "opened",
+      base_ref: "main",
+      body: envelope.body,
+      head_ref: envelope.head_ref,
+      head_repo: repo,
+      head_sha: envelope.head,
+      kind: "pr",
+      merged: "false",
+      number: String(envelope.number),
+      repo,
+      title: envelope.title,
+      updated_at: new Date(Date.now() - 60_000).toISOString(),
+      url: `https://github.com/${repo}/pull/${envelope.number}`,
+    });
+  }
+  for (const envelope of envelopes) {
+    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule 2)`;
+    const stored = await awaitStoredHead(envelope.number, wanted);
+    note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
+    note(`  is stored as ${stored}`);
+    if (stored !== wanted) return `#${envelope.number} is stored as ${stored}, want ${wanted}`;
+  }
+
+  // The child's own pull request answers for the child's checks and for none of the parent's.
+  await record(child, {
+    check: "child",
+    commit: commits.attributionBranch,
+    observed: "the child's run passed at its pull request's head",
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+  await record(parent, {
+    check: "parent",
+    commit: commits.attributionBranch,
+    observed: "the same commit, recorded against the parent's check",
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+  const childCheck = (await checksOf(child, commits.attributionBranch))[0];
+  const childStands = childCheck?.results.map(standsOf).join(", ") ?? "";
+  note(
+    `${child} with ?at=${commits.attributionBranch.slice(0, 12)} compares with ${comparedOf(childCheck as CheckBlock)}, and its result stands ${childStands}`
+  );
+  if (childStands !== "at_basis") return `the child's results stand ${childStands}, want at_basis`;
+  const childHeads = await checkOf(child, "child");
+  note(`${child} compares with ${comparedOf(childHeads)}`);
+  const parentHeads = await checkOf(parent, "parent");
+  note(`${parent} compares with ${comparedOf(parentHeads)}`);
+  if (
+    !(childHeads.compared_with ?? []).some((basis) => basis.commit === commits.attributionBranch)
+  ) {
+    return `the child's check does not compare with its own pull request's head`;
+  }
+  if (
+    (parentHeads.compared_with ?? []).some((basis) => basis.commit === commits.attributionBranch)
+  ) {
+    return `the parent's check took the child's head`;
+  }
+  const parentStands = await commitStandsAt(parent, "parent", commits.attributionBranch);
+  note(`the parent's result at the child's head stands ${parentStands}`);
+  if (parentStands !== "other_commit") return `the parent's result stands ${parentStands}`;
+
+  // Two stored rows the rule before this build's credited to the parent, which no route of
+  // Dispatch can write: every write stamps the rule this build judges by. The reconcile takes
+  // the open one because no read has reached it and the merged one because an older rule judged
+  // it, reads each pull request from GitHub, and moves both to the child the answer names.
+  await seedRepositories({
+    "45": {
+      head_repo: repo,
+      head_sha: commits.attributionStoredOpen,
+      merged: false,
+      state: "open",
+      title: `${child} the stored open pull request`,
+    },
+    "46": {
+      head_repo: repo,
+      head_sha: commits.attributionStoredMerged,
+      merged: true,
+      state: "closed",
+      title: `${child} the stored merged pull request`,
+    },
+  });
+  const stored = [
+    { head: commits.attributionStoredOpen, number: 45, state: "open" },
+    { head: commits.attributionStoredMerged, number: 46, state: "merged" },
+  ];
+  for (const row of stored) {
+    await sql(
+      `insert into pull_request_heads
+         (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
+          title, url, attribution_rule)
+       values ('${repo}', ${row.number}, '${row.head}', 'legion/${child}', 'main', '${row.state}',
+          '${parent}', 'title_body', 'the stored pull request #${row.number}',
+          'https://github.com/${repo}/pull/${row.number}', 1)`
+    );
+    note(`#${row.number} is stored ${row.state}, credited to ${parent} by title_body under rule 1`);
+  }
+  for (const row of stored) {
+    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 2)`;
+    const seen = await awaitStoredHead(row.number, wanted);
+    note(`the reconcile re-judged #${row.number}: ${seen}`);
+    if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
+  }
+
+  // One pass re-judges both rows, in an order of the reconcile's own, so the moves are compared
+  // sorted: which of the two it read first says nothing about the rule.
+  const parentMoves = await awaitAttributionMoves(parent, 2);
+  for (const move of parentMoves) note(`${parent} records ${move}`);
+  const childMoves = await awaitAttributionMoves(child, 3);
+  for (const move of childMoves) note(`${child} records ${move}`);
+  const wantedMoves = [
+    `#45 ${parent} → ${child} by title_body`,
+    `#46 ${parent} → ${child} by title_body`,
+  ];
+  if ([...parentMoves].sort().join("; ") !== wantedMoves.join("; ")) {
+    return `${parent} records ${parentMoves.join("; ")}, want ${wantedMoves.join("; ")}`;
+  }
+  const wantedChild = [`#41 nobody → ${child} by branch`, ...wantedMoves];
+  if ([...childMoves].sort().join("; ") !== wantedChild.join("; ")) {
+    return `${child} records ${childMoves.join("; ")}, want ${wantedChild.join("; ")}`;
+  }
+
+  // An attribution that does not move appends no event: the same pull request at a new head,
+  // credited to the child as before, is written and recorded nowhere.
+  await publishPullRequest({
+    action: "synchronize",
+    base_ref: "main",
+    body: `This carries part of ${parent}, and ${child} is the issue it closes.`,
+    head_ref: `legion/${child}`,
+    head_repo: repo,
+    head_sha: commits.attributionBranchMoved,
+    kind: "pr",
+    merged: "false",
+    number: "41",
+    repo,
+    title: `${parent} and ${child}: the child's pull request`,
+    updated_at: new Date().toISOString(),
+    url: `https://github.com/${repo}/pull/41`,
+  });
+  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 2)`;
+  const movedHead = await awaitStoredHead(41, wantedHead);
+  note(`#41 after the push is stored as ${movedHead}`);
+  if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;
+  const afterPush = await attributionMoves(child);
+  note(`${child} still records ${afterPush.length} move(s), the push among them appending none`);
+  return afterPush.length === childMoves.length
+    ? undefined
+    : `${child} records ${afterPush.length} moves after the push, want ${childMoves.length}`;
 });
 
 summarise();

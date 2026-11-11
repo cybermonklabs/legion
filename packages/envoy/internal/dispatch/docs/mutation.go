@@ -1482,7 +1482,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			// the two runs of the batch encode nothing again.
 			before, err := checkEditPrecondition(tree, *precondition)
 			if err != nil {
-				mutationErr = err
+				mutationErr = adviseRemovedPreconditionBlock(start, ops, err)
 				return
 			}
 			if len(snapshots) > 0 {

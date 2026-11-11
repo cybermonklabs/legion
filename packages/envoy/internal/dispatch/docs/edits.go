@@ -300,6 +300,11 @@ var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 type ErrPreconditionFailed struct {
 	CurrentDocument string
 	Mismatches      []model.EditPreconditionMismatch
+	// Advice is the way back from a block the document no longer holds, which a whole-document
+	// upload mints a fresh id for whenever it changed that block: the quote anchor form, and the
+	// id that block carries now where the batch's own text names exactly one
+	// (adviseRemovedPreconditionBlock). It is empty for every other mismatch.
+	Advice string
 }
 
 func (e *ErrPreconditionFailed) Error() string {
@@ -315,7 +320,37 @@ func (e *ErrPreconditionFailed) Error() string {
 		}
 		reasons = append(reasons, fmt.Sprintf("block %q changed", mismatch.BlockID))
 	}
-	return "document edit precondition failed: " + strings.Join(reasons, ", ")
+	return "document edit precondition failed: " + strings.Join(reasons, ", ") + e.Advice
+}
+
+// adviseRemovedPreconditionBlock adds that way back to a precondition refused for a block the
+// document no longer holds. A batch prepared from an earlier listing fails here on exactly the
+// blocks another session changed, and the refusal alone leaves the caller with an id that names
+// nothing: so it names the quote anchor form, and the id the block carries now where the batch's
+// own text identifies one block (blockHoldingText, which names none where two or more hold it).
+func adviseRemovedPreconditionBlock(tree *batchTree, ops []model.EditOp, err error) error {
+	var failed *ErrPreconditionFailed
+	if !errors.As(err, &failed) || failed.Advice != "" {
+		return err
+	}
+	removed := false
+	for _, mismatch := range failed.Mismatches {
+		removed = removed || (mismatch.Scope == "block" && mismatch.Current == nil)
+	}
+	if !removed {
+		return err
+	}
+	failed.Advice = " A block the document no longer holds took a fresh id when another session" +
+		" changed it: read the document's blocks again, and name each block by its text."
+	for _, op := range ops {
+		current, named := blockHoldingText(tree, op.Find)
+		if !named {
+			continue
+		}
+		failed.Advice += fmt.Sprintf(" The block whose text is %q now has the id %q.", op.Find, current)
+		break
+	}
+	return failed
 }
 
 // nodeToken hashes a canonical semantic Proof representation, including inline marks but excluding

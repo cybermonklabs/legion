@@ -724,8 +724,21 @@ func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Nod
 // reports relocated=false for a block that is no list item, for a target in no list, and for an
 // empty target, which names a document edge rather than a block: each of those takes the
 // document-level move instead.
+//
+// The block a caller names is the one a listing shows it (documentBlocks), and a list's items are
+// listed by the paragraph each holds rather than by the item itself, so a move of an item is
+// written against that paragraph's id. Such a paragraph is read as its item, but only where it is
+// the item's whole content: an item that also holds a nested list would otherwise carry that list
+// along, which is not what a caller naming one paragraph asked for, and that move keeps the
+// document-level placement it has today.
 func moveListItem(doc *Node, path []int, blockID string, target Range, after bool) (*Node, bool, error) {
-	if nodeAtPath(doc, path).Type != "list_item" || target.From == target.To {
+	if target.From == target.To {
+		return nil, false, nil
+	}
+	if item, ok := listItemOfOnlyChild(doc, path); ok {
+		path = item
+	}
+	if nodeAtPath(doc, path).Type != "list_item" {
 		return nil, false, nil
 	}
 	found, ok := listAnchor(doc, target)
@@ -765,6 +778,20 @@ func moveListItem(doc *Node, path []int, blockID string, target Range, after boo
 		return nil, true, err
 	}
 	return out, true, nil
+}
+
+// listItemOfOnlyChild is the path of the list item a block is the whole content of, and false for
+// every other block: one at document level, one of an item that holds more than it, and one whose
+// parent is no list item at all.
+func listItemOfOnlyChild(doc *Node, path []int) ([]int, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	parent := nodeAtPath(doc, path[:len(path)-1])
+	if parent == nil || parent.Type != "list_item" || len(parent.Children) != 1 {
+		return nil, false
+	}
+	return path[:len(path)-1], true
 }
 
 // holdsNode reports whether tree still holds node itself, by identity.

@@ -10,6 +10,51 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
+// A batch prepared from an earlier listing names ids another session's whole-document upload has
+// minted again, and the precondition refuses it. The refusal says how to get back: read the
+// blocks again, name a block by its text, and, where the batch's own text names one block, the id
+// that block carries now.
+func TestAPreconditionRefusedForARemovedBlockNamesTheWayBack(t *testing.T) {
+	tree, err := parseInput("# Title\n\nIntro, as another session reworded it.\n\nTail.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := newBatchTree(tree)
+	current := blockIDOfText(t, tree, "Intro, as another session reworded it.")
+	gone := "b9d7a3f0-0000-4000-8000-000000000000"
+	refused := &ErrPreconditionFailed{Mismatches: []model.EditPreconditionMismatch{
+		{Scope: "block", BlockID: gone, Expected: "sha256:stale"},
+	}}
+	ops := []model.EditOp{{Op: "replace", Find: "Intro, as another session reworded it.", With: "again"}}
+	err = adviseRemovedPreconditionBlock(start, ops, refused)
+	if !strings.Contains(err.Error(), "took a fresh id") ||
+		!strings.Contains(err.Error(), "now has the id "+strconv.Quote(current)) {
+		t.Fatalf("the refusal = %q, want the way back and the current id %q", err, current)
+	}
+	// Text two blocks hold names neither, since neither is the block the caller meant.
+	twice, err := parseInput("Same words.\n\nSame words.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := newBatchTree(twice)
+	err = adviseRemovedPreconditionBlock(ambiguous,
+		[]model.EditOp{{Op: "replace", Find: "Same words.", With: "again"}},
+		&ErrPreconditionFailed{Mismatches: []model.EditPreconditionMismatch{
+			{Scope: "block", BlockID: gone, Expected: "sha256:stale"},
+		}})
+	if strings.Contains(err.Error(), "now has the id") {
+		t.Fatalf("the refusal = %q, want no id named where two blocks hold the text", err)
+	}
+	// A token that changed, rather than a block the document no longer holds, takes no advice.
+	token := "sha256:current"
+	unchanged := &ErrPreconditionFailed{Mismatches: []model.EditPreconditionMismatch{
+		{Scope: "block", BlockID: current, Expected: "sha256:stale", Current: &token},
+	}}
+	if err := adviseRemovedPreconditionBlock(start, ops, unchanged); strings.Contains(err.Error(), "fresh id") {
+		t.Fatalf("a changed block's refusal = %q, want no advice about a removed one", err)
+	}
+}
+
 // A block guard covers an insert or a move whose anchor is a block id or a quote: the batch names
 // the anchor block, and a move names the block it relocates as well.
 func TestPreconditionBlocksCoverInsertAndMove(t *testing.T) {
