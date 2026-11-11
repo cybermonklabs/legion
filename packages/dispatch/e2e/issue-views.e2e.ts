@@ -65,9 +65,25 @@ test("default columns fit desktop views and phone titles use two lines @legion @
     await page.setViewportSize({ width: 390, height: 844 });
     for (const view of ["open", "triage", "waiting", "in-flight", "slots", "finished", "mine"]) {
       await page.goto(`/projects/ACME/issues?view=${view}`);
+      const scroll = page.getByTestId("issues-table-scroll");
+      await expect(page.locator("[data-issue-row]").first()).toBeVisible();
       const title = page.locator("[data-grid-title-row]").first();
-      if ((await title.count()) !== 0)
-        expect(await title.locator("span").first().getAttribute("class")).toContain("line-clamp-2");
+      await expect(title).toBeVisible();
+      expect(await title.locator("span").first().getAttribute("class")).toContain("line-clamp-2");
+      if (view === "open") {
+        expect(
+          await scroll
+            .locator("thead tr")
+            .first()
+            .evaluate((element) => element.getBoundingClientRect().height)
+        ).toBeLessThanOrEqual(48);
+        expect(await page.locator("[data-issue-row]").count()).toBeGreaterThanOrEqual(5);
+        expect(
+          await scroll
+            .locator("td")
+            .evaluateAll((cells) => cells.every((cell) => cell.scrollWidth <= cell.clientWidth))
+        ).toBe(true);
+      }
     }
   } finally {
     await context.close();

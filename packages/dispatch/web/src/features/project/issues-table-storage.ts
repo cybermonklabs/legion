@@ -12,7 +12,8 @@ import type { BuiltInViewId } from "./issues-table-view-spec";
  * carries the view, and the action record is only a convenience for finishing what a reload
  * cut short.
  */
-export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
+/** Version two stores only reader changes; version-one snapshots of old defaults are ignored. */
+export const tableStorageKey = (project: string) => `dispatch.project-table.v2.${project}`;
 
 /** The storage key's project segment: All open keeps today's key and every other view is separate. */
 export function layoutKeyOf(project: string, view: BuiltInViewId): string {
@@ -112,8 +113,30 @@ export function readLayout(project: string, hiddenByDefault: VisibilityState = {
   };
 }
 
-export function writeLayout(project: string, { sizing, order, visibility }: TableLayout): void {
-  writeStore(project, { sizing, order, visibility });
+export function writeLayout(
+  project: string,
+  { sizing, order, visibility }: TableLayout,
+  hiddenByDefault: VisibilityState = {}
+): void {
+  const changedVisibility = Object.fromEntries(
+    Object.entries(visibility).filter(([id, visible]) => hiddenByDefault[id] !== visible)
+  );
+  if (
+    Object.keys(sizing).length === 0 &&
+    order.length === 0 &&
+    Object.keys(changedVisibility).length === 0
+  ) {
+    const stored = readStore(project);
+    const { order: _order, sizing: _sizing, visibility: _visibility, ...other } = stored;
+    try {
+      if (Object.keys(other).length === 0) localStorage.removeItem(tableStorageKey(project));
+      else localStorage.setItem(tableStorageKey(project), JSON.stringify(other));
+    } catch {
+      /* The URL still works when the browser refuses local preferences. */
+    }
+    return;
+  }
+  writeStore(project, { sizing, order, visibility: changedVisibility });
 }
 
 export function readPhaseMode(layoutKey: string): "share" | "hours" {

@@ -41,7 +41,7 @@ export const BUILT_IN_VIEWS: readonly BuiltInView[] = [
     id: "open",
     name: "All open",
     params: () => new URLSearchParams([["sort", "queue"]]),
-    cols: ["queue", "key", "title", "status", "phase"],
+    cols: ["priority", "queue", "key", "title", "status", "phase", "assignee"],
     bar: "stage",
     legionOnly: false,
   },

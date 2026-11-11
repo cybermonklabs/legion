@@ -394,7 +394,7 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
   return {
     displayRows,
     facets: options.facets ?? defaultFacets,
-    fit: options.fit ?? "window",
+    fit: narrow ? "rows" : (options.fit ?? "window"),
     layout,
     listedLeaves,
     listedTotal: options.listedTotal,

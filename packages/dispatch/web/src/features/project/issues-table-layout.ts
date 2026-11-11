@@ -76,8 +76,9 @@ export function useTableLayout(
    *  does to the box is move its top edge, which is not a size change the box itself sees. */
   const attachAbove = useCallback((node: HTMLDivElement | null) => setAbove(node), []);
   useEffect(() => {
-    if (columnsOverride === undefined) writeLayout(project, { sizing, order, visibility });
-  }, [columnsOverride, project, sizing, order, visibility]);
+    if (columnsOverride === undefined)
+      writeLayout(project, { sizing, order, visibility }, hiddenByDefault);
+  }, [columnsOverride, project, sizing, order, visibility, hiddenByDefault]);
 
   const responsive = useMemo(() => {
     const viewportWidth =

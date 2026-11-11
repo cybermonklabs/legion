@@ -67,7 +67,6 @@ import { issueIsUnread } from "./UnreadDot";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
-const ACTION_WIDTH = 104;
 
 const PHONE_PRIMARY: Record<BuiltInViewId, readonly ColumnId[]> = {
   open: ["status", "phase"],
@@ -792,7 +791,7 @@ function IssuesTableContent({
                 row={row}
               />
             )}
-            trailingWidth={model.narrow ? 0 : ACTION_WIDTH}
+            trailingWidth={0}
           />
 
           <IssueTableSelection

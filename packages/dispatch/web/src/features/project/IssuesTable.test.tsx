@@ -377,7 +377,7 @@ test("a stopped epic creation retries its committed request under the same key",
 test("dismissing an interrupted action preserves layout and sends none of its future steps", async () => {
   const user = userEvent.setup();
   localStorage.setItem(
-    "dispatch.project-table.CORE",
+    "dispatch.project-table.v2.CORE",
     JSON.stringify({
       sizing: { title: 360 },
       action: {
@@ -395,7 +395,7 @@ test("dismissing an interrupted action preserves layout and sends none of its fu
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Dismiss" }));
   expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull();
-  const saved = JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}");
+  const saved = JSON.parse(localStorage.getItem("dispatch.project-table.v2.CORE") ?? "{}");
   expect(saved.action).toBeUndefined();
   expect(saved.sizing.title).toBe(360);
   expect(send).not.toHaveBeenCalled();
@@ -1281,7 +1281,7 @@ test("Finish retries a refused action's writes eight at a time", async () => {
 test("resizing a column on a phone leaves the saved key and title widths alone", async () => {
   const user = userEvent.setup();
   localStorage.setItem(
-    "dispatch.project-table.CORE",
+    "dispatch.project-table.v2.CORE",
     JSON.stringify({ sizing: { key: 200, title: 500 } })
   );
   const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
@@ -1300,10 +1300,10 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
     { keys: "[/MouseLeft]", target: document.body, coords: { clientX: 160 } },
   ]);
   await waitFor(() => {
-    const saved = JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}");
+    const saved = JSON.parse(localStorage.getItem("dispatch.project-table.v2.CORE") ?? "{}");
     expect(saved.sizing.status).toBeGreaterThan(128);
   });
-  const saved = JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}");
+  const saved = JSON.parse(localStorage.getItem("dispatch.project-table.v2.CORE") ?? "{}");
   expect(saved.sizing.key).toBe(200);
   expect(saved.sizing.title).toBe(500);
 });
@@ -1313,7 +1313,7 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
 test("a retried Move reports in the ordinary wording while an action waits to be finished", async () => {
   const user = userEvent.setup();
   localStorage.setItem(
-    "dispatch.project-table.CORE",
+    "dispatch.project-table.v2.CORE",
     JSON.stringify({
       action: { id: "waiting", kind: "startNext", project: "CORE", keys: ["CORE-2"], writes: {} },
     })
@@ -1361,7 +1361,7 @@ test("a resumed merge posts no second reason when the source already holds it", 
     messages.mockRestore();
   });
   localStorage.setItem(
-    "dispatch.project-table.CORE",
+    "dispatch.project-table.v2.CORE",
     JSON.stringify({
       action: {
         id: "merging",
@@ -1430,7 +1430,8 @@ test("a resumed merge whose discarded reason never landed posts it before closin
   refuseReason = false;
   await waitFor(() =>
     expect(
-      JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}").action?.writes.reason
+      JSON.parse(localStorage.getItem("dispatch.project-table.v2.CORE") ?? "{}").action?.writes
+        .reason
     ).toBeUndefined()
   );
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
@@ -1557,7 +1558,7 @@ test.each([
     messages.mockRestore();
   });
   localStorage.setItem(
-    "dispatch.project-table.CORE",
+    "dispatch.project-table.v2.CORE",
     JSON.stringify({
       action: {
         id: "merging",
@@ -1664,7 +1665,7 @@ test("an action record older than a day is gone, and a new action may begin", as
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   localStorage.setItem(
-    "dispatch.project-table.CORE",
+    "dispatch.project-table.v2.CORE",
     JSON.stringify({
       action: {
         id: "yesterday",

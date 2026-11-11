@@ -62,7 +62,7 @@ export function TableHeaderCell<Row>({
             ? "descending"
             : undefined
       }
-      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
+      className={`sticky top-0 border-b px-1 ${compact ? "py-1 [&_button[aria-label^='About']]:hidden" : "py-2"} pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}
@@ -86,14 +86,12 @@ export function TableHeaderCell<Row>({
           // parts wrap — the name on one line, the switch under it — rather than standing side
           // by side and reaching past the table's box. The header a column supplies is laid out
           // by its own row of parts, so the wrap reaches into it as well as this row.
-          <span
-            className={`flex min-w-0 items-center gap-1 ${compact ? "flex-wrap [&>span]:min-w-0 [&>span]:flex-wrap" : ""}`}
-          >
+          <span className={`flex min-w-0 items-center gap-1 ${compact ? "[&>span]:min-w-0" : ""}`}>
             {flexRender(column.columnDef.header, header.getContext())}
             {column.getCanSort() ? (
               <button
                 aria-label={`Sort by ${column.id}`}
-                className={textMutedOnCanvas}
+                className={compact ? "hidden" : textMutedOnCanvas}
                 draggable={!pinned}
                 onClick={column.getToggleSortingHandler()}
                 onDragEnd={() => setDragColumn(undefined)}
@@ -120,7 +118,7 @@ export function TableHeaderCell<Row>({
             type="button"
           >
             {flexRender(column.columnDef.header, header.getContext())}
-            <span className={textMutedOnCanvas}>
+            <span className={compact ? "hidden" : textMutedOnCanvas}>
               {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
             </span>
           </button>

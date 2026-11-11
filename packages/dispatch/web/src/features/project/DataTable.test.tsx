@@ -217,25 +217,40 @@ test("listedLeaves counts every page", async () => {
 
 test("columnsOverride shows only the named columns and writes nothing", async () => {
   localStorage.setItem(
-    "dispatch.project-table.T",
+    "dispatch.project-table.v2.T",
     JSON.stringify({ order: [], sizing: { hours: 200 }, visibility: {} })
   );
-  const before = localStorage.getItem("dispatch.project-table.T");
+  const before = localStorage.getItem("dispatch.project-table.v2.T");
   draw(<CoreTable columnsOverride={["key"]} />);
 
   const table = await screen.findByRole("table", { name: "Rows" });
   expect(within(table).getByRole("columnheader", { name: /^Key/ })).toBeDefined();
   expect(within(table).queryByRole("columnheader", { name: /^Hours/ })).toBeNull();
-  expect(localStorage.getItem("dispatch.project-table.T")).toBe(before);
+  expect(localStorage.getItem("dispatch.project-table.v2.T")).toBe(before);
+});
+
+test("a version-one layout snapshot cannot override current default columns", async () => {
+  localStorage.setItem(
+    "dispatch.project-table.T",
+    JSON.stringify({ order: [], sizing: {}, visibility: { hours: false } })
+  );
+  const view = draw(<CoreTable />);
+  try {
+    const table = await screen.findByRole("table", { name: "Rows" });
+    expect(within(table).getByRole("columnheader", { name: /^Hours/ })).toBeTruthy();
+    expect(localStorage.getItem("dispatch.project-table.v2.T")).toBeNull();
+  } finally {
+    view.unmount();
+  }
 });
 
 test("changing layout keys reloads that view's stored columns", async () => {
   localStorage.setItem(
-    "dispatch.project-table.T.one",
+    "dispatch.project-table.v2.T.one",
     JSON.stringify({ order: [], sizing: {}, visibility: { hours: false } })
   );
   localStorage.setItem(
-    "dispatch.project-table.T.two",
+    "dispatch.project-table.v2.T.two",
     JSON.stringify({ order: [], sizing: {}, visibility: {} })
   );
   const view = draw(<CoreTable layoutKey="T.one" />);
