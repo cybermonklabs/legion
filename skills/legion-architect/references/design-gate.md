@@ -24,7 +24,9 @@ document (`verification.md`) with it, uploading each version after the first wit
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`. The human approves both documents in one request (step 4 below), and every
 later role reads the checks: the implementer and the tester record a result against each, and the
-reviewer approves only once every `before_merge` check has a passing result at the head.
+reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
+check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
+pass recorded under an older wording of the check or a retracted one.
 
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's

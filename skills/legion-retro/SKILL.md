@@ -39,7 +39,7 @@ the reviewer's approval.
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do
 not call `handoff_complete`. Report it with `envoy_publish` to the architect's
 topic in the `Legion addressing` line of your system prompt, with the command and its output. A
-check with no passing result at the head goes back as step 1 says. The Dispatch message (step 5) is
+check with no pass standing at the head goes back as step 1 says. The Dispatch message (step 5) is
 for a finished retro only.
 
 ## Steps
@@ -48,12 +48,12 @@ for a finished retro only.
    request, and the tester's and reviewer's handoffs
    (`dispatch handoff-read --issue <issue> --phase test`, then the review
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
-   that line quotes). Every `before_merge` check of the issue carries a passing result at the
-   approved head, the implementer's and the tester's alike, and the pull request
+   that line quotes). A pass stands for every `before_merge` check of the issue at the approved
+   head, from the implementer and from the tester alike, and the pull request
    body's `Checks` block carries each of those lines. In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. When a check has no passing result at that head, or its only evidence is a unit suite,
+   request. When a check has no pass standing at that head, or its only evidence is a unit suite,
    call the `legion` tool's `request_backward_move` with `to: implementing` for the implementer's
    result or `to: testing` for the tester's, its `reason` naming the check by its block id. When
    retro runs again, that gap is your first learning.

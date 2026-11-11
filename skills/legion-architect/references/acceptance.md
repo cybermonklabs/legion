@@ -69,7 +69,7 @@ requirement proves it with a check on its own Verification document whose `serve
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
 that waits for it waits forever, so work another child builds on is a child of its own, in a
 repository of its own or with a deploy of its own. While the approved head does not carry those
-merges, or a check in another repository has no passing result since the close of a child it
+merges, or a check in another repository has no pass standing since the close of a child it
 needs, leave the issue in `accepting` until each has closed (`child-closed`) or been parked for
 good (`child-status`). Move a parked child's criterion to the root's own pull request or a
 released, open child first; never downgrade it. A root's requirement stays the root's, pending
