@@ -14,8 +14,9 @@ import (
 )
 
 // createRequestBody is POST /v1/requests's exact shape: a signed
-// request object plus an optional,
-// unsigned session_id (wake-only). The v8 "secrets"/"reason"/"issue" top-level fields are gone —
+// request object plus two optional,
+// unsigned fields, session_id (wake-only) and github_app (the narrowing the release will ask
+// for). The v8 "secrets"/"reason"/"issue" top-level fields are gone —
 // they now live inside the signed request object itself.
 type createRequestBody struct {
 	// The session's signed request: a compact ES256 JWS, signed with the session's key and
@@ -24,6 +25,13 @@ type createRequestBody struct {
 	Request string `json:"request"`
 	// Optional: the Envoy session the broker notifies if this request expires undecided.
 	SessionID *string `json:"session_id"`
+	// Optional: the narrowing this request's grant will be released with, as POST
+	// /v1/grants/{id}/values takes it. It is unsigned, as session_id is. It narrows nothing by
+	// itself: the release is what applies a narrowing, and a release that asks for none is
+	// owner-wide whatever this field said. The broker checks it before it asks a person to
+	// approve the request, so a narrowing it cannot serve is refused here and costs no
+	// approval.
+	GitHubApp *githubNarrowing `json:"github_app"`
 }
 
 // createRequestResponse is POST /v1/requests's exact wire shape: request_id, state, secrets,
@@ -74,7 +82,19 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
 	}
-	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""), nil)
+	// The narrowing the release will ask for, read exactly as the release's own route reads it
+	// (grantValues), so one narrowing is refused by one parser and the caller reads one answer
+	// for one mistake.
+	var narrowing *secrets.GitHubNarrowing
+	if body.GitHubApp != nil {
+		n, refusal := policy.ParseGitHubNarrowing(body.GitHubApp.Owner, body.GitHubApp.Repositories, body.GitHubApp.ReadOnly)
+		if refusal != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_NARROWING", "github_app."+refusal.Field+" "+refusal.Reason)
+			return
+		}
+		narrowing = &n
+	}
+	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""), narrowing)
 	switch {
 	case errors.Is(err, record.ErrRequestInvalid):
 		writeError(w, http.StatusBadRequest, "REQUEST_INVALID", err.Error())
@@ -94,6 +114,38 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		return
 	case errors.Is(err, policy.ErrUnknownSecret):
 		writeError(w, http.StatusBadRequest, "UNKNOWN_SECRET", err.Error())
+		return
+	case errors.Is(err, requests.ErrNarrowingNotApplicable):
+		// The request asks for no github-app secret, so nothing its grant releases could be
+		// narrowed. Bad input, and the release answers 400 for the same cause.
+		writeError(w, http.StatusBadRequest, "NARROWING_NOT_APPLICABLE", err.Error())
+		return
+	case errors.Is(err, requests.ErrNarrowingBehindAirlock):
+		// The request asks for a name the airlock keeps back, whose value the proxy spends on
+		// the session's behalf and mints owner-wide once per pod, so no narrowing of its
+		// release could hold for it. A conflict between the narrowing and the names asked for,
+		// not bad input, so 409 rather than 400, as the release answers for the same cause.
+		writeError(w, http.StatusConflict, "NARROWING_BEHIND_AIRLOCK", err.Error())
+		return
+	case errors.Is(err, requests.ErrNarrowingOwnerNotListed):
+		// The narrowing names an account a github-app secret of the request does not list;
+		// GitHub was not asked. The caller's input, so a 4xx, and 403 as the release answers.
+		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
+		return
+	case errors.Is(err, secrets.ErrMintNarrowingRefused):
+		// GitHub refused the narrowed token the check asked for (a repository the installation
+		// does not reach, or a permission the App does not hold); the message names the part it
+		// refused. The caller fixes the narrowing, so a 4xx, and 422 as the release answers.
+		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
+		return
+	case errors.Is(err, secrets.ErrMintRefused):
+		// The App has no installation on the account the narrowing names. The release answers
+		// 502 MINT_FAILED for this one, because there it cannot tell it from an upstream that
+		// failed; here the check reached GitHub and decided it is the narrowing's own account
+		// that has no installation, which the caller fixes, so it reads as the narrowing
+		// refusal it is. It comes after the narrowing refusal above, which is the more
+		// particular of the two.
+		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		// The proof was verified moments ago against a live enrollment, but it was revoked (or

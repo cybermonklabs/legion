@@ -926,7 +926,9 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx := context.Background()
 	c := newClient(base)
-	result, raw, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID())
+	// `request` has no narrowing flags: it asks for the request alone, and the release that
+	// narrows is a later run's.
+	result, raw, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID(), nil)
 	if err != nil {
 		refuse(stderr, "agent-secrets request", c.source(ctx), err)
 		return 1
@@ -1173,7 +1175,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// all of them: the injection line, and each refusal, whether the request is refused, waits
 	// out its decision, or releases no value.
 	src := sync.OnceValue(func() source { return c.source(ctx) })
-	result, _, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID())
+	result, _, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID(), narrowing)
 	if err != nil {
 		refuse(stderr, "agent-secrets", src(), err)
 		return 1
