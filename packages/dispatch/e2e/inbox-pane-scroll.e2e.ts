@@ -487,7 +487,6 @@ test("a second thread anchored to the same block opens at that block's section",
   }
 });
 
-// SLOW(>=2s): two versions seeded and the marked one drawn before the step is read.
 test("Next change moves the column to the next changed block", async ({ browser }) => {
   const seed = await seedApprovalWithMarks();
   const alice = await asUser(browser, "alice");

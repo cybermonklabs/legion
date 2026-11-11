@@ -78,8 +78,6 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-// SLOW(>=2s): the seed's five listener and API writes, a sign-in and the Inbox's own first draw;
-// measured at 1.9 s in an issue pod on one worker.
 test("the Inbox's agents band names a session by the title it stamped, not by its id", async ({
   browser,
 }) => {

@@ -26,10 +26,6 @@ async function coverageOf(issue: string, blockId: string): Promise<RequirementCo
   return requirement;
 }
 
-// SLOW(>=2s): 3.3 s - one sign-in and one load of the Spec tab, then a second version of the
-// Verification document written under that same open page and its flag watched clearing there.
-// The live refresh of the coverage read is held to the start of its first fetch plus a second
-// (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts), and that second is the row's third.
 // @pr: The coverage surface's own row: an unserved requirement is flagged on the Spec tab and a check written under the open page clears it.
 test("a requirement no check serves is flagged on the Spec tab, and a check that serves it clears the flag @pr", async ({
   browser,
