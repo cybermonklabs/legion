@@ -131,6 +131,10 @@ function insertionTransaction(
   // below goes over them, and the reader types on after the mention rather than inside it.
   const marks = state.doc.resolve(from).marks();
   const link = href === undefined ? undefined : state.schema.marks.link?.create({ href });
+  // A pick that links is its words and its address together: a schema with no `link` mark can
+  // write only half of it, so the pick is refused whole, as a stale one is, rather than written
+  // as the words with the address dropped. Today's commonmark schema has the mark.
+  if (href !== undefined && link === undefined) return undefined;
   const transaction = state.tr.insertText(text, from, to);
   // Where the caret lands is the write's own doing: the reader types on after the reference.
   const after = from + text.length;

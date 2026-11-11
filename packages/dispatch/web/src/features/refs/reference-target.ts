@@ -29,9 +29,7 @@ import type {
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
-  appHref,
   buildDispatchReference,
-  buildReferencePath,
   type DispatchReferenceRoute,
   type IssueRoute,
   type ReferencedArtifact,
@@ -721,10 +719,7 @@ export function needsSpecSlug(
 export function useReferenceHref(route: DispatchReferenceRoute | undefined): string | undefined {
   const specKey = route !== undefined && needsSpecSlug(route) ? route.key : undefined;
   const issue = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
-  if (route === undefined || route.kind === "person") {
-    return undefined;
-  }
-  return appHref(buildReferencePath(route, summarySpec(issue.data)?.slug));
+  return route === undefined ? undefined : referenceHref(route, summarySpec(issue.data)?.slug);
 }
 
 /** `useReferenceHref`'s answer for a click outside a render: it waits for the issue summary a
@@ -734,12 +729,9 @@ export async function fetchReferenceHref(
   queryClient: QueryClient,
   route: DispatchReferenceRoute
 ): Promise<string | undefined> {
-  if (route.kind === "person") {
-    return undefined;
-  }
   if (!needsSpecSlug(route)) {
     return referenceHref(route);
   }
   const issue = await queryClient.fetchQuery(issueSummaryQuery(route.key)).catch(() => undefined);
-  return appHref(buildReferencePath(route, summarySpec(issue)?.slug));
+  return referenceHref(route, summarySpec(issue)?.slug);
 }

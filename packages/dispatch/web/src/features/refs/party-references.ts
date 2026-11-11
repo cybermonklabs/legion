@@ -2,6 +2,7 @@ import { partyLink } from "./ref-picker";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
+  isDeliveryAddress,
   type PartyRoute,
   sessionOfAddress,
 } from "./routes";
@@ -31,25 +32,35 @@ export function isPartyRoute(route: DispatchReferenceRoute): route is PartyRoute
 }
 
 /** The delivery address a party is reached at - `session:<id>` or `role:<token>` - or undefined
- *  for a person: a person reads the record and is never a delivering party (R5). */
+ *  for a party no address reaches: a person, who reads the record and is never a delivering
+ *  party (R5), and an agent whose session id is outside the grammar a route is written in
+ *  (`isDeliveryAddress`). A reference names a session by the wider rule the Agents page shows
+ *  ids under, so a body can write an agent address no route reaches; the server refuses such a
+ *  write (`api.checkMentionRoute`), and a writer told here that it is delivered would be told
+ *  one thing before the refusal said another. */
 export function deliveryTargetOf(route: PartyRoute): string | undefined {
   switch (route.kind) {
-    case "agent-session":
-      return `session:${route.session}`;
-    case "role":
-      return `role:${route.role}`;
+    case "agent-session": {
+      const address = `session:${route.session}`;
+      return isDeliveryAddress(address) ? address : undefined;
+    }
+    case "role": {
+      const address = `role:${route.role}`;
+      return isDeliveryAddress(address) ? address : undefined;
+    }
     case "person":
       return undefined;
   }
 }
 
-/** The party a delivery address names, or undefined for an address that names none. */
+/** The party a delivery address names, or undefined for an address that names none: one of no
+ *  delivery route's form (`isDeliveryAddress`) is reached by nothing, so it names no party. */
 export function partyRouteOf(target: string): PartyRoute | undefined {
+  if (!isDeliveryAddress(target)) return undefined;
   const session = sessionOfAddress(target);
-  if (session !== undefined) return { kind: "agent-session", session };
-  return target.startsWith("role:")
+  return session === undefined
     ? { kind: "role", role: target.slice("role:".length) }
-    : undefined;
+    : { kind: "agent-session", session };
 }
 
 /** The mention of the party at `target`, written as the link that names it: `title` for the

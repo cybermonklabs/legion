@@ -434,6 +434,79 @@ test("a send kept with the old build's mentions restores them as the links that 
   }
 });
 
+/** The body a send comes back with when the record kept beside it holds `mentions`: the draft is
+ *  seeded, its record rewritten as the build before this one wrote it, and the send put back far
+ *  enough that the page does not make it again. The request's body and the composer's are the
+ *  same restore, so the caller reads one and the test reads both. */
+async function restoredBody(
+  tab: KeptTab,
+  key: MutationKey,
+  sendKey: string,
+  body: string,
+  mentions: readonly object[]
+): Promise<{ draft: string | undefined; request: string | undefined }> {
+  heldOf(tab).held.send(key, { ...request, draft: { body, replacement: "" }, sendKey });
+  await settle();
+  const kept = tab.kept(sendKey) as {
+    detail: { draft: { draft: object }; request: { draft: object } };
+  };
+  const withMentions = (draft: object) => ({ ...draft, mentions });
+  tab.storage.setItem(
+    `dispatch.write:${sendKey}`,
+    JSON.stringify({
+      ...kept,
+      detail: {
+        ...kept.detail,
+        draft: { ...kept.detail.draft, draft: withMentions(kept.detail.draft.draft) },
+        request: { ...kept.detail.request, draft: withMentions(kept.detail.request.draft) },
+      },
+    })
+  );
+  pressedLongAgo(tab, sendKey);
+
+  const { held: after, writes } = heldOf(tab);
+  writes.resume("alice");
+  await settle();
+  return {
+    draft: after.get(key)?.draft.draft.body,
+    request: after.get(key)?.request.draft.body,
+  };
+}
+
+// What a record holds is read back as a record, not as a draft this build wrote: a kept mention
+// is rewritten only where its target is a delivery route and its offsets are a span of the body.
+// A target of no route's form is written into the body as it stands, and `slice` reads a
+// negative or fractional offset as a span of its own, so either puts Markdown of the record's
+// choosing - a link to another site - into a body a resumed send (`wire === null`) then sends.
+// Only same-origin script writes this storage, so there is no exploit path; the body is held to
+// the rule all the same.
+test("a kept mention is rewritten only for a delivery route at a span of the body", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  try {
+    const body = "@Planner @Ghost please look.";
+    const hostile = await restoredBody(tab, ["conversation", "CORE-1"], "send-bad", body, [
+      // A target that closes the link it is written into and opens one of its own.
+      { end: 8, start: 0, target: "session:x) [y](https://evil.example", text: "Planner" },
+      // A fraction is no offset, and `slice` truncates it to one that names `@Ghost`.
+      { end: 15.5, start: 9.5, target: "session:planner-session", text: "Ghost" },
+    ]);
+    expect(hostile).toEqual({ draft: body, request: body });
+
+    // A negative pair `slice` counts from the end of the body, where it names `@Away` whole.
+    const away = "@Away is away.";
+    const negative = await restoredBody(tab, ["conversation", "CORE-2"], "send-neg", away, [
+      { end: -9, start: -14, target: "session:planner-session", text: "Away" },
+    ]);
+    expect(negative).toEqual({ draft: away, request: away });
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A closed tab loses what sessionStorage keeps, so while a send has no verdict the page asks to
 // confirm leaving, and only then.
 test("leaving asks for confirmation only while a send is unconfirmed", async () => {

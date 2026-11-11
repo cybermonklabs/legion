@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { draftParties, partyMentionSpan } from "./party-references";
+import { draftParties, partyMention, partyMentionSpan, partyRouteOf } from "./party-references";
 
 const SESSION = "01a1058e-f14f-7684-87eb-3dc885955551";
 const AGENT = `dispatch://agent/${SESSION}`;
@@ -84,4 +84,34 @@ test("a party written only in code is mentioned nowhere", () => {
   expect(partyMentionSpan(`Run \`dispatch send ${AGENT}\` first.`, `session:${SESSION}`)).toBe(
     undefined
   );
+});
+
+// A reference names an agent by the wider rule the Agents page shows session ids under, where a
+// delivery route is `session:[A-Za-z0-9_-]+` (the server's `model.ParseRoute`). A body can
+// therefore write an agent address no route reaches, and the server refuses such a write
+// (`api.checkMentionRoute`): the composer says the same of the draft in front of the reader
+// rather than listing a party who is told and then showing a refusal that says otherwise.
+test("an agent address no delivery route reaches names the draft and is delivered to nobody", () => {
+  expect(draftParties("[x](dispatch://agent/a.b) please look.")).toEqual({
+    named: true,
+    targets: [],
+  });
+  expect(partyMentionSpan("[x](dispatch://agent/a.b) please look.", "session:a.b")).toBe(undefined);
+});
+
+test("a delivery address is read as a party only where a route is written that way", () => {
+  expect(partyRouteOf(`session:${SESSION}`)).toEqual({ kind: "agent-session", session: SESSION });
+  expect(partyRouteOf("role:reviewer")).toEqual({ kind: "role", role: "reviewer" });
+  for (const target of [
+    "session:a.b",
+    "session:",
+    "session:x) [y](https://evil.example",
+    "role:Reviewer",
+    "role:",
+    "agent:s1",
+    SESSION,
+  ]) {
+    expect(partyRouteOf(target)).toBe(undefined);
+    expect(partyMention(target, "Planner")).toBe(undefined);
+  }
 });

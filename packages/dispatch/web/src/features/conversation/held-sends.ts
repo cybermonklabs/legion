@@ -306,7 +306,14 @@ function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
  *  nobody with nothing said about it. A span is rewritten only while it still reads as the
  *  `@Name` that build accepted - the rule that build read its own mentions by
  *  (`survivingMentions`) - and the spans are written from the last to the first, so each is
- *  still the one its offsets named. A target that names no party keeps its words. */
+ *  still the one its offsets named.
+ *
+ *  What is read back is a record, not a draft this build wrote: a target is written into the
+ *  body only as the link `partyMention` makes of a delivery address (`party-references.ts`),
+ *  so a target of no route's form keeps the words it stood as rather than becoming Markdown of
+ *  its own, and offsets are rewritten only where they are a span of this text - `slice` counts
+ *  a negative one from the end, and a resumed send whose `wire` is null sends the body this
+ *  writes. */
 function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
   if (mentions === undefined) {
     return { body, replacement };
@@ -314,12 +321,16 @@ function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
   const written = [...mentions]
     .sort((one, other) => other.start - one.start)
     .reduce((text, mention) => {
+      const { end, start } = mention;
       const words = `@${mention.text}`;
-      if (text.slice(mention.start, mention.end) !== words) {
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > text.length) {
+        return text;
+      }
+      if (text.slice(start, end) !== words) {
         return text;
       }
       const link = partyMention(mention.target, mention.text) ?? words;
-      return `${text.slice(0, mention.start)}${link}${text.slice(mention.end)}`;
+      return `${text.slice(0, start)}${link}${text.slice(end)}`;
     }, body);
   return { body: written, replacement };
 }

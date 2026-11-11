@@ -73,15 +73,16 @@ type commentParties struct {
 }
 
 // partyTarget is the delivery route a party reference names - `session:<id>` for an agent,
-// `role:<token>` for a role - and whether it names one at all. A person names none.
-func partyTarget(ref text.Ref) (string, bool) {
+// `role:<token>` for a role - or "" for a party kind that is neither: a person, whom nothing is
+// delivered to, and any kind text.IsParty takes that this reader does not know.
+func partyTarget(ref text.Ref) string {
 	switch ref.Kind {
 	case "session":
-		return "session:" + ref.ID, true
+		return "session:" + ref.ID
 	case "role":
-		return "role:" + ref.ID, true
+		return "role:" + ref.ID
 	}
-	return "", false
+	return ""
 }
 
 // checkMentionRoute refuses a target of no known form - one model.ParseRoute does not read as a
@@ -128,12 +129,15 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		if located.InCode || !located.IsParty() {
 			continue
 		}
-		target, delivers := partyTarget(located.Ref)
-		if !delivers {
-			// The one party no route reaches is a person, who reads the record (R5).
+		// A person is named by being one, not by being the party left over when no route is
+		// written: a person reads the record and is never delivered to (R5). Every other party
+		// is a route this reader writes; for a kind added to text.IsParty alone partyTarget
+		// answers "", which checkMentionRoute refuses rather than let it pass for a person.
+		if located.Kind == "person" {
 			parties.person = true
 			continue
 		}
+		target := partyTarget(located.Ref)
 		if err := checkMentionRoute(target); err != nil {
 			return commentParties{}, err
 		}

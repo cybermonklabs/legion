@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -433,5 +434,39 @@ func TestCommentBodyMentionOutsideCodeStillDelivers(t *testing.T) {
 	}
 	if len(sends()) != 1 {
 		t.Fatalf("sends = %#v, want one", sends())
+	}
+}
+
+// The person of a party set is named by being one, never by being the party left over when no
+// route is written: commentPartiesOf reads the kind itself, so a party kind text.IsParty takes
+// and partyTarget writes no route for earns the refusal a target of no known form earns, rather
+// than passing for a reader nothing is delivered to and nothing refused for. The rows are the
+// three kinds IsParty takes today, with an agent address of the wider body grammar beside them.
+func TestCommentPartiesOfNamesThePersonByKind(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		targets []string
+		person  bool
+		refused bool
+	}{
+		{"an agent", "[p](dispatch://agent/s1) please look.", []string{"session:s1"}, false, false},
+		{"a role", "[r](dispatch://role/reviewer) please look.", []string{"role:reviewer"}, false, false},
+		{"a person", "[a](dispatch://person/alice@example.com) should see this.", nil, true, false},
+		{"an agent address no route reaches", "[x](dispatch://agent/a.b) please look.", nil, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(tc.body, ""))
+			if (err != nil) != tc.refused {
+				t.Fatalf("commentPartiesOf(%q) error = %v, refused want %v", tc.body, err, tc.refused)
+			}
+			if err != nil {
+				return
+			}
+			if !slices.Equal(parties.targets, tc.targets) || parties.person != tc.person {
+				t.Errorf("commentPartiesOf(%q) = %#v / person %v, want %#v / person %v",
+					tc.body, parties.targets, parties.person, tc.targets, tc.person)
+			}
+		})
 	}
 }

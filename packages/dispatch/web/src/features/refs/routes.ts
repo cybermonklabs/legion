@@ -232,6 +232,10 @@ const componentReferencePattern = /^component\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)
 /** A role's token, the charset a `role:<token>` delivery route is written in (the server's
  *  `model.ParseRoute`). */
 const roleTokenOnlyPattern = /^[a-z0-9-]+$/;
+/** A session id a `session:<id>` delivery route is written with, the server's `model.ParseRoute`
+ *  again. It is narrower than the ids a reference may name (`SESSION_ID_PATTERN`, which takes
+ *  `.` and `:` among the rest), so a body can write an agent address no route reaches. */
+const sessionRouteIDPattern = /^[A-Za-z0-9_-]+$/;
 /** A person's login: their email lowercased, the stored form of a login (the server's
  *  `model.CanonicalLogin`). A login written any other way names nobody Dispatch holds. */
 const personLoginOnlyPattern = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
@@ -778,6 +782,19 @@ export function sessionOfAddress(address: string): string | undefined {
   return address.startsWith("session:") ? address.slice("session:".length) : undefined;
 }
 
+/** Whether `address` is a delivery address a route is reached at: `session:<id>` and
+ *  `role:<token>` as the server's `model.ParseRoute` reads them
+ *  (`internal/dispatch/model/model.go`), the grammar it holds every mention target to
+ *  (`api.checkMentionRoute`). A body can name a party outside it - an agent reference takes the
+ *  wider `SESSION_ID_PATTERN` - and such a party is reached by nothing, so the composer says so
+ *  rather than listing it as one who is told (`party-references.ts`). */
+export function isDeliveryAddress(address: string): boolean {
+  const session = sessionOfAddress(address);
+  return session === undefined
+    ? address.startsWith("role:") && roleTokenOnlyPattern.test(address.slice("role:".length))
+    : sessionRouteIDPattern.test(session);
+}
+
 /** The route a document is referenced and linked by: an issue's primary document is its `spec`,
  *  any other issue artifact is `artifact/<slug>`, a project document sits under its project, and
  *  an artifact of an agent's conversation under that agent's session. `version` pins a historical
@@ -1003,11 +1020,16 @@ const SAME_SITE_PROBE_ORIGIN = "https://same-site.invalid";
 
 /** The `href` a reference opens inside this dashboard, or `undefined` for one that opens no
  *  page of it: the path the reference builds (`buildReferencePath`), through the gate above.
- *  The composition every sink of a typed reference makes - `RefLink`'s two writers and
- *  `features/doc/picture-view` - named once here, beside the gate it is made of. */
-export function referenceHref(route: DispatchReferenceRoute): string | undefined {
+ *  The composition every sink of a typed reference makes - `RefLink`'s two writers,
+ *  `features/doc/picture-view` and the two hooks of `reference-target.ts` - named once here,
+ *  beside the gate it is made of. `specSlug` is `buildReferencePath`'s, the slug a pinned block
+ *  of an issue's spec opens its version under, which only the issue's summary names. */
+export function referenceHref(
+  route: DispatchReferenceRoute,
+  specSlug?: string
+): string | undefined {
   // A person has no page, so there is no path to gate: the sink draws the words instead.
-  return route.kind === "person" ? undefined : appHref(buildReferencePath(route));
+  return route.kind === "person" ? undefined : appHref(buildReferencePath(route, specSlug));
 }
 
 /** The SPA path a reference navigates to, whichever side of the issue/project split it is on. A
@@ -1018,7 +1040,7 @@ export function referenceHref(route: DispatchReferenceRoute): string | undefined
  *  their own. A block of a project document's comment opens the comment (`?comment=<id>`) with no
  *  fragment: that page's `#b-` names a block of the document. An issue's spec keeps its versions
  *  under its own slug, which a spec route does not carry: `specSlug` names it once the issue's
- *  summary is read (`useReferencePath`), and until then a pinned block of the spec opens the live
+ *  summary is read (`useReferenceHref`), and until then a pinned block of the spec opens the live
  *  spec at the block. A person is no caller of this: nothing shows one, so a person's reference
  *  opens no page, and leaving that kind out (`PagedReferenceRoute`) is what makes each sink
  *  that can hold one say for itself what it draws instead (R5). */

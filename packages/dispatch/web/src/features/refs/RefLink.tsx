@@ -266,8 +266,8 @@ export function collectReferenceAnchors(
       continue;
     }
     // A reference that opens no page of this dashboard is its words, as one that cites nothing
-    // is: a person, whom nothing in Dispatch shows (the empty path), and anything that does not
-    // resolve to this origin, which no route writes today and none may start writing unnoticed.
+    // is: a person, whom nothing in Dispatch shows (R5), and anything that does not resolve to
+    // this origin, which no route writes today and none may start writing unnoticed.
     const path = referenceHref(route);
     if (path === undefined) {
       anchor.replaceWith(document.createTextNode(text));

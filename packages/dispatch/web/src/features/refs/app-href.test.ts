@@ -50,6 +50,16 @@ test("a person's reference is no link", () => {
   buildReferencePath(person);
 });
 
+// The slug a pinned block of a spec opens its version under is the builder's own `specSlug`,
+// carried through the gate here so the two hooks that wait for the issue's summary
+// (`useReferenceHref`, `fetchReferenceHref`) make no composition of their own.
+test("a pinned block of a spec opens its version under the slug it is given", () => {
+  const spec = { block: { id: "p1", pin: "3" }, key: "CORE-1", kind: "spec" as const };
+  expect(referenceHref(spec, "core-1-md")).toBe("/issues/CORE-1/artifacts/core-1-md?v=3");
+  // Until the summary names the slug, the live spec at the block.
+  expect(referenceHref(spec)).toBe("/issues/CORE-1/spec#b-p1");
+});
+
 // Every other kind this change adds opens a page of this dashboard, so each passes the gate.
 test.each([
   { kind: "agent-session" as const, session: "01a1058e-f14f-7684-87eb-3dc885955551" },

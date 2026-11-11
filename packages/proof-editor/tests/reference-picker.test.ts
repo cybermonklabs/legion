@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { TextSelection, type Transaction } from "@milkdown/kit/prose/state";
+import { Schema } from "@milkdown/kit/prose/model";
+import { EditorState, TextSelection, type Transaction } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type { EditorReferencePicker, ReferencePickerCaret } from "../src/lib";
+import { insertReference } from "../src/reference-picker";
 import { withMarksEditor } from "./marks-editor";
 
 /** The host's side of the picker: every caret it was told about, in order, and the keys it was
@@ -208,6 +210,33 @@ test("a pick naming an address is stored as the link that names it", async () =>
     view.dispatch(view.state.tr.insertText("!", view.state.selection.head));
     expect(handle.getMarkdown().trim()).toBe("Ask [Planner](dispatch://agent/abc)! now");
   });
+});
+
+// A pick that links is its words and its address together, so a schema with no `link` mark can
+// write only half of it: the pick is refused whole, as a stale one is, rather than storing the
+// words and dropping the address while answering that it was written. Today's commonmark schema
+// has the mark, so no box in Dispatch takes this path.
+test("a pick naming an address is refused by a schema with no link mark", () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: "block+" },
+      paragraph: { content: "inline*", group: "block" },
+      text: { group: "inline" },
+    },
+  });
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, schema.text("Ask @plan "))]);
+  const state = EditorState.create({ doc, selection: TextSelection.create(doc, 11) });
+  const dispatched: Transaction[] = [];
+  const dispatch = (transaction: Transaction) => {
+    dispatched.push(transaction);
+  };
+
+  const pick = { end: 9, start: 4, text: "Planner", trigger: "@" };
+  expect(insertReference(state, dispatch, { ...pick, href: "dispatch://agent/abc" })).toBe(false);
+  expect(dispatched).toEqual([]);
+  // The same pick with no address of its own is plain words, which this schema does write.
+  expect(insertReference(state, dispatch, pick)).toBe(true);
+  expect(dispatched).toHaveLength(1);
 });
 
 test("a key the host's list takes never reaches the document, and every other key does", async () => {
