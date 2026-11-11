@@ -1043,9 +1043,6 @@ The edit route's refusal of the same shape advises moving the code out of the ty
 A line of colons in code inside a typed block is kept:
 the browser editor's parser ends a typed block at a line of at least its fence's colons, with spaces and tabs around them, starting less than four columns past where the typed block's own lines start on the written line, even inside fenced code - counting the width of the list markers and `> ` around the code, advancing a tab to the next multiple of four from the column it stands at, and finding nothing closing in a blockquote inside the typed block - so the renderer writes the typed block's fence longer than every such line (below).
 The engine's reading of each shape is `pmdoc/testdata/typed-fence-lines.json`, which the fixture generator writes for a callout at the top and inside a blockquote, list items, a footnote definition and another callout.
-Text a `replace` writes that would read as block syntax at a line start is written escaped, so it reads back as the characters:
-`---`, `***`, `~~~` or `::::` over a paragraph is stored `\---` and so on (the renderer's line-start escapes).
-Beside an emptied paragraph it is written the same way, since an empty paragraph is not written.
 Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`, its checks in `docs/accept.go`) writes blocks, so it stores what reads back as the live document, and refuses what cannot, naming `replace_with`.
 A table the splice cut is padded to its width as the browser editor's table plugin pads it (`padCutTables`, `pmdoc.PadTables`), where the browser's accept writes the replacement where `Splice` does (`padsLikeTheBrowser`):
 inline text, code's literal text, an empty replacement (which deletes the matched text, by this accept's own rule, where the browser's accept of an empty suggestion only clears its mark), or block content over exactly the two textblocks the browser's accept replaces whole (`pmdoc.MultiblockRange`, which reads each textblock one position short of its end as the editor does), the first of them a document-level block.
@@ -1081,23 +1078,42 @@ the document stays as it was and the suggestion stays open.
 The person accepting cannot change the text, so the refusal (`acceptRefusal`) says what the text writes where it lands - for a same-id rewrite of a typed block, in the block that typed block stands in - and names what they can do (reject the suggestion, or reply asking for text the block can hold), never an edit-route operation;
 it says the text empties a paragraph only when the text renders no content, and then offers deleting the paragraph only where the rest of its block stands without it, and the whole block only where the paragraph is all it holds.
 A reject is not checked, since it gives back the text the insert started from.
-Everywhere else `replace` is inline: `with` parses through `pmdoc.ParseInline` (paragraph-only block grammar), so a multi-paragraph `with` is `INVALID_OP`, so is any non-empty `with` that renders to no inline content (a line indented four spaces or a tab, which markdown reads as a code block, or whitespace alone
-— an empty `with` deletes the match on purpose, and a container left holding only the emptied paragraph reads back holding it;
-refusing the rest is LEGION-280, since splicing nothing over the match silently deleted the caller's text), and a leading marker of a *different* kind from the matched block's own is literal escaped text.
+Everywhere else `with` is markdown written into the document, read by the parse an insert's markdown is read by (`pmdoc.ParseFragment`, where front matter opens the document's start alone, `opensDocument`), and what that parse gives decides how it is written.
+A `with` of one paragraph, and the empty document an empty `with` gives, go to the inline path (`inlineReplacement`), which parses the text again through `pmdoc.ParseInline` (paragraph-only block grammar) and continues the textblock the match sits in.
+That path carries the refusal of a non-empty `with` that renders to no inline content, the hard breaks, the whitespace at the text's edges and the anchor marks it strips, so the paragraph the first parse made is not reused.
+Whitespace alone is the whole of that refusal now, since a line indented four spaces or a tab is a code block, which the block path writes.
+An empty `with` deletes the match on purpose, and a container left holding only the emptied paragraph reads back holding it;
+refusing the rest is LEGION-280, since splicing nothing over the match silently deleted the caller's text.
+HTML the parser reads as a block goes to the inline path as well (`pmdoc.ErrBlockHTML`):
+the Proof schema holds no block of HTML, so that text names no block, and where it lands it is inline text, which the read-back refusals judge - refused where it opens a block there, kept in a heading, in a table cell and inside a line.
+Every other refusal of the parse is the caller's to read, as an insert's markdown is, and is `INVALID_MARKDOWN` on `with`.
+A `with` that gives blocks writes them over the match (`blockReplacement`), fitted by `pmdoc.ValidDocument.Splice` as the editor a person reads the document in fits them:
+blocks that enter a list become its items, and blocks a typed block can hold go inside it.
+Three places hold no block of their own, and a match in one is refused with the document unchanged:
+a heading, which holds one line of text;
+any cell of a table, where the fit lifts the blocks out of the table and leaves it a cell short or splits it in two, so every cell is refused and not the refusing cells alone;
+and a typed block whose content rule cannot hold the blocks, which would then stand outside it, unless the `with` rewrites that block under its own id (`pmdoc.RewritesBlock`, `holdsWrittenBlocks`), which is that climb out on purpose.
+The anchor marks covering the match go on one block of what is written (`markBlockReplacement`):
+the first paragraph or heading holding a run of text (`anchoredBlock`, which passes over a block in a table, whose mark would quote one cell), and a `with` holding none of either under an open comment or ask is refused, since the anchor would have no words left to quote.
+What the block path wrote then runs the guards every other path that writes blocks runs (`refuseWrittenBlocks`: `pmdoc.RepeatedBlockID` and `pmdoc.RefuseMisreadWrite`), and is settled with the block ids of the textblock it split carried (`settleBlockReplacement`).
+A leading marker of a *different* kind from the matched block's own names the block its markdown names, as it does in an insert, and a backslash before it keeps prose that merely looks like a marker as text.
 A `with` opening with a marker of the *same* kind as that block's own would render it twice and is `INVALID_OP` on `with` (`replacementMarkdown`), naming the marker the block renders and, in backticks the caller can paste back, their own text with the marker's significant character escaped;
 the exceptions are a heading rename whose `find` carried a heading marker, where the repeated marker is dropped, and `with` may change the level only when `find` named the block's actual level
 — `# ` is the level-blind selector, so a generic `find` renames the text and keeps the level —
 and a list item the `find`'s own list marker selected, having matched no text as written (`resolveEditQuote`'s `byMarker`), where the repeated marker is dropped and the item keeps its number, and a `with` that is the marker alone, which would empty the item, is `INVALID_OP`.
 A hard line break inside `with` — two trailing spaces or a backslash before the newline
-— puts what follows it at a true line start, where a heading, bullet, `1.`/`1)` ordered or `>` blockquote marker is `INVALID_OP` on `with` as well (`blockMarkerAfterHardBreak`), since replace is inline and that marker can only be written as escaped literal text continuing the matched block, never as the block it names.
-A hard break is itself `INVALID_OP` when the matched textblock is a heading or a table cell (`pmdoc.TextblockAt.OneLine`), which are written on one line, so the break would end the block;
+— is `INVALID_OP` when the matched textblock is a heading or a table cell (`pmdoc.TextblockAt.OneLine`), which are written on one line, so the break would end the block;
 a line break inside a code span or inline HTML there ends it too, and the replace is refused because the block would read back as blocks of another shape (`refuseReshapedReplacement`).
-A bare newline is a soft break, which renders as a space and reaches no line start;
-an ordered marker interrupts a paragraph only numbered a lone `1`, as the browser editor's parser reads it, so `1.` and `1)` are refused, while `01.`, `001)`, `02.` and `10.` are not;
-and marked text opens with its mark's delimiter, not the marker — none of the three is refused.
+A line start inside `with` is the markdown's own:
+a bullet, a heading or a `>` opens its block after a bare newline as after a hard break, and a soft break joins the two lines where the line after it opens none;
+an ordered marker interrupts a paragraph only numbered a lone `1`, as the browser editor's parser reads it, so `1.` and `1)` write the list their markdown names, while `01.`, `001)`, `02.` and `10.` stay the paragraph's text;
+and marked text opens with its mark's delimiter, not the marker, so it stays text as well.
 A batch that leaves the document's semantic identity unchanged
 — `nodeToken` over the whole tree, inline marks included
 — mints no version, named or not, and the response carries `changed: false` with `unchanged_ops` naming each operation that changed nothing (`docs.EditOutcome`).
+Every edit answers with `written` too, the markdown the batch wrote, read back off the tree it wrote (`docs.EditOutcome.Written`, `editBatch.readBack`):
+each of the document's own blocks the write added, changed or moved, in document order, and a line for each one it removed or emptied, within 2000 bytes (`editReadBackBound`, `boundedReadBack`, which cuts at a rune boundary and ends with a line naming what it left out).
+A batch that left the document as it was writes none, and the command prints what there is under its `Applied` line.
 Every refusal names its operation index and its anchor:
 `docs` dresses quote, heading-anchor and cross-block misses (`ErrQuoteNotFound`, `ErrAnchorAmbiguous`, `ErrQuoteSpansBlocks`), and `isEditRefusal` keeps the service's internal prose off them.
 `delete` takes `find` or `block`; a `find` covering a textblock's whole text removes that block (`pmdoc.ValidDocument.DeleteTextblock`:
@@ -1137,7 +1153,7 @@ Since `BlocksGainingText` reads the same span, a replacement whose old and new c
 A splice cuts a text node only where a range's edge falls between characters:
 `slice16` answers an edge inside a pair with an error of the package's own (a `500`, never the `ErrSchema` verdict on the write), and a quote's ambiguity context rounds outward to whole characters (`context16`).
 
-Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`) splices its `replace_with`, which unlike an edit's `with` may be blocks, with ProseMirror's range fitting (`pmdoc.ValidDocument.Splice`).
+Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`) splices its `replace_with`, which may be blocks as a `replace`'s `with` may, with ProseMirror's range fitting (`pmdoc.ValidDocument.Splice`).
 A non-empty replacement fitted into a typed block stays inside it, and a fit never replaces the typed block it lands in:
 a callout takes what its content rule allows, a code block included (the engine oracle's `callout-paragraph-and-code` case), and an ask takes any block at this step, since `Validate` lets an ask hold other blocks, which concurrent browser edits can leave there.
 The one exception is a replacement holding exactly one block of the typed block's own type under its id, at any depth, which is that block rewritten:
@@ -2525,6 +2541,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A `replace` through the edit route, and the text an accepted suggestion writes inline or into code, takes every comment, suggestion and ask mark that covers all of the text it replaces (`pmdoc.AnchorMarksCovering`, the accepted suggestion's own mark excepted):
   replacing a word, the first or last word, or the whole quote leaves the anchor over the new text, and the refreshed quote is its whole current extent.
   A replace that runs past an anchor's edge rewrote text outside it too, so that anchor keeps only the text the replace left alone, and one covering the whole anchor and more orphans it.
+  A `replace` that writes blocks marks one block of what it writes (`markBlockReplacement`, `anchoredBlock`: the first paragraph or heading holding a run of text, a block in a table passed over, since a mark there would quote one cell), and is refused where what it writes holds no such block, since the anchor would have no words left to quote.
   A block replacement from an accepted suggestion takes no mark, since it can land a code block an ask's mark cannot cover.
 
 - A refresh finds every open row's mark in one walk of the tree (`pmdoc.FindMarks`, which reads for each identity exactly what `FindMark` and `pmdoc.MarkAttrs` read), then updates and announces the rows in their order (`openAnchoredMarks`:

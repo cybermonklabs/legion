@@ -1331,7 +1331,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_doc_edit",
-      "One replace per paragraph: more new paragraphs go in one insert after the last one you rewrote, since two inserts at one anchor come out reversed; read the passage back with dispatch doc-read afterwards.",
+      "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again.",
     ],
     [
       "dispatch_artifact",
