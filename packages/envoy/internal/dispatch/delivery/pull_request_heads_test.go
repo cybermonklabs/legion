@@ -274,7 +274,7 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 // HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
 // intake writes carries GitHub's own spelling of the repository, from the envelope's
 // `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling the
-// repository-to-project mapping stores (api/results_currency.go, comparisonReader.repositoryOf).
+// repository-to-project mapping stores (api/results_comparison.go, comparisonReader.repositoryOf).
 // An exact comparison would answer "no row" for every repository whose owner writes their name
 // with capitals, and the read would spend a GitHub call on each commit Dispatch already holds
 // the pull request for. Another repository's row is still another repository's: the case is all
@@ -344,7 +344,7 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 // (attributionCandidates) and takes the first one that resolves to the pull request's own
 // repository (attributionHeld), so the other repository's issue is passed over and the one that
 // belongs here is kept. An attributed head is exactly what makes a `before_merge` result at that
-// head read current (HeadAttributedTo, the question api/results_currency.go asks). Both writers
+// head read current (HeadAttributedTo, the question api/results_comparison.go asks). Both writers
 // of the row answer for it: the `pull_request` envelope and the read-through a recorded result
 // makes.
 func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
@@ -1213,8 +1213,8 @@ func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) 
 	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, later); answer != BranchCarries {
 		t.Fatalf("a stored yes while the repository is unreadable = %v, want %v", answer, BranchCarries)
 	}
-	if branches.RepositoryReadable(ctx, client, "acme/widgets", later) {
-		t.Fatal("RepositoryReadable while the App cannot read the repository = true, want false")
+	if _, canRead := branches.DefaultBranchOf(ctx, client, "acme/widgets", later); canRead {
+		t.Fatal("DefaultBranchOf while the App cannot read the repository = true, want false")
 	}
 	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", unaskedCommit, later); answer != BranchUnknown {
 		t.Fatalf("a commit with no stored answer while the repository is unreadable = %v, want %v", answer, BranchUnknown)
@@ -1555,7 +1555,7 @@ func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
 // and is about a branch rather than about one unlucky call; holding one would make every
 // result measured against that branch read unknown for five minutes over one bad second.
 // Nor is the failure an answer about the commit: it is BranchUnknown, which no later "not on
-// it" may turn into `older` (api/results_currency.go, of).
+// it" may turn into `older` (api/results_comparison.go, of).
 func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
@@ -1659,7 +1659,7 @@ func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
 // A refusal of the repository's own default branch holds nothing where the caller spelled that
 // branch out either, and not only where it passed DefaultBranch. An `after_merge` walk asks
 // about the branch the issue merged into and then about the default branch
-// (api/results_currency.go, measuredBranches), and for an issue merged the ordinary way those
+// (api/results_comparison.go, measuredBranches), and for an issue merged the ordinary way those
 // two steps are one branch under two names; a hold taken under the spelled-out name would
 // answer the default-branch step from it without a read, and every `default_branch` result of
 // the repository, and every `after_merge` result of it no stored row answers, would read

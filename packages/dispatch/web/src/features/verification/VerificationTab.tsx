@@ -282,7 +282,9 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="inline-flex flex-wrap items-baseline gap-x-2">
           <span
-            className={`${pillShapeClassName} ${surfaceMutedBg} ${wordsFor(PASS_STANDS_TEXT, stands)}`}
+            // The class map, never wordsFor: an answer this build holds no class for would
+            // otherwise put the server's own word into className and leave the pill unstyled.
+            className={`${pillShapeClassName} ${surfaceMutedBg} ${PASS_STANDS_TEXT[stands] ?? textMutedOnSurface}`}
             data-testid="verification-check-pass-stands"
           >
             {wordsFor(PASS_STANDS_LABELS, stands)}

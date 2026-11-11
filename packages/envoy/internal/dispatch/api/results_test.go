@@ -1825,7 +1825,7 @@ func TestAResultsReadReadsThroughNeitherAnUnseenRepositoryNorAKnownHead(t *testi
 // GitHub answers by naming the pull request at the head it has now: an answer about that commit
 // that stands until something opens a pull request at it. So the pair is held off for
 // delivery.CommitPullSettledFor and no read inside that span asks again
-// (delivery.CommitPullReads.Settle, api/results_currency.go's readThroughHead); without that, a
+// (delivery.CommitPullReads.Settle, api/results_comparison.go's readThroughHead); without that, a
 // tab left open would spend the call again every delivery.CommitPullReadStaleAfter for as long
 // as the result is read.
 func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *testing.T) {
@@ -1956,7 +1956,7 @@ func TestAPullRequestOpenedAtASettledCommitIsSeenOnceTheSpanEnds(t *testing.T) {
 // What a child's result on its parent's tab costs: nothing. Its commit heads the child's own
 // pull request, attributed to the child, so Dispatch has been told that commit's pull request
 // and asking GitHub again teaches it nothing. The result stands at no basis of the parent's
-// check by the rule itself, whatever GitHub answers (R4, api/results_currency.go,
+// check by the rule itself, whatever GitHub answers (R4, api/results_comparison.go,
 // readThroughHead).
 func TestAChildsResultOnTheParentsTabAsksGitHubNothing(t *testing.T) {
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
@@ -1984,7 +1984,7 @@ func TestAChildsResultOnTheParentsTabAsksGitHubNothing(t *testing.T) {
 // Eligibility is the (issue, commit) pair's, and never one result's. A check holds a result at
 // the head of a pull request nothing told Dispatch of and a later result at a commit no pull
 // request carries, and a sibling check holds one result, at that same head. Every check of
-// the issue is compared with one list of heads (api/results_currency.go, headBases), so a read
+// the issue is compared with one list of heads (api/results_comparison.go, headBases), so a read
 // the eligibility test skipped for one result must not stand as the answer for the rest: both
 // results at the head stand at it, whichever check recorded them and whenever.
 func TestEveryResultOfAnIssueAtAPullRequestsHeadStandsAtIt(t *testing.T) {
@@ -2059,7 +2059,7 @@ func TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck(t *test
 // The control the two above are read against: one check, one result, at the head of a pull
 // request nothing told Dispatch of, and nothing else recorded anywhere. It stands at that
 // head, so a failure of either test above is the eligibility test refusing the call and not
-// the read-through failing to repair the result (api/results_currency.go, readThroughHead).
+// the read-through failing to repair the result (api/results_comparison.go, readThroughHead).
 func TestACheckWithOneResultAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESX", "acme/widgets", "One result")

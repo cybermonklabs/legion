@@ -220,3 +220,47 @@ func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
 		t.Errorf("the batch = %+v, want no #174: this rule has judged it already", batch)
 	}
 }
+
+// One pass offers at most RejudgedHeadsPerPass of the merged rows a raised rule brings back, and
+// the rest of the batch goes to the rows a reader meets now. A raised rule offers every merged
+// row of a deployment once, and those rows sort first — a merged row was read days ago and an
+// open row five minutes ago — so without the bound the backfill fills every pass until it drains
+// and no open head is re-read meanwhile.
+func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 75)
+	eventAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	read := time.Now().Add(-time.Hour)
+	for number := 300; number < 300+RejudgedHeadsPerPass+10; number++ {
+		head := attributedHeadRow(number, &issue, sourceTitleBody)
+		head.State, head.EventAt, head.CheckedAt = "merged", &eventAt, &read
+		if err := UpsertPullRequestHead(ctx, pool, nil, head); err != nil {
+			t.Fatalf("store the merged head #%d: %v", number, err)
+		}
+		stampLegacyAttributionRule(t, ctx, pool, "acme/widgets", number)
+	}
+	open := attributedHeadRow(400, &issue, sourceTitleBody)
+	open.State, open.EventAt, open.CheckedAt = "open", &eventAt, &read
+	if err := UpsertPullRequestHead(ctx, pool, nil, open); err != nil {
+		t.Fatalf("store the open head: %v", err)
+	}
+
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	if err != nil {
+		t.Fatalf("list the stale heads: %v", err)
+	}
+	rejudged, openOffered := 0, false
+	for _, head := range batch {
+		if head.Number == 400 {
+			openOffered = true
+			continue
+		}
+		rejudged++
+	}
+	if rejudged != RejudgedHeadsPerPass {
+		t.Errorf("the pass offered %d rows a raised rule brought back, want %d", rejudged, RejudgedHeadsPerPass)
+	}
+	if !openOffered {
+		t.Errorf("the batch = %+v, want the open head among them: the backfill never takes the whole pass", batch)
+	}
+}

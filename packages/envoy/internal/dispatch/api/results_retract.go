@@ -223,7 +223,7 @@ func resultIsRetracted(ctx context.Context, q queryer, id string) (bool, error) 
 //
 // A reader of the results sees a retracted result with the reason it is wrong and the actor
 // who said so, and counts it as no evidence: no pass of a retracted result stands
-// (results_currency.go, passStandsOf).
+// (results_comparison.go, passStandsOf).
 func loadCheckResultRetractions(
 	ctx context.Context, q queryer, artifactID string,
 ) (map[string]model.CheckResultRetracted, error) {

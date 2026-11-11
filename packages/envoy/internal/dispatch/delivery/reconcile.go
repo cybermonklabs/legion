@@ -140,7 +140,7 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 //
 // The head pass (reconcilePullRequestHeads) runs first and whatever the settings say.
 // pull_request_heads is not delivery's own table: it is what a recorded check result's commit
-// is compared with (api/results_currency.go), and that reader is served in every deployment,
+// is compared with (api/results_comparison.go), and that reader is served in every deployment,
 // delivery configured or not, so a deployment with no delivery settings refreshes its heads
 // and a result recorded at a head a later push replaced stands at no basis there too. It is
 // outside the deploy repository's permission check for the same reason: that check asks about

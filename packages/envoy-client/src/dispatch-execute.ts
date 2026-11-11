@@ -5582,7 +5582,10 @@ export async function executeDispatchTool(
       if (optionalBoolean(args, "force") !== true) {
         const held = artifactUnderName(
           artifactOwner.kind === "project"
-            ? await client.listProjectArtifacts(artifactOwner.project)
+            ? // unlinked, as every other read of a project's own documents is: without it the
+              // answer carries every issue-attached document of the project too, and an upload
+              // naming one of those is refused although the server would write a new document.
+              await client.listProjectArtifacts(artifactOwner.project, true)
             : await client.listIssueArtifacts(issue()),
           name
         );

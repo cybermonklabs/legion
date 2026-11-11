@@ -9,7 +9,7 @@ import (
 // (ReadThroughCommitPulls). It is branch.go's twin: that file holds how long an answer about a
 // repository and a commit's place on one of its branches is believed, this one how long an
 // answer about the pull requests of a commit stands before GitHub is asked again. Its one
-// caller is the results read (api/results_currency.go, comparisonReader.readThroughHead), which
+// caller is the results read (api/results_comparison.go, comparisonReader.readThroughHead), which
 // keeps a memo for the span of one request and no policy.
 
 // CommitPullReadStaleAfter is how long one commit's read-through stands before another read may
@@ -84,7 +84,7 @@ type commitPullKey struct {
 //
 // A read that fails is claimed with the rest: GitHub was asked, and a repository whose every ask
 // fails must not be asked again on every read. One read of one issue's results asks about a
-// commit once whatever this answers (api/results_currency.go, comparisonReader's own memo).
+// commit once whatever this answers (api/results_comparison.go, comparisonReader's own memo).
 func (c *CommitPullReads) Claim(repoFull, sha string, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -108,7 +108,7 @@ func (c *CommitPullReads) Claim(repoFull, sha string, now time.Time) bool {
 // Settle holds the asking about one repository and commit off for CommitPullSettledFor: GitHub
 // has been read for the pair and named a pull request whose head is another commit, so this
 // commit is behind that pull request and nothing a read within that span can learn about it
-// repairs a result there (api/results_currency.go, comparisonReader.readThroughHead). Without it
+// repairs a result there (api/results_comparison.go, comparisonReader.readThroughHead). Without it
 // the pair would be claimed again every CommitPullReadStaleAfter for as long as the result is
 // read, since nothing is stored at a commit no pull request heads.
 //

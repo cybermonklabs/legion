@@ -191,9 +191,8 @@ func markHeadNotStored(err error) error {
 // broker writes the row and appends nothing, so a caller that holds none hands over nothing
 // else. The two writers that hold one hand it over — the `pull_request` envelope the intake's
 // (recordPullRequestHead) and the reconcile's refresh the reconcile's (RefreshPullRequestHead)
-// — so every move either of them makes is recorded. The results read's own read-through is the
-// caller that passes nil today, and a move it makes is written with no event
-// (api/results.go, api/results_currency.go).
+// — so every move either of them makes is recorded, and so does the results read's own
+// read-through (api/results.go, api/results_comparison.go). A test is the caller that passes nil.
 //
 // The events are appended only where this write may replace the row's issue (AttributionComplete
 // above), and only where it did: the row's issue is read under its own lock before the write, and
@@ -438,7 +437,7 @@ func upsertHeadUnderCanonicalName(
 // heads its check is compared with. A closed-unmerged pull request's head proves nothing. A
 // pull request attributed to another issue never answers for this one; the results read asks
 // this about the check's own issue, so a child's pull request never answers for a check above
-// it (api/results_currency.go's comparisonReader).
+// it (api/results_comparison.go's comparisonReader).
 func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
 	var found bool
 	if err := pool.QueryRow(ctx, `
@@ -506,7 +505,7 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 // commit that its own passes keep reading. It is a weaker question than HeadAttributedTo's and
 // it is asked for another purpose — the results read asks it before it reads GitHub for a commit,
 // since a commit such a row already heads is one the reconcile re-reads and a read from there
-// repairs nothing (api/results_currency.go, comparisonReader.readThroughHead).
+// repairs nothing (api/results_comparison.go, comparisonReader.readThroughHead).
 //
 // A closed-unmerged row is counted for nothing, as HeadAttributedTo counts it for nothing: it
 // is no basis a result stands at, the reconcile keeps no such row in its passes
@@ -539,7 +538,7 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 
 // BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
 // into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
-// issue is measured against (api/results_currency.go). An issue whose pull request merged
+// issue is measured against (api/results_comparison.go). An issue whose pull request merged
 // into an integration branch has reached that branch and no other, so a result of it is
 // current at a commit that branch's history carries, where the repository's default branch
 // answers nothing about the work until the integration branch itself lands. The merged row
@@ -632,18 +631,53 @@ const (
 // and (checked_at is null or attribution_rule < $3)` — because the two terms are what the two
 // partial indexes hold (pull_request_heads_merged_unread and pull_request_heads_merged_rule,
 // 20261111060005): written this way the planner takes a bitmap of each and ors them, and
-// written the other way it reads every row of the table. Both forms select the same rows, and
-// the one-off pass that follows a raised rule is a sequential scan either way, since it takes
-// every merged row there is.
+// written the other way it reads every row of the table. Both forms select the same rows.
+//
+// The rule half is read in a pass of its own, bounded by RejudgedHeadsPerPass, and the rest of
+// limit goes to the rows a reader meets now: the open rows, whose head decides a live result,
+// and the merged rows no read ever reached. Raising the rule offers every merged row of the
+// deployment once, which on a production-shaped table measured for INFRA-1522 is 12,000 rows,
+// about 12,000 GitHub reads and 2,400 an hour against an installation's 5,000 — half a
+// deployment's budget for five hours, for a backfill nothing live waits on. At 50 a pass it is
+// about 600 an hour and about a day, and a table of a few hundred merged rows is still a few
+// passes. The two reads are ordered the same way and the bound is applied to their sum, so a
+// pass never reads more rows than it did before.
 func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestHead, error) {
-	rows, err := pool.Query(ctx, `
+	heads, err := listStaleHeads(ctx, pool, `
 		select repo, number from pull_request_heads
 		where (state = 'open' and (checked_at is null or checked_at < $1))
-		   or (state = 'merged'
-		       and ((issue_key is null and checked_at is null) or attribution_rule < $3))
+		   or (state = 'merged' and issue_key is null and checked_at is null)
 		order by checked_at nulls first, repo, number
 		limit $2
-	`, now.Add(-PullRequestHeadStaleAfter), limit, AttributionRuleVersion)
+	`, now.Add(-PullRequestHeadStaleAfter), limit)
+	if err != nil {
+		return nil, err
+	}
+	rejudge := min(RejudgedHeadsPerPass, limit-len(heads))
+	if rejudge <= 0 {
+		return heads, nil
+	}
+	rejudged, err := listStaleHeads(ctx, pool, `
+		select repo, number from pull_request_heads
+		where state = 'merged' and attribution_rule < $1
+		order by checked_at nulls first, repo, number
+		limit $2
+	`, AttributionRuleVersion, rejudge)
+	if err != nil {
+		return nil, err
+	}
+	return append(heads, rejudged...), nil
+}
+
+// RejudgedHeadsPerPass is how many merged rows one reconcile pass offers under the rule-version
+// clause alone (ListStalePullRequestHeads). It bounds the one-off backfill a raised
+// AttributionRuleVersion starts, which nothing live waits on, so the pass's own batch stays with
+// the rows a reader meets now.
+const RejudgedHeadsPerPass = 50
+
+// listStaleHeads reads one of ListStalePullRequestHeads's two selects.
+func listStaleHeads(ctx context.Context, pool *store.Pool, query string, args ...any) ([]PullRequestHead, error) {
+	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list the stale pull request heads: %w", err)
 	}
@@ -922,7 +956,7 @@ func repositoryUnreadable(err error) bool {
 // It answers how many rows it wrote and whether any pull request it saw has sha as its head
 // (atHead). A repository the App cannot read writes nothing and comes back as the App's own
 // error, which each caller logs at Info and carries on from (api/results.go's
-// readThroughPullRequests, api/results_currency.go's readThroughHead): the answer about that
+// readThroughPullRequests, api/results_comparison.go's readThroughHead): the answer about that
 // result stands as its stored rows leave it.
 //
 // atHead is the difference between the two answers GitHub gives about a commit no pull request
@@ -950,7 +984,7 @@ func repositoryUnreadable(err error) bool {
 // canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
 // is ever written under a name a repository was renamed away from. The read-time caller has
 // canonicalised that name already, and so has the record-time caller, which resolves through
-// the same helper (api/results_currency.go, server.checkIssueRepository); the rule reaches the
+// the same helper (api/results_comparison.go, server.checkIssueRepository); the rule reaches the
 // canonical name in one step, so this read changes nothing for either. It is here because this
 // function's key is its argument's, not its caller's, and a caller that hands over a name it
 // has not canonicalised must still write no row under a name a repository was renamed away

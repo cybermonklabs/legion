@@ -29,7 +29,7 @@ import (
 // each, from any issue, newest first, and says what each check compared those results with: a
 // `before_merge` check is compared with the pull request heads of the check's own issue, so a
 // child's pull request answers for nothing against its parent's check. The comparison itself
-// is answered in results_currency.go.
+// is answered in results_comparison.go.
 
 // checkResultRole bounds the role a result names: the word the pull-request body line prints.
 var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
@@ -56,7 +56,7 @@ const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact
 	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq`
 
 // resolvedCheck is one `check` block a result names: where it lives, the version its words last
-// changed in and their digest as document_blocks holds them, and the words themselves.
+// changed in and their digest as document_blocks holds them, and its `when`.
 type resolvedCheck struct {
 	IssueKey   string
 	ArtifactID string
@@ -64,7 +64,6 @@ type resolvedCheck struct {
 	Version    int
 	SHA256     string
 	When       string
-	Text       string
 }
 
 // checkResultInput is the body POST /api/v1/issues/{key}/results takes.
@@ -141,7 +140,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// It is the check's issue's repository, not the recording issue's: readThroughPullRequests
 	// and the results read both resolve check_issue_key, and a refusal keyed on the recording
 	// issue would disagree with the read about which repository the commit belongs to. It is
-	// resolved through the one helper the results read resolves through (results_currency.go,
+	// resolved through the one helper the results read resolves through (results_comparison.go,
 	// server.checkIssueRepository), under the canonical name the repository is called today: a
 	// refusal asking under a name the repository was renamed away from reads the 404 GitHub
 	// answers for that name's installation, where the read reads the commit — so it would
@@ -507,7 +506,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if check.When, check.Text, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID); err != nil {
+	if check.When, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
@@ -548,26 +547,26 @@ func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *res
 	if check.SHA256 == resolved {
 		return nil
 	}
-	check.When, check.Text, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID)
+	check.When, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID)
 	return err
 }
 
-// checkBlockWords reads one check block's `when` and its words out of the live document. The
-// index holds a block's type and digest but not its attributes, so the document itself is the
-// one place `when` is written.
-func (s *server) checkBlockWords(ctx context.Context, artifactID, blockID string) (string, string, error) {
+// checkBlockWords reads one check block's `when` out of the live document. The index holds a
+// block's type and digest but not its attributes, so the document itself is the one place
+// `when` is written.
+func (s *server) checkBlockWords(ctx context.Context, artifactID, blockID string) (string, error) {
 	blocks, err := s.checkBlocksIn(ctx, artifactID)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	for _, block := range blocks {
 		if block.BlockID == blockID {
-			return block.When, block.Text, nil
+			return block.When, nil
 		}
 	}
 	// The index holds the block, so the live document has it too unless a write landed between
 	// the two reads; the schema's default is what such a block's `when` would be.
-	return checkWhenBeforeMerge, "", nil
+	return checkWhenBeforeMerge, nil
 }
 
 // typedBlocksIn walks the live markdown of one document and hands visit each block of blockType

@@ -12,7 +12,7 @@
 -- once per attribution rule (ListStalePullRequestHeads), so asking GitHub again from a read
 -- teaches nothing. So the read asks this first, and a child's result on its parent's tab — whose
 -- commit heads the child's own pull request, attributed to the child — costs no GitHub call at all
--- (api/results_currency.go, comparisonReader.readThroughHead). A closed-unmerged row is counted for
+-- (api/results_comparison.go, comparisonReader.readThroughHead). A closed-unmerged row is counted for
 -- nothing: the reconcile keeps none, and a pull request closed at a commit does not stop another
 -- being opened from the same head.
 --

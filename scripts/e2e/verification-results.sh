@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The live proof that a recorded check result says where its commit stands against the commits and
 # branches its check compares with (comparisonReader,
-# packages/envoy/internal/dispatch/api/results_currency.go), and that the head it is compared with
+# packages/envoy/internal/dispatch/api/results_comparison.go), and that the head it is compared with
 # moves with the pull-request events Dispatch takes off the bus
 # (recordPullRequestHead, packages/envoy/internal/dispatch/delivery/pull_request_heads.go). It runs
 # the real envoy-dispatch binary against a PostgreSQL the caller names, a NATS server of the run's

@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// results_currency.go says what each check compares its results with, where each result's
+// results_comparison.go says what each check compares its results with, where each result's
 // commit stands against that, and whether a pass of the check stands. It holds no policy about
 // GitHub: what is asked, how long an answer is believed and what is written back are
 // delivery's (delivery/branch.go, delivery/commit_pull_reads.go, delivery.HeadsAttributedTo,
@@ -84,7 +84,7 @@ type comparisonReader struct {
 	defaults     map[string]defaultBranchAnswer
 	baseBranches map[string]baseBranchAnswer
 	bases        map[[2]string]comparison
-	readThroughs map[[2]string]bool
+	readThroughs map[[2]string]struct{}
 	storedHeads  map[[2]string]bool
 	commits      map[[3]string]delivery.BranchAnswer
 }
@@ -100,6 +100,13 @@ const noCommitNamed = ""
 type comparison struct {
 	bases  []model.CheckBasis
 	reason string
+}
+
+// noBases is a check comparing with nothing, for the one reason given: the empty list is the
+// invariant comparison states, and writing it out at each of its call sites is how one of them
+// comes to answer a null.
+func noBases(reason string) comparison {
+	return comparison{bases: []model.CheckBasis{}, reason: reason}
 }
 
 // defaultBranchAnswer is what the App last said about one repository: the name of its default
@@ -129,7 +136,7 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 		defaults:     map[string]defaultBranchAnswer{},
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
-		readThroughs: map[[2]string]bool{}, storedHeads: map[[2]string]bool{},
+		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
 		commits: map[[3]string]delivery.BranchAnswer{},
 	}
 }
@@ -202,10 +209,10 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 	heads, err := delivery.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
-		return comparison{bases: []model.CheckBasis{}, reason: model.ReasonReadFailed}
+		return noBases(model.ReasonReadFailed)
 	}
 	if len(heads) == 0 {
-		return comparison{bases: []model.CheckBasis{}, reason: c.nothingReason(ctx, issueKey)}
+		return noBases(c.nothingReason(ctx, issueKey))
 	}
 	bases := make([]model.CheckBasis, 0, len(heads))
 	for _, head := range heads {
@@ -236,16 +243,15 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // sees. The repository's default branch is named here rather than carried as
 // delivery.DefaultBranch, since the surface says which branch it compared against.
 func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlock) comparison {
-	if repo := c.repositoryOf(ctx, check.IssueKey); repo == nil {
-		return comparison{bases: []model.CheckBasis{}, reason: model.ReasonNoPullRequestOrBranch}
-	}
 	defaultBranch, readable := c.defaultBranchOf(ctx, check.IssueKey)
 	if !readable {
-		return comparison{bases: []model.CheckBasis{}, reason: model.ReasonRepositoryUnreadable}
+		// Either kind of nothing: no repository resolves, or the App cannot read the one that
+		// does. nothingReason tells them apart from the same two memoized reads.
+		return noBases(c.nothingReason(ctx, check.IssueKey))
 	}
 	branches, chosen := c.measuredBranches(ctx, check, defaultBranch)
 	if !chosen {
-		return comparison{bases: []model.CheckBasis{}, reason: model.ReasonReadFailed}
+		return noBases(model.ReasonReadFailed)
 	}
 	bases := make([]model.CheckBasis, 0, len(branches))
 	for _, branch := range branches {
@@ -304,7 +310,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 				continue
 			}
 			named := c.readThroughHead(ctx, result)
-			c.readThroughs[key] = named
+			c.readThroughs[key] = struct{}{}
 			if !named {
 				continue
 			}
@@ -344,10 +350,12 @@ func (c *comparisonReader) commitStands(
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
 	if check.When == checkWhenBeforeMerge {
-		if c.repositoryOf(ctx, check.IssueKey) != nil {
-			if _, readable := c.defaultBranchOf(ctx, check.IssueKey); !readable {
-				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable}
-			}
+		// The heads are the whole of this check's comparison, and none of them is this commit.
+		// A repository the App cannot read is the one case Dispatch cannot say: nothingReason
+		// tells it from an issue that resolves to no repository, where the heads Dispatch
+		// holds are every head it will ever hold.
+		if c.nothingReason(ctx, check.IssueKey) == model.ReasonRepositoryUnreadable {
+			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable}
 		}
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
