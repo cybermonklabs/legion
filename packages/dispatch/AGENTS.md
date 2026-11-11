@@ -2400,7 +2400,10 @@ mode runs them alone (the sign-in spec only under `DISPATCH_E2E_SIGNIN=oidc`, be
 twice (`web/dist`, then `web/dist-b` with `DISPATCH_BUILD=e2e-b`, so its entry chunk differs from
 A's even where CI sets `GITHUB_SHA`; `web/vite.config.ts` takes `DISPATCH_BUILD` first) and runs
 Playwright in two-process mode with B on `dist-b`, or on the
-`DISPATCH_E2E_WEB_DIST_B` the caller set, passing on extra arguments
+`DISPATCH_E2E_WEB_DIST_B` the caller set, which the script keeps by assigning that variable as
+`${DISPATCH_E2E_WEB_DIST_B:-../dispatch/web/dist-b}`: a plain assignment there would override the
+caller, and B would serve this tree's own page while CI believed it served the other build's,
+passing on extra arguments
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`).
 The `multiprocess` job of `.github/workflows/dispatch-browser.yaml` runs it, on the full lane
 alone, and CI's `dispatch-two-builds` job runs `cross-build.multiprocess` with

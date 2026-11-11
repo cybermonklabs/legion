@@ -28,7 +28,6 @@ import {
   COLUMNS,
   COMPACT_COLUMN_MIN,
   type ColumnId,
-  compareCreated,
   createdAt,
   createdBy,
   type Item,
@@ -231,10 +230,16 @@ const renderings = (
   },
   created: {
     header: "Created",
-    accessorFn: (item) => item.issue.created_at,
-    // `compareTimestamps` throws on a value it cannot parse, and a server of the release before
-    // the one that added `created_at` sends none: `compareCreated` puts those rows last.
-    sortingFn: (a, b) => compareCreated(a.original.issue, b.original.issue),
+    accessorFn: (item) => createdAt(item.issue),
+    // A server of the release before the one that added `created_at` sends none, and the table
+    // sorts such a row last in either direction: TanStack orders an undefined accessor value
+    // before it calls `sortingFn` and then reverses that for a descending sort, so a sorting
+    // function alone would put those rows first under `?sort=-created`. `priority` and `queue`
+    // say the same thing the same way. What `compareTimestamps` then compares is always a time
+    // it can parse. `IssuesTable.test.tsx` sorts a row without a time in both directions.
+    sortUndefined: "last",
+    sortingFn: (a, b) =>
+      compareTimestamps(a.original.issue.created_at, b.original.issue.created_at),
     cell: ({ row }) => {
       // The cell is empty for a row that server sent, which carries no time to show, which the
       // same row of `IssuesTable.test.tsx` reads.

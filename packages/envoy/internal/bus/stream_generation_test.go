@@ -92,9 +92,11 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 // none in the keeper (keptSubjects).
 func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 	resumeLane := SessionResumeSubjectPrefix + ">"
-	row, ok := streamGenerations[streamConfigGeneration-1]
+	// Generation 2, named rather than derived from streamConfigGeneration: generation 3 is the
+	// one that added this lane, so the build without it is that row whatever the next bump does.
+	row, ok := streamGenerations[2]
 	if !ok {
-		t.Fatalf("generation %d has no pinned row to play the build before this one with", streamConfigGeneration-1)
+		t.Fatal("generation 2 has no pinned row to play the build before the resume lane with")
 	}
 	if slices.Contains(row.subjects, resumeLane) {
 		t.Fatalf("generation %d already carries %s, so it plays no build without the lane", streamConfigGeneration-1, resumeLane)

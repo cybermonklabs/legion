@@ -1211,8 +1211,10 @@ It drives each build's `dispatch` command against the other build's server, read
 Generations and holds protect from the release after the first one that carries them.
 The build before them compares stream and consumer settings with no generation, binds its delivery durable by lookup with no hold, and refuses a request member it does not declare.
 So each protection binds from the release after the one that introduces it, and that release would ideally change no request member, stream or consumer setting, or loop interval.
-This one changes two such things that main merged beside it.
-The stream carries the listener's own lanes `notifications.envoy.kept.>` (stream generation 2) and `notifications.envoy.resume.>` (stream generation 3); the build before keeps a deployed subject that overlaps none of its own (`reconcileSubjects`), so it leaves those lanes in place.
+This one changes no stream setting at all.
+The stream's subjects already carry the listener's own lanes `notifications.envoy.kept.>` and `notifications.envoy.resume.>` in the release before this one, `legion-envoy-v29.56.1`, at the same `MaxAge`, `Duplicates` and `Discard`, so the two builds of a roll compile one set of settings between them.
+What this release adds is the stamp: generations 1, 2 and 3 exist on this change alone, and generation 3 is the pinned row of the settings it ships, so the next build that changes a setting takes generation 4 and a build of this release leaves it alone (`keepStream`).
+A build before the stamp keeps a deployed subject that overlaps none of its own (`reconcileSubjects`), so it leaves those lanes in place whatever the stamp says.
 The document elements of version 3 are already out: the three typed blocks `requirement`, `plan_task` and `check` ship from `legion-envoy-v29.1.0`, the first release carrying the commit that added them.
 Every release from that one on, `legion-envoy-v29.2.0` and this one included, reads and creates them at manifest version 3, and reads a document holding them as a document of its own schema.
 A release before it, such as `legion-envoy-v29.0.0` at manifest version 2, declares none of the three and has no newer-content answer at all, so it reads a document holding one as outside the schema, and while it serves, a repair or a rebuild asked of it would rewrite that document without them.
