@@ -178,6 +178,11 @@ type trimmer struct {
 	// said is the last standing state the trimmer wrote, which says keeps so that a state it is
 	// still in is not written once per interval.
 	said string
+	// saidRead is the same memory for the one standing state that is not a settings state: a
+	// volume this process cannot read. It is its own field because says is cleared on every
+	// interval whose settings the trimmer can run (saidNothing), which is every interval a
+	// failing statfs happens on.
+	saidRead string
 }
 
 // newTrimmer is the pod's trimmer: the volume at VolumeRoot, the container's own /proc, the four
@@ -417,9 +422,16 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	t.flush()
 	reading, err := readVolumeUsage(t.volumeRoot)
 	if err != nil {
-		t.logf(volumeTrimLog+"the volume at %s could not be read: %v", t.volumeRoot, err)
+		// Said when it changes and not once per interval, for the reason a refusal is (says): a
+		// volume this process cannot read is a standing state, and the statfs behind it answers
+		// the same way every minute for as long as it lasts.
+		if why := err.Error(); why != t.saidRead {
+			t.saidRead = why
+			t.logf(volumeTrimLog+"the volume at %s could not be read: %v", t.volumeRoot, err)
+		}
 		return restart, trimGoesOn
 	}
+	t.saidRead = ""
 	t.last = reading
 	percent := reading.Percent()
 	t.episodeOf(percent, set)
