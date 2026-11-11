@@ -2393,8 +2393,10 @@ jobs:
     # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
     # limit carries ten minutes over the sum.
     # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
-    # steps whose primary the fault holds, allowed at 126 s each. That 126 s was two ladders and
-    # not one, which is why the old allowance was about twice what those steps could cost. What
+    # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
+    # control costs, because it drives two ladders; the other fourteen of those steps drive one
+    # and cost about 64 s, so the old allowance was about twice what two thirds of them could
+    # cost. What
     # one ladder costs, and how it is derived, is in the comment above ci_tools_curl of
     # .github/scripts/ci-tools.sh.
     # What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the
