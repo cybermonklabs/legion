@@ -289,6 +289,15 @@ export function stageText(value: string): string {
   return kind === "status" ? statusText(id ?? value) : legionPhaseText(id ?? value);
 }
 
+const SLOT_USE_ORDER = [
+  "working",
+  "between_turns",
+  "held_children",
+  "held_person",
+  "held_idle",
+] as const;
+const WAITING_REASON_ORDER = ["ready", "slot", "blocked", "person"] as const;
+
 export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
@@ -408,7 +417,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     filter: {
       kind: "picks",
       values: (item) => (item.legion?.card.slot_use ? [item.legion.card.slot_use] : []),
-      order: ["working", "between_turns", "held_children", "held_person", "held_idle"],
+      order: SLOT_USE_ORDER,
       show: slotUseText,
     },
   },
@@ -420,7 +429,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     filter: {
       kind: "picks",
       values: (item) => (item.legion?.card.waiting ? [item.legion.card.waiting.reason] : []),
-      order: ["ready", "slot", "blocked", "person"],
+      order: WAITING_REASON_ORDER,
       show: waitingReasonText,
     },
   },
@@ -542,17 +551,6 @@ export function keyColumnWidth(chars: number): number {
 export const PINNED: readonly string[] = COLUMNS.filter((column) => column.pinned).map(
   (column) => column.id
 );
-/** The columns the Issues tab opens with hidden, until the reader shows them in the column
- *  picker: Phase is shown where a Legion daemon serves the project; Slot, Roles, CI and Time
- *  per phase wait there, as Updated does. The tab's own rule, not every table's: a grid on a
- *  page shows every column its caller named. */
-export const ISSUES_TAB_HIDDEN: Readonly<Record<string, boolean>> = {
-  updated: false,
-  slot: false,
-  roles: false,
-  ci: false,
-  phase_hours: false,
-};
 /** How much of the table's box the pinned columns may cover: on a phone (below 640 px) the key
  *  and title are what identify a row, so they take most of it. */
 export const PINNED_SHARE = 0.6;
@@ -995,6 +993,13 @@ export function writeUrl(params: URLSearchParams, state: View, hasLegion = false
   return next;
 }
 
+/** Whether serializing this view leaves a control that differs from the selected view. */
+export function viewIsChanged(params: URLSearchParams, state: View, hasLegion = false): boolean {
+  return [...new Set(writeUrl(params, state, hasLegion).keys())].some(
+    (key) => !["view", "page", "size"].includes(key)
+  );
+}
+
 /** The column order a drag leaves behind: `dragged` taken out of `current` and put back
  *  immediately before `before`. A drop on itself, or on an id the order does not hold, leaves
  *  the order as it was. */
@@ -1006,16 +1011,32 @@ export function reorder(current: readonly string[], dragged: string, before: str
   return next;
 }
 
-/** One segment of the bar above the table: a stretch of the lifecycle, named by the Legion
- *  phase or the Dispatch status its issues stand in, with what a press on it filters by. */
-export interface IssueStateCount {
-  id: string;
-  label: string;
-  column: "phase" | "status";
-  count: number;
-  /** What a press puts in the table's filters: the picks of each column it narrows to. */
-  picks: { phase?: readonly string[]; status?: readonly string[] };
+/** One segment of a view's bar. `value` is the filter value and `stage` selects its colour. */
+export interface BarCount {
+  readonly value: string;
+  readonly label: string;
+  readonly count: number;
+  readonly stage: string;
 }
+
+const WAITING_REASON_STAGE: Readonly<Record<string, string>> = {
+  ready: "phase:design",
+  slot: "phase:queue",
+  blocked: "phase:held",
+  person: "phase:awaiting_person",
+};
+/** The lifecycle stage a Dispatch status names when no Legion card supplies a phase. */
+export function statusStage(status: string): string {
+  return status === "testing" ? "phase:testing" : `status:${status}`;
+}
+
+const SLOT_USE_STAGE: Readonly<Record<string, string>> = {
+  working: "phase:implementing",
+  between_turns: "phase:queue",
+  held_children: "phase:waiting_on_children",
+  held_person: "phase:awaiting_person",
+  held_idle: "phase:held",
+};
 
 /** Which lifecycle stage an issue stands in: its Legion phase where the board holds it, else its
  *  Dispatch status — and, for a Legion issue the board does not hold, the phase its status
@@ -1032,7 +1053,7 @@ export function stageOf(item: Item): string {
     if (status === "todo") return "phase:queue";
   }
   // The phase and the status of the same name are one moment of the work, so one segment.
-  return status === "testing" ? "phase:testing" : `status:${status}`;
+  return statusStage(status);
 }
 const isLegionManaged = (issue: Pick<IssueSummary, "labels">) => hasLabel(issue, "legion");
 
@@ -1044,50 +1065,56 @@ const STATUSES_NAMED_LIKE_A_PHASE: readonly string[] = ["in_progress", "needs_re
 /** What a segment of those statuses is called, where Legion serves the project. */
 export const NOT_IN_LEGION = "not in Legion";
 
+function stageLabel(stage: string, hasLegion: boolean): string {
+  const [kind, id = stage] = stage.split(":");
+  if (kind === "status")
+    return hasLegion && STATUSES_NAMED_LIKE_A_PHASE.includes(id)
+      ? `${statusText(id)} · ${NOT_IN_LEGION}`
+      : statusText(id);
+  return legionPhaseText(id);
+}
+
 /**
- * The bar's segments, in the order the work runs (`LIFECYCLE_ORDER`), each issue counted once.
- * An empty segment is left out, so the bar shows the project as it is rather than the whole
- * lifecycle every time.
- *
- * `legion` says whether a Legion daemon serves this project. Where one does, a status segment
- * whose name is also a phase's says which of the two it is, because an issue Legion runs is
- * never counted under the Dispatch status of the same name (`segmentOf`).
+ * Counts a view's listed rows in the order and the terms its bar uses. A row with no value for
+ * Waiting or Slot use contributes no segment, so those bars leave their empty categories out.
  */
-export function countIssueStates(items: readonly Item[], legion = false): IssueStateCount[] {
+export function countBy(
+  rows: readonly Item[],
+  column: "stage" | "waiting_reason" | "slot_use",
+  hasLegion: boolean
+): BarCount[] {
+  const values =
+    column === "stage"
+      ? LIFECYCLE_ORDER
+      : column === "waiting_reason"
+        ? WAITING_REASON_ORDER
+        : SLOT_USE_ORDER;
   const counts = new Map<string, number>();
-  for (const item of items) {
-    const segment = stageOf(item);
-    counts.set(segment, (counts.get(segment) ?? 0) + 1);
+  for (const item of rows) {
+    const value =
+      column === "stage"
+        ? stageOf(item)
+        : column === "waiting_reason"
+          ? item.legion?.card.waiting?.reason
+          : item.legion?.card.slot_use;
+    if (value !== undefined && value !== null) counts.set(value, (counts.get(value) ?? 0) + 1);
   }
-  return LIFECYCLE_ORDER.flatMap<IssueStateCount>((segment) => {
-    const count = counts.get(segment);
+  return values.flatMap((value) => {
+    const count = counts.get(value);
     if (count === undefined) return [];
-    const [column, id] = segment.split(":") as ["phase" | "status", string];
-    if (column === "status")
-      return [
-        {
-          column,
-          count,
-          id,
-          label:
-            legion && STATUSES_NAMED_LIKE_A_PHASE.includes(id)
-              ? `${statusText(id)} · ${NOT_IN_LEGION}`
-              : statusText(id),
-          // A status segment is the issues Legion does not hold: its phase is none.
-          picks: { phase: [NO_PHASE], status: [id] },
-        },
-      ];
-    const label = LEGION_PHASE_LABELS[id] ?? id;
-    return [
-      {
-        column,
-        count,
-        id,
-        label,
-        // Testing is both: the phase, and the status of an issue no daemon holds.
-        picks: id === "testing" ? { phase: [id, NO_PHASE], status: ["testing"] } : { phase: [id] },
-      },
-    ];
+    const stage =
+      column === "stage"
+        ? value
+        : column === "waiting_reason"
+          ? WAITING_REASON_STAGE[value]
+          : SLOT_USE_STAGE[value];
+    const label =
+      column === "stage"
+        ? stageLabel(value, hasLegion)
+        : column === "waiting_reason"
+          ? waitingReasonText(value)
+          : slotUseText(value);
+    return [{ value, label, count, stage }];
   });
 }
 

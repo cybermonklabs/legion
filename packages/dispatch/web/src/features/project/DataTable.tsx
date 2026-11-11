@@ -242,8 +242,9 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
   });
   const narrow =
     layout.boxWidth < 640 && primary.length > 0 && options.columnsOverride === undefined;
+  const visibilityChanged = useRef(false);
   const visibility = useMemo(() => {
-    if (options.columnsOverride !== undefined) {
+    if (options.columnsOverride !== undefined && !visibilityChanged.current) {
       const shown = new Set(options.columnsOverride);
       return Object.fromEntries(named.map((id) => [id, shown.has(id)]));
     }
@@ -259,7 +260,6 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
     [groupOrder, groupValue]
   );
 
-  const visibilityChanged = useRef(false);
   const table = useReactTable({
     autoResetExpanded: false,
     autoResetPageIndex: false,
@@ -285,7 +285,7 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
     onColumnOrderChange: layout.setOrder,
     onColumnSizingChange: layout.setSizing,
     onColumnVisibilityChange: (next) => {
-      visibilityChanged.current = options.columnsOverride === undefined;
+      visibilityChanged.current = true;
       layout.setVisibility(next);
     },
     onExpandedChange: setExpanded,

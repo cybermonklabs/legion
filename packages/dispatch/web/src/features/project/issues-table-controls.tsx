@@ -1,7 +1,6 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Column, Table } from "@tanstack/react-table";
 import { type ReactNode, type RefObject, useCallback, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import type { IssueSummary, LegionBoardResponse } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
 import { InfoHint } from "../../components/InfoHint";
@@ -11,9 +10,8 @@ import {
   card,
   checkboxAccent,
   dangerText,
-  issueStatusScale,
-  legionPhaseScale,
   pickedSegmentRing,
+  stageClass,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
@@ -23,17 +21,9 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
-import { useIssueFilters } from "./issue-filters";
 import { columnLabel } from "./issues-table-columns";
-import {
-  ALL_ROWS,
-  countIssueStates,
-  defaultView,
-  type Item,
-  PAGE_SIZES,
-  readUrl,
-  writeUrl,
-} from "./issues-table-model";
+import { ALL_ROWS, closedWindow, countBy, type Item, PAGE_SIZES } from "./issues-table-model";
+import { RangeFilter } from "./RangeFilter";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -63,6 +53,26 @@ export function ColumnFilter<Row>({
   const doneLoaded = doneLoadedOverride ?? column.columnDef.meta?.doneLoaded ?? true;
   const meta = column.columnDef.meta;
   const name = columnLabel(column);
+  if (column.id === "closed") {
+    const value = column.getFilterValue() as string | undefined;
+    const invalid = value !== undefined && closedWindow(value, Date.now()) === null;
+    return (
+      <Popover
+        align="right"
+        label={invalid ? "Closed: invalid range" : <FunnelIcon />}
+        labelClassName={
+          invalid
+            ? `rounded-full border px-3 py-1 text-sm ${borderDefault} ${surfaceMutedBg}`
+            : filterTrigger(value !== undefined)
+        }
+        open={open}
+        onOpenChange={onOpenChange}
+        title={`Filter ${name}`}
+      >
+        {() => <RangeFilter onChange={(next) => column.setFilterValue(next)} value={value} />}
+      </Popover>
+    );
+  }
   if (meta?.text) {
     const value = (column.getFilterValue() as string | undefined) ?? "";
     return (
@@ -239,16 +249,9 @@ export function Action({
   );
 }
 
-/** A state's colour: a Legion phase runs on the phase scale, a Dispatch status on its own. */
-const scaleOf = (column: string): Readonly<Record<string, string>> =>
-  column === "phase" ? legionPhaseScale : issueStatusScale;
-
 /**
- * Each segment's width as a percentage of the bar, from the counts: its share of the issues,
- * never under `floorPercent` of the bar, so a count of one is still wide enough to press and
- * to read. The segments together are the whole bar, so none of it is cut off: what the floors
- * take, the segments above the floor give, which is why the share each of those keeps is
- * settled by raising one segment to the floor at a time.
+ * Each segment's width as a percentage of the bar, from its row count. A segment is never below
+ * `floorPercent`, while the remaining segments keep the rest in their original proportions.
  */
 export function segmentWidths(counts: readonly number[], floorPercent = 3): number[] {
   const total = counts.reduce((sum, count) => sum + count, 0);
@@ -272,70 +275,61 @@ export function segmentWidths(counts: readonly number[], floorPercent = 3): numb
 
 export function IssueTableStatus({
   table,
-  items,
+  rows,
+  column,
+  viewValue,
   hasLegion = false,
   board,
 }: {
   table: Table<Item>;
-  items: readonly Item[];
+  rows: readonly Item[];
+  column: "stage" | "waiting_reason" | "slot_use";
+  viewValue: readonly string[] | undefined;
   hasLegion?: boolean;
   board?: LegionBoardResponse;
 }): ReactNode {
-  // Only the states with issues behind them: an empty phase is neither a segment nor a legend
-  // item. The order is the lifecycle's, from `countIssueStates`.
-  const shown = countIssueStates(items, hasLegion).filter(({ count }) => count > 0);
-  /** What the bar counts, which is what its title says: every issue in one of its segments. */
-  const counted = shown.reduce((sum, { count }) => sum + count, 0);
+  const shown = countBy(rows, column, hasLegion);
   const widths = segmentWidths(shown.map(({ count }) => count));
-  const filterOf = (column: string) =>
-    column === "phase" && !hasLegion
-      ? []
-      : ((table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? []);
-  /** This state is among those the table lists: every one, while nothing is picked. */
-  const isLit = (column: string, id: string) => {
-    const current = filterOf(column);
-    return current.length === 0 || current.includes(id);
-  };
-  /** The table shows this state alone, which is what a second press undoes. */
-  const isPicked = (column: string, id: string) => {
-    const current = filterOf(column);
-    return current.length === 1 && current[0] === id && (column === "phase") === hasLegion;
-  };
-  /** Show this state alone, or every state again where it is the one already shown. The
-   *  segment and its legend item do the same thing. */
-  const pick = (column: string, id: string) => {
-    const entry = shown.find((state) => state.column === column && state.id === id);
-    if (entry === undefined) return;
-    const wanted = hasLegion ? entry.picks : { status: entry.picks.status ?? [id] };
-    const undo = isPicked(column, id);
-    table.setColumnFilters((filters) => {
-      const next = filters.filter((filter) => !["phase", "status"].includes(filter.id));
-      if (undo) return next;
-      return [
-        ...next,
-        ...(wanted.phase === undefined ? [] : [{ id: "phase", value: [...wanted.phase] }]),
-        ...(wanted.status === undefined ? [] : [{ id: "status", value: [...wanted.status] }]),
-      ];
-    });
+  const current = table.getColumn(column)?.getFilterValue();
+  const picked = Array.isArray(current) ? current.map(String) : [];
+  const groupLabel =
+    column === "stage"
+      ? hasLegion
+        ? "Issues by phase or status"
+        : "Issues by status"
+      : column === "waiting_reason"
+        ? "Issues by waiting reason"
+        : "Issues by slot use";
+  const legendLabel =
+    column === "stage" ? (hasLegion ? "Phases and statuses" : "Statuses") : groupLabel;
+  const titleCount = rows.length;
+  const isLit = (value: string) => picked.length === 0 || picked.includes(value);
+  const isPicked = (value: string) => picked.length === 1 && picked[0] === value;
+  const pick = (value: string) => {
+    const undo = isPicked(value);
+    table.setColumnFilters((filters) => [
+      ...filters.filter((filter) => filter.id !== column),
+      ...(undo
+        ? viewValue?.length
+          ? [{ id: column, value: [...viewValue] }]
+          : []
+        : [{ id: column, value: [value] }]),
+    ]);
   };
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <div
         className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
       >
-        {/* What the bar counts, not what the daemon runs: the Legion tab says how many slots
-            are in use, and a count of workers beside a bar of issues read as the bar's own. */}
         <span className="flex items-baseline gap-1" data-issues-bar-title>
           <span data-issues-counted>
             <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>
-              {counted.toLocaleString("en-US")}
+              {titleCount.toLocaleString("en-US")}
             </b>{" "}
-            {counted === 1 ? "issue" : "issues"}
+            {titleCount === 1 ? "issue" : "issues"}
           </span>
-          <InfoHint label="About these counts">
-            The bar counts every issue on this page once. Each colour is one phase or status, and
-            its width is its share. The list under the bar names each colour. Press a colour to show
-            only those issues.
+          <InfoHint label="About this bar">
+            The bar counts the rows this view lists. Press a colour to show only those rows.
             {hasLegion && board?.header.read_ok && board.header.read_at ? (
               <>
                 {" "}
@@ -366,49 +360,44 @@ export function IssueTableStatus({
           </span>
         ) : null}
       </div>
-      {/* The bar is colour alone: at fifteen phases a segment is too narrow for a word, and a
-          bare count names nothing. The legend under it carries the names, and is the touch
-          target for each phase (the page's 44px control minimum is off on the segments). */}
       <fieldset
-        aria-label={hasLegion ? "Issues by phase or status" : "Issues by status"}
+        aria-label={groupLabel}
         className={`flex h-6 min-w-0 overflow-hidden rounded-md border-0 p-0 md:h-5 ${surfaceMutedBg}`}
+        data-bar-column={column}
+        data-issues-bar
         role={hasLegion ? "group" : undefined}
       >
-        {shown.map(({ id, label, column, count }, index) => (
+        {shown.map(({ value, label, count, stage }, index) => (
           <button
             aria-label={`${label} ${count}`}
-            className={`h-full p-0 ${scaleOf(column)[id] ?? ""} ${
-              isPicked(column, id) ? pickedSegmentRing : isLit(column, id) ? "" : "opacity-30"
+            className={`h-full p-0 ${stageClass(stage)} ${
+              isPicked(value) ? pickedSegmentRing : isLit(value) ? "" : "opacity-30"
             }`}
-            key={`${column}:${id}`}
-            onClick={() => pick(column, id)}
+            data-bar-segment={value}
+            data-count={count}
+            key={value}
+            onClick={() => pick(value)}
             style={{ width: `${widths[index] ?? 0}%`, minWidth: 0, minHeight: 0 }}
             title={`${label}: ${count}`}
             type="button"
           />
         ))}
       </fieldset>
-      <ul
-        aria-label={hasLegion ? "Phases and statuses" : "Statuses"}
-        className="mt-1 flex flex-wrap gap-x-1"
-        data-issues-legend
-      >
-        {shown.map(({ id, label, column, count }) => (
-          <li key={`${column}:${id}`}>
+      <ul aria-label={legendLabel} className="mt-1 flex flex-wrap gap-x-1" data-issues-legend>
+        {shown.map(({ value, label, count, stage }) => (
+          <li key={value}>
             <button
               aria-label={`${label}: ${count}`}
-              aria-pressed={isPicked(column, id)}
+              aria-pressed={isPicked(value)}
               className={`inline-flex min-h-11 items-center gap-1.5 rounded px-2 text-xs whitespace-nowrap md:min-h-7 ${surfaceMutedHoverBg} ${
-                isPicked(column, id)
-                  ? `font-semibold ${textPrimaryOnCanvas}`
-                  : textSecondaryOnCanvas
-              } ${isLit(column, id) ? "" : "opacity-50"}`}
-              onClick={() => pick(column, id)}
+                isPicked(value) ? `font-semibold ${textPrimaryOnCanvas}` : textSecondaryOnCanvas
+              } ${isLit(value) ? "" : "opacity-50"}`}
+              onClick={() => pick(value)}
               type="button"
             >
               <span
                 aria-hidden="true"
-                className={`size-3 shrink-0 rounded-sm ${scaleOf(column)[id] ?? ""}`}
+                className={`size-3 shrink-0 rounded-sm ${stageClass(stage)}`}
               />
               {label} <span className="tabular-nums">{count}</span>
             </button>
@@ -422,17 +411,29 @@ export function IssueTableStatus({
 export function IssueTableToolbar({
   table,
   unclaimedUnchecked,
+  onDeleteView,
+  onResetView,
+  onSaveView,
 }: {
   table: Table<Item>;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
+  onDeleteView?: () => void;
+  onResetView?: () => void;
+  onSaveView?: (name: string) => void;
 }): ReactNode {
-  const flags = useIssueFilters();
-  const [, setParams] = useSearchParams();
-  const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
+  const [name, setName] = useState("");
+  const { globalFilter: search, grouping } = table.getState();
   const setSearch = table.setGlobalFilter;
   const setGrouping = table.setGrouping;
   const setExpanded = table.setExpanded;
+  const save = (close: () => void) => {
+    const trimmed = name.trim();
+    if (trimmed === "") return;
+    onSaveView?.(trimmed);
+    setName("");
+    close();
+  };
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -473,31 +474,55 @@ export function IssueTableToolbar({
           </select>
         </label>
         <IssueFlagChips />
-        {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
+        {onResetView === undefined ? null : (
           <button
             className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
-            onClick={() =>
-              setParams(
-                (current) => {
-                  const next = writeUrl(current, {
-                    ...readUrl(current),
-                    // Back to the view the table opens with, not to no filter at all: an empty
-                    // status pick asks the server for every closed issue in the project.
-                    filters: defaultView.filters,
-                    search: "",
-                    page: 0,
-                  });
-                  for (const flag of ["needs-you", "unread"]) next.delete(flag);
-                  return next;
-                },
-                { replace: true }
-              )
-            }
+            onClick={onResetView}
             type="button"
           >
-            Clear filters
+            Reset view
           </button>
-        ) : null}
+        )}
+        {onSaveView === undefined ? null : (
+          <Popover label="Save view" title="Save view">
+            {(close) => (
+              <form
+                className="grid gap-2 p-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  save(close);
+                }}
+              >
+                <label className="grid gap-1">
+                  Name
+                  <input
+                    // biome-ignore lint/a11y/noAutofocus: Save view opens to name it
+                    autoFocus
+                    maxLength={14}
+                    onChange={(event) => setName(event.target.value)}
+                    value={name}
+                  />
+                </label>
+                <button
+                  className={`rounded border px-2 py-1 ${borderDefault} ${surfaceMutedHoverBg}`}
+                  disabled={name.trim() === ""}
+                  type="submit"
+                >
+                  Save
+                </button>
+              </form>
+            )}
+          </Popover>
+        )}
+        {onDeleteView === undefined ? null : (
+          <button
+            className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
+            onClick={onDeleteView}
+            type="button"
+          >
+            Delete view
+          </button>
+        )}
       </div>
       <UnclaimedUnchecked reason={unclaimedUnchecked} />
     </>

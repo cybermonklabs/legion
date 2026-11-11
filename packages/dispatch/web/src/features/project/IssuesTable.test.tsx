@@ -199,7 +199,7 @@ test("typed title and every picked label match case-insensitively, as on Board",
 
 test("opening a Labels facet does not pass its values through another column's formatter", async () => {
   const user = userEvent.setup();
-  table([issue("CORE-1", { labels: ["frontend"] })]);
+  table([issue("CORE-1", { labels: ["frontend"] })], "?cols=key,title,labels");
   const trigger = await screen.findByRole("button", { name: "Filter Labels" });
   await user.click(trigger);
   expect(await screen.findByRole("combobox", { name: "Search Labels" })).toBeDefined();
@@ -471,10 +471,10 @@ test("a partially refused batch keeps selection and identifies the writes alread
   );
 });
 
-test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", async () => {
+test("Reset view clears Needs you, Unread and the lapsed-claim filter", async () => {
   const user = userEvent.setup();
   table([issue("CORE-1", { open_asks: 2 })], "?needs-you=1&unread=1&unclaimed=1");
-  await user.click(await screen.findByRole("button", { name: "Clear filters" }));
+  await user.click(await screen.findByRole("button", { name: "Reset view" }));
   expect(
     screen.getByRole("button", { name: /^Filter Claimed by/ }).getAttribute("aria-label")
   ).toBe("Filter Claimed by");
@@ -498,8 +498,6 @@ test("loading closed issues retains the open rows and controls, including after 
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const closed = Promise.withResolvers<IssueSummary[]>();
   listing.mockReturnValueOnce(closed.promise);
-  // Asking the Status filter for Done is what loads the closed issues; Clear filters goes back
-  // to the open view, which needs no second listing.
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
   await user.click(screen.getByRole("option", { name: /^Done/ }));
   expect(screen.getByRole("table", { name: "Project issues table" })).toBeDefined();
@@ -630,16 +628,19 @@ test("parent-changing actions skip closed selections and New epic refuses an all
 });
 
 test("created-by sessions use their live name and state, and a null creator is Unknown", async () => {
-  table([
-    issue("CORE-1", {
-      created_by: {
-        kind: "session",
-        id: "table-creator",
-        origin: { session_title: "Table author" },
-      },
-    }),
-    issue("CORE-2", { created_by: null }),
-  ]);
+  table(
+    [
+      issue("CORE-1", {
+        created_by: {
+          kind: "session",
+          id: "table-creator",
+          origin: { session_title: "Table author" },
+        },
+      }),
+      issue("CORE-2", { created_by: null }),
+    ],
+    "?cols=key,title,author"
+  );
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(
     within(row)
@@ -1512,12 +1513,10 @@ test("Start next on a selection larger than the page asks first", async () => {
   await waitFor(() => expect(send).toHaveBeenCalled());
 });
 
-// F1: the button named Clear filters goes back to the view the table opens with, which is not
-// "every closed issue in the project".
-test("Clear filters restores the default view rather than loading every closed issue", async () => {
+test("Reset view restores the default view rather than loading every closed issue", async () => {
   const user = userEvent.setup();
   const { listing } = table([issue("CORE-1")], "?q=rank&status=done");
-  await user.click(await screen.findByRole("button", { name: "Clear filters" }));
+  await user.click(await screen.findByRole("button", { name: "Reset view" }));
   await waitFor(() =>
     expect(screen.getByTestId("route-search")?.textContent ?? "").not.toContain("nofilter")
   );
@@ -1731,4 +1730,25 @@ test("a collapsed group keeps its heading and reopens", async () => {
   expect(collapsed.textContent).not.toContain("0 of");
   await user.click(collapsed);
   expect(await screen.findByRole("row", { name: "CORE-2 Bravo" })).toBeDefined();
+});
+
+test("the Closed filter writes a selected date range", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1", { closed_at: "2026-11-03T05:00:00Z", status: "done" })], "?view=finished");
+
+  await user.click(await screen.findByRole("button", { name: "Filter Closed" }));
+  await user.click(screen.getByRole("button", { name: "7 days" }));
+
+  expect(screen.getByTestId("route-search")).toHaveTextContent("?view=finished&f.closed=7d");
+});
+
+test("a saved view name stops at fourteen characters", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1")]);
+
+  await user.click(await screen.findByRole("button", { name: "Save view" }));
+  const name = screen.getByRole("textbox", { name: "Name" });
+  await user.type(name, "123456789012345");
+
+  expect(name).toHaveValue("12345678901234");
 });

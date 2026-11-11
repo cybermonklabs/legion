@@ -440,7 +440,9 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
 test("List table and Board strip share the URL's status, labels and search", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
-  const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
+  const page = renderPage(
+    "/projects/CORE?label=frontend&q=core&status=todo&cols=priority,queue,key,title,status,labels"
+  );
   try {
     await screen.findByRole("table", { name: "Project issues table" });
     expect(screen.getByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();

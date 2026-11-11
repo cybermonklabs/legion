@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnFiltersState, FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { userStateQuery, whoAmIQuery } from "../../api/queries";
+import { projectDoneIssuesQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import { InfoHint } from "../../components/InfoHint";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { useSearchParamsUpdate } from "../../lib/url-array-params";
 import {
   borderDefault,
   dangerText,
@@ -18,33 +19,47 @@ import {
 import { useAgentRegistry } from "../refs/agent-registry";
 import { buildProjectPath } from "../refs/routes";
 import { setSelectedIssues } from "../search/bar-scope";
+import { useUserPreference } from "../shell/userPreference";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, useDataTable } from "./DataTable";
 import { EpicNameDialog } from "./EpicNameDialog";
+import { IssueViewTabs } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import { type PhaseHoursDisplay, useIssueTableColumns } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
 import { doneWindowOf, useHasLegion, useProjectIssueItems } from "./issues-table-data";
 import {
+  buildItems,
+  type ColumnId,
   clearPicked,
   compareGroups,
   effectiveFilters,
   facetCounts,
   groupValue,
-  ISSUES_TAB_HIDDEN,
   type Item,
   isEpic,
   isLegionFilter,
   matchesFilters,
   matchesSearch,
+  readExcludedTrees,
   readSelection,
+  readUrl,
   UNCLAIMED_FACET,
+  viewIsChanged,
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
-import { readPhaseMode, writePhaseMode } from "./issues-table-storage";
+import {
+  activeSavedView,
+  deleteView,
+  readSavedViews,
+  saveView,
+  writeSavedViews,
+} from "./issues-table-saved-views";
+import { layoutKeyOf, readPhaseMode, writePhaseMode } from "./issues-table-storage";
 import { useTableView } from "./issues-table-view";
+import { type BuiltInViewId, viewCount, viewOf } from "./issues-table-views";
 import { phaseHoursTotal } from "./PhaseHoursBar";
 import { issueIsUnread } from "./UnreadDot";
 
@@ -67,25 +82,48 @@ function IssuesTableContent({
 }): ReactNode {
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(hasLegion);
+  const updateParams = useSearchParamsUpdate();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
+  const requestedView = viewOf(params);
+  const activeView =
+    requestedView.legionOnly && !hasLegion ? viewOf(new URLSearchParams()) : requestedView;
+  const requestedBarView = viewOf(params);
+  const barView =
+    requestedBarView.legionOnly && !hasLegion ? viewOf(new URLSearchParams()) : requestedBarView;
+  const barColumn = barView.bar;
+  const barFilter =
+    barColumn === null
+      ? undefined
+      : readUrl(barView.params(hasLegion), hasLegion).filters.find(
+          (filter) => filter.id === barColumn
+        );
+  const barViewValue = Array.isArray(barFilter?.value) ? barFilter.value.map(String) : undefined;
+  const layoutKey = layoutKeyOf(project, activeView.id);
+  const [savedViewsByProject, setSavedViewsByProject] = useUserPreference(
+    "project.saved-views",
+    readSavedViews,
+    writeSavedViews
+  );
+  const savedViews = savedViewsByProject[project] ?? [];
+  const activeSaved = activeSavedView(savedViews, params);
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const viewer = useQuery(whoAmIQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
-  const [phaseMode, setStoredPhaseMode] = useState(() => readPhaseMode(project));
+  const [phaseMode, setStoredPhaseMode] = useState(() => readPhaseMode(layoutKey));
   const [phaseMax, setPhaseMax] = useState<number>();
   useEffect(() => {
-    setStoredPhaseMode(readPhaseMode(project));
+    setStoredPhaseMode(readPhaseMode(layoutKey));
     setPhaseMax(undefined);
-  }, [project]);
+  }, [layoutKey]);
   const setPhaseMode = useCallback(
     (mode: "share" | "hours") => {
       setStoredPhaseMode(mode);
-      writePhaseMode(project, mode);
+      writePhaseMode(layoutKey, mode);
     },
-    [project]
+    [layoutKey]
   );
   const phase = useMemo<PhaseHoursDisplay>(
     () => ({ max: phaseMax, mode: phaseMode, setMode: setPhaseMode }),
@@ -118,6 +156,7 @@ function IssuesTableContent({
     legion,
     listingError,
     missingParents,
+    openItems,
   } = useProjectIssueItems(project, {
     done,
     doneDefaulted,
@@ -126,12 +165,57 @@ function IssuesTableContent({
     viewer: viewer.data?.login,
   });
   const boardReady = !hasLegion || legion.data !== undefined;
+  const finishedRead = useQuery({ ...projectDoneIssuesQuery(project, "28d"), enabled: false });
+  const finishedItems = useMemo(() => {
+    if (!finishedRead.data?.length) return [];
+    return buildItems(
+      finishedRead.data,
+      (actor) => actor.id,
+      [],
+      () => true,
+      hasLegion ? (legion.data ?? null) : undefined,
+      viewer.data?.login
+    );
+  }, [finishedRead.data, hasLegion, legion.data, viewer.data?.login]);
+  const counts = useMemo<Partial<Record<BuiltInViewId, number | string>>>(() => {
+    if (issues.data === undefined) return {};
+    const now = Date.now();
+    const count = (id: BuiltInViewId, rows: readonly Item[]) =>
+      viewCount(viewOf(new URLSearchParams(`view=${id}`)), rows, hasLegion, now);
+    const next: Partial<Record<BuiltInViewId, number | string>> = {
+      mine: count("mine", openItems),
+      open: count("open", openItems),
+      triage: count("triage", openItems),
+    };
+    if (boardReady) {
+      next["in-flight"] = count("in-flight", openItems);
+      if (hasLegion) {
+        next.waiting = count("waiting", openItems);
+        next.slots =
+          legion.data === undefined
+            ? undefined
+            : `${legion.data.header.slots_in_use}/${legion.data.header.slot_cap}`;
+      }
+      if (finishedRead.data !== undefined) next.finished = count("finished", finishedItems);
+    }
+    return next;
+  }, [
+    boardReady,
+    finishedItems,
+    finishedRead.data,
+    hasLegion,
+    issues.data,
+    legion.data,
+    openItems,
+  ]);
+  const excludedTrees = useMemo(() => readExcludedTrees(params), [params]);
   // The issues behind a number the reader clicked on the Legion tab, if they arrived by one.
   const picked = useMemo(() => readSelection(params), [params]);
   const items = useMemo(() => {
     const shown = allItems.filter(
-      ({ issue }) =>
+      ({ facts, issue }) =>
         (picked === null || picked.keys.has(issue.key)) &&
+        !excludedTrees.has(facts?.tree ?? "") &&
         (!flags.needsYou || issue.open_asks > 0) &&
         (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
     );
@@ -154,6 +238,7 @@ function IssuesTableContent({
   }, [
     allItems,
     boardReady,
+    excludedTrees,
     filters,
     flags.needsYou,
     flags.unread,
@@ -171,6 +256,23 @@ function IssuesTableContent({
       ),
     [columns, doneLoaded]
   );
+  const hiddenByDefault = useMemo(() => {
+    const visible = new Set(activeView.cols);
+    return Object.fromEntries(
+      tableColumns.flatMap((column) => {
+        if (column.id === undefined || column.id === "select") return [];
+        return [[column.id, visible.has(column.id as ColumnId)]];
+      })
+    );
+  }, [activeView.cols, tableColumns]);
+  const columnsOverride = useMemo(() => {
+    const columns = params.get("cols");
+    return columns === null ? undefined : ["select", ...columns.split(",").filter(Boolean)];
+  }, [params]);
+  const dropColumnsOverride = useCallback(() => {
+    if (!params.has("cols")) return;
+    updateParams((next) => next.delete("cols"));
+  }, [params, updateParams]);
   const tableFilters = effectiveFilters(filters, boardReady);
   const onFiltersChange = useCallback(
     (update: ColumnFiltersState | ((current: ColumnFiltersState) => ColumnFiltersState)) => {
@@ -209,10 +311,12 @@ function IssuesTableContent({
     globalFilterFn: fuzzy,
     groupOrder: compareGroups,
     groupValue,
-    hiddenByDefault: ISSUES_TAB_HIDDEN,
-    layoutKey: project,
+    columnsOverride,
+    hiddenByDefault,
+    layoutKey,
     longestKeyChars: all.reduce((most, issue) => Math.max(most, issue.key.length), 0),
     onOpenFilterChange: setOpenFilter,
+    onVisibilityChanged: dropColumnsOverride,
     rows: items,
     searchColumn: "title",
     selection: { onChange: setSelection, state: selection },
@@ -229,6 +333,37 @@ function IssuesTableContent({
   }, [pagePhaseHoursMax, phaseMode]);
   const { layout, table } = model;
   const { attachAbove } = layout;
+  const viewChanged = activeSaved === undefined && viewIsChanged(params, view, hasLegion);
+  const resetView = useCallback(() => {
+    const next = new URLSearchParams();
+    if (activeView.id !== "open") next.set("view", activeView.id);
+    setParams(next);
+  }, [activeView.id, setParams]);
+  const saveCurrentView = useCallback(
+    (name: string) => {
+      const query = new URLSearchParams(params);
+      query.delete("page");
+      query.delete("cols");
+      const columns = table
+        .getVisibleLeafColumns()
+        .map((column) => column.id)
+        .filter((id) => id !== "select");
+      if (columns.length > 0) query.set("cols", columns.join(","));
+      setSavedViewsByProject({
+        ...savedViewsByProject,
+        [project]: saveView(savedViews, { name, query: query.toString() }),
+      });
+      setParams(query);
+    },
+    [params, project, savedViews, savedViewsByProject, setParams, setSavedViewsByProject, table]
+  );
+  const deleteCurrentView = useCallback(() => {
+    if (activeSaved === undefined) return;
+    setSavedViewsByProject({
+      ...savedViewsByProject,
+      [project]: deleteView(savedViews, activeSaved.name),
+    });
+  }, [activeSaved, project, savedViews, savedViewsByProject, setSavedViewsByProject]);
   // The keys the table lists under the filters and the search it is showing, in row order. A key
   // it no longer lists drops out of the selection - another filter, another project - so a row
   // that is listed again comes back unselected; this is the rule `hooks/useMarkedKeys.ts` holds
@@ -314,7 +449,8 @@ function IssuesTableContent({
       table.setPageIndex(Math.max(pageCount - 1, 0));
   }, [done, doneLoaded, issues.data, pagination.pageIndex, pageCount, table]);
 
-  if (issues.isPending || userState.isPending) return <LoadingSkeleton label="Loading issues" />;
+  if (issues.isPending || userState.isPending || (activeView.id === "mine" && viewer.isPending))
+    return <LoadingSkeleton label="Loading issues" />;
   if ((issues.isError && issues.data === undefined) || userState.isError)
     return (
       <p className={dangerText} role="alert">
@@ -333,7 +469,13 @@ function IssuesTableContent({
     );
 
   return (
-    <section aria-label="Project issues" className="space-y-3 sm:pb-24">
+    <section
+      aria-label="Project issues"
+      className="space-y-3 sm:pb-24"
+      data-issues-tab
+      data-view={activeSaved === undefined ? activeView.id : `saved:${activeSaved.name}`}
+      data-view-changed={viewChanged || undefined}
+    >
       <div className="space-y-3" ref={attachAbove}>
         {listingError ? (
           <p className={dangerText} role="alert">
@@ -379,13 +521,56 @@ function IssuesTableContent({
         {hasLegion && legion.isPending ? (
           <p className={textMutedOnCanvas}>Loading Legion data…</p>
         ) : null}
-        {/* Issues by phase or status: a click shows only that one, a second click every one. */}
-        <IssueTableStatus
-          table={table}
-          items={allItems}
-          hasLegion={hasLegion}
-          board={legion.data}
-        />
+        <IssueViewTabs counts={counts} hasLegion={hasLegion} project={project} saved={savedViews} />
+        {doneDefaulted || excludedTrees.size > 0 ? (
+          <div className={`flex flex-wrap gap-2 text-sm ${textSecondaryOnCanvas}`}>
+            {doneDefaulted ? (
+              <span
+                className={`inline-flex min-h-9 items-center rounded-full border px-3 ${borderDefault} ${surfaceMutedBg}`}
+                data-closed-chip
+              >
+                Closed: last 28 days
+              </span>
+            ) : null}
+            {[...excludedTrees].map((key) => (
+              <span
+                className={`inline-flex min-h-9 items-center gap-2 rounded-full border px-3 ${borderDefault} ${surfaceMutedBg}`}
+                data-exclude-tree={key}
+                key={key}
+              >
+                Without {key}&apos;s tree
+                <button
+                  aria-label={`Include ${key}'s tree`}
+                  className={`-mr-1 rounded-full px-1.5 ${surfaceMutedHoverBg}`}
+                  onClick={() =>
+                    updateParams((next) => {
+                      const remaining = next
+                        .getAll("exclude_tree")
+                        .filter((candidate) => candidate !== key);
+                      next.delete("exclude_tree");
+                      remaining.forEach((candidate) => {
+                        next.append("exclude_tree", candidate);
+                      });
+                    })
+                  }
+                  type="button"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {barColumn === null ? null : (
+          <IssueTableStatus
+            board={legion.data}
+            column={barColumn}
+            hasLegion={hasLegion}
+            rows={model.listedLeaves}
+            table={table}
+            viewValue={barViewValue}
+          />
+        )}
         {picked === null ? null : (
           <p className={`flex flex-wrap items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
             <span
@@ -408,6 +593,9 @@ function IssuesTableContent({
         )}
 
         <IssueTableToolbar
+          onDeleteView={activeSaved === undefined ? undefined : deleteCurrentView}
+          onResetView={viewChanged ? resetView : undefined}
+          onSaveView={saveCurrentView}
           table={table}
           unclaimedUnchecked={
             wantsFree && registry.isError

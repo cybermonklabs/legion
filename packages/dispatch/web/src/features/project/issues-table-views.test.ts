@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { IssueSummary } from "../../api/types";
 import { COLUMN_LABELS } from "./issues-table-columns";
-import { buildItems, readUrl, writeUrl } from "./issues-table-model";
+import { buildItems, readUrl, viewIsChanged, writeUrl } from "./issues-table-model";
 import { BUILT_IN_VIEWS, issuesViewHref, viewCount, viewOf } from "./issues-table-views";
 
 const filterValue = (params: string, id: string, hasLegion = true) =>
@@ -107,6 +107,14 @@ test("writing keeps only state that differs from a view", () => {
       true
     ).toString()
   ).toBe("view=slots&f.slot_use=");
+});
+
+test("a view change ignores paging and size but keeps explicit controls", () => {
+  const unchanged = new URLSearchParams("view=in-flight&page=2&size=100");
+  expect(viewIsChanged(unchanged, readUrl(unchanged, true), true)).toBe(false);
+
+  const overridden = new URLSearchParams("view=in-flight&f.stage=phase:implementing");
+  expect(viewIsChanged(overridden, readUrl(overridden, true), true)).toBe(true);
 });
 
 test("a pre-view link remains the open view with its overrides", () => {

@@ -209,6 +209,31 @@ test("columnsOverride shows only the named columns and writes nothing", async ()
   expect(localStorage.getItem("dispatch.project-table.T")).toBe(before);
 });
 
+test("changing layout keys reloads that view's stored columns", async () => {
+  localStorage.setItem(
+    "dispatch.project-table.T.one",
+    JSON.stringify({ order: [], sizing: {}, visibility: { hours: false } })
+  );
+  localStorage.setItem(
+    "dispatch.project-table.T.two",
+    JSON.stringify({ order: [], sizing: {}, visibility: {} })
+  );
+  const view = draw(<CoreTable layoutKey="T.one" />);
+  const table = await screen.findByRole("table", { name: "Rows" });
+  expect(within(table).queryByRole("columnheader", { name: /^Hours/ })).toBeNull();
+
+  await act(async () => {
+    view.rerender(
+      <MemoryRouter initialEntries={["/projects/T/issues"]}>
+        <CoreTable layoutKey="T.two" />
+      </MemoryRouter>
+    );
+  });
+
+  const changed = screen.getByRole("table", { name: "Rows" });
+  expect(within(changed).getByRole("columnheader", { name: /^Hours/ })).toBeDefined();
+});
+
 test("the phone layout draws the title under the key", async () => {
   const primaryHours: GridColumn<Row> = {
     header: "Hours",

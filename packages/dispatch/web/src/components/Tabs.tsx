@@ -12,7 +12,9 @@ export interface TabDefinition<Id extends string> {
   id: Id;
   label: string;
   /** Shown as a small pill after the label; the tab's accessible name is `<label> <count>`. */
-  count?: number;
+  count?: number | string;
+  /** A changed view draws a dot after its label. */
+  marked?: boolean;
 }
 
 /** The DOM id of the tablist button for `id` under `idPrefix`. A keyboard binding that
@@ -146,13 +148,22 @@ export function Tabs<Id extends string>({
             type="button"
           >
             {tab.label}
+            {tab.marked ? (
+              <span
+                aria-hidden="true"
+                className="size-1.5 rounded-full bg-current"
+                data-tab-marked
+              />
+            ) : null}
             {/* The space is the one between the label and the count: a flex container does not
                 render a white-space-only child, so this changes no pixel, and without it the
                 label and the count read as one word against the name above. */}
             {tab.count === undefined ? null : (
               <>
                 {" "}
-                <Pill>{tab.count}</Pill>
+                <span data-tab-count={String(tab.count)}>
+                  <Pill>{tab.count}</Pill>
+                </span>
               </>
             )}
           </button>

@@ -53,6 +53,13 @@ export function useTableLayout(
   const [sizing, setSizing] = useState<ColumnSizingState>(saved.sizing);
   const [order, setOrder] = useState<ColumnOrderState>(saved.order);
   const [visibility, setVisibility] = useState<VisibilityState>(saved.visibility);
+  const layoutKey = useRef(project);
+  if (layoutKey.current !== project) {
+    layoutKey.current = project;
+    setSizing(saved.sizing);
+    setOrder(saved.order);
+    setVisibility(saved.visibility);
+  }
   const [boxWidth, setBoxWidth] = useState(1000);
   const [boxHeight, setBoxHeight] = useState(400);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -68,7 +75,6 @@ export function useTableLayout(
   /** Everything drawn above the box: the status bar, the toolbar and the notices. What it
    *  does to the box is move its top edge, which is not a size change the box itself sees. */
   const attachAbove = useCallback((node: HTMLDivElement | null) => setAbove(node), []);
-
   useEffect(() => {
     if (columnsOverride === undefined) writeLayout(project, { sizing, order, visibility });
   }, [columnsOverride, project, sizing, order, visibility]);

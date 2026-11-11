@@ -1,5 +1,6 @@
 import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tanstack/react-table";
 import { PINNED } from "./issues-table-model";
+import type { BuiltInViewId } from "./issues-table-view-spec";
 
 /**
  * The one owner of what the table keeps in the browser for a project: the layout the reader
@@ -12,6 +13,11 @@ import { PINNED } from "./issues-table-model";
  * cut short.
  */
 export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
+
+/** The storage key's project segment: All open keeps today's key and every other view is separate. */
+export function layoutKeyOf(project: string, view: BuiltInViewId): string {
+  return view === "open" ? project : `${project}.${view}`;
+}
 
 export interface TableLayout {
   sizing: ColumnSizingState;
@@ -41,9 +47,6 @@ export interface TableAction {
  *  discarded in Pending changes. */
 export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-/** A table with nothing saved and no rule of its own: every column it holds is shown. Which
- *  columns start hidden is the surface's own rule, not storage's, and travels in `readLayout`'s
- *  second argument (the Issues tab's is `ISSUES_TAB_HIDDEN`). */
 const EMPTY_LAYOUT: TableLayout = { sizing: {}, order: [], visibility: {} };
 
 function readStore(project: string): Record<string, unknown> {
