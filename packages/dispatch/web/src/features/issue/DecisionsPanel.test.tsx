@@ -425,16 +425,13 @@ test("a block of an answer with no reading cites its own markdown, not the decis
     expect(cited.closest("p")?.textContent).toContain("It answers");
     // One reference link in the whole card, asserted before the literal is looked for: a text
     // lookup finds only an element whose own text nodes hold the phrase, so a literal that had
-    // been linked would leave its paragraph unmatched and the row would end in that lookup's
-    // timeout rather than here, where the count says what went wrong.
+    // been linked would leave its paragraph unmatched and the row would die where that lookup
+    // throws for finding nothing, rather than here, where the count says what went wrong.
     expect(waiting.querySelectorAll("a[data-dispatch-ref]")).toHaveLength(1);
     // And it is the citing block's: the block that wrote the reference escaped draws it as the
     // text it is, under no anchor of its own.
-    const literal = within(waiting)
-      .getAllByText(/Write #q2 for the literal/, { ignore: false })
-      .at(-1);
-    expect(literal?.textContent).toContain("Write #q2 for the literal");
-    expect(literal?.querySelector("a[data-dispatch-ref]")).toBeNull();
+    const literal = within(waiting).getByText(/Write #q2 for the literal/);
+    expect(literal.querySelector("a[data-dispatch-ref]")).toBeNull();
   } finally {
     getAsk.mockRestore();
     questions.mockRestore();

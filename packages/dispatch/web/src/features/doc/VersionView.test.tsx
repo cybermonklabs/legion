@@ -44,8 +44,9 @@ function renderVersionView({
   highlight: { by: string; id: string; quote: string } | undefined;
   markdown: string;
   /** The server's reading of `markdown`, when a row needs the one it built itself; the page's
-   *  own reading of that text otherwise. */
-  markdownTree?: DisplayTree;
+   *  own reading of that text otherwise, and `null` for an answer that carries no reading at
+   *  all, which is what a pod of the build before this one sends. */
+  markdownTree?: DisplayTree | null;
   /** The answer `/auth/whoami` holds before the first render; `null` leaves the key unset, for a
    *  row where the person arrives after the version's text. */
   whoAmI?: AuthenticatedUser | null;
@@ -65,7 +66,7 @@ function renderVersionView({
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
     markdown,
-    markdown_tree: markdownTree ?? treeOf(markdown),
+    markdown_tree: markdownTree === null ? undefined : (markdownTree ?? treeOf(markdown)),
     named: false,
     number: 1,
     summary: null,
@@ -259,6 +260,28 @@ test("VersionView shows what refused the version instead of an empty document", 
       )
     );
     expect(editors[0]?.destroyed).toBe(true);
+    expect(within(view.container).getByRole("heading").textContent).toMatch(/^Version 1 · /);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A pod of the build before this one answers a version with its markdown and no reading, for as
+// long as a rollout takes. The version is a stored text like every other, so it is drawn by
+// parsing that markdown rather than refused: a reader who is told the version could not be
+// loaded has lost a document the answer carried.
+test("VersionView draws a version whose answer carried no reading from its markdown", async () => {
+  const markdown = "The plan **ships** behind a canary.";
+  const { editors, view } = renderVersionView({
+    highlight: undefined,
+    markdown,
+    markdownTree: null,
+  });
+
+  try {
+    await waitFor(() => expect(editors[0]?.markdown).toBe(markdown));
+    expect(editors[0]?.documentJSON).toBeUndefined();
+    expect(within(view.container).queryByText("Could not load this document version.")).toBeNull();
     expect(within(view.container).getByRole("heading").textContent).toMatch(/^Version 1 · /);
   } finally {
     view.unmount();

@@ -109,17 +109,10 @@ function seedDocument(
     client.setQueryData(["asks", artifact.issue_key], []);
   }
   for (const [number, markdown] of Object.entries(versions)) {
-    client.setQueryData(["artifact", artifact.id, "version", Number(number)], {
-      authors: [{ id: "alice", kind: "user" }],
-      created_at: "2026-10-02T00:00:00Z",
-      markdown,
-      // The pane marks against the version's tree now, which the server sends beside its
-      // markdown; the page's own reading of the same text is the same document.
-      markdown_tree: loadedEngine()?.parse(markdown)?.toJSON(),
-      named: false,
-      number: Number(number),
-      summary: null,
-    });
+    client.setQueryData(
+      ["artifact", artifact.id, "version", Number(number)],
+      versionText(Number(number), markdown)
+    );
   }
 }
 
@@ -129,6 +122,12 @@ function renderedDocument(markdown: string): ProseMirrorNode {
   const parsed = loadedEngine()?.parse(markdown);
   if (parsed === undefined) throw new Error(`the engine rendered nothing for "${markdown}"`);
   return parsed;
+}
+
+/** The reading of `markdown` the server sends beside it, which is what the pane marks against
+ *  and what the version view draws rather than parsing the markdown again. */
+function treeOf(markdown: string): DisplayTree {
+  return renderedDocument(markdown).toJSON() as DisplayTree;
 }
 
 /** The first question block of `markdown`, as the engine parses it: the node the editor's own
@@ -149,8 +148,10 @@ function askNodeOf(markdown: string): ProseMirrorNode {
  *  for every `ask` node of the text it holds: the fake editor installs the host's node views but
  *  constructs none itself, so the test constructs the one the version needs (`Inbox.test.tsx`
  *  does the same for a live document). The block is appended as the text lands, under whichever
- *  write puts it there: a version writes the reading the server sent (`setDocumentJSON`) and a
- *  live document its markdown, and either replaces everything in the editor's root. */
+ *  write puts it there: a version draws the reading the server sent (`setDocumentJSON`), and one
+ *  that arrived with no reading writes its own markdown instead (`setMarkdown`), which is the
+ *  fallback this change gives the version view. Either replaces everything in the editor's
+ *  root. */
 function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
   return (inner) => async (root, options) => {
     const handle: EditorHandle = await inner(root, options);
@@ -400,10 +401,7 @@ test("an approval draws the latest version marked against the version it follows
     // The latest version, which is the version Approve approves.
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
     await waitFor(() => expect(drawn).toHaveLength(1));
-    const marks = changeMarksAgainst(
-      loadedEngine()?.parse(baseline)?.toJSON() as DisplayTree,
-      renderedDocument(latest)
-    );
+    const marks = changeMarksAgainst(treeOf(baseline), renderedDocument(latest));
     expect(marks.text.length).toBeGreaterThan(0);
     expect(drawn[0]).toEqual(marks);
   } finally {
@@ -779,7 +777,7 @@ function versionText(number: number, markdown: string): ArtifactVersionText {
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-10-02T00:00:00Z",
     markdown,
-    markdown_tree: loadedEngine()?.parse(markdown)?.toJSON(),
+    markdown_tree: treeOf(markdown),
     named: false,
     number,
     summary: null,

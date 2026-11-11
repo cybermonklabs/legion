@@ -5,8 +5,8 @@
  * Each row here opens one page of the dashboard, waits for a stored text to be on it - a body
  * formatted, so the row is never a count of a page that drew nothing - and reads the counters
  * `e2e/parse-counting.ts` installs, which say how that count reaches a built page. The last row
- * is the control: the same issue page, served with every tree stripped from its answers, parses
- * in the browser and the counter sees it.
+ * is the control: the same pages, served with every tree stripped from their answers, draw the
+ * same texts by parsing the markdown themselves, and the counter sees those parses.
  */
 import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
 
@@ -329,6 +329,18 @@ async function parsesOf(context: BrowserContext, surface: Surface): Promise<unkn
   }
 }
 
+/** Shows `surface` on `page` and names it in whatever that fails with: the walk below is one
+ *  test over fourteen pages, so the surface that drew nothing has to be in the failure itself
+ *  and not only in the line number under it. */
+async function showNamed(page: Page, surface: Surface): Promise<void> {
+  try {
+    await surface.show(page);
+  } catch (cause) {
+    const said = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`${surface.name} drew no stored text: ${said}`, { cause });
+  }
+}
+
 test.beforeEach(async () => {
   await resetDatabase();
 });
@@ -368,6 +380,9 @@ test("the counter sees the parse a text served with no reading costs", async ({
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "the control runs where the rows run");
+  // The same fourteen pages as the row above, each in a page of its own: the deadline is that
+  // walk's, not one page's.
+  test.setTimeout(310_000);
   const seeded = await seedStoredTexts();
   const alice = await asUser(browser, "alice");
   await countParses(alice);
@@ -375,10 +390,35 @@ test("the counter sees the parse a text served with no reading costs", async ({
   // markdown alone, which it parses itself.
   await serveWithoutDisplayTrees(alice);
   try {
-    const page = await alice.newPage();
-    await page.goto(`/issues/${seeded.issueKey}`);
-    await expect(bold(page, "spec")).toBeVisible();
-    expect((await readParseCounts(page)).display).toBeGreaterThan(0);
+    const pages = surfaces(seeded);
+    // The same list the row above walks, pinned the same way: the control is what says each of
+    // those pages falls back to the markdown, so a surface missing from one list is missing
+    // from both.
+    expect(pages).toHaveLength(14);
+    const counted = [];
+    for (const surface of pages) {
+      const page = await alice.newPage();
+      try {
+        // `show` waits for the surface's own text, so a view that refuses an answer carrying no
+        // tree, or draws nothing from one, fails here under that surface's name: the fallback
+        // is a rule of the whole list rather than of the views someone has fixed so far.
+        await showNamed(page, surface);
+        // And the text stands in place of the document rather than beside an apology for it: a
+        // view that gave up and drew its error can still leave the word the row waits for
+        // somewhere else on the page.
+        await expect(
+          page.getByText(/Could not load/),
+          `${surface.name} drew an error in place of its document`
+        ).toHaveCount(0);
+        counted.push({ display: (await readParseCounts(page)).display, surface: surface.name });
+      } finally {
+        await page.close();
+      }
+    }
+    // And the counter sees the parse a page with no reading has to make: the issue page holds
+    // the spec's markdown alone and reads it itself, which is what says the zeros the row above
+    // counts are pages that could have parsed and did not.
+    expect(counted.find((page) => page.surface === "the issue page")?.display).toBeGreaterThan(0);
   } finally {
     await alice.close();
   }

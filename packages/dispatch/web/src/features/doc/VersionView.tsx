@@ -77,6 +77,12 @@ export function VersionView({
   const tree = (isText(versionQuery.data) ? versionQuery.data.markdown_tree : undefined) as
     | DocumentJSON
     | undefined;
+  // The version's own markdown, which draws it where no reading arrived: a pod of the build
+  // before this one answers a version without one for the length of a rollout, and a stored
+  // text with no tree is parsed rather than refused, as every other view of this change does
+  // (`MarkdownBody`, `DecisionsPanel`). Telling a reader the version could not be loaded, where
+  // the document is right there in the answer, is the one reading this view must not make.
+  const markdown = isText(versionQuery.data) ? versionQuery.data.markdown : undefined;
   // Where a `#id` in this version's text resolves: the document it is a version of, whose
   // latest version's question blocks declare the asks it names, as the server reads them.
   const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
@@ -101,7 +107,12 @@ export function VersionView({
   );
   useEffect(() => {
     const parent = root.current;
-    if (parent === null || tree === undefined || login === undefined || blockSchema === undefined) {
+    if (
+      parent === null ||
+      (tree === undefined && markdown === undefined) ||
+      login === undefined ||
+      blockSchema === undefined
+    ) {
       return;
     }
 
@@ -132,8 +143,18 @@ export function VersionView({
         editor.destroy();
         return;
       }
-      const embedded = highlighted === undefined ? undefined : embedHighlight(tree, highlighted);
-      editor.setDocumentJSON(embedded ?? tree);
+      // The reading where there is one, and the markdown itself where the answer carried none:
+      // a highlight is embedded in the tree, so a version drawn from its markdown marks no
+      // quote and says so, as it does for a quote its tree no longer holds.
+      const embedded =
+        tree === undefined || highlighted === undefined
+          ? undefined
+          : embedHighlight(tree, highlighted);
+      if (tree === undefined) {
+        editor.setMarkdown(markdown ?? "");
+      } else {
+        editor.setDocumentJSON(embedded ?? tree);
+      }
       setHighlightMissing(highlighted !== undefined && embedded === undefined);
       // Once the version's text is in: its references are drawn over what it reads now.
       setEditorHandle(editor);
@@ -172,12 +193,15 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [blockSchema, changeBaseline, createEditor, highlighted, login, queryClient, tree]);
+  }, [blockSchema, changeBaseline, createEditor, highlighted, login, markdown, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
   }
-  if (versionQuery.isError || tree === undefined) {
+  // The message is for a version there is no text of: a read that failed, or an answer that is
+  // no text at all (a file version). An answer that carried its markdown and no reading is not
+  // one of those, and is drawn above by parsing it.
+  if (versionQuery.isError || (tree === undefined && markdown === undefined)) {
     return <p>Could not load this document version.</p>;
   }
 
