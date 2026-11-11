@@ -339,6 +339,14 @@ func writeCostPaths() []writeCostPath {
 // 200 readings of a 40-second tick is hours of wall time for nothing, and their p50 decides
 // with their p99 printed beside it.
 //
+// The tick is held to no relative budget at all: the deferral exists to move the index out of
+// the request, so the loop always spends on a document what the request did not, and holding it
+// to a commit that deferred nothing of the kind would refuse the design rather than test it.
+// e2e/acceptance/graph-sizing.sh holds it to two gates that measure it against the work it is
+// given - it drains no slower than deferred work arrives, and it indexes a document no slower
+// than the request path indexes the same document itself, within a tenth - and this run prints
+// its cost beside them.
+//
 // A path whose p99 rises by more than 100 ms fails. The 8,001-block path carries a second bound,
 // 1 s absolute, because IndexDocumentReferences already spends 347 ms on that version inside a
 // request measured at 939 to 1,130 ms: a change inside the relative budget can still put that
@@ -444,6 +452,24 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 
 	for _, path := range writeCostPaths() {
 		here, before := readings[path.name][head], readings[path.name][base]
+		if path.name == writeCostTickPath {
+			// The tick is held to no relative budget, and the reason is the deferral itself.
+			// A document past the threshold leaves its index to the loop, so the loop spends
+			// on it what the request did not: measured on this pod, 0.33 s to write and defer
+			// against 1.44 s to drain. Holding that to the commit before this child, which
+			// deferred nothing of the kind, would refuse the design rather than test it. What
+			// the loop is held to instead is c-growth's two gates, which measure it against
+			// the work it is given rather than against a request that skipped the work: it
+			// drains no slower than deferred work arrives, and it indexes a document no
+			// slower than the request path indexes the same document itself, within a tenth.
+			// Its cost is printed here so a reader sees what the design chose.
+			t.Logf("%s: p50 %.1f ms at this child against %.1f ms at the commit before it (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). "+
+				"This path carries no relative budget: the deferral exists to move the index out of the request, so the loop spends what the request did not, "+
+				"and e2e/acceptance/graph-sizing.sh holds it to the two gates that measure it against the work it is given.",
+				path.name, costMilliseconds(here.p50()), costMilliseconds(before.p50()),
+				costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings)
+			continue
+		}
 		// Which statistic decides, and why it is not the same for every path. A path of tens of
 		// milliseconds takes 200 readings, where the 99th is the 198th and so is a reading with
 		// others above it: its p99 decides. A path of seconds takes 20, where the 99th is the
