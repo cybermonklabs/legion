@@ -17,8 +17,11 @@ name: Dispatch browser suite
 # run pay for the rest, each of which has the wall time for them.
 #
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
-# gives: `services:` is a job-level key and a composite action's step keys do not include
-# timeout-minutes, and this file needs both. That is also why the shard and alone jobs repeat
+# gives: `container:` and `services:` are job-level keys and a composite action's step keys do
+# not include timeout-minutes, and this file needs both kinds. No job here declares a
+# `services:` any more - the two that did start their stacks' Postgres themselves now
+# (dispatch://INFRA-1109) - but the shard and alone jobs' `container:` is the same job-level
+# key and the same reason. That is also why the shard and alone jobs repeat
 # their step lists rather than sharing one - they are kept textually identical where they are the
 # same, so a reader can diff them.
 #
@@ -1147,32 +1150,48 @@ jobs:
     # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
     # `if: failure()` upload below still runs, which a cancelled job skips.
     #
-    # That 13 minutes stands through this change (dispatch://INFRA-1109), which took the server
-    # build out of this job and put three steps in: two actions/download-artifact and the chmod
-    # beside them, which take the shard job's measured maxima for the same steps, 5 s a
-    # download and 1 s the chmod. The 135 s above still carries the build that left, so it is
-    # an over-estimate by that much, and 4 + 4 + 2 min plus 135 + 11 s is 12 min 26 s, which
-    # rounds up to the same 13 minutes. The dashboard step's own 4 minutes can only have got
-    # roomier: the two Vite builds it ran are the binaries job's now.
+    # That 13 minutes stood through the change that took the server build out of this job and
+    # put three steps in: two actions/download-artifact and the chmod beside them, which take
+    # the shard job's measured maxima for the same steps, 5 s a download and 1 s the chmod. The
+    # 135 s above still carries the build that left, so it is an over-estimate by that much,
+    # and 4 + 4 + 2 min plus 135 + 11 s is 12 min 26 s, which rounds up to the same 13 minutes.
+    # The dashboard step's own 4 minutes can only have got roomier: the two Vite builds it ran
+    # are the binaries job's now.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
     # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
-    timeout-minutes: 13
-    services:
-      postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    #
+    # WHY THIS JOB HAS NO `postgres:` SERVICE, AND WHAT IT PAYS INSTEAD. It had one until
+    # dispatch://INFRA-1109 read what it cost: in run 43045412941, the first green full lane at
+    # this shape, `Initialize containers` took 21 s of this job's 128 s and `Stop containers`
+    # 0 s, and the same two steps took 22 s and 3 s of the embedder job's 68 s - 46 s of a lane
+    # measured at 2,061 s against a bound of 2,040. A service container is a pull, a network, a
+    # start and then a wait on `--health-interval 10s`, which no first probe can finish sooner
+    # than that interval.
+    #
+    # So the stacks start their own, through e2e/harness-postgres.ts's image provider, which is
+    # the route the visual job below already takes on the runner and not a new one: one
+    # `docker run` of the same pgvector digest per stack, published on a loopback port the OS
+    # chose, waited on by the harness's own `select 1` rather than by a ten-second health
+    # interval, and removed with the stack. The shard and alone jobs' route is no route here -
+    # their PostgreSQL 18 with pgvector is in the image they run in, and this job runs on the
+    # runner, whose own PostgreSQL 16 carries no `vector` extension at all
+    # (actions/runner-images installs postgresql-16 and libpq-dev and nothing else), so
+    # DISPATCH_E2E_PG_BIN here would fail at `create extension vector` before the first row.
+    # What it costs is measured on one sample, the visual job of that same run 43045412941: its
+    # browser step began at 15:13:06.7 and the stack's first listener logged at 15:13:15.0 with
+    # the server listening at 15:13:17.1, so 8.3 to 10.4 s covered the pull, the container and
+    # the whole stack's boot. The first runs at this head replace that one sample with this
+    # job's own.
+    #
+    # The budget, by the rule in this file's head and from those figures: the step budgets are
+    # unchanged at 4 + 4 + 2 min - the two browser steps absorb those 8.3 to 10.4 s inside
+    # maxima (202 s and 13 s) measured when the dashboard step still ran two Vite builds this
+    # job no longer runs - and the measured maximum of every step without one loses the
+    # `Initialize containers` it carried, 135 - 21 = 114 s. 10 min plus 114 s is 11 min 54 s,
+    # which rounds up to 12 minutes.
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1273,10 +1292,18 @@ jobs:
         # binaries job built. `e2e:multiprocess:run` and not `e2e:multiprocess`: that script
         # builds the contracts, A's dashboard and B's before it runs, which is what a person's
         # own command must still do, and this job takes all three from the run
-        # (packages/dispatch/package.json). DISPATCH_E2E_SERVER_BIN is set on the command line
-        # rather than in this step's `env:`, for the reason the shard job's head gives.
+        # (packages/dispatch/package.json). DISPATCH_E2E_SERVER_BIN and the stack's Postgres
+        # image are set on the command line rather than in this step's `env:`, for the reason
+        # the shard job's head gives.
         timeout-minutes: 4
         run: |
+          # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml),
+          # started per stack by e2e/harness-postgres.ts in place of the `postgres:` service
+          # this job used to declare, for the reason and at the cost the job's head gives. The
+          # digest is a literal, as the visual job below writes it: .github/scripts/
+          # check-ci-images.sh resolves a reference to a row of that file and cannot resolve
+          # one holding a `${{ }}`.
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           bun run e2e:multiprocess:run
         working-directory: packages/dispatch
@@ -1285,9 +1312,13 @@ jobs:
         # e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. B
         # serves A's build, which this spec does not tell apart. The issuer is the one binary
         # this job still builds, in e2e/run-signin-issuer.sh and under the Go cache the steps
-        # above restore for it; the servers are the binary the run built.
+        # above restore for it; the servers are the binary the run built. This step runs
+        # Playwright a second time, so it starts a stack of its own and a Postgres container
+        # with it; the image the step above pulled is on the machine by then, so what it pays
+        # is the container and the server's own boot.
         timeout-minutes: 2
         run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
@@ -1326,31 +1357,32 @@ jobs:
   # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
   # their own, as this file's head requires.
   #
-  # That 11 minutes stands through this change (dispatch://INFRA-1109), which took three steps
-  # out of this job - actions/setup-go, the go cache restore and the server build - and put
-  # three in: two actions/download-artifact and the chmod beside them, which take the shard
-  # job's measured maxima for the same steps, 5 s a download and 1 s the chmod. The contracts
-  # build stays, as it does in every job that runs Playwright itself. The borrowed 135 s is now
-  # an over-estimate by the three steps it still carries, and 4 + 4 min plus 135 + 11 s is
-  # 10 min 26 s, which rounds up to the same 11 minutes.
+  # That 11 minutes stood through the change that took three steps out of this job -
+  # actions/setup-go, the go cache restore and the server build - and put three in: two
+  # actions/download-artifact and the chmod beside them, which take the shard job's measured
+  # maxima for the same steps, 5 s a download and 1 s the chmod. The contracts build stays, as
+  # it does in every job that runs Playwright itself. The borrowed 135 s is now an over-estimate
+  # by the three steps it still carries, and 4 + 4 min plus 135 + 11 s is 10 min 26 s, which
+  # rounds up to the same 11 minutes.
+  #
+  # WHY THIS JOB HAS NO `postgres:` SERVICE. The multiprocess job's head above says it, with the
+  # measurements both jobs are read from: a service container cost this job 22 s of
+  # `Initialize containers` and 3 s of `Stop containers` out of 68 s whole in run 43045412941,
+  # and the stacks now start their own Postgres from the same pgvector digest through
+  # e2e/harness-postgres.ts's image provider, which is the route the visual job below already
+  # takes on the runner. The runner's own PostgreSQL 16 carries no `vector` extension, so the
+  # shard and alone jobs' DISPATCH_E2E_PG_BIN is no route here either.
+  #
+  # The budget, by the rule in this file's head: the two step budgets stay at 4 and 4 min - the
+  # browser step absorbs the provider's 8.3 to 10.4 s (the one sample behind that figure is the
+  # visual job of run 43045412941, which this head's first runs replace) inside a budget set for
+  # rows that take 16 s in CI - and the borrowed maximum for the steps without one loses the
+  # `Initialize containers` it carried, 135 - 21 = 114 s. 8 min plus 114 s is 9 min 54 s, which
+  # rounds up to 10 minutes.
   embedder:
     needs: binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 11
-    services:
-      postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1404,8 +1436,16 @@ jobs:
         # (run-server.sh:369-372 builds one for a caller that names none) and the directory
         # e2e/run-broker.sh serves the broker's three commands from - this lane runs one
         # process against the fake broker, which is what starts the real one
-        # (e2e/harness-real-broker.ts).
+        # (e2e/harness-real-broker.ts). This stack's Postgres is named the same way, and on the
+        # command line for the same reason.
         run: |
+          # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml),
+          # started per stack by e2e/harness-postgres.ts in place of the `postgres:` service
+          # this job used to declare, for the reason and at the cost the job's head gives. The
+          # digest is a literal, as the visual job below writes it: .github/scripts/
+          # check-ci-images.sh resolves a reference to a row of that file and cannot resolve
+          # one holding a `${{ }}`.
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
           bun run e2e:embedder:run

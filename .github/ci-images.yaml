@@ -65,7 +65,9 @@
 registry: ghcr.io/cybermonklabs/legion/ci
 
 images:
-  # Postgres with pgvector: the `services:` Postgres of ten CI jobs, and testpg.Image.
+  # Postgres with pgvector: every `services:` Postgres of CI, testpg.Image, and the image the
+  # Dispatch browser suite's harness runs per stack where the job has no PostgreSQL of its own
+  # (DISPATCH_E2E_PG_IMAGE, in the visual, multiprocess and embedder jobs).
   - upstream: docker.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
     tag: pgvector-2358fcba
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
