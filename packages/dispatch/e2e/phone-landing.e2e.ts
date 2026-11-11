@@ -108,8 +108,13 @@ async function expectNewestInView(page: Page, card: Locator, label: string): Pro
   expect(apart, `${label}: the newest card shares a point with the composer: ${where}`).toBe(true);
 }
 
-/** The three reads the Conversation's list is built from. */
-const READS = ["asks", "comments", "messages"] as const;
+/** The reads the Conversation's list waits on that the tab sends for itself: the issue's asks
+ *  with each ask's thread, its phase handoffs and its messages. `ConversationTab` holds the list
+ *  back until every read it waits on has answered (`loading`,
+ *  `features/conversation/ConversationTab.tsx`), so each of these can be the one that answers
+ *  last. The fourth it waits on, the issue's comments, is not among them: the landing the page
+ *  signs in with carries them, and `openWithReadLast` holds every open to that. */
+const READS = ["asks", "handoffs", "messages"] as const;
 
 /** Matches the Conversation's read `read` for `issueKey`. */
 function conversationRead(issueKey: string, read: (typeof READS)[number]): (url: URL) => boolean {
@@ -133,6 +138,19 @@ async function openWithReadLast(
     await page.evaluate(() => ({ history: history.length, scrollY: window.scrollY })),
     `${label}: the new page before it navigates`
   ).toEqual({ history: 1, scrollY: 0 });
+  // The comments are the read of the list this page sends no request for: the landing that
+  // answered the viewer carried them and seeded them under the key the tab reads them by
+  // (`web/src/api/queries.ts`, `seedIssuePage`), before `AuthGate` drew the tab at all. That is
+  // why they are not in `READS` - no open can leave them answering last - and this counts both
+  // routes so that a release putting them back on a route of their own fails here, rather than
+  // leaving that case quietly uncovered.
+  const carried = { comments: 0, landing: 0 };
+  page.on("request", (request) => {
+    if (request.method() !== "GET") return;
+    const path = new URL(request.url()).pathname;
+    if (path === `/api/v1/issues/${issueKey}/comments`) carried.comments += 1;
+    if (path === "/api/v1/landing") carried.landing += 1;
+  });
   const held: Route[] = [];
   const heldRead = conversationRead(issueKey, last);
   const hold = (route: Route) => {
@@ -166,19 +184,26 @@ async function openWithReadLast(
     await margin.promise;
   });
   expect(held, `${label}: the tab made exactly one ${last} read while it was held`).toHaveLength(1);
+  expect(carried.landing, `${label}: the page read the landing`).toBeGreaterThan(0);
+  expect(
+    carried.comments,
+    `${label}: the comments rode the landing, so the tab asked their own route not at all`
+  ).toBe(0);
   await held[0]?.continue();
   // A refetch of that read after the hold is the page's own business, not this fixture's.
   await page.unroute(heldRead, hold);
   return page;
 }
 
-// INFRA-303: the Conversation's list is built from three reads, asks, comments and messages, and
-// shows nothing until all three answer. The first placement on the newest turn must not be spent
-// while one of them is still pending: a newest message known from the messages read before the
-// asks read answers otherwise lands the reader at the top of the page, the newest message under
-// the docked composer, and the asks answering later changes nothing that brings them back. Each
-// read is held last in turn, which is the title's claim and strictly more than a loop of opens
-// hoping to meet each order.
+// INFRA-303: the Conversation's list is built from four reads - the issue's asks, comments,
+// messages and phase handoffs - and shows nothing until all four answer. The first placement on
+// the newest turn must not be spent while one of them is still pending: a newest message known
+// from the messages read before the asks read answers otherwise lands the reader at the top of
+// the page, the newest message under the docked composer, and the asks answering later changes
+// nothing that brings them back. Three of the four are requests the tab sends, and each is held
+// last in turn, which is the title's claim and strictly more than a loop of opens hoping to meet
+// each order. The fourth, the comments, rides the landing and is in the cache before the tab
+// mounts, so no open can leave it answering last; each open checks that it still does.
 // SLOW(>=2s): three opens, each a fresh page because only a page with no history entry is a
 // first open (`history.length` 1 above), each holding the 300 ms margin the partial-data state
 // has no in-page signal for, plus the top-of-page control the fixture needs to stay honest.

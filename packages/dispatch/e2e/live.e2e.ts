@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { expect, type Locator, test, type WebSocket } from "./test";
+import { expect, type Locator, type Page, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -53,6 +53,32 @@ async function renameUntilShown(
     if (shown && reads() > loads) return;
   }
   throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
+}
+
+/**
+ * The head of the event log the page signed in at, which its event feed resumes from
+ * (`web/src/api/event-feed.ts`), read from the answer that carried it.
+ *
+ * The read a page makes for its viewer is the landing, whose answer carries the viewer beside
+ * the page's own data (`web/src/api/queries.ts`, `readLanding`); `GET /auth/whoami` is what it
+ * falls back to where that route is not there to answer, such as a Dispatch older than it. It is
+ * one head either way - the landing resolves its caller as whoami does - under the name its own
+ * answer gives it.
+ *
+ * Call it before the navigation: it waits for the first such answer of the page.
+ */
+async function signInHead(page: Page): Promise<string> {
+  const response = await page.waitForResponse(
+    (answer) =>
+      ["/api/v1/landing", "/auth/whoami"].includes(new URL(answer.url()).pathname) && answer.ok()
+  );
+  const body = (await response.json()) as {
+    readonly event_head?: string;
+    readonly viewer?: { readonly event_head?: string };
+  };
+  const head = body.viewer?.event_head ?? body.event_head;
+  if (head === undefined) throw new Error(`${response.url()} answered no event head`);
+  return head;
 }
 
 // @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
@@ -455,14 +481,12 @@ test("live: a forced server disconnect resumes from the last event id @pr", asyn
       }
     });
   });
-  const whoami = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/auth/whoami" && response.ok()
-  );
+  const signedIn = signInHead(page);
 
   // The reconnect draw the disconnect below arms is spent on the page's clock.
   await page.clock.install();
   await page.goto(`/issues/${issue.key}/conversation`);
-  const head: string = (await (await whoami).json()).event_head;
+  const head = await signedIn;
   await expect(page.getByText("Before disconnect")).toBeVisible();
   // The first subscription resumes from the sign-in check's head.
   await expect.poll(() => sockets[0]?.resumes).toEqual([head]);
@@ -540,15 +564,13 @@ test("live: a change committed while the first live socket fails to open is show
         server.send(message);
       });
     });
-    const whoami = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/auth/whoami" && response.ok()
-    );
+    const signedIn = signInHead(page);
 
     // The second socket waits a draw from [0, RECONNECT_SPREAD_MS) armed when the first
     // handshake failed (`web/src/api/live-socket.ts`), which the page's own clock spends.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const head: string = (await (await whoami).json()).event_head;
+    const head = await signedIn;
     await expect(page.getByText("Before the failed handshake", { exact: true })).toBeVisible();
     await refused.promise;
     await patchIssue(issue.key, { title: "Committed while the socket was down" }, bob);
@@ -622,57 +644,43 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // event log at all now that the history is the Activity tab's, and the Activity panel is
   // unmounted until its tab is opened.
   const firstLoad = [
-    "/auth/whoami",
-    // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
-    // fetching again.
-    "/api/v1/inbox",
-    // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
-    // there is no drawer-closed phone case to leave them out for.
-    "/api/v1/issues?pinned=true",
-    "/api/v1/projects",
-    "/api/v1/me/state",
-    // The issue's detail.
-    `/api/v1/issues/${issue.key}`,
-    // The active-sessions read.
-    "/api/v1/agents",
-    // The primary artifact's comments, which the Conversation's own list shares rather than
-    // fetching again.
-    `/api/v1/issues/${issue.key}/comments`,
-    // The margin's own list of the issue's asks, and the Conversation's, which asks the same
-    // route for each ask's thread (`?thread=1`) and so is a request of its own, not the
-    // margin's shared.
-    `/api/v1/issues/${issue.key}/asks?state=all`,
+    // The one read the page makes for its viewer, which carries the shell every page draws and
+    // the issue this address names (`web/src/api/queries.ts`, `readLanding`). Everything that
+    // was a request of its own before and is absent below - the sidebar's Inbox, Pinned and
+    // Projects, the viewer's state, the issue's detail, its comments, the margin's own ask list,
+    // its subscribers, the agent registry, the project's architecture sources, the repository
+    // mappings, the Agents badge's state and the Inbox badge's reply count - rides this one
+    // answer and is seeded under the key that read's own reader holds (`seedShell`,
+    // `seedIssuePage`), so the page asks none of those routes at all.
+    `/api/v1/landing?page=issue&key=${issue.key}`,
+    // The Conversation's own ask list, which asks the same route for each ask's thread
+    // (`?thread=1`) and so is a request of its own, not the margin's shared.
     `/api/v1/issues/${issue.key}/asks?state=all&thread=1`,
     // The issue's message threads.
     `/api/v1/issues/${issue.key}/messages`,
-    // The two one-row event reads the unread mark needs: the first event past the watermark,
-    // and the issue's head.
-    `/api/v1/issues/${issue.key}/events?after=0&limit=1`,
-    `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
-    // The Conversation's live-agent query.
-    `/api/v1/issues/${issue.key}/subscribers`,
-    // The one block-schema fetch every document surface shares for the session.
-    "/api/v1/schema/blocks",
-    // The header's read of the project's architecture sources: the `Components:` line offers
-    // its picker only when the project has one. The component tree itself,
-    // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
-    // load, which is why it is absent from this set.
-    "/api/v1/projects/CORE/architecture-sources",
-    // The header's read of the repository mappings: an issue that resolves to no repository,
-    // as this one does, shows the `Repository:` item only when its project maps one.
-    "/api/v1/settings/repo-projects",
-    // me/agents/state, whose unread replies the Agents badge counts on every page (the
-    // sidebar's on desktop, the compact header's on phone).
-    "/api/v1/me/agents/state",
-    // The credential requests waiting on the viewer, which the Inbox count adds up on every
-    // page.
-    "/api/v1/credential-requests?approver=me",
-    // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
-    // number (the sidebar's on desktop, the compact header's on phone).
-    "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
     // The Conversation's list of the issue's phase handoffs, which it shows beside the
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,
+    // The one-row event reads the unread mark needs. The issue's head is read once. The first
+    // event past the reader's watermark is read at each watermark this load has: `after=0`,
+    // since alice has never read this issue, and then `after=6` - the issue's six events, which
+    // are what the read mark this load writes covers - because that mark moves the watermark,
+    // and the watermark is in the read's own key.
+    `/api/v1/issues/${issue.key}/events?after=0&limit=1`,
+    `/api/v1/issues/${issue.key}/events?after=6&limit=1`,
+    `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
+    // The read mark the page writes for the issue the reader opened - the one request of this
+    // load that is not a read, and here because the set is every request the load makes - and
+    // the viewer's state read again once that write lands.
+    `/api/v1/me/issues/${issue.key}/state`,
+    "/api/v1/me/state",
+    // The credential requests waiting on the viewer, which the Inbox count adds up on every
+    // page. The landing carries this part too, and the page reads it all the same: a null there
+    // says "Dispatch could not read it" as well as "there is nothing to read", and only this
+    // route tells the two apart (`web/src/api/queries.ts`, `seedShell`).
+    "/api/v1/credential-requests?approver=me",
+    // The one block-schema fetch every document surface shares for the session.
+    "/api/v1/schema/blocks",
   ].sort();
   await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
 
@@ -725,8 +733,8 @@ test("live: an event during a project list's first load fetches it again once th
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "OLDTITLE" });
-  // Pinned, so the sidebar's pinned row shows each rename: the one sign on this page that the
-  // event was handled while the list's first load is still held.
+  // Pinned, so the sidebar's pinned row shows the rename beside the board's own row: two draws
+  // of the event the page handled once the held load landed.
   await putIssueState(issue.key, { pinned: true });
 
   const alice = await asUser(browser, "alice");
@@ -740,6 +748,7 @@ test("live: an event during a project list's first load fetches it again once th
     let mostInFlight = 0;
     page.on("request", (request) => {
       if (!listUrl.test(request.url())) return;
+      listRequests += 1;
       listsInFlight += 1;
       mostInFlight = Math.max(mostInFlight, listsInFlight);
     });
@@ -748,11 +757,15 @@ test("live: an event during a project list's first load fetches it again once th
     };
     page.on("requestfinished", settle);
     page.on("requestfailed", settle);
-    // The list's first request is answered by the server now and held on the wire, so the body
-    // that eventually lands is genuinely older than the event below.
-    await page.route(listUrl, async (route) => {
-      listRequests += 1;
-      if (listRequests > 1) {
+    // The project list's first load is the landing: its one answer carries the list and seeds it
+    // under the key the board reads it by (`web/src/api/queries.ts`, `seedBoardPage`), and the
+    // board's own route is asked only for a read after that. So the landing is what is answered
+    // by the server now and held on the wire, and the body that eventually lands is genuinely
+    // older than the event below.
+    let landings = 0;
+    await page.route(/\/api\/v1\/landing(\?|$)/u, async (route) => {
+      landings += 1;
+      if (landings > 1) {
         await route.continue();
         return;
       }
@@ -764,31 +777,23 @@ test("live: an event during a project list's first load fetches it again once th
 
     await page.clock.install();
     await page.goto("/projects/CORE");
-    const pinnedRow = page
-      .getByRole("navigation", { name: "Navigation" })
-      .getByRole("link", { name: issue.key });
-    await expect(pinnedRow).toContainText("OLDTITLE");
     await inFlight;
-    // Renamed, again every 2 s, until the pinned row shows it: the feed is open and the event
-    // was handled while the held first load was still in flight.
-    let newTitle = "";
-    for (let attempt = 1; attempt <= 10 && newTitle === ""; attempt += 1) {
-      await patchIssue(issue.key, { title: `NEWTITLE ${attempt}` }, bob);
-      if (
-        await expect(pinnedRow)
-          .toContainText(`NEWTITLE ${attempt}`, { timeout: 2_000 })
-          .then(() => true)
-          .catch(() => false)
-      ) {
-        newTitle = `NEWTITLE ${attempt}`;
-      }
-    }
-    expect(newTitle).not.toBe("");
-    // The event did not start a second request beside the held one.
-    expect(listRequests).toBe(1);
+    // Renamed while that load is held, so the body it carries is older than this write. The
+    // page's event feed resumes from the head that same body carries, so Dispatch replays the
+    // rename on the socket the page opens once the body lands: one write is enough, where a feed
+    // that could have missed it needed ten.
+    const newTitle = "NEWTITLE";
+    await patchIssue(issue.key, { title: newTitle }, bob);
+    // Nothing went out for the list beside the held load, which is the half of the claim about
+    // what the page does while its first load is in flight.
+    expect(listRequests).toBe(0);
     release();
 
     // The held body predates the rename; the list is fetched again once it lands.
+    const pinnedRow = page
+      .getByRole("navigation", { name: "Navigation" })
+      .getByRole("link", { name: issue.key });
+    await expect(pinnedRow).toContainText(newTitle);
     await expect(
       page.getByRole("row", { name: `${issue.key} ${newTitle}`, exact: true })
     ).toBeVisible();
@@ -796,14 +801,14 @@ test("live: an event during a project list's first load fetches it again once th
       0
     );
     // The 100 ms event batch and the refresh the scheduler holds back for
-    // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a third request would already be
+    // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a second request would already be
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
-    // The margin that paragraph names: a third request would leave the page inside the jump
+    // The margin that paragraph names: a second request would leave the page inside the jump
     // above, and this window in Node is for it to reach Playwright's counter; a request that is
     // never made marks nothing else the row could wait on.
     await sleep(100);
-    expect([listRequests, mostInFlight]).toEqual([2, 1]);
+    expect([listRequests, mostInFlight]).toEqual([1, 1]);
   } finally {
     release();
     await alice.close();

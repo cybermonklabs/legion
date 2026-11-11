@@ -21,6 +21,24 @@ import { asUser } from "./users";
 // alice's browser is real.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 
+/** The one read a cold page makes for its viewer, which carries the shell every page draws and
+ *  the page its address names (`web/src/api/queries.ts`, `readLanding`). */
+const LANDING_PATH = "/api/v1/landing";
+
+/** Which issue `url` reads in full, or `undefined` where it reads no issue: `GET
+ *  /api/v1/issues/<key>` (the detail, not its summary), and the landing of that issue's page,
+ *  whose one answer carries the same issue and seeds it under the same key
+ *  (`web/src/api/queries.ts`, `seedIssuePage`). A cold page reads the issue inside the landing
+ *  and asks the detail route not at all; every later read - the refresh an event owes - is the
+ *  detail route's own. Either request is one read of that issue, which is what the counts below
+ *  are about. */
+function issueReadOf(url: URL): string | undefined {
+  const detail = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
+  if (detail !== undefined) return decodeURIComponent(detail);
+  if (url.pathname !== LANDING_PATH || url.searchParams.get("page") !== "issue") return undefined;
+  return url.searchParams.get("key") ?? undefined;
+}
+
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
  *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
@@ -28,7 +46,8 @@ const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as con
 interface Traffic {
   /** Path and query of each GET under `/api/` since the last `reset`. */
   readonly gets: string[];
-  /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
+  /** How many times the full issue `key` was read, by whichever request carried it
+   *  (`issueReadOf`). */
   issueReads(key: string): number;
   /** Whether no request has been in flight for `ms`. */
   quietFor(ms: number): boolean;
@@ -45,10 +64,9 @@ function watchTraffic(page: Page): Traffic {
     const url = new URL(request.url());
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
     gets.push(`${url.pathname}${url.search}`);
-    const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
+    const issue = issueReadOf(url);
     if (issue !== undefined) {
-      const key = decodeURIComponent(issue);
-      issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
+      issueReads.set(issue, (issueReads.get(issue) ?? 0) + 1);
     }
   });
   const settle = (request: Request) => {
@@ -267,11 +285,18 @@ test("sidebar: an issue event while the sidebar's first reads are in flight disc
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
+    // The three lists the sidebar draws, each matched by whichever request carries it. On a cold
+    // page that request is the landing: its one answer carries all three and seeds them under the
+    // keys the sidebar reads them by (`web/src/api/queries.ts`, `seedShell`), so the page asks
+    // their own routes not at all. A refresh the page owes later asks those routes. Either is one
+    // read of that list, and what this row counts is reads, not requests.
+    const landing = (url: URL) => url.pathname === LANDING_PATH;
     const reads = {
-      inbox: (url: URL) => url.pathname === "/api/v1/inbox",
+      inbox: (url: URL) => url.pathname === "/api/v1/inbox" || landing(url),
       pinned: (url: URL) =>
-        url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true",
-      projects: (url: URL) => url.pathname === "/api/v1/projects",
+        (url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true") ||
+        landing(url),
+      projects: (url: URL) => url.pathname === "/api/v1/projects" || landing(url),
     };
     type Read = keyof typeof reads;
     const sent: Record<Read, number> = { inbox: 0, pinned: 0, projects: 0 };
@@ -282,39 +307,40 @@ test("sidebar: an issue event while the sidebar's first reads are in flight disc
         if (reads[name](url)) sent[name] += 1;
       }
     });
-    // The first request of each is answered by the server now and held on the wire, so the body
-    // that lands is older than the event below; any later one goes straight through.
+    // The page's first read is answered by the server now and held on the wire, so the body that
+    // lands is older than the event below; any later request goes straight through.
     const release = Promise.withResolvers<void>();
-    const arrived = (Object.keys(reads) as Read[]).map((name) => {
-      const reached = Promise.withResolvers<void>();
-      let routed = 0;
-      return {
-        reached: reached.promise,
-        route: page.route(reads[name], async (route) => {
-          routed += 1;
-          if (route.request().method() !== "GET" || routed > 1) {
-            await route.fallback();
-            return;
-          }
-          const response = await route.fetch();
-          reached.resolve();
-          await release.promise;
-          // The commit before the change dropped this request once the event arrived; its
-          // answer then has nowhere to land.
-          await route.fulfill({ response }).catch(() => undefined);
-        }),
-      };
+    const reached = Promise.withResolvers<void>();
+    let routed = 0;
+    await page.route(landing, async (route) => {
+      routed += 1;
+      if (route.request().method() !== "GET" || routed > 1) {
+        await route.fallback();
+        return;
+      }
+      const response = await route.fetch();
+      reached.resolve();
+      await release.promise;
+      // The commit before the change dropped this request once the event arrived; its
+      // answer then has nowhere to land.
+      await route.fulfill({ response }).catch(() => undefined);
     });
-    await Promise.all(arrived.map(({ route }) => route));
 
     await page.clock.install();
     await page.goto(`/issues/${subject.key}`);
     const navigation = page.getByRole("navigation", { name: "Navigation" });
-    await Promise.all(arrived.map(({ reached }) => reached));
-    // A title change moves none of the three: the issue is in no pinned row, no Inbox row and
-    // holds no open ask.
-    await eventBarrier(page, traffic, subject.key, subject.title);
+    await reached.promise;
+    // Written while that read is in flight, and so after the head its answer carries: the page's
+    // event feed resumes from that head, so Dispatch replays this write on the socket the page
+    // opens once the read lands. A title change moves none of the three: the issue is in no
+    // pinned row, no Inbox row and holds no open ask.
+    const renamed = `${subject.title} renamed in flight`;
+    await patchIssue(subject.key, { title: renamed }, bob);
     release.resolve();
+
+    // The header reading that title is the event written during the read reaching this page, so
+    // past this the page has handled an event that arrived while its first read was in flight.
+    await eventBarrier(page, traffic, subject.key, renamed);
 
     await expect(navigation.getByRole("link", { name: /^Inbox/ })).toBeVisible();
     await expect(navigation.locator('a[href="/projects/OTHER"]')).toBeVisible();
