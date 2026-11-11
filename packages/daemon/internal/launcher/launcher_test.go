@@ -177,10 +177,20 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	return c
 }
 
-// acknowledge admits the connection's hello and reads the launcher's first state on it.
+// acknowledge admits the connection's hello with the empty acknowledgement and reads the
+// launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
 	g.t.Helper()
-	g.send(shimwire.LauncherHelloAck{})
+	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
+}
+
+// acknowledgeWith admits the hello with an acknowledgement of the case's own and reads the
+// launcher's first state on it: the answer to an issue pod's first role carries the settings the
+// pod's cache trimmer runs by, and the absence of them is what turns it off (launcher.go's
+// serveVolumeTrim).
+func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
+	g.t.Helper()
+	g.send(ack)
 	state, ok := g.next().(shimwire.LauncherState)
 	if !ok {
 		g.t.Fatalf("after the acknowledgement: %#v, want the launcher's state", state)
@@ -572,12 +582,25 @@ type fleet struct {
 	conns                 map[string]*roleConn
 }
 
-// newFleet starts a launcher over a roles directory shaped as an issue pod's one container gives
-// it — every role's launcher token, gh bundle, private, state and agent-secrets directory — and
-// takes every role's connection through its hello, acknowledgement and state. A generation of
-// such a launcher runs in namespaces of its own, so a test that starts one calls
-// requireRoleNamespaces first.
+// newFleet is newFleetDialed with every role's hello admitted by the empty acknowledgement, in
+// the order of the --role list, which is the order an issue pod's daemon answers them in.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
+	t.Helper()
+	f := newFleetDialed(t, grace, roles...)
+	for _, role := range roles {
+		f.role(role).acknowledge()
+	}
+	return f
+}
+
+// newFleetDialed starts a launcher over a roles directory shaped as an issue pod's one container
+// gives it — every role's launcher token, gh bundle, private, state and agent-secrets directory
+// — and takes every role's connection up to its hello, acknowledging none: a case that drives
+// the pod's cache trimmer answers each hello itself, since the answer to the first role's is
+// what hands the trimmer its settings (launcher.go's serveVolumeTrim). A generation of such a
+// launcher runs in namespaces of its own, so a test that starts one calls requireRoleNamespaces
+// first.
+func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
@@ -635,10 +658,23 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 		}
 		f.conns[conn.hello.Role] = conn
 	}
-	for _, conn := range f.conns {
-		conn.acknowledge()
-	}
 	return f
+}
+
+// stop ends the container's context and answers what Run returned, putting it back where the
+// case's own cleanup reads it: the cleanup waits for one value, and a case that read it and
+// kept it would leave the cleanup waiting out its bound for a launcher that had already left.
+func (f *fleet) stop() error {
+	f.t.Helper()
+	f.cancel()
+	select {
+	case err := <-f.result:
+		f.result <- err
+		return err
+	case <-time.After(testwait.Bounded(f.t, 30*time.Second, time.Second)):
+		f.t.Fatalf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
+		return nil
+	}
 }
 
 // role is the daemon end of role's connection.
