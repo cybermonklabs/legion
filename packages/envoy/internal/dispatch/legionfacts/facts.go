@@ -2,9 +2,10 @@
 // (dispatch://INFRA-2915). The facts are computed once and stored as rows, so the board, the
 // issue table and every eval read rows and compute nothing.
 //
-// It holds no loop and no lease. A consumer calls Compute for the issues whose inputs moved and
-// ComputeProject for a whole sweep, and gives the rows to Write; the loop that decides when to do
-// either is its own.
+// The computation holds no loop and no lease: facts.go answers the rows of a key set (Compute)
+// or of a whole project (ComputeProject), and store.go writes them (Write). Run is the loop
+// that decides when to call either, under one lease and woken by the feeds a row is computed
+// from (consumer.go).
 //
 // The numbers are the metrics package's: Compute and ComputeProject read a population and call
 // metrics.ProjectFacts, which is the one computation of the per-issue facts. Nothing here states

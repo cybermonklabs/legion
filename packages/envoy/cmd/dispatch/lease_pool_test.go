@@ -157,11 +157,37 @@ func leaseNames(fn *ast.FuncDecl) map[string]bool {
 	return held
 }
 
-// passesLease reports whether one of held's names is an argument of call.
+// passesLease reports whether one of held's names is an argument of call, as the argument
+// itself or as a field of a struct literal it is given in: a loop whose dependencies arrive as
+// one struct takes its lease pool there (legionfacts.Run takes legionfacts.Deps), and that
+// caller holds a connection like every other.
 func passesLease(call *ast.CallExpr, held map[string]bool) bool {
 	for _, arg := range call.Args {
-		if name, ok := arg.(*ast.Ident); ok && held[name.Name] {
+		if holdsLease(arg, held) {
 			return true
+		}
+	}
+	return false
+}
+
+// holdsLease reports whether expression is one of held's names, or a struct literal a field of
+// which holds one, taken through the & of a literal taken by address. It looks inside no call
+// and no function literal: a lease pool an argument's own call is handed is that call's, and
+// counting it here would count one caller twice.
+func holdsLease(expression ast.Expr, held map[string]bool) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return held[value.Name]
+	case *ast.UnaryExpr:
+		return value.Op == token.AND && holdsLease(value.X, held)
+	case *ast.CompositeLit:
+		for _, element := range value.Elts {
+			if keyed, ok := element.(*ast.KeyValueExpr); ok {
+				element = keyed.Value
+			}
+			if holdsLease(element, held) {
+				return true
+			}
 		}
 	}
 	return false

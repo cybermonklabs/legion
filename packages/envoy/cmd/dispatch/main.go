@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
@@ -707,6 +708,12 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	// The Legion facts consumer reads three feeds, so it registers a wake of its own on each:
+	// the events it recomputes an issue from, the sampler's reads of a daemon, and the delivery
+	// changes that carry a pull request's merge time (legionfacts.Run).
+	factsEventsWake := listenerHub.Wake(api.EventsChannel)
+	factsStateWake := listenerHub.Wake(legion.StateChannel)
+	factsChangesWake := listenerHub.Wake(legionfacts.ChangesChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
@@ -862,6 +869,23 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
+	// dispatch://INFRA-2915: the per-issue Legion facts, computed once and stored as rows of
+	// issue_facts, so the board, the issue table and every eval read rows and compute nothing.
+	// It recomputes an issue when one of its three feeds moves - the issue's events, the
+	// daemon's observations and a pull request's merge time - and recomputes every open issue
+	// every 30 s, because an open issue's hours grow with the clock while no input moves
+	// (legionfacts.SweepEvery). It takes the legion-facts lease: a pass reads its cursors,
+	// computes the rows and writes both in one transaction, so two processes woken by one
+	// commit must not run a pass at once. It reads the event log up to the safe horizon of the
+	// same events.Horizon the suggestion sweep above reads, for the same reason.
+	go legionfacts.Run(ctx, legionfacts.Deps{
+		Pool:         database.Pool,
+		Horizon:      background.EventHorizon(),
+		Leases:       leases,
+		Events:       factsEventsWake,
+		Observations: factsStateWake,
+		Deliveries:   factsChangesWake,
+	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
