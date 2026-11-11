@@ -60,8 +60,8 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 	requireClusteredRefusals(t, []clusteredRefusal{
 		{"no kubeconfig", func(a *A) { a.Kubeconfig = nil }, "kubeconfig", []string{"kubeconfig is required"}},
 
-		{"no name", func(a *A) { a.Name = "" }, "name", []string{`name ""`, "DNS-1123 label of at most 44 bytes"}},
-		{"a 45-byte name", func(a *A) { a.Name = strings.Repeat("a", 45) }, "name", []string{"at most 44 bytes"}},
+		{"no name", func(a *A) { a.Name = "" }, "name", []string{`name ""`, "DNS-1123 label of at most 43 bytes"}},
+		{"a 44-byte name", func(a *A) { a.Name = strings.Repeat("a", 44) }, "name", []string{"at most 43 bytes"}},
 		{"a name with an uppercase letter", func(a *A) { a.Name = "Envoy-nats" }, "name", []string{`name "Envoy-nats"`}},
 		{"a name ending in a hyphen", func(a *A) { a.Name = "envoy-" }, "name", []string{`name "envoy-"`}},
 
@@ -172,11 +172,17 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 			"tailnet.listener.allowedHosts", []string{"tailnet.listener.allowedHosts[1]"}},
 		{"an empty listener cpu", func(a *A) { listener(a).Cpu = str("") }, "tailnet.listener.cpu", []string{"tailnet.listener.cpu is empty; leave it unset for 500m"}},
 		{"a listener cpu that is no quantity", func(a *A) { listener(a).Cpu = str("half") }, "tailnet.listener.cpu", []string{"not a Kubernetes quantity"}},
+		// The listener container is the listener pod's whole request now that the listener is a
+		// workload of its own: no sidecar's CPU is counted beside it, so 100m, which the tailnet
+		// pod's two fixed containers carried over Autopilot's floor before the split, is refused.
+		{"a listener cpu below Autopilot's floor for the listener pod's shape", func(a *A) { listener(a).Cpu = str("100m") }, "tailnet.listener.cpu",
+			[]string{`tailnet.listener.cpu "100m" must be at least 250m: the listener pod would request less than 250m`,
+				"neither pod anti-affinity nor the safe-to-evict annotation"}},
 		{"an empty listener memory", func(a *A) { listener(a).Memory = str("") }, "tailnet.listener.memory",
 			[]string{"tailnet.listener.memory is empty; leave it unset for 1Gi"}},
 		{"a listener memory that is no quantity", func(a *A) { listener(a).Memory = str("1 GB") }, "tailnet.listener.memory", []string{"not a Kubernetes quantity"}},
-		{"a listener memory too small for the tailnet pod's CPU", func(a *A) { listener(a).Cpu = str("4"); listener(a).Memory = str("1Gi") }, "tailnet.listener.memory",
-			[]string{"the tailnet pod must hold between 1 and 6.5 GiB of memory per CPU"}},
+		{"a listener memory too small for the listener pod's CPU", func(a *A) { listener(a).Cpu = str("4"); listener(a).Memory = str("1Gi") }, "tailnet.listener.memory",
+			[]string{"the listener pod must hold between 1 and 6.5 GiB of memory per CPU"}},
 
 		{"no users and no tailnet", func(a *A) { withoutTailnet(a).Users = nil }, "users", []string{"at least one user is required"}},
 		{"a user with no nkey", func(a *A) { a.Users[1].NKey = "" }, "users", []string{"users[1]: nkey is required"}},

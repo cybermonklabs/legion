@@ -37,16 +37,41 @@ func clusteredTailnetPodSpec(t *testing.T, m *pulumitest.Mocks) map[string]any {
 }
 
 // The tailnet host's pod, whole: the init container creating tailscaled's state directory, the
-// tailscale container serving svc:envoy-hub, the advertiser gating it on the listener's /healthz,
-// and the session listener, all as the one uid, with the state volume, the serve config and the
-// listener's seed by reference.
+// tailscale container serving svc:envoy-hub and the advertiser deciding when it does, both as
+// the one uid, with the state volume and the serve config. The session listener is a workload of
+// its own now (TestClusteredNatsHubListenerPodMatchesGolden), so neither its container nor its
+// seed volume is here: the lists this reads are counted first, since an absence is true of a pod
+// that rendered nothing.
 func TestClusteredNatsHubTailnetPodMatchesGolden(t *testing.T) {
-	requirePodGolden(t, runClusteredHub(t, clusteredArgs()), clusteredTailnetName, "clustered-hub-tailnet-pod.golden")
+	m := runClusteredHub(t, clusteredArgs())
+	requirePodGolden(t, m, clusteredTailnetName, "clustered-hub-tailnet-pod.golden")
+
+	pod := clusteredTailnetPodSpec(t, m)
+	initContainers := pod["initContainers"].([]any)
+	require.Len(t, initContainers, 1)
+	require.Equal(t, "tailscale-state", initContainers[0].(map[string]any)["name"])
+	containers := pod["containers"].([]any)
+	require.Len(t, containers, 2, "the pod holds the tailscale container and the advertiser")
+	names := make([]string, len(containers))
+	for i, container := range containers {
+		names[i] = container.(map[string]any)["name"].(string)
+	}
+	require.Equal(t, []string{"tailscale", "advertiser"}, names)
+	require.NotContains(t, names, "listener", "the session listener runs in a pod of its own")
+
+	volumes := pod["volumes"].([]any)
+	require.NotEmpty(t, volumes)
+	volumeNames := make([]string, len(volumes))
+	for i, volume := range volumes {
+		volumeNames[i] = volume.(map[string]any)["name"].(string)
+	}
+	require.Equal(t, []string{"state", "serve"}, volumeNames)
+	require.NotContains(t, volumeNames, "nats-seed", "the seed is mounted in the listener's own pod")
 }
 
 // The serve config forwards the Service's NATS port to the hub's client Service and its listener
-// port to the pod's own listener on loopback, as plain TCP, from ConfigMap <name>-tailnet in the
-// hub's namespace.
+// port to the session listener's own cluster Service, as plain TCP, from ConfigMap <name>-tailnet
+// in the hub's namespace.
 func TestClusteredNatsHubTailnetServeConfigMatchesGolden(t *testing.T) {
 	r := runClusteredHub(t, clusteredArgs()).Named(t, configMapType, clusteredTailnetName)
 	requireClusteredKubernetesChild(t, r)
@@ -113,83 +138,27 @@ func preStopSeconds(t *testing.T, container map[string]any) float64 {
 	return float64(seconds)
 }
 
-// The kubelet spends each container's preStop hook and its shutdown on SIGTERM inside the one
-// grace period, and kills what is still running at its end. Both containers that hold the
-// Service's connections fit: the tailscale container's hook (drain 5 s, wait 20 s, logout 5 s)
-// and containerboot's 25 s shutdown, and the listener's 25 s wait, which outlasts the hook's
-// drain and wait, and its own 28 s shutdown (cmd/listener/main.go: HTTP 10 s, role lane 5 s, NATS
-// drain 13 s).
+// The kubelet spends the tailscale container's preStop hook and its shutdown on SIGTERM inside
+// the one grace period, and kills what is still running at its end. The tailnet host pod now
+// holds the tailscale side alone: its hook (drain 5 s, wait 20 s, logout 5 s) and containerboot's
+// 25 s shutdown fit, and the session listener, whose own stop is held within its own pod's grace
+// (TestClusteredNatsHubListenerStopFitsItsGrace), no longer spends any of this one.
 func TestClusteredNatsHubTailnetShutdownFitsTheGrace(t *testing.T) {
 	m := runClusteredHub(t, clusteredArgs())
 	template := deploymentPodTemplate(t, m, clusteredTailnetName)
 	grace := template["spec"].(map[string]any)["terminationGracePeriodSeconds"].(float64)
 
+	require.Equal(t, 60.0, grace)
 	require.Equal(t, 55, gcp.TailnetShutdownSeconds)
 	require.LessOrEqual(t, float64(gcp.TailnetShutdownSeconds), grace, "the tailscale container's hook and containerboot's shutdown")
-
-	listenerWait := preStopSeconds(t, podContainer(t, template, "listener"))
-	require.Equal(t, 25.0, listenerWait, "the tailscale container's drain and wait")
-	require.Equal(t, 28, gcp.ClusteredHubListenerShutdownSeconds)
-	require.LessOrEqual(t, listenerWait+float64(gcp.ClusteredHubListenerShutdownSeconds), grace, "the listener's wait and its shutdown")
-}
-
-// The listener's environment in the pod: its machine id (tailnet.serviceName by default) on the
-// pod's loopback at port 9020, the Service's tailnet name first among the hosts it answers, the
-// hub's client Service as its NATS URL, marked remote, ENVOY_NATS_REPLICAS and
-// ENVOY_STREAM_MAX_BYTES exactly when given, and its seed as a file from the operator's Secret,
-// mounted read-only. No ENVOY_API_TOKEN: it serves /v1 on loopback alone.
-func TestClusteredNatsHubTailnetListenerEnvironment(t *testing.T) {
-	for _, row := range []struct {
-		name                         string
-		machineID                    *string
-		natsReplicas, streamMaxBytes *int
-		want                         map[string]any
-	}{
-		{"defaults", nil, nil, nil, map[string]any{"ENVOY_MACHINE_ID": "envoy-hub"}},
-		{"a machine id", pulumi.StringRef("example-listener"), nil, nil, map[string]any{"ENVOY_MACHINE_ID": "example-listener"}},
-		{"natsReplicas", nil, pulumi.IntRef(3), nil, map[string]any{"ENVOY_MACHINE_ID": "envoy-hub", "ENVOY_NATS_REPLICAS": "3"}},
-		{"streamMaxBytes", nil, nil, pulumi.IntRef(1 << 30), map[string]any{"ENVOY_MACHINE_ID": "envoy-hub", "ENVOY_STREAM_MAX_BYTES": "1073741824"}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			args := clusteredArgs()
-			args.Tailnet.Listener.MachineID = row.machineID
-			args.Tailnet.Listener.AllowedHosts = []string{"envoy.example.com"}
-			args.NatsReplicas, args.StreamMaxBytes = row.natsReplicas, row.streamMaxBytes
-			template := deploymentPodTemplate(t, runClusteredHub(t, args), clusteredTailnetName)
-			listener := podContainer(t, template, "listener")
-			want := map[string]any{
-				"PORT":                    "9020",
-				"ENVOY_LISTEN_HOST":       "127.0.0.1",
-				"ENVOY_ALLOWED_HOSTS":     "envoy-hub.example-tailnet.ts.net,envoy.example.com",
-				"NATS_URLS":               "nats://envoy-nats.envoy.svc.cluster.local:4222",
-				"ENVOY_ALLOW_REMOTE_NATS": "1",
-				"NATS_NKEY_SEED_FILE":     "/var/run/secrets/envoy/nats-seed",
-			}
-			for name, value := range row.want {
-				want[name] = value
-			}
-			env := containerEnv(t, listener)
-			require.Equal(t, want, env)
-			require.NotContains(t, env, "ENVOY_API_TOKEN")
-
-			require.Equal(t, []any{map[string]any{"name": "nats-seed", "mountPath": "/var/run/secrets/envoy", "readOnly": true}}, listener["volumeMounts"])
-			var seed any
-			for _, v := range template["spec"].(map[string]any)["volumes"].([]any) {
-				if v.(map[string]any)["name"] == "nats-seed" {
-					seed = v
-				}
-			}
-			require.Equal(t, map[string]any{"name": "nats-seed", "secret": map[string]any{
-				"secretName": "envoy-hub-listener-seed", "items": []any{map[string]any{"key": "seed", "path": "nats-seed"}},
-			}}, seed)
-		})
-	}
 }
 
 // The tailscale container joins with the component's auth key and every tag, and never advertises
-// the Service by itself: the advertiser does, only while the pod's listener answers 200 on
-// /healthz.
-func TestClusteredNatsHubTailnetHostJoinsWithTheTagsAndAdvertisesOnHealth(t *testing.T) {
+// the Service by itself: the advertiser does, on the host's own readiness alone. Its script
+// carries an empty health, which tailnetAdvertiserScript reads as no gate, since the session
+// listener runs in a pod of its own and no advertiser can reach that pod's loopback: a listener
+// fault no longer takes NATS off the tailnet.
+func TestClusteredNatsHubTailnetHostJoinsWithTheTagsAndAdvertisesWithNoHealthGate(t *testing.T) {
 	args := clusteredArgs()
 	args.Tailnet.Tags = []string{"tag:envoy-hub-host", "tag:example"}
 	template := deploymentPodTemplate(t, runClusteredHub(t, args), clusteredTailnetName)
@@ -201,7 +170,7 @@ func TestClusteredNatsHubTailnetHostJoinsWithTheTagsAndAdvertisesOnHealth(t *tes
 
 	command := podContainer(t, template, "advertiser")["command"].([]any)
 	require.Equal(t, []any{"/bin/sh", "-c"}, command[:2])
-	require.Contains(t, command[2], "\nhealth=http://127.0.0.1:9020/healthz\n")
+	require.Contains(t, command[2], "\nhealth=''\n", "an empty health, which the script reads as no gate")
 	require.Contains(t, command[2], "\nservice=svc:envoy-hub\n")
 	require.Contains(t, command[2], "\ngrace=60\n")
 }
@@ -266,8 +235,10 @@ func TestClusteredNatsHubWithoutTailnetRegistersNoTailnetHost(t *testing.T) {
 
 // The Secret is what reads tailnetAuthKey: a blank key and one holding an nkey seed, each another
 // resource's secret output sent through Construct, fail the update naming tailnetAuthKey and never
-// the value; neither the Secret nor the Deployment waiting on it registers, and no registration
-// carries the value.
+// the value; neither the Secret nor the tailnet hosts' Deployment, which waits on it, registers,
+// and no registration carries the value. The session listener's Deployment, which takes no auth
+// key, is another workload's, so the hosts' absence is read by name over every registration,
+// counted.
 func TestConstructRefusesABlankOrSeededTailnetAuthKey(t *testing.T) {
 	seed, _ := testnats.User(t)
 	for _, row := range []struct{ name, value, want string }{
@@ -282,8 +253,10 @@ func TestConstructRefusesABlankOrSeededTailnetAuthKey(t *testing.T) {
 			require.ErrorContains(t, err, clusteredHubType+" example-clustered-hub: "+row.want)
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)
 			require.NotContains(t, m.Types(), kubeSecretType, "no Secret holds it")
-			require.NotContains(t, m.Types(), deploymentType, "no host joins with it")
-			for _, r := range m.Registrations() {
+			registrations := m.Registrations()
+			require.NotEmpty(t, registrations, "the hub registers its other children")
+			for _, r := range registrations {
+				require.False(t, r.Type == deploymentType && r.Name == clusteredTailnetName, "no host joins with it")
 				for _, s := range allStrings(resource.NewProperty(r.Inputs)) {
 					require.NotContains(t, strings.ToUpper(s), seed, "%s %s holds the seed", r.Type, r.Name)
 				}
