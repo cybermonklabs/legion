@@ -349,7 +349,8 @@ test.skipIf(omp === undefined && !onActions)(
           return Response.json([]);
         }
         if (request.method === "POST" && route === "/api/v1/markdown/round-trip") {
-          return Response.json({ markdown: (await request.json()).markdown });
+          const sent = (await request.json()) as { markdown?: string };
+          return Response.json({ markdown: sent.markdown });
         }
         if (request.method === "POST" && route === "/api/v1/issues/DSP-1/artifacts") {
           const file = (await request.formData()).get("file");
