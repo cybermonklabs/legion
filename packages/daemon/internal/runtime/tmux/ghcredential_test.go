@@ -662,11 +662,11 @@ func TestAControllerPaneIsRefreshedForTheOwnerItsLaunchRecorded(t *testing.T) {
 // test reads which mint each owner's directory holds.
 type leaseTokens struct{}
 
-func (leaseTokens) Token(_ context.Context, _ appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return appauth.Lease{Token: "write-" + repo.Owner(), ExpiresAt: staticCredentialExpiry}, nil
+func (leaseTokens) Token(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "write-" + owner, ExpiresAt: staticCredentialExpiry}, nil
 }
 
-func (leaseTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (leaseTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "read-" + owner, ExpiresAt: staticCredentialExpiry}, nil
 }
 

@@ -257,23 +257,22 @@ describe("app-logins.ts", () => {
     holdsNoToken(stderr);
   });
 
-  test("a token command runs as the daemon runs it: no NATS seed, stdin closed, owner, repositories and read-only set empty", async () => {
-    // An unset variable prints `unset`, so a set-empty owner, repository list and read-only flag
-    // each print nothing.
+  test("a token command runs as the daemon runs it: no NATS seed, stdin closed, owner and read-only set empty", async () => {
+    // An unset variable prints `unset`, so a set-empty owner and read-only flag each print
+    // nothing.
     const probe =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
-      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_REPOS-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
+      'printf "%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
     const { code, stderr } = await run(config(app("101", probe), app("202")), {
       NATS_NKEY_SEED: "pane-seed",
       NATS_DAEMON_NKEY_SEED: "daemon-seed",
       NATS_NKEY_SEED_FILE: "/seed-file",
       LEGION_GITHUB_OWNER: "leaked-owner",
-      LEGION_GITHUB_REPOS: "leaked-repo",
       LEGION_GITHUB_READ_ONLY: "1",
     });
     expect(code).toBe(1);
     expect(stderr).toBe(
-      "||/seed-file||||app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 4): ||/seed-file||||"
+      "||/seed-file|||app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 4): ||/seed-file|||"
     );
   });
 
@@ -614,23 +613,22 @@ describe("app-logins.ts", () => {
     holdsNoKey(stderr, keyIDs);
   });
 
-  test("a key command runs as the daemon runs it: no NATS seed, stdin closed, owner, repositories and read-only untouched", async () => {
-    // The daemon sets none of the three narrowing variables for a key command, so each reaches
-    // it with the value the caller set, where the token command's row above reads them empty.
+  test("a key command runs as the daemon runs it: no NATS seed, stdin closed, owner and read-only untouched", async () => {
+    // The daemon sets neither narrowing variable for a key command, so each reaches it with the
+    // value the caller set, where the token command's row above reads them empty.
     const probe =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
-      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_REPOS-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
+      'printf "%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
     const { code, stderr } = await run(config(app("101"), keyApp("202", probe)), {
       NATS_NKEY_SEED: "pane-seed",
       NATS_DAEMON_NKEY_SEED: "daemon-seed",
       NATS_NKEY_SEED_FILE: "/seed-file",
       LEGION_GITHUB_OWNER: "kept-owner",
-      LEGION_GITHUB_REPOS: "kept-repo",
       LEGION_GITHUB_READ_ONLY: "1",
     });
     expect(code).toBe(1);
     expect(stderr).toBe(
-      "||/seed-file|kept-owner|kept-repo|1|app-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 4): ||/seed-file|kept-owner|kept-repo|1|"
+      "||/seed-file|kept-owner|1|app-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 4): ||/seed-file|kept-owner|1|"
     );
   });
 

@@ -22,30 +22,30 @@ func refusedProjectRepos() []ghrepo.Repository {
 	return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke"), ghrepo.MustParse("acme/widgets")}
 }
 
-// refusingOwnerTokens answers every lease naming a repository of owner with the refusal GitHub
-// gives a request naming a repository its installation does not reach (422,
-// appauth.ErrNarrowingRefused) while refuse holds, and an ordinary lease for every other owner
-// and once refuse is cleared. app, when set, is the one App role that refuses, the other minting
-// as readily as ever: two Apps' installations answer for themselves.
+// refusingOwnerTokens answers every lease of owner with the refusal GitHub gives a request its
+// installation cannot answer (422, appauth.ErrNarrowingRefused) while refuse holds, and an
+// ordinary lease for every other owner and once refuse is cleared. app, when set, is the one App
+// role that refuses, the other minting as readily as ever: two Apps' installations answer for
+// themselves.
 type refusingOwnerTokens struct {
 	refuse *atomic.Bool
 	owner  string
 	app    appauth.AppRole
 }
 
-func (t refusingOwnerTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return t.lease(role, repo.Owner(), repo.Name())
+func (t refusingOwnerTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return t.lease(role, owner, "write")
 }
 
-func (t refusingOwnerTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
-	return t.lease(role, owner, strings.Join(repos, "+"))
+func (t refusingOwnerTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return t.lease(role, owner, "read")
 }
 
-func (t refusingOwnerTokens) lease(role appauth.AppRole, owner, repos string) (appauth.Lease, error) {
+func (t refusingOwnerTokens) lease(role appauth.AppRole, owner, kind string) (appauth.Lease, error) {
 	if t.refuse.Load() && strings.EqualFold(owner, t.owner) && (t.app == "" || t.app == role) {
-		return appauth.Lease{}, fmt.Errorf("the %s App on %s (%s): %w", role, owner, repos, appauth.ErrNarrowingRefused)
+		return appauth.Lease{}, fmt.Errorf("the %s App on %s: %w", role, owner, appauth.ErrNarrowingRefused)
 	}
-	return appauth.Lease{Token: "ghs_" + string(role) + "_" + strings.ToLower(owner) + "_" + repos, ExpiresAt: staticCredentialExpiry}, nil
+	return appauth.Lease{Token: "ghs_" + string(role) + "_" + strings.ToLower(owner) + "_" + kind, ExpiresAt: staticCredentialExpiry}, nil
 }
 
 // eachAppsTokens answers each App role's lease from that App's own tokens: the two Apps'
@@ -53,12 +53,12 @@ func (t refusingOwnerTokens) lease(role appauth.AppRole, owner, repos string) (a
 // one entry per App role of appauth.Roles, a role it held none for minting nothing.
 type eachAppsTokens map[appauth.AppRole]refusingOwnerTokens
 
-func (e eachAppsTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return e[role].Token(ctx, role, repo)
+func (e eachAppsTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return e[role].Token(ctx, role, owner)
 }
 
-func (e eachAppsTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
-	return e[role].ReadToken(ctx, role, owner, repos)
+func (e eachAppsTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return e[role].ReadToken(ctx, role, owner)
 }
 
 // withRefusedOwner gives the rig the daemon's three gh answers over tokens that refuse every

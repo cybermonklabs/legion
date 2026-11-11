@@ -246,9 +246,10 @@ type bundleDir struct {
 	hold dirLease
 }
 
-// dirLease is the ask that mints one directory's lease: the write lease for repo, the one
-// repository a role works, or a read-only lease over owner's repos. Both name the repositories
-// they reach, which is what keeps a directory's token no wider than its name.
+// dirLease is the ask that mints one directory's lease: the write lease for repo's owner, the
+// one repository a role works being that owner's, or a read-only lease on owner. Each is minted
+// on one account's installation and reaches every repository that installation holds
+// (INFRA-2543); repos is what the directory was built to serve, which its refusals name.
 type dirLease struct {
 	write bool
 	repo  ghrepo.Repository
@@ -256,23 +257,23 @@ type dirLease struct {
 	repos []string
 }
 
-// scope is what two directories hold the one lease under: the lease's kind and what it reaches,
-// as the Manager keys its cache (leaseScope), so the grouping here and the Manager's are the one
-// rule. A configured rename's two owner directories share one scope, as do the repository
-// directories under them.
+// scope is what two directories hold the one lease under: the lease's kind and the owner whose
+// installation mints it, as the Manager keys its cache (leaseScope), so the grouping here and
+// the Manager's are the one rule. A configured rename's two owner directories share one scope,
+// as do the repository directories under them.
 func (d dirLease) scope(role AppRole) scope {
 	if d.write {
-		return leaseScope(false, role, d.repo.Owner(), []string{d.repo.Name()})
+		return leaseScope(false, role, d.repo.Owner())
 	}
-	return leaseScope(true, role, d.owner, d.repos)
+	return leaseScope(true, role, d.owner)
 }
 
 // mint asks tokens for the lease, as the App role.
 func (d dirLease) mint(ctx context.Context, tokens Tokens, role AppRole) (Lease, error) {
 	if d.write {
-		return tokens.Token(ctx, role, d.repo)
+		return tokens.Token(ctx, role, d.repo.Owner())
 	}
-	return tokens.ReadToken(ctx, role, d.owner, d.repos)
+	return tokens.ReadToken(ctx, role, d.owner)
 }
 
 // over is d's read lease narrowed to repos: the ask made again, one repository at a time and then
@@ -796,9 +797,7 @@ func dirEntry(ctx context.Context, tokens Tokens, appRole AppRole, hold dirLease
 	lease, held, err := overReached(ctx, tokens, appRole, hold, answered, only)
 	if NarrowingRefused(err) {
 		if forgetter, ok := tokens.(ReadScopeForgetter); ok {
-			for _, repo := range answered {
-				forgetter.ForgetReadScope(appRole, hold.owner, []string{repo})
-			}
+			forgetter.ForgetReadScope(appRole, hold.owner)
 		}
 		if answered, only, err = probeReached(ctx, tokens, appRole, hold, answered, log); err != nil {
 			return ghconfig.Rendered{}, false, err
@@ -857,7 +856,7 @@ func overReached(ctx context.Context, tokens Tokens, appRole AppRole, hold dirLe
 		return only, true, nil
 	}
 	if forgetter, ok := tokens.(RefusalForgetter); ok {
-		forgetter.ForgetNarrowingRefusal(appRole, hold.owner, answered)
+		forgetter.ForgetNarrowingRefusal(appRole, hold.owner)
 	}
 	if lease, err = hold.over(answered).mint(ctx, tokens, appRole); err != nil {
 		return Lease{}, false, err

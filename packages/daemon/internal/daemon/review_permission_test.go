@@ -204,8 +204,8 @@ type forgettingTokens struct {
 	forgot string
 }
 
-func (t *forgettingTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	lease, err := t.outboxTokens.Token(ctx, role, repo)
+func (t *forgettingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	lease, err := t.outboxTokens.Token(ctx, role, owner)
 	lease.Minted = t.minted
 	return lease, err
 }
@@ -374,12 +374,12 @@ func TestAReviewOnAnOwnerTheReviewAppIsNotInstalledOnDecidesNothing(t *testing.T
 // appauth refuses one (appauth.ErrNotInstalled), counted.
 type notInstalledTokens struct{ calls int }
 
-func (t *notInstalledTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
+func (t *notInstalledTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	t.calls++
-	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, repo.Owner())
+	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
 }
 
-func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	t.calls++
 	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
 }
@@ -388,7 +388,7 @@ func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, 
 // a lease, so a test can tell a retried mint from one the hold should have skipped.
 type transientOnceTokens struct{ calls int }
 
-func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
+func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	t.calls++
 	if t.calls == 1 {
 		return appauth.Lease{}, &appauth.TransientError{Err: errors.New("mint refused: GitHub's rate limit")}
@@ -396,8 +396,8 @@ func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, ghrepo.Rep
 	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, ghrepo.Repository{})
+func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := t.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }

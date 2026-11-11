@@ -682,7 +682,7 @@ func (r *outbox) graphQL(ctx context.Context, issue string) (githubrest.Client, 
 		return githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	repo := r.repositories.serving(named)
-	lease, err := r.tokens.Token(ctx, appauth.Implement, repo)
+	lease, err := r.tokens.Token(ctx, appauth.Implement, repo.Owner())
 	if err != nil {
 		return githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}

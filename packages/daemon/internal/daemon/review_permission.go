@@ -175,7 +175,7 @@ const tokenRefusedWait = 5 * time.Second
 // other reason is returned as is.
 func (w *workflowRuntime) reviewAppClient(ctx context.Context, repository ghrepo.Repository) (githubrest.Client, appauth.Lease, ghrepo.Repository, error) {
 	serving := w.repositories.serving(repository)
-	lease, err := w.tokens.Token(ctx, appauth.Review, serving)
+	lease, err := w.tokens.Token(ctx, appauth.Review, serving.Owner())
 	if err != nil {
 		var transient *appauth.TransientError
 		if errors.As(err, &transient) {

@@ -241,7 +241,7 @@ func (s *server) appLease(w http.ResponseWriter, r *http.Request, role appauth.A
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
 		return appauth.Lease{}, false
 	}
-	lease, err := s.tokens.Token(r.Context(), role, repo)
+	lease, err := s.tokens.Token(r.Context(), role, repo.Owner())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: mint GitHub App token", "role", logRole, "repo", repo.String())
 		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")

@@ -19,52 +19,52 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// ownerTokens names each lease for the App and what the lease reaches, so a test reads which mint
-// answered for which directory: a write lease names its one repository, a read lease the owner
-// and the repositories it was narrowed to. refuse is an owner every mint for it fails, with an
-// error that is no narrowing refusal, and unreachable names the repositories, as
-// `<owner>/<repo>`, that the App's installation does not reach: a lease naming any of them is
-// ErrNarrowingRefused, as GitHub answers 422 to a request naming one.
+// ownerTokens names each lease for the App, what kind of lease it is and the owner whose
+// installation mints it, which is the whole of what a lease is now (INFRA-2543), so a test reads
+// which mint answered for which directory. refuse is an owner every mint for it fails, with an
+// error that is no narrowing refusal, and unreachable names the owners the App's installation
+// cannot mint for, as GitHub's 422 says it: the key `<owner>` refuses both of that owner's
+// leases, and `<owner> read` refuses its read lease alone, which is what leaves a read-only
+// directory out while the write lease of the same owner stands.
 type ownerTokens struct {
 	refuse      string
 	unreachable map[string]bool
 }
 
-// refusesNarrowing reports that the installation on owner reaches none of repos, as a 422 says
-// it: GitHub refuses the request whole over any one repository it does not reach.
-func (t ownerTokens) refusesNarrowing(owner string, repos ...string) error {
-	for _, repo := range repos {
-		if t.unreachable[strings.ToLower(owner+"/"+repo)] {
-			return fmt.Errorf("%w (repositories %s)", ErrNarrowingRefused, strings.Join(repos, ", "))
-		}
+// refusesNarrowing reports that the App's installation on owner mints no lease of this kind, as
+// a 422 says it: GitHub refuses the request whole and mints nothing.
+func (t ownerTokens) refusesNarrowing(owner string, read bool) error {
+	named := strings.ToLower(owner)
+	if t.unreachable[named] || (read && t.unreachable[named+" read"]) {
+		return fmt.Errorf("%w (permissions contents: read)", ErrNarrowingRefused)
 	}
 	return nil
 }
 
-func (t ownerTokens) Token(_ context.Context, role AppRole, repo ghrepo.Repository) (Lease, error) {
-	if repo.IsZero() {
-		return Lease{}, errors.New("a write token names no repository")
+func (t ownerTokens) Token(_ context.Context, role AppRole, owner string) (Lease, error) {
+	if strings.TrimSpace(owner) == "" {
+		return Lease{}, errors.New("a write token names no owner")
 	}
-	if repo.Owner() == t.refuse {
-		return Lease{}, errors.New("no installation on " + repo.Owner())
-	}
-	if err := t.refusesNarrowing(repo.Owner(), repo.Name()); err != nil {
-		return Lease{}, err
-	}
-	return Lease{Token: string(role) + "-token-for-" + strings.ToLower(repo.String()), ExpiresAt: time.Now().Add(time.Hour)}, nil
-}
-
-func (t ownerTokens) ReadToken(_ context.Context, role AppRole, owner string, repos []string) (Lease, error) {
-	if len(repos) == 0 {
-		return Lease{}, errors.New("a read token names no repository")
-	}
-	if owner == t.refuse {
+	if strings.EqualFold(owner, t.refuse) {
 		return Lease{}, errors.New("no installation on " + owner)
 	}
-	if err := t.refusesNarrowing(owner, repos...); err != nil {
+	if err := t.refusesNarrowing(owner, false); err != nil {
 		return Lease{}, err
 	}
-	return Lease{Token: string(role) + "-read-for-" + owner + "/" + strings.Join(repos, "+"), ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return Lease{Token: string(role) + "-token-for-" + strings.ToLower(owner), ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (t ownerTokens) ReadToken(_ context.Context, role AppRole, owner string) (Lease, error) {
+	if strings.TrimSpace(owner) == "" {
+		return Lease{}, errors.New("a read token names no owner")
+	}
+	if strings.EqualFold(owner, t.refuse) {
+		return Lease{}, errors.New("no installation on " + owner)
+	}
+	if err := t.refusesNarrowing(owner, true); err != nil {
+		return Lease{}, err
+	}
+	return Lease{Token: string(role) + "-read-for-" + strings.ToLower(owner), ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
 // bundleLog is a logger a test reads what a bundle said on, and the lines it holds.
@@ -125,25 +125,25 @@ func TestGitHubCredentialBundlesEveryOwnerOfTheProject(t *testing.T) {
 	}{
 		{"an implementer on one of acme's two repositories", claim.RoleImplementer, ghrepo.MustParse("Acme/widgets"), "acme",
 			map[string]string{
-				"acme":         "implement-token-for-acme/widgets",
-				"acme/gadgets": "implement-read-for-acme/gadgets",
-				"sjawhar":      "implement-read-for-sjawhar/legion",
+				"acme":         "implement-token-for-acme",
+				"acme/gadgets": "implement-read-for-acme",
+				"sjawhar":      "implement-read-for-sjawhar",
 			}, "implement"},
 		{"a reviewer on sjawhar's only repository", claim.RoleReviewer, ghrepo.MustParse("sjawhar/legion"), "sjawhar",
 			map[string]string{
-				"acme":    "review-read-for-acme/gadgets+widgets",
-				"sjawhar": "review-token-for-sjawhar/legion",
+				"acme":    "review-read-for-acme",
+				"sjawhar": "review-token-for-sjawhar",
 			}, "review"},
 		{"a merger on a repository outside the set", claim.RoleMerger, ghrepo.MustParse("Other/thing"), "other",
 			map[string]string{
-				"acme":    "implement-read-for-acme/gadgets+widgets",
-				"other":   "implement-token-for-other/thing",
-				"sjawhar": "implement-read-for-sjawhar/legion",
+				"acme":    "implement-read-for-acme",
+				"other":   "implement-token-for-other",
+				"sjawhar": "implement-read-for-sjawhar",
 			}, "implement"},
 		{"the controller, which names no repository", claim.RoleController, ghrepo.Repository{}, "acme",
 			map[string]string{
-				"acme":    "review-read-for-acme/gadgets+widgets",
-				"sjawhar": "review-read-for-sjawhar/legion",
+				"acme":    "review-read-for-acme",
+				"sjawhar": "review-read-for-sjawhar",
 			}, "review"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -198,9 +198,9 @@ func TestGitHubCredentialNarrowsEverySiblingRepositoryToItsOwnDirectory(t *testi
 		t.Fatalf("credential: %v", err)
 	}
 	want := map[string]string{
-		"theorem-labs":             "implement-token-for-theorem-labs/agent-infra",
-		"theorem-labs/nats-server": "implement-read-for-theorem-labs/nats-server",
-		"cybermonklabs":            "implement-read-for-cybermonklabs/legion",
+		"theorem-labs":             "implement-token-for-theorem-labs",
+		"theorem-labs/nats-server": "implement-read-for-theorem-labs",
+		"cybermonklabs":            "implement-read-for-cybermonklabs",
 	}
 	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 		t.Errorf("tokens = %v, want %v", got, want)
@@ -220,7 +220,7 @@ func TestGitHubCredentialNarrowsEverySiblingRepositoryToItsOwnDirectory(t *testi
 	if dirs := GitHubDirs(repos, ghrepo.Renames{}, nil, Roles, ghrepo.MustParse("theorem-labs/agent-infra")); !slices.Equal(dirs, bundle.DirNames()) {
 		t.Errorf("GitHubDirs = %q, want the bundle's own directories %q", dirs, bundle.DirNames())
 	}
-	if want := []string{"cybermonklabs/legion", "theorem-labs/agent-infra", "theorem-labs/nats-server"}; !slices.Equal(minted, want) {
+	if want := []string{"cybermonklabs read", "theorem-labs", "theorem-labs read"}; !slices.Equal(minted, want) {
 		t.Errorf("minted for %v, want one lease per scope %v", minted, want)
 	}
 	if err := bundle.Validate(); err != nil {
@@ -270,12 +270,12 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 			name: "an implementer on the repository as it was recorded", role: claim.RoleImplementer,
 			repo: ghrepo.MustParse("sjawhar/legion"), def: "sjawhar", appName: "implement",
 			tokens: map[string]string{
-				"acme":                "implement-read-for-acme/widgets",
-				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
-				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
-				"sjawhar":             "implement-token-for-cybermonklabs/legion",
+				"acme":                "implement-read-for-acme",
+				"cybermonklabs":       "implement-token-for-cybermonklabs",
+				"cybermonklabs/tools": "implement-read-for-cybermonklabs",
+				"sjawhar":             "implement-token-for-cybermonklabs",
 			},
-			minted:   []string{"acme/widgets", "cybermonklabs/legion", "cybermonklabs/tools"},
+			minted:   []string{"acme read", "cybermonklabs", "cybermonklabs read"},
 			oneLease: [][2]string{{"sjawhar", "cybermonklabs"}},
 		},
 		{
@@ -286,33 +286,33 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 			name: "an implementer on the repository as GitHub holds it now", role: claim.RoleImplementer,
 			repo: ghrepo.MustParse("Cybermonklabs/legion"), def: "cybermonklabs", appName: "implement",
 			tokens: map[string]string{
-				"acme":                "implement-read-for-acme/widgets",
-				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
-				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
-				"sjawhar":             "implement-read-for-cybermonklabs/legion+tools",
+				"acme":                "implement-read-for-acme",
+				"cybermonklabs":       "implement-token-for-cybermonklabs",
+				"cybermonklabs/tools": "implement-read-for-cybermonklabs",
+				"sjawhar":             "implement-read-for-cybermonklabs",
 			},
-			minted: []string{"acme/widgets", "cybermonklabs/legion", "cybermonklabs/tools", "cybermonklabs/legion+tools"},
+			minted: []string{"acme read", "cybermonklabs", "cybermonklabs read"},
 		},
 		{
 			name: "an implementer on another owner of the project", role: claim.RoleImplementer,
 			repo: ghrepo.MustParse("acme/widgets"), def: "acme", appName: "implement",
 			tokens: map[string]string{
-				"acme":          "implement-token-for-acme/widgets",
-				"cybermonklabs": "implement-read-for-cybermonklabs/legion+tools",
-				"sjawhar":       "implement-read-for-cybermonklabs/legion+tools",
+				"acme":          "implement-token-for-acme",
+				"cybermonklabs": "implement-read-for-cybermonklabs",
+				"sjawhar":       "implement-read-for-cybermonklabs",
 			},
-			minted:   []string{"acme/widgets", "cybermonklabs/legion+tools"},
+			minted:   []string{"acme", "cybermonklabs read"},
 			oneLease: [][2]string{{"sjawhar", "cybermonklabs"}},
 		},
 		{
 			name: "the controller, which writes to nothing", role: claim.RoleController,
 			repo: ghrepo.Repository{}, def: "acme", appName: "review",
 			tokens: map[string]string{
-				"acme":          "review-read-for-acme/widgets",
-				"cybermonklabs": "review-read-for-cybermonklabs/legion+tools",
-				"sjawhar":       "review-read-for-cybermonklabs/legion+tools",
+				"acme":          "review-read-for-acme",
+				"cybermonklabs": "review-read-for-cybermonklabs",
+				"sjawhar":       "review-read-for-cybermonklabs",
 			},
-			minted:   []string{"acme/widgets", "cybermonklabs/legion+tools"},
+			minted:   []string{"acme read", "cybermonklabs read"},
 			oneLease: [][2]string{{"sjawhar", "cybermonklabs"}},
 		},
 	} {
@@ -370,13 +370,13 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 			t.Fatalf("credential: %v", err)
 		}
 		want := map[string]string{
-			"cybermonklabs": "implement-token-for-cybermonklabs/legion",
-			"sjawhar":       "implement-read-for-sjawhar/legion",
+			"cybermonklabs": "implement-token-for-cybermonklabs",
+			"sjawhar":       "implement-read-for-sjawhar",
 		}
 		if got := bundleTokens(t, bundle); !maps.Equal(got, want) || bundle.Default != "cybermonklabs" {
 			t.Errorf("Default %q and tokens %v, want cybermonklabs and %v", bundle.Default, got, want)
 		}
-		if !slices.Equal(minted, []string{"cybermonklabs/legion", "sjawhar/legion"}) {
+		if !slices.Equal(minted, []string{"cybermonklabs", "sjawhar read"}) {
 			t.Errorf("minted for %v, want each owner its own lease", minted)
 		}
 	})
@@ -397,13 +397,13 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 			t.Fatalf("credential: %v", err)
 		}
 		want := map[string]string{
-			"cybermonklabs": "implement-token-for-cybermonklabs/legion",
-			"sjawhar":       "implement-read-for-sjawhar/legion",
+			"cybermonklabs": "implement-token-for-cybermonklabs",
+			"sjawhar":       "implement-read-for-sjawhar",
 		}
 		if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 			t.Errorf("tokens = %v, want %v: each owner keeps its own token", got, want)
 		}
-		if !slices.Equal(minted, []string{"cybermonklabs/legion", "sjawhar/legion"}) {
+		if !slices.Equal(minted, []string{"cybermonklabs", "sjawhar read"}) {
 			t.Errorf("minted for %v, want each owner its own lease", minted)
 		}
 		if _, err := credential(context.Background(), claim.RoleReviewer, ghrepo.MustParse("sjawhar/legion")); err != nil {
@@ -492,11 +492,11 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			name: "an issue on the old owner's own other repository", repo: ghrepo.MustParse("sjawhar/oh-my-pi"),
 			dirs: []string{"acme", "cybermonklabs", "sjawhar"},
 			tokens: map[string]string{
-				"acme":          "implement-read-for-acme/widgets",
-				"cybermonklabs": "implement-read-for-cybermonklabs/legion",
-				"sjawhar":       "implement-token-for-sjawhar/oh-my-pi",
+				"acme":          "implement-read-for-acme",
+				"cybermonklabs": "implement-read-for-cybermonklabs",
+				"sjawhar":       "implement-token-for-sjawhar",
 			},
-			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			minted:  []string{"acme read", "cybermonklabs read", "sjawhar"},
 			writing: []string{"sjawhar"},
 		},
 		{
@@ -506,11 +506,11 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			name: "an issue on the repository the pair moved", repo: ghrepo.MustParse("cybermonklabs/legion"),
 			dirs: []string{"acme", "cybermonklabs", "sjawhar"},
 			tokens: map[string]string{
-				"acme":          "implement-read-for-acme/widgets",
-				"cybermonklabs": "implement-token-for-cybermonklabs/legion",
-				"sjawhar":       "implement-read-for-sjawhar/oh-my-pi",
+				"acme":          "implement-read-for-acme",
+				"cybermonklabs": "implement-token-for-cybermonklabs",
+				"sjawhar":       "implement-read-for-sjawhar",
 			},
-			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			minted:  []string{"acme read", "cybermonklabs", "sjawhar read"},
 			writing: []string{"cybermonklabs"},
 		},
 		{
@@ -528,12 +528,12 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			repo: ghrepo.MustParse("sjawhar/legion"),
 			dirs: []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/oh-my-pi"},
 			tokens: map[string]string{
-				"acme":             "implement-read-for-acme/widgets",
-				"cybermonklabs":    "implement-token-for-cybermonklabs/legion",
-				"sjawhar":          "implement-token-for-cybermonklabs/legion",
-				"sjawhar/oh-my-pi": "implement-read-for-sjawhar/oh-my-pi",
+				"acme":             "implement-read-for-acme",
+				"cybermonklabs":    "implement-token-for-cybermonklabs",
+				"sjawhar":          "implement-token-for-cybermonklabs",
+				"sjawhar/oh-my-pi": "implement-read-for-sjawhar",
 			},
-			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			minted:  []string{"acme read", "cybermonklabs", "sjawhar read"},
 			writing: []string{"cybermonklabs", "sjawhar"},
 		},
 		{
@@ -552,12 +552,12 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			repo:   ghrepo.MustParse("sjawhar/oh-my-pi"),
 			dirs:   []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/tools"},
 			tokens: map[string]string{
-				"acme":          "implement-read-for-acme/widgets",
-				"cybermonklabs": "implement-read-for-cybermonklabs/legion",
-				"sjawhar":       "implement-token-for-sjawhar/oh-my-pi",
-				"sjawhar/tools": "implement-read-for-sjawhar/tools",
+				"acme":          "implement-read-for-acme",
+				"cybermonklabs": "implement-read-for-cybermonklabs",
+				"sjawhar":       "implement-token-for-sjawhar",
+				"sjawhar/tools": "implement-read-for-sjawhar",
 			},
-			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			minted:  []string{"acme read", "cybermonklabs read", "sjawhar", "sjawhar read"},
 			writing: []string{"sjawhar"},
 		},
 		{
@@ -572,13 +572,13 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			repo:   ghrepo.MustParse("sjawhar/legion"),
 			dirs:   []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/oh-my-pi", "sjawhar/tools"},
 			tokens: map[string]string{
-				"acme":             "implement-read-for-acme/widgets",
-				"cybermonklabs":    "implement-token-for-cybermonklabs/legion",
-				"sjawhar":          "implement-token-for-cybermonklabs/legion",
-				"sjawhar/oh-my-pi": "implement-read-for-sjawhar/oh-my-pi",
-				"sjawhar/tools":    "implement-read-for-sjawhar/tools",
+				"acme":             "implement-read-for-acme",
+				"cybermonklabs":    "implement-token-for-cybermonklabs",
+				"sjawhar":          "implement-token-for-cybermonklabs",
+				"sjawhar/oh-my-pi": "implement-read-for-sjawhar",
+				"sjawhar/tools":    "implement-read-for-sjawhar",
 			},
-			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			minted:  []string{"acme read", "cybermonklabs", "sjawhar read"},
 			writing: []string{"cybermonklabs", "sjawhar"},
 		},
 		{
@@ -595,12 +595,12 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			repo:   ghrepo.MustParse("sjawhar/legion"),
 			dirs:   []string{"cybermonklabs", "cybermonklabs/tools", "sjawhar", "sjawhar/tools"},
 			tokens: map[string]string{
-				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
-				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
-				"sjawhar":             "implement-token-for-cybermonklabs/legion",
-				"sjawhar/tools":       "implement-read-for-sjawhar/tools",
+				"cybermonklabs":       "implement-token-for-cybermonklabs",
+				"cybermonklabs/tools": "implement-read-for-cybermonklabs",
+				"sjawhar":             "implement-token-for-cybermonklabs",
+				"sjawhar/tools":       "implement-read-for-sjawhar",
 			},
-			minted:  []string{"cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			minted:  []string{"cybermonklabs", "cybermonklabs read", "sjawhar read"},
 			writing: []string{"cybermonklabs", "sjawhar"},
 		},
 		{
@@ -617,11 +617,11 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			repo:   ghrepo.MustParse("cybermonklabs/legion"),
 			dirs:   []string{"cybermonklabs", "cybermonklabs/tools", "sjawhar"},
 			tokens: map[string]string{
-				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
-				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
-				"sjawhar":             "implement-read-for-sjawhar/tools",
+				"cybermonklabs":       "implement-token-for-cybermonklabs",
+				"cybermonklabs/tools": "implement-read-for-cybermonklabs",
+				"sjawhar":             "implement-read-for-sjawhar",
 			},
-			minted:  []string{"cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			minted:  []string{"cybermonklabs", "cybermonklabs read", "sjawhar read"},
 			writing: []string{"cybermonklabs"},
 		},
 		{
@@ -643,10 +643,10 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			repo:   ghrepo.MustParse("sjawhar/tools"),
 			dirs:   []string{"cybermonklabs", "sjawhar"},
 			tokens: map[string]string{
-				"cybermonklabs": "implement-read-for-cybermonklabs/legion+tools",
-				"sjawhar":       "implement-token-for-sjawhar/tools",
+				"cybermonklabs": "implement-read-for-cybermonklabs",
+				"sjawhar":       "implement-token-for-sjawhar",
 			},
-			minted:  []string{"cybermonklabs/legion+tools", "sjawhar/tools"},
+			minted:  []string{"cybermonklabs read", "sjawhar"},
 			writing: []string{"sjawhar"},
 		},
 		{
@@ -664,11 +664,11 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 			repo:   ghrepo.MustParse("sjawhar/legion"),
 			dirs:   []string{"cybermonklabs", "cybermonklabs/widgets", "sjawhar"},
 			tokens: map[string]string{
-				"cybermonklabs":         "implement-token-for-cybermonklabs/legion",
-				"cybermonklabs/widgets": "implement-read-for-cybermonklabs/widgets",
-				"sjawhar":               "implement-token-for-cybermonklabs/legion",
+				"cybermonklabs":         "implement-token-for-cybermonklabs",
+				"cybermonklabs/widgets": "implement-read-for-cybermonklabs",
+				"sjawhar":               "implement-token-for-cybermonklabs",
 			},
-			minted:  []string{"cybermonklabs/legion", "cybermonklabs/widgets"},
+			minted:  []string{"cybermonklabs", "cybermonklabs read"},
 			writing: []string{"cybermonklabs", "sjawhar"},
 		},
 	} {
@@ -739,28 +739,26 @@ func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testi
 	}
 	tokens := bundleTokens(t, bundle)
 	want := map[string]string{
-		"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
-		"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
-		"sjawhar":             "implement-token-for-cybermonklabs/legion",
-		"theorem-labs":        "implement-read-for-theorem-labs/agent-infra+nats-server",
+		"cybermonklabs":       "implement-token-for-cybermonklabs",
+		"cybermonklabs/tools": "implement-read-for-cybermonklabs",
+		"sjawhar":             "implement-token-for-cybermonklabs",
+		"theorem-labs":        "implement-read-for-theorem-labs",
 	}
 	if !maps.Equal(tokens, want) {
 		t.Errorf("tokens = %v, want %v", tokens, want)
 	}
 	reached := map[string]bool{}
 	for _, token := range tokens {
-		owner, names, ok := leaseNames(token)
+		owner, ok := leaseOwner(token)
 		if !ok {
-			t.Fatalf("the lease %q names no repository: the fakes render every lease as <app>-token-for-<owner>/<name> or <app>-read-for-<owner>/<name>[+<name>]", token)
+			t.Fatalf("the lease %q names no owner: the fakes render every lease as <app>-token-for-<owner> or <app>-read-for-<owner>", token)
 		}
-		for _, name := range names {
-			reached[owner+"/"+name] = true
-		}
+		reached[owner] = true
 	}
 	for _, repo := range served {
-		if !reached[strings.ToLower(repo)] {
-			t.Errorf("no lease of the bundle names %s, which the project serves; the bundle holds %v reaching %v",
-				strings.ToLower(repo), slices.Sorted(maps.Keys(tokens)), slices.Sorted(maps.Keys(reached)))
+		if owner := strings.ToLower(ghrepo.MustParse(repo).Owner()); !reached[owner] {
+			t.Errorf("no lease of the bundle is minted on %s, which serves %s; the bundle holds %v minted on %v",
+				owner, strings.ToLower(repo), slices.Sorted(maps.Keys(tokens)), slices.Sorted(maps.Keys(reached)))
 		}
 	}
 	if dirs := GitHubDirs(repos, chainedRenames, nil, Roles, recorded); !slices.Equal(dirs, bundle.DirNames()) {
@@ -777,9 +775,9 @@ func TestControllerCredentialIsReadOnlyForEveryOwner(t *testing.T) {
 	repos := projectRepos("Cybermonklabs/legion", "cybermonklabs/tools", "acme/widgets")
 	renames := ghrepo.MustRenames(legionRename)
 	want := map[string]string{
-		"acme":          "review-read-for-acme/widgets",
-		"cybermonklabs": "review-read-for-cybermonklabs/legion+tools",
-		"sjawhar":       "review-read-for-cybermonklabs/legion+tools",
+		"acme":          "review-read-for-acme",
+		"cybermonklabs": "review-read-for-cybermonklabs",
+		"sjawhar":       "review-read-for-cybermonklabs",
 	}
 	for asked, def := range map[string]string{"": "acme", "Cybermonklabs": "cybermonklabs", "Sjawhar": "sjawhar"} {
 		bundle, err := ControllerCredential(ownerTokens{}, repos, renames, nil, quietBundleLog())(context.Background(), asked)
@@ -809,59 +807,56 @@ func TestControllerCredentialIsReadOnlyForEveryOwner(t *testing.T) {
 	}
 }
 
-// countingTokens records what each mint was asked to reach, in the order the bundle asked, and
-// answers as the ownerTokens it holds: a test that names unreachable repositories reads both
-// what was asked and what was refused.
+// countingTokens records the scope of each mint, in the order the bundle asked, and answers as
+// the ownerTokens it holds: a write lease is its owner's name and a read lease that name with
+// `read` after it, so a test reads both what was asked for and what was refused.
 type countingTokens struct {
 	ownerTokens
 	minted *[]string
 }
 
-func (t countingTokens) Token(ctx context.Context, role AppRole, repo ghrepo.Repository) (Lease, error) {
-	*t.minted = append(*t.minted, strings.ToLower(repo.String()))
-	return t.ownerTokens.Token(ctx, role, repo)
+func (t countingTokens) Token(ctx context.Context, role AppRole, owner string) (Lease, error) {
+	*t.minted = append(*t.minted, strings.ToLower(owner))
+	return t.ownerTokens.Token(ctx, role, owner)
 }
 
-func (t countingTokens) ReadToken(ctx context.Context, role AppRole, owner string, repos []string) (Lease, error) {
-	*t.minted = append(*t.minted, owner+"/"+strings.Join(repos, "+"))
-	return t.ownerTokens.ReadToken(ctx, role, owner, repos)
+func (t countingTokens) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {
+	*t.minted = append(*t.minted, strings.ToLower(owner)+" read")
+	return t.ownerTokens.ReadToken(ctx, role, owner)
 }
 
-// GitHub answers 422 to a token request naming a repository its installation does not reach — one
-// dropped from the App's selected repositories, deleted, or transferred without a configured
-// rename — and mints nothing, so a read lease over several repositories is refused whole over any
-// one of them. The refusal costs that repository alone: the lease is asked for again one
-// repository at a time, the owner's directory holds a lease over the ones that answered, and the
-// bundle is served rather than the role's launch failing for every owner.
-func TestGitHubCredentialKeepsTheReadLeaseTheReachableRepositoriesGive(t *testing.T) {
+// GitHub answers 422 to a token request its installation cannot serve and mints nothing, so the
+// read lease of one owner is refused whole. The refusal costs that owner's directory alone: the
+// lease is asked for again, once for each repository the directory was built to serve, and the
+// bundle is served without that directory rather than the role's launch failing for every
+// owner. Each repository the directory would have served is said once on the log.
+func TestARefusedReadLeaseCostsItsOwnersDirectoryAndNotTheBundle(t *testing.T) {
 	var minted []string
 	log, said := bundleLog()
 	repos := projectRepos("sjawhar/legion", "acme/widgets", "acme/gadgets")
-	tokens := countingTokens{ownerTokens: ownerTokens{unreachable: map[string]bool{"acme/gadgets": true}}, minted: &minted}
+	tokens := countingTokens{ownerTokens: ownerTokens{unreachable: map[string]bool{"acme read": true}}, minted: &minted}
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	want := map[string]string{
-		"acme":    "implement-read-for-acme/widgets",
-		"sjawhar": "implement-token-for-sjawhar/legion",
-	}
+	want := map[string]string{"sjawhar": "implement-token-for-sjawhar"}
 	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
-		t.Errorf("tokens = %v, want %v: acme's directory reaches the one repository that answered", got, want)
+		t.Errorf("tokens = %v, want %v: the refused owner's directory is left out and the rest of the bundle stands", got, want)
 	}
 	if err := bundle.Validate(); err != nil {
 		t.Errorf("the bundle does not validate: %v", err)
 	}
-	// The refused lease, then one ask per repository, and the write lease: the lease over the one
-	// repository that answered is the ask already made for it, which the Manager serves from its
-	// cache, so no fourth read ask is made for acme.
-	if asked := []string{"acme/gadgets+widgets", "acme/gadgets", "acme/widgets", "sjawhar/legion"}; !slices.Equal(minted, asked) {
+	// The refused lease, then the ask made again for each repository the directory would have
+	// served, and the write lease, which this owner's refusal costs nothing.
+	if asked := []string{"acme read", "acme read", "acme read", "sjawhar"}; !slices.Equal(minted, asked) {
 		t.Errorf("minted for %v, want %v", minted, asked)
 	}
-	if count := strings.Count(said.String(), `repository=gadgets`); count != 1 {
-		t.Errorf("the log holds %d lines naming the refused repository, want one:\n%s", count, said.String())
+	for _, named := range []string{"repository=gadgets", "repository=widgets"} {
+		if count := strings.Count(said.String(), named); count != 1 {
+			t.Errorf("the log holds %d lines naming %q, want one:\n%s", count, named, said.String())
+		}
 	}
 	for _, named := range []string{"app=implement", "owner=acme"} {
 		if !strings.Contains(said.String(), named) {
@@ -877,7 +872,7 @@ func TestGitHubCredentialKeepsTheReadLeaseTheReachableRepositoriesGive(t *testin
 func TestGitHubCredentialLeavesOutASiblingRepositoryGitHubRefuses(t *testing.T) {
 	log, said := bundleLog()
 	repos := projectRepos("theorem-labs/agent-infra", "theorem-labs/nats-server", "cybermonklabs/legion")
-	tokens := ownerTokens{unreachable: map[string]bool{"theorem-labs/nats-server": true}}
+	tokens := ownerTokens{unreachable: map[string]bool{"theorem-labs read": true}}
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("theorem-labs/agent-infra"))
@@ -885,8 +880,8 @@ func TestGitHubCredentialLeavesOutASiblingRepositoryGitHubRefuses(t *testing.T) 
 		t.Fatalf("credential: %v", err)
 	}
 	want := map[string]string{
-		"cybermonklabs": "implement-read-for-cybermonklabs/legion",
-		"theorem-labs":  "implement-token-for-theorem-labs/agent-infra",
+		"cybermonklabs": "implement-read-for-cybermonklabs",
+		"theorem-labs":  "implement-token-for-theorem-labs",
 	}
 	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 		t.Errorf("tokens = %v, want %v: the refused repository's directory is left out and the rest whole", got, want)
@@ -908,7 +903,7 @@ func TestGitHubCredentialLeavesOutASiblingRepositoryGitHubRefuses(t *testing.T) 
 func TestGitHubCredentialStillFailsOnARefusedWriteLease(t *testing.T) {
 	log, said := bundleLog()
 	repos := projectRepos("acme/widgets", "sjawhar/legion")
-	tokens := ownerTokens{unreachable: map[string]bool{"acme/widgets": true}}
+	tokens := ownerTokens{unreachable: map[string]bool{"acme": true}}
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleReviewer, ghrepo.MustParse("acme/widgets"))
@@ -931,7 +926,7 @@ func TestGitHubCredentialStillFailsOnARefusedWriteLease(t *testing.T) {
 func TestGitHubCredentialSaysARefusedRepositoryOnceOverTwoBundles(t *testing.T) {
 	log, said := bundleLog()
 	repos := projectRepos("oncelabs/served", "oncelabs/twice")
-	tokens := ownerTokens{unreachable: map[string]bool{"oncelabs/twice": true}}
+	tokens := ownerTokens{unreachable: map[string]bool{"oncelabs read": true}}
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
 
 	for i := range 2 {
@@ -959,7 +954,7 @@ func TestGitHubCredentialLeavesOutARepositoryNamedLikeGhsOwnFiles(t *testing.T) 
 			if err != nil {
 				t.Fatalf("credential: %v", err)
 			}
-			want := map[string]string{owner: "implement-token-for-" + owner + "/legion"}
+			want := map[string]string{owner: "implement-token-for-" + owner}
 			if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 				t.Errorf("tokens = %v, want %v: the owner's own directory alone", got, want)
 			}
@@ -984,7 +979,7 @@ func TestGitHubCredentialLeavesOutARepositoryNamedLikeGhsOwnFiles(t *testing.T) 
 // ghconfig.Bundle.Validate refuses long after the ask that could say why.
 func TestABundleTakesItsDefaultFromTheOwnersTheMintAnsweredFor(t *testing.T) {
 	repos := projectRepos("acme/widgets", "sjawhar/legion")
-	tokens := ownerTokens{unreachable: map[string]bool{"acme/widgets": true}}
+	tokens := ownerTokens{unreachable: map[string]bool{"acme": true}}
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), quietBundleLog())
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.Repository{})
@@ -1008,7 +1003,7 @@ func TestABundleTakesItsDefaultFromTheOwnersTheMintAnsweredFor(t *testing.T) {
 // ErrNarrowingRefused, naming the owner and the repositories the lease would have reached.
 func TestABundleRefusesADefaultOwnerGitHubRefusesEveryLeaseOf(t *testing.T) {
 	repos := projectRepos("acme/widgets", "acme/gadgets", "sjawhar/legion")
-	tokens := ownerTokens{unreachable: map[string]bool{"acme/widgets": true, "acme/gadgets": true}}
+	tokens := ownerTokens{unreachable: map[string]bool{"acme": true}}
 	left := NewLeftOut()
 
 	controller := ControllerCredential(tokens, repos, ghrepo.Renames{}, left, quietBundleLog())
@@ -1026,159 +1021,137 @@ func TestABundleRefusesADefaultOwnerGitHubRefusesEveryLeaseOf(t *testing.T) {
 	}
 }
 
-// A read lease over several repositories GitHub refuses is asked for again one repository at a
-// time, and then over the ones that answered. Where every one of them answered, that last ask
-// names what the first ask named, which the Manager remembers as refused for five minutes
-// (narrowingRefusalWindow) — and that memory is stale by construction: every repository it
-// covers has just answered alone. Were it served, the directory would be refused with no call
-// to GitHub, and the whole bundle with it — the write lease, the launch and the controller's
-// own pod alike — over repositories GitHub reaches, until the window passed (INFRA-513).
-func TestTheLastAskOverTheRepositoriesThatAnsweredIsMadePastTheRememberedRefusal(t *testing.T) {
-	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
-	var stderr bytes.Buffer
-	// Whether the installation reaches gadgets: the account adds it part-way through.
-	reaches := false
-	github := &keyModeGitHub{owners: []string{"acme"}, slug: "legion-reviewer"}
-	github.answer = func(_ int, body accessTokensBody) (int, string) {
-		if !reaches && slices.Contains(body.Repositories, "gadgets") {
-			return http.StatusUnprocessableEntity, `{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`
-		}
-		return http.StatusOK, mintedFor("ghs_"+strings.Join(body.Repositories, "_"), now.Add(time.Hour), body.Permissions, body.Repositories...)
-	}
-	tokens := keyModeManager(t, github, &now, &stderr)
-	controller := ControllerCredential(tokens, projectRepos("acme/gadgets", "acme/widgets"), ghrepo.Renames{}, NewLeftOut(), quietBundleLog())
+// refusedNarrowingAnswer is GitHub's 422 to a token request its installation cannot serve: it
+// mints nothing, whatever else the request named.
+const refusedNarrowingAnswer = `{"message":"The permissions requested are not granted to this installation."}`
 
-	// The probe of an earlier bundle asked for the one repository the installation does not
-	// reach, and the Manager remembers that scope's refusal.
-	if _, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"gadgets"}); !errors.Is(err, ErrNarrowingRefused) {
-		t.Fatalf("the read lease over the repository the installation does not reach = %v, want ErrNarrowingRefused", err)
-	}
-
-	// Four minutes on, the bundle's own ask over both repositories is refused for that same
-	// repository and remembered under a window of its own; the directory holds the one
-	// repository that answered.
-	now = now.Add(4 * time.Minute)
-	bundle, err := controller(context.Background(), "acme")
-	if err != nil {
-		t.Fatalf("the controller's bundle while the installation reaches gadgets not at all: %v", err)
-	}
-	if got := bundleTokens(t, bundle)["acme"]; got != "ghs_widgets" {
-		t.Fatalf("acme's directory holds %q, want the lease over widgets alone", got)
-	}
-
-	// The account adds gadgets to the installation. Two minutes later the refusal of gadgets
-	// alone has passed its window, so the probe asks GitHub and is answered, while the refusal
-	// of the two together, met at four minutes, is remembered still — and is the refusal of an
-	// ask every repository of which has just answered.
-	reaches = true
-	now = now.Add(2 * time.Minute)
-	bundle, err = controller(context.Background(), "acme")
-	if err != nil {
-		t.Fatalf("the controller's bundle once GitHub reaches both repositories = %v, want a bundle: the refusal remembered for their scope was met before either of them answered", err)
-	}
-	if got := bundleTokens(t, bundle)["acme"]; got != "ghs_gadgets_widgets" {
-		t.Fatalf("acme's directory holds %q, want the lease over both repositories", got)
-	}
-}
-
-// refusedNarrowingAnswer is GitHub's 422 to a token request naming a repository the installation
-// does not reach: it mints nothing, whatever else the request named.
-const refusedNarrowingAnswer = `{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`
-
-// askedOfGitHub is the repositories each token exchange named, joined by a plus, in the order
-// GitHub got them: what a test reads to tell an ask that reached GitHub from one the Manager
-// answered out of its cache.
-func askedOfGitHub(github *keyModeGitHub) []string {
-	bodies := github.exchanges()
-	asked := make([]string, 0, len(bodies))
-	for _, body := range bodies {
-		asked = append(asked, strings.Join(body.Repositories, "+"))
-	}
-	return asked
-}
-
-// A probe of one repository is served from the Manager's lease cache wherever a lease naming that
-// repository alone was minted within the hour — and one nearly always was: every issue pod's
-// `<owner>/<repo>` directory mints one, for both Apps, as does the provisioning adapter. Such an
-// answer says a token was minted, not that GitHub reaches the repository now, so an installation
-// that drops a repository leaves every probe of it answering as it did, and the ask over the
-// repositories the probes called reached is refused as the first ask was.
-//
-// That refusal costs the repositories it names and nothing else: the probes are made again, past
-// the lease the Manager holds for each of them as well as past the refusal it remembers, so each
-// is GitHub's answer now, and the directory holds a lease over what answers then. The bundle is
-// whole — the write lease, the launch and the controller's own pod included — where it would
-// otherwise be refused for the rest of a cached lease's life over repositories GitHub reaches
+// A directory whose owner's lease GitHub refuses is left out of the bundle, and the Manager
+// remembers that refusal for five minutes (narrowingRefusalWindow): a bundle built inside the
+// window is served from that memory with GitHub asked nothing, and the first bundle past it
+// holds the directory again once the account has granted what the mint asks for. The rest of
+// the bundle — the write lease, the launch and the controller's own pod — waits on none of it
 // (INFRA-513).
-func TestADirectoryDropsTheRepositoryItsCachedProbeStillAnswersFor(t *testing.T) {
+func TestADirectoryGitHubRefusesIsLeftOutAndHeldAgainOnceGitHubAnswers(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
-	// Whether the installation reaches gadgets: the account drops it part-way through.
-	reaches := true
-	github := &keyModeGitHub{owners: []string{"cachedlabs", "sjawhar"}, slug: "legion-implementer"}
-	github.answer = func(_ int, body accessTokensBody) (int, string) {
-		if !reaches && slices.Contains(body.Repositories, "gadgets") {
+	// Whether the account grants the App what a read lease asks for: it approves the grant
+	// part-way through.
+	grants := false
+	github := &keyModeGitHub{owners: []string{"acme", "sjawhar"}, slug: "legion-implementer"}
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		if !grants && body.Permissions["contents"] == "read" {
 			return http.StatusUnprocessableEntity, refusedNarrowingAnswer
 		}
-		return http.StatusOK, mintedFor("ghs_"+strings.Join(body.Repositories, "_"), now.Add(time.Hour), body.Permissions, body.Repositories...)
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "gadgets", "widgets")
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
-	log, said := bundleLog()
-	repos := projectRepos("cachedlabs/gadgets", "cachedlabs/widgets", "sjawhar/legion")
-	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), log)
+	repos := projectRepos("acme/gadgets", "acme/widgets", "sjawhar/legion")
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), quietBundleLog())
 
-	// An issue pod's own `cachedlabs/gadgets` directory minted this lease, and the Manager holds
-	// it for the hour it lasts.
-	if _, err := tokens.ReadToken(context.Background(), Implement, "cachedlabs", []string{"gadgets"}); err != nil {
-		t.Fatalf("the read lease an earlier bundle minted over gadgets alone: %v", err)
-	}
-
-	// The account drops gadgets from the installation. A minute on, the lease over it is still
-	// cached and still served, so the probe of gadgets answers while GitHub refuses it.
-	reaches = false
-	now = now.Add(time.Minute)
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
-		t.Fatalf("the implementer's bundle once the installation dropped gadgets = %v, want a bundle over the repositories it reaches", err)
+		t.Fatalf("the implementer's bundle while acme's read lease is refused: %v", err)
 	}
-	want := map[string]string{"cachedlabs": "ghs_widgets", "sjawhar": "ghs_legion"}
-	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
-		t.Errorf("tokens = %v, want %v: the owner's directory over widgets alone, and the write lease whole", got, want)
+	if want := []string{"sjawhar"}; !slices.Equal(bundle.DirNames(), want) {
+		t.Fatalf("the bundle holds %q, want %q: the refused owner's directory is left out", bundle.DirNames(), want)
+	}
+	// The refused read lease and the write lease: the asks made again for each of acme's
+	// repositories are that same scope, which the Manager answers from the refusal it remembers.
+	if asked := github.exchanges(); len(asked) != 2 {
+		t.Fatalf("%d exchanges, want the refused read lease and the write lease", len(asked))
+	}
+
+	now = now.Add(narrowingRefusalWindow - time.Minute)
+	if _, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion")); err != nil {
+		t.Fatalf("the second bundle inside the window: %v", err)
+	}
+	if asked := github.exchanges(); len(asked) != 2 {
+		t.Errorf("%d exchanges, want none added: inside the window the refusal and the lease are both served from the Manager", len(asked))
+	}
+
+	grants = true
+	now = now.Add(2 * time.Minute)
+	bundle, err = credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
+	if err != nil {
+		t.Fatalf("the bundle once the account granted the read lease: %v", err)
+	}
+	if want := []string{"acme", "sjawhar"}; !slices.Equal(bundle.DirNames(), want) {
+		t.Errorf("the bundle holds %q, want %q: past the window the owner's lease is asked for again", bundle.DirNames(), want)
 	}
 	if err := bundle.Validate(); err != nil {
 		t.Errorf("the bundle does not validate: %v", err)
 	}
-	// The earlier lease, the bundle's own ask, the probe of widgets (gadgets' is served from the
-	// cache), the ask over the two the probes called reached, the two probes made again past that
-	// cache, and the write lease.
-	asked := []string{"gadgets", "gadgets+widgets", "widgets", "gadgets+widgets", "gadgets", "widgets", "legion"}
-	if got := askedOfGitHub(github); !slices.Equal(got, asked) {
-		t.Errorf("GitHub was asked for %v, want %v", got, asked)
+}
+
+// A lease the Manager minted for an owner is served to every bundle until fewer than twenty
+// minutes remain on it (refreshWindow), so a bundle built after an account changed the App's
+// installation is served the token minted before it: a cached answer says a token was minted
+// within the hour, never what GitHub would mint now. The directory it belongs to goes when the
+// lease nears its expiry and the ask that replaces it is GitHub's answer of that moment, which
+// is what a caller reading a directory as the installation's reach must know (lease,
+// INFRA-513).
+func TestADirectoryIsServedFromTheOwnersCachedLeaseUntilItNearsExpiry(t *testing.T) {
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	var stderr bytes.Buffer
+	// Whether the App's installation on cachedlabs mints what a read lease asks for: the
+	// account drops the App part-way through.
+	reaches := true
+	github := &keyModeGitHub{owners: []string{"cachedlabs", "sjawhar"}, slug: "legion-implementer"}
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		if !reaches && body.Permissions["contents"] == "read" {
+			return http.StatusUnprocessableEntity, refusedNarrowingAnswer
+		}
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "gadgets", "widgets")
 	}
-	if count := strings.Count(said.String(), "repository=gadgets"); count != 1 {
-		t.Errorf("the log holds %d lines naming the repository left out, want one:\n%s", count, said.String())
+	tokens := keyModeManager(t, github, &now, &stderr)
+	repos := projectRepos("cachedlabs/gadgets", "cachedlabs/widgets", "sjawhar/legion")
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), quietBundleLog())
+
+	// An earlier bundle minted cachedlabs' read lease, and the Manager holds it for the hour it
+	// lasts.
+	cached, err := tokens.ReadToken(context.Background(), Implement, "cachedlabs")
+	if err != nil {
+		t.Fatalf("the read lease an earlier bundle minted for cachedlabs: %v", err)
 	}
-	if !strings.Contains(said.String(), "owner=cachedlabs") {
-		t.Errorf("the log line does not name the owner:\n%s", said.String())
+
+	reaches = false
+	now = now.Add(time.Minute)
+	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
+	if err != nil {
+		t.Fatalf("the implementer's bundle once the account dropped the App from cachedlabs: %v", err)
+	}
+	if got := bundleTokens(t, bundle)["cachedlabs"]; got != cached.Token {
+		t.Errorf("cachedlabs' directory holds %q, want the cached lease %q", got, cached.Token)
+	}
+	if err := bundle.Validate(); err != nil {
+		t.Errorf("the bundle does not validate: %v", err)
+	}
+
+	// Fewer than twenty minutes are left on that lease, so the next bundle asks GitHub, which
+	// refuses: the directory goes, and the write lease and the bundle stand.
+	now = now.Add(40 * time.Minute)
+	bundle, err = credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
+	if err != nil {
+		t.Fatalf("the implementer's bundle once the cached lease neared its expiry: %v", err)
+	}
+	if want := []string{"sjawhar"}; !slices.Equal(bundle.DirNames(), want) {
+		t.Errorf("the bundle holds %q, want %q: the directory goes with the lease that stood for it", bundle.DirNames(), want)
 	}
 }
 
-// Where the second round of probes is refused for every repository the directory holds — an
-// installation that dropped them all, each of them answering from a lease the Manager cached
-// before it did — the directory is left out of the bundle and the rest of the bundle stands, the
-// write lease and every other directory in it. The drift check is told the same, so no pod is
-// replaced for a directory no mint produces (LeftOut, GitHubDirs).
-func TestADirectoryWhoseEveryCachedProbeIsRefusedAgainIsLeftOut(t *testing.T) {
+// A directory left out is said on the log once for each repository it was built to serve, and
+// recorded left out (LeftOut), so the drift check's own answer names what a bundle built now
+// holds and no pod is replaced for a directory no mint produces. The rest of the bundle — the
+// write lease among it — is minted and served.
+func TestEveryRepositoryOfADirectoryLeftOutIsSaidOnceOnTheLog(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
-	reaches := true
 	github := &keyModeGitHub{owners: []string{"gonelabs", "sjawhar"}, slug: "legion-implementer"}
-	github.answer = func(_ int, body accessTokensBody) (int, string) {
-		dropped := slices.Contains(body.Repositories, "gadgets") || slices.Contains(body.Repositories, "widgets")
-		if !reaches && dropped {
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		if body.Permissions["contents"] == "read" {
 			return http.StatusUnprocessableEntity, refusedNarrowingAnswer
 		}
-		return http.StatusOK, mintedFor("ghs_"+strings.Join(body.Repositories, "_"), now.Add(time.Hour), body.Permissions, body.Repositories...)
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
 	log, said := bundleLog()
@@ -1186,23 +1159,12 @@ func TestADirectoryWhoseEveryCachedProbeIsRefusedAgainIsLeftOut(t *testing.T) {
 	left := NewLeftOut()
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, left, log)
 
-	for _, repo := range []string{"gadgets", "widgets"} {
-		if _, err := tokens.ReadToken(context.Background(), Implement, "gonelabs", []string{repo}); err != nil {
-			t.Fatalf("the read lease an earlier bundle minted over %s alone: %v", repo, err)
-		}
-	}
-
-	// The installation is removed from both repositories, and both probes answer from the cache
-	// all the same.
-	reaches = false
-	now = now.Add(time.Minute)
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
-		t.Fatalf("the implementer's bundle once the installation dropped every repository of an owner = %v, want the rest of the bundle", err)
+		t.Fatalf("the implementer's bundle once the App's installation refuses an owner: %v", err)
 	}
-	want := map[string]string{"sjawhar": "ghs_legion"}
-	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
-		t.Errorf("tokens = %v, want %v: the owner's directory left out and the write lease whole", got, want)
+	if want := []string{"sjawhar"}; !slices.Equal(bundle.DirNames(), want) {
+		t.Errorf("the bundle holds %q, want %q: the owner's directory left out and the write lease whole", bundle.DirNames(), want)
 	}
 	if err := bundle.Validate(); err != nil {
 		t.Errorf("the bundle does not validate: %v", err)
@@ -1210,82 +1172,60 @@ func TestADirectoryWhoseEveryCachedProbeIsRefusedAgainIsLeftOut(t *testing.T) {
 	if dirs := GitHubDirs(repos, ghrepo.Renames{}, left, Roles, ghrepo.MustParse("sjawhar/legion")); !slices.Equal(dirs, bundle.DirNames()) {
 		t.Errorf("GitHubDirs = %q, want the bundle's own directories %q", dirs, bundle.DirNames())
 	}
-	// The two earlier leases, the bundle's own ask, the ask over the two the cached probes called
-	// reached, the two probes made again past that cache — refused, both of them — and the write
-	// lease.
-	asked := []string{"gadgets", "widgets", "gadgets+widgets", "gadgets+widgets", "gadgets", "widgets", "legion"}
-	if got := askedOfGitHub(github); !slices.Equal(got, asked) {
-		t.Errorf("GitHub was asked for %v, want %v", got, asked)
-	}
 	for _, named := range []string{"repository=gadgets", "repository=widgets"} {
 		if count := strings.Count(said.String(), named); count != 1 {
 			t.Errorf("the log holds %d lines naming %q, want one:\n%s", count, named, said.String())
 		}
 	}
+	if !strings.Contains(said.String(), "owner=gonelabs") {
+		t.Errorf("the log line does not name the owner:\n%s", said.String())
+	}
 }
 
-// One extra round, never a loop: where GitHub answers each repository alone and refuses them
-// together — answers that disagree, which no account action makes and a daemon must still answer
-// — the second round of probes answers as the first did and the ask over them is refused as
-// before. The directory is left out, its repositories said on the log, and the bundle stands; the
-// ask over the pair is made three times and no more.
-func TestARepeatedRefusalOfTheRepositoriesThatAnsweredLeavesTheDirectoryOut(t *testing.T) {
+// One ask decides a directory. The bundle asks the owner's lease once, and a refusal leaves the
+// directory out: the asks it makes again, one for each repository the directory was built to
+// serve, are that same scope, which the Manager answers from the refusal it remembers rather
+// than from GitHub (narrowingRefusalWindow). So a refused owner costs one exchange, where an
+// ask per repository would cost one for each, and a rate limit on those asks would fail every
+// bundle of the project.
+func TestOneRefusedAskDecidesADirectoryAndGitHubIsAskedNoMore(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
 	github := &keyModeGitHub{owners: []string{"pairlabs", "sjawhar"}, slug: "legion-implementer"}
-	github.answer = func(_ int, body accessTokensBody) (int, string) {
-		if len(body.Repositories) > 1 {
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		if body.Permissions["contents"] == "read" {
 			return http.StatusUnprocessableEntity, refusedNarrowingAnswer
 		}
-		return http.StatusOK, mintedFor("ghs_"+strings.Join(body.Repositories, "_"), now.Add(time.Hour), body.Permissions, body.Repositories...)
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
-	log, said := bundleLog()
 	repos := projectRepos("pairlabs/gadgets", "pairlabs/widgets", "sjawhar/legion")
-	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), log)
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), quietBundleLog())
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
-		t.Fatalf("the implementer's bundle against an installation whose answers disagree = %v, want the rest of the bundle", err)
+		t.Fatalf("the implementer's bundle against an installation that refuses an owner: %v", err)
 	}
-	want := map[string]string{"sjawhar": "ghs_legion"}
-	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
-		t.Errorf("tokens = %v, want %v: the owner's directory left out and the write lease whole", got, want)
+	if want := []string{"sjawhar"}; !slices.Equal(bundle.DirNames(), want) {
+		t.Errorf("the bundle holds %q, want %q", bundle.DirNames(), want)
 	}
-	if err := bundle.Validate(); err != nil {
-		t.Errorf("the bundle does not validate: %v", err)
-	}
-	asked := []string{"gadgets+widgets", "gadgets", "widgets", "gadgets+widgets", "gadgets", "widgets", "gadgets+widgets", "legion"}
-	if got := askedOfGitHub(github); !slices.Equal(got, asked) {
-		t.Errorf("GitHub was asked for %v, want %v: one extra round and no more", got, asked)
-	}
-	// No repository of the set is refused on its own, so none is said left out on its own; the
-	// directory is, and that line is said at every bundle rather than once for the process,
-	// since nothing about it is keyed by a repository (sayDirectoryLeftOut).
-	if count := strings.Count(said.String(), "repository="); count != 0 {
-		t.Errorf("the log holds %d lines naming a repository left out on its own, want none:\n%s", count, said.String())
-	}
-	directory := `an owner's directory is left out of the role's gh bundle`
-	if count := strings.Count(said.String(), directory); count != 1 {
-		t.Errorf("the log holds %d lines naming the directory left out, want one:\n%s", count, said.String())
-	}
-	if !strings.Contains(said.String(), `repositories="gadgets, widgets"`) {
-		t.Errorf("the line names no repositories of the directory:\n%s", said.String())
+	if asked := github.exchanges(); len(asked) != 2 {
+		t.Fatalf("%d exchanges, want the one refused read lease and the write lease", len(asked))
 	}
 	if _, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion")); err != nil {
 		t.Fatalf("the second bundle: %v", err)
 	}
-	if count := strings.Count(said.String(), directory); count != 2 {
-		t.Errorf("the log holds %d lines naming the directory left out over two bundles, want one each:\n%s", count, said.String())
+	if asked := github.exchanges(); len(asked) != 2 {
+		t.Errorf("%d exchanges over two bundles, want none added: the refusal and the write lease are both served from the Manager", len(asked))
 	}
 }
 
 // troubledTokens answers every read with GitHub's trouble that also reads as a narrowing
 // refusal, which a rate-limited 422 is: the lease a caller is refused that way says nothing
-// about which repositories the installation reaches.
+// about what the account grants the App's installation.
 type troubledTokens struct{ ownerTokens }
 
-func (troubledTokens) ReadToken(context.Context, AppRole, string, []string) (Lease, error) {
+func (troubledTokens) ReadToken(context.Context, AppRole, string) (Lease, error) {
 	return Lease{}, &TransientError{Err: fmt.Errorf("%w: GitHub App token exchange failed (422)", ErrNarrowingRefused)}
 }
 

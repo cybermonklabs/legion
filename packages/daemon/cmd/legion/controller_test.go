@@ -125,7 +125,7 @@ func newControllerDaemonWithTokens(t *testing.T, tokens appauth.Tokens) *control
 // controllerDaemonOptions configures newControllerDaemonWithOptions: the design-gate steps the
 // project gates, the project's mapped repositories (for the controller's addressing), and, for
 // the tests of the controller's GitHub credential route, a Tokens fake and the project's served
-// repositories its mints are narrowed to.
+// repositories, whose owners its bundle holds a directory each for.
 type controllerDaemonOptions struct {
 	steps        []record.DesignStep
 	tokens       appauth.Tokens
@@ -1458,11 +1458,11 @@ func (c *controllerCredentialTokens) failWith(err error) {
 	c.err = err
 }
 
-func (c *controllerCredentialTokens) Token(_ context.Context, _ appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return c.lease(repo.Owner())
+func (c *controllerCredentialTokens) Token(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+	return c.lease(owner)
 }
 
-func (c *controllerCredentialTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (c *controllerCredentialTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
 	lease, err := c.lease(owner)
 	lease.Token += "-read"
 	return lease, err

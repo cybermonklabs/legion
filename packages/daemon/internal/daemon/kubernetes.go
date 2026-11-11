@@ -580,14 +580,14 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 	if t.serving != nil {
 		repo = t.serving(repo)
 	}
-	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
+	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner())
 	if err == nil {
 		return lease.Token, nil
 	}
 	if !appauth.NarrowingRefused(err) {
 		return "", err
 	}
-	lease, err = t.apps.Token(ctx, appauth.Implement, repo)
+	lease, err = t.apps.Token(ctx, appauth.Implement, repo.Owner())
 	if err != nil {
 		return "", err
 	}

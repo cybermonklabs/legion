@@ -18,7 +18,7 @@ import (
 )
 
 // writePermissions is the permission set a role's write token is asked for, one per App role:
-// what that App's roles do to the one repository the token names, and nothing else. It is what
+// what that App's roles do to the repositories they work in, and nothing else. It is what
 // the mint asks for of an installation granted all of it; an installation granted less is asked
 // for what it is granted (exchangeGranted), since GitHub answers a request naming a permission
 // the installation is not granted HTTP 422, minting nothing rather than leaving that one out.
@@ -131,11 +131,10 @@ type saidShortfall struct {
 // A cut that leaves no permission at all refuses the mint instead: GitHub reads a request with
 // no permissions as every permission the installation holds, so a body without them would mint
 // wider than the role's set asks for rather than narrower. The refusal names the role, the
-// owner, the repositories and the set asked for (askedFor), and carries no token.
+// owner and the set asked for (askedFor), and carries no token.
 //
-// A 422 from the exchange after this cut is a repository the installation does not reach, or a
-// grant that changed between the two calls (ErrNarrowingRefused): it stays the hard refusal it
-// is.
+// A 422 from the exchange after this cut is a grant that changed between the two calls
+// (ErrNarrowingRefused): it stays the hard refusal it is.
 func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string, request mintRequest) (Lease, error) {
 	granted, err := m.grantedPermissions(ctx, jwt, installation)
 	if err != nil {
@@ -145,9 +144,9 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 	m.sayShortfalls(request.role, request.owner, short)
 	if len(permissions) == 0 {
 		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has",
-			request.role, request.owner, askedFor(request.repos, request.permissions))
+			request.role, request.owner, askedFor(request.permissions))
 	}
-	return m.exchange(ctx, jwt, installation, request.repos, permissions)
+	return m.exchange(ctx, jwt, installation, permissions)
 }
 
 // grantedPermissions is what owner's account approved for the App's installation: GET
@@ -193,8 +192,8 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 }
 
 // sayShortfalls writes shortfallMessage for each of short the first time a mint of role for
-// owner meets it, and nothing on every mint after it, whatever repositories that mint or the
-// ones after it named: the grant is the installation's and the line is about the installation.
+// owner meets it, and nothing on any mint after it: the grant is the installation's and the
+// line is about the installation, which the owner names.
 func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfall) {
 	for _, shortfall := range short {
 		key := saidShortfall{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}

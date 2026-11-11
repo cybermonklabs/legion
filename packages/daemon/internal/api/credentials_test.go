@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -19,7 +18,7 @@ type tokenSource struct{}
 
 // Token leases the role's App: the implement App is legion-implementer[bot], the review App
 // legion-reviewer[bot].
-func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repository) (appauth.Lease, error) {
+func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
 	name := "legion-implementer[bot]"
 	if role == appauth.Review {
 		name = "legion-reviewer[bot]"
@@ -28,8 +27,8 @@ func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repos
 }
 
 // ReadToken is Token's lease with "-read" appended to the token text.
-func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := s.Token(ctx, role, ghrepo.Repository{})
+func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := s.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }

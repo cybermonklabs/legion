@@ -144,11 +144,11 @@ func (h *harness) controllerGitHubCredential(secret string) *httptest.ResponseRe
 // failingTokens is a Tokens whose every mint fails, for the credential routes' 502.
 type failingTokens struct{}
 
-func (failingTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
+func (failingTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("github is down")
 }
 
-func (failingTokens) ReadToken(context.Context, appauth.AppRole, string, []string) (appauth.Lease, error) {
+func (failingTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("github is down")
 }
 
@@ -160,11 +160,11 @@ type refusingTokens struct {
 	owner string
 }
 
-func (t refusingTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
+func (t refusingTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	if strings.EqualFold(owner, t.owner) {
-		return appauth.Lease{}, fmt.Errorf("%w (repositories %s)", appauth.ErrNarrowingRefused, strings.Join(repos, ", "))
+		return appauth.Lease{}, fmt.Errorf("%w (owner %s)", appauth.ErrNarrowingRefused, owner)
 	}
-	return t.handoffTokens.ReadToken(ctx, role, owner, repos)
+	return t.handoffTokens.ReadToken(ctx, role, owner)
 }
 
 // rateLimitedTokens refuses owner's read leases as GitHub's rate limit does: the narrowing
@@ -174,14 +174,14 @@ type rateLimitedTokens struct {
 	owner string
 }
 
-func (t rateLimitedTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
+func (t rateLimitedTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	if strings.EqualFold(owner, t.owner) {
 		return appauth.Lease{}, &appauth.TransientError{
-			Err: fmt.Errorf("%w: GitHub App token exchange failed (422): you have exceeded a secondary rate limit (repositories %s)",
-				appauth.ErrNarrowingRefused, strings.Join(repos, ", ")),
+			Err: fmt.Errorf("%w: GitHub App token exchange failed (422): you have exceeded a secondary rate limit (owner %s)",
+				appauth.ErrNarrowingRefused, owner),
 		}
 	}
-	return t.handoffTokens.ReadToken(ctx, role, owner, repos)
+	return t.handoffTokens.ReadToken(ctx, role, owner)
 }
 
 // The route that mints a controller capability answers only the operator's bearer, and a refusal

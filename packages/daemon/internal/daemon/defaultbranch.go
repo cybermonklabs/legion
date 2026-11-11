@@ -124,7 +124,7 @@ func (d *defaultBranches) Kept(repo string) (ghbranch.Repository, bool) {
 // the old one by redirect.
 func (d *defaultBranches) fetch(ctx context.Context, repo ghrepo.Repository) (ghbranch.Repository, error) {
 	served := d.repos.serving(repo)
-	lease, err := d.tokens.Token(ctx, appauth.Implement, served)
+	lease, err := d.tokens.Token(ctx, appauth.Implement, served.Owner())
 	if err != nil {
 		return ghbranch.Repository{}, fmt.Errorf("mint the implement App token to read the default branch of %s: %w", served, err)
 	}

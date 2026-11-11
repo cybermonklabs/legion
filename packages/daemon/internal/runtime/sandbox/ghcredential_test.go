@@ -732,11 +732,11 @@ func (l *namedLeases) lease(role appauth.AppRole, owner, kind string) (appauth.L
 	return appauth.Lease{Token: leaseNamed(role, owner, kind), ExpiresAt: staticCredentialExpiry}, nil
 }
 
-func (l *namedLeases) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return l.lease(role, strings.ToLower(repo.Owner()), "write")
+func (l *namedLeases) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return l.lease(role, strings.ToLower(owner), "write")
 }
 
-func (l *namedLeases) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (l *namedLeases) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	return l.lease(role, strings.ToLower(owner), "read")
 }
 

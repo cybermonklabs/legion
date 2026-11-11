@@ -20,15 +20,15 @@
 // admits exactly one (internal/config, readGitHubApp):
 //   `token_command`, which lib/github-apps.sh writes for the implement role, is run as the daemon
 //     runs it (internal/appauth, runTokenCommand): `sh -c`, stdin closed, the environment less the
-//     NATS seed variables (internal/runtime, WithoutNATSSeeds) with LEGION_GITHUB_OWNER,
-//     LEGION_GITHUB_REPOS and LEGION_GITHUB_READ_ONLY set empty (the release of every
-//     installation, narrowed to nothing, as AppLogin asks), and its stdout read as the secrets
-//     broker's release, whose first installation token is the one proved.
+//     NATS seed variables (internal/runtime, WithoutNATSSeeds) with LEGION_GITHUB_OWNER and
+//     LEGION_GITHUB_READ_ONLY set empty (the release of every installation, as AppLogin asks),
+//     and its stdout read as the secrets broker's release, whose first installation token is the
+//     one proved.
 //   `private_key_command`, which lib/github-apps.sh writes for the review role so that the daemon
 //     mints and renews that App's tokens out of its key by itself, as a reviewer pod does, is run
 //     as the daemon runs that one (internal/config, executePrivateKeyCommand): the same `sh -c`
-//     with stdin closed and the NATS seed variables dropped, but none of those three variables
-//     touched, since the daemon sets none of them for a key command. Its trimmed stdout is the
+//     with stdin closed and the NATS seed variables dropped, but neither of those two variables
+//     touched, since the daemon sets neither of them for a key command. Its trimmed stdout is the
 //     App's PEM, which signs an App JWT here, and that JWT mints the token that is proved.
 // Either command's stderr is relayed and kept for a failure's message alone. The key path proves
 // at least what the token path proves: the token it mints goes through the same viewer and
@@ -208,13 +208,12 @@ async function runCredentialCommand(
 ): Promise<string> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const name of natsSeedVariables) delete env[name];
-  // The daemon sets the three narrowing variables empty for a token command, which it runs for
-  // every installation, and sets none of them for a key command, which reads a key no
-  // installation narrows (internal/config, executePrivateKeyCommand). So a key command here sees
-  // whatever this process's environment holds under those names, as the daemon's would.
+  // The daemon sets both narrowing variables empty for a token command, which it runs for every
+  // installation, and sets neither for a key command, which reads a key no installation narrows
+  // (internal/config, executePrivateKeyCommand). So a key command here sees whatever this
+  // process's environment holds under those names, as the daemon's would.
   if (kind === "token_command") {
     env.LEGION_GITHUB_OWNER = "";
-    env.LEGION_GITHUB_REPOS = "";
     env.LEGION_GITHUB_READ_ONLY = "";
   }
   let child: Bun.Subprocess<"ignore", "pipe", "pipe">;

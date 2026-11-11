@@ -93,7 +93,7 @@ func TestRealGitHubReadyHoldsTheHeadToRetrosCommits(t *testing.T) {
 		t.Fatalf("READY = %d %s %q; want it accepted, or refused only by a check after its scope check", recorder.Code, failure.Code, failure.Error)
 	}
 
-	lease, err := tokens.Token(h.ctx, appauth.Implement, repository)
+	lease, err := tokens.Token(h.ctx, appauth.Implement, repository.Owner())
 	if err != nil {
 		t.Fatalf("mint the implement App's lease: %v", err)
 	}

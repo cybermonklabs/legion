@@ -19,12 +19,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// implementTokens is the harness's ProvisionTokens: the implement App's installation token
-// narrowed to reading the one repository it is minted for, from the token command the script
-// hands the harness (resolveApp), so the harness holds no App key. repos are the run's
-// repositories, the first the run's own; a token names the one it is minted for, as every mint
-// of the daemon's does. left is the one record of what those mints find GitHub refuses, which
-// the bundles write and the directory set reads, as the daemon's three share one
+// implementTokens is the harness's ProvisionTokens: the implement App's installation token on
+// the owner of the repository it is minted for, narrowed to reading, from the token command the
+// script hands the harness (resolveApp), so the harness holds no App key. repos are the run's
+// repositories, the first the run's own. left is the one record of what those mints find GitHub
+// refuses, which the bundles write and the directory set reads, as the daemon's three share one
 // (appauth.LeftOut, internal/daemon's sandboxRuntime).
 type implementTokens struct {
 	apps  *appauth.Manager
@@ -35,15 +34,15 @@ type implementTokens struct {
 func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
 	// No fallback to the owner's own write token, which the daemon's adapter has: the App is
 	// this run's own, so a refusal here is a misconfigured proof and must fail the run loudly.
-	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
+	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner())
 	return lease.Token, err
 }
 
 // Credential is the harness's GitHubCredential: the daemon's own bundle
 // (appauth.GitHubCredential) over the run's repositories, with every lease minted as the
-// implement App, the one App the harness holds — its write lease for the repository the role
-// works, a lease narrowed to that one repository for each other repository of its owner, and a
-// read-only lease per other owner over the repositories it serves. Every role is rendered as the
+// implement App, the one App the harness holds — its write lease on the owner of the repository
+// the role works, a read-only lease for each other repository of that owner, and a read-only
+// lease per other owner it serves. Every role is rendered as the
 // implementer's, so Stage 4a proves the files reach each role, follow the lease and pick the
 // directory a command names, not which App a role writes as; Stage 4b's daemon hands each role
 // its own.
@@ -63,12 +62,12 @@ func (t implementTokens) ControllerCredential(ctx context.Context, defaultOwner 
 // harness holds that App alone.
 type implementApp struct{ apps appauth.Tokens }
 
-func (a implementApp) Token(ctx context.Context, _ appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return a.apps.Token(ctx, appauth.Implement, repo)
+func (a implementApp) Token(ctx context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+	return a.apps.Token(ctx, appauth.Implement, owner)
 }
 
-func (a implementApp) ReadToken(ctx context.Context, _ appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
-	return a.apps.ReadToken(ctx, appauth.Implement, owner, repos)
+func (a implementApp) ReadToken(ctx context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+	return a.apps.ReadToken(ctx, appauth.Implement, owner)
 }
 
 // ProjectDirs is the harness's GitHubDirs (Options.GitHubDirs): the directories a bundle built
@@ -100,7 +99,7 @@ func (r *liveRig) resolveApp() (err error) {
 	branches := make([]string, 2)
 	var identity runtime.GitIdentity
 	for i, repo := range []ghrepo.Repository{r.env.repo, r.env.repoSecondOwner} {
-		lease, err := apps.Token(r.ctx, appauth.Implement, repo)
+		lease, err := apps.Token(r.ctx, appauth.Implement, repo.Owner())
 		if err != nil {
 			return fmt.Errorf("minting the implement App's installation token for %s: %w", repo.Owner(), err)
 		}
