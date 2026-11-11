@@ -116,8 +116,8 @@ listener reaped its interests;
 `restore(snapshot)` loads what a host persisted, dropping expired ledger entries and keeping the
 state at any age. A write carries the state only when it changed. A frame the host fails to show is answered `nak` and sent again, and
 on its third delivery the host shows a notice naming it instead (`showFailureNotice`); a host whose
-delivery path failed a frame outside the relay calls `liveFailed(followed, envelope, error,
-receivedAt)`, which shows that notice at once. `failureNoticeFields` words that card, and
+delivery path failed a frame outside the relay calls `liveFailed(envelope, error)`, which shows
+that notice at once. `failureNoticeFields` words that card, and
 `envoyNoticeText` renders a notice's fields under `envoy:` in TOON, so a sender's summary that
 holds a newline stays inside its own field. Work started for one session stops, writing nothing, once
 `sessionID()` names another.

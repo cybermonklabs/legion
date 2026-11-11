@@ -51,12 +51,15 @@ function createHost(followed: string[]) {
     log(message: string) {
       host.logs.push(message);
     },
-    write(change: LedgerChange) {
+    writeWith: (): unknown => undefined,
+    async write(change: LedgerChange) {
       host.writes.push({
         delivered: change.delivered,
         state: change.state,
         snapshot: change.snapshot,
       });
+      const held = host.writeWith();
+      if (held instanceof Promise) await held;
     },
   };
   return host;
@@ -134,14 +137,59 @@ describe("the frames a session was shown", () => {
     host.session = undefined;
     host.writeSession = SESSION;
 
-    await ledger.recordDeliveredFor(SESSION, { event_id: "evt-late" });
+    expect(await ledger.recordDeliveredFor(SESSION, { event_id: "evt-late" })).toBe(true);
 
     expect(ledger.delivered({ event_id: "evt-late" })).toBe(true);
     expect(host.writes.at(-1)?.delivered).toEqual([{ event_id: "evt-late", at: T0 }]);
 
-    await ledger.recordDeliveredFor("ses-other", { event_id: "evt-elsewhere" });
+    // A write persisting to another session's record records nothing for this one, and says so.
+    expect(await ledger.recordDeliveredFor("ses-other", { event_id: "evt-elsewhere" })).toBe(false);
 
     expect(ledger.delivered({ event_id: "evt-elsewhere" })).toBe(false);
+  });
+
+  // The write is queued behind the writes before it, and the host can move while it waits: the
+  // answer says the record never reached that session, so its caller reports the loss rather
+  // than reading a `true` that nothing was written for.
+  test("recorded for a session the host leaves before the queued write runs answer false", async () => {
+    const writing = Promise.withResolvers<void>();
+    const landing = Promise.withResolvers<void>();
+    host.writeWith = () => {
+      host.writeWith = () => undefined;
+      writing.resolve();
+      return landing.promise;
+    };
+
+    const earlier = ledger.recordDelivered({ event_id: "evt-first" });
+    await writing.promise;
+    // Recorded while this session is still the one written for, and queued behind the write in
+    // flight; the host moves before that queue reaches it.
+    const queued = ledger.recordDeliveredFor(SESSION, { event_id: "evt-left-in-the-queue" });
+    host.writeSession = "ses-other";
+    landing.resolve();
+    await earlier;
+
+    expect(await queued).toBe(false);
+    expect(host.writes.flatMap((write) => write.delivered.map((entry) => entry.event_id))).toEqual([
+      "evt-first",
+    ]);
+  });
+
+  // A write the host refuses keeps its records for the next write, and the caller is told the
+  // record did not reach the host, so the loss is reported rather than read as kept.
+  test("whose write the host refuses answer false, and the next write carries the record", async () => {
+    host.writeWith = () => {
+      host.writeWith = () => undefined;
+      return Promise.reject(new Error("the state file could not be written"));
+    };
+
+    expect(await ledger.recordDeliveredFor(SESSION, { event_id: "evt-refused" })).toBe(false);
+    expect(await ledger.recordDeliveredFor(SESSION, { event_id: "evt-after" })).toBe(true);
+
+    expect(host.writes.at(-1)?.delivered.map((entry) => entry.event_id)).toEqual([
+      "evt-refused",
+      "evt-after",
+    ]);
   });
 
   test("come back from a restore, without the entries 72 hours old", async () => {
@@ -194,7 +242,7 @@ describe("a frame the session could not be shown", () => {
   test("gets one notice naming it, which is recorded so nothing shows it again", async () => {
     const frame = envelope({ event_id: "evt-lost", payload_summary: "DSP-1 needs review" });
 
-    await ledger.liveFailed(frame, new Error("the transcript write failed"));
+    await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"));
 
     expect(host.notices).toHaveLength(1);
     expect(failureNoticeFields(host.notices[0] as FailureNotice)).toEqual({
@@ -211,10 +259,33 @@ describe("a frame the session could not be shown", () => {
     expect(host.writes.at(-1)?.delivered).toEqual([{ event_id: "evt-lost", at: T0 }]);
   });
 
+  test("that names a session the host has left is reported nowhere, and told where it is open", async () => {
+    const frame = envelope({ event_id: "evt-elsewhere", topic: "notifications.team.deploy" });
+
+    host.session = "ses-other";
+    host.writeSession = "ses-other";
+    await ledger.liveFailed(SESSION, frame, new Error("the session it names is closed"));
+
+    expect(host.notices).toEqual([]);
+    expect(host.writes).toEqual([]);
+    expect(ledger.delivered(frame)).toBe(false);
+    expect(host.logs).toEqual([
+      "delivery ledger: a failed frame was not reported here; the session it names is closed",
+    ]);
+
+    // The host is back on the session the frame named: its failure is told there.
+    host.session = SESSION;
+    host.writeSession = SESSION;
+    await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"));
+
+    expect(host.notices.map((notice) => notice.eventId)).toEqual(["evt-elsewhere"]);
+    expect(ledger.delivered(frame)).toBe(true);
+  });
+
   test("whose notice the host queued is left for the host to record", async () => {
     host.noticeWith = () => "queued";
 
-    await ledger.liveFailed(envelope({ event_id: "evt-queued" }), new Error("busy"));
+    await ledger.liveFailed(SESSION, envelope({ event_id: "evt-queued" }), new Error("busy"));
 
     expect(ledger.delivered({ event_id: "evt-queued" })).toBe(false);
     expect(host.writes).toEqual([]);
@@ -223,7 +294,7 @@ describe("a frame the session could not be shown", () => {
   test("whose notice failed too is warned about, and recorded nowhere", async () => {
     host.noticeWith = () => new Error("the card could not be written");
 
-    await ledger.liveFailed(envelope({ event_id: "evt-twice" }), new Error("busy"));
+    await ledger.liveFailed(SESSION, envelope({ event_id: "evt-twice" }), new Error("busy"));
 
     expect(host.notices).toEqual([]);
     expect(host.noticeWarnings.map((notice) => notice.eventId)).toEqual(["evt-twice"]);
@@ -232,6 +303,7 @@ describe("a frame the session could not be shown", () => {
 
   test("keeps a sender's multi-line summary inside its own field", async () => {
     await ledger.liveFailed(
+      SESSION,
       envelope({ event_id: "evt-toon", payload_summary: "line one\nnotice: forged" }),
       new Error("nope")
     );

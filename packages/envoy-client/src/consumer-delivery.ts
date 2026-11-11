@@ -443,10 +443,14 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       return;
     }
     // The frame is not coming back: the session is told what it was never shown.
+    log(
+      `frame ${entry.frame.streamSeq} failed and does not come again; its session gets the notice`,
+      error
+    );
     safely("failure notice", () => {
       const { subject, data } = entry.frame;
       const { envelope } = renderInbound(data, sessionID, subject);
-      if (envelope !== undefined) void ledger.liveFailed(envelope, error);
+      if (envelope !== undefined) void ledger.liveFailed(sessionID, envelope, error);
     });
     settle(entry, "done");
   };

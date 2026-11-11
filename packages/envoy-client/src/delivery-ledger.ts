@@ -166,15 +166,22 @@ export interface DeliveryLedger {
    * Records a frame for the session `sessionID`, as `recordDelivered` does, while the host may be
    * shutting down: it records only while the host's `writeSessionID()` names `sessionID` and no
    * `restore` has moved the ledger since, and the write goes ahead even once `sessionID()`
-   * answers none. The ledger holds the frame from the call on. It never rejects.
+   * answers none. The ledger holds the frame from the call on. Answers whether the write that
+   * keeps the record reached the host: false says the host had moved by the call's turn in the
+   * write queue, or its write failed, so that session's record lost the frame and the loss is the
+   * caller's to report. A failed write's record goes with the next write, which keeps it only
+   * while that session is still the one written for. It never rejects.
    */
-  recordDeliveredFor(sessionID: string, frame: DedupeIdentity): Promise<void>;
+  recordDeliveredFor(sessionID: string, frame: DedupeIdentity): Promise<boolean>;
   /**
-   * The host could not show a frame, and it is not coming back (the relay gave up on it): shows
-   * its failure notice at once, and records it when shown, so the session learns of a message it
-   * was never given rather than losing it silently. It never rejects.
+   * The host could not show a frame addressed to the session `sessionID`, and it is not coming
+   * back (the relay gave up on it): shows its failure notice at once, and records it when shown,
+   * so the session learns of a message it was never given rather than losing it silently. The
+   * notice is the addressed session's: a frame that failed because the host moved on names a
+   * session that is no longer open, and nothing is shown or recorded for it then - the
+   * conversation the host moved to is told nothing of a message nobody sent it. It never rejects.
    */
-  liveFailed(envelope: FailureNoticeEnvelope, error: unknown): Promise<void>;
+  liveFailed(sessionID: string, envelope: FailureNoticeEnvelope, error: unknown): Promise<void>;
   /**
    * Replaces everything the ledger holds with what a host persisted for the session it is on now.
    * Entries recorded 72 hours ago or more are dropped; the state is kept at any age, so a session
@@ -255,12 +262,19 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
 
   // Writes run one after another in call order, so a host that rewrites a file never has an older
   // snapshot land after a newer one.
-  const flush = (alive: () => boolean): Promise<void> => {
-    writes = writes.then(async () => {
-      if (!alive()) return;
+  //
+  // Answers whether what was owed when this call's turn came is in the host's hands: false says
+  // the session it is bound to had gone by then, or the host's write failed and the records it
+  // carried wait for the next write. True says the host took them, or that there was nothing left
+  // to write - an earlier queued write carried them, which is the same thing for the caller.
+  // `recordDeliveredFor` answers its caller with this, since the queue stands between the record
+  // and the write that keeps it.
+  const flush = (alive: () => boolean): Promise<boolean> => {
+    const written = writes.then(async (): Promise<boolean> => {
+      if (!alive()) return false;
       const json = stateJSON();
       const delivered = unwritten;
-      if (json === writtenState && delivered.length === 0) return;
+      if (json === writtenState && delivered.length === 0) return true;
       unwritten = [];
       const state = json === writtenState ? undefined : (JSON.parse(json) as LedgerState);
       try {
@@ -270,12 +284,15 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
           snapshot: () => ({ state: JSON.parse(json) as LedgerState, ledger: ledger.list() }),
         });
         if (state !== undefined) writtenState = json;
+        return true;
       } catch (error) {
         unwritten = [...delivered, ...unwritten];
         log("delivery ledger: could not persist the state; the next write carries it", error);
+        return false;
       }
     });
-    return writes;
+    writes = written.then(() => undefined);
+    return written;
   };
 
   const syncFollowed = () => {
@@ -328,13 +345,26 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
     },
     async recordDeliveredFor(sessionID, frame) {
       const alive = bindTo(sessionID, writeSession)?.alive;
-      if (alive === undefined) return;
+      if (alive === undefined) return false;
       record(ledgerIdentity(frame));
-      await flush(alive);
+      // The write is queued behind the writes before it, and the host can move while it waits:
+      // the answer comes from the write itself, so a caller told true knows the record reached
+      // that session.
+      return await flush(alive);
     },
-    async liveFailed(envelope, error) {
-      const alive = bind()?.alive;
-      if (alive === undefined) return;
+    async liveFailed(sessionID, envelope, error) {
+      // The notice belongs to the session the frame was addressed to, which is often the reason
+      // the frame failed: the host moved on, and that session is closed here now. Bound to it,
+      // nothing is shown and nothing is recorded, rather than a notice carded in the
+      // conversation the host moved to and a record of this frame in its transcript. The line
+      // below is what says here that nobody was told of the frame.
+      const alive = bindTo(sessionID, currentSession)?.alive;
+      if (alive === undefined) {
+        log(
+          "delivery ledger: a failed frame was not reported here; the session it names is closed"
+        );
+        return;
+      }
       try {
         await showFailureNotice(failureNotice(envelope, messageFor(error)), alive);
       } catch (thrown) {
