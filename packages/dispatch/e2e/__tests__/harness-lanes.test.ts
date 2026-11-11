@@ -268,8 +268,9 @@ if (withoutPlaywright) {
 // This row starts `playwright test --list` twice, each of which loads the Playwright config and
 // resolves every spec. Measured in an issue pod with the pod to itself it takes 3.9 s of Bun's
 // 5 s default, and with the browser suite running beside it the row has ended at 5003 ms - the
-// default to the millisecond - which reads as a defect of this change rather than as the machine
-// being busy, which is why it carries `SPAWN_TEST_MS` like the spawning rows above.
+// default to the millisecond - which reads as a defect of whatever change is under test rather
+// than as the machine being busy, which is why it carries `SPAWN_TEST_MS` like the spawning rows
+// above.
 test.skipIf(withoutPlaywright)(
   "the Playwright config refuses a --workers that is not the lane count",
   async () => {

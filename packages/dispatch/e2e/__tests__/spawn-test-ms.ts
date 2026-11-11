@@ -13,27 +13,29 @@
 
 /** The per-test limit of every row in those two files that spawns a process.
  *
- *  Measured on the fast pod shape, each the worst reading of its run: 9.46 s (implementer, this
- *  issue's first pod, 2 CPUs, 8 runs under 6 busy loops, 3 x nproc), 12.78 s (reviewer, the
- *  replacement pod) and 3.90 s (implementer, that same replacement pod, 8 runs). The limit
- *  follows the worst reading rather than the most recent: the 3.90 s reading came last, and a
- *  limit sized from it would go red the next time a pod reads as the reviewer's did.
+ *  Measured on the fast pod shape (2 CPUs, gVisor, under 6 busy loops, 3 x nproc), each the worst
+ *  reading of its run, all recorded on dispatch://INFRA-1571: 9.46 s (the implementer, the
+ *  issue's first pod, 8 runs; implement handoff v3), 12.78 s (the tester, the replacement pod,
+ *  8 runs; test handoff v3) and 3.90 s (the implementer, that same replacement pod, 8 runs;
+ *  comment 9a421ae5). The limit follows the worst reading rather than the most recent: the
+ *  3.90 s reading came last, and a limit sized from it would go red the next time a pod reads as
+ *  the tester's did.
  *
  *  Inferred for the slow pod shape: about 27.5 s. Pods of the same core count do not read alike,
  *  and dispatch://INFRA-1505's Verification preamble records the ratio at code that does not
- *  differ - a 335 s suite on one pod against 156 s on this shape, about 2.15 times - so the
+ *  differ - a 335 s suite on one pod against 156 s on the fast shape, about 2.15 times - so the
  *  12.78 s reading above is about 27.5 s there. That figure is inferred from that source and
  *  measured by nobody; a real reading on that shape replaces it, and then this number is sized
  *  from the reading rather than from the inference.
  *
- *  90 s is three times the inferred 27.5 s, which is this tree's own bar applied to the worst
- *  shape known to exist. It is deliberately generous, because this limit is no row's subject: a
- *  number too large costs a slower report of a true hang, a number too small costs a flake that
- *  ejects a pull request from the merge queue, and the two are not comparable.
+ *  90 s is three times the inferred 27.5 s (82.5 s) rounded up, which is this tree's own bar
+ *  applied to the worst shape known to exist. It is deliberately generous, because this limit is
+ *  no row's subject: a number too large costs a slower report of a true hang, a number too small
+ *  costs a flake that ejects a pull request from the merge queue, and the two are not comparable.
  *
  *  So it is two things at once, and a reader should not take it for one. On the slow shape it is
- *  a limit sized from measurement, through the inference above. On this pod it is seven times
- *  the worst reading ever taken here, which is past any sizing: here it is a hang guard, and a
+ *  a limit sized from measurement, through the inference above. On the fast shape it is seven
+ *  times the worst reading taken there, which is past any sizing: there it is a hang guard, and a
  *  row it cuts off reads about 90 s. Bun's unwritten 5 s default is under every reading above
  *  but the 3.90 s one, which is why a busy machine read as a defect of whatever change was
  *  under test. */
