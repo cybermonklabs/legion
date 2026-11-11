@@ -264,12 +264,14 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 //
 // One transaction would still need `for update` on these tables: one that deletes such a row or
 // changes a key column, which is what the weaker level does not cover. Nothing holding one of
-// these locks does either. The removal of an untouched document deletes an artifacts row
-// (api.removeArtifact), which takes that row's own lock, and it takes no explicit lock on the
-// row before the delete: it locks the issue the document hangs from, which it does not delete
-// and whose key columns it does not change, and then this room's lock (LockDocumentRoom), under
-// which it reads what the document holds and deletes the row. It therefore waits for no room
-// lock while it holds the artifacts row. The check refuses a `for update` if something starts to
+// these locks takes `for no key update` on a row it then deletes. One of them does delete a row,
+// and of another table: the removal of an untouched document deletes an artifacts row
+// (api.removeArtifact) while it holds this room's lock. That delete takes the artifacts row's
+// own lock, and nothing of the removal locks that row before it: the removal locks the issue the
+// document hangs from, which it does not delete and whose key columns it does not change, and
+// then this room's lock (LockDocumentRoom), under which it reads what the document holds and
+// deletes the row. It therefore waits for no room lock while it holds the artifacts row.
+// The check refuses a `for update` if something starts to
 // spell one, and that red is the prompt to revisit this rule, not to reach for a weaker level
 // that would not hold.
 //

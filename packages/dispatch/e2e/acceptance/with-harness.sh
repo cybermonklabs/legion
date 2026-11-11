@@ -30,7 +30,6 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-readonly startup_seconds=180
 exports="$(mktemp)"
 errors="$(mktemp)"
 harness=""
@@ -49,12 +48,15 @@ trap 'exit 143' TERM
 bun e2e/harness-up.ts >"$exports" 2>"$errors" &
 harness=$!
 
-up=0
-for _ in $(seq 1 "$startup_seconds"); do
-  if grep -q '^export DISPATCH_E2E_REUSE_SERVERS=1$' "$exports"; then
-    up=1
-    break
-  fi
+# This waits with no deadline of its own, because the harness carries better ones. Each listener
+# row has its own bound (`e2e/harness-listeners.ts`), ten minutes for the Dispatch server, whose
+# `run-server.sh` builds it and whose cold `go build` is the long pole, and thirty seconds for a
+# listener that builds nothing; `e2e/harness-start.ts` holds every row to its bound and fails as
+# soon as that process exits, so a build that failed is reported at once rather than when a wait
+# runs out. A deadline here would be a second, shorter one laid over those, and it would refuse a
+# harness that is still coming up and hide the harness's own message. So the only thing this reads
+# is whether the harness is still alive.
+until grep -q '^export DISPATCH_E2E_REUSE_SERVERS=1$' "$exports"; do
   if ! kill -0 "$harness" 2>/dev/null; then
     printf 'the harness stopped before it was up:\n' >&2
     cat -- "$errors" >&2
@@ -62,11 +64,6 @@ for _ in $(seq 1 "$startup_seconds"); do
   fi
   sleep 1
 done
-if [[ "$up" != 1 ]]; then
-  printf 'the harness did not come up within %s seconds:\n' "$startup_seconds" >&2
-  tail -n 20 -- "$errors" >&2
-  exit 1
-fi
 
 # shellcheck disable=SC1090 # the stack's own exports, written by e2e/harness-up.ts above
 . "$exports"

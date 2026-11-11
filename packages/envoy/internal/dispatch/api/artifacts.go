@@ -1331,8 +1331,9 @@ func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
 
 // loadArtifactDetails sends queueArtifactDetails's statements as a batch of their own on q, for a
 // read that queues nothing else: an issue's artifacts (loadArtifacts), a project's
-// (listProjectArtifacts) and one artifact read by id or by ref_key (loadArtifactRow). The batch
-// holds q's connection until its results close, so nothing else reads the database in between.
+// (listProjectArtifacts), one artifact read by id (loadArtifact) and one read by ref_key or as
+// an issue's spec (loadArtifactRow). The batch holds q's connection until its results close, so
+// nothing else reads the database in between.
 func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
 	apply := queueArtifactDetails(batch, artifacts)
