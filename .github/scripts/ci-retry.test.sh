@@ -194,13 +194,42 @@ refusing_err=$(cat "$work/refusing.err")
 indent "$refusing_err"
 check "exactly five attempts ran" "$(is "${#refusing_starts[@]}" 5)"
 check "standard output is empty" "$(is "$refusing_out" '')"
-check "and standard error carries none of the attempts' bytes" \
-  "$(is "$(contains "$refusing_err" 'LEAKED-MARKER')" false)"
-check "each of the five said what it withheld" \
-  "$(is "$(grep -c "wrote $leak_bytes bytes to standard output; none of it is printed" <<<"$refusing_err" || true)" 5)"
+check "the four attempts a retry follows said what they withheld and printed none of it" \
+  "$(is "$(grep -c "wrote $leak_bytes bytes to standard output; none of it is printed" <<<"$refusing_err" || true)" 4)"
+# The last attempt is the diagnosis: nothing retries after it, so its body is printed - on
+# standard error, where it cannot reach a caller capturing this call's value. An apt outage read
+# `677 bytes, none printed` five times in this repository's own CI and said nothing about which
+# host or error (dispatch://INFRA-1545).
+check "the last attempt's bytes are printed, on standard error" \
+  "$(is "$(contains "$refusing_err" 'LEAKED-MARKER')" true)"
+check "and it says it is printing them rather than withholding them" \
+  "$(contains "$refusing_err" "^the refusing tool: the last attempt wrote $leak_bytes bytes to standard output; they follow on standard error\$")"
+check "standard output still carries nothing of them" \
+  "$(is "$(contains "$refusing_out" 'LEAKED-MARKER')" false)"
 check "it returns the last attempt's status" "$(is "$refusing_status" 1)"
 check "and its last line is still the exhaustion annotation" \
   "$(is "$(tail -n 1 <<<"$refusing_err")" '::error::the refusing tool failed to download after 5 attempts (last exit 1)')"
+
+echo "case: a last attempt that writes more than the report prints has its output cut, and says so"
+# A failed download writes a body of any size - a proxy's HTML page, a registry's JSON, apt's
+# whole progress stream - and this goes into a log a person reads.
+cat > "$work/verbose" <<VERBOSE
+#!/usr/bin/env bash
+head -c $((FINAL_OUTPUT_BYTES + 500)) /dev/zero | tr '\\0' 'x'
+exit 1
+VERBOSE
+chmod +x "$work/verbose"
+set +e
+verbose_out=$(retry_fetch "the verbose tool" 1 -- "$work/verbose" 2> "$work/verbose.err")
+verbose_status=$?
+set -e
+verbose_err=$(cat "$work/verbose.err")
+check "it returns the attempt's status" "$(is "$verbose_status" 1)"
+check "standard output is empty" "$(is "$verbose_out" '')"
+check "it names the whole size and the part it prints" \
+  "$(contains "$verbose_err" "^the verbose tool: the last attempt wrote $((FINAL_OUTPUT_BYTES + 500)) bytes to standard output; the first $FINAL_OUTPUT_BYTES of them follow on standard error\$")"
+check "and it prints that many bytes of them and no more" \
+  "$(is "$(grep -c "^x\{$FINAL_OUTPUT_BYTES\}\$" <<<"$verbose_err" || true)" 1)"
 
 echo "case: a first attempt that succeeds has its output copied byte for byte"
 # The buffer must add nothing and drop nothing, a trailing newline the command did not write

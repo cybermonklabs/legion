@@ -73,8 +73,15 @@
 # The runner reads a step's standard error for workflow commands as it reads its standard output,
 # so the `::error::` line below still becomes the step's annotation.
 #
-# On exhaustion it prints one `::error::` line, which GitHub turns into the step's annotation, and
-# returns the last attempt's exit status.
+# On exhaustion it prints one `::error::` line, which GitHub turns into the step's annotation, the
+# last attempt's own standard output on standard error, and returns that attempt's exit status.
+#
+# How much of that last attempt's output is printed. A failed download writes a body of any size -
+# a proxy's HTML page, a registry's JSON, apt's whole progress stream - and this goes into a log a
+# person reads, so the report is cut here and says that it cut it. The command's own standard
+# error is not cut, because this function never buffers it.
+FINAL_OUTPUT_BYTES=4096
+
 retry_fetch() {
   local what bound attempts attempt status left noun refusal buffer withheld unit
 
@@ -144,7 +151,6 @@ retry_fetch() {
     # with spaces where GNU's does not, so the padding comes off; `|| withheld=0` keeps a `wc`
     # that somehow failed from ending a caller that has errexit on.
     withheld=$(wc -c < "$buffer" | tr -d ' ') || withheld=0
-    rm -f "$buffer"
     left=$((attempts - attempt))
     if [ "$left" -eq 1 ]; then noun=attempt; else noun=attempts; fi
     # 124 is the status GNU coreutils' `timeout` returns when it kills the command, and it is the
@@ -160,10 +166,30 @@ retry_fetch() {
     # Only where the attempt wrote something. A host that refuses the connection sends no body,
     # which is most of what this helper meets, and a line of zeros beside each of five attempts
     # would say nothing.
-    if [ "$withheld" -gt 0 ]; then
+    if [ "$withheld" -gt 0 ] && [ "$attempt" -lt "$attempts" ]; then
       if [ "$withheld" -eq 1 ]; then unit=byte; else unit=bytes; fi
       echo "$what: attempt $attempt of $attempts wrote $withheld $unit to standard output; none of it is printed" >&2
     fi
+    # The last attempt's bytes are the diagnosis, and nothing retries after it, so they are
+    # printed — on standard error, never on standard output, because a caller may be capturing
+    # this call's value and a failed attempt's body must never reach it (the paragraph on the
+    # buffer above). An outage of apt's mirrors reported `677 bytes, none printed` five times
+    # in this repository's own CI on 2026-11-11 (jobs 130594958298, 130594957391, 130660138851),
+    # and a reader diagnosing it could not see which host or which error apt had named
+    # (dispatch://INFRA-1545). At most FINAL_OUTPUT_BYTES of them: a failed download can write a
+    # body of any size, and a log is read by a person.
+    if [ "$attempt" -ge "$attempts" ] && [ "$withheld" -gt 0 ]; then
+      if [ "$withheld" -gt "$FINAL_OUTPUT_BYTES" ]; then
+        echo "$what: the last attempt wrote $withheld bytes to standard output; the first $FINAL_OUTPUT_BYTES of them follow on standard error" >&2
+      else
+        echo "$what: the last attempt wrote $withheld bytes to standard output; they follow on standard error" >&2
+      fi
+      # `|| true`: a read of this file that fails must not end a caller that has errexit on, and
+      # the status this call returns is the command's own rather than this report's.
+      head -c "$FINAL_OUTPUT_BYTES" "$buffer" >&2 || true
+      echo >&2
+    fi
+    rm -f "$buffer"
     if [ "$attempt" -ge "$attempts" ]; then
       echo "::error::$what failed to download after $attempts attempts (last exit $status)" >&2
       return "$status"
