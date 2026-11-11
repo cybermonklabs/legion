@@ -860,9 +860,11 @@ const CONTROLLER_TOPIC = /\bnotifications\.role\.legion-[\w-]+-controller\b/;
  * choose — a live run wrote "No Dispatch issue tracks this test" — so up to two words stand
  * between them. */
 const NO_ISSUE = /\bno (?:\w+ ){0,2}issue\b|\bnothing tracks\b|\bnot tracked\b|\bno such issue\b/i;
-/** `dispatch issue`, the command that files one: never `issue-update`, and never a `--help` or a
- * `--dry-run`, which file nothing. */
-const FILES_ISSUE = /\bdispatch[ \t]+issue\b(?!-)(?![^\n]*--(?:help|dry-run)\b)/;
+/** `dispatch issue` in the form that files one, which is the form `findings.md` and the
+ * controller's own reference give: a `--title` on the same command line. Never `issue-update`,
+ * never a `--help` or a `--dry-run`, and never a read — a live run's `dispatch issue --list`,
+ * which lists issues and files nothing, was read as a filing before the `--title` was required. */
+const FILES_ISSUE = /\bdispatch[ \t]+issue\b(?!-)(?![^\n]*--(?:help|dry-run)\b)[^\n]*--title\b/;
 /** The read of the failing attempt's log the page asks for, `gh run view <run id> --log-failed`. */
 const LOG_READ = /\bgh[ \t]+run[ \t]+view\b[^\n]*--log-failed\b/;
 /** A wait inside the turn: a `sleep` of a number or of a variable. */

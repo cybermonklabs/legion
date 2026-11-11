@@ -4422,6 +4422,13 @@ redRun("red-at-the-head-a-head-13", {}, [
     command: "dispatch issue --project LWEVAL --title 'notify retries a refused send is flaky'",
   }),
 ]);
+// A read of the issue list, which files nothing: a live run ran `dispatch issue --list` while it
+// looked for the report issue, and the filing pattern took it for a filing until the `--title`
+// the filing form carries was required of it.
+redRun("red-at-the-head-a-head-20", {}, [
+  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")),
+  toolCall("call-l", "bash", { command: "dispatch issue --list" }),
+]);
 // No issue tracks the test, and the message to the controller says so: the occurrence has gone
 // where findings.md sends it, with no comment of its own.
 redRun("red-at-the-head-a-head-14", {}, [
@@ -4813,6 +4820,11 @@ test("a run that told no controller fails what became of the record", () => {
 
 test("a run that filed the issue itself fails what became of the record", () => {
   redFails("red-at-the-head-a-head-13", "told=false", "controller=true filed=true");
+});
+
+test("a read of the issue list is no filing", () => {
+  expect(rowOf("red-at-the-head-a-head-20")).toContain("controller=true filed=false");
+  expect(rowOf("red-at-the-head-a-head-20")).toMatch(/^red-at-the-head-a-head-20\tpass=true\t/);
 });
 
 test("a run that said no issue tracks the test posted the occurrence", () => {
