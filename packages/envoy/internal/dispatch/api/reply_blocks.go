@@ -2,13 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -68,12 +68,32 @@ func (s *server) ownerAddress(ctx context.Context, tx pgx.Tx, owner owner) (issu
 	return owner.IssueKey, project, slug, nil
 }
 
+// deferredRefusal splits what a delivery reply's planning returned into the refusal its route
+// holds back and the failure it answers at once. The two delivery replies plan the reply above
+// their row locks and raise what that planning refuses where the refusal was raised before,
+// after the mention and the attempt have been checked, so that no answer of either route moves
+// (planCommentReply, planMessageReply). Only an *apiError is such a refusal: it is this
+// request's own answer, and the transaction is sound.
+//
+// Anything else is a database failure, which must not be held back. A failed query aborts the
+// transaction, so every statement after it answers 25P02 "current transaction is aborted", and
+// a route that held the first failure back would log that one and lose the cause.
+func deferredRefusal(err error) (refusal, failure error) {
+	var refused *apiError
+	if errors.As(err, &refused) {
+		return err, nil
+	}
+	return nil, err
+}
+
 // planReplyBlock checks that blockID is a current block of item itemID — the comment or the
 // message a reply answers, or the ask a reply names, whose blocks are the parts of its question,
 // its options and its answer — and returns it with the index the item owes, which the caller
-// writes with its own writes. The caller holds the item's owner (when it has one), which
-// assigns no transaction id (store.LockOwner), and takes the item row of a message with the
-// index it writes, never with this read; an item an older build wrote, or wrote after its last
+// writes where it makes its own writes: queued on its write phase (namedReplyBlock) or run at
+// once beside them (refs.ItemRepair.Write, the two delivery replies). The caller holds the
+// item's owner (when it has one), which assigns no transaction id (store.LockOwner), and takes
+// the item row of a message with the index it writes, never with this read; an item an older
+// build wrote, or wrote after its last
 // index, is indexed by the same transaction (refs.PlanItemIfOwed), so the block named is one
 // the item holds now: the repaired index is read from its plan, the stored one from the block
 // rows. A block the item does not hold now answers 400 with code, naming field and the block.
@@ -100,27 +120,6 @@ func (s *server) planReplyBlock(
 		return refs.ItemRepair{}, nil, errorf(http.StatusBadRequest, code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
 	}
 	return repair, &namedBlock{kind: kind, node: node, item: itemID, id: blockID, excerpt: excerpt}, nil
-}
-
-// replyBlockOf is planReplyBlock with the item's owed index queued on ledger, at the point the
-// reply reads the block, for a route whose writes are one queued batch. A route that writes as
-// it goes - the delivery replies - plans the block itself above the row locks it takes and
-// writes the repair with its own writes (refs.ItemRepair.Write), so no index is planned while
-// its transaction holds a transaction id.
-func (s *server) replyBlockOf(
-	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, blockID, field, code string,
-) (*namedBlock, error) {
-	repair, block, err := s.planReplyBlock(ctx, tx, kind, itemID, blockID, field, code)
-	if err != nil {
-		return nil, err
-	}
-	if !repair.Owed() {
-		return block, nil
-	}
-	return block, ledger.Queue(func(b *store.WriteBatch) error {
-		repair.Queue(b)
-		return nil
-	})
 }
 
 // nodeID is the block's node id for replies_to_block, null for a reply naming no block.

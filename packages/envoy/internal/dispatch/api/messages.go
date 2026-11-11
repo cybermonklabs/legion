@@ -1039,6 +1039,12 @@ func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 // message's blocks, the mentions each holds and its own references (refs.ReplaceCountedItem),
 // and the reference graph changes they moved. A direct message writes no mention, so its blocks
 // hold none either: only its blocks are indexed, and it moves nothing.
+//
+// It parses the body and reads the document the message belongs to under whatever the calling
+// transaction holds, so its one caller is the broadcast write (writeBroadcast), whose copies
+// are inserted before their index. Every other message write plans its index before its first
+// row lock instead and writes the plan with its own writes (planItemWrite, createStoredMessage,
+// planMessageReply).
 func (s *server) indexMessage(ctx context.Context, tx pgx.Tx, message model.Message) (model.ReferenceChanges, error) {
 	if message.IssueKey == nil {
 		_, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil)

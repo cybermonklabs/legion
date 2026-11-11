@@ -317,13 +317,26 @@ func (s *server) normalizeCommentThreadTarget(
 // names a block of that comment, as the client and the tool that write it mean, where only a
 // reply naming the ask names one of the ask's parts. The ask is ordered against a write of its
 // own by its owner's lock (store.LockOwner), which this transaction took before it read either
-// item (lockCommentOwner), and under which asks.go's readAskForTransition reads the row. The
-// index the item owes is queued on ledger, the write phase of the route that reads the block
-// here; a delivery reply, which writes as it goes, plans its block itself (planReplyBlock).
+// item (lockCommentOwner), and under which asks.go's readAskForTransition reads the row.
+//
+// It is planReplyBlock with the index the item owes queued on ledger, the write phase of this
+// route, since this route's writes are one queued batch: the reply's own route is the only
+// caller, and reply_to_block is the only field it reads, so the field and the code a refusal
+// names are written here rather than passed in.
 func (s *server) namedReplyBlock(
 	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, blockID string,
 ) (*namedBlock, error) {
-	return s.replyBlockOf(ctx, tx, ledger, kind, itemID, blockID, "reply_to_block", "INVALID_COMMENT")
+	repair, block, err := s.planReplyBlock(ctx, tx, kind, itemID, blockID, "reply_to_block", "INVALID_COMMENT")
+	if err != nil {
+		return nil, err
+	}
+	if !repair.Owed() {
+		return block, nil
+	}
+	return block, ledger.Queue(func(b *store.WriteBatch) error {
+		repair.Queue(b)
+		return nil
+	})
 }
 
 // threadHeadOf climbs reply_to from a comment read under the owner's lock to the head of its
