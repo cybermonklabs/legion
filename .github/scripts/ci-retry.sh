@@ -10,6 +10,14 @@
 # no option is set, no variable is left behind, nothing is printed. From a workflow `run:`, whose
 # working directory is the repository root:
 #
+# A CALLER WHOSE COMMAND CAN WRITE A CREDENTIAL TO STANDARD OUTPUT MUST NOT GO THROUGH THIS
+# FUNCTION, because a failed last attempt's standard output reaches the step log. No caller does
+# today: the `gh` ones pass their token in the environment, the leak engine writes with
+# `--output`, crane prints digests and configuration, and the registry pull token goes through
+# `ci_tools_curl` (review round 21 of dispatch://INFRA-1545 read every one of them). A fetch of a
+# minted token is the shape to keep out: a body that times out part way is printed here, and no
+# mask covers bytes the runner has never seen.
+#
 #     . .github/scripts/ci-retry.sh
 #     retry_fetch "the Bun toolchain" 180 -- bun install --frozen-lockfile
 #
@@ -49,7 +57,10 @@
 # file is copied to standard output, byte for byte. A copy that cannot be written — no space on
 # the device, an I/O error, a reader that closed the pipe — is this call's status, so a cut
 # answer never reads as a success. A failed attempt's bytes reach neither stream, and one line on
-# standard error says how many were withheld. So a caller may capture the
+# standard error says how many were withheld — EXCEPT THE LAST ATTEMPT'S, which nothing retries
+# after and which is the diagnosis: its bytes are copied to STANDARD ERROR, cut at
+# 4096 bytes, with one line naming the whole size and the part printed. Standard
+# output still carries a successful attempt's bytes or nothing at all, so a caller may capture the
 # value:
 #
 #     names=$(retry_fetch "the run's artifact list" 30 -- gh api "$route" --jq '.[].name')
@@ -76,14 +87,14 @@
 # On exhaustion it prints one `::error::` line, which GitHub turns into the step's annotation, the
 # last attempt's own standard output on standard error, and returns that attempt's exit status.
 #
-# How much of that last attempt's output is printed. A failed download writes a body of any size -
-# a proxy's HTML page, a registry's JSON, apt's whole progress stream - and this goes into a log a
-# person reads, so the report is cut here and says that it cut it. The command's own standard
-# error is not cut, because this function never buffers it.
-FINAL_OUTPUT_BYTES=4096
-
 retry_fetch() {
   local what bound attempts attempt status left noun refusal buffer withheld unit
+  # How much of the last attempt's output is printed. A failed download writes a body of any size
+  # — a proxy's HTML page, a registry's JSON, apt's whole progress stream — and this goes into a
+  # log a person reads, so the report is cut and says that it cut it. The command's own standard
+  # error is not cut, because this function never buffers it. A local, so that sourcing this file
+  # still leaves no variable behind; the harness writes the same 4096 as a literal.
+  local final_output_bytes=4096 stop_commands
 
   if [ "$#" -lt 3 ]; then
     echo "::error::retry_fetch takes <what> <per-attempt bound in seconds> -- <command...>, and got $# argument(s)" >&2
@@ -173,21 +184,33 @@ retry_fetch() {
     # The last attempt's bytes are the diagnosis, and nothing retries after it, so they are
     # printed — on standard error, never on standard output, because a caller may be capturing
     # this call's value and a failed attempt's body must never reach it (the paragraph on the
-    # buffer above). An outage of apt's mirrors reported `677 bytes, none printed` five times
-    # in this repository's own CI on 2026-11-11 (jobs 130594958298, 130594957391, 130660138851),
+    # buffer above). An outage of apt's mirrors reported `677 bytes, none printed` on every one of
+    # fifteen attempts across three jobs of this repository's own CI on 2026-11-11, five to a job
+    # (jobs 130594958298, 130594957391 and 130660138851),
     # and a reader diagnosing it could not see which host or which error apt had named
-    # (dispatch://INFRA-1545). At most FINAL_OUTPUT_BYTES of them: a failed download can write a
+    # (dispatch://INFRA-1545). At most `final_output_bytes` of them: a failed download can write a
     # body of any size, and a log is read by a person.
     if [ "$attempt" -ge "$attempts" ] && [ "$withheld" -gt 0 ]; then
-      if [ "$withheld" -gt "$FINAL_OUTPUT_BYTES" ]; then
-        echo "$what: the last attempt wrote $withheld bytes to standard output; the first $FINAL_OUTPUT_BYTES of them follow on standard error" >&2
+      if [ "$withheld" -gt "$final_output_bytes" ]; then
+        echo "$what: the last attempt wrote $withheld bytes to standard output; the first $final_output_bytes of them follow on standard error" >&2
       else
         echo "$what: the last attempt wrote $withheld bytes to standard output; they follow on standard error" >&2
       fi
+      # These are bytes a host chose, and the runner reads its workflow commands (`::add-mask::`,
+      # `::stop-commands::` and the rest) on standard error as it reads them on standard output.
+      # So the copy is wrapped in a stop token the body cannot have guessed: between the two
+      # lines below the runner treats every line as text (review round 21 of
+      # dispatch://INFRA-1545, which found no exploit path and asked for the door shut anyway).
+      stop_commands=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+      # A machine with no /dev/urandom still gets a token rather than an empty one, which would
+      # end the stop block at the first `::::` a body wrote.
+      [ -n "$stop_commands" ] || stop_commands="ci-retry-$$-$RANDOM-$RANDOM"
+      echo "::stop-commands::$stop_commands" >&2
       # `|| true`: a read of this file that fails must not end a caller that has errexit on, and
       # the status this call returns is the command's own rather than this report's.
-      head -c "$FINAL_OUTPUT_BYTES" "$buffer" >&2 || true
+      head -c "$final_output_bytes" "$buffer" >&2 || true
       echo >&2
+      echo "::$stop_commands::" >&2
     fi
     rm -f "$buffer"
     if [ "$attempt" -ge "$attempts" ]; then

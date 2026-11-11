@@ -57,7 +57,8 @@ repeat() {
 # this tree's own listing rather than carried: job 130686006739 (`tool-fallback`, success, head
 # 974a67db6338) reads `github.com: full, curl exit 22, 127s` beside honest ghcr.io fetches of
 # 1 s and 0 s. A case here that kept 63 s would now take the under-floor arm of the window
-# chain and prove the opposite of what it says. This log keeps those three as they are and puts the other
+# chain and prove the opposite of what it says. This log carries those three with the kept case's
+# seconds re-derived to that 127 s, and puts the other
 # 62 in three shapes that no refusal of the verb reads: 18 refusals of the faulted release host,
 # 11 refusals of the dead address and 33 fetches that served the bytes. That listing mixes its
 # hosts in another order; the verb reads no order. Every case below is built from this one log.
@@ -129,7 +130,7 @@ check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 echo "case: a log under the floor is refused for its records as well"
 # The comment above the count refusal in ci-tools-proof.sh's ladder_report says that refusal
 # stands on its own and is no further arm of the window chain above it. This log is the case
-# above with one field changed, 10 s in place of 63 s, so it takes that chain's under-floor arm,
+# above with one field changed, 10 s in place of that 127 s, so it takes that chain's under-floor arm,
 # and written as a further `elif` the verb would then say nothing of its 65 records at all.
 # That rewrite is what the two assertions below on the count refusal and on the number of
 # refusals redden for.

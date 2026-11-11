@@ -14,8 +14,10 @@
 #
 # It costs about 360 s, almost all of it in two cases that each pay the helper's 150 s of
 # sleeps: the five attempts against a command that hangs for ever, which the 120 s floor is
-# measured from, and the five against a command that writes an error body and fails, which is
-# how the cases below see that none of those bytes reach the caller.
+# measured from, and the five against a command that writes an error body and fails, which is how
+# the cases below see that none of those bytes reach a caller capturing the value, that the last
+# attempt's own body is printed on standard error, and that a body larger than the report prints
+# is cut. Those three readings share that one case's sleeps rather than paying them again.
 #
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
@@ -176,11 +178,20 @@ check "and they reached standard error no more than standard output" \
 check "standard error says how many bytes were withheld" \
   "$(contains "$leaky_err" "^the leaky tool: attempt 1 of 5 wrote $leak_bytes bytes to standard output; none of it is printed\$")"
 
-echo "case: every attempt writes and fails, so nothing of any attempt reaches standard output"
+echo "case: every attempt writes and fails, so nothing of any attempt reaches standard output, and the last attempt's body is printed and cut"
+# 500 bytes more than the helper prints, so the whole is over the cut and the report must name
+# both figures.
+refusing_filler=$((4096 + 500 - ${#leak_payload}))
+refusing_bytes=$((${#leak_payload} + refusing_filler + 1))
+# Its body is larger than the helper prints, so this one case proves the cut as well as the
+# withholding and pays the helper's 150 s of sleeps once rather than twice. The marker is at the
+# front, where a cut cannot drop it.
 cat > "$work/refusing" <<REFUSING
 #!/usr/bin/env bash
 date +%s >> "$work/refusing.starts"
-echo '$leak_payload'
+printf '%s' '$leak_payload'
+head -c $refusing_filler /dev/zero | tr '\\0' 'x'
+echo
 exit 1
 REFUSING
 chmod +x "$work/refusing"
@@ -195,41 +206,33 @@ indent "$refusing_err"
 check "exactly five attempts ran" "$(is "${#refusing_starts[@]}" 5)"
 check "standard output is empty" "$(is "$refusing_out" '')"
 check "the four attempts a retry follows said what they withheld and printed none of it" \
-  "$(is "$(grep -c "wrote $leak_bytes bytes to standard output; none of it is printed" <<<"$refusing_err" || true)" 4)"
+  "$(is "$(grep -c "wrote $refusing_bytes bytes to standard output; none of it is printed" <<<"$refusing_err" || true)" 4)"
 # The last attempt is the diagnosis: nothing retries after it, so its body is printed - on
 # standard error, where it cannot reach a caller capturing this call's value. An apt outage read
 # `677 bytes, none printed` five times in this repository's own CI and said nothing about which
 # host or error (dispatch://INFRA-1545).
 check "the last attempt's bytes are printed, on standard error" \
   "$(is "$(contains "$refusing_err" 'LEAKED-MARKER')" true)"
-check "and it says it is printing them rather than withholding them" \
-  "$(contains "$refusing_err" "^the refusing tool: the last attempt wrote $leak_bytes bytes to standard output; they follow on standard error\$")"
+check "and it says it is printing them, naming the whole size and the part it prints" \
+  "$(contains "$refusing_err" "^the refusing tool: the last attempt wrote $refusing_bytes bytes to standard output; the first 4096 of them follow on standard error\$")"
+check "and it prints that many bytes of them and no more" \
+  "$(is "$(grep -c "^{\"message\":\"LEAKED-MARKER\",\"status\":\"422\"}x\{$((4096 - ${#leak_payload}))\}\$" <<<"$refusing_err" || true)" 1)"
 check "standard output still carries nothing of them" \
   "$(is "$(contains "$refusing_out" 'LEAKED-MARKER')" false)"
+# Those bytes are a host's, and the runner reads its workflow commands on standard error as it
+# reads them on standard output, so the copy is wrapped in a stop token the body cannot have
+# guessed: a body writing `::add-mask::` or `::error::` of its own is text between these lines.
+refusing_stop=$(sed -n 's/^::stop-commands::\(.*\)$/\1/p' <<<"$refusing_err")
+check "the copy is wrapped in a stop-commands token" "$(is "$(grep -c . <<<"$refusing_stop")" 1)"
+check "the token is not a guessable constant" \
+  "$(is "$(grep -cE '^[0-9a-f]{32}$' <<<"$refusing_stop" || true)" 1)"
+check "and the block is closed again with that same token" \
+  "$(contains "$refusing_err" "^::$refusing_stop::\$")"
+check "the body sits inside that block" \
+  "$(is "$(awk -v s="::stop-commands::$refusing_stop" -v e="::$refusing_stop::" '$0==s{i=1;next} $0==e{i=0} i&&/LEAKED-MARKER/{n++} END{print n+0}' "$work/refusing.err")" 1)"
 check "it returns the last attempt's status" "$(is "$refusing_status" 1)"
 check "and its last line is still the exhaustion annotation" \
   "$(is "$(tail -n 1 <<<"$refusing_err")" '::error::the refusing tool failed to download after 5 attempts (last exit 1)')"
-
-echo "case: a last attempt that writes more than the report prints has its output cut, and says so"
-# A failed download writes a body of any size - a proxy's HTML page, a registry's JSON, apt's
-# whole progress stream - and this goes into a log a person reads.
-cat > "$work/verbose" <<VERBOSE
-#!/usr/bin/env bash
-head -c $((FINAL_OUTPUT_BYTES + 500)) /dev/zero | tr '\\0' 'x'
-exit 1
-VERBOSE
-chmod +x "$work/verbose"
-set +e
-verbose_out=$(retry_fetch "the verbose tool" 1 -- "$work/verbose" 2> "$work/verbose.err")
-verbose_status=$?
-set -e
-verbose_err=$(cat "$work/verbose.err")
-check "it returns the attempt's status" "$(is "$verbose_status" 1)"
-check "standard output is empty" "$(is "$verbose_out" '')"
-check "it names the whole size and the part it prints" \
-  "$(contains "$verbose_err" "^the verbose tool: the last attempt wrote $((FINAL_OUTPUT_BYTES + 500)) bytes to standard output; the first $FINAL_OUTPUT_BYTES of them follow on standard error\$")"
-check "and it prints that many bytes of them and no more" \
-  "$(is "$(grep -c "^x\{$FINAL_OUTPUT_BYTES\}\$" <<<"$verbose_err" || true)" 1)"
 
 echo "case: a first attempt that succeeds has its output copied byte for byte"
 # The buffer must add nothing and drop nothing, a trailing newline the command did not write

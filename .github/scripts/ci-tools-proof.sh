@@ -303,15 +303,20 @@ DEAD_ADDRESS="127.0.0.1:1"
 # refuses at once, whose back-off is 1+2+4+8+16+32+64 = 127 s; job 130417801504 read that case
 # at 127 s. The floor is those 127 s less the headroom a slow runner needs.
 # The ceiling is this repository's own price of one ladder, and it is derived in one place
-# rather than here: the block at the fetch helper ci-tools.sh, in its block at lines 544-560,, which gives
+# rather than here: the fetch helper ci-tools.sh, in its block at lines 544-560, which gives
 # ONE LADDER'S CEILING IS 120 + 64 + <the per-attempt bound> and, at the `max_time: 60` every
 # row of .github/ci-tools.yaml carries, 244 s written as 247 s. The third term is why: curl
 # decides whether to retry when an attempt ENDS, so a decision taken just under 120 s still
 # sleeps its last 64 s and starts an attempt that spends its whole bound after the limit.
-# That block drove it on curl 8.14.1 - the eighth attempt starting 64 s later at 183 s and
-# ending at exit 28 at 213 s - and .github/scripts/check-download-retry.sh prices a ladder at
+# That block drove the shape on curl 8.14.1 AT THE 30 s PER-ATTEMPT BOUND, where it reads 213 s
+# - the eighth attempt starting 64 s later at 183 s and ending at exit 28 - so the 247 s of the
+# 60 s bound is that measurement plus the 30 s the longer attempt adds, and is derived rather
+# than driven. .github/scripts/check-download-retry.sh prices a ladder at
 # 247 s as well, so a figure here that disagreed with it would be this tree disagreeing with
-# itself. The ceiling is those 247 s with the same headroom the floor leaves.
+# itself. The ceiling is those 247 s with 23 s of headroom on top, where the floor leaves 18 s
+# under its own 127 s: a reading a little over the price is a slow runner, and the two margins
+# are of different sizes because a ladder can overrun its arithmetic by a whole attempt and
+# cannot undershoot its back-off by more than the seconds a sleep rounds.
 # The bound was 60 s before dispatch://INFRA-1545 raised it to meet R1's floor, where the
 # back-off was 63 s and the worst, by that same derivation, 60 + 32 + 60 = 152 s rather than
 # the 120 s an earlier version of this comment gave; the figures below are of the 120 s ladder this
@@ -377,9 +382,12 @@ PROBE_BOUND=15
 # pass as a refusal.
 # This figure also judges the eight installs with nowhere to go, which the paragraph below
 # says and the control step of the `tool-fallback` job does through the `install-bound` verb,
-# and seven of those eight carry `timeout-minutes: 11` (.github/workflows/ci.yaml:2957, 2969,
-# 2981, 2993, 3013, 3028 and 3070; the eighth, the docker provider plugin's, carries 13 at
-# :3048). Eleven minutes is therefore the smallest bound any step this figure judges carries,
+# and seven of those eight carry `timeout-minutes: 11`: the installs with nowhere to go for
+# crane, changie, jj, bun, elan, uv and the Pulumi CLI, each named `Mark when the install with
+# nowhere to go for <tool> began` in the `tool-fallback` job of .github/workflows/ci.yaml. The
+# eighth, the docker provider plugin's, carries 13. They are cited by name rather than by line,
+# because a line number in this file is wrong at the next edit of that one and says nothing when
+# it is. Eleven minutes is therefore the smallest bound any step this figure judges carries,
 # a step held to it ends at about 660 s, and the margin under that is 60 s.
 # The longest single install measured over
 # 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
@@ -1765,7 +1773,7 @@ ladder_report() {
     echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, under the floor of $LADDER_FLOOR s, so it stopped driving the real ladder: its fetch now ends before the back-off of 1+2+4+8+16+32+64 s does, which is the 127 s a source that refuses at once costs under the flags this repository's fetch helper pins, and nothing in this job measures the ladder an outage is ridden out on." >&2
     problems=$((problems + 1))
   elif [ "$longest" -gt "$LADDER_CEILING" ]; then
-    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is this repository's own price of one ladder (120 s of new attempts, the last 64 s wait, and one attempt of a row's max_time of 60 s, which the fetch helper ci-tools.sh, in its block at lines 544-560, derives and drove at 247 s) with headroom: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 127 s and one that hangs about 247 s, so a reading over this ceiling is a ladder those flags no longer bound." >&2
+    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is this repository's own price of one ladder (120 s of new attempts, the last 64 s wait, and one attempt of a row's max_time of 60 s, which the fetch helper ci-tools.sh, in its block at lines 544-560, derives and drove at 247 s) with headroom: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 127 s, one that hangs through every attempt about 121 s, and the mixture of the two - quick failures that carry the timer to just under 120 s, then the last 64 s wait, then one attempt that spends its whole 60 s bound - the 247 s this ceiling is derived from, so a reading over it is a ladder those flags no longer bound." >&2
     problems=$((problems + 1))
   fi
   # This reading stands on its own and is no further arm of the chain above: a job whose kept

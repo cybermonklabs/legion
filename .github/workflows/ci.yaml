@@ -2549,8 +2549,9 @@ jobs:
     # pinned ladder (2), the jj-primary case, which runs before the fault (1), the fault and its
     # probe, whose two requests are bounded at 15 s each (1), the one case that keeps the ladder,
     # the head's own `install-crane`, which measured 64 s at the 60 s bound this branch replaced
-    # and which the 120 s one prices at 120 + 64 + 60 = 247 s, the ceiling
-    # .github/scripts/ci-tools.sh:544-560 derives and drove, since curl decides whether to
+    # and which the 120 s one prices at 120 + 64 + 60 = 244 s, written as 247 s for the seconds a
+    # second's rounding in each term can add - the ceiling the fetch helper ci-tools.sh derives
+    # in its block on that option, since curl decides whether to
     # retry when an attempt ends and a decision taken just under 120 s still sleeps its last
     # 64 s and starts one more attempt (5), the other steps whose primary the fault or a dead port holds, each now about
     # a second because the stand-in shortens them: job 129874475871 made 65 fetches through the
@@ -3815,8 +3816,8 @@ jobs:
     # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, whose
     # `--retry-max-time 120` allows new attempts for two minutes, then takes the last 64 s wait
     # a decision made just under that limit still sleeps, and then one last attempt of
-    # the row's `max_time` 60 s: 247 s at worst, the ceiling ci-tools.sh:544-560 derives and
-    # drove (5) — the 107 MB npm tarball, its gunzip
+    # the row's `max_time` 60 s: 244 s at worst, written as 247 s, the ceiling the fetch helper
+    # ci-tools.sh derives in its block on that option (5) — the 107 MB npm tarball, its gunzip
     # and the write (3), the two readings, each a sha256 of that binary (2), the report step
     # (1), and the machine watch's start and its report (1). That is 16 minutes, 960 s, and this
     # job's unretried term; a job its own limit cuts off reports `cancelled`, which ci-ok fails.
@@ -4024,8 +4025,9 @@ jobs:
     # dispatch://INFRA-1545 added two steps to the end of the list
     # whose cost is not in that 13 s, because each waits out a time bound rather than computing:
     # the retry helper's test, 362 s measured, which spends 310 s of that waiting out the two
-    # things it proves — the 120 s floor, and five failed attempts whose output the helper
-    # withholds — and the fault proxy's test, 10 s measured. That is 4943 s, above both the
+    # things it proves — the 120 s floor, and five failed attempts, of which the four a retry
+    # follows have their output withheld and the last has its own printed on standard error and
+    # cut — and the fault proxy's test, 10 s measured. That is 4943 s, above both the
     # 4800 s of the 80 minutes this job carried before this branch and the job's 1924 s measured
     # maximum, so 4943 s is the unretried term of the budget below.
     #
@@ -4268,9 +4270,11 @@ jobs:
       # download fault it answers. The retry test measures the floor the rule sets rather
       # than reading it off the source — five attempts against a host that sends nothing, the
       # fifth starting at least 120 s after the first — and five more against a command that
-      # writes an error body and fails, which is how it sees that none of those bytes reach
-      # the caller. It costs about 360 s of this job's budget, almost all of it in those two
-      # cases.
+      # writes an error body and fails, which is how it sees that none of those bytes reach a
+      # caller capturing the value, that the last attempt's body is printed on standard error,
+      # and that a body larger than the report prints is cut. It costs about 360 s of this job's
+      # budget, almost all of it in those two cases, which carry those three readings between
+      # them rather than paying a third set of sleeps.
       - name: Test the download retry helper
         run: .github/scripts/ci-retry.test.sh
 
