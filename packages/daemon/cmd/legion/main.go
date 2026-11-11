@@ -673,14 +673,13 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 // tree's name. It names no issue either: the per-issue answers are in `legion state --json`,
 // where a line per issue would print hundreds on a live deployment.
 //
-// A deployment whose settings declare no experiment has none to name and prints the one line
-// `experiments: none`, which is what a deployment that declares nothing has always read in the
-// line this printer took the place of (`memory: none`).
+// Every project declares at least the memory experiment, so there is always a line: a project
+// whose settings carry no `memory` block and no experiment of its own declares that one at mode
+// off (config.Project.ExperimentsDeclared), and its line counts the arms its issues hold —
+// `memory: none` for a deployment that has drawn nothing yet, which is the line such a
+// deployment read before any experiment was declared.
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
 	declared := settings.Projects[project].DeclaredExperiments()
-	if len(declared) == 0 {
-		return []string{"experiments: none"}
-	}
 	counts := make(map[string]map[string]int, len(declared))
 	for _, issue := range issues {
 		for _, assignment := range issue.Assignments {

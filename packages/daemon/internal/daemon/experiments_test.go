@@ -92,3 +92,37 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 		t.Fatalf("checkRoleConfigFiles = %v, want it to start %q", err, want)
 	}
 }
+
+// The launch reader makes no query for a deployment none of whose declared experiments names a
+// file: there is nothing for a drawn unit to run with, whichever arm it drew, so reading the
+// record could only answer what the launch already knows. That is the deployment this fleet runs
+// — no `memory` block and no experiment of its own, which declares the memory experiment at mode
+// off and nothing else (config.Project.ExperimentsDeclared) — and it is what keeps a worker
+// spawn off the database, the transaction per spawn this guard was written for.
+//
+// The store is nil, so any read of it would panic: the closure's answer is proof it read
+// nothing. The second half declares one arm that does name a file, over the same nil store, and
+// recovers the panic that read makes — without it the first half would pass over a reader that
+// never queries at all.
+func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
+	const tree, issue = "LEGION-1", "LEGION-2"
+	declared := config.Project{}.ExperimentsDeclared()
+	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
+		t.Fatalf("a project that declares nothing declares %+v, want the memory experiment alone", declared)
+	}
+	variants, err := launchVariants(nil, declared, nil)(context.Background(), tree, issue)
+	if err != nil || variants != nil {
+		t.Fatalf("launchVariants over a fileless declaration = %v, %v, want no variant and no error", variants, err)
+	}
+
+	naming := []config.Experiment{{Name: "alpha", Mode: config.ExperimentRandom, Unit: config.ExperimentTree,
+		Variants: []config.Variant{{Name: "on", Weight: 1, ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"}}, {Name: "off", Weight: 1}}}}
+	read := func() (queried bool) {
+		defer func() { queried = recover() != nil }()
+		_, _ = launchVariants(nil, naming, nil)(context.Background(), tree, issue)
+		return false
+	}
+	if !read() {
+		t.Fatal("launchVariants read no record for a declaration whose arm names a file, want the record read")
+	}
+}

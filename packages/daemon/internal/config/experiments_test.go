@@ -260,10 +260,12 @@ func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.
 	}
 }
 
-// ExperimentsDeclared is the one list every reader below the loader asks: the `memory` block
-// mapped to the experiment named memory, which comes first because it is one key rather than a
-// member of the ordered mapping, then the `experiments` key's own in the file's order. A project
-// that writes neither declares nothing and gets nothing back.
+// ExperimentsDeclared is the one list every reader below the loader asks: the memory experiment,
+// which comes first because it is one key rather than a member of the ordered mapping, then the
+// `experiments` key's own in the file's order. Every project declares the memory experiment —
+// one that writes no block declares it at mode off, the mode its trees have been drawn and
+// recorded under all along — and the only project it is not added to is the one declaring
+// `experiments.memory` itself, the other spelling of that one experiment.
 func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 	memoryBlock := "{mode: on, config_files: [/etc/legion-operator/memory.yml], instructions: /etc/legion-operator/memory.md}"
 	mapped := Experiment{
@@ -280,6 +282,23 @@ func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 			},
 			{Name: "none", Weight: 1},
 		},
+	}
+	// What a project that writes no `memory` block declares: the same experiment at mode off,
+	// carrying no file, which draws every new tree at no arm and records it.
+	memoryOff := Experiment{
+		Name:      "memory",
+		Mode:      ExperimentOff,
+		Unit:      ExperimentTree,
+		OnVariant: "memory",
+		Variants:  []Variant{{Name: "memory", Weight: 1}, {Name: "none", Weight: 1}},
+	}
+	// The key's own spelling of that experiment, which stands alone: the block's mapping is left
+	// out so the project declares one memory experiment and not two.
+	keyed := Experiment{
+		Name:     "memory",
+		Mode:     ExperimentRandom,
+		Unit:     ExperimentTree,
+		Variants: []Variant{{Name: "memory", Weight: 1}, {Name: "none", Weight: 1}},
 	}
 	other := Experiment{
 		Name:     "other",
@@ -300,9 +319,14 @@ func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 		want       []Experiment
 	}{
 		{"the block alone", "memory: " + memoryBlock, []Experiment{mapped}},
-		{"the key alone", "experiments: " + otherBlock, []Experiment{other, second}},
+		{"the key alone", "experiments: " + otherBlock, []Experiment{memoryOff, other, second}},
 		{"the block and the key together", "memory: " + memoryBlock + ", experiments: " + otherBlock, []Experiment{mapped, other, second}},
-		{"neither", "", nil},
+		{"neither", "", []Experiment{memoryOff}},
+		{
+			"the key's own memory, which the block is refused beside",
+			"experiments: {memory: {mode: random, variants: [{name: memory}, {name: none}]}}",
+			[]Experiment{keyed},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := Load(writeConfigFile(t, projectBodyFile(tc.body, "")), noEnv)

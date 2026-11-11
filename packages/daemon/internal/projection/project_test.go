@@ -724,6 +724,47 @@ func TestProjectShowsEveryIssueItsTreeRootsMemoryDraw(t *testing.T) {
 	}
 }
 
+// The three memory fields of a tree of a project that writes no `memory` block and declares no
+// experiment of its own — the deployment this fleet runs. Such a project declares the memory
+// experiment at mode off (config.Project.ExperimentsDeclared), so admission records each new
+// tree at no arm under the word `off` with the instant of the draw, and this is the row's own
+// shape. The state answers the group `none` under the mode `off` with that instant, for the
+// root and for every issue of its tree, which is what it answered for such a tree before any
+// experiment was declared: a reader counting the trees a group reached counts the same trees.
+func TestProjectAnswersTheMemoryFieldsOfAProjectThatDeclaresNothing(t *testing.T) {
+	drawnAt := projectedAt.Add(-48 * time.Hour)
+	issue := func(key, tree, rank string) record.Issue {
+		return record.Issue{
+			Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: tree,
+			Phase: phase.Implementing, Status: "in_progress", Rank: rank, HandedOver: true,
+		}
+	}
+	store := projectionStore{
+		issues: []record.Issue{
+			issue("LEGION-208", "LEGION-208", "A"),
+			issue("LEGION-209", "LEGION-208", "B"),
+		},
+		// The row admission writes for such a tree: the experiment named memory, for the unit
+		// tree, at no variant, under the word off, at the instant of the draw.
+		assignments: map[string][]record.Assignment{
+			"LEGION-208": {{Experiment: config.MemoryExperimentName, Unit: "tree", Mode: string(config.MemoryOff), DrawnAt: &drawnAt}},
+		},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, config.Project{}.ExperimentsDeclared(), nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	for _, key := range []string{"LEGION-208", "LEGION-209"} {
+		view := got.Issues[key]
+		if view.MemoryGroup != "none" || view.MemoryDrawMode != "off" ||
+			view.MemoryDrawnAt == nil || !view.MemoryDrawnAt.Equal(drawnAt) {
+			t.Errorf("%s = group %q drawn as %q at %v, want none, off, %s",
+				key, view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt, drawnAt)
+		}
+	}
+}
+
 // Every assignment that applies to an issue is on its view: its tree's, for an experiment whose
 // unit is the tree, and its own, for one whose unit is the issue. A root's own key holds both
 // kinds and every row of it applies to the root itself; a child takes its root's tree rows and

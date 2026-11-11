@@ -952,23 +952,31 @@ func variantKey(experiment, variant string) string { return experiment + "/" + v
 // never the operator's path: a pod cannot read the daemon's configuration, and the operator's
 // file may change under a running daemon.
 //
-// A project that declares no experiment reads no record at all: there is no arm for a row to
-// name, so the common deployment pays no transaction per worker spawn. The issue's own key is
-// read beside its tree's only where some declared experiment draws for the issue
-// (config.ExperimentIssue), since a deployment whose experiments all draw for the tree has
-// nothing of the issue's own to read.
+// An experiment whose every arm names neither a config file nor an instructions path contributes
+// nothing to any launch: there is nothing for a drawn unit to run with, whichever arm it drew. A
+// project none of whose declared experiments names a file — the common deployment, which writes
+// no `memory` block and declares no experiment of its own, and so declares the memory experiment
+// at mode off and nothing else (config.Project.ExperimentsDeclared) — therefore reads no record
+// at all, and pays no transaction per worker spawn. The issue's own key is read beside its
+// tree's only where some declared experiment draws for the issue (config.ExperimentIssue), since
+// a deployment whose experiments all draw for the tree has nothing of the issue's own to read.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
 // the same store with no workflow configured (api's drawExperiments), and a launch that could not
 // read that draw back would run the unit against an arm the daemon had already recorded for it.
 func launchVariants(st *store.Store, declared []config.Experiment, instructions map[string]string) func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
+	namesFile := func(experiment config.Experiment) bool {
+		return slices.ContainsFunc(experiment.Variants, func(variant config.Variant) bool {
+			return len(variant.ConfigFiles) > 0 || variant.InstructionsPath != ""
+		})
+	}
+	if !slices.ContainsFunc(declared, namesFile) {
+		return func(context.Context, string, string) ([]runtime.Variant, error) { return nil, nil }
+	}
 	records := record.NewStore()
 	byIssue := slices.ContainsFunc(declared, func(e config.Experiment) bool { return e.Unit == config.ExperimentIssue })
 	return func(ctx context.Context, tree, issue string) ([]runtime.Variant, error) {
-		if len(declared) == 0 {
-			return nil, nil
-		}
 		keys := []string{tree}
 		if byIssue && issue != tree {
 			keys = append(keys, issue)

@@ -1917,8 +1917,9 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 		},
 		{name: "nothing drawn", declared: memory, issues: `{` + undrawn + `}`, want: "memory: none\n"},
 		{name: "no issues", declared: memory, issues: `{}`, want: "memory: none\n"},
-		// A deployment whose settings name no experiment has none to name.
-		{name: "no experiment declared", declared: "", issues: `{` + undrawn + `}`, want: "experiments: none\n"},
+		// A deployment whose settings name no experiment of its own still declares the memory
+		// experiment, at mode off, and reads its line.
+		{name: "no experiment declared", declared: "", issues: `{` + undrawn + `}`, want: "memory: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			served := "{" + daemon + `,"issues":` + tc.issues + settings(tc.declared) + "}"
@@ -1984,6 +1985,48 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "experiments: none") {
 		t.Fatalf("legion state printed %q, want no `experiments: none`: the block declares an experiment", out.String())
+	}
+}
+
+// The deployment that writes no `memory` block and declares no `experiments` key — the
+// deployment this fleet runs — counts the memory arms its issues hold all the same: such a
+// project declares the memory experiment at mode off (config.Project.ExperimentsDeclared), under
+// which every tree it opens is drawn and recorded at no arm, so the settings carry neither key
+// and the line is still the memory one. Printing `experiments: none` over it would drop a line
+// every such deployment has read since before any experiment was declared.
+func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// What such a project's trees hold: the empty arm an experiment at mode off draws, recorded
+	// with the word `off` and the instant of the draw.
+	issue := func(key string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"assignments":[{"experiment":"memory","variant":"","mode":"off","drawnAt":"2026-10-25T10:00:00Z"}]}`
+	}
+	issues := `{` + issue("LEGION-208") + `,` + issue("LEGION-209") + `}`
+	// The settings as the daemon serves them for such a project: no `memory` block at all, and an
+	// empty `experiments`.
+	settings := `,"settings":{"projects":{"LEGION":{"memory":{"config_files":[]},"experiments":[]}}}`
+	served := "{" + daemon + `,"issues":` + issues + settings + "}"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	const want = "memory: 2 issues — 2 no variant\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
+	}
+	if strings.Contains(out.String(), "experiments: none") {
+		t.Fatalf("legion state printed %q, want no `experiments: none`: every project declares the memory experiment", out.String())
 	}
 }
 

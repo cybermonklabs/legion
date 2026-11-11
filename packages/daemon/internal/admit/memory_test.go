@@ -97,11 +97,12 @@ const (
 	depthExperiment  = "review-depth"
 )
 
-// declaring is the experiments a project with this `memory` block declares: the block's own, as
-// config.Project.ExperimentsDeclared maps it, and a tree experiment of the project's own beside
-// it at the same mode, so every fact below is read twice — once for the block and once for an
-// experiment that is not it. A project that names no mode writes no block and declares nothing at
-// all, neither experiment, which is a deployment that declares no experiment.
+// declaring is the experiments a project with this `memory` block declares: the memory
+// experiment, as config.Project.ExperimentsDeclared maps it, and a tree experiment of the
+// project's own beside it at the same mode, so every fact below is read twice — once for the
+// block and once for an experiment that is not it. A project that names no mode writes no block
+// and declares the memory experiment alone, at mode off: that is a deployment that declares
+// nothing of its own, and its trees are drawn for memory all the same.
 func declaring(mode config.MemoryMode) []config.Experiment {
 	project := config.Project{Memory: config.Memory{Mode: mode}}
 	if mode == "" {
@@ -132,10 +133,11 @@ func pinnedSource(value uint64) func(uint64) (uint64, error) {
 // Admission draws a tree's experiments when it opens that tree for the first time, under the mode
 // each is declared at: `off` draws no arm at all, `on` draws the arm on_variant names, and
 // `random` draws what the source says, both ways. A project whose file declares nothing — no
-// `memory` block and no experiment of its own — is drawn for nothing, and holds no row. Each
-// answer is the tree root's own row, written with the mode it was drawn under and the time of the
-// draw. A later pass under a changed mode leaves every row exactly as it stands: the tree runs
-// under the arms it was drawn, for as long as it lives.
+// `memory` block and no experiment of its own — declares the memory experiment at mode off, so
+// its tree is drawn at no arm for memory and holds no row for anything else. Each answer is the
+// tree root's own row, written with the mode it was drawn under and the time of the draw. A
+// later pass under a changed mode leaves every row exactly as it stands: the tree runs under the
+// arms it was drawn, for as long as it lives.
 func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 	const root = "LEGION-1"
 	for _, tc := range []struct {
@@ -151,7 +153,7 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 		word                config.MemoryMode
 		memory, reviewDepth string
 	}{
-		{name: "a project that declares nothing", mode: "", memory: noDraw, reviewDepth: noDraw},
+		{name: "a project that declares nothing", mode: "", word: config.MemoryOff, memory: "", reviewDepth: noDraw},
 		{name: "off", mode: config.MemoryOff, word: config.MemoryOff, memory: "", reviewDepth: ""},
 		{name: "on", mode: config.MemoryOn, word: config.MemoryOn, memory: "memory", reviewDepth: "deep"},
 		{name: "random, the source drawing the first arm", mode: config.MemoryRandom, word: config.MemoryRandom,
@@ -171,9 +173,9 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 
 			tick(t, pool, admission, "admit")
 
-			wantMemory, wantDepth := noDraw, noDraw
+			wantMemory := drawnAs(tc.memory, string(tc.word), &fixedNow)
+			wantDepth := noDraw
 			if tc.mode != "" {
-				wantMemory = drawnAs(tc.memory, string(tc.word), &fixedNow)
 				wantDepth = drawnAs(tc.reviewDepth, string(tc.word), &fixedNow)
 			}
 			if got := memoryOf(t, pool, root); got != wantMemory {
@@ -192,6 +194,41 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 				t.Fatalf("after a pass under changed modes the root holds %v, want %v unchanged", after, before)
 			}
 		})
+	}
+}
+
+// The deployment that writes no `memory` block and declares no experiment of its own — the
+// deployment this fleet runs — records every new tree at the memory experiment all the same:
+// one row, naming the experiment `memory` for the unit `tree`, at no variant, under the word
+// `off`, at the instant of the draw. That is the row the daemon has written for such a tree
+// since the memory draw existed, and the row the three memory fields of every issue of the tree
+// are read off (internal/projection's memoryOf answers `none` under `off` for it). A tree opened
+// after this release must hold what a tree opened before it holds, so this reads the whole row
+// and not the arm alone.
+func TestATreeOfAProjectThatDeclaresNothingIsRecordedAtTheMemoryExperiment(t *testing.T) {
+	const root = "LEGION-1"
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	// Exactly what the loader gives such a project: a project with no `memory` block and no
+	// `experiments` key at all.
+	admission.UseExperiments(config.Project{}.ExperimentsDeclared())
+	// Mode off decides without a draw, so the source is one that fails the test when it is read.
+	admission.source = refusingSource(t)
+	seedWaiting(t, pool, root, "A")
+
+	tick(t, pool, admission, "admit")
+
+	held := assignments(t, pool, root)
+	if len(held) != 1 {
+		t.Fatalf("the admitted root holds %v, want the one memory row", answers(t, pool, root))
+	}
+	row := held[0]
+	if row.Experiment != memoryExperiment || row.Unit != string(config.ExperimentTree) {
+		t.Fatalf("the row names the experiment %q for the unit %q, want %q for %q",
+			row.Experiment, row.Unit, memoryExperiment, config.ExperimentTree)
+	}
+	if got, want := drawnAs(row.Variant, row.Mode, row.DrawnAt), drawnAs("", string(config.MemoryOff), &fixedNow); got != want {
+		t.Fatalf("the admitted root was drawn %s for the memory experiment, want %s", got, want)
 	}
 }
 

@@ -43,11 +43,20 @@ var memoryVariants = []runtime.Variant{
 	{Experiment: "memory", Name: "none"},
 }
 
+// fileless are the same two arms as a project that writes no `memory` block declares them: it
+// declares the memory experiment all the same, at mode off, and neither arm names a file. They
+// reach every runtime's options and name nothing there, since an arm with no overlay adds no
+// PI_CONFIG_FILES value and no mount (runtime.RoleOverlayValues).
+var fileless = []runtime.Variant{
+	{Experiment: "memory", Name: "memory"},
+	{Experiment: "memory", Name: "none"},
+}
+
 // A project that names overlays hands the arms that carry them to the tmux runtime whatever its
 // mode is: the mode decides which new trees are drawn into the memory group, and a tree drawn
-// into it before the mode moved to off still has files to name. A project with no block declares
-// no experiment and hands over none, which is the pane every deployment built before this
-// release.
+// into it before the mode moved to off still has files to name. A project with no block hands
+// over the same two arms carrying no file, which names nothing in a pane: that is the pane every
+// deployment built before this release.
 func TestAProjectThatNamesOverlaysHandsThemToTheTmuxRuntimeAtEveryMode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -58,7 +67,7 @@ func TestAProjectThatNamesOverlaysHandsThemToTheTmuxRuntimeAtEveryMode(t *testin
 		{"random", memoryBlock(config.MemoryRandom), memoryVariants},
 		{"off", memoryBlock(config.MemoryOff), memoryVariants},
 		{"no mode", memoryBlock(""), memoryVariants},
-		{"no block", config.Memory{}, nil},
+		{"no block", config.Memory{}, fileless},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tmuxOptions(memoryConfig(tc.memory), "test", nil, "", "", quietLogger()).ExperimentVariants
@@ -81,7 +90,7 @@ func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *tes
 		{"random", memoryBlock(config.MemoryRandom), memoryVariants},
 		{"off", memoryBlock(config.MemoryOff), memoryVariants},
 		{"no mode", memoryBlock(""), memoryVariants},
-		{"no block", config.Memory{}, nil},
+		{"no block", config.Memory{}, fileless},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")

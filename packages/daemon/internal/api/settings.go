@@ -259,12 +259,17 @@ type ProjectSettings struct {
 }
 
 // DeclaredExperiments is every experiment this project declares, as the daemon's own loader
-// builds the list: the `memory` block's experiment first, then the `experiments` key's own in
-// the file's order (config.Project.ExperimentsDeclared, which this reverses the two keys back
-// through). The settings carry the two keys as the file writes them — the block under `memory`,
-// the key's own under `experiments` — because that is what an operator reads them for, so a
-// reader that must answer for every experiment the deployment draws, as `legion state` does
-// when it counts each one's arms, asks here rather than writing the mapping a second time.
+// builds the list: the memory experiment first, then the `experiments` key's own in the file's
+// order (config.Project.ExperimentsDeclared, which this reverses the two keys back through).
+// The settings carry the two keys as the file writes them — the block under `memory`, the key's
+// own under `experiments` — because that is what an operator reads them for, so a reader that
+// must answer for every experiment the deployment draws, as `legion state` does when it counts
+// each one's arms, asks here rather than writing the mapping a second time.
+//
+// A project whose settings carry no `memory` block and no experiment of its own declares the
+// memory experiment all the same, at mode off: every tree such a project opens is drawn for it
+// and recorded at no arm, so `legion state` prints that project's memory line with the arms its
+// issues hold, as it printed one before any experiment was declared.
 //
 // The daemon serves the settings from the same configuration it declares its experiments from
 // (internal/daemon's source), so this answers what that daemon drew for.

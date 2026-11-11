@@ -114,22 +114,32 @@ const MemoryExperimentName = "memory"
 var MemoryVariantNames = []string{"memory", "none"}
 
 // ExperimentsDeclared is every experiment the project declares, the `memory` block included, once
-// the whole file has passed: the block mapped to the experiment named memory, then the
-// `experiments` key's own in the file's order. Every reader of experiments below the loader asks
-// this one list, so the block and the key behave alike there and a reader needs no second path for
-// the block.
+// the whole file has passed: the experiment named memory, then the `experiments` key's own in the
+// file's order. Every reader of experiments below the loader asks this one list, so the block and
+// the key behave alike there and a reader needs no second path for the block.
 //
-// The block's experiment comes first. It is one key rather than a member of the ordered mapping,
+// The memory experiment comes first. It is one key rather than a member of the ordered mapping,
 // so it has no file order against the mapping's members; first is chosen and fixed here so that
 // the order is a contract a reader may rely on rather than an accident of how the file was read.
-// The block maps to mode the block's own word (Memory.Word, so an absent mode is off), unit tree,
-// on_variant memory, and the two variants memory (weight 1, carrying the block's config_files and
-// instructions) and none (weight 1, carrying neither) — the group the daemon has always drawn.
+// It is mode the block's own word (Memory.Word, so a block that names no mode and a project that
+// writes no block alike are off), unit tree, on_variant memory, and the two variants memory
+// (weight 1, carrying the block's config_files and instructions) and none (weight 1, carrying
+// neither) — the group the daemon has always drawn.
 //
-// A project that writes neither the block nor the key declares nothing and gets nothing back, not
-// a memory experiment at mode off: a deployment that declares no experiment must stay a deployment
-// that declares no experiment, since a later reader records a draw for every experiment it is
-// given.
+// Every project declares it, whatever it writes: a project that writes no block declares it at
+// mode off, whose draw records each new tree at no variant. That is the record the daemon has
+// written for every tree of such a project since the memory draw existed — the draw ran at every
+// tree's first lifecycle row whatever the file said, and the empty mode read back as the word
+// `off` — and the three memory fields a reader asks of such a tree answer off that row
+// (internal/projection's memoryOf: `memory_group` none, `memory_draw_mode` off and the instant of
+// the draw). Declaring it for such a project is what keeps those three answers where they are;
+// leaving it out would empty them for every tree opened after this release while every older
+// tree went on answering them.
+//
+// The one project it is not added to is the one declaring `experiments.memory` itself, which is
+// the same experiment spelled the other way: the loader refuses that key beside the block
+// (checkExperimentMemory), so the two spellings never both appear, and the key's own block is the
+// whole declaration.
 //
 // readMemory and checkMemory stay the block's own reader and checker, and this method is no part
 // of either. Seven rows of the refusal table in the documentation quote their texts word for word,
@@ -138,7 +148,10 @@ var MemoryVariantNames = []string{"memory", "none"}
 // at all, so it is the block's rule and not an experiment's.
 func (project Project) ExperimentsDeclared() []Experiment {
 	var declared []Experiment
-	if memory := project.Memory; memory.Written() {
+	if !slices.ContainsFunc(project.Experiments, func(experiment Experiment) bool {
+		return experiment.Name == MemoryExperimentName
+	}) {
+		memory := project.Memory
 		declared = append(declared, Experiment{
 			Name:      MemoryExperimentName,
 			Mode:      ExperimentMode(memory.Word()),

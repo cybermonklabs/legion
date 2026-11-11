@@ -1171,11 +1171,14 @@ Closing the terminal leaves the project without one, and the daemon logs
   **The experiment lines.** There is one per experiment the project declares, counting the issues
   that hold each arm of that experiment: `memory: 6 issues — 4 memory, 2 none` above. The arms of
   one line are in the arms' own names; the lines are in the order the daemon declares the
-  experiments, which is the `memory` block's experiment first and then the order
+  experiments, which is the `memory` experiment first and then the order
   `projects.<KEY>.experiments` names the rest in. An experiment no issue holds yet is `none` after
-  its name, and a deployment that declares no experiment at all prints the one line
-  `experiments: none` in their place. `no variant` in a count is an answer and no arm: a
-  hand-over settled that unit at no arm, because the tree it left held no row for the experiment.
+  its name. Every project declares the `memory` experiment, a project that writes no `memory`
+  block declaring it at mode `off`, under which every new tree is drawn at no arm, so such a
+  deployment reads a `memory` line too — `memory: none` until a tree is drawn, and counts of
+  `no variant` after. `no variant` in a count is an answer and no arm: either the experiment was
+  at mode `off` when that unit was drawn, or a hand-over settled it at no arm because the tree it
+  left held no row for the experiment.
   The lines count issues rather than the trees a tree experiment is drawn for, because the state
   names no tree and a tree handed over as one of its own carries its old tree's draw verbatim, so
   two trees can share one draw.
