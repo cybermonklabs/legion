@@ -49,20 +49,14 @@ func openMovedApprovalRequest(t *testing.T, handler http.Handler, project, title
 
 // unchangedEdit runs an edit whose one operation replaces find with itself, so the document is as
 // it was and no version is stored, and answers the advice beside the edit's own result.
-func unchangedEdit(t *testing.T, handler http.Handler, artifactID, find string) (*testWriteAdvice, struct {
-	Changed bool           `json:"changed"`
-	Version *model.Version `json:"version"`
-}) {
+func unchangedEdit(t *testing.T, handler http.Handler, artifactID, find string) (*testWriteAdvice, editArtifactResponse) {
 	t.Helper()
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
-		"ops":   []map[string]string{{"op": "replace", "find": find, "with": find}},
+		"ops":   []map[string]string{replaceOp(find, find)},
 	})
 	advice := adviceFromResponse(t, edited.Code, edited.Body.String())
-	return advice, decodeBody[struct {
-		Changed bool           `json:"changed"`
-		Version *model.Version `json:"version"`
-	}](t, edited)
+	return advice, decodeBody[editArtifactResponse](t, edited)
 }
 
 // The whole report, over the edit route. A request names the issue's spec and its Verification
@@ -95,7 +89,7 @@ func TestMovedApprovalRequestNamesTheAskTheOwnerAndEveryDocument(t *testing.T) {
 // A null `role` column reads the role its slug decides. The same state, with the Verification
 // document's row left with no role - what a rolling deploy leaves on a row created before the
 // column was written - and the report still names the role, because it asks documentPlays and
-// not the column (movedApprovalDocumentRole).
+// not the column (documentRoleOf).
 func TestMovedApprovalRequestReadsTheRoleTheSlugDecides(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	state := openMovedApprovalRequest(t, handler, "ROLELESS", "Written before the role column")

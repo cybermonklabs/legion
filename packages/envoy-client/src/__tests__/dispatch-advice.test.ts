@@ -1259,7 +1259,7 @@ describe("a document write that moved an open approval request", () => {
     version: 17,
   };
   const notesDocument = {
-    artifact_id: "artifact-77",
+    artifact_id: "artifact-91",
     name: "notes.md",
     primary: false,
     requested_version: 3,
@@ -1362,7 +1362,7 @@ describe("a document write that moved an open approval request", () => {
       "dispatch_doc_edit",
       editArgs,
       movedAdvice(request({ documents: [notesDocument] })),
-      "dispatch request-approval --issue DSP-42 --artifact artifact-77 " +
+      "dispatch request-approval --issue DSP-42 --artifact artifact-91 " +
         "--summary '<what changed since version 3>'",
     ],
     [
@@ -1378,7 +1378,7 @@ describe("a document write that moved an open approval request", () => {
           documents: [notesDocument],
         },
       } satisfies DocumentWriteAdvice,
-      "dispatch request-approval --project DSP --artifact artifact-77 " +
+      "dispatch request-approval --project DSP --artifact artifact-91 " +
         "--summary '<what changed since version 3>'",
     ],
   ])("a request whose first document is %s names it that way in the call", async (_case, tool, args, rawAdvice, command) => {

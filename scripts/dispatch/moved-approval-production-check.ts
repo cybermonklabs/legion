@@ -538,6 +538,14 @@ async function readJson(
  * line was printed leave the function.
  *
  * Both parts of the line stand in one sentence of one line, so output holding both printed it.
+ *
+ * The run is bounded by the deadline every other call of this check runs under
+ * (DISPATCH_TOOL_DEADLINE_MS), because it is the one wait here with no deadline of its own and
+ * it stands between the assertions and the `finally` that closes the scratch issue: a `dispatch`
+ * that hung would leave an open approval request in production, which is the state that close
+ * exists to prevent. A child the deadline kills falls out as the exit status of a process killed
+ * by that signal (137 for SIGKILL) with no line, which `observed cli-line=no exit=<status>`
+ * reports as it reports any other failure of the command.
  */
 async function runDocEditCommand(
   key: string,
@@ -556,7 +564,13 @@ async function runDocEditCommand(
         "--ops-json",
         JSON.stringify([{ op: "insert", markdown: sentence, after: "end" }]),
       ],
-      { stdin: "ignore", stdout: "pipe", stderr: "pipe" }
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: DISPATCH_TOOL_DEADLINE_MS,
+        killSignal: "SIGKILL",
+      }
     );
     const [stdout, stderr, code] = await Promise.all([
       new Response(child.stdout).text(),

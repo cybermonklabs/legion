@@ -401,6 +401,32 @@ func (s *server) logAdviceError(route, issueKey, query string, err error) {
 	slog.Warn("dispatch: write advice omitted", "route", route, "issue", issueKey, "query", query, "error", err)
 }
 
+// adviceSavepoint opens the savepoint one document report runs behind and bounds its statements,
+// or reports false when the savepoint or the bound could not be set, logging that failure under
+// field, the report's own name. Each report runs behind one of these rather than sharing a
+// savepoint with the report beside it, so a failed read costs its own report and no other.
+//
+// The caller rolls the savepoint back, in a defer of its own: a report writes nothing, so its
+// savepoint is always rolled back rather than released, and that rollback restores the
+// statement_timeout this set. Where this answers false it has rolled back already, and there is
+// no savepoint for the caller to hold.
+func (s *server) adviceSavepoint(ctx context.Context, tx pgx.Tx, route, issueKey, field string) (pgx.Tx, bool) {
+	adviceTx, err := tx.Begin(ctx)
+	if err != nil {
+		s.logAdviceError(route, issueKey, field, err)
+		return nil, false
+	}
+	// Healthy advice queries complete in single-digit milliseconds. Bound them at 500 ms so a
+	// future plan regression cannot hold the write's row locks and a pool connection
+	// indefinitely.
+	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
+		_ = adviceTx.Rollback(ctx)
+		s.logAdviceError(route, issueKey, field, err)
+		return nil, false
+	}
+	return adviceTx, true
+}
+
 // documentBlocks is what a document write's advice reports about the typed blocks in the document
 // it stored: how many ask blocks it holds, and the typed block openings it holds as text.
 type documentBlocks struct {
@@ -485,9 +511,10 @@ type supersededApprovalGate struct {
 // older approval was already stale before this write, and a newer changes request had already
 // closed the gate.
 //
-// Like every other advice query this runs behind a savepoint, because a failed statement aborts
-// the transaction it ran in and this must never fail the write it describes. It writes nothing,
-// so the savepoint is always rolled back, which also restores the statement_timeout it set.
+// Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
+// because a failed statement aborts the transaction it ran in and this must never fail the write
+// it describes. It writes nothing, so the savepoint is always rolled back, which also restores
+// the statement_timeout it set.
 func (s *server) supersededApprovalAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -496,16 +523,11 @@ func (s *server) supersededApprovalAdvice(
 	artifactID string,
 	version int,
 ) *supersededApproval {
-	adviceTx, err := tx.Begin(ctx)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
+	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "superseded_approval")
+	if !ok {
 		return nil
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
-	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return nil
-	}
 	approval, err := newestReviewAsApproval(ctx, adviceTx, artifactID, version)
 	if err != nil {
 		s.logAdviceError(route, issueKey, "superseded_approval", err)
@@ -627,15 +649,6 @@ type movedApprovalDocument struct {
 	Version          int    `json:"version"`
 }
 
-// movedApprovalRoles are the three roles a document can play, in the order
-// movedApprovalDocumentRole asks them: roleSlugs holds the same three, but it is a map, whose
-// range order Go randomises, and a report must answer the same thing twice.
-var movedApprovalRoles = [...]string{
-	model.ArtifactRoleVerification,
-	model.ArtifactRolePlan,
-	model.ArtifactRoleDecisions,
-}
-
 // movedApprovalRequestAdvice reports the open approval request the write just took back from the
 // person, or nil when it took none: a document with no open request, and a request still at the
 // version its agent handed over, which is what a write whose own carry answered the request
@@ -646,11 +659,11 @@ var movedApprovalRoles = [...]string{
 // The rule is docs.ApprovalAwaitsHandBack, the same one the quiet move and the SQL approvalMoved
 // (ask_rows.go) apply, asked here of the request as this write left it.
 //
-// Like every other advice query this runs behind a savepoint, because a failed statement aborts
-// the transaction it ran in and this must never fail the write it describes. It writes nothing,
-// so the savepoint is always rolled back, which also restores the statement_timeout it set and
-// releases the row lock the ask read took. A failure costs the report alone: the write commits
-// as it always does, and the agent is left where it is today, with the request unnamed.
+// Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
+// because a failed statement aborts the transaction it ran in and this must never fail the write
+// it describes. It writes nothing, so the savepoint is always rolled back, which also restores
+// the statement_timeout it set. A failure costs the report alone: the write commits as it always
+// does, and the agent is left where it is today, with the request unnamed.
 func (s *server) movedApprovalRequestAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -658,16 +671,11 @@ func (s *server) movedApprovalRequestAdvice(
 	issueKey string,
 	artifactID string,
 ) *movedApprovalRequest {
-	adviceTx, err := tx.Begin(ctx)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
+	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "moved_approval_request")
+	if !ok {
 		return nil
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
-	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
-		return nil
-	}
 	ask, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
 	if err != nil {
 		s.logAdviceError(route, issueKey, "moved_approval_request", err)
@@ -712,7 +720,7 @@ func (s *server) movedApprovalRequestAdvice(
 		if artifact, ok := rows[document.ArtifactID]; ok {
 			entry.Name = artifact.Name
 			entry.Primary = artifact.Primary
-			entry.Role = movedApprovalDocumentRole(artifact)
+			entry.Role = documentRoleOf(artifact)
 		}
 		moved.Documents = append(moved.Documents, entry)
 	}
@@ -751,20 +759,6 @@ func movedApprovalArtifacts(
 		byID[artifact.ID] = artifact
 	}
 	return byID, nil
-}
-
-// movedApprovalDocumentRole is the part a document plays, asked of the row as every other reader
-// asks it (documentPlays), in the fixed order of movedApprovalRoles. Asking documentPlays rather
-// than reading artifacts.role is what gives a row whose role column is still null the role its
-// slug decides, which is the state a rolling deploy leaves behind. A document that plays none of
-// the three answers "", which omits the field.
-func movedApprovalDocumentRole(artifact model.Artifact) string {
-	for _, role := range movedApprovalRoles {
-		if documentPlays(artifact, role) {
-			return role
-		}
-	}
-	return ""
 }
 
 // documentWriteAdvice is the whole advice of a document write with no issue state to report: a

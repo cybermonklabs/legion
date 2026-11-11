@@ -309,6 +309,17 @@ function movedApprovalClauses(
     .join("; ");
 }
 
+/** The documents of an approval request a version has moved: the ones standing above the version
+ *  the request asks about. It is this side's one spelling of `requested_version < version`, the
+ *  rule the server spells as `docs.ApprovalAwaitsHandBack` and the SQL `approvalMoved`, read by
+ *  the two lines that name a moved request - a document write's advice and a reply on such a
+ *  request - so the two can never drift. */
+function movedApprovalDocuments<Document extends { requested_version: number; version: number }>(
+  documents: readonly Document[]
+): Document[] {
+  return documents.filter((document) => document.requested_version < document.version);
+}
+
 function renderAdvice(
   tool: string,
   key: string,
@@ -403,11 +414,11 @@ function renderAdvice(
     movedApproval !== undefined &&
     (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")
   ) {
-    // No line when the report holds no document (`documents` is null on a request this client
-    // cannot describe) and none when no document of it moved, since a document still at the
-    // version the request asks about is one this write left alone.
+    // No line when no document of the report moved, since a document still at the version the
+    // request asks about is one this write left alone. A report holding no document at all
+    // (`documents` is null on a request this client cannot describe) moved none of them either.
     const documents = movedApproval.documents ?? [];
-    const moved = documents.filter((document) => document.requested_version < document.version);
+    const moved = movedApprovalDocuments(documents);
     // The owner part of the call comes from the request's own place. A report naming neither an
     // issue nor a project could name no owner, and an invalid command is worse than no line.
     const movedOwner =
@@ -416,7 +427,7 @@ function renderAdvice(
         : movedApproval.project !== undefined && movedApproval.project !== ""
           ? ({ kind: "project", key: movedApproval.project } as const)
           : undefined;
-    if (documents.length > 0 && moved.length > 0 && movedOwner !== undefined) {
+    if (moved.length > 0 && movedOwner !== undefined) {
       // The call reopens the request's first document, and the `--summary` floor is the version
       // the first document that moved was handed over at. `--include-verification` is what asked
       // for a second document, so it is read from the documents beside the first.
@@ -2101,7 +2112,7 @@ async function movedApprovalLine(
             version: approval.version,
           },
         ];
-  const moved = documents.filter((document) => document.requested_version < document.version);
+  const moved = movedApprovalDocuments(documents);
   if (moved.length === 0) return undefined;
   const command = handBackApprovalCommand({
     owner:

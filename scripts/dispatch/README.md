@@ -457,9 +457,10 @@ The steps print one line each, in this order:
   itself, `close issue=<KEY> status=done|other pass|fail`.
 
 A step that could not be carried out prints `<step> unavailable: <category>`
-(`auth|refused|transport|malformed|not-found`) instead of its verdict and is never a pass. A
-failed scratch or request stops the steps after it, and the close still runs for an issue the
-run made.
+(`auth|refused|transport|malformed|not-found`) instead of its verdict and is never a pass; the
+close, the one step that names a value before `unavailable:`, prints
+`close issue=<KEY> unavailable: <category>`. A failed scratch or request stops the steps after
+it, and the close still runs for an issue the run made.
 
 The last two lines are `result pass|fail|unavailable exit=<code>` and the count of the
 assertions, `all 3 assertions passed` or `assertions passed <n> of 3`, so a reader can tell a

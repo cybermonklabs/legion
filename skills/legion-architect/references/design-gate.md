@@ -139,7 +139,7 @@ Facts about the request:
 - A newer version of a document moves an open approval request of it to that version and leaves it
   waiting on you: the human stops seeing it in their "Waiting on you" band, and nothing tells them.
   The write itself reports it. `dispatch doc-edit` and `dispatch artifact` print the request, each
-  document it names with the version the request asks about beside the version now, and the call
+  document that stands above the version the request asks about with both versions, and the call
   that hands it back. Once the human has agreed to every point in that version, run that call to
   hand the same request back. Run it whether or not your write printed the line: a pane prints it
   only once its Dispatch client carries that report.

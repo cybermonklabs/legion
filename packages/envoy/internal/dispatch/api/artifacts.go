@@ -1877,7 +1877,8 @@ func artifactSlug(name string) string {
 // roleSlugs pairs each role a document plays with the slug that names it: the one place the two
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
-// (documentRolePredicate), and documentPlays, which asks the same of a row already read.
+// (documentRolePredicate), documentPlays, which asks the same of a row already read, and
+// documentRoles, the written list of the same three.
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
 	model.ArtifactRolePlan:         "plan-md",
@@ -1913,6 +1914,31 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 // judge the document in hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
 	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
+}
+
+// documentRoles are the three roles a document can play, in the order documentRoleOf asks them.
+// roleSlugs holds the same three, but as a map, and a report that names the part each document
+// plays needs a written, ordered list of the roles to ask for. It is read here, beside
+// roleSlugs, so a fourth role is added in one place.
+var documentRoles = [...]string{
+	model.ArtifactRoleVerification,
+	model.ArtifactRolePlan,
+	model.ArtifactRoleDecisions,
+}
+
+// documentRoleOf is the part a document plays: the first role of documentRoles that
+// documentPlays answers true for, asked of the row as every other reader asks it. Asking
+// documentPlays rather than reading artifacts.role is what gives a row whose role column is
+// still null the role its slug decides, which is the state a rolling deploy leaves behind. A
+// document that plays none of the three answers "", which omits the field of a report that
+// carries it (movedApprovalDocument).
+func documentRoleOf(artifact model.Artifact) string {
+	for _, role := range documentRoles {
+		if documentPlays(artifact, role) {
+			return role
+		}
+	}
+	return ""
 }
 
 // isSpecDocument reports whether an artifact already read is an issue's spec: the primary
