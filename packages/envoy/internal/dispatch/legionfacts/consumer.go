@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -41,6 +42,12 @@ const Freshness = time.Minute
 // 80 ms (TestTheSweepsPaceHoldsTheFreshnessRequirement prints both, over five runs). A pass
 // may therefore grow to about 380 times its measured length before a stored row can stand a
 // minute old.
+//
+// The sweep also reads the rows whose issue lost its Legion phase work (staleStoredRows), which
+// it did not read before dispatch://INFRA-2915's fourth round. That read costs a sweep pass
+// about 10 ms over those 252 issues and about 20 ms over the 1,008 of the same test's larger
+// population, measured as the difference between three runs of the test with the read and three
+// without it.
 const SweepEvery = 30 * time.Second
 
 // feedPage is the most rows one transaction reads of each feed. A pass whose page was full reads
@@ -114,7 +121,9 @@ var serverSchedule = schedule{
 //     the sampler recorded (readObservationPage).
 //  3. A pull request's merge time, woken by Deps.Deliveries (readChangePage).
 //  4. The clock, for an open issue, which no event moves. That is the sweep: each pass
-//     recomputes the stored rows of the project's open issues (openStoredRows).
+//     recomputes the stored rows of the project's open issues (openStoredRows), and the stored
+//     rows whose issue carries no Legion phase work any more, which no feed names at all
+//     (staleStoredRows).
 //
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // rows again. Every pass is safe to run twice: a row whose values did not move is not rewritten
@@ -235,8 +244,9 @@ func safeHorizon(ctx context.Context, horizon *events.Horizon) (int64, error) {
 // waiting.
 //
 // sweep says whether this page carries the work no feed announces: the recomputation of the open
-// rows, and the backfill of a project a feed cannot answer for. Only the first page of a pass
-// carries it, because both read the whole of what they cover.
+// rows, the recomputation of the rows whose issue lost its Legion phase work, and the backfill
+// of a project a feed cannot answer for. Only the first page of a pass carries it, because all
+// three read the whole of what they cover.
 //
 // The rows are computed before the transaction opens and written inside it, so no connection is
 // held open while a whole project is read. The cursor moves in the transaction that wrote the
@@ -290,6 +300,17 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			return nil, false, err
 		}
 		for project, keys := range open {
+			if work := needed(project); work != nil {
+				for _, key := range keys {
+					work.keys[key] = true
+				}
+			}
+		}
+		stale, err := staleStoredRows(ctx, deps.Pool)
+		if err != nil {
+			return nil, false, err
+		}
+		for project, keys := range stale {
 			if work := needed(project); work != nil {
 				for _, key := range keys {
 					work.keys[key] = true
@@ -640,6 +661,64 @@ func openStoredRows(ctx context.Context, q Querier) (map[string][]string, error)
 		return nil, fmt.Errorf("read the open issues' stored facts: %w", err)
 	}
 	return open, nil
+}
+
+// staleStoredRows is the stored row of every issue that a session wrote on and that carries no
+// Legion phase work any more, by project: the second set the sweep adds to its work, beside the
+// open rows.
+//
+// A stored row means Legion worked the issue, and an issue loses its phase work as well as
+// gains it: a role session that writes next on another issue under that issue's title takes the
+// work with it (legion.PhaseWork). Nothing else a pass reads names the issue it left. No event
+// is written on that issue, the links do not reach it, and the sweep reads it among the open
+// rows only while it is open, so the row of a closed issue would stand for ever. The key is
+// therefore read from what the table already holds, as the tree a moved parent link left is
+// read from the stored root_key (leftTrees), and it joins the set the pass states. It is one
+// more source of keys of the same kind: the computation decides whether the issue still carries
+// work, and the deletion inside the stated set takes the row only where the computation
+// answered it none.
+//
+// A row whose issue no session ever wrote on is left where it stands. Such a row is no row this
+// loop can have written, because the computation answers a row for an issue a handoff names or
+// a role session worked, and a handoff is never taken back. The whole-project pass is what
+// answers for a row of that kind (DeleteStaleProjectRows), as it does for a row whose key names
+// no issue at all.
+//
+// Both reads are of the whole deployment and run once a sweep, which is what their cost is
+// measured against. legion.PhaseWorkKeys is the one read of the phase-work rule, and the
+// computation of every project of the pass makes it anyway (metrics.Population). `select
+// project_key, issue_key from issue_facts` reads two narrow columns of the whole table, which
+// Postgres answers with one sequential scan: 26 shared buffers and 0.3 ms over the 1,008 rows
+// of the freshness test's larger population, and 519 buffers and 8 ms over 20,000 rows, under
+// explain (analyze, buffers). Neither read grows with the issues the pass computes.
+func staleStoredRows(ctx context.Context, pool *store.Pool) (map[string][]string, error) {
+	work, err := legion.PhaseWorkKeys(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx, `select project_key, issue_key from issue_facts`)
+	if err != nil {
+		return nil, fmt.Errorf("read the stored facts of the issues that lost their Legion phase work: %w", err)
+	}
+	defer rows.Close()
+	stale := map[string][]string{}
+	for rows.Next() {
+		var project, issue string
+		if err := rows.Scan(&project, &issue); err != nil {
+			return nil, fmt.Errorf("read the stored facts of the issues that lost their Legion phase work: %w", err)
+		}
+		if _, works := work.Keys[issue]; works {
+			continue
+		}
+		if _, wrote := work.SessionIssues[issue]; !wrote {
+			continue
+		}
+		stale[project] = append(stale[project], issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the stored facts of the issues that lost their Legion phase work: %w", err)
+	}
+	return stale, nil
 }
 
 // parentLinks is every issue of the project by its parent's key, and "" for an issue with no
