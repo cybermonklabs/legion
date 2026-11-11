@@ -36,8 +36,10 @@ import {
  *
  * A row is the twisty, the type with its shape, the author where the model holds one, the node's
  * first line, its chips, the gaps on it, and its state with its shape where the model holds one;
- * a folded row says how many nodes it holds. The first line is cut at a word (`firstLineOf`) and
- * the whole text is in the body, so nothing is lost and no row truncates a word.
+ * a folded row says how many nodes it holds. The first line is cut at a word (`firstLineOf`,
+ * and again at `oneLineFirstLine` where the row is one line) and the whole text is in the body,
+ * so nothing is lost and no row truncates a word. The words beside it - the type, the author,
+ * the state - hold no word boundary to cut at, so a one-line row draws each of them whole.
  *
  * The body is drawn for the focused row and for a row pinned open, and for no other row: it is
  * the focus that opens it, never the pointer, and no element of the row carries a `title`, since
@@ -65,6 +67,7 @@ export function NodeRow({
   level,
   node,
   oneLine,
+  oneLineMeasure,
   onFocus,
   onPin,
   onToggle,
@@ -102,6 +105,10 @@ export function NodeRow({
   /** Whether the row is drawn on one line, which is how the zoomed tree draws it at 1024 px and
    *  below: the row stays one line, cut with an ellipsis, and its body says the rest. */
   oneLine: boolean;
+  /** How many characters of its own words the row draws while it is one line
+   *  (`PHONE_ONE_LINE_MEASURE`, `WIDE_ONE_LINE_MEASURE`): the tree reads the width band once
+   *  for every row (`IssueTree.tsx`), since no row may read its own layout. */
+  oneLineMeasure: number;
   onFocus: () => void;
   onPin: () => void;
   onToggle: () => void;
@@ -114,19 +121,39 @@ export function NodeRow({
   tabStop: boolean;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
-  const first = firstLineOf(node.text);
   const state = node.state === undefined ? undefined : nodeStateWord(node.state);
   const stateGlyphs: Readonly<Record<string, Readonly<Record<string, string>>>> =
     GLYPH_TOKENS.states;
   const stateGlyph = node.state === undefined ? undefined : stateGlyphs[node.type]?.[node.state];
-  // What a one-line row gives up when its parts do not fit (R17). A phone's row is 258 px and
-  // a type's word, a session's id and a state's word are long enough together to fill it, so
-  // each gives width up and the text in it is cut. Only the element the text itself sits in
-  // is cut, never one that holds another: a box that reached past its row would be drawn over
-  // whatever sits beside it (c-checks-readable). The whole of every cut word is in the body
-  // the row opens on focus (R2). Above 1024 px the row wraps instead and nothing is cut.
-  const cut = oneLine ? "min-w-0 truncate" : "";
-  const gives = oneLine ? "min-w-0" : "";
+  /** What a folded row says it holds, which is drawn beside the node's own text. */
+  const counted =
+    folded === undefined || expanded !== false
+      ? undefined
+      : `${folded} ${CONTROL_LABELS.folded_nodes}`;
+  // The node's own first line. Where the row wraps, it is the whole of `firstLineOf`'s line;
+  // where the row is one line, it is cut again to what the row's other words leave of the
+  // measure its width band carries, at a word (R1).
+  const first = oneLine
+    ? oneLineFirstLine(node.text, oneLineMeasure, [
+        NODE_TYPE_NAMES[node.type],
+        node.author?.id,
+        state,
+        counted,
+      ])
+    : firstLineOf(node.text);
+  // What a one-line row gives up when its parts do not fit, and what it never gives up (R1,
+  // R17). A phone's row is 258 px and a type's word, a session's id and a state's word are long
+  // enough together to fill it. None of those three holds a word boundary to cut at - a type's
+  // word and a state's word are one word each, and a session's id is one token - so none of
+  // them is cut at all: each is drawn whole (`shrink-0`), and what gives width up is the node's
+  // own text, cut above by the measure rather than here by a CSS ellipsis that would stop
+  // inside a word. Only the element the text itself sits in is cut, never one that holds
+  // another: a box that reached past its row would be drawn over whatever sits beside it
+  // (c-checks-readable), so where a width or a font leaves that measure generous the line's own
+  // box hides what reaches past it, with no ellipsis of its own to claim a cut the words do not
+  // carry. The whole of every cut word is in the body the row opens on focus (R2). Above
+  // 1024 px the row wraps instead and nothing is cut.
+  const whole = oneLine ? "shrink-0" : "";
 
   // The focused row is brought inside the viewport and clear of the sticky identity block
   // after every move, by the one rule the whole page places a target with (R9,
@@ -170,12 +197,12 @@ export function NodeRow({
         }`}
       >
         <Twisty expanded={expanded} onToggle={onToggle} />
-        <span className={`flex items-center gap-1 ${gives}`} {...pageChrome}>
+        <span className={`flex items-center gap-1 ${whole}`} {...pageChrome}>
           <NodeGlyph token={GLYPH_TOKENS.types[node.type]} />
-          <span className={`${textMutedOnCanvas} ${cut}`}>{NODE_TYPE_NAMES[node.type]}</span>
+          <span className={textMutedOnCanvas}>{NODE_TYPE_NAMES[node.type]}</span>
         </span>
         {node.author === undefined ? null : (
-          <span className={`${textMutedOnCanvas} ${cut}`} data-node-author="" {...authorText}>
+          <span className={`${textMutedOnCanvas} ${whole}`} data-node-author="" {...authorText}>
             {node.author.id}
           </span>
         )}
@@ -189,7 +216,7 @@ export function NodeRow({
             a faint row is as readable as any other. */}
         <span
           className={`min-w-0 ${context ? textMutedOnCanvas : textSecondaryOnCanvas} ${
-            oneLine ? "truncate" : "break-words"
+            oneLine ? "overflow-hidden" : "break-words"
           }`}
           data-node-first-line=""
           {...authorText}
@@ -203,15 +230,15 @@ export function NodeRow({
         {/* A row whose own twisty is closed says how many nodes it holds. A branch below the
             drawn levels says it on the one line it folds to, under this row, so the count is
             drawn once however the nodes came to be out of sight. */}
-        {folded === undefined || expanded !== false ? null : (
-          <span className={`text-xs ${textMutedOnCanvas} ${cut}`} {...pageChrome}>
+        {counted === undefined ? null : (
+          <span className={`text-xs ${textMutedOnCanvas} ${whole}`} {...pageChrome}>
             <span {...authorText}>{folded}</span> {CONTROL_LABELS.folded_nodes}
           </span>
         )}
         {state === undefined || node.state === undefined ? null : (
-          <span className={`ml-auto flex items-center gap-1 text-xs ${gives}`} {...pageChrome}>
+          <span className={`ml-auto flex items-center gap-1 text-xs ${whole}`} {...pageChrome}>
             {stateGlyph === undefined ? null : <NodeGlyph token={stateGlyph} />}
-            <span className={`${textMutedOnCanvas} ${cut}`} data-node-state={node.state}>
+            <span className={textMutedOnCanvas} data-node-state={node.state}>
               {state}
             </span>
           </span>
@@ -231,6 +258,68 @@ export function NodeRow({
       ) : null}
     </div>
   );
+}
+
+/**
+ * How many characters of its own words a one-line row draws at 767 px and below
+ * (`PHONE_VIEWPORT_QUERY`), which is the phone's band of the one-line widths (R1, R17).
+ *
+ * The row a phone draws is 258 px wide, measured on the zoomed tree at the 390 px the `iphone`
+ * project runs, so the page keeps 132 px of that viewport for itself. Off the row go the
+ * twisty and the two shapes at 16 px each (`h-4 w-4`), the four gaps between the row's parts at
+ * 8 px each (`gap-x-2`) and the gap inside the type and inside the state at 4 px each
+ * (`gap-1`): 88 px, which leaves 170 px of words. `text-sm` is 14 px and the page's sans face
+ * draws mixed-case prose at about half its size per character, so 170 / 7 is 24 characters,
+ * and the row's words share them.
+ */
+export const PHONE_ONE_LINE_MEASURE = 24;
+
+/**
+ * The same, for the rest of the one-line widths: 768 px up to the 1024 px the tree is zoomed at
+ * (`ZOOMED_TREE_QUERY`), where the row is still one line and four times as wide as a phone's.
+ *
+ * The same arithmetic at 1024 px: the page keeps the 132 px the measurement above gives it, so
+ * the row is 1024 - 132 = 892 px; less the same 88 px of twisty, shapes and gaps, 804 px of
+ * words; at 7 px a character, 804 / 7 is 114. A line of 114 characters is longer than
+ * `FIRST_LINE_LIMIT` allows one to be at all, so a row of this band draws the whole of
+ * `firstLineOf`'s line except where its own type, author and state take enough of the measure
+ * to cut into it.
+ *
+ * Each band is derived at one width and drawn at every width in it, because a row may not read
+ * its own layout to decide what it says - that is a layout read per row and another on every
+ * resize, for a page that draws 56 of them - and the tree reads the band once for all of them
+ * (`IssueTree.tsx`). So the low end of a band hides the tail of a long line in the line's own
+ * box: 320 px leaves the phone's row 188 px, and 768 px leaves this band's row 636 px, which is
+ * (636 - 88) / 7, about 78 characters. The row's whole text is in the body it opens on focus
+ * (R2) at every width, and the cut a measure makes never lands inside a word.
+ */
+export const WIDE_ONE_LINE_MEASURE = 114;
+
+/**
+ * The node's own text as a one-line row draws it: `firstLineOf`'s line, cut again to what the
+ * row's other words - its type, its author, its state, the count a folded row draws - leave of
+ * `measure`, at a space and never inside a word (R1). `cut` says the text carries on past the
+ * line, which is what the row draws its ellipsis for.
+ *
+ * A first word longer than what is left of the measure is drawn whole rather than cut: a piece
+ * of a word with an ellipsis after it is the one thing R1 bans, and a word no box at that width
+ * could hold is answered by the body the row opens (R2), never by cutting it. The one cut no
+ * word boundary can answer is already made before this: `firstLineOf` holds a token longer than
+ * its own 100 characters to that limit, because such a token has no boundary in it at all
+ * (`issue-tree.ts`).
+ */
+export function oneLineFirstLine(
+  text: string,
+  measure: number,
+  beside: readonly (string | undefined)[]
+): { readonly cut: boolean; readonly line: string } {
+  const first = firstLineOf(text);
+  const left = measure - beside.reduce((sum, word) => sum + (word?.length ?? 0), 0);
+  if (first.line.length <= left) return first;
+  const space = first.line.lastIndexOf(" ", Math.max(left, 0));
+  if (space > 0) return { cut: true, line: first.line.slice(0, space) };
+  const wordEnd = first.line.indexOf(" ");
+  return wordEnd === -1 ? first : { cut: true, line: first.line.slice(0, wordEnd) };
 }
 
 /** The control that opens and closes a branch. It draws a shape with no name of its own - the

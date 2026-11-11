@@ -313,6 +313,12 @@ export function rowPictures(row: Locator): Locator {
   return row.locator("img");
 }
 
+/** The element one row draws the node's own first line in: the box a one-line row cuts that
+ *  line to fit, which is read for what it holds and for what it hides (R1, R17). */
+export function rowFirstLine(row: Locator): Locator {
+  return row.locator(SELECTORS.nodeFirstLine);
+}
+
 export function rowBody(row: Locator): Locator {
   return row.locator(SELECTORS.nodeBody);
 }

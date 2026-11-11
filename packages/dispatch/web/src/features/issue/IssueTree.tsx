@@ -2,9 +2,10 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
-import { useMediaQuery } from "../shell/useDialog";
+import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
 import { firstLineOf, type TreeNode } from "./issue-tree";
+import { PHONE_ONE_LINE_MEASURE, WIDE_ONE_LINE_MEASURE } from "./NodeRow";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
@@ -97,6 +98,14 @@ export function IssueTree({
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
   const zoomed = useMediaQuery(ZOOMED_TREE_QUERY);
+  // The width band a one-line row draws its own text to, read once for every row the tree
+  // draws: a row may not read its own layout to decide what it says, and 56 rows reading a
+  // query apiece, and again on every resize, is that read by another name (R1,
+  // `NodeRow.tsx`'s measures). The two bands are the page's own: `PHONE_VIEWPORT_QUERY` is
+  // where a row is a phone's 258 px, and the rest of the zoomed widths run to 1024 px.
+  const measure = useMediaQuery(PHONE_VIEWPORT_QUERY)
+    ? PHONE_ONE_LINE_MEASURE
+    : WIDE_ONE_LINE_MEASURE;
   const setFocusedNode = useSetFocusedNode();
   const body = useRef<HTMLDivElement | null>(null);
   const { edit, editing, stopEditing } = useNodeEditing({
@@ -330,6 +339,7 @@ export function IssueTree({
           onToggle={(node, expanded) =>
             zoomed ? setZoom(node.id) : unfold(node.id, expanded !== true)
           }
+          oneLineMeasure={measure}
           {...(openBody === undefined ? {} : { openBody })}
           pinned={pinned}
           rows={rows}

@@ -29,6 +29,7 @@ export function TreeRows({
   onOpenDeeper,
   onPin,
   onToggle,
+  oneLineMeasure,
   openBody,
   pinned,
   rows,
@@ -50,6 +51,10 @@ export function TreeRows({
   onOpenDeeper: (id: string) => void;
   onPin: (row: string) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
+  /** How many characters of its own words a one-line row draws, which the tree reads from the
+   *  width band once for every row (`IssueTree.tsx`, `NodeRow.tsx`'s measures): a row may not
+   *  read its own layout to decide what it says. */
+  oneLineMeasure: number;
   /** The node whose body the preset opens without being asked (R7). */
   openBody?: string;
   /** The keys of the rows whose bodies the reader pinned open. */
@@ -101,9 +106,10 @@ export function TreeRows({
             level={row.level}
             node={row.node}
             onFocus={() => onFocus(key, row.node)}
+            oneLine={zoomed}
+            oneLineMeasure={oneLineMeasure}
             onPin={() => onPin(key)}
             onToggle={() => onToggle(row.node, row.expanded)}
-            oneLine={zoomed}
             pinned={pinned.has(key)}
             rowKey={key}
             tabStop={tabStop === key}
