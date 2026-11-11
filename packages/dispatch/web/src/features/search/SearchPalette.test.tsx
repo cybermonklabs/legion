@@ -23,6 +23,7 @@ import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
+import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
 const results: SearchResult[] = [
   {
@@ -451,9 +452,10 @@ test("does not query below two characters", async () => {
     await user.clear(input);
     await user.click(input);
     await user.paste("a");
-    // Past both of the bar's timers - the 150 ms keystroke debounce and the 500 ms meaning
-    // pause - so a search of one character would have gone out by now if the bar made one.
-    await tick(600);
+    // Past both of the bar's timers, by the bar's own numbers, so a search of one character
+    // would have gone out by now if the bar made one - and so this row goes on reaching both
+    // tiers if either number ever moves.
+    await tick(KEYSTROKE_DEBOUNCE_MS + MEANING_PAUSE_MS);
 
     expect(search).not.toHaveBeenCalled();
     expect(screen.getByText("Type at least 2 characters")).not.toBeNull();
@@ -480,8 +482,10 @@ test("names the limit instead of querying over it, and queries at it", async () 
         `Search with a short phrase: ${SEARCH_QUERY_MAX + 1} characters is over the ${SEARCH_QUERY_MAX}-character limit`
       )
     ).not.toBeNull();
-    // Past the palette's 150 ms debounce, so a request would have gone out by now.
-    await tick(300);
+    // Past both of the bar's timers, by the bar's own numbers: a query over the limit must
+    // reach neither the keystroke tier nor the meaning tier, and an advance short of the pause
+    // would leave the second half of that unchecked.
+    await tick(KEYSTROKE_DEBOUNCE_MS + MEANING_PAUSE_MS);
     expect(search).not.toHaveBeenCalled();
 
     await user.clear(input);
@@ -765,6 +769,10 @@ test("while the search is in flight no action found inside its label is highligh
     await act(async () => answer.resolve(searchAnswer([hit])));
     await waitFor(() => expect(input).toHaveAttribute("aria-activedescendant", optionId(hit)));
     expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]);
+    // Enter then opens the hit the highlight landed on, rather than the action row below it.
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+    expect(ran).toEqual([]);
   } finally {
     search.mockRestore();
     unregister();
@@ -909,49 +917,6 @@ test("while the search is out the arrows walk only the actions the query starts,
     expect(input).toHaveAttribute("aria-activedescendant", triage);
     await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["triage"]));
-  } finally {
-    search.mockRestore();
-    unregister();
-    view.unmount();
-    view.queryClient.clear();
-  }
-});
-
-// This row reads the window where the keystroke debounce has fired and the 500 ms meaning
-// pause has not, so the search the keystrokes started is still out and no answer of the
-// meaning tier is mounted. What a cached answer of that tier does when the pause IS crossed -
-// an empty one leaves the hits that follow it with no highlight at all - is covered by no row
-// here, deliberately: it is a question about the palette's own re-rank rule
-// (`SearchPalette.tsx:616-623`) and not about this suite, and it is with the controller.
-test("a search still out leaves Down and Enter reaching no action found inside its label", async () => {
-  const user = userOnFakeClock();
-  const ran: string[] = [];
-  const unregister = registerClose(ran);
-  const hit = issueHit("LEGION-3");
-  const answer = Promise.withResolvers<SearchResponse>();
-  const search = spyOn(api, "search").mockReturnValue(answer.promise);
-  const view = renderPaletteHost();
-
-  try {
-    const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    await user.clear(input);
-    await user.click(input);
-    await user.paste("issue");
-    // The keystroke debounce alone, which is the window this row is about.
-    await tick(150);
-    await waitFor(() => expect(search).toHaveBeenCalled());
-    expect(optionIds()).toEqual([CLOSE_ROW]);
-    await user.keyboard("{ArrowDown}");
-    expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    await user.keyboard("{Enter}");
-    expect(ran).toEqual([]);
-
-    await act(async () => answer.resolve(searchAnswer([hit])));
-    await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
-    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
-    await user.keyboard("{Enter}");
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
-    expect(ran).toEqual([]);
   } finally {
     search.mockRestore();
     unregister();
