@@ -1,0 +1,237 @@
+package record
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// mergeJumpColumns is the jump mark's columns in the order scanMergeJump reads them, so the two
+// reads of the table (one issue's mark, a project's marks) cannot drift apart.
+const mergeJumpColumns = `issue, reason, session, set_at`
+
+// mergeHoldColumns is the hold's columns in the order scanMergeHold reads them, which both reads
+// of the hold list share (MergeHolds and LiveMergeHolds).
+const mergeHoldColumns = `paths, repository, reason, ends_at, session, set_at`
+
+// mergeJumpRecordColumns is the jump record's columns in the order scanMergeJumpRecord reads them.
+const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, entries, entries_total, entries_unknown, refused, refusal`
+
+func (s *Postgres) SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) error {
+	_, err := tx.Exec(ctx, `insert into merge_jumps (issue, reason, session, set_at) values ($1, $2, $3, $4)
+		on conflict (issue) do update set reason = excluded.reason, session = excluded.session, set_at = excluded.set_at`,
+		jump.Issue, jump.Reason, jump.Session, jump.SetAt)
+	if err != nil {
+		return fmt.Errorf("set the jump mark of %s: %w", jump.Issue, err)
+	}
+	return nil
+}
+
+func (s *Postgres) ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	tag, err := tx.Exec(ctx, "delete from merge_jumps where issue = $1", issue)
+	if err != nil {
+		return false, fmt.Errorf("clear the jump mark of %s: %w", issue, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *Postgres) MergeJumps(ctx context.Context, tx pgx.Tx, project string) ([]MergeJump, error) {
+	rows, err := tx.Query(ctx, `select `+mergeJumpColumns+` from merge_jumps
+		where split_part(issue, '-', 1) = $1 order by issue`, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the jump marks of %s: %w", project, err)
+	}
+	defer rows.Close()
+	jumps := []MergeJump{}
+	for rows.Next() {
+		jump, err := scanMergeJump(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list the jump marks of %s: %w", project, err)
+		}
+		jumps = append(jumps, jump)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the jump marks of %s: %w", project, err)
+	}
+	return jumps, nil
+}
+
+func (s *Postgres) MergeJumpOf(ctx context.Context, tx pgx.Tx, issue string) (*MergeJump, error) {
+	jump, err := scanMergeJump(tx.QueryRow(ctx, `select `+mergeJumpColumns+` from merge_jumps where issue = $1`, issue))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the jump mark of %s: %w", issue, err)
+	}
+	return &jump, nil
+}
+
+// scanMergeJump reads one row of mergeJumpColumns, with its time in UTC as every time this
+// package answers is.
+func scanMergeJump(row pgx.Row) (MergeJump, error) {
+	var jump MergeJump
+	if err := row.Scan(&jump.Issue, &jump.Reason, &jump.Session, &jump.SetAt); err != nil {
+		return MergeJump{}, err
+	}
+	jump.SetAt = jump.SetAt.UTC()
+	return jump, nil
+}
+
+func (s *Postgres) ReplaceMergeHolds(ctx context.Context, tx pgx.Tx, project string, holds []MergeHold) error {
+	if _, err := tx.Exec(ctx, "delete from merge_holds where project = $1", project); err != nil {
+		return fmt.Errorf("replace the merge holds of %s: %w", project, err)
+	}
+	for ordinal, hold := range holds {
+		paths := hold.Paths
+		if paths == nil {
+			paths = []string{}
+		}
+		_, err := tx.Exec(ctx, `insert into merge_holds (project, ordinal, paths, repository, reason, ends_at, session, set_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			project, ordinal, paths, hold.Repository, hold.Reason, hold.EndsAt, hold.Session, hold.SetAt)
+		if err != nil {
+			return fmt.Errorf("replace the merge holds of %s: %w", project, err)
+		}
+	}
+	return nil
+}
+
+// MergeHolds deletes the project's ended holds and answers the rest; LiveMergeHolds is the same
+// read without the delete. Keep the two together: a reader that follows one must find the other
+// beside it.
+func (s *Postgres) MergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error) {
+	if _, err := tx.Exec(ctx, "delete from merge_holds where project = $1 and ends_at <= $2", project, now); err != nil {
+		return nil, fmt.Errorf("delete the ended merge holds of %s: %w", project, err)
+	}
+	rows, err := tx.Query(ctx, `select `+mergeHoldColumns+` from merge_holds where project = $1 order by ordinal`, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the merge holds of %s: %w", project, err)
+	}
+	return scanMergeHolds(rows, project)
+}
+
+func (s *Postgres) LiveMergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error) {
+	rows, err := tx.Query(ctx, `select `+mergeHoldColumns+` from merge_holds
+		where project = $1 and ends_at > $2 order by ordinal`, project, now)
+	if err != nil {
+		return nil, fmt.Errorf("list the live merge holds of %s: %w", project, err)
+	}
+	return scanMergeHolds(rows, project)
+}
+
+// scanMergeHolds reads a hold list of mergeHoldColumns, in the order the query gave, with each
+// end and set time in UTC. It closes rows, so both reads of the list share one body.
+func scanMergeHolds(rows pgx.Rows, project string) ([]MergeHold, error) {
+	defer rows.Close()
+	holds := []MergeHold{}
+	for rows.Next() {
+		var hold MergeHold
+		if err := rows.Scan(&hold.Paths, &hold.Repository, &hold.Reason, &hold.EndsAt, &hold.Session, &hold.SetAt); err != nil {
+			return nil, fmt.Errorf("list the merge holds of %s: %w", project, err)
+		}
+		hold.EndsAt = hold.EndsAt.UTC()
+		hold.SetAt = hold.SetAt.UTC()
+		holds = append(holds, hold)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the merge holds of %s: %w", project, err)
+	}
+	return holds, nil
+}
+
+func (s *Postgres) PutMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) error {
+	// A record with no entry read carries an empty array, never null: the column is `not null`,
+	// and an unread queue says so with EntriesUnknown rather than with a missing array.
+	entries, err := json.Marshal(append([]MergeQueueEntryRecord{}, record.Entries...))
+	if err != nil {
+		return fmt.Errorf("put the jump record of %s in %s: encode the queue entries: %w", record.Repository, project, err)
+	}
+	_, err = tx.Exec(ctx, `insert into merge_jump_records (project, repository, issue, number, head, at, reason,
+		entries, entries_total, entries_unknown, refused, refusal)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		on conflict (project, repository) do update set issue = excluded.issue, number = excluded.number,
+		head = excluded.head, at = excluded.at, reason = excluded.reason, entries = excluded.entries,
+		entries_total = excluded.entries_total, entries_unknown = excluded.entries_unknown,
+		refused = excluded.refused, refusal = excluded.refusal`,
+		project, record.Repository, record.Issue, record.Number, record.Head, record.At, record.Reason,
+		entries, record.EntriesTotal, record.EntriesUnknown, record.Refused, record.Refusal)
+	if err != nil {
+		return fmt.Errorf("put the jump record of %s in %s: %w", record.Repository, project, err)
+	}
+	return nil
+}
+
+func (s *Postgres) MergeJumpRecords(ctx context.Context, tx pgx.Tx, project string) ([]MergeJumpRecord, error) {
+	rows, err := tx.Query(ctx, `select `+mergeJumpRecordColumns+` from merge_jump_records
+		where project = $1 order by repository`, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the jump records of %s: %w", project, err)
+	}
+	defer rows.Close()
+	records := []MergeJumpRecord{}
+	for rows.Next() {
+		record, err := scanMergeJumpRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list the jump records of %s: %w", project, err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the jump records of %s: %w", project, err)
+	}
+	return records, nil
+}
+
+// scanMergeJumpRecord reads one row of mergeJumpRecordColumns, decoding the queue snapshot the
+// jsonb column holds. Every time it answers is in UTC: the jump's own, and each entry's, which
+// JSON carries with the offset it was written at, so without this a snapshot read back would
+// differ from the one written only in the zone its times are spelled in.
+func scanMergeJumpRecord(row pgx.Row) (MergeJumpRecord, error) {
+	var record MergeJumpRecord
+	var entries []byte
+	if err := row.Scan(&record.Repository, &record.Issue, &record.Number, &record.Head, &record.At,
+		&record.Reason, &entries, &record.EntriesTotal, &record.EntriesUnknown, &record.Refused,
+		&record.Refusal); err != nil {
+		return MergeJumpRecord{}, err
+	}
+	if err := json.Unmarshal(entries, &record.Entries); err != nil {
+		return MergeJumpRecord{}, fmt.Errorf("decode the queue entries of %s: %w", record.Repository, err)
+	}
+	for i := range record.Entries {
+		record.Entries[i].EnqueuedAt = record.Entries[i].EnqueuedAt.UTC()
+	}
+	record.At = record.At.UTC()
+	return record, nil
+}
+
+func (s *Postgres) MergeHeldIssues(ctx context.Context, tx pgx.Tx, project string) ([]MergeHeldIssue, error) {
+	// The hold's mark is read from the payload's own key rather than through a decoded
+	// ReadyMerge: the question is whether the row carries a held moment at all, which the key's
+	// presence and a non-empty value answer without decoding a payload this read never uses.
+	rows, err := tx.Query(ctx, `select issue, next_at from outbox
+		where kind = $1 and split_part(issue, '-', 1) = $2
+		and payload ? 'heldSince' and payload->>'heldSince' <> '' order by issue`,
+		string(OutboxKindReadyMerge), project)
+	if err != nil {
+		return nil, fmt.Errorf("list the held merges of %s: %w", project, err)
+	}
+	defer rows.Close()
+	held := []MergeHeldIssue{}
+	for rows.Next() {
+		var issue MergeHeldIssue
+		if err := rows.Scan(&issue.Issue, &issue.DueAt); err != nil {
+			return nil, fmt.Errorf("list the held merges of %s: %w", project, err)
+		}
+		issue.DueAt = issue.DueAt.UTC()
+		held = append(held, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the held merges of %s: %w", project, err)
+	}
+	return held, nil
+}

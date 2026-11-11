@@ -1561,6 +1561,42 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+	// SetMergeJump sets issue's jump mark (MergeJump), replacing the one the issue holds: an
+	// issue carries at most one.
+	SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) error
+	// ClearMergeJump deletes issue's jump mark and answers whether a row went. False is a mark
+	// another transaction already spent, or one a controller took off, which is what the
+	// transaction that submits a jumping merge reads to know the mark was still there when it
+	// submitted.
+	ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// MergeJumps is every jump mark of project's issues, by issue key.
+	MergeJumps(ctx context.Context, tx pgx.Tx, project string) ([]MergeJump, error)
+	// MergeJumpOf is issue's jump mark, nil when the issue carries none.
+	MergeJumpOf(ctx context.Context, tx pgx.Tx, issue string) (*MergeJump, error)
+	// ReplaceMergeHolds replaces project's whole merge hold list with holds, in the order given.
+	// The list is written whole and never a row at a time, so a hold's place in it is the only
+	// identity it has (MergeHold).
+	ReplaceMergeHolds(ctx context.Context, tx pgx.Tx, project string, holds []MergeHold) error
+	// MergeHolds deletes project's holds that ended at or before now and answers the rest in
+	// their list order. This read WRITES: a caller inside a read-only snapshot must call
+	// LiveMergeHolds instead, which answers the same list and deletes nothing. The delete is what
+	// keeps an ended hold out of the list a controller reads before it replaces the list, so
+	// nobody copies a dead hold forward.
+	MergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error)
+	// LiveMergeHolds is project's holds still live at now, in their list order: MergeHolds
+	// without its delete, for the state projection, which runs inside the state's one snapshot
+	// transaction and must write nothing.
+	LiveMergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error)
+	// PutMergeJumpRecord records the newest jump of (project, the record's repository),
+	// replacing the one that repository holds: the record keeps the last jump of each repository
+	// and no history (MergeJumpRecord).
+	PutMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) error
+	// MergeJumpRecords is project's jump records, by repository.
+	MergeJumpRecords(ctx context.Context, tx pgx.Tx, project string) ([]MergeJumpRecord, error)
+	// MergeHeldIssues is every issue of project whose ready_merge row a merge hold is keeping
+	// back — the row's payload carries a heldSince — each with the moment that row is due again,
+	// by issue.
+	MergeHeldIssues(ctx context.Context, tx pgx.Tx, project string) ([]MergeHeldIssue, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
