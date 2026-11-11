@@ -1,7 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, test, type WebSocket } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
@@ -18,7 +16,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -56,10 +54,6 @@ async function renameUntilShown(
   }
   throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
 test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({
@@ -190,6 +184,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // Anything the first rename scheduled fires on this clock, and is then cleared with the
     // counters below; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS);
+    // The margin that paragraph names: a read the jump above set going leaves the page at once,
+    // and this window in Node is for it to reach Playwright's counter before the counters are
+    // cleared, since the page's own clock cannot carry a request across the wire.
     await sleep(100);
     inboxReads = 0;
     pinnedReads = 0;
@@ -203,6 +200,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // `MIN_REFETCH_INTERVAL_MS` both fall due inside this jump, so a read either owed is sent and
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a read either timer owed leaves the page in the jump
+    // above, and this window in Node is for it to reach Playwright's counter, which the page's
+    // own clock cannot move it to. A read that never happens marks nothing else to wait on.
     await sleep(100);
 
     expect([inboxReads, pinnedReads]).toEqual([0, 0]);
@@ -679,13 +679,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await alice.close();
 });
 
-test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone", async ({
+test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "the margin sheet toggle only renders as a fixed bottom bar on phone; desktop hides it via md:hidden"
-  );
   await createProject({ key: "CORE", name: "Core" });
   // #844 hides the margin sheet's `<aside>` (and its toggle) entirely when no
   // issue is open, so the toggle only exists on an issue page.
@@ -803,6 +799,9 @@ test("live: an event during a project list's first load fetches it again once th
     // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a third request would already be
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a third request would leave the page inside the jump
+    // above, and this window in Node is for it to reach Playwright's counter; a request that is
+    // never made marks nothing else the row could wait on.
     await sleep(100);
     expect([listRequests, mostInFlight]).toEqual([2, 1]);
   } finally {

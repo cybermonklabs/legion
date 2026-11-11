@@ -92,7 +92,7 @@ FORCE=false
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--dir)
-		[ $# -ge 2 ] || {
+		[ $# -ge 2 ] && [ -n "$2" ] || {
 			echo "airlock-clients: --dir needs a directory" >&2
 			exit 2
 		}
@@ -112,6 +112,12 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+
+# ROOT is made absolute once both of its setters, --dir above and the environment at the top,
+# have had their say: this script writes links into $ROOT/bin whose target is built from ROOT,
+# and a relative target resolves from the link's own directory, so a relative ROOT leaves every
+# one of them pointing at nothing.
+case "$ROOT" in /*) ;; *) ROOT="$PWD/$ROOT" ;; esac
 
 for needed in curl tar sha256sum uv python3; do
 	command -v "$needed" >/dev/null 2>&1 || {

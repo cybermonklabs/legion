@@ -1,4 +1,4 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { afterAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -21,8 +21,10 @@ import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
 import { commentDeliveryFields } from "./comment-fixture";
+import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
+import { userOnFakeClock } from "./user";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
@@ -38,6 +40,9 @@ function ask(overrides: Partial<OwnedAsk> = {}): OwnedAsk {
     anchor: null,
     answer: null,
     artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { kind: "session", id: "session-1" },
     block_id: null,
     created_at: "2026-09-09T00:00:00Z",
@@ -681,7 +686,8 @@ function png(name: string): File {
 // A picture pasted into an answer is part of the answer: the field takes the picture syntax once
 // the upload lands, and Answer waits for it, since an answer sent before would go without it.
 test("AskCard writes a picture pasted into its answer as an inline picture, and waits for it", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const submitted: AnswerAskInput[] = [];
   const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
@@ -711,9 +717,7 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
     // Ctrl+Enter is Answer's other way in, and the form's submit does not itself wait for uploads.
     await user.click(answer);
     await user.keyboard("{Control>}{Enter}{/Control}");
-    const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
-    setTimeout(settle, 20);
-    await settled;
+    await tick(20);
     expect(submitted).toEqual([]);
     expect(uploadArtifact.mock.calls[0]?.[0]).toEqual({ issue: "CORE-1" });
 
@@ -732,6 +736,7 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
       ])
     );
   } finally {
+    realClock();
     view.unmount();
     uploadArtifact.mockRestore();
   }

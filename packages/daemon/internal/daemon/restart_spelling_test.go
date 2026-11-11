@@ -10,13 +10,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -66,11 +66,7 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := nats.Connect(workflowNATS(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatal(err)

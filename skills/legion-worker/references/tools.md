@@ -630,8 +630,10 @@ something to count.
 
   Both or neither: one set without the other fails the test rather than falling back. The
   monitor port is read, not decoration — the per-test reset waits there for every client
-  connection to end. One server serves one test binary at a time, so name one package a
-  command (or pass `-p 1`): two packages' binaries on one server delete each other's streams.
+  connection to end, and the check at the end of each test reads it again, failing the test
+  that leaves a client connected. One server serves one test binary at a time, so name one
+  package a command (or pass `-p 1`): two packages' binaries on one server delete each other's
+  streams, and each would see the other's connections as a leak.
   Pick ports no sibling role holds, and keep the store directory off your home. In your own
   work, run the NATS-backed tests your change touches by name (`go test -run`), as the first
   section says. Measured here, as proof of the route and not as a run to repeat:
