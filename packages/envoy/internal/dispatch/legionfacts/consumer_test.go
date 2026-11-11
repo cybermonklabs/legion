@@ -200,19 +200,36 @@ func TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor(t *testing.T
 	if len(stored) != len(run.fixture.PhaseWork) {
 		t.Errorf("the pass stored %d rows, want the %d issues with Legion phase work", len(stored), len(run.fixture.PhaseWork))
 	}
+	// A cursor stands at its feed's head once the pass has read it, with one exception the facts
+	// feed makes for itself: the pass's own write appends an issue_facts change row for every row
+	// it wrote, after it read that feed, so the delivery_changes head runs ahead of the cursor by
+	// exactly those rows. Nothing is lost, and the second pass below is the proof: it reads them,
+	// keeps none, writes nothing and brings every cursor to its head.
 	heads, cursors := run.feedHeads(t), run.cursors(t)
 	for _, name := range cursorNames {
 		at, has := cursors[name]
 		switch {
 		case !has:
 			t.Errorf("the %s cursor has no row after a pass", name)
-		case at.position != heads[name]:
+		case at.position > heads[name]:
+			t.Errorf("the %s cursor stands at %d, past its feed's head %d", name, at.position, heads[name])
+		case at.position < heads[name] && name != changesCursor:
 			t.Errorf("the %s cursor stands at %d, want its feed's head %d", name, at.position, heads[name])
 		case at.position == 0:
 			t.Errorf("the %s cursor stands at 0, so the pass read none of that feed", name)
 		case !at.updatedAt.Equal(run.at):
 			t.Errorf("the %s cursor is stamped %s, want the moment the pass computed as of, %s",
 				name, at.updatedAt.UTC(), run.at.UTC())
+		}
+	}
+	if rewritten := run.pass(t); len(rewritten) != 0 {
+		t.Errorf("a second pass with nothing moved rewrote %d rows, want none: %v", len(rewritten), rewritten)
+	}
+	settled, afterwards := run.feedHeads(t), run.cursors(t)
+	for _, name := range cursorNames {
+		if afterwards[name].position != settled[name] {
+			t.Errorf("after a second pass the %s cursor stands at %d, want its feed's head %d",
+				name, afterwards[name].position, settled[name])
 		}
 	}
 	t.Logf("one pass: %d issues seeded, %d with Legion phase work, %d rows stored, %d rows changed; cursors events=%d observations=%d delivery_changes=%d",
