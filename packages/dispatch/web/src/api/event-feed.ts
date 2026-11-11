@@ -49,6 +49,7 @@ const knownEventTypes: Record<EventType, true> = {
   "block.invalid": true,
   "result.recorded": true,
   "result.retracted": true,
+  "issue.pull_request_attribution_changed": true,
   "comment.created": true,
   "comment.anchor_refreshed": true,
   "comment.delivery": true,

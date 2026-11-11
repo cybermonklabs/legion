@@ -695,7 +695,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	})
 
 	stale := time.Now().Add(-2 * PullRequestHeadStaleAfter)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 55, HeadSHA: headWas, HeadRef: "legion/" + key, BaseRef: "main",
 		State: "open", IssueKey: &key, AttributionSource: "title_body", AttributionComplete: true,
 		Title: key + " the work", URL: "https://github.com/acme/widgets/pull/55", CheckedAt: &stale,
@@ -772,7 +772,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	})
 
 	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/gadgets", Number: 60, HeadSHA: sha, HeadRef: "legion/" + own, BaseRef: "main",
 		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
 		Title: title, URL: "https://github.com/acme/gadgets/pull/60", CheckedAt: &stamped,
@@ -842,7 +842,7 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	// the rule that took the first candidate outright, which attribution_rule numbers 0. No
 	// writer stamps that rule, so the row is written and then stamped with it.
 	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/gadgets", Number: 61, HeadSHA: sha, HeadRef: "topic", BaseRef: "main",
 		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
 		Title: title, URL: "https://github.com/acme/gadgets/pull/61", CheckedAt: &stamped,

@@ -968,6 +968,21 @@ export interface CheckResultRetractedEventPayload {
   readonly reason: string;
 }
 
+/** `issue.pull_request_attribution_changed`: a pull request Dispatch credited to one issue now
+ *  belongs to another, which changes what that issue's results are measured against. One event
+ *  goes on the issue it left and one on the issue it reached, each carrying this payload;
+ *  `from` and `to` are those two issues, either null and never both, and `source` is what
+ *  decided the new one (`external_link`, `github_issue_link`, `branch`, `title_body`,
+ *  `commit_message`, or `none` where the pull request is now credited to nobody). */
+export interface IssuePullRequestAttributionEventPayload {
+  readonly repo: string;
+  readonly number: number;
+  readonly url: string;
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly source: string;
+}
+
 /** A server-owned typed-block attribute was restored from its indexed row. */
 export interface BlockRepairedEventPayload {
   readonly block_id: string;
@@ -1305,6 +1320,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "result.retracted";
       readonly payload: CheckResultRetractedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "issue.pull_request_attribution_changed";
+      readonly payload: IssuePullRequestAttributionEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "comment.created";

@@ -561,7 +561,8 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 		return false
 	}
 	written, atHead, err := delivery.ReadThroughCommitPulls(
-		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, *repo, result.CommitSHA, now)
+		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, c.server.deps.Events,
+		*repo, result.CommitSHA, now)
 	if err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a result's commit",
 			"repo", *repo, "commit", result.CommitSHA, "error", err)

@@ -930,6 +930,12 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     return targets;
   }
+  // A pull request that moves to another issue changes what this issue's results are compared
+  // with, and the event is on each of the two issues, so each refetches its own results read.
+  if (event.type === "issue.pull_request_attribution_changed") {
+    targets.push({ exact: true, queryKey: ["issue", key, "results"] });
+    return targets;
+  }
   if (isAskEvent(event)) {
     targets.push({ queryKey: inboxKey });
     appendAskReads(targets, event);

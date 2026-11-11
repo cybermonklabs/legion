@@ -1275,6 +1275,14 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     issue: "CORE-1",
     reason: "The run was against the wrong commit.",
   }),
+  "issue.pull_request_attribution_changed": event("issue.pull_request_attribution_changed", {
+    repo: "acme/widgets",
+    number: 42,
+    url: "https://github.com/acme/widgets/pull/42",
+    from: "CORE-1",
+    to: "CORE-2",
+    source: "branch",
+  }),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",
     {},

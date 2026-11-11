@@ -69,9 +69,9 @@ func storedIssueKey(t *testing.T, ctx context.Context, pool *store.Pool, repo st
 	return *issue
 }
 
-// TestAttributionFallsBackToAnExternalLinkNamingThePullRequest: source (a), an issue whose
-// external link is the pull request's own URL.
-func TestAttributionFallsBackToAnExternalLinkNamingThePullRequest(t *testing.T) {
+// TestAttributionTakesAnExternalLinkNamingThePullRequest: source 1, an issue whose external
+// link is the pull request's own URL.
+func TestAttributionTakesAnExternalLinkNamingThePullRequest(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-101"}, map[string][]string{
 		"ATTR-101": {"https://github.com/acme/widgets/pull/101"},
@@ -100,10 +100,10 @@ func TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest(t *testing.T) 
 	}
 }
 
-// TestAttributionFallsBackToACitedGitHubIssue: source (b), the first GitHub issue the body
-// cites, a full URL or a bare #N in the pull request's own repository, that an issue's external
-// link names.
-func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
+// TestAttributionTakesACitedGitHubIssue: source 2, the first GitHub issue the body cites, a
+// full URL or a bare #N in the pull request's own repository, that an issue's external link
+// names.
+func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-111", "ATTR-112", "ATTR-113"}, map[string][]string{
 		"ATTR-111": {"https://github.com/acme/widgets/issues/77"},
@@ -132,9 +132,9 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 	}
 }
 
-// TestAttributionFallsBackToTheHeadBranch: source (c), a key in the branch name, matched
-// whatever its case.
-func TestAttributionFallsBackToTheHeadBranch(t *testing.T) {
+// TestAttributionTakesTheHeadBranch: source 3, a key in the branch name, matched whatever its
+// case.
+func TestAttributionTakesTheHeadBranch(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-121"}, nil)
 	key, source := resolvedKey(t, ctx, pool, attributionFacts{
@@ -145,8 +145,8 @@ func TestAttributionFallsBackToTheHeadBranch(t *testing.T) {
 	}
 }
 
-// TestAttributionFallsBackToCommitMessages: source (d), the first known key across the commit
-// messages in commit order.
+// TestAttributionFallsBackToCommitMessages: source 5, the first known key across the commit
+// messages in commit order, which is read only where the four sources above name nobody.
 func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-131", "ATTR-132"}, nil)
@@ -159,8 +159,9 @@ func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 	}
 }
 
-// TestAttributionTakesTheSourcesInOrder: title/body, then (a), (b), (c), (d); each source is
-// tried only when every earlier one found nothing.
+// TestAttributionTakesTheSourcesInOrder: the external link, then the GitHub issue the body
+// cites, then the head branch, then the title and the body, then the commit messages; each
+// source is tried only when every earlier one found nothing.
 func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	prURL := "https://github.com/acme/widgets/pull/140"
@@ -177,11 +178,11 @@ func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
 		want   string
 		source attributionSource
 	}{
-		{func(*attributionFacts) {}, "ATTR-141", sourceTitleBody},
-		{func(f *attributionFacts) { f.Title = "feat: none" }, "ATTR-142", sourceExternalLink},
+		{func(*attributionFacts) {}, "ATTR-142", sourceExternalLink},
 		{func(f *attributionFacts) { f.URL = "https://github.com/acme/widgets/pull/149" }, "ATTR-143", sourceGitHubIssueLink},
 		{func(f *attributionFacts) { f.Body = "" }, "ATTR-144", sourceBranch},
-		{func(f *attributionFacts) { f.HeadRef = "main" }, "ATTR-145", sourceCommitMessage},
+		{func(f *attributionFacts) { f.HeadRef = "main" }, "ATTR-141", sourceTitleBody},
+		{func(f *attributionFacts) { f.Title = "feat: none" }, "ATTR-145", sourceCommitMessage},
 		{func(f *attributionFacts) { f.CommitMessages = nil }, "", sourceNone},
 	}
 	facts := all
@@ -191,6 +192,64 @@ func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
 		if key != step.want || source != step.source {
 			t.Fatalf("with %+v resolved %q from %q, want %q from %q", facts, key, source, step.want, step.source)
 		}
+	}
+}
+
+// TestAttributionTakesTheHeadBranchOverTheTitle: the first of the two moves R8 of INFRA-1522
+// makes. A branch name is an act that names the issue — someone branched for it — while a key
+// in a title is a mention, which a pull request that follows or reverts another issue's work
+// carries as readily as one that does it. Rule 1 credited this pull request to the issue its
+// title names.
+func TestAttributionTakesTheHeadBranchOverTheTitle(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-231", "ATTR-232"}, nil)
+	key, source := resolvedKey(t, ctx, pool, attributionFacts{
+		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/230",
+		Title: "feat: follows ATTR-231", HeadRef: "legion/attr-232-the-work",
+	})
+	if key != "ATTR-232" || source != sourceBranch {
+		t.Fatalf("resolved %q from %q, want ATTR-232 from %q: the branch outranks the title", key, source, sourceBranch)
+	}
+}
+
+// TestAttributionTakesALinkOverTheTitle: the second move R8 makes, for both link sources.
+// Someone linking an issue to the pull request, or the pull request citing a GitHub issue an
+// issue holds, names the issue as deliberately as a branch does.
+func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	prURL := "https://github.com/acme/widgets/pull/240"
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-241", "ATTR-242", "ATTR-243"}, map[string][]string{
+		"ATTR-242": {prURL},
+		"ATTR-243": {"https://github.com/acme/widgets/issues/243"},
+	})
+	for _, tc := range []struct {
+		name  string
+		facts attributionFacts
+		want  string
+		from  attributionSource
+	}{
+		{
+			name: "the issue linking the pull request",
+			facts: attributionFacts{
+				Repo: "acme/widgets", URL: prURL, Title: "feat: follows ATTR-241",
+			},
+			want: "ATTR-242", from: sourceExternalLink,
+		},
+		{
+			name: "the issue holding the GitHub issue the body cites",
+			facts: attributionFacts{
+				Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/249",
+				Title: "feat: follows ATTR-241", Body: "Fixes #243.",
+			},
+			want: "ATTR-243", from: sourceGitHubIssueLink,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key, source := resolvedKey(t, ctx, pool, tc.facts)
+			if key != tc.want || source != tc.from {
+				t.Fatalf("resolved %q from %q, want %q from %q: a link outranks the title", key, source, tc.want, tc.from)
+			}
+		})
 	}
 }
 

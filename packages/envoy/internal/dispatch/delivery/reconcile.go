@@ -519,9 +519,11 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 
 // reconcilePullRequestHeads re-reads the pull request heads ListStalePullRequestHeads hands it,
 // at most PullRequestHeadBatch of them a pass, the longest unread first: the open rows Dispatch
-// last checked over PullRequestHeadStaleAfter ago, and every merged row credited to nobody that
-// the rule this build judges by has not judged yet, each of those taken once per rule version
-// (AttributionRuleVersion). GitHub's `pull_request` events carry every head move, so this is
+// last checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody that no
+// read has reached, and every merged row a rule older than this build's judged, each of those
+// taken once per rule version (AttributionRuleVersion). A row this pass moves from one issue to
+// another records that move on both issues, through the broker handed to the refresh
+// (UpsertPullRequestHead). GitHub's `pull_request` events carry every head move, so this is
 // the backstop for an event that never arrived — a delivery Dispatch was down for, a
 // repository whose webhook was installed late — and the one way a merge that happened while
 // Dispatch was not listening reaches the head row at all. The
@@ -537,7 +539,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := RefreshPullRequestHead(ctx, r.pool, r.github, head.Repo, head.Number, now)
+		err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
 		if err == nil {
 			return nil
 		}

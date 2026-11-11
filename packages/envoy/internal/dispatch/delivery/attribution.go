@@ -16,27 +16,33 @@ import (
 // A pull request's issue is the first issue its five ranked sources name that resolves to the
 // repository the pull request is in: a candidate ranked above it that resolves to another
 // repository, or to no repository at all, is passed over, and a pull request no candidate of
-// which resolves here is attributed to nobody, with the source "none". The sources rank as the
-// prototype's collector/attribution.py tried them, every candidate of one before any of the
-// next (attributionCandidates):
+// which resolves here is attributed to nobody, with the source "none". Every candidate of one
+// source ranks above any of the next (attributionCandidates):
 //
-//  1. a key in its title or body, title first;
-//  2. the issue whose external link is the pull request's own URL;
-//  3. the issue whose external link is a GitHub issue the body cites, a full
+//  1. the issue whose external link is the pull request's own URL;
+//  2. the issue whose external link is a GitHub issue the body cites, a full
 //     github.com/<owner>/<repo>/issues/<n> URL or a bare #N in the pull request's own repository,
 //     the first such citation in body order;
-//  4. a key in its head branch name, whatever its case;
+//  3. a key in its head branch name, whatever its case;
+//  4. a key in its title or body, title first;
 //  5. a key in its commit messages, in commit order.
+//
+// The prototype's collector/attribution.py tried the title and the body first, and ranks 1 to 3
+// below them. R8 of INFRA-1522 moved them above: a branch name and a link are acts that name the
+// issue — someone branched for it, someone linked it — while a key in a title or a body is a
+// mention, which a pull request that reverts, follows or merely cites another issue's work
+// carries as readily as one that does that work. The commit messages stay last: they are the
+// weakest mention of all, and the only source that costs a GitHub call to read (attributeHead).
 //
 // The holding to the repository is the server's one repository-resolution rule, spliced into the
 // same statement as the candidates (refs.IssueRepoTerms, attributionHeld), so what an
 // attribution believes an issue's repository is can never disagree with the issue page.
 //
-// Sources 1, 3, 4 and 5 read what GitHub says about the pull request, which does not change once it
-// has merged, so those inputs (AttributionInputs) are read from GitHub once and stored on its row.
-// Sources 2 and 3 also read Dispatch's external links, which change whenever someone links an issue,
-// every source reads whether the issue it names exists, and the holding reads where that issue
-// sits — a reparent, or a project's repository mapping, moves it — so a stored row's issue is
+// Sources 2, 3, 4 and 5 read what GitHub says about the pull request, which does not change once
+// it has merged, so those inputs (AttributionInputs) are read from GitHub once and stored on its
+// row. Sources 1 and 2 also read Dispatch's external links, which change whenever someone links an
+// issue, every source reads whether the issue it names exists, and the holding reads where that
+// issue sits — a reparent, or a project's repository mapping, moves it — so a stored row's issue is
 // resolved again from the database alone (AttributePullRequests), a batch of rows a pass, the rows
 // checked longest ago first: an issue that links a pull request tomorrow credits it within one walk
 // of the table, with no GitHub call. Nothing in the schema says which rows a change could affect (a
@@ -46,16 +52,18 @@ import (
 // AttributionRuleVersion names the rule this build judges a pull request by: the first
 // candidate, of the five sources above, whose issue resolves to the repository the pull request
 // is in. pull_request_heads.attribution_rule records the rule that last judged a row, and the
-// reconcile re-judges a merged row credited to nobody once when the rule that judged it is
-// older than this one (ListStalePullRequestHeads, pull_request_heads.go). 0 is what a row
-// written before that column has: the rule that took the first candidate outright, whatever
-// repository its issue resolved to.
+// reconcile re-judges a merged row once when the rule that judged it is older than this one
+// (ListStalePullRequestHeads, pull_request_heads.go). 0 is what a row written before that column
+// has: the rule that took the first candidate outright, whatever repository its issue resolved
+// to. 1 held every candidate to the pull request's repository and ranked the title and the body
+// first. 2 is the order above, with the two links and the head branch over the title and the
+// body.
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
 // row is read again only by that arm — so a change made without raising it leaves every pull
 // request merged before it judged by the rule of its day for good.
-const AttributionRuleVersion = 1
+const AttributionRuleVersion = 2
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -164,25 +172,26 @@ type attributionColumns struct {
 const attributionCandidateBound = 25
 
 // attributionCandidates is the issues a pull request's five sources name, best first: the
-// ranking is the prototype's, every candidate of a source before any of the next, and within a
-// source the order the keys were read in. The two link sources compare URLs lowercased on both
-// sides: GitHub's owner and repository names are case-insensitive, its answers spell them as
-// their owners do (`Acme/Widgets`), and Dispatch stores an issue's GitHub link lowercased
-// (canonicalRepo) or as a person typed it (issue_external_links_url_lower serves the
-// comparison).
+// ranking is the file's, every candidate of a source before any of the next, and within a
+// source the order the keys were read in. The union's arms are written in that ranked order,
+// so the text reads as the list at the top of this file reads. The two link sources compare
+// URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive, its
+// answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's GitHub
+// link lowercased (canonicalRepo) or as a person typed it (issue_external_links_url_lower serves
+// the comparison).
 func attributionCandidates(c attributionColumns) string {
 	return `select s.key, s.source, s.rank, s.n from (
-		select t.key, '` + string(sourceTitleBody) + `' as source, 0 as rank, t.n
-			from unnest(` + c.TitleKeys + `) with ordinality t(key, n) join issues i on i.key = t.key
-		union all
-		select l.issue_key, '` + string(sourceExternalLink) + `', 1, 0
+		select l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0 as n
 			from issue_external_links l where lower(l.url) = lower(` + c.URL + `)
 		union all
-		select l.issue_key, '` + string(sourceGitHubIssueLink) + `', 2, c.n
+		select l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, c.n
 			from unnest(` + c.CitedIssues + `) with ordinality c(url, n) join issue_external_links l on lower(l.url) = lower(c.url)
 		union all
-		select b.key, '` + string(sourceBranch) + `', 3, b.n
+		select b.key, '` + string(sourceBranch) + `', 2, b.n
 			from unnest(` + c.BranchKeys + `) with ordinality b(key, n) join issues i on i.key = b.key
+		union all
+		select t.key, '` + string(sourceTitleBody) + `', 3, t.n
+			from unnest(` + c.TitleKeys + `) with ordinality t(key, n) join issues i on i.key = t.key
 		union all
 		select m.key, '` + string(sourceCommitMessage) + `', 4, m.n
 			from unnest(` + c.CommitKeys + `) with ordinality m(key, n) join issues i on i.key = m.key
