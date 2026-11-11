@@ -201,3 +201,5 @@ more for an ask on the report issue: the controller's catch-up follows it at its
 An ask on the report issue blocks nothing of your own issue: its work goes on. One on your own
 issue holds its acceptance, as step 2 of [When no controller takes
 it](#when-no-controller-takes-it) says.
+
+<!-- INFRA-1413 selection probe, never merged. -->
