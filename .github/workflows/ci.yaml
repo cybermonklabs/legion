@@ -999,14 +999,16 @@ jobs:
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
-            # The secrets broker's TypeScript client: its own sources and tests (it imports nothing
-            # first-party outside itself but the fixtures its tests use), the Bun install and the
-            # Bun it runs, and Biome.
+            # The secrets broker's TypeScript client: its own sources and tests, the one
+            # first-party package its sources import, the fixtures its tests use, the Bun install
+            # and the Bun it runs, and Biome.
             broker_client:
               - '.github/workflows/ci.yaml'
               - *bun_install
               - *biome
               - 'packages/broker-client/**'
+              # src/token-client.ts imports @legion/contracts/trailing-slash.
+              - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
             envoy_client:
