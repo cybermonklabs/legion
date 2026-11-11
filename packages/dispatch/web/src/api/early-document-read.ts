@@ -3,10 +3,11 @@
  *
  * A reader who opens a document is waiting for its bytes, and the one thing that read needs is
  * the address - `/issues/{key}/artifacts/{slug}` names the document as Dispatch's own route
- * does. `main.tsx` asks for it in the entry module's body (`features/doc/open-document-early.ts`),
- * which is as early as any module can, and that is still after every static import of the entry
- * has evaluated: on a phone at 4x CPU throttling the entry's own evaluation is one task of about
- * a second, and the read went out about 1.4 s into the load (dispatch://INFRA-341, R11). The
+ * does. The page's own call is in `features/shell/boot.ts` (`openDocumentEarly`,
+ * `features/doc/open-document-early.ts`), the chunk the entry asks for in its first task, so it
+ * cannot run before every static import of the entry has evaluated: on a phone at 4x CPU
+ * throttling that evaluation is one task of about a second, and the read went out about 1.4 s
+ * into the load (dispatch://INFRA-341, R11). The
  * bytes can be asked for while the browser is still parsing the HTML, so an inline script in
  * `web/index.html` asks for them there and leaves the answer here.
  *
@@ -19,8 +20,9 @@
  *
  * It is taken once and by exact path. The HTML's rule for which address opens a document is a
  * strict subset of `parseIssuePath`'s - the same issue key, a narrower slug, and a `?v=` it
- * refuses unless the router would read it - and `main.tsx` opens the page's first address in the
- * entry's own first task, so this read is taken there or never made at all. A read nothing takes,
+ * refuses unless the router would read it - and `features/shell/boot.ts` opens the page's first
+ * address in the task after the entry's, so this read is taken there or never made at all. A
+ * read nothing takes,
  * one Dispatch refuses and one that never arrives all cost the page nothing: the client falls
  * back to the request it makes today.
  */

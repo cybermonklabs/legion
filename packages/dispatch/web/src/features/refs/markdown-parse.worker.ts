@@ -87,8 +87,8 @@ interface WorkerScope {
 }
 
 /** Answers one body: the parsed document as plain JSON with the open-fence check beside it, or a
- *  refusal for a body the parser throws on (a mark span this schema has no node for, and raw
- *  HTML where the request refuses it), which the page shows as its literal text. */
+ *  refusal for a body the parser throws on (a mark span this schema has no node for; raw HTML
+ *  throws under neither policy), which the page shows as its literal text. */
 function answerParseRequest(
   { id, markdown, rawHtml, softBreaks }: ParseRequest,
   proof: HeadlessProofEditor

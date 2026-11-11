@@ -234,9 +234,10 @@ export interface RenderedMarkdownOptions {
   onRendered?: () => void;
   /** The soft-break parse policy (`SoftBreaks`): `space`, the default, or `line`. */
   softBreaks?: SoftBreaks;
-  /** The raw-HTML parse policy (`RawHtml`): `refuse`, the default, which leaves a body holding
-   *  raw HTML to the literal-text fallback, or `text`, which every body renderer passes - an
-   *  HTML comment draws as nothing and any other raw HTML as its literal characters. */
+  /** The raw-HTML parse policy (`RawHtml`): `refuse`, the default, which keeps an HTML comment
+   *  as the characters its author wrote, or `text`, which every body renderer passes - an HTML
+   *  comment draws as nothing. Any other raw HTML reads as its literal characters either way,
+   *  and neither policy sends a body to the literal-text fallback. */
   rawHtml?: RawHtml;
   /** `paint`, a piece at a time (`PaintMarkdownInSlices`), for a body the parse worker parsed;
    *  without one such a body is painted in one go, as every other body is. */

@@ -24,9 +24,11 @@ import { rememberUpTo, type WorkerJob, WorkerQueue } from "./worker-queue";
  * default, hard-wrapped Markdown is one paragraph) or `"line"` (text whose author meant its
  * lines as lines, a model's streamed turn in the live view).
  *
- * `RawHtml` is what raw HTML in a source becomes: `"refuse"` (the document default, a line of it
- * throws and the source is kept as its author wrote it) or `"text"` (a comment, message or reply
- * body: an HTML comment draws as nothing and any other raw HTML as its literal text).
+ * `RawHtml` is what raw HTML in a source becomes. Neither policy throws over it and neither
+ * draws it as HTML: a block of raw HTML is drawn as a paragraph of the same characters and an
+ * inline tag-shaped span as an atom of its own text. They differ in the HTML comment alone -
+ * `"refuse"` (the document default) keeps it as its author wrote it, and `"text"` (a comment,
+ * message or reply body) draws it as nothing, as GitHub draws it.
  */
 export type { RawHtml, SoftBreaks };
 
@@ -77,12 +79,13 @@ export interface MarkdownEngine {
    * than refused or silently dropped, a Pandoc `::: warning` fence or a `::leaf` / `:text{` line
    * reads as paragraph text, and so does a `:::` opener inside 32 open container directives, the
    * deepest the parser nests them (`directive-container.ts`), so none of them throws. A mark
-   * span of a kind this schema does not carry still throws, and so does a line of raw HTML -
-   * which a bare tag-shaped line such as `<img src=x>` is - under `rawHtml: "refuse"`, the
-   * default a document takes. Under `"text"`, which every body renderer passes, that line draws
-   * as the literal text its author typed, never as HTML, and an HTML comment draws as nothing,
-   * as GitHub draws it. A tag-shaped span among a paragraph's own text throws under neither
-   * policy: it is an inline node of the schema, drawn as the characters it is made of.
+   * span of a kind this schema does not carry still throws. Raw HTML throws under neither
+   * policy: a line of it - which a bare tag-shaped line such as `<img src=x>` is - is drawn as
+   * a paragraph of the same characters, and a tag-shaped span among a paragraph's own text is
+   * an inline node of the schema, drawn as the characters it is made of. The policies differ in
+   * the HTML comment alone: under `rawHtml: "refuse"`, the default a document takes, it is kept
+   * as its author wrote it, and under `"text"`, which every body renderer passes, it draws as
+   * nothing, as GitHub draws it.
    * HTML-like text inside a code span or fence parses
    * safely as literal text, so nothing is escaped beforehand: escaping the whole source
    * regardless of context would print literal backslashes around any

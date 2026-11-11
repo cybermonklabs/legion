@@ -107,13 +107,16 @@ const notices = thirdPartyNoticesFile();
  * list of its own shape, and a list that left the app out would leave the app a request
  * behind.
  *
- * Only what the page needs to draw belongs here. The decision card every Markdown body draws
- * (`features/doc/DeferredAskCard.tsx`) does not: no `ask` shell exists until a body has been
- * parsed and painted, and its chunk statically imports the Inbox's ask card, half a megabyte
- * the reader would download and compile in front of the first screen. Neither does a tab panel
- * no document address opens - the Conversation, the Activity list, the role documents - each
- * of which is now a chunk of its own (`features/issue/IssuePage.tsx`) and is asked for when
- * the reader asks for its tab.
+ * Only what the page needs to draw is named here. The decision card every Markdown body draws
+ * (`features/doc/DeferredAskCard.tsx`) is not: no `ask` shell exists until a body has been
+ * parsed and painted. Naming it would put it in every address's list, the `app` one included,
+ * and its chunk statically imports the Inbox's ask card, half a megabyte the reader would
+ * download and compile in front of the first screen. A chunk a named module statically imports
+ * joins the list with it, though, which is why both document lists hold that card's chunk
+ * anyway - `ArtifactDocument` imports it - and the `app` list does not. Nor is a tab panel
+ * named that no document address opens - the Conversation, the Activity list, the role
+ * documents - each of which is now a chunk of its own (`features/issue/IssuePage.tsx`) and is
+ * asked for when the reader asks for its tab.
  */
 const EVERY_ADDRESS = [
   // The app: the shell, its routes and everything they draw with (`main.tsx`).
@@ -239,9 +242,11 @@ export default defineConfig({
     dedupe: ["prosemirror-model"],
     alias: {
       "decode-named-character-reference": characterReferenceDecoder,
-      // One alias per subpath of `@legion/contracts` the web imports, longest first, because
-      // Vite matches a string alias by prefix and `@legion/contracts` alone would otherwise
-      // swallow every one of them. Each names a module of its own rather than the package's
+      // One alias per subpath of `@legion/contracts` the web imports, listed alphabetically with
+      // the bare `@legion/contracts` after all of them: Vite matches a string alias by prefix,
+      // so the bare one would otherwise swallow every subpath, and that is the only order here
+      // that decides anything. The same holds of `@legion/proof-editor` below.
+      // Each names a module of its own rather than the package's
       // index, so the page's bundle holds only what it imports: the values and the plain
       // helpers, never `dispatch-api.ts`, whose every zod schema is built as it loads
       // (`packages/contracts/src/dispatch-constants.ts`; `check:no-zod`).

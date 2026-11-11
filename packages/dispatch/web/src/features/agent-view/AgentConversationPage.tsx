@@ -60,8 +60,9 @@ function deliveryModes(capabilities: readonly string[]): MessageDeliveryMode[] {
 }
 
 /** What the composer's placeholder says the `/` list holds. It always holds the delivery modes
- *  (`deliveryModes` answers with at least one, so there is no list without them), and a session
- *  that published commands of its own has those in the list above them. */
+ *  (`deliveryModes` answers with at least one, so there is no list without them), and they lead
+ *  it, so a session that published commands of its own has those below them
+ *  (`AgentThread.tsx`'s `matchingModes` and the adapter that joins the two lists). */
 function slashHint(hasCommands: boolean): string {
   return hasCommands ? ", / for commands" : ", / for send modes";
 }

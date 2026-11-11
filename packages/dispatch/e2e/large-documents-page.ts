@@ -63,8 +63,14 @@ declare global {
     /** Every `longtask` entry since the page began, by when it started and how long it ran.
      *  The longest number above says how bad the worst freeze is; this says how many there
      *  were and where each fell, which is what a report of the tasks still over the target
-     *  reads (dispatch://INFRA-341, R11). */
+     *  reads (dispatch://INFRA-341, R11). A browser's `longtask` entry is one of at least
+     *  50 ms, which is the threshold the entry type itself is defined by. */
     __largeDocumentLongTasks?: { at: number; ms: number }[];
+    /** Whether the `longtask` observer above is watching this page: true once `observe` has
+     *  returned, and absent where the browser took no such observer. A row whose claim is that
+     *  no task was over its target reads this, since an observer that never attached records
+     *  no task at all and would meet that claim with nothing. */
+    __largeDocumentLongTasksWatched?: boolean;
     /** `performance.now()` when the reader first had any block of the document on the screen -
      *  the server's draw, or the page's own - which is read against no target. */
     __largeDocumentPaintedAt?: number;
@@ -243,7 +249,12 @@ const previewSelector = '#first-screen, [aria-label="Document text"]';
  *  This is the selector the measurement read the editor's first block by until INFRA-341, which
  *  is the whole of that defect: a preview block, drawn before the editor exists and taking no
  *  edit, read against R11's target for the block a reader can type in. It is recorded here, and
- *  asserted nowhere. */
+ *  asserted nowhere, which is the only honest place for it: `watchTheDocument`'s loop stamps
+ *  this number before it looks for the editor's own block in each pass, and this selector
+ *  matches a block of the editor as readily as one of the preview, so the editor's block is
+ *  later than this one however the measurement drifts. A row held the two to that order until
+ *  INFRA-341 and could not have failed on either. What says the timed block was the editor's is
+ *  the block's own reading of where it stood (`DocumentMeasurement`'s `firstBlock`). */
 const pageDrawnSelector = '[aria-label="Document editor"] [data-block-id]';
 
 /** The first block the reader had on the screen at all, whoever drew it: the blocks the server
@@ -321,10 +332,15 @@ export interface DocumentMeasurement {
   readonly pageDrawnMs: number | undefined;
   /** The longest main-thread task, in milliseconds, over the whole measurement. */
   readonly longestTaskMs: number;
-  /** Every main-thread task over `longTaskMs`, in the order they ran: when each started,
-   *  counted from the start of navigation, and how long it held the thread. What the longest
-   *  number alone cannot say is how many freezes a reader met and where. */
+  /** Every main-thread task the browser recorded a `longtask` entry for, which is one of at
+   *  least 50 ms, in the order they ran: when each started, counted from the start of
+   *  navigation, and how long it held the thread. What the longest number alone cannot say is
+   *  how many freezes a reader met and where. */
   readonly longTasks: readonly { readonly at: number; readonly ms: number }[];
+  /** Whether the `longtask` observer was attached to the page at all. The two numbers above
+   *  are a reading of nothing where it was not, so the rows that hold a build to a longest
+   *  task read this beside them. */
+  readonly longTasksWatched: boolean;
   /** How many viewport heights the scroll moved before it reached the end of the document or its
    *  cap, which says the page scrolled at all. */
   readonly scrollSteps: number;
@@ -448,6 +464,9 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
           window.__largeDocumentLongTasks?.push({ at: entry.startTime, ms: entry.duration });
         }
       }).observe({ buffered: true, type: "longtask" });
+      // Written after `observe` has returned, so it is the page's own word that the entries
+      // below were being collected rather than this side's assumption that they were.
+      window.__largeDocumentLongTasksWatched = true;
       const inTheViewport = (selector: string): Element | null => {
         const element = document.querySelector(selector);
         if (element === null) {
@@ -743,6 +762,9 @@ export async function measureDocument(
 
   const longestTaskMs = await page.evaluate(() => window.__largeDocumentLongestTask);
   const longTasks = await page.evaluate(() => window.__largeDocumentLongTasks);
+  const longTasksWatched = await page.evaluate(
+    () => window.__largeDocumentLongTasksWatched === true
+  );
   const windowClosedMs = await page.evaluate(() => performance.now());
   const firstPaintedMs = await page.evaluate(() => window.__largeDocumentPaintedAt);
   const pageDrawnMs = await page.evaluate(() => window.__largeDocumentPageDrawnAt);
@@ -762,6 +784,7 @@ export async function measureDocument(
     pageDrawnMs,
     longestTaskMs,
     longTasks,
+    longTasksWatched,
     scrollSteps,
     windowClosedMs,
     opening,
@@ -774,8 +797,10 @@ export async function measureDocument(
 const measurementLegend =
   "The first editable block is the editor's own first visible block, the first block a reader " +
   'can type in (its root carries `data-write-path="live"`); that number and the longest ' +
-  "main-thread task are the two read against R11's targets, and no other number here is " +
-  "asserted. First painted is the first block of the document on the screen from any draw, " +
+  "main-thread task are the two read against R11's targets. No other number here is held to " +
+  "one, and the only other thing the rows assert of this line is that the page recorded a " +
+  "main-thread task at all, since a longest task read off nothing meets any target. " +
+  "First painted is the first block of the document on the screen from any draw, " +
   "which is the server's own where it drew the document's opening blocks into the page it " +
   "sent. The page's own draw is the first block the app itself put on the screen, in the " +
   "read-only preview inside the document surface it renders: that one is the number this rig " +

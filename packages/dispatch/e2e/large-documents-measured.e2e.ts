@@ -163,13 +163,21 @@ for (const row of rows) {
       expect(measured.editorOpenedMs ?? 0).toBeGreaterThan(0);
       expect(measured.windowClosedMs).toBeGreaterThan(measured.editorOpenedMs ?? 0);
       expect(measured.scrollSteps).toBeGreaterThan(0);
-      expect(measured.longestTaskMs).toBeGreaterThan(0);
-      // And the editor's block came no earlier than either draw in front of it: the first block
-      // on the screen, which is the server's own where it drew one, and the first block the
-      // page's own code drew, which is the preview's and which this rig read as the editor's
-      // until INFRA-341. A number at or under that one is the preview's block timed again.
-      expect(measured.firstBlockMs).toBeGreaterThanOrEqual(measured.firstPaintedMs ?? 0);
-      expect(measured.firstBlockMs).toBeGreaterThan(measured.pageDrawnMs ?? 0);
+      // And the tasks the second target is read over are a set the page really collected: the
+      // `longtask` observer was watching this page, and it was given entries. "No task over
+      // half a second" is true of no tasks at all, so the longest of them says nothing until
+      // both of these do (dispatch://INFRA-341, the pairing every universal clause of a check
+      // takes).
+      expect(
+        measured.longTasksWatched,
+        "the page never took the `longtask` observer, so every main-thread number of this run " +
+          "is a reading of nothing"
+      ).toBe(true);
+      expect(
+        measured.longTasks.length,
+        "the observer recorded no main-thread task at all over the whole window, so the " +
+          "longest task below is the target met by an empty set rather than by a quick build"
+      ).toBeGreaterThan(0);
 
       expect(measured.firstBlockMs).toBeLessThanOrEqual(row.firstBlockTargetMs);
       expect(measured.longestTaskMs).toBeLessThanOrEqual(longTaskTargetMs);
@@ -261,11 +269,46 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
 // everything already waiting, and the three rows are the three things a reader loses while
 // nothing else runs: the page's own clock, a decision they answer, and another person's edit.
 
-/** The longest a message on the document's socket may wait to be served while the editor is
- *  built. The same half-second R11 holds a main-thread task to: Chromium runs a networking
- *  task ahead of a timer, so a socket message waits only for whatever the thread is in the
- *  middle of, and the worst one measured across a build was 45 ms. */
-const aMessageWaitsAtMostMs = 500;
+/*
+ * What the row below holds another person's edit to while the reader's editor is built, and
+ * what it only reports.
+ *
+ * **It is not held to half a second.** R11's 500 ms is a bound on a main-thread task, which
+ * the two measuring rows at the top of this file read; the spec asks nowhere that another
+ * person's word be *served* within 500 ms. A word may wait behind several lawful tasks, so a
+ * row holding the wait to 500 ms would be restating a task bound as a delivery bound and
+ * asserting a promise the product never made (the architect, dispatch://INFRA-341). A new
+ * promise belongs in a spec version a person approves. **Do not restore that bound here.**
+ *
+ * **The one thing the row holds the words to is liveness.** Every word their page sent inside
+ * the build is served, inside the build or inside the swap that ends it, which the page stamps
+ * itself (`TheBuildRan`'s `swappedMs`). A page that stops serving while it builds fails there,
+ * and so does one that holds a word past its own swap.
+ *
+ * **The gap between servings is printed and held to nothing.** The longest the page went
+ * without serving a word already waiting carries the relay between two browsers - the writer's
+ * page, the server, the reader's socket - as well as the reader's own serving, and no reading
+ * a page can take separates them; a page that stops serving fails liveness instead. Measured
+ * on this pod inside the window: 1,469 to 1,895 ms against that window's longest main-thread
+ * task of 547 to 789 ms, with every word's wait in the row's own spread.
+ *
+ * The waits themselves are printed and go in the pull request as a measurement. Measured on
+ * this pod over the 406,319-character document with the second reader writing throughout, the
+ * build's longest task 614 ms: his words waited 93 to 1,710 ms, most of them 400 to 600 ms,
+ * which is that pod's own batch.
+ *
+ * The wait is read from the writer's own stamp (`whenTheirWordsAreSent`) because no clock on
+ * the reader's side holds the moment a frame arrived. Until INFRA-341 the row read
+ * `performance.now() - event.timeStamp`, and a browser stamps a message event in the task that
+ * dispatches it, so the expression read a few microseconds however long the frame had waited.
+ * The browser's own `Network.webSocketFrameReceived` is no better: it is stamped in the
+ * renderer as Blink takes the frame off the pipe, and measured here - with the page holding
+ * its thread for two seconds inside the listener - it read 0 to 37 ms for every frame of a
+ * build, exactly as the event's own stamp does; Playwright's `framereceived` is told of a
+ * frame 4 to 319 ms after the page's own listener ran, so every wait read that way came out
+ * negative. The writer's stamp is on the other side of the wire, so it carries the relay as
+ * well as the wait, which overstates rather than flatters.
+ */
 
 /** How long a timer the page sets may wait while the editor is built.
  *
@@ -329,41 +372,80 @@ const namedEditor = '[role="textbox"][aria-label="Document editor"]';
  *  keeping the page busy. */
 const timerEveryMs = 250;
 
+/** The words the other person writes in the row below, as a pattern both pages read their own
+ *  frames for: one of his writes is one frame on the socket, and the word in it is what pairs
+ *  the moment his page sent that frame with the moment the reader's page served it. */
+const theirWordsPattern = "Pan\\d+";
+
+/** How large a frame the reader's page reads for those words. The document's own state frame
+ *  is hundreds of kilobytes and carries none of them; a frame of one write is a few hundred
+ *  bytes. */
+const theirWordsInFramesUnderBytes = 16_384;
+
 /**
  * Records what the page's own posted tasks cost it while the editor is being built: every
- * timer the page hands the browser, every message the document's socket receives, and the
- * build's own window, so the row can read the tasks handed over inside it.
+ * timer the page hands the browser, the build's own window, and - where `theirWords` names a
+ * pattern - `Date.now()` the moment the page serves the socket frame carrying each word
+ * another person wrote, so the row can read what the build made each of them wait.
  *
  * A timer is handed over from an animation frame, because a frame is the one thing that does
- * run through a starved build and so the one place a probe can be handed over from. A socket
- * message is timed from the message event's own `timeStamp`, which the browser sets when it
- * makes the event - that is, when it queues the task that delivers it - so the difference is
- * what the page's own thread made that message wait and nothing of the network's. The socket
- * is wrapped as a `construct` proxy rather than a subclass for the reason
+ * run through a starved build and so the one place a probe can be handed over from.
+ *
+ * A word is read out of the frame's own bytes, which is what pairs it with the moment the
+ * other person's page sent it (`whenTheirWordsAreSent`): the two stamps are the one machine's
+ * wall clock, so the difference is what the reader's thread made that edit wait. Nothing of
+ * the frame's arrival is read here, because no clock inside the page holds it - a
+ * `MessageEvent` is stamped in the task that dispatches it, and the browser's own
+ * `Network.webSocketFrameReceived` is stamped in this renderer as Blink takes the frame off
+ * the pipe, which a thread the build owns delays as surely as it delays the event. Both read
+ * zero behind a page held for two seconds, measured (dispatch://INFRA-341).
+ *
+ * A frame larger than `theirWordsInFramesUnderBytes` is left unread: the document's own state
+ * frame is hundreds of kilobytes and carries no word of theirs, and decoding it would be this
+ * probe holding the thread it is measuring. Only the first document socket is recorded. The
+ * socket is wrapped as a `construct` proxy rather than a subclass for the reason
  * `large-documents-page.ts` gives: the page's transport subclasses `globalThis.WebSocket` too.
  *
  * Install before the navigation; read once the editor has opened.
  */
-async function whatTheBuildServes(page: Page): Promise<void> {
+async function whatTheBuildServes(page: Page, theirWords?: string): Promise<void> {
   await page.addInitScript(
-    ({ every, live, named }: { every: number; live: string; named: string }) => {
+    ({
+      every,
+      live,
+      named,
+      under,
+      words,
+    }: {
+      every: number;
+      live: string;
+      named: string;
+      under: number;
+      words: string | undefined;
+    }) => {
       const timers: ServedLate[] = [];
-      const messages: ServedLate[] = [];
+      const servedWords: Record<string, number> = {};
       const ran: TheBuildRan = {};
       window.__servedTimers = timers;
-      window.__servedMessages = messages;
+      window.__theirWordsServed = servedWords;
       window.__theBuildRan = ran;
+      let recording = false;
+      const theirs = words === undefined ? undefined : new RegExp(words, "g");
+      const read = new TextDecoder();
       window.WebSocket = new Proxy(window.WebSocket, {
         construct(made, args: [string | URL, (string | string[])?], asked) {
           const socket = Reflect.construct(made, args, asked) as WebSocket;
-          if (!String(args[0]).includes("/ws/doc/")) {
+          if (recording || theirs === undefined || !String(args[0]).includes("/ws/doc/")) {
             return socket;
           }
+          recording = true;
           socket.addEventListener("message", (event) => {
-            messages.push({
-              handedAt: event.timeStamp,
-              waitedMs: performance.now() - event.timeStamp,
-            });
+            const servedAt = Date.now();
+            const data: unknown = event.data;
+            if (!(data instanceof ArrayBuffer) || data.byteLength > under) return;
+            for (const [word] of read.decode(data).matchAll(theirs)) {
+              servedWords[word] ??= servedAt;
+            }
           });
           return socket;
         },
@@ -396,14 +478,125 @@ async function whatTheBuildServes(page: Page): Promise<void> {
         }
         if (document.querySelector(named) !== null) {
           ran.openedMs = now;
+          // And the swap that ends the build runs in the tasks after this frame: the binding
+          // adopting the document, the editor being revealed, and the margin placing its cards
+          // over it for the first time. The page says when that is over rather than leaving it
+          // to be inferred from a run of `longtask` entries: a task handed over now runs after
+          // the work already queued, so the frame it is served in is the page's own word that
+          // it is free again, and it is the stamp the row reads for every word the swap owed.
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              ran.swappedMs = performance.now();
+            }, 0);
+          });
           return;
         }
         requestAnimationFrame(look);
       };
       requestAnimationFrame(look);
     },
-    { every: timerEveryMs, live: liveEditorRoot, named: namedEditor }
+    {
+      every: timerEveryMs,
+      live: liveEditorRoot,
+      named: namedEditor,
+      under: theirWordsInFramesUnderBytes,
+      words: theirWords,
+    }
   );
+}
+
+/**
+ * Stamps, in the page that writes them, when each word matching `theirWords` left on the
+ * document's socket: the moment the other person's edit went out, read where it went out.
+ *
+ * This is the half of a socket message's wait the reader's own page cannot hold. The frame
+ * reaches the server and comes back down the reader's socket in a millisecond or two on one
+ * machine, so the stamp is the reader's frame arriving to within that, and the wait read
+ * against it carries the relay with it - which is the direction that cannot flatter the
+ * reader's page.
+ *
+ * The socket is wrapped the way `large-documents-page.ts` wraps it, and `send` sits on the
+ * instance in front of the transport's own override on the prototype. Install before the
+ * navigation.
+ */
+async function whenTheirWordsAreSent(page: Page, theirWords: string): Promise<void> {
+  await page.addInitScript((words: string) => {
+    const sent: Record<string, number> = {};
+    window.__theirWordsSent = sent;
+    const theirs = new RegExp(words, "g");
+    const read = new TextDecoder();
+    window.WebSocket = new Proxy(window.WebSocket, {
+      construct(made, args: [string | URL, (string | string[])?], asked) {
+        const socket = Reflect.construct(made, args, asked) as WebSocket;
+        if (!String(args[0]).includes("/ws/doc/")) {
+          return socket;
+        }
+        const sends = Object.getPrototypeOf(socket).send as WebSocket["send"];
+        socket.send = (data) => {
+          if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+            const sentAt = Date.now();
+            for (const [word] of read.decode(data).matchAll(theirs)) {
+              sent[word] ??= sentAt;
+            }
+          }
+          sends.call(socket, data);
+        };
+        return socket;
+      },
+    });
+  }, theirWords);
+}
+
+/** One word the other person wrote, on the reader's page's own clock: when their page sent it,
+ *  and when the reader's page served the frame carrying it, `undefined` where it never did. */
+interface TheirWord {
+  readonly sentMs: number;
+  readonly servedMs: number | undefined;
+  readonly word: string;
+}
+
+/** Every word their page sent, in the order it sent them, each read onto the reader's clock so
+ *  the build's own window and its tasks can be read against them. */
+function theirWordsOfTheBuild(
+  sent: Readonly<Record<string, number>>,
+  served: Readonly<Record<string, number>>,
+  timeOriginMs: number
+): TheirWord[] {
+  return Object.entries(sent)
+    .map(([word, sentAt]) => ({
+      sentMs: sentAt - timeOriginMs,
+      servedMs: served[word] === undefined ? undefined : served[word] - timeOriginMs,
+      word,
+    }))
+    .sort((one, next) => one.sentMs - next.sentMs);
+}
+
+/**
+ * The longest the page went without serving a word that was waiting for it: for each word the
+ * page served, the time from the moment it could have been served - the later of their page
+ * sending it and the page finishing the word before it - until the page served it, and the
+ * worst of those, with the word it was.
+ *
+ * This is the no-starvation reading, and it is not the wait: a word sent while the page is
+ * still on the word before it is owed only the time after that one, and a page serving its
+ * socket between the build's tasks owes each word the task it is in the middle of and no more.
+ */
+function theLongestWithoutServing(words: readonly TheirWord[]): {
+  gapMs: number;
+  word: string;
+} {
+  const served = words
+    .filter((word): word is TheirWord & { servedMs: number } => word.servedMs !== undefined)
+    .sort((one, next) => one.servedMs - next.servedMs);
+  let worst = { gapMs: 0, word: "none" };
+  let servedLast: number | undefined;
+  for (const word of served) {
+    const couldHave = servedLast === undefined ? word.sentMs : Math.max(word.sentMs, servedLast);
+    const gapMs = word.servedMs - couldHave;
+    if (gapMs > worst.gapMs) worst = { gapMs, word: word.word };
+    servedLast = word.servedMs;
+  }
+  return worst;
 }
 
 /** The tasks of `served` the browser was given while the build ran, which are the ones the
@@ -469,6 +662,10 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // the only thing left for him to do while she builds is press the keys: every word he
     // types is a message on her socket.
     const bobPage = await bob.newPage();
+    // Before his page has a socket, so the moment each of his writes leaves it is his page's
+    // own stamp: the reader's page cannot hold that moment, and this row's claim is the span
+    // between the two.
+    await whenTheirWordsAreSent(bobPage, theirWordsPattern);
     await bobPage.goto(path);
     await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
     await expect(connectedDot(bobPage)).toHaveText("connected");
@@ -477,24 +674,25 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
-    await whatTheBuildServes(page);
+    await whatTheBuildServes(page, theirWordsPattern);
     await page.goto(path, { waitUntil: "commit" });
 
     // From Alice's first batch until her editor opens, so his words cover her whole build
     // rather than a moment this row has to guess at. Both moments are announcements the page
     // makes rather than readings this side takes (`large-documents-page.ts`).
     //
-    // He types without resting between words. He used to rest half a second, so that four
-    // words a second would not go into a document of 986 blocks - a load no reader puts on
-    // another - and that rest was written when a build of this document lasted thirteen
-    // seconds. It does not any more: on a quiet machine the build is now about 1.3 s
-    // (dispatch://INFRA-341, R11), and a writer who rests half a second gets two words into it,
-    // which is fewer than this row needs to have proved anything. What bounded his rate was
-    // never that rest anyway, but his own page: he holds the same 986-block document, and at a
-    // desktop width each of his keystrokes costs a layout of it and of the margin beside it, so
-    // on a loaded machine `Pangolin0` was three to four seconds of his. So the rest is gone and
-    // the key delay stays: where the machine is slow his page still paces him, and where it is
-    // fast his words cover a fast build.
+    // He writes each word in one insert, so that one of his writes is one frame on her socket
+    // and the word in it pairs the two stamps the wait is read from. He rests between words
+    // only as long as his own page makes him: he used to rest half a second so that four words
+    // a second would not go into a document of 986 blocks - a load no reader puts on another -
+    // and that rest was written when a build of this document lasted thirteen seconds. It does
+    // not any more: on a quiet machine the build is now about 1.3 s (dispatch://INFRA-341,
+    // R11), and a writer who rests half a second gets two words into it, which is fewer than
+    // this row needs to have proved anything. What bounded his rate was never that rest
+    // anyway, but his own page: he holds the same 986-block document, and each of his writes
+    // costs a layout of it and of the margin beside it, so on a loaded machine `Pangolin0` was
+    // three to four seconds of his. Where the machine is slow his page still paces him, and
+    // where it is fast his words cover a fast build.
     await reached.firstBlock;
     let open = false;
     const opened = reached.editorOpened.then((at) => {
@@ -503,7 +701,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     });
     let words = 0;
     while (!open && words < 60) {
-      await bobPage.keyboard.type(` Pan${words}`, { delay: 25 });
+      await bobPage.keyboard.insertText(` Pan${words}`);
       words += 1;
     }
     const openedMs = await opened;
@@ -511,10 +709,12 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const everyTimer = (await page.evaluate(() => window.__servedTimers)) ?? [];
     const timers = handedToTheBuild(everyTimer, ran);
-    const messages = handedToTheBuild(
-      (await page.evaluate(() => window.__servedMessages)) ?? [],
-      ran
-    );
+    const sentWords = (await bobPage.evaluate(() => window.__theirWordsSent)) ?? {};
+    const servedWords = (await page.evaluate(() => window.__theirWordsServed)) ?? {};
+    const timeOriginMs = await page.evaluate(() => performance.timeOrigin);
+    // Each word he wrote is one of his page's frames and one of hers, so the pairing is a
+    // reading of this run rather than an assumption about it: a word his page never sent, or
+    // one hers never served, is named below rather than guessed at.
     const built = (ran.openedMs ?? 0) - (ran.firstBatchMs ?? 0);
     // Every timer of the load, not only the ones inside the build: what says whether a long
     // wait is the build's doing is where the long ones fall.
@@ -526,26 +726,84 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
           `${Math.round(timer.waitedMs)}`
       )
       .join(" ");
+    const theirs = theirWordsOfTheBuild(sentWords, servedWords, timeOriginMs);
+    // The words he sent inside her build's own window: the ones that build could have held.
+    // One he sent after it says nothing about this build and is left out.
+    const inTheBuild = theirs.filter(
+      (word) => word.sentMs >= began && word.sentMs <= (ran.openedMs ?? 0)
+    );
+    // Every word of his, in the order he wrote them, as sent:waited from her first batch -
+    // reported, never held to a number of its own. Where a long wait falls is what says
+    // whether the build is what held it.
+    const theirSpread = theirs
+      .map(
+        (word) =>
+          `${Math.round(word.sentMs - began)}:` +
+          `${word.servedMs === undefined ? "never" : Math.round(word.servedMs - word.sentMs)}`
+      )
+      .join(" ");
     // What one turn of the page's own loop cost while all that ran: a task the page was given
     // waits behind whatever the thread is in the middle of, so the longest of those says what
     // the waits above are made of.
-    const tasks = ((await page.evaluate(() => window.__largeDocumentLongTasks)) ?? []).filter(
-      (task) => task.at >= began && task.at <= (ran.openedMs ?? 0)
-    );
+    const everyTask = (await page.evaluate(() => window.__largeDocumentLongTasks)) ?? [];
+    const tasks = everyTask.filter((task) => task.at >= began && task.at <= (ran.openedMs ?? 0));
     const longestTask = tasks.reduce((worst, task) => Math.max(worst, task.ms), 0);
+    // When the page was free again after the swap that ends the build, which is the page's own
+    // stamp and no reading of this side's (`whatTheBuildServes`). It is the moment a reader's
+    // build is really over, and the moment every word the build owed has to have been served
+    // by. A page that never wrote it never finished its swap, and `openedMs` stands in so the
+    // liveness reading below fails rather than passing on a missing number.
+    const swappedMs = ran.swappedMs ?? ran.openedMs ?? 0;
+    // The longest the page went without serving a word that was already waiting, over the
+    // words the build itself served. Printed, asserted against nothing: it carries the relay
+    // between two browsers as well as this page's own serving (the block above
+    // `aTimerWaitsAtMostMs` says why), and a page that stops serving fails liveness instead.
+    const withoutServing = theLongestWithoutServing(
+      inTheBuild.filter(
+        (word) => (word.servedMs ?? Number.POSITIVE_INFINITY) <= (ran.openedMs ?? 0)
+      )
+    );
+    const heldPastTheSwap = inTheBuild.filter(
+      (word) => word.servedMs === undefined || word.servedMs > swappedMs
+    );
+    // The words the build itself did not serve: when he sent each and how far past the window
+    // and the swap's own end the page served it, so the output shows the shape of the end of a
+    // build rather than a verdict on it.
+    const servedInTheSwap = inTheBuild
+      .filter((word) => word.servedMs !== undefined && word.servedMs > (ran.openedMs ?? 0))
+      .map(
+        (word) =>
+          `${word.word} sent ${Math.round(word.sentMs - began)} ms into the build, served ` +
+          `${Math.round((word.servedMs ?? 0) - (ran.openedMs ?? 0))} ms past the window and ` +
+          `${Math.round((word.servedMs ?? 0) - swappedMs)} ms past the swap's own end`
+      )
+      .join("; ");
+    const worstWait = inTheBuild.reduce(
+      (worst, word) =>
+        word.servedMs === undefined ? worst : Math.max(worst, word.servedMs - word.sentMs),
+      0
+    );
     // Printed before any of them is read against its target, as every other number in this
     // file is: a run that missed one says what it measured rather than only what it wanted.
     console.log(
       `R11 posted tasks · a build of ${Math.round(built)} ms from its first batch, ` +
         `${timers.length} timer(s) handed over inside it one at a time, worst wait ` +
         `${Math.round(longestWait(timers))} ms (target ${aTimerWaitsAtMostMs} ms, and one ` +
-        `served every ${aTimerEveryMs} ms of the build); ${messages.length} socket message(s), ` +
-        `worst wait ${Math.round(longestWait(messages))} ms (target ${aMessageWaitsAtMostMs} ms). ` +
-        `${tasks.length} main-thread task(s) over 50 ms inside the build, longest ` +
-        `${Math.round(longestTask)} ms. The editor opened at ${Math.round(openedMs)} ms, with ` +
-        `${words} word(s) written into it while it was built (target more than 3). ` +
+        `served every ${aTimerEveryMs} ms of the build); ${inTheBuild.length} of the ` +
+        `${theirs.length} word(s) his page sent were sent inside it, ` +
+        `${inTheBuild.length - heldPastTheSwap.length} of those served by the time the page ` +
+        `was free again, which it said at ${Math.round(swappedMs - (ran.openedMs ?? 0))} ms ` +
+        `past the window; the longest it went without serving one that was already waiting ` +
+        `${Math.round(withoutServing.gapMs)} ms (${withoutServing.word}; reported, held to ` +
+        `nothing - it carries the relay between two browsers as well as this page's own ` +
+        `serving), worst wait ${Math.round(worstWait)} ms (reported too: R11's 500 ms is a ` +
+        `task bound). ${tasks.length} main-thread task(s) over 50 ms inside the build, ` +
+        `longest ${Math.round(longestTask)} ms. The editor opened at ${Math.round(openedMs)} ` +
+        `ms, with ${words} word(s) written into it while it was built (target more than 3). ` +
+        `Words the swap served: ${servedInTheSwap === "" ? "none" : servedInTheSwap}. ` +
         `Every timer of the load, as handed-over@blocks-built:waited, counted from the ` +
-        `first batch: ${spread}`
+        `first batch: ${spread}. Every word of his, as sent:waited, counted from the same ` +
+        `batch: ${theirSpread}`
     );
 
     expect(words, "Bob never wrote while Alice's editor was being built").toBeGreaterThan(3);
@@ -559,9 +817,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // asserting that the product stays slow.
     expect(ran.firstBatchMs ?? 0).toBeGreaterThan(0);
     theWindowHeldABuild(timers);
-    // And the page was given both kinds of task inside it, so neither number below is the
-    // target met by nothing having happened.
-    expect(messages.length, "no socket message arrived while the build ran").toBeGreaterThan(3);
+    // And the page was given both kinds of task inside it, so neither reading below is the
+    // bound met by nothing having happened.
+    expect(
+      inTheBuild.length,
+      "the other person wrote none of his words inside the build, so nothing below is a " +
+        "reading of what that build did to them"
+    ).toBeGreaterThan(3);
 
     // The page's own clock ran right through the build: it was handed a timer, served it, was
     // handed the next, over and over. A build that served one and then nothing until it ended
@@ -577,12 +839,22 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         `with the longest main-thread task inside that build ${Math.round(longestTask)} ms: ` +
         "it is waiting for the build rather than for a turn of the page's own loop"
     ).toBeLessThanOrEqual(aTimerWaitsAtMostMs);
+    // Liveness, and the only thing the words are held to: every word he sent inside the build
+    // was served, inside the build or inside the swap that ended it - the binding adopting the
+    // document, the editor being revealed and the margin placing its cards, which is when a
+    // reader's build is really over. The end of that swap is the page's own stamp
+    // (`ran.swappedMs`, written in the frame the page was free again), never a run of tasks
+    // this side groups, so a word still unserved then is a failure here, and so is one never
+    // served at all, whatever the machine's speed.
     expect(
-      Math.round(longestWait(messages)),
-      "a message on the document's socket waited longer than a reader feels as a freeze " +
-        "while the editor was being built: another person's edit, or a reconnect, is held " +
-        "for as long as the build lasts"
-    ).toBeLessThanOrEqual(aMessageWaitsAtMostMs);
+      heldPastTheSwap.map(
+        (word) =>
+          `${word.word} sent ${Math.round(word.sentMs - began)} ms into the build, ` +
+          `${word.servedMs === undefined ? "never served" : `served ${Math.round(word.servedMs - swappedMs)} ms past the swap's own end`}`
+      ),
+      `the page held the other person's words past the swap that ended its build, which it ` +
+        `said was over ${Math.round(swappedMs - (ran.openedMs ?? 0))} ms past the window`
+    ).toEqual([]);
   } finally {
     await bob.close();
     await alice.close();

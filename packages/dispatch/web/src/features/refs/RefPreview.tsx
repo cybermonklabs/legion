@@ -56,17 +56,17 @@ function routeOf(trigger: HTMLElement): DispatchReferenceRoute | undefined {
   return reference === null ? undefined : parseNodeReference(reference);
 }
 
-/** How long after the reader's last input a boundary event or a scroll still counts as theirs.
+/** How long after the reader's last input a scroll still counts as theirs.
  *  A page that moves under a still pointer - a card above the reference settling its height, a
- *  picture landing, a long body formatting - slides the anchor out from under the pointer and
- *  scrolls the page under it, and the browser reports each with no input behind it. */
+ *  picture landing, a long body formatting - scrolls the page under the pointer, and the
+ *  browser reports that scroll with no input behind it. */
 const READER_INPUT_GRACE_MS = 100;
 
 /** `event.timeStamp` of the reader's last input that moves the pointer or the page: a pointer
  *  they moved, a wheel they turned, a key they pressed, a button they put down. Module-level
- *  beside the card's own state because two document listeners judge an event by it - the one
- *  that judges a boundary event (`attachTriggers`) and the one that judges a scroll
- *  (`RefPreviewHost`) - and the two must read the same answer. */
+ *  beside the card's own state because the listener that judges a scroll (`RefPreviewHost`)
+ *  reads it while the listeners of `attachTriggers` keep it: a boundary event is judged by
+ *  whether the pointer's own position changed (`theReaderMoved`) and never by this. */
 let lastInputAt = Number.NEGATIVE_INFINITY;
 
 /** Delegated hover/focus triggers for every reference trigger in the document, present or
@@ -113,9 +113,9 @@ function attachTriggers(): () => void {
     const at = document.elementFromPoint(x, y);
     return at !== null && (at === anchor || anchor.contains(at));
   };
-  /** Anything the reader did that moves the pointer or the page, so neither a boundary event nor
-   *  a scroll after it is read as the page moving by itself: a wheel they turned, a key they
-   *  pressed (a space or an arrow scrolls), a button they put down (a drag of the scrollbar). */
+  /** Anything the reader did that moves the pointer or the page, so a scroll after it is not
+   *  read as the page moving by itself: a wheel they turned, a key they pressed (a space or an
+   *  arrow scrolls), a button they put down (a drag of the scrollbar). */
   const onReaderInput = (event: Event) => {
     lastInputAt = event.timeStamp;
   };

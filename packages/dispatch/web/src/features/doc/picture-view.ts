@@ -27,7 +27,9 @@ function fallbackLink(
   const link = document.createElement("a");
   // The reference behind this route came out of the document's own text, so the path goes into
   // the href only as a path of this app (`safeReferencePath`); one that is not leaves the words
-  // and `data-dispatch-href` without a link to follow.
+  // and `data-dispatch-href` with no `href`, which is what a middle click and a new-tab open
+  // need. A plain click still follows it: the document's own handler navigates from
+  // `data-dispatch-href` (`useReferenceClick`, `features/doc/document-references.tsx`).
   const path = safeReferencePath(route);
   if (path !== undefined) {
     link.setAttribute("href", path);

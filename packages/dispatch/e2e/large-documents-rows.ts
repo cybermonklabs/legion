@@ -42,27 +42,33 @@ export interface DrawnInATask {
   readonly cards: number;
 }
 
-/** What one task the page handed the browser while the editor was being built cost it: when
- *  the browser was given it, and how long it then waited before it ran. `whatTheBuildServes`
- *  records one of these per timer and per socket message, and the two rows of
- *  `large-documents-measured.e2e.ts` that read a build's own window read them. */
+/** What one task the page was given while the editor was being built cost it: when it was
+ *  given, on the page's own clock, and how long it then waited before it ran. The two rows of
+ *  `large-documents-measured.e2e.ts` that read a build's own window read these - one per timer
+ *  `whatTheBuildServes` hands over, and one per word another person wrote, which that row
+ *  builds from the stamp the writer's page took as it sent the word and the stamp the
+ *  reader's page took as it served the frame carrying it. */
 export interface ServedLate {
-  /** `performance.now()` when the browser was given the task: when `setTimeout` was called
-   *  for a timer, and the message event's own `timeStamp` - the moment the browser made the
-   *  event, which is when it queued the task that delivers it - for a socket message. */
+  /** `performance.now()` when the task was given: when `setTimeout` was called for a timer,
+   *  and the moment the other person's page sent the word, counted from the reader's page's
+   *  time origin, for one of their words. */
   readonly handedAt: number;
   /** How many top-level blocks the editor held when it was handed over, for a timer the probe
-   *  below hands over; `undefined` for a socket message, which arrives when it arrives. */
+   *  below hands over; `undefined` for one of their words, which arrives when it arrives. */
   readonly builtThen?: number;
   /** How long it waited from then until it ran. */
   readonly waitedMs: number;
 }
 
 /** The build's own window on the page's clock, as `whatTheBuildServes` sees it: the frame its
- *  first batch was found in, and the frame the finished editor was named in. */
+ *  first batch was found in, the frame the finished editor was named in, and the moment the
+ *  page was free again after the swap that ends a build - the adoption, the reveal and the
+ *  margin's first placement - which the page says by serving a task it was handed in that
+ *  frame. A reader's build is over at the third of these, not the second. */
 export interface TheBuildRan {
   firstBatchMs?: number;
   openedMs?: number;
+  swappedMs?: number;
 }
 
 /** Where the editor was when another person's word first showed up in its first block: how
@@ -125,10 +131,13 @@ declare global {
      *  makes the row's answer mean anything. */
     __firstBlockPlace?: { grew: boolean; moved: number; started: number };
     /** What `whatTheBuildServes` recorded: how long each timer the page handed the browser
-     *  and each message the document's socket received waited to be run, and the build's own
-     *  window, which says which of them were handed over while it ran. */
+     *  waited to be run, `Date.now()` as the page served the socket frame carrying each word
+     *  another person wrote, and the build's own window, which says which of them the build
+     *  was given. `__theirWordsSent` is the same stamp in the page that wrote them, taken as
+     *  the frame left it (`whenTheirWordsAreSent`). */
     __servedTimers?: ServedLate[];
-    __servedMessages?: ServedLate[];
+    __theirWordsServed?: Record<string, number>;
+    __theirWordsSent?: Record<string, number>;
     __theBuildRan?: TheBuildRan;
     /** Where the editor was when another person's word reached its first block
      *  (`whenTheirWordLands`). */
@@ -146,7 +155,9 @@ export const agent = {
  * running, and no document owed a block index. A document of this size defers its block index
  * (`deferBlockIndexBlocks`, `docs/reference_excerpts.go`), and that work costs the same machine
  * the browser runs on, so a measurement taken while it runs measures the reconciliation too.
- * The same wait as `heavy-document-writes.e2e.ts`'s, against the one database this run holds.
+ * The wait runs against the one database this run holds (`sql`), and its callers are this
+ * file's own `seedDocument`, `large-documents-measured.e2e.ts` and
+ * `large-documents-reader.e2e.ts`.
  */
 export async function everythingOwedFinished(what: string): Promise<void> {
   await expect

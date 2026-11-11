@@ -107,8 +107,9 @@ export function wsUrl(artifactId: string): string {
 }
 
 // Hocuspocus and Yjs load with the first document that connects, not with the issue route: the
-// same lazy boundary `createEditor` puts around the editor itself. The connect they resolve to is
-// synchronous, so a host has one place to react to the connection.
+// same lazy boundary `constructEditor` (`features/doc/editor.ts`) puts around the editor itself.
+// The connect they resolve to is synchronous, so a host has one place to react to the
+// connection.
 export async function loadDocumentTransport(): Promise<ConnectDocument> {
   const [
     { HocuspocusProvider, HocuspocusProviderWebsocket },

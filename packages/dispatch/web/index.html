@@ -115,8 +115,9 @@
       A reader who opens /issues/<KEY>/artifacts/<slug> is waiting for that document's bytes, and
       the address alone names them: Dispatch answers them at
       /api/v1/issues/<KEY>/artifacts/<slug>/text, the route the page's own client reads them by.
-      The page asks for them in the entry module's body (src/features/doc/open-document-early.ts),
-      which is the earliest any module can and still about 1.4 s into the load on a phone at 4x
+      The page asks for them from src/features/shell/boot.ts (openDocumentEarly,
+      src/features/doc/open-document-early.ts), the chunk the entry asks for in its first task,
+      which is still about 1.4 s into the load on a phone at 4x
       CPU throttling, because every static import of the entry has to evaluate first - one task of
       about a second on its own. Here there is nothing to evaluate: the request goes out before
       the entry chunk has finished downloading (dispatch://INFRA-341, R11).
@@ -138,7 +139,8 @@
       This is a classic inline script and not a module one because Vite's build folds every
       module script of this page into the one chunk it generates for it - an inline module
       script and a second entry's `src` alike, both rewritten to imports of that chunk - so
-      either shape would run only once all 813 kB of the entry had downloaded, which is the wait
+      either shape would run only once the whole entry chunk had downloaded - 284 kB at this
+      head, `ls -l web/dist/assets/index-*.js` after `bun run build:web` - which is the wait
       this is here to skip. A second entry kept outside the bundle, under `web/public/`, would be
       another file to download first and another untyped file to keep. A classic inline script
       survives the build exactly as it is written, as the recovery script above does, and costs
@@ -252,7 +254,7 @@
       A reader who opens /issues/<KEY> or /issues/<KEY>/artifacts/<slug> with a session that may
       read that document is sent its first blocks as HTML, drawn by the Go server from the tree
       it already holds (internal/dispatch/pmdoc/first_screen.go). So the document is on the
-      screen as soon as the page is parsed, rather than after 813 kB of entry chunk has
+      screen as soon as the page is parsed, rather than after that whole entry chunk has
       downloaded, evaluated, read the document's text and parsed it - on a phone at 4x CPU
       throttling, seconds (dispatch://INFRA-341, R11).
 
@@ -312,10 +314,13 @@
       minus the entry chunk, which the script tag below already fetches. `app` is the list of
       every other address - the app and its first reads, which every address needs - and each
       of the two document lists holds those as well, so one list is read and one list is
-      enough. Only what the page needs to draw is in them: the decision card every Markdown
-      body draws is not, because no `ask` shell exists until a body has been parsed and
+      enough. Only what the page needs to draw is named in them: the decision card every
+      Markdown body draws is not, because no `ask` shell exists until a body has been parsed and
       painted, and its chunk brings half a megabyte of the Inbox's ask card with it; nor is a
-      tab panel the address does not open. They stay empty in `vite dev`, where there is no
+      tab panel the address does not open. What a named chunk statically imports is in the list
+      with it, which is how the two document lists hold that card's chunk anyway - the artifact
+      document imports it - while the `app` list does not hold it at all.
+      They stay empty in `vite dev`, where there is no
       bundle and every module is served on demand.
 
       A preload only downloads; the page still reaches each chunk by the `import()` it always

@@ -60,13 +60,16 @@ import { remarkRawHtmlAsText } from './raw-html.js';
 export type SoftBreaks = 'space' | 'line';
 
 /**
- * What raw HTML in the source becomes. `'refuse'`, the default, is what a document means by it:
- * the schema has no node for it, the parse throws, and the caller keeps the source as its author
- * wrote it — which is how a document holds an HTML comment and writes it back byte for byte.
- * `'text'` is what a comment, message or reply body means by it: an HTML comment draws as
- * nothing, as GitHub draws it, and any other raw HTML draws as the literal text its author
- * typed, never as HTML (`remarkRawHtmlAsText`), so a body holding either still reads as the
- * Markdown around it.
+ * What raw HTML in the source becomes. Neither policy throws over it and neither draws it as
+ * HTML: the schema has no node for a block of raw HTML, so the parse draws that block as a
+ * paragraph of the same characters (`remarkHtmlBlockParagraphs`, ./html-blocks.ts), and an
+ * inline tag-shaped span stays the commonmark preset's `html` atom, whose DOM is a span of its
+ * own value as text. The two differ in the HTML comment alone. `'refuse'`, the default, is what
+ * a document means by it: a comment is kept as the characters its author wrote, which is how a
+ * document writes one back byte for byte. `'text'` is what a comment, message or reply body
+ * means by it: an HTML comment draws as nothing, as GitHub draws it (`remarkRawHtmlAsText`), so
+ * the `<!-- legion: … -->` footer an agent appends is not read back to a reader, while every
+ * other raw HTML still reads as the literal text its author typed.
  */
 export type RawHtml = 'refuse' | 'text';
 
@@ -78,9 +81,7 @@ export interface HeadlessProofEditor {
    * (`'refuse'` by default).
    *
    * Throws for a source the schema has no node for: a mark span of a kind this schema does not
-   * carry, and, under `rawHtml: 'refuse'`, a raw-HTML block or span (a bare tag-shaped
-   * substring outside a code span or fence, e.g. `<img src=x>`). Outside read-only mode, with a
-   * `blockSchema`, it also
+   * carry. Outside read-only mode, with a `blockSchema`, it also
    * throws for the parser's directive refusals (an unknown typed block, a refused attribute, a
    * paragraph line that opens like a directive), as the pmdoc fixture generators need to match
    * the document service, and draws a typed block whose content breaks its content rule as its

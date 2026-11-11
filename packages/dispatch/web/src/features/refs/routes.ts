@@ -672,10 +672,12 @@ const APP_PATH_BASE = "https://dispatch.invalid";
  * the path and comparing origins is what refuses that one, and anything else a parser reads
  * otherwise than the characters suggest.
  *
- * Every builder below returns such a path for every route it knows, and this is what says so
- * wherever a path becomes a link a reader can press: `safeReferencePath` is how each of those
- * places asks. The rule a new route kind has to keep is here, in front of the sink, rather than
- * spread over the builders where the next one would miss it.
+ * Every builder below returns such a path for every route it knows, each segment of it encoded
+ * (`encodeURIComponent`), and this is what says so where a path built from a reference a reader
+ * wrote becomes a link they can press: `safeReferencePath` below asks it for a whole route, and
+ * `RefLink.tsx` asks it for the path its hook already resolved. The rule a new route kind has to
+ * keep is here, in front of the check, rather than spread over the builders where the next one
+ * would miss it.
  */
 export function isSafeAppPath(path: string): boolean {
   if (!path.startsWith("/") || path.startsWith("//")) {
@@ -692,8 +694,15 @@ export function isSafeAppPath(path: string): boolean {
  * The path `route` opens, or undefined when what the builders made is not a path of this app.
  *
  * A route is read out of text a reader wrote or out of an anchor the page already holds, and the
- * path built from it is written into an `href`. Every such place builds its path here, so the
- * guard cannot be the one a new sink forgets.
+ * path built from it is written into an `href`. Not every such place asks here: `RefLink.tsx`
+ * holds the path it writes to `isSafeAppPath` itself, and the sites that link a route the page
+ * already holds - an activity line, an artifact header, a decision card, a reference link, a
+ * Referenced-by row, an item match - call `buildReferencePath` and write what it answers. What
+ * makes those safe is the builders: every one of them encodes each segment it writes
+ * (`encodeURIComponent`), so no id or slug can open a path of another origin. This is the guard
+ * for the places that read a route out of a body's own text, and the rule a new route kind has
+ * to keep is stated at `isSafeAppPath` above, in front of the check, rather than spread over the
+ * builders where the next one would miss it.
  */
 export function safeReferencePath(
   route: DispatchReferenceRoute,

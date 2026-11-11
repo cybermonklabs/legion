@@ -149,7 +149,7 @@ const REANCHOR_SEND_WAIT_MS = 5000;
 
 /** How long a refused send waits for a document to register its bridge before the margin tells
  *  the reader the document is not open. The bridge binds only once the document has synced and
- *  its editor is built (`ProofDocument`'s `onSynced`, `createEditor`, `bindEditor`), while a
+ *  its editor is built (`ProofDocument`'s `onSynced`, `constructEditor`, `bindEditor`), while a
  *  reload resumes a margin send pressed within `KEPT_SEND_RESUME_MS`: the refusal of a send on
  *  the document the reader is looking at can land seconds before that document's editor exists.
  *  Long enough for a document to load on a slow connection, and short enough that a reader on no

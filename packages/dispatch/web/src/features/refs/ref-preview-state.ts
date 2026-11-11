@@ -35,7 +35,7 @@ let closeTimer = 0;
 /** The open delay of the request standing now ran out while the reference was not what the
  *  pointer was on, so the card was not drawn and the request was not dropped either: the page
  *  had moved the reference out from under a still pointer, or drawn something over it. The
- *  reader's next movement onto the reference is what opens it then (`openAfterTheDelay`). */
+ *  reader's next movement onto the reference is what opens it then (`startTheDelayAgain`). */
 let theDelayRanOut = false;
 const subscribers = new Set<() => void>();
 

@@ -314,22 +314,25 @@ const multiprocessProjects = [
 // and one row at a time, and in no project above them (sjawhar/legion#2612).
 const clockSpecs = /(heavy-bodies|nested-directive)\.e2e\.ts/;
 
-// The rows read from the wall clock that live in a file whose other rows are not: four of
+// The rows read from the wall clock that live in a file whose other rows are not: five of
 // `large-documents-measured.e2e.ts`. The argument above `clockSpecs` is theirs too, and CI has
 // said it of each of them.
 //
-// Three are the rows the spec's own targets are read from - the two measurements of a first
-// editable block under 4x CPU throttling, and the row that times a page timer and a socket
-// message handed over inside the editor's build. At one head the two measurements read 4,824 ms
-// and 8,311 ms on their first attempt and 3,838 ms and 5,105 ms on the retry, with each
-// attempt's network reads the same or slower and every main-thread number halved, which is the
-// other lanes easing rather than any cache warming; at the same head the timer row's worst wait
-// was 8,279 ms behind a build whose own longest task was 732 ms. They are read on the phone the
-// spec names, so they run in `iphone-alone` below.
+// Four are read on the phone the spec names - the two measurements of a first editable block
+// under 4x CPU throttling, the row that times a page timer and a socket message handed over
+// inside the editor's build, and the row that times a decision answered inside one - so they
+// run in `iphone-alone` below. At one head the two measurements read 4,824 ms and 8,311 ms on
+// their first attempt and 3,838 ms and 5,105 ms on the retry, with each attempt's network reads
+// the same or slower and every main-thread number halved, which is the other lanes easing
+// rather than any cache warming; at the same head the timer row's worst wait was 8,279 ms
+// behind a build whose own longest task was 732 ms. The decision row holds two readings of the
+// page's own clock 500 ms apart under 4x CPU throttling - the press the page made and the
+// request its answer left in - which four lanes on one machine measure as surely as they
+// measure the other three (dispatch://INFRA-341).
 const phoneClockRows =
-  /(measures .* on a phone under 4x CPU throttling|a page timer and a socket message are served while .*'s editor is built)/;
+  /(measures .* on a phone under 4x CPU throttling|a page timer and a socket message are served while .*'s editor is built|a decision answered while .*'s editor is built goes out within half a second of the press)/;
 
-// The fourth is the guard on the longest main-thread task of a build at a desktop width, whose
+// The fifth is the guard on the longest main-thread task of a build at a desktop width, whose
 // number is as much the runner's as theirs: over three CI runs of one branch, each in a
 // `chromium` shard leg four workers wide, it printed `longest 445 ms`, `longest 467 ms` and
 // `longest 557 ms`, the last of them a failure against its 500 ms guard on both attempts, while
@@ -339,7 +342,7 @@ const phoneClockRows =
 // it: it runs in `chromium-alone` below, which is Desktop Chrome with the machine to itself.
 const desktopClockRow = /no task of .*'s build holds a desktop page for half a second/;
 
-// Both sets, which is what every parallel project inverts: all four run after the lanes, one row
+// Both sets, which is what every parallel project inverts: all five run after the lanes, one row
 // at a time, and in no project above them. Their file's other rows stay where they are, which is
 // why this selects by row rather than by file. Playwright reads an array as OR
 // (`createTitleMatcher`, playwright/lib/util.js).
@@ -600,14 +603,14 @@ const aloneProjects = [
     workers: 1,
     retries: 0,
   },
-  // The three clock rows of `large-documents-measured.e2e.ts` the spec's own targets are read
-  // from (`phoneClockRows` above), on the phone they measure: the iPhone 13 viewport, touch and
-  // Chromium the `iphone` project gives them, since every target the spec names is read on that
-  // device under 4x CPU throttling. It selects by row rather than by file, because the file's
-  // other rows belong in the lanes, and it runs last, after the three `-alone` projects above
-  // it, so nothing of the suite is left beside it. Its three rows are the whole of its cost:
-  // the measurements took 34.3 s and 1.2 m per attempt on CI's own runner and the timer row
-  // 1.3 m, each one row wide.
+  // The four clock rows of `large-documents-measured.e2e.ts` read on the phone
+  // (`phoneClockRows` above): the iPhone 13 viewport, touch and Chromium the `iphone` project
+  // gives them, since every target the spec names is read on that device under 4x CPU
+  // throttling. It selects by row rather than by file, because the file's other rows belong in
+  // the lanes, and it runs last, after the three `-alone` projects above it, so nothing of the
+  // suite is left beside it. Its four rows are the whole of its cost: the measurements took
+  // 34.3 s and 1.2 m per attempt on CI's own runner and the timer row 1.3 m, each one row wide,
+  // and the decision row, which ran in the lanes until now, joins them.
   {
     name: "iphone-alone",
     dependencies: [

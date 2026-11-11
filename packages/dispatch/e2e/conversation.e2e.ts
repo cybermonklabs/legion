@@ -1328,7 +1328,15 @@ test("clearing a conversation's New mark moves no card @phone", async ({ browser
         });
       });
     const before = await boxes();
+    // The three cards the row is about, one of each placement named above: a comment's thread
+    // card, an ask's card, and a message's byline mark. A page that drew none of them, or three
+    // of one kind, would leave the comparison below nothing of this row's subject to compare.
     expect(before).toHaveLength(3);
+    expect(before.map((card) => card.turn.split(":")[0]).sort()).toEqual([
+      "ask",
+      "comment",
+      "message",
+    ]);
 
     await (await held).continue();
     await expect(marks).toHaveCount(0);

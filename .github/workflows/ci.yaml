@@ -4159,6 +4159,17 @@ jobs:
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
         working-directory: packages/dispatch
+      # The entry chunk is the first screen's download, and what it may hold is a list
+      # (web/src/entry-chunk-contents.ts): a deferred part pulled back into it, or a preload the
+      # page no longer writes, costs every first paint and nothing else fails. The second check
+      # holds the entry chunk to carrying no zod, the validator the SPA keeps out of its first
+      # download. Both read the build the step above produced, so they run here, after it.
+      - name: Check dispatch dashboard entry chunk
+        run: bun run check:entry-chunk
+        working-directory: packages/dispatch
+      - name: Check zod stays out of the dispatch dashboard entry chunk
+        run: bun run check:no-zod
+        working-directory: packages/dispatch
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

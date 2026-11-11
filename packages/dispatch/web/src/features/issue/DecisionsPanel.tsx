@@ -12,6 +12,7 @@ import type {
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
+import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import {
   card,
   dangerText,
@@ -167,6 +168,9 @@ function ChangeComposer({
         className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
         id={fieldId}
         onChange={(event) => setBody(event.target.value)}
+        // Enter writes a line; Ctrl/Cmd+Enter sends, through this form's own submit, as every
+        // Dispatch-owned multi-line input does.
+        onKeyDown={(event) => submitOnModifiedEnter(event)}
         rows={3}
         value={body}
       />

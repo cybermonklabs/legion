@@ -487,7 +487,7 @@ export function AgentThread({
   sessionId,
 }: {
   /** The slash commands the composer completes, beside the delivery modes it always offers;
-   *  none is offered while this is undefined or empty. */
+   *  no command is offered while this is undefined or empty. */
   commands: readonly AgentStreamCommand[] | undefined;
   /** Every turn of the transcript, in the order it is rendered, by the key each one carries in
    *  `data-message-id`: what the follow hook counts as new and finds the reader's place in. */

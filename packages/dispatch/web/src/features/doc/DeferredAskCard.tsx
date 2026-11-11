@@ -20,8 +20,11 @@ import type { AskBlockHost } from "./typed-block-drawing";
  * this component, so `useRenderedMarkdown` has a card from its first render and draws every
  * `ask` shell exactly as it does today; the card fills that shell in once its chunk arrives,
  * under the frame the body itself drew, which is the same shell a body with no provider leaves
- * empty. A document address downloads the chunk beside the issue page's own
- * (`documentAddressChunks` in `web/vite.config.ts`), so it is in hand before a body is parsed.
+ * empty. Its chunk is named in no address's preload list, and both document lists hold it all
+ * the same: `ArtifactDocument`, which is named there, statically imports it
+ * (`DOCUMENT_ADDRESS_MODULES` and `documentAddressChunks` in `web/vite.config.ts`), so at an
+ * issue or a document address it is in hand before a body is parsed, and at every other address
+ * it is asked for when the first card mounts.
  */
 const AskBlockCard = lazy(() =>
   import("./AskBlockCard").then((module) => ({ default: module.TextAskBlockCard }))

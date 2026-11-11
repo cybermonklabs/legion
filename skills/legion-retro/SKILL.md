@@ -76,8 +76,10 @@ for a finished retro only.
    The body is at most 32,000 characters, Dispatch's message limit,
    and carries no `<!-- legion: … -->` footer:
    Dispatch records the session that sent the message,
-   and the footer is for a pull-request comment or review, which the daemon reads it from
-   (`skill://legion-worker`).
+   and the footer is for a pull-request comment or review:
+   the daemon reads the session out of a pull-request review
+   (`packages/daemon/internal/intake/facts.go`'s `PullRequestReview.LegionSession`,
+   `skill://legion-worker`).
 
    ```bash
    dispatch message --issue '<KEY>' --body-file - <<'EOF'

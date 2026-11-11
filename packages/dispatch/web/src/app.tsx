@@ -261,14 +261,17 @@ function IssuePageFallback(): ReactNode {
  * short pieces, yielding to the browser between them, so the page's own paint and the reader's
  * scroll are not held behind the whole of it.
  *
- * The shell paints its own skeleton first - the same `IssuePageFallback` the `Suspense`
- * boundary above shows while the page's chunk arrives - and the effect then starts the
- * transition. So the page appears exactly as it does today: the skeleton, then the page, with
- * nothing in between that a reader did not see before.
+ * The shell paints `IssuePageFallback` first - the space the page's own chunk keeps until it
+ * arrives (`chunkComponent`'s `space`, above), the same skeleton the route's `Suspense`
+ * fallback carries for the pages that still suspend - and this element's effect then starts
+ * the transition. So the page appears exactly as it does today: the skeleton, then the page,
+ * with nothing in between that a reader did not see before.
  *
- * This element opens the transition the page's chunk renders inside; the chunk's own arrival
- * carries it on from there (`chunkComponent`'s `inATransition` above), since the arrival lands
- * in a promise callback long after this transition has ended.
+ * Two transitions carry two renders. This one carries the render that mounts the page's chunk
+ * component, and the page's own first render where that chunk is already in hand; where it is
+ * not, the arrival lands in a promise callback long after this transition has ended, so it
+ * opens one of its own (`chunkComponent`'s `inATransition`, above) and that transition is what
+ * splits the page's first render into short tasks.
  */
 function IssuePageInATransition(): ReactNode {
   const [renderThePage, setRenderThePage] = useState(false);

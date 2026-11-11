@@ -56,7 +56,6 @@ import {
   blocksBuilt,
   type EditMade,
   everythingOwedFinished,
-  framesOfTheBuild,
   seedDocument,
 } from "./large-documents-rows";
 import { openCommentThread, settledScrollTop } from "./mermaid-helpers";
@@ -358,7 +357,6 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
 
     const page = await alice.newPage();
     await throttleTheCpu(page);
-    await framesOfTheBuild(page);
     await readerEditsTheBuild(page, reading);
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
@@ -369,14 +367,35 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     // Bob writes from the moment Alice's socket is let through: a word in a block her batches
     // have built, a block inserted inside that built run, and that block taken out of it again
     // over the prose it was inserted above.
+    //
+    // Where in her build each of his writes falls is read from her page as he makes them,
+    // because nothing else in this row can say that he wrote during one at all: that some frame
+    // of hers held part of the document is true of any batched build wherever his keystrokes
+    // landed, and he could have written every word of this after her editor opened. The reading
+    // is taken after each write, which is the order that cannot flatter him - a build still
+    // running then was running when he wrote - and it is two selectors of her page rather than
+    // a reading she has to compute.
+    const herBuild: { built: number; open: boolean }[] = [];
+    const whereHerBuildWas = async () => {
+      herBuild.push(
+        await page.evaluate(() => ({
+          built: document.querySelectorAll(".proof-editor [data-block-id]").length,
+          open: document.querySelector('[role="textbox"][aria-label="Document editor"]') !== null,
+        }))
+      );
+    };
     await transport.release();
     await placeCaret(bobPage, "after", title);
     await bobPage.keyboard.type(" Pangolin.");
+    await whereHerBuildWas();
     await placeCaret(bobPage, "after", sectionHeading(0));
     await bobPage.keyboard.press("Enter");
+    await whereHerBuildWas();
     await bobPage.keyboard.type("Otter paragraph.");
+    await whereHerBuildWas();
     await selectTextIn(bobPage, documentEditor(bobPage), `Otter paragraph.${proseOpening(0)}`);
     await bobPage.keyboard.press("Backspace");
+    await whereHerBuildWas();
 
     await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
     const whole = await blocksBuilt(page);
@@ -392,13 +411,29 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     // word changes no count, Enter makes a block, Backspace unmakes one, and three blocks
     // pasted over a selection that runs from one into the next leave one more than there were.
     expect(made.map((edit) => edit.after - edit.built)).toEqual([0, 1, -1, 1]);
-    // And Bob's writing crossed that build too: the page drew frames holding part of the
-    // document while he was writing.
-    const frames = await page.evaluate(() => window.__blocksBuilt ?? []);
+    // And Bob's writing crossed that build: her editor had not been named at any of his four
+    // writes, and it held part of the document - some of its blocks, and not all of them - at
+    // the last of them, so what he wrote he wrote into a document still being built.
+    console.log(
+      `R11 two people write · Alice's editor held ${herBuild
+        .map((at) => `${at.built}${at.open ? " open" : ""}`)
+        .join(", ")} of ${whole} block(s) at Bob's four writes.`
+    );
     expect(
-      frames.filter((held) => held > 0 && held < whole),
-      "no frame was drawn holding part of the document, so Bob's writing crossed no build"
-    ).not.toEqual([]);
+      herBuild.map((at) => at.open),
+      "Alice's editor was open before Bob had written, so this run says nothing about two " +
+        "people writing into one build"
+    ).toEqual([false, false, false, false]);
+    expect(
+      herBuild.at(-1)?.built ?? 0,
+      "Alice's editor held none of the document when Bob made his last write: nothing of her " +
+        "build had reached the page he was writing into"
+    ).toBeGreaterThan(0);
+    expect(
+      herBuild.at(-1)?.built ?? 0,
+      "Alice's editor held the whole document when Bob made his last write, so his writing " +
+        "crossed no build"
+    ).toBeLessThan(whole);
 
     // The binding has taken over, and the document the server holds carries every edit of both
     // of them.

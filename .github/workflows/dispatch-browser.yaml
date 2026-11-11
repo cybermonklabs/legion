@@ -335,18 +335,19 @@ jobs:
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed again
     # at this branch's head (`bunx playwright test --config e2e/playwright.config.ts --list`),
-    # the shard and alone jobs hold 1,430 rows: 1,373 in the ten projects the full lane's five
+    # the shard and alone jobs hold 1,466 rows: 1,408 in the ten projects the full lane's five
     # shards run - the eight parallel ones and the two stubbed - of which 290 are what the
     # pull-request lane's four projects run under `@pr`, 147 of them on the real stack. The
-    # remaining 57 are the four `-alone` projects', which the alone job runs - 20, 17 and 17 of
-    # the three engine legs and 3 of `iphone-alone`. The 20 is `chromium-alone`'s two clock
-    # specs plus the one desktop clock row of large-documents-measured.e2e.ts; the 3 are
-    # `iphone-alone`'s phone clock rows. The visual job's 20 rows are in neither figure: it
-    # writes no blob report at all.
+    # remaining 58 are the four `-alone` projects', which the alone job runs (`--no-deps`) - 20,
+    # 17, 17 and 4. The 20 is `chromium-alone`'s 17 heavy-bodies rows, its two nested-directive
+    # rows and the one desktop row of large-documents-measured.e2e.ts; the 17s are
+    # heavy-bodies.e2e.ts alone on `firefox-alone` and on `webkit-alone`; the 4 are
+    # `iphone-alone`'s phone rows of large-documents-measured.e2e.ts. The visual job's 20 rows
+    # are in neither figure: it writes no blob report at all.
     #
-    # Those 1,373 cut five ways, each leg listed at this head with the ten projects named below
-    # and this job's own denominator (`--shard=<i>/5 --list`): 275, 275, 275, 274 and 274 rows,
-    # which sum to the 1,373. Equal row counts are all Playwright's cut promises, and the
+    # Those 1,408 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 282, 282, 282, 281 and 281 rows,
+    # which sum to the 1,408. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
     timeout-minutes: 13
     strategy:
@@ -1370,7 +1371,7 @@ jobs:
   # What the legs together ran. It joins every shard's and every alone leg's blob report into one
   # report, publishes three readings of it - the rows, the flake rate and the legs that did not
   # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-  # and not seven.
+  # and not nine, one per leg that uploads a report: five shards and four `-alone` projects.
   #
   # This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
   # `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It

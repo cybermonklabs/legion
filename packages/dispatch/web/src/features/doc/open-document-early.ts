@@ -38,9 +38,10 @@ function documentOf(issue: IssueDetails, route: IssueRoute): Artifact | undefine
  * (dispatch://INFRA-341, R11). None of them is anything the text read depends on: the address
  * names the issue, the issue names the document, and the document names its text.
  *
- * The page's first address opens as the entry module evaluates (`main.tsx`), which is before
- * React has rendered anything and before the sign-in check has been asked for, let alone
- * answered: on a phone that moved the issue's read about a second earlier and the document's
+ * The page's first address opens from `features/shell/boot.ts`, the chunk the entry asks for in
+ * its first task (`main.tsx`), which is before React has rendered anything and before the
+ * sign-in check that module asks for just ahead of it has answered: on a phone that moved the
+ * issue's read about a second earlier and the document's
  * text about two, since neither waits any longer for the shell to commit. Every later address
  * opens from the shell's own effect (`app.tsx`'s `OpenDocumentEarly`), which is when the page
  * learns of it. The two meet on the page's first render, so an address already opened is not

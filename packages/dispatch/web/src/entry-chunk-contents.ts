@@ -133,8 +133,9 @@ export const DEFERRED_PARTS: readonly DeferredPart[] = [
     loadedBy: "web/src/features/doc/DeferredAskCard.tsx",
     marker: "data-dispatch-ask-copied-from",
     name: "the decision card every Markdown body draws",
-    // Not preloaded: no `ask` shell exists until a body has been parsed and painted, and this
-    // chunk brings the Inbox's ask card with it (`DOCUMENT_ADDRESS_MODULES` says why).
+    // Needed before no address's first draw: no `ask` shell exists until a body has been parsed
+    // and painted. The two document preload lists hold its chunk all the same, since
+    // `ArtifactDocument` statically imports it (`DOCUMENT_ADDRESS_MODULES` says what is named).
     neededBy: [],
   },
   {

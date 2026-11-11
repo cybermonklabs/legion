@@ -57,7 +57,11 @@ export function AfterTheFirstBatch({
  * because a part arrives over as many commits as its chunk needs - the chunk's own fallback
  * first, the part itself after it.
  *
- * A reader who presses or tabs into the space has reached for the chrome, and gets it then.
+ * A reader who presses or tabs into the space has reached for the chrome, and gets it then:
+ * the press is `onPointerDownCapture` below and the Tab is `onFocusCapture`, which a held
+ * control takes because it is `aria-disabled` rather than `disabled`. A keyboard reader who
+ * presses an issue binding instead reaches it the same way from the page's own keymap
+ * (`features/issue/IssuePage.tsx`'s `reachingTheChrome`).
  */
 export function ChromeAfterTheFirstBatch({
   children,

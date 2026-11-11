@@ -51,8 +51,6 @@ dispatch comment --issue '<KEY>' --body-file - <<'EOF'
 Evidence: <file and symbol, or text quoted from it, of this pull request, and what went wrong>.
 Belongs in: <the skill, prompt or guide>.
 Replaces: <the instruction and its path>, or nothing.
-
-<!-- legion: {"session":"<session-id>","phase":"retro"} -->
 EOF
 ```
 

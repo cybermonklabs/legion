@@ -237,3 +237,35 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
     comment.mockRestore();
   }
 });
+
+test("the change composer sends on Ctrl/Cmd+Enter, as every Dispatch-owned multi-line input does", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+
+    const composer = within(waiting).getByRole("form", { name: "Change Store notices in a table" });
+    await user.click(within(composer).getByLabelText("Your change"));
+    await user.paste("Use a queue instead.");
+    // The key, and not the button: Enter alone writes a line, so nothing is sent until the
+    // modifier is held.
+    await user.keyboard("{Enter}");
+    expect(comment).not.toHaveBeenCalled();
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    await waitFor(() => expect(comment).toHaveBeenCalled());
+    expect(comment.mock.calls[0]?.slice(0, 2)).toEqual([
+      "CORE-1",
+      {
+        anchor: { artifact: documentId, quote: "A table keeps them queryable." },
+        body: "Use a queue instead.\n",
+      },
+    ]);
+  } finally {
+    read.mockRestore();
+    comment.mockRestore();
+  }
+});

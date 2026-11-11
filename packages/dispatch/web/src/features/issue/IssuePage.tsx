@@ -66,9 +66,12 @@ import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from ".
  *
  * The first is the commit. The page used to mount in one commit - the header, the tab strip
  * and the document surface together - and a commit cannot be interrupted, so that one commit
- * held the main thread for about 0.7 s on a phone at 4x CPU throttling; rendering the page
- * inside a transition makes its render interruptible and leaves that commit whole
- * (dispatch://INFRA-341, R11). Each part here makes one commit of its own instead: the
+ * held the main thread for about 0.7 s on a phone at 4x CPU throttling; this page's first
+ * render runs inside a transition, which makes it interruptible and leaves each commit whole
+ * (`app.tsx`'s `IssuePageInATransition` opens that transition, and the arrival of this
+ * module's own chunk opens one again where it lands after it, `chunkComponent`'s
+ * `inATransition`; dispatch://INFRA-341, R11). Each part here makes one commit of its own
+ * instead: the
  * document's part commits first, with the two boxes the reader already has in front of them
  * (`issue-page-skeleton.tsx`), and the header, the tabs and each side list land after it, one
  * commit each.

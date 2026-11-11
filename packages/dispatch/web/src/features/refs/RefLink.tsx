@@ -67,8 +67,9 @@ export function RefLink({
   const path = useReferencePath(route);
   useLayoutEffect(() => {
     // The route behind this path was read out of a body's own text, so the path goes into the
-    // href only as a path of this app (`isSafeAppPath`), as it does at every other href this
-    // module writes.
+    // href only as a path of this app (`isSafeAppPath`). A site that links a route the page
+    // already holds writes `buildReferencePath`'s answer straight into its `to`, which is safe
+    // because every builder encodes the segments it writes (`features/refs/routes.ts`).
     if (anchor instanceof HTMLAnchorElement && isSafeAppPath(path)) {
       anchor.setAttribute("href", path);
     }

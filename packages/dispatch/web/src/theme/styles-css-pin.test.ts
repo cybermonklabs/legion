@@ -10,9 +10,9 @@ import * as P from "./palette";
  * `styles.css` only uses hand-written color literals for the pre-hydration `:root` fallback,
  * outside components' `dark:`-className mechanism. Each literal is annotated with the matching
  * palette swatch so a manual fallback change cannot silently drift from the rendered theme.
- * `css-colors.ts` finds every colour a human can write there, in any notation; the pin accepts
- * one of two notations, and only annotated, so a colour added in any other way fails here
- * rather than slipping past a pattern that never looked for it.
+ * `css-colors.ts` finds every colour a human can write there, in the notations R13 names; the
+ * pin accepts one of two notations, and only annotated, so a colour added in any other way
+ * fails here rather than slipping past a pattern that never looked for it.
  */
 
 const STYLES_CSS_PATH = join(import.meta.dir, "..", "styles.css");
