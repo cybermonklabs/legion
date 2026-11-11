@@ -770,5 +770,6 @@
       "stalled": false,
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
-  ]
+  ],
+  "lowestPluginContract": 46
 }

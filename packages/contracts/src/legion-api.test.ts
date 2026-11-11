@@ -56,6 +56,15 @@ const schemas: Record<string, z.ZodType> = {
   // Written by internal/projection's own golden test: what the state route projects while the
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
+  // One issue's record (`GET /legion/v1/issues/{key}/record`), which answers the very value the
+  // state holds under `issues.<key>`: the issue schema the state response already carries,
+  // reached through it rather than written out or exported a second time.
+  "issue-record.json": LegionStateResponse.shape.issues.valueType,
+  // The typed health body (`api.Health`, `GET /healthz`): that the daemon is serving, and the
+  // project it serves, which the controller's boot check reads. Written out here rather than
+  // imported, because the slice that adds `LegionHealthResponse` to `legion-api.ts` owns that
+  // schema; it replaces this entry with the exported one.
+  "health.json": z.strictObject({ status: z.string().min(1), project: z.string().min(1) }),
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).

@@ -672,6 +672,12 @@ export const LegionStateResponse = z.object({
   repositories: legionRepositories,
   settings: legionSettings,
   consumers: z.array(legionConsumerLag),
+  // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
+  // process and record one, absent where no claim does (contract 60). No plugin code reads the
+  // value — it is a number for an operator and for the serving-down's own reckoning — so it is
+  // optional here, and a reader that finds it absent learns that nothing of the project runs a
+  // plugin it knows the contract of.
+  lowestPluginContract: z.number().int().positive().optional(),
 });
 
 export type LegionState = z.output<typeof LegionStateResponse>;

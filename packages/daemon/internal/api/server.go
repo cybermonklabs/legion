@@ -409,9 +409,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /legion/v1/state", s.stateRoute)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		s.writeAnswer(w, r, AnswerHealth, http.StatusOK, map[string]string{"status": "ok"})
-	})
+	mux.HandleFunc("GET /legion/v1/issues/{key}/record", s.issueRecordRoute)
+	mux.HandleFunc("GET /healthz", s.healthRoute)
 
 	mux.HandleFunc("POST /legion/v1/claims/register", s.register)
 	mux.HandleFunc("POST /legion/v1/claims/ready", s.ready)
@@ -455,9 +454,31 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 
 	return &http.Server{
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           mux,
+		Handler:           statingContract{mux: mux},
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
+}
+
+// daemonContractHeader is the response header this daemon states its own contract in
+// (DaemonAPIVersion), so a caller reads the number the body it just received was written at
+// rather than inferring it from the body's keys.
+const daemonContractHeader = "Legion-Daemon-Contract"
+
+// statingContract is the one handler every request of this daemon passes through: it states the
+// daemon's contract and hands the request to the mux. It is a handler around the whole mux and
+// not a line in a writer, because the header rides on every answer — the catch-all's 404 and
+// `GET /healthz` as much as a `/legion/v1` route, a refusal as much as a success, and the four
+// routes that answer 204 with no body at all, which write no body for a writer to add it to.
+//
+// It is a type of its own rather than a closure so that a test can read the server's Handler and
+// see that the mux is wrapped, which is what makes a route that misses the header impossible.
+type statingContract struct {
+	mux *http.ServeMux
+}
+
+func (s statingContract) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))
+	s.mux.ServeHTTP(w, r)
 }
 
 // decision is the context a route runs a decision of token's claim on. It outlives the request,
@@ -575,11 +596,19 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
-func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
+// projectState is the project's own value, as every route that reads it reads it: one
+// repeatable-read read-only snapshot, one read of the source, and the consumers' lag read after
+// that snapshot commits. It writes its own refusal and answers false where it wrote one, so the
+// two reading routes share the transaction, the read and the refusals and differ only in what
+// each answers from the value.
+//
+// The claims are the snapshot's own, which is what a caller's contract is read from
+// (writeAnswerFrom): a claim and the state it was projected into cannot come from two moments.
+func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []supervise.Claim, bool) {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
 		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
-		return
+		return State{}, nil, false
 	}
 	tx, err := s.stateTransactions.BeginTx(r.Context(), pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
@@ -587,7 +616,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logRequestFailure(r, err, "api: begin state transaction failed")
 		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
-		return
+		return State{}, nil, false
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
@@ -595,19 +624,83 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logRequestFailure(r, err, "api: state source failed")
 		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
-		return
+		return State{}, nil, false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.logRequestFailure(r, err, "api: commit state transaction failed")
 		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
-		return
+		return State{}, nil, false
 	}
 	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
 	// no snapshot open; what it does not answer is each consumer's `unavailable`, never a refusal.
 	if s.consumerLag != nil {
 		state.Consumers = ConsumerLagViewsOf(s.consumerLag(r.Context()))
 	}
+	// The fleet's lowest plugin contract is read from the claims of the very snapshot the state
+	// was projected from, so the number the body reports and the shapes the body was served at
+	// are read from one moment (State.LowestPluginContract).
+	state.LowestPluginContract = lowestPluginContract(claims)
+	return state, claims, true
+}
+
+func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
+	state, claims, ok := s.projectState(w, r)
+	if !ok {
+		return
+	}
 	s.writeAnswerFrom(w, r, AnswerState, http.StatusOK, state, claims)
+}
+
+// recordNotFound is the code of the one refusal this route makes, and no other refusal of this
+// daemon uses it: a caller that reads one issue's record tells "this daemon holds no record for
+// the issue you named" from every other 404 by the code alone (`ISSUE_NOT_FOUND` is the
+// workflow routes', api's handoff.go and architect.go).
+const recordNotFound = "RECORD_NOT_FOUND"
+
+// issueRecordRoute answers one issue's record, the value the whole-project body holds under
+// `issues.<key>`, for any issue the caller names and not the caller's own alone. It
+// authenticates nobody and places its caller by its address, as the state route does.
+//
+// It builds the project's state exactly as the state route does (projectState) and answers
+// `state.Issues[key]` out of it, rather than asking the store a cheaper question of one issue,
+// because the record must equal the record of that issue inside the whole-project body field for
+// field: `waitingLine` and `slot` come from the project's admission, `check` from its open
+// production checks, `gatedSteps` from the deployment's steps and the three memory fields from
+// the tree's draw. None of the six is a fact of the issue's own row. Building the answer from
+// the same value the whole-project body is built from makes that equality hold by construction,
+// and a test holds a later change to it.
+//
+// An issue the daemon holds no record for is a 404 carrying recordNotFound and the sentence the
+// plugin's own `read_record` answers for an unknown issue today
+// (`packages/pi-shared/src/legion-phase-ops.ts`), so a role reads the same words whichever side
+// found the record missing.
+func (s *server) issueRecordRoute(w http.ResponseWriter, r *http.Request) {
+	state, claims, ok := s.projectState(w, r)
+	if !ok {
+		return
+	}
+	key := r.PathValue("key")
+	issue, recorded := state.Issues[key]
+	if !recorded {
+		s.writeFailure(w, r, http.StatusNotFound, recordNotFound, "The daemon has no record for "+key)
+		return
+	}
+	s.writeAnswerFrom(w, r, AnswerIssueRecord, http.StatusOK, issue, claims)
+}
+
+// Health is the body of `GET /healthz`: that the daemon answered, and the project it serves, so
+// a caller that reached a daemon learns which project it reached rather than only that something
+// is listening. The controller's boot check reads the project from `state.daemon.project` today,
+// which costs it the whole state for one word.
+type Health struct {
+	Status  string `json:"status"`
+	Project string `json:"project"`
+}
+
+// healthRoute answers that this daemon is serving, and the project it serves. It reads no store,
+// so a daemon whose database is unreachable still answers it.
+func (s *server) healthRoute(w http.ResponseWriter, r *http.Request) {
+	s.writeAnswer(w, r, AnswerHealth, http.StatusOK, Health{Status: "ok", Project: s.project})
 }
 
 // pluginContractHeader is the request header a caller states the contract its own plugin speaks
@@ -1050,6 +1143,30 @@ func podContracts(claims []supervise.Claim, pod string) (lowest, highest int, re
 		}
 	}
 	return lowest, highest, recorded
+}
+
+// lowestPluginContract is the lowest contract the claims that hold a process record, over every
+// pod of the project rather than one caller's: the same claims podContracts reads, with the pod
+// left out of the question. Nil where no such claim exists.
+//
+// A claim with no locator, or one whose locator names no pod, is in no reckoning here, exactly
+// as it is in none of a pod's: suspending, failing or retiring a claim ends what the machine had
+// with its process and the claim gives up its locator with it, so such a claim calls nothing and
+// no shape is owed to it. A claim recording no contract reports nothing either.
+func lowestPluginContract(claims []supervise.Claim) *int {
+	lowest := 0
+	for _, c := range claims {
+		if c.Locator == nil || c.Locator.Sandbox == nil || c.PluginContract == 0 {
+			continue
+		}
+		if lowest == 0 || c.PluginContract < lowest {
+			lowest = c.PluginContract
+		}
+	}
+	if lowest == 0 {
+		return nil
+	}
+	return &lowest
 }
 
 // withoutUpdateRounds is state with no claim view carrying `updateRound` or `updateHead`, the two

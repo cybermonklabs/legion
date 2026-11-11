@@ -1,0 +1,134 @@
+{
+  "key": "LEGION-208",
+  "generation": 3,
+  "phase": "implementing",
+  "status": "in_progress",
+  "tree": "LEGION-208",
+  "repo": "acme/widgets",
+  "defaultBranch": "main",
+  "architect": {
+    "session": "ses_architect_208",
+    "state": "ready",
+    "locator": {
+      "runtime": "tmux",
+      "claim": "legion-legion-legion-208-architect",
+      "incarnation": "31881:9442101",
+      "tmux": {
+        "window": "@4",
+        "pane": "%12"
+      }
+    },
+    "pluginContract": 0,
+    "step": {
+      "at": "2026-09-22T09:16:58Z",
+      "turnStartedAt": "2026-09-22T09:16:40Z",
+      "tool": "read",
+      "callId": "toolu_arch_3",
+      "argsBytes": 74,
+      "argsHash": "3f7c1a9d62b40e58",
+      "startedAt": "2026-09-22T09:16:55Z",
+      "endedAt": "2026-09-22T09:16:58Z"
+    }
+  },
+  "workers": {
+    "implementer": {
+      "claim": {
+        "session": "ses_implementer_208",
+        "state": "working",
+        "locator": {
+          "runtime": "sandbox",
+          "claim": "legion-legion-legion-208-implementer",
+          "incarnation": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11/5",
+          "sandbox": {
+            "namespace": "legion",
+            "name": "legion-legion-legion-208",
+            "podUid": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+            "container": "roles",
+            "generation": 5
+          }
+        },
+        "capabilities": {
+          "measuredAt": "2026-09-22T09:17:03Z",
+          "incarnation": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11/5",
+          "ok": [
+            "subagents",
+            "dispatch-envoy-tools"
+          ],
+          "open": [
+            {
+              "name": "github",
+              "detail": "gh api user: HTTP 401: Bad credentials"
+            }
+          ]
+        },
+        "pluginContract": 0,
+        "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+        "step": {
+          "at": "2026-09-22T09:17:12Z",
+          "turnStartedAt": "2026-09-22T09:16:30Z",
+          "tool": "bash",
+          "callId": "toolu_impl_11",
+          "argsBytes": 128,
+          "argsHash": "9b2e45c0d1f8a673",
+          "startedAt": "2026-09-22T09:17:12Z"
+        }
+      },
+      "rounds": 2
+    },
+    "planner": {
+      "claim": {
+        "session": "ses_planner_208",
+        "state": "suspended",
+        "locator": {
+          "runtime": "sandbox",
+          "claim": "legion-legion-legion-208-planner",
+          "incarnation": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11/2",
+          "sandbox": {
+            "namespace": "legion",
+            "name": "legion-legion-legion-208",
+            "podUid": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+            "container": "roles",
+            "generation": 2
+          }
+        },
+        "pluginContract": 0,
+        "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+        "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128"
+      },
+      "handoffRecord": {
+        "id": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
+        "version": 1
+      },
+      "rounds": 0
+    }
+  },
+  "pullRequest": {
+    "repo": "acme/widgets",
+    "number": 1247,
+    "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+    "state": "open",
+    "checksVerdict": "pending",
+    "reviewDecision": "changes_requested"
+  },
+  "designGate": {
+    "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+    "currentVersion": 7,
+    "approvedVersion": 6
+  },
+  "gatedSteps": [
+    {
+      "step": "spec",
+      "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+      "currentVersion": 7,
+      "approvedVersion": 6,
+      "status": "waiting"
+    }
+  ],
+  "slot": {
+    "index": 0,
+    "admittedAt": "2026-09-21T18:42:11Z"
+  },
+  "memoryGroup": "memory",
+  "memoryDrawMode": "random",
+  "memoryDrawnAt": "2026-09-20T11:04:05Z"
+}

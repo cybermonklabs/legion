@@ -360,7 +360,9 @@ func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 				logs := &bytes.Buffer{}
 				handler := shapedServer(t, populatedState(t), tc.claims, logs, tc.placesCallers)
 
-				if body := stateStating(t, handler, tc.remote, 0); string(body) != string(whole) {
+				// Each row's claims are its own, so each reports its own `lowestPluginContract`,
+				// which no caller's contract decides: the shape is what is compared.
+				if body := stateStating(t, handler, tc.remote, 0); withoutLowestContract(t, body) != withoutLowestContract(t, whole) {
 					t.Errorf("state = %s, want the body this contract writes %s", body, whole)
 				}
 				if logs.Len() != 0 {

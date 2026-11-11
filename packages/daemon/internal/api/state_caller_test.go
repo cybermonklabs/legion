@@ -185,7 +185,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				t.Errorf("the state %s names %d of the wakes the pacing holds, want the fixture's %d", body, len(wakes), len(fullWakes))
 			}
 			if tc.rounds && tc.stall {
-				if string(body) != string(full) {
+				if withoutLowestContract(t, body) != withoutLowestContract(t, full) {
 					t.Fatalf("state = %s, want the state as this contract writes it, %s", body, full)
 				}
 				return
@@ -256,6 +256,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
 			}
+			// The fleet's lowest plugin contract is the snapshot's claims, which this row's own
+			// claims are (withoutLowestContract): it is no key the caller's contract decides.
+			delete(want, "lowestPluginContract")
+			delete(got, "lowestPluginContract")
 			wantJSON, _ := json.Marshal(want)
 			gotJSON, _ := json.Marshal(got)
 			if string(gotJSON) != string(wantJSON) {
@@ -282,6 +286,25 @@ func strandedWithoutRetired(t *testing.T, stranded any) []any {
 		kept = append(kept, row)
 	}
 	return kept
+}
+
+// withoutLowestContract is a state body as a string with `lowestPluginContract` left out, which
+// is how two bodies of different claims are compared for their shape. The key reports the claims
+// of the snapshot the body was projected from (State.LowestPluginContract) and nothing the
+// caller's own contract decides, so two bodies served from different claims differ in it by
+// design and a comparison about the shaping reads neither.
+func withoutLowestContract(t *testing.T, body []byte) string {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode the state %s: %v", body, err)
+	}
+	delete(decoded, "lowestPluginContract")
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("encode the state: %v", err)
+	}
+	return string(encoded)
 }
 
 // servedShape applies to want, a body decoded from the state this contract writes, the two

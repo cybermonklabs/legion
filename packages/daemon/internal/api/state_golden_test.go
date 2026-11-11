@@ -582,11 +582,29 @@ func populatedState(t *testing.T) State {
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
+	// The oldest plugin any pod of the fixture's project runs, which the state route reads from
+	// the claims of its own snapshot (api's lowestPluginContract). The floor is the reading this
+	// change records of the fleet, and the fixture carries a value so that the golden and every
+	// walk over it see the field.
+	lowest := ServingFloor
+	state.LowestPluginContract = &lowest
 	return state
 }
 
 func TestStateGolden(t *testing.T) {
 	golden(t, "state.json", populatedState(t))
+}
+
+// One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
+// the whole-project body holds under `issues.LEGION-208`, which a test of the route holds the
+// two to, field for field.
+func TestIssueRecordGolden(t *testing.T) {
+	golden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
+}
+
+// What `GET /healthz` answers: that the daemon is serving, and the project it serves.
+func TestHealthGolden(t *testing.T) {
+	golden(t, "health.json", Health{Status: "ok", Project: "legion"})
 }
 
 // Every plugin parses the state with the schema of the contract it was built at, and a

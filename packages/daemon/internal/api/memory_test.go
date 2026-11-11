@@ -254,6 +254,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
 			}
+			// The fleet's lowest plugin contract is the snapshot's claims, which this row's own
+			// claims are: it is no key the caller's contract decides (withoutLowestContract).
+			delete(want, "lowestPluginContract")
+			delete(got, "lowestPluginContract")
 			wantJSON, _ := json.Marshal(want)
 			gotJSON, _ := json.Marshal(got)
 			if string(gotJSON) != string(wantJSON) {

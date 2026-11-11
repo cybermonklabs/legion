@@ -84,6 +84,17 @@ type State struct {
 	// NATS at the request after the state's transaction commits, so no NATS read holds the
 	// snapshot open. Never null: a daemon with no workflow has none (contract 43).
 	Consumers []ConsumerLagView `json:"consumers"`
+	// LowestPluginContract is the lowest plugin contract among the claims of the project whose
+	// locator names a pod and that record one — the claims that hold a process, which are the
+	// ones a plugin reads this daemon's answers from (api's lowestPluginContract). Absent where
+	// no such claim exists, which is a project with nothing running.
+	//
+	// It is the number that says which shapes the serving-down must still cover, and the one to
+	// read before the floor this daemon shapes an answer from (ServingFloor) is raised: no claim
+	// holding a process reads below it. A claim that is suspended, failed or retired gave its
+	// locator up with its process and lowers it by nothing, however old the plugin it last
+	// recorded (contract 60).
+	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
