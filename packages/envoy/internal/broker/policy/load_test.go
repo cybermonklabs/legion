@@ -930,6 +930,32 @@ func TestAdminCap(t *testing.T) {
 	}
 }
 
+// TestTagRulesRefusesAShapeThatIsNeitherWord is the shape tag's own rule, weighed by calling
+// TagRules rather than by driving a load as the two tests above do: the tag says what the stored
+// value is, so the broker takes the two words it knows and the absent tag, and refuses every
+// other value — another casing of a word it knows among them — as ReasonShapeMalformed rather
+// than reading it as one of them. The line a load writes for such a secret is
+// TestLoadRefusesEachUnservableSecretByNameWithTheExactLine's BOGUS_SHAPE row; this is the rule
+// that line comes of, and the one `agent-secrets secret` applies before it writes a tag.
+func TestTagRulesRefusesAShapeThatIsNeitherWord(t *testing.T) {
+	for _, c := range []struct{ shape, reason string }{
+		{"", ""},
+		{policy.ShapeToken, ""},
+		{policy.ShapeDocument, ""},
+		{"Token", policy.ReasonShapeMalformed},
+		{"DOCUMENT", policy.ReasonShapeMalformed},
+		{"documents", policy.ReasonShapeMalformed},
+		{"one-line", policy.ReasonShapeMalformed},
+		{" ", policy.ReasonShapeMalformed},
+	} {
+		// Every other tag of the set is one the rules allow, so the answer is the shape's alone.
+		set := policy.TagSet{Owner: owner, Tier: policy.TierAgent, Shape: c.shape}
+		if got := policy.TagRules(set); got != c.reason {
+			t.Errorf("TagRules(shape=%q) = %q, want %q", c.shape, got, c.reason)
+		}
+	}
+}
+
 // TestNewSetDigest pins what a requesters tag does to the digest: two spellings of one list — the
 // entries in another order, separated by more space — are one policy and one version, a changed
 // list is another, and a namespace that carries no requesters digests to the bytes it digested
