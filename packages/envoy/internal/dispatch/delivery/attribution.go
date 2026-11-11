@@ -119,20 +119,22 @@ const (
 // host is github.com. It asks one question, and it is the question the alert this file was
 // changed for asks: what is the host of the URL this path hangs off?
 //
-// The bytes immediately before the path are that URL's authority, as the default branch's own
-// expression read them, and net/url says what host they name. That reading refuses every name
-// that merely looks like github.com — `evilgithub.com`, `www.github.com`, `pages.github.com`,
-// `github.com.evil.test`, `github.com@evil.test`, a percent-encoded or punycode lookalike, a
-// trailing-dot name — and it refuses a github.com URL whose path is not an issue's, because the
-// bytes before `/main/docs/issues/12` in a blob URL are `blob` rather than a host. The path
-// comparison states what that leaves true: the authority runs to where the match begins, so the
-// matched path is the whole path of what was read.
+// authorityBefore answers it by reading the run of host bytes immediately before the path, and
+// that read is what refuses most of the names that look like github.com: `@` and `%` are no host
+// bytes, so `github.com@evil.test` and a percent-escaped name end the run elsewhere, and a run
+// that is longer than github.com — `evilgithub.com`, `www.github.com`, `my-github.com`,
+// `Seegithub.com` — is simply another name. net/url then separates a port and userinfo from that
+// run and says what host it names, and the comparison refuses every name but github.com, however
+// the body spells its case. A github.com URL whose path is not an issue's is refused by the same
+// read: the bytes before `/main/docs/issues/12` in a blob URL are `blob`, not a host. The path
+// comparison states what that leaves true, that the authority runs to where the match begins.
 //
-// What stands further left decides nothing, which is the one thing five review rounds taught
-// this file: every rule for it credited some shapes a reader writes and dropped others, while
-// the default branch, which reads no further left than this, credits them all. So a citation
-// inside another URL's path, query or fragment is credited here as it is there, and the whole of
-// what this change does to attribution is to stop crediting a host that is not github.com.
+// What stands further left decides nothing. The default branch reads less than this — the ten
+// bytes `github.com/` wherever they fall — and credits every shape a reader writes; a rule for
+// the bytes before the host credited some of those shapes and dropped others, which is why there
+// is none. So a citation inside another URL's path, query or fragment is credited here as it is
+// there, and what this change does to attribution is to refuse a host that is not github.com and
+// to credit a host spelled in any case or carrying a port.
 func citesGitHubIssue(body string, pathAt, end int) bool {
 	host := authorityBefore(body, pathAt)
 	if host < 0 {

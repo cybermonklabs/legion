@@ -11,23 +11,27 @@ import (
 // same call:
 //
 //	jj file show -r f164e6a27756 packages/envoy/internal/dispatch/delivery/attribution.go > attribution.go
-//	go test ./internal/dispatch/delivery/ -run TestZZCorpusProbe      # a scratch probe over this list
+//	go test ./internal/dispatch/delivery/ -run TestZZProbe        # a scratch probe over this list
 //
-// hostIsNotGitHub marks a body whose authority before the issue path is not github.com, which is
-// the one class this change refuses and the default branch credits: a name that merely ends in
-// github.com, a subdomain, a name beginning with it, and a percent-encoded run that reads as
-// another name. Those are what the CodeQL alert this change answers is about.
+// hostIsNotGitHub marks a body whose authority before the issue path is not github.com. The
+// default branch credits each of them by matching the ten bytes `github.com/` wherever they fall;
+// this code reads the whole run of host bytes before the path, so a name that merely ends in
+// github.com is another host: `evilgithub.com`, `my-github.com`, `Seegithub.com`, a subdomain
+// such as `www.github.com` or `pages.github.com`, and a percent escape immediately before the
+// host (`?q=see%20github.com/…`, `/%2Fgithub.com/…`), which is part of the host as the bytes
+// stand. That class is what the CodeQL alert this change answers is about.
 //
 // What a failure of this test means, which a reader needs before editing anything here:
 //
-//   - a body the default branch credits and this code refuses is a DEFECT, unless its row carries
-//     hostIsNotGitHub. Four review rounds of this change each found one, and each was a citation
-//     somebody writes: a second citation joined by punctuation, one after a bare reference, one
-//     inside brackets. Fix the code, not the row.
-//   - a body this code credits and the default branch does not is an ADDITION, and this change
-//     makes three of them deliberately: a host spelled in any case, a host carrying a port, and
-//     userinfo before the host. An addition needs a row of its own in attribution_test.go saying
-//     why it is wanted; it does not belong here.
+//   - a body whose answer differs from main's and carries no hostIsNotGitHub is a DEFECT, in
+//     either direction. Dropping a citation main credits breaks attribution for a shape somebody
+//     writes; crediting one main does not is a shape nobody has decided. Fix the code, not the row.
+//   - a hostIsNotGitHub row that credits anything is the alert reopening: this code refuses every
+//     one of them, and a change that credits `evilgithub.com` again reddens here first.
+//   - three credits this change adds on purpose are not in this corpus, because they are
+//     differences from main that were decided rather than measured: a host spelled in any case, a
+//     host carrying a port, and the two together. attribution_test.go and citation_boundary_test.go
+//     pin them with the reason each is wanted.
 //   - the golden list is another branch's behaviour rather than a contract, so it is dated: it is
 //     f164e6a27756's answer and nothing else. Re-measure it with the command above when the base
 //     moves, and never edit a golden entry by hand to make a red test green.
@@ -38,23 +42,23 @@ type corpusRow struct {
 }
 
 // TestCitedIssuesAgreesWithTheDefaultBranch is the rule rather than a list of shapes: this code
-// credits every citation the default branch credits, and refuses it only where the authority
-// before the issue path is not github.com. The corpus is every body both citation test files
-// hold, every example of this change's five review rounds, and the shapes each round measured by
-// hand; it exists so the next change to this file is answerable without a sixth round finding a
-// shape nobody thought of.
+// credits exactly what the default branch credits, except that it refuses a citation whose
+// authority is not github.com. The corpus is the bodies both citation test files hold, every
+// example of this change's review rounds and the shapes each round measured by hand; it exists so
+// the next change to this file is answerable without another round finding a shape nobody
+// thought of.
 func TestCitedIssuesAgreesWithTheDefaultBranch(t *testing.T) {
 	for _, row := range citationCorpus {
 		t.Run(row.body, func(t *testing.T) {
 			got := citedIssues("acme/widgets", row.body)
-			for _, want := range row.main {
-				credited := slices.Contains(got, want)
-				switch {
-				case row.hostIsNotGitHub && credited:
-					t.Errorf("credits %s, whose authority is not github.com; the default branch credits it and this change exists to refuse it", want)
-				case !row.hostIsNotGitHub && !credited:
-					t.Errorf("drops %s, which the default branch credits: %v, got %v", want, row.main, got)
+			if row.hostIsNotGitHub {
+				if len(got) != 0 {
+					t.Errorf("credits %v, whose authority is not github.com; the default branch credits %v and this change exists to refuse it", got, row.main)
 				}
+				return
+			}
+			if !slices.Equal(got, row.main) {
+				t.Errorf("cites %v, where the default branch cites %v", got, row.main)
 			}
 		})
 	}
@@ -125,8 +129,6 @@ var citationCorpus = []corpusRow{
 	{body: "See https://example.test/~github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See https://example.test/(github.com/acme/widgets/issues/7) here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See https://example.test/x@github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
-	{body: "See https://github.com:99999/acme/widgets/issues/7 here.", main: []string{}},
-	{body: "See https://github.com:443443443/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "See https://github.com:", main: []string{}},
 	{body: "github.com/acme/widgets/issues/7", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: ",github.com/acme/widgets/issues/7", main: []string{"https://github.com/acme/widgets/issues/7"}},
@@ -149,10 +151,7 @@ var citationCorpus = []corpusRow{
 	{body: "See https://github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See HTTPS://github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See Https://github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
-	{body: "See HTTPS://GITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
-	{body: "See https://GitHub.Com/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "See github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
-	{body: "See GITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "See http://github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See //github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "Context (https://github.com/acme/widgets/issues/7).", main: []string{"https://github.com/acme/widgets/issues/7"}},
@@ -164,7 +163,6 @@ var citationCorpus = []corpusRow{
 	{body: "<a href=https://github.com/acme/widgets/issues/7>the issue</a>", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "issue=https://github.com/acme/widgets/issues/7", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See https://user@github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
-	{body: "See HTTPS://USER@GITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "a host whose name ends in github.com", main: []string{}},
 	{body: "See https://evilgithub.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}, hostIsNotGitHub: true},
 	{body: "See HTTPS://EVILGITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
@@ -182,17 +180,12 @@ var citationCorpus = []corpusRow{
 	{body: "See https://github.com@evil.test/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "See HTTPS://GITHUB.COM@EVIL.TEST/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "See https://example.test/github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
-	{body: "See HTTPS://EXAMPLE.TEST/GITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
-	{body: "See HTTPS://EXAMPLE.TEST/~GITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
-	{body: "See https://example.test/(GitHub.com/acme/widgets/issues/7) here.", main: []string{}},
-	{body: "See HTTPS://EXAMPLE.TEST/R?U=GITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "See https://example.test/a%2Fgithub.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}, hostIsNotGitHub: true},
 	{body: "See HTTPS://EXAMPLE.TEST/A%2FGITHUB.COM/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "a github.com URL written inside another host's query is still written", main: []string{}},
 	{body: "See https://evil.test/r?u=https://github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See https://github.com./acme/widgets/issues/7 here.", main: []string{}},
 	{body: "a host with a port is github.com, the port being no part of the host", main: []string{}},
-	{body: "See https://github.com:443/acme/widgets/issues/7 here.", main: []string{}},
 	{body: "See https://github.com/acme/widgets/issues/7/ here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See\\thttps://github.com/acme/widgets/issues/7\\there.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "a punycode host that reads like github.com is another host", main: []string{}},
@@ -233,4 +226,6 @@ var citationCorpus = []corpusRow{
 	{body: "**github.com/acme/widgets/issues/7**", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See\u00a0github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}},
 	{body: "See https://github.com/acme/widgets/compare/v1/issues/12 here.", main: []string{}},
+	{body: "See https://example.test/r?q=see%20github.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}, hostIsNotGitHub: true},
+	{body: "See Seegithub.com/acme/widgets/issues/7 here.", main: []string{"https://github.com/acme/widgets/issues/7"}, hostIsNotGitHub: true},
 }
