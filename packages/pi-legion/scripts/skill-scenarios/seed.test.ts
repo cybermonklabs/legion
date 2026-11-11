@@ -1062,7 +1062,7 @@ describe("tester-proof", () => {
     const body = { schemaVersion: 1, phase: "implement", issue: "LWEVAL-2" };
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     const commit = "1111111111111111111111111111111111111111";
-    await handoffSeeds.implementHandoff(file, path.join(dir, "implement.json"), commit);
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", commit);
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({
         issue_key: "LWEVAL-2",
@@ -1096,7 +1096,7 @@ describe("tester-proof", () => {
     await seed.testerProofIssue(file);
     writeFileSync(path.join(dir, "implement.json"), "[1]");
     await expect(
-      handoffSeeds.implementHandoff(file, path.join(dir, "implement.json"), "1".repeat(40))
+      handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", "1".repeat(40))
     ).rejects.toThrow("holds no JSON object");
     expect(dispatch.handoffs).toEqual([]);
     expect(dispatch.results).toEqual([]);
@@ -1110,10 +1110,10 @@ describe("tester-proof", () => {
     await seed.testerProofIssue(file);
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
     const commit = "3333333333333333333333333333333333333333";
-    await handoffSeeds.implementHandoff(file, path.join(dir, "implement.json"), commit);
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", commit);
     const body = { schemaVersion: 1, phase: "test", issue: "LWEVAL-2" };
     writeFileSync(path.join(dir, "test.json"), JSON.stringify(body));
-    await handoffSeeds.testerResult(file, path.join(dir, "test.json"), commit);
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "test.json"), "test", commit);
     expect(dispatch.handoffs[1]).toMatchObject({
       issue_key: "LWEVAL-2",
       phase: "test",
@@ -1146,7 +1146,7 @@ describe("tester-proof", () => {
     await seed.testerProofIssue(file);
     writeFileSync(path.join(dir, "test.json"), '"a string"');
     await expect(
-      handoffSeeds.testerResult(file, path.join(dir, "test.json"), "4".repeat(40))
+      handoffSeeds.phaseHandoff(file, path.join(dir, "test.json"), "test", "4".repeat(40))
     ).rejects.toThrow("holds no JSON object");
     expect(dispatch.handoffs).toEqual([]);
     expect(dispatch.results).toEqual([]);
@@ -1161,7 +1161,7 @@ describe("tester-proof", () => {
     await seed.testerProofIssue(file);
     const body = { schemaVersion: 1, phase: "review", issue: "LWEVAL-2", decision: "approved" };
     writeFileSync(path.join(dir, "review.json"), JSON.stringify(body));
-    await handoffSeeds.reviewHandoff(file, path.join(dir, "review.json"));
+    await handoffSeeds.phaseHandoff(file, path.join(dir, "review.json"), "review");
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({
         issue_key: "LWEVAL-2",
@@ -1186,7 +1186,12 @@ describe("tester-proof", () => {
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
-    await handoffSeeds.implementHandoff(file, path.join(dir, "implement.json"), "2".repeat(40));
+    await handoffSeeds.phaseHandoff(
+      file,
+      path.join(dir, "implement.json"),
+      "implement",
+      "2".repeat(40)
+    );
     dispatch.handoffs.push({
       id: "h-test",
       issue_key: "LWEVAL-2",

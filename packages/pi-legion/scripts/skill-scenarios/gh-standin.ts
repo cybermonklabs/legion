@@ -147,11 +147,13 @@ function branchTip(): string | undefined {
 }
 // What GitHub serves for `gh pr diff` is the pull request's diff as it stands, so the answer is
 // the diff of the run's own remote at the call, the issue branch against the branch it is open
-// against, rather than the diff the fixture froze. A role that reads the pull request after
-// another role pushed to it — the reviewer, reading the fix the implementer pushed after an
-// approval that left text threads open — must see what was pushed. `--name-only` answers the
-// names alone, as `gh pr diff --name-only` does. A remote the run has not got leaves the
-// fixture's answer as it is.
+// against, rather than a diff frozen into the fixture, which would read the same whatever the
+// run pushed. A role that reads the pull request after another role pushed to it — the reviewer,
+// reading the fix the implementer pushed after an approval that left text threads open — must
+// see what was pushed. `--name-only` answers the names alone, as `gh pr diff --name-only` does.
+// A run with no world of its own has no remote to read, and its call falls through to the
+// routes, where no world of rig.sh writes a `gh pr diff` (its round_world), so what such a call
+// gets is the 404 below.
 function branchDiff(nameOnly: boolean): string | undefined {
   const world = worldOf();
   if (world === undefined) return undefined;

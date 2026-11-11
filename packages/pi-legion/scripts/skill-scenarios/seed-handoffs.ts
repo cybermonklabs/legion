@@ -4,9 +4,9 @@
 // because they are one world — one fixture file, one issue, one check — and seed.ts had grown
 // past a thousand lines around them.
 //
-//   seed.ts implement-handoff <file> <body file> <commit>   implementHandoff
-//   seed.ts tester-result <file> <body file> <commit>       testerResult
-//   seed.ts review-handoff <file> <body file>               reviewHandoff
+//   seed.ts implement-handoff <file> <body file> <commit>   phaseHandoff, phase implement
+//   seed.ts tester-result <file> <body file> <commit>       phaseHandoff, phase test
+//   seed.ts review-handoff <file> <body file>               phaseHandoff, phase review
 //   seed.ts capture-handoffs <file> <run dir>               captureHandoffs
 //
 // seed.ts's own header says what each writes and reads.
@@ -47,8 +47,10 @@ type HandoffPhase = keyof typeof PHASE_SEED;
  * that predecessor's own session, and, for a phase whose role records one, its passing result
  * against the issue's check `k1` at `commit`, as `dispatch result` records it; the record goes
  * into the fixture under its phase. A body that is no JSON object is the fixture's fault,
- * refused before anything is written. */
-async function phaseHandoff(
+ * refused before anything is written. It is the whole of `implement-handoff`, `tester-result`
+ * and `review-handoff`, which are one seeding under three phase words: seed.ts's header says
+ * what each of the three writes. */
+export async function phaseHandoff(
   file: string,
   bodyFile: string,
   phase: HandoffPhase,
@@ -77,32 +79,6 @@ async function phaseHandoff(
   console.log(
     `seeded ${fixture.issue}'s ${phase} handoff, version ${recorded.version} (${recorded.id})`
   );
-}
-
-/** `implement-handoff <file> <body file> <commit>`: the implementer's handoff and its passing
- * result, under the implementer's session. */
-export async function implementHandoff(
-  file: string,
-  bodyFile: string,
-  commit: string
-): Promise<void> {
-  await phaseHandoff(file, bodyFile, "implement", commit);
-}
-
-/** `tester-result <file> <body file> <commit>`: the tester's handoff and its passing result,
- * under the tester's session. A reviewer refuses an approval while a `before_merge` check of the
- * issue has no passing result current at the head it reads, so the reviewer scenario seeds this
- * one beside the implementer's and the reviewer's verdict rests on what it found in the change;
- * threads-closed seeds both so that neither of its agents reads a gate of its own as open. */
-export async function testerResult(file: string, bodyFile: string, commit: string): Promise<void> {
-  await phaseHandoff(file, bodyFile, "test", commit);
-}
-
-/** `review-handoff <file> <body file>`: the round's review handoff, under the reviewer's session
- * and with no result of its own, since a reviewer records none against a check. The task of each
- * agent of threads-closed names its version, and the record is the approval they work from. */
-export async function reviewHandoff(file: string, bodyFile: string): Promise<void> {
-  await phaseHandoff(file, bodyFile, "review");
 }
 
 /** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */

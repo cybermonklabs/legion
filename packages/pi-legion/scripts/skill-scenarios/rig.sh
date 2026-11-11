@@ -2031,10 +2031,11 @@ run_project() {
 # A run that boots a second agent calls this again with that agent's role, after writing its
 # prompt: the two run one after the other on the one run directory, so the second reads the gh
 # stand-in, the remote and the Dispatch issue the first left. Each agent gets its own daemon
-# stand-in (the one before it is stopped, and its log kept under its role), its own HOME, its own
-# Oh My Pi session directory and its own last line of output, and the role of each is in the
-# calls it records (SKILL_SCENARIO_AGENT), while the run keeps one calls.jsonl, one pushes.log
-# and one daemon.log.
+# stand-in, whose own output ($R/logs/daemon.log, where start_process writes it) is moved aside
+# under the role of the agent it served, its own HOME, its own Oh My Pi session directory and its
+# own last line of output, and the role of each is in the calls it records (SKILL_SCENARIO_AGENT),
+# while the run keeps one calls.jsonl, one pushes.log and one record of what reached the daemon,
+# $R/daemon.log, which every stand-in of the run appends to.
 worker_boot() {
   local name=$1 project=$2 role=$3 phase=${4:-} state port
   state=$R/state

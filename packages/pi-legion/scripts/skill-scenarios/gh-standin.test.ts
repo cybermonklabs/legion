@@ -56,8 +56,9 @@ function runDir(options: { fixture: boolean }): { dir: string; first: string; se
   }
   // The routes rig.sh's fixture_write writes, in the shapes it writes them: the pull request as
   // one object for `gh pr view`, the same object in a list for `gh pr list`, which is GitHub's
-  // answer to a listing of the open pull requests of a branch, the frozen diff, and the edit
-  // route a body edit needs a match of before the stand-in keeps the new body.
+  // answer to a listing of the open pull requests of a branch, and the edit route a body edit
+  // needs a match of before the stand-in keeps the new body. No route for `gh pr diff`, as no
+  // world of rig.sh writes one (rig.sh's round_world): the diff is the run's own remote's.
   const pull = { number: 1001, headRefOid: first, head: { sha: first }, body: "a body" };
   writeFileSync(
     path.join(dir, "fixtures.json"),
@@ -65,7 +66,6 @@ function runDir(options: { fixture: boolean }): { dir: string; first: string; se
       routes: [
         { match: "^gh pr view", stdout: pull },
         { match: "^gh pr list", stdout: [pull] },
-        { match: "^gh pr diff", stdout: "the frozen diff\n" },
         { match: "^gh pr edit", stdout: "https://example.invalid/pull/1001#issuecomment-1" },
       ],
     })
@@ -130,19 +130,14 @@ test("the pull request's diff is the diff of the run's own remote", () => {
   expect(answer(dir, ["pr", "diff", "1001", "--name-only"])).toBe("docs.md");
 });
 
-// Catches: a stand-in that drops the run's world for a scenario that builds none, which would
-// crash every `gh pr diff` of a run with no world.json instead of answering its route.
-test("a run with no worker fixture keeps the route's own diff", () => {
-  expect(answer(runDir({ fixture: false }).dir, ["pr", "diff", "1001"])).toBe("the frozen diff");
-});
-
 // Catches: a stand-in that reads a world.json it cannot parse as a run with no world of its own.
 // The two readings serve different answers: a run that builds no world is served the fixture's
-// frozen head and diff, which is right for it and is silence for a run whose world the rig wrote
-// wrongly — a pushing role would read a head that is not its own and stop, and a reviewer the
-// diff without the fix it was sent to read. So only a missing file is "no world", and a file that
-// does not parse exits with an error naming it. The second world below is the one that exercises
-// `base`, which rig.sh's fixture_write writes into every world and this schema defaults for none.
+// frozen head, which is right for it and is silence for a run whose world the rig wrote wrongly
+// — a pushing role would read a head that is not its own and stop, and a reviewer would read the
+// diff of a branch that is not the world's. So only a missing file is "no world", and a file
+// that does not parse exits with an error naming it. The second world below is the one that
+// exercises `base`, which rig.sh's fixture_write writes into every world and this schema
+// defaults for none.
 test("a world.json that does not parse exits with an error, and one with no base too", () => {
   for (const text of ["{not json", JSON.stringify({ branch: "legion/LWEVAL-1" })]) {
     const { dir } = runDir({ fixture: true });

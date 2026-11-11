@@ -19,9 +19,13 @@
 //                                          the same for the tester: <body file> as the issue's
 //                                          test handoff under the session TESTER, and the
 //                                          tester's own passing result on check k1 at <commit>,
-//                                          which a reviewer's approval gate reads (test: {id,
-//                                          version} in <file>). reviewer-text-findings and
-//                                          threads-closed seed it beside the implementer's;
+//                                          which a reviewer's approval gate reads, since a
+//                                          reviewer refuses an approval while a `before_merge`
+//                                          check of the issue has no passing result current at
+//                                          the head it reads (test: {id, version} in <file>).
+//                                          reviewer-text-findings and threads-closed seed it
+//                                          beside the implementer's, so that no agent of theirs
+//                                          reads a gate of its own as open;
 //                                          tester-proof seeds neither, since its tester records
 //                                          both itself
 //   seed.ts review-handoff <file> <body file>
@@ -119,13 +123,7 @@ import {
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { parseInstant } from "./production-dispatch";
-import {
-  captureHandoffs,
-  implementHandoff,
-  reviewHandoff,
-  type TesterFixture,
-  testerResult,
-} from "./seed-handoffs";
+import { captureHandoffs, phaseHandoff, type TesterFixture } from "./seed-handoffs";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -868,7 +866,7 @@ async function main(argv: string[]): Promise<boolean> {
     third !== undefined &&
     n === 4
   )
-    await implementHandoff(file, second, third);
+    await phaseHandoff(file, second, "implement", third);
   else if (
     command === "tester-result" &&
     file !== undefined &&
@@ -876,9 +874,9 @@ async function main(argv: string[]): Promise<boolean> {
     third !== undefined &&
     n === 4
   )
-    await testerResult(file, second, third);
+    await phaseHandoff(file, second, "test", third);
   else if (command === "review-handoff" && file !== undefined && second !== undefined && n === 3)
-    await reviewHandoff(file, second);
+    await phaseHandoff(file, second, "review");
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
   else return false;

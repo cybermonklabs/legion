@@ -1124,6 +1124,29 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
  *              describes never opens: a control that failed a base run for pushing its own fix
  *              would fail the base label for following the rule it is the control of (A4 of the
  *              2026-11-10 audit, which the architect settled).
+ *
+ * The wake is not only that the message was sent: it is sent once the issue stands in
+ * `accepting`, which the reviewer reads with the `legion` tool's `read_record`
+ * (review-threads.md step 1). The round ends on both halves, so an accepted completion can land
+ * before the review's webhook, and a push in that gap voids the approval — the reviewer's own
+ * round-1 finding, which `workflow/review.go` makes load-bearing. So the ordering the run must
+ * show is: the verdict is submitted, the reviewer reads the record after it, that read answers
+ * `accepting`, and the publish follows that answer.
+ *
+ * The read must come after the submission and not merely before the publish. The stand-in moves
+ * to `accepting` on any accepted completion of `reviewing` (daemon-standin.ts), while the daemon
+ * needs the review as well, so a read taken before the approval cannot have shown the round
+ * ending whatever it answered — measured by the deep pass of 2026-11-10, which moved a recorded
+ * run's own submission after its read and the run still passed.
+ *
+ * The read is the reviewer's own call and its own answer, both from the tool's result: the
+ * result's timestamp is written when the tool returned, so it orders the publish without any
+ * help from the server's log, where the call's own timestamp, written with the assistant
+ * message, would not. Other callers read the same route — `handoff_complete` reads the state
+ * before it posts (`pi-shared/src/legion-phase-ops.ts`), the phase reminder reads it to check
+ * the record — so a reviewer that completed again after its acceptance and published would pass
+ * on any reading taken from that route rather than from this call.
+ *
  * `ref`: the agent read skill://legion-worker/references/merge-gate.md, where the rule is
  * defined. */
 function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
@@ -1152,29 +1175,6 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // search for the work the merge waits for. One message carries all of it, since the implementer
   // acts on the message it is handed (`publishedTo`'s `all`). A `REQUEST_CHANGES` round opens
   // no such loop and sends none.
-  // And the rule is not only that the message was sent: it is sent once the issue stands in
-  // `accepting`, which the reviewer reads with the `legion` tool's `read_record`
-  // (review-threads.md step 1). The round ends on both halves, so an accepted completion can
-  // land before the review's webhook, and a push in that gap voids the approval — the
-  // reviewer's own round-1 finding, which `workflow/review.go` makes load-bearing. So the
-  // ordering the run must show is: the verdict is submitted, the reviewer reads the record after
-  // it, that read answers `accepting`, and the publish follows that answer.
-  //
-  // The read must come after the submission and not merely before the publish. The stand-in
-  // moves to `accepting` on any accepted completion of `reviewing` (daemon-standin.ts), while
-  // the daemon needs the review as well, so a read taken before the approval cannot have shown
-  // the round ending whatever it answered — measured by the deep pass of 2026-11-10, which moved
-  // a recorded run's own submission after its read and the run still passed. The submission read
-  // is the verdict's own (`review`, the verdict the round ended with), not the first APPROVE of
-  // the round.
-  //
-  // The read is the reviewer's own call and its own answer, both from the tool's result: the
-  // result's timestamp is written when the tool returned, so it orders the publish without any
-  // help from the server's log, where the call's own timestamp, written with the assistant
-  // message, would not. Other callers read the same route — `handoff_complete` reads the state
-  // before it posts (`pi-shared/src/legion-phase-ops.ts`), the phase reminder reads it to check
-  // the record — so a reviewer that completed again after its acceptance and published would
-  // pass on any reading taken from that route rather than from this call.
   const entries = session(runDir);
   const sender = ownSession(entries);
   const results = outcomes(entries);
@@ -4214,14 +4214,12 @@ function unscored(
       if (!existsSync(path.join(runDir, file)))
         return `<run>/${file} is missing: nothing wrote it, so the run left no record of ${reads} rather than a record of none`;
     }
-  }
-  // What each agent sent is Envoy's own record of this run (`publishes`), and a record is read
-  // only when the recorder said both that it had subscribed and that it was stopped. A recorder
-  // that died mid-run — its connection lost, its process killed — leaves the second line out,
-  // and every message it missed would otherwise read as a message never sent, which is the
-  // parser's old fault in a new place. That is a rig error, as a run whose agent got no model
-  // turn is.
-  if (RECORDED.includes(scenario)) {
+    // What each agent sent is Envoy's own record of this run (`publishes`), and a record is read
+    // only when the recorder said both that it had subscribed and that it was stopped. A recorder
+    // that died mid-run — its connection lost, its process killed — leaves the second line out,
+    // and every message it missed would otherwise read as a message never sent, which is the
+    // parser's old fault in a new place. That is a rig error, as a run whose agent got no model
+    // turn is.
     const record = recordState(runDir);
     if (!record.opened)
       return "<run>/published.jsonl has no `recording` line: the publish recorder never subscribed to the bus";

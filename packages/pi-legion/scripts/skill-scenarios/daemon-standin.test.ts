@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { LegionStateResponse } from "@legion/contracts/legion-api";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -15,13 +15,11 @@ const skip = skipWithout("go");
 const work = temporaryDirectory("skill-scenarios-standin");
 
 /** The repository rig.sh's worker world is on (its `worker_repo`, which fixture_write writes into
- * every world.json), read from rig.sh itself so this file holds no second copy of it: the record
- * the stand-in serves and the world the run's gh calls reach are one name or they are two
- * worlds. */
-const WORLD_REPO =
-  /^worker_repo=(\S+)$/m.exec(readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8"))?.[1] ??
-  "";
-if (WORLD_REPO === "") throw new Error("rig.sh names no worker_repo");
+ * every world.json): the rows below start the stand-in on it, so the record they read is the one
+ * a run's agents read. That rig.sh hands the stand-in that name, rather than one of its own, is
+ * rig.test.ts's row "the stand-in is given the run's project, the world's repository and the
+ * phase", which reads the boot's argument and the world's `repo` and holds them equal. */
+const WORLD_REPO = "example/widgets";
 
 /** The stand-in, started on a port the kernel picks, with its own log and boot token file, on the
  * world's repository and in `phase` when the caller names one. It prints
@@ -241,8 +239,8 @@ test.skipIf(skip)(
 // of the forty runs of 2026-11-10 submitted their review to a repository their world does not
 // name, four of them to `sjawhar/legion-smoke`, which this stand-in named while the world was
 // rig.sh's `worker_repo`, and the queries of the other answered 404 (the other two followed the
-// pane's own addressing, which named `skills-rig/project`: daemon-pane.go). The repository is
-// the world's own, read from rig.sh here so the two cannot disagree.
+// pane's own addressing, which named `skills-rig/project`: daemon-pane.go). What rig.sh gives
+// this stand-in is the world's own name, which rig.test.ts reads out of a boot.
 test.skipIf(skip)(
   "the record names the repository the run's world is on, in the issue and in the mapping",
   async () => {

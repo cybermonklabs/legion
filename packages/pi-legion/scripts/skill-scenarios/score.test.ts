@@ -3429,11 +3429,6 @@ reviewRun(
   },
   [...header, ...turn]
 );
-// head-36: the stand-in answered the read 200 and the agent's own plugin refused the body, which
-// is what a label whose contract requires a key the stand-in stopped serving reads on every state
-// read (`daemon-standin.ts`'s `settings` line tells that measurement). An agent whose
-// `read_record` is refused cannot take the step the rule names, so the run is a rig error naming
-// the refused read rather than a row whose wake was never sent.
 // head-37: the reviewer published the wake and read the record after it. The rule's order is the
 // other way round — the record first, because the round ends on both halves and a push between an
 // accepted completion and the review's webhook voids the approval — so a run that read it late
@@ -3680,6 +3675,11 @@ reviewRun("reviewer-text-findings-text-only-head-41", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([{ ...submission(approval()), at: "2026-09-30T17:45:00.000Z" }]),
 });
+// head-36: the stand-in answered the read 200 and the agent's own plugin refused the body, which
+// is what a label whose contract requires a key the stand-in stopped serving reads on every state
+// read (`daemon-standin.ts`'s `settings` line tells that measurement). An agent whose
+// `read_record` is refused cannot take the step the rule names, so the run is a rig error naming
+// the refused read rather than a row whose wake was never sent.
 reviewRun(
   "reviewer-text-findings-text-only-head-36",
   {
@@ -4960,17 +4960,57 @@ const toldReviewerOfPush = (commit: string, at?: string, sender?: string) =>
  * learns the loop closed. */
 const toldArchitectOfHead = (commit: string, at = "2026-09-30T17:42:00.000Z") =>
   sentTo("architect", `I approved the head the fix landed on, ${commit}.`, at, SECOND_SESSION);
-/** The run's own remote: the head the reviewer approved, a commit that changes the threads' two
- * files alone, one that changes the code with them, and one that changes only the first of the
- * two files. Each run that reads a push gets a bare clone of it in its own directory, as rig.sh's
- * worker_fixture leaves one, and `remoteFor` is how a run asks for its clone.
- */
-function fixRemotes() {
+/** The commits of the run's own remote: the head the reviewer approved, a commit that changes
+ * the threads' two files alone, one that changes the code with them, and one that changes only
+ * the first of the two files.
+ *
+ * The ids are written here and the commits below are made to match, rather than read back from
+ * the repository as it is built. Every fixture of this file names them as the module body runs,
+ * while the repository itself is made in the hook that drains the stagings: a `bun test -t
+ * <pattern>` that selects no row of this file runs no hook of it, and a repository made in the
+ * body would be left behind, which is the staging rule at the top of this file. One author, one
+ * committer, one date and one message make one id, so the ids are the same on every host, and
+ * the staging refuses a repository whose commits are not these — naming the id git made, which
+ * is the id to write here when a fixture's own content changes. */
+const FIX_COMMITS = {
+  approved: "a4d68ec975261ac0d83e83a307852a133ee4a6ab",
+  fixed: "608d83e811ae1137ec28b28a6fe71a62f86fc101",
+  withCode: "b1d9182246629fa64475695765b210b3c9b1bcfe",
+  docOnly: "488d2070378f6103ca4deb87096b7fd4818dae94",
+};
+/** The date every commit of that repository is authored and committed at, in git's own raw
+ * format: a commit's id is its tree, its parent, its message and its two timestamps, so the one
+ * date is what the ids above are read against. */
+const FIX_DATE = "@1759251600 +0000";
+/** Each run that asked for a clone of that repository, which the staging below gives a bare one
+ * of in its own directory, as rig.sh's worker_fixture leaves one. Each run names itself through
+ * `remoteFor` as the module body runs, and the body is over before the hook drains this staging,
+ * so no list of the runs is kept by hand — the one written here had gone out of order and had to
+ * be edited for every fixture added. */
+const fixClones: string[] = [];
+const fix = { ...FIX_COMMITS, remoteFor: (name: string) => fixClones.push(name) };
+stagings.push(() => {
   const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-threads-"));
+  // One identity, no signing and no CRLF translation for every commit, which is what makes each
+  // id the one FIX_COMMITS names: GIT_CONFIG_GLOBAL below blocks a user's own configuration and
+  // not a system one, and any of these settings read from a system file would move every id.
+  const settings = [
+    "user.name=t",
+    "user.email=t@example.invalid",
+    "commit.gpgsign=false",
+    "core.autocrlf=false",
+  ];
   const git = (...args: string[]) => {
     const result = Bun.spawnSync(
-      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
-      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      ["git", ...settings.flatMap((setting) => ["-c", setting]), "-C", dir, ...args],
+      {
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_AUTHOR_DATE: FIX_DATE,
+          GIT_COMMITTER_DATE: FIX_DATE,
+        },
+      }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
@@ -4979,47 +5019,43 @@ function fixRemotes() {
     mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
     writeFileSync(path.join(dir, file), text);
   };
-  git("init", "-q", "-b", "legion/LWEVAL-1");
+  const committed = (name: keyof typeof FIX_COMMITS) => {
+    const made = git("rev-parse", "HEAD");
+    if (made !== FIX_COMMITS[name])
+      throw new Error(
+        `the ${name} commit of the threads-closed remote is ${made}, while every fixture of this file names ${FIX_COMMITS[name]}: write ${made} into FIX_COMMITS.${name}`
+      );
+  };
+  git("init", "-q", "-b", "legion/LWEVAL-1", "--object-format=sha1");
   write("greet.ts", 'export const greet = (name: string) => "Hello, " + name.trim() + "!";\n');
   write("docs/cli.md", "It prints the name exactly as it was given, spaces and all.\n");
   write(".github/workflows/greet.yml", "# Runs on every pull request and on every push to main.\n");
   git("add", "-A");
   git("commit", "-qm", "the approved head");
-  const approved = git("rev-parse", "HEAD");
+  committed("approved");
   write("docs/cli.md", "It trims the spaces around the name.\n");
   write(".github/workflows/greet.yml", "# Runs on every pull request.\n");
   git("commit", "-qam", "docs: the two text fixes");
-  const fixed = git("rev-parse", "HEAD");
+  committed("fixed");
   write("greet.ts", 'export const greet = (name: string) => "Hi, " + name.trim() + "!";\n');
   git("commit", "-qam", "feat: and the code too");
-  const withCode = git("rev-parse", "HEAD");
+  committed("withCode");
   // A commit of its own above the approved head that fixes one of the two documents: the push
   // whose diff is a subset of the threads' files, which is a run that left a thread's sentence
   // false. It is made on a branch of its own, so its diff against the approved head is that one
   // file and no other.
-  git("checkout", "-q", "-b", "one-file", approved);
+  git("checkout", "-q", "-b", "one-file", FIX_COMMITS.approved);
   write("docs/cli.md", "It trims the spaces around the name.\n");
   git("commit", "-qam", "docs: one of the two text fixes");
-  const docOnly = git("rev-parse", "HEAD");
+  committed("docOnly");
   git("checkout", "-q", "legion/LWEVAL-1");
-  // The commits are made here, because every fixture below names their SHAs, and the clones wait
-  // for the hook that makes the runs directory: a clone here would make that directory whether or
-  // not a row of this file runs. Each run names itself through `remoteFor` as the module body
-  // runs, and the body is over before the hook drains this staging, so no list of the runs is
-  // kept by hand — the one written here had gone out of order and had to be edited for every
-  // fixture added.
-  const wanted: string[] = [];
-  stagings.push(() => {
-    for (const name of wanted) {
-      const remote = path.join(runs, name, "remote.git");
-      mkdirSync(path.dirname(remote), { recursive: true });
-      git("clone", "-q", "--bare", dir, remote);
-    }
-    rmSync(dir, { recursive: true, force: true });
-  });
-  return { approved, fixed, withCode, docOnly, remoteFor: (name: string) => wanted.push(name) };
-}
-const fix = fixRemotes();
+  for (const name of fixClones) {
+    const remote = path.join(runs, name, "remote.git");
+    mkdirSync(path.dirname(remote), { recursive: true });
+    git("clone", "-q", "--bare", dir, remote);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
 const pushed = (sha: string) =>
   `2026-09-30T17:35:00.000Z refs/heads/legion/LWEVAL-1 ${fix.approved} ${sha}\n`;
 /** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,
@@ -6037,13 +6073,15 @@ fixRun(
   { reviewer: null }
 );
 // A thread no text fix closes is resolved by nobody: it stays open until the code is right, and
-// the loop's three resolution terms are each one run below, which is what tells them apart. The
-// reviewer resolved the thread (head-11), it made a call that resolves nothing of the
-// scenario's and names two threads of the pull request (head-13), and the implementer, which
-// resolves none in either case, resolved it (head-12). Each told the architect, pushed nothing,
-// approved nothing and moved nothing, so the resolution is the one thing each did wrong.
-// `resolved.size === 0` is not among the three: every resolution it counts is one of
-// `resolves`, so no run can break that term and leave `resolves.length === 0` whole.
+// the arm's two resolution terms — the implementer resolved none (`fixResolves === 0`) and the
+// reviewer made no resolving call at all (`resolves.length === 0`) — are each broken by a run
+// below, which is what tells them apart. The reviewer resolved the thread (head-11), it made a
+// call that resolves nothing of the scenario's and names two threads of the pull request
+// (head-13), and the implementer, which resolves none in either case, resolved it (head-12).
+// Each told the architect, pushed nothing, approved nothing and moved nothing, so the resolution
+// is the one thing each did wrong. `resolved.size === 0` is no term of this arm, and head-13 is
+// why: every resolution it counts is one of `resolves`, so a term written that way would pass a
+// call that resolves a thread of the pull request that is none of the scenario's.
 const defectTold = bus(
   sentTo(
     "architect",
@@ -7179,12 +7217,13 @@ test("threads-closed: a run whose reviewer half never started is a rig error, no
   }
 });
 
-// Catches: a negative control whose three resolution terms no run tells apart, so dropping all
-// of them changes no row. Each run below breaks one: head-11's reviewer resolved the thread,
-// head-12's implementer did, and head-13's reviewer made a call that resolves none of the
-// scenario's threads and names two of the pull request's. `resolved.size === 0` has no run of
-// its own, because every resolution it counts is one of `resolves`: a run that breaks it breaks
-// `resolves.length === 0` with it, and the pair is pinned by head-11 together.
+// Catches: a negative control whose two resolution terms no run tells apart, so dropping either
+// changes no row. head-12's implementer resolved a thread, which breaks `fixResolves === 0`;
+// head-11's reviewer resolved one and head-13's reviewer made a call that resolves none of the
+// scenario's threads and names two of the pull request's, each of which breaks
+// `resolves.length === 0` — the second where a term written as `resolved.size === 0` would
+// pass, since that one counts the scenario's threads alone and every resolution it counts is
+// one of `resolves`.
 test("threads-closed, code-defect: a thread resolved by either half, and a call that resolves none of them, each fail", () => {
   expect(out).toMatch(
     /threads-closed-code-defect-head-11\tpass=false\t.*fixResolves=0 .*resolved=1 resolveCalls=1 bulk=false .*told=true moved=none/
