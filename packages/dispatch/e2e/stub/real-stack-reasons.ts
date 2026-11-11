@@ -26,31 +26,31 @@ export const realStackReasons: Record<string, string> = {
   "agent-list-refilling.e2e.ts":
     "drives the fake Envoy listener's refusal states and asserts the page's reading of them",
   "agent-live-layout.e2e.ts":
-    "every row lands on a live view whose transcript is the session's own replay over the relay, and the ring and question mark beside it read frames that arrive after load",
+    "the header's pin is written to Dispatch and read back from its stored state, and every row opens on a view the relay builds from the session's replay",
   "agent-live-views.e2e.ts":
-    "a view that sleeps and comes back re-subscribes and is answered with the session's replay, which the live relay alone gives; a draft and a reading place survive that round trip",
+    "a view that sleeps and comes back is answered with the session's replay, which the live relay alone gives; a reply seeded through Dispatch after load changes the unread count the rail reads, and the view in front writes the read mark that clears it",
   "agent-name.e2e.ts":
     "margin comment on the live document, plus the fake registry; lands on the live view, whose frames come from the relay; a registry change after load must reach the open page",
   "agent-rail.e2e.ts":
-    "a pin is the viewer's per-agent state written to the server and read back, in a second browser context as well; the word each row carries - live, live 30s, asleep - is the registry's state against the clock",
+    "a pin is the viewer's per-agent state written to the server and read back - from the rail row, the Agents row and the live view header, in a second browser context that reloaded nothing, and out of this browser's own old list into what Dispatch stores",
   "agent-shell-command.e2e.ts":
-    "a ! message is a write whose answer comes back as the session's own Dispatch reply over the relay, and the row reads what the server stored rather than what the page typed",
+    "the view is built from the session's replay over the relay, and each turn is drawn under the id Dispatch minted for the message it answers, folded with the reply the server stored",
   "agent-skill-completion.e2e.ts":
-    "completion reads the session's skills from frames the live relay carries, and the message it writes is re-read from the server",
+    "completion reads the session's commands from the replay the live relay carries, and what Send hands over is read back from the fake Envoy",
   "agent-tokens.e2e.ts": "token mint, attribution, privacy between two contexts, revoke",
   "agent-view-cost.e2e.ts":
-    "counts the live views and conversations the page holds open, which is the relay's own subscription count",
+    "every view opens on a transcript at the stream's limit the relay replays, and the gap row turns on the relay itself: a frame published while a viewer is subscribed reaches the page, and one published to a sleeping view reaches nobody and is kept nowhere",
   "agent-view-settings.e2e.ts":
     "live session settings frames, switch round trips through fake Envoy, `page.reload()` after writes",
   "agent-view.e2e.ts": "every row replays or streams session frames over the live relay",
   "agent-workspace-timing.e2e.ts":
     "times the page against six hundred sessions of the fake registry and a limit-sized transcript the relay replays, both of which a recording would freeze",
   "agents-groups.e2e.ts":
-    "a session's group is its open asks and its Dispatch activity against the clock, both the server's own computation, and a recording freezes last_seen",
+    "the page groups on what the server answers: the asks it holds open for the reader, the event it stamps a session's activity with, and last_seen against the wall clock, which a recording freezes; a row's pin is written and read back in the rail",
   "agents-search.e2e.ts":
     "every row reads the Agents list, which folds a session unseen for ten minutes against the clock, and a recording freezes last_seen",
   "agents-window.e2e.ts":
-    "windows six hundred sessions of the fake registry, whose listing and order the server gives, and a draft survives a scroll out of the window and back",
+    "six hundred sessions come from the fake registry, and the one group the page counts all six hundred under, Idle, is their last_seen against the wall clock, which a recording freezes",
   "agents.e2e.ts":
     "sends a BTW message and asserts the exchange; Clear is a write re-read after a reload; needs a session reply delivered live",
   "anchors.e2e.ts": "live document edits with the server's anchor state read back",
