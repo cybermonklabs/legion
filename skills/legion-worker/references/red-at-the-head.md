@@ -17,7 +17,7 @@ jobs once.
 
 ## The record comes first, never after
 
-Before the re-run the role writes down:
+Before it presses the re-run, the role records on the Dispatch issue:
 
 - the repository and the pull request
 - the head commit
@@ -28,11 +28,18 @@ Before the re-run the role writes down:
 The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
 recorded as failed, with the error, and the role makes the re-run all the same.
 
-The record goes in the role's own handoff record on the Dispatch issue, under the field
-`redAtTheHead`. That field is a list, with one entry per red. The reviewer's round carries the
-same record in the body of the one review it submits at the end of the round, because a review
-cannot be written before the re-run. No file under `packages/daemon/internal/prompts/roles/`
-names that field. This page is where the tester and the reviewer read it.
+The record is a handoff record of the role's own phase, written with
+`dispatch handoff-write --issue <issue> --phase <test|review> --body-file <file>` before the
+`gh run rerun` call, never after it. Its body carries the field `redAtTheHead`, a list with one
+entry per red, each entry naming all eight facts above. That record is a version of its own: the
+role writes the phase's full record later, with `redAtTheHead` in it again, and `handoff_complete`
+reports the newest version. A re-run pressed before Dispatch has recorded the first version loses
+the failure, which is what this page exists to keep.
+
+The reviewer's round carries the same record in the body of the one review it submits at the end
+of the round, because a review cannot be written before the re-run. No file under
+`packages/daemon/internal/prompts/roles/` names that field. This page is where the tester and the
+reviewer read it.
 
 ## Which red is the change's
 
@@ -101,6 +108,10 @@ role whose phase ends while it waits for its re-run has already written the reco
 goes to the implementer with the work. The role starts nothing new.
 
 ## What becomes of the record
+
+The role does all four of these after the re-run settles and before it completes its phase. A red
+cleared and never written up is a flaky test nobody fixes, which is the cost this page is paid to
+stop.
 
 - The role finds the issue that tracks the test with `dispatch search` on the test's full name.
 - It posts the occurrence as a `dispatch comment` on that issue, whatever that issue's status.
