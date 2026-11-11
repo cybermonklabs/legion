@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -287,6 +288,29 @@ func TestGrantLogRefusesAPageOfNoSize(t *testing.T) {
 		})
 		if !errors.Is(err, store.ErrGrantLogLimit) || events != nil {
 			t.Errorf("ReadGrantLog(limit %d) = %d events, %v; want no events and ErrGrantLogLimit", limit, len(events), err)
+		}
+	}
+}
+
+// TestGrantLogAnswersThePeriodWhateverPageTheCallerNames pins that the page's size bounds the
+// answer and nothing else: a limit far past anything the route sends — and far past the page
+// the store allocates for — still reads the period's rows, all of them and in the same order as
+// the ordinary page above. The store sizes its own allocation; the limit stays the SQL's.
+func TestGrantLogAnswersThePeriodWhateverPageTheCallerNames(t *testing.T) {
+	st := storetest.Open(t)
+	seedGrantLog(t, st)
+
+	whole := readGrantLog(t, st, store.GrantLogQuery{})
+	for _, limit := range []int{grantLogPage, 10_000_000, math.MaxInt32} {
+		events := readGrantLog(t, st, store.GrantLogQuery{Limit: limit})
+		if len(events) != len(whole) {
+			t.Fatalf("a limit of %d reads %d rows, want the period's %d", limit, len(events), len(whole))
+		}
+		for i, ev := range events {
+			if ev.ID != whole[i].ID || ev.Kind != whole[i].Kind {
+				t.Fatalf("a limit of %d reads row %d as %d/%s, want %d/%s",
+					limit, i, ev.ID, ev.Kind, whole[i].ID, whole[i].Kind)
+			}
 		}
 	}
 }

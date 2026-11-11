@@ -40,7 +40,6 @@ func tailnetTestShell(ctx context.Context, args ...string) *exec.Cmd {
 //     exist; a second capability names SVC too, which must not count. It keeps the advertisement
 //     in FAKE/advertised, answers a certificate order for CERT by FAKE/cert-mode (ok, fail, or by
 //     default `invalid domain`), and logs out by forgetting the node.
-//   - wget answers with the status code in FAKE/health (none, or "down", is a refused connection).
 //   - sleep moves the clock on, runs FAKE/hook with $now and $d set, and ends the script once the
 //     clock reaches FAKE/limit.
 //   - date prints the fake clock for +%s; timeout logs its bound and runs the rest.
@@ -77,21 +76,6 @@ logout) rm -f $d/self-id $d/advertised ;;
 esac
 `
 
-const fakeTailnetWget = `#!/bin/sh
-d=FAKE
-code=$(cat $d/health 2>/dev/null)
-echo "$(cat $d/clock) wget $* -> ${code:-down}" >>$d/calls
-case "$code" in
-''|down) echo "wget: can't connect to remote host: Connection refused" >&2; exit 1 ;;
-esac
-echo "Connecting to 127.0.0.1:8222 (127.0.0.1:8222)" >&2
-echo "  HTTP/1.1 $code Example" >&2
-case "$code" in
-2??) exit 0 ;;
-*) echo "wget: server returned error: HTTP/1.1 $code Example" >&2; exit 1 ;;
-esac
-`
-
 const fakeTailnetSleep = `#!/bin/sh
 d=FAKE
 now=$(( $(cat $d/clock) + ${1%%.*} ))
@@ -120,7 +104,6 @@ const tailnetRigStart = 1000
 const (
 	tailnetRigService     = "example"
 	tailnetRigCertificate = "example.example-tailnet.ts.net"
-	tailnetRigHealth      = "http://127.0.0.1:8222/healthz"
 	tailnetRigGrace       = 60
 	tailnetRigNode        = "nAAAACNTRL"
 )
@@ -132,9 +115,9 @@ type tailnetRig struct {
 	host tailnetServiceHost
 }
 
-// newTailnetRig is a rig for a host with a health URL (health) or a certificate (certificate),
-// whose tailscaled runs as node selfID ("" for none).
-func newTailnetRig(t *testing.T, selfID string, configure func(*tailnetServiceHost)) *tailnetRig {
+// newTailnetRig is a rig for a host each configure shapes (tailnetWithCertificate), whose
+// tailscaled runs as node selfID ("" for none).
+func newTailnetRig(t *testing.T, selfID string, configure ...func(*tailnetServiceHost)) *tailnetRig {
 	t.Helper()
 	shell := strings.Fields(os.Getenv("ENVOY_TEST_SHELL"))
 	if len(shell) == 0 {
@@ -160,7 +143,9 @@ func newTailnetRig(t *testing.T, selfID string, configure func(*tailnetServiceHo
 			graceSeconds:  tailnetRigGrace,
 		},
 	}
-	configure(&r.host)
+	for _, c := range configure {
+		c(&r.host)
+	}
 	bin := filepath.Join(dir, "bin")
 	for _, d := range []string{r.fake, r.host.paths.mount, bin} {
 		require.NoError(t, os.MkdirAll(d, 0o755))
@@ -168,7 +153,7 @@ func newTailnetRig(t *testing.T, selfID string, configure func(*tailnetServiceHo
 	fill := strings.NewReplacer("FAKE", r.fake, "READY", r.host.paths.ready(), "REALDATE", realDate,
 		"SVC", r.host.service(), "CERT", tailnetRigCertificate)
 	for name, body := range map[string]string{
-		"tailscale": fakeTailnetTailscale, "wget": fakeTailnetWget, "sleep": fakeTailnetSleep,
+		"tailscale": fakeTailnetTailscale, "sleep": fakeTailnetSleep,
 		"date": fakeTailnetDate, "timeout": fakeTailnetTimeout,
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(fill.Replace(body)), 0o755))
@@ -181,7 +166,6 @@ func newTailnetRig(t *testing.T, selfID string, configure func(*tailnetServiceHo
 	return r
 }
 
-func tailnetWithHealth(h *tailnetServiceHost)      { h.health = tailnetRigHealth }
 func tailnetWithCertificate(h *tailnetServiceHost) { h.certificate = tailnetRigCertificate }
 
 // set writes one of the stand-ins' files.
@@ -304,45 +288,6 @@ const (
 	tailnetOrderCall     = " cert --cert-file=- --key-file=- " + tailnetRigCertificate
 )
 
-// With a health URL the advertiser advertises only after tailnetHealthRise answers of HTTP 200 in
-// a row, each GET given at least 6 s. The negative controls: a URL that answers 204, or refuses
-// the connection, is never healthy, and the node is never advertised.
-func TestTailnetServiceAdvertisesAfterTwoHealthyAnswers(t *testing.T) {
-	for _, code := range []string{"204", "down"} {
-		r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-		r.set(t, "health", code)
-		ev, out := r.run(t, 120)
-		if tailnetIndexOf(ev, 0, "serve ") >= 0 || tailnetExists(r.host.paths.ready()) {
-			t.Errorf("health %s: the advertiser advertised or became ready:\n%s\n%s", code, tailnetDump(ev), out)
-		}
-		if tailnetCount(ev, 0, len(ev), "wget ") < 10 {
-			t.Errorf("health %s: want a GET every 5 s:\n%s", code, tailnetDump(ev))
-		}
-	}
-
-	r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-	r.set(t, "health", "503")
-	r.hook(t, `if [ "$now" -ge 1020 ] && [ ! -e $d/healed ]; then echo 200 >$d/health; touch $d/healed; echo "$now healed" >>$d/calls; fi`)
-	ev, out := r.run(t, 120)
-	healed := tailnetIndexOf(ev, 0, "healed")
-	advertise := tailnetIndexOf(ev, 0, tailnetAdvertiseCall)
-	switch {
-	case healed < 0 || advertise < 0:
-		t.Fatalf("healed at %d, advertised at %d:\n%s\n%s", healed, advertise, tailnetDump(ev), out)
-	case advertise < healed:
-		t.Fatalf("advertised at %d, before the URL answered 200 at %d:\n%s", advertise, healed, tailnetDump(ev))
-	}
-	if n := tailnetCount(ev, healed, advertise, "-> 200"); n != tailnetHealthRise {
-		t.Errorf("advertised after %d answers of 200, want %d:\n%s", n, tailnetHealthRise, tailnetDump(ev))
-	}
-	for _, e := range ev {
-		if strings.Contains(e.what, "wget ") && !strings.Contains(e.what, fmt.Sprintf(" -T %d %s ", tailnetHealthTimeoutSeconds, tailnetRigHealth)) {
-			t.Errorf("a GET without the %d s timeout: %s", tailnetHealthTimeoutSeconds, e.what)
-		}
-	}
-	require.GreaterOrEqual(t, tailnetHealthTimeoutSeconds, 6)
-}
-
 // The kubelet stops the advertiser with SIGTERM, which it must act on itself: as its container's
 // PID 1 it gets no default action. It exits 0 at once, mid-wait, rather than when its sleep ends.
 // The negative controls are the two ways it could fail: killed by the signal (no trap, which as PID
@@ -351,7 +296,7 @@ func TestTailnetServiceAdvertisesAfterTwoHealthyAnswers(t *testing.T) {
 func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	realSleep, err := exec.LookPath("sleep")
 	require.NoError(t, err, "sleep is not on PATH")
-	r := newTailnetRig(t, "", tailnetWithHealth)
+	r := newTailnetRig(t, "")
 	// A sleep that waits for real, after logging that the advertiser is waiting. It holds none of
 	// the advertiser's output, so Wait does not wait for it once the advertiser is gone, and
 	// records its PID, so the test ends it.
@@ -373,7 +318,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	cmd.Stdout, cmd.Stderr = &out, &out
 	require.NoError(t, cmd.Start())
 	require.Eventually(t, func() bool { return tailnetIndexOf(r.events(t), 0, "sleep ") >= 0 }, 10*time.Second, 50*time.Millisecond,
-		"the advertiser never waited (with no logged-in node it retries every %d s)", tailnetHealthPeriodSeconds)
+		"the advertiser never waited (with no logged-in node it retries every %d s)", tailnetAdvertiserPeriodSeconds)
 	sent := time.Now()
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
 	err = cmd.Wait()
@@ -383,11 +328,10 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 }
 
 // The ready file appears only once the node's service-host capability lists the Service: every
-// moment before, with the node advertised and healthy, it is absent. The capability's other
-// Service and another capability naming this Service count for nothing.
+// moment before, with the node advertised, it is absent. The capability's other Service and
+// another capability naming this Service count for nothing.
 func TestTailnetServiceIsReadyOnlyOnceApproved(t *testing.T) {
-	r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-	r.set(t, "health", "200")
+	r := newTailnetRig(t, tailnetRigNode)
 	r.hook(t, `if [ "$now" -ge 1100 ] && [ ! -e $d/approved ]; then touch $d/approved; echo "$now approved" >>$d/calls; fi`)
 	ev, out := r.run(t, 200)
 	approved := tailnetIndexOf(ev, 0, "approved")
@@ -405,55 +349,18 @@ func TestTailnetServiceIsReadyOnlyOnceApproved(t *testing.T) {
 	}
 }
 
-// A ready host whose health URL fails tailnetHealthFall times in a row drains the Service and
-// loses the ready file, and not after fewer failures; once the URL answers 200 again it is
-// advertised again after tailnetHealthRise healthy answers, and ready again.
-func TestTailnetServiceDrainsAfterThreeFailuresAndAdvertisesAgain(t *testing.T) {
-	r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-	r.set(t, "health", "200")
-	r.set(t, "approved", "")
-	r.hook(t, fmt.Sprintf(`if [ -e %[1]s ] && [ ! -e $d/broken ]; then echo 503 >$d/health; echo $now >$d/broken; echo "$now broken" >>$d/calls; fi
-if [ -e $d/broken ] && [ ! -e $d/mended ] && [ "$now" -ge $(($(cat $d/broken) + 60)) ]; then echo 200 >$d/health; touch $d/mended; echo "$now mended" >>$d/calls; fi`,
-		r.host.paths.ready()))
-	ev, out := r.run(t, 300)
-	broken := tailnetIndexOf(ev, 0, "broken")
-	drain := tailnetIndexOf(ev, broken, tailnetDrainCall)
-	mended := tailnetIndexOf(ev, broken, "mended")
-	again := tailnetIndexOf(ev, mended, tailnetAdvertiseCall)
-	switch {
-	case broken < 0 || drain < 0 || mended < 0 || again < 0:
-		t.Fatalf("broken %d, drained %d, mended %d, advertised again %d:\n%s\n%s", broken, drain, mended, again, tailnetDump(ev), out)
-	case drain > mended:
-		t.Fatalf("drained at %d, after the URL was mended at %d:\n%s", drain, mended, tailnetDump(ev))
-	}
-	if n := tailnetCount(ev, broken, drain, "-> 503"); n != tailnetHealthFall {
-		t.Errorf("drained after %d failures, want %d:\n%s", n, tailnetHealthFall, tailnetDump(ev))
-	}
-	if i := tailnetReadyWhile(ev, drain, again); i >= 0 {
-		t.Errorf("ready at %d, between the drain and the new advertisement:\n%s", ev[i].at, tailnetDump(ev))
-	}
-	if n := tailnetCount(ev, mended, again, "-> 200"); n != tailnetHealthRise {
-		t.Errorf("advertised again after %d answers of 200, want %d:\n%s", n, tailnetHealthRise, tailnetDump(ev))
-	}
-	if tailnetReadyWhile(ev, again, len(ev)) < 0 || !tailnetFileHolds(r.host.paths.ready(), tailnetRigNode) {
-		t.Errorf("not ready again after the recovery:\n%s\n%s", tailnetDump(ev), out)
-	}
-}
-
 // While the node stays unapproved the advertiser leaves the advertisement alone up to
 // tailnetAdvertiseStuckSeconds after it advertised (the negative control), then drains, pauses
 // tailnetDrainPauseSeconds and advertises again, logging the attempt, and waits twice as long
 // before the next. It never writes the ready file.
 func TestTailnetServiceRecoversAStuckAdvertisement(t *testing.T) {
-	r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-	r.set(t, "health", "200")
+	r := newTailnetRig(t, tailnetRigNode)
 	ev, out := r.run(t, tailnetAdvertiseStuckSeconds)
 	if tailnetIndexOf(ev, 0, tailnetAdvertiseCall) < 0 || tailnetIndexOf(ev, 0, "serve drain") >= 0 {
 		t.Errorf("within the bound: want an advertisement and no drain:\n%s\n%s", tailnetDump(ev), out)
 	}
 
-	r = newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-	r.set(t, "health", "200")
+	r = newTailnetRig(t, tailnetRigNode)
 	ev, out = r.run(t, 4*tailnetAdvertiseStuckSeconds+2*tailnetDrainPauseSeconds+60)
 	advertise := tailnetIndexOf(ev, 0, tailnetAdvertiseCall)
 	drain := tailnetIndexOf(ev, advertise, tailnetDrainCall)
@@ -478,17 +385,16 @@ func TestTailnetServiceRecoversAStuckAdvertisement(t *testing.T) {
 }
 
 // While the preStop hook's draining file names the node and is younger than the grace period,
-// the advertiser does nothing: no GET, no advertisement, no drain. Once the file is older, it is
+// the advertiser does nothing: no advertisement and no drain. Once the file is older, it is
 // removed and the node is advertised again, with no one deleting the pod.
 func TestTailnetServiceStaysQuietWhileDraining(t *testing.T) {
-	r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-	r.set(t, "health", "200")
+	r := newTailnetRig(t, tailnetRigNode)
 	r.set(t, "approved", "")
 	require.NoError(t, os.WriteFile(r.host.paths.draining(), []byte(fmt.Sprintf("%s %d\n", tailnetRigNode, tailnetRigStart)), 0o644))
 	ev, out := r.run(t, 2*tailnetRigGrace)
 	over := tailnetRigStart + tailnetRigGrace
 	for _, e := range ev {
-		if e.at <= over && (strings.Contains(e.what, "wget ") || strings.Contains(e.what, " serve ")) {
+		if e.at <= over && strings.Contains(e.what, " serve ") {
 			t.Errorf("at %d, while the draining file of %d was fresh (until %d): %s", e.at, tailnetRigStart, over, e.what)
 		}
 	}
@@ -509,8 +415,7 @@ func TestTailnetServiceStaysQuietWhileDraining(t *testing.T) {
 // it, writes the new id, advertises the new node and is ready as it, with no one deleting the pod.
 // The negative control: an id that is not alphanumeric is never written and never advertised.
 func TestTailnetServiceFollowsANewNode(t *testing.T) {
-	r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
-	r.set(t, "health", "200")
+	r := newTailnetRig(t, tailnetRigNode)
 	r.set(t, "approved", "")
 	r.hook(t, fmt.Sprintf(`if [ -e %s ] && [ ! -e $d/switched ]; then
   echo nBBBBCNTRL >$d/self-id; rm -f $d/advertised; touch $d/switched; echo "$now new node" >>$d/calls
@@ -528,8 +433,7 @@ fi`, r.host.paths.ready()))
 		t.Errorf("not ready as the new node, or its id not written:\n%s\n%s", tailnetDump(ev), out)
 	}
 
-	r = newTailnetRig(t, "nA}{x", tailnetWithHealth)
-	r.set(t, "health", "200")
+	r = newTailnetRig(t, "nA}{x")
 	ev, out = r.run(t, 60)
 	if tailnetExists(r.host.paths.nodeID()) || tailnetIndexOf(ev, 0, "serve advertise") >= 0 || !strings.Contains(out, "not alphanumeric") {
 		t.Errorf("an id that is not alphanumeric was written or advertised:\n%s\n%s", tailnetDump(ev), out)
@@ -581,9 +485,6 @@ func TestTailnetServiceWithACertificateAdvertisesOnlyTheFlaggedNode(t *testing.T
 		if what := strings.TrimSuffix(e.what, " [ready]"); strings.Contains(what, " cert ") && !strings.HasSuffix(what, tailnetOrderCall) {
 			t.Errorf("the advertiser asked for a certificate other than the Service's: %s", e.what)
 		}
-	}
-	if tailnetCount(ev, 0, len(ev), "wget ") != 0 {
-		t.Error("a host with no health URL sent a GET")
 	}
 	if !tailnetFileHolds(r.host.paths.ready(), tailnetRigNode) {
 		t.Errorf("no ready file naming %s after the certificate:\n%s\n%s", tailnetRigNode, tailnetDump(ev), out)
@@ -651,7 +552,7 @@ func TestTailnetServiceWithACertificateBoundsItsOrders(t *testing.T) {
 // the Service, waits tailnetPreStopWaitSeconds and logs the node out, each bounded and each
 // through the pod's own socket.
 func TestTailnetServicePreStopDrainsThenLogsOut(t *testing.T) {
-	r := newTailnetRig(t, tailnetRigNode, tailnetWithHealth)
+	r := newTailnetRig(t, tailnetRigNode)
 	r.set(t, "advertised", "")
 	for _, f := range []string{r.host.paths.nodeID(), r.host.paths.ready()} {
 		require.NoError(t, os.WriteFile(f, []byte(tailnetRigNode+"\n"), 0o644))
@@ -678,7 +579,7 @@ func TestTailnetServicePreStopDrainsThenLogsOut(t *testing.T) {
 
 	// With no node id (tailscaled never ran as a node) there is nothing to keep from being
 	// advertised: no draining file, and the drain and logout still run.
-	r = newTailnetRig(t, "", tailnetWithHealth)
+	r = newTailnetRig(t, "")
 	cmd = tailnetTestShell(context.Background(), "-c", tailnetPreStopScript(r.host))
 	cmd.Env = r.env()
 	out, err = cmd.CombinedOutput()

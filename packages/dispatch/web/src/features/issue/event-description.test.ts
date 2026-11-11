@@ -42,6 +42,9 @@ function editedAskEvent(): Extract<DispatchEvent, { type: "ask.edited" }> {
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: null,
       author: { id: "session-1", kind: "session" },
@@ -88,6 +91,9 @@ function answeredAskEvent(
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: { at: "2026-09-11T00:00:00Z", selected: ["Hold"], text: null, user: "alice" },
       author: { id: "session-1", kind: "session" },

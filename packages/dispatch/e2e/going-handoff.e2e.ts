@@ -1,8 +1,6 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { getSentMessages, plannerSession, resetFakeEnvoy, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Check k10 of dispatch://INFRA-1042/artifact/verification-md, serving R10: handing the request
@@ -60,7 +58,6 @@ async function seedIssue(claimed: boolean): Promise<string> {
 }
 
 test.beforeEach(async () => {
-  await resetDatabase();
   await resetFakeEnvoy();
   await createProject({ key: "CORE", name: "Core" });
 });

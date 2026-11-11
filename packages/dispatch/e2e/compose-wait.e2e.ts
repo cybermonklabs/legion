@@ -13,7 +13,6 @@
  *  meets; only its scale is the harness's, and the constants below are where that scale is
  *  written down. At that scale no row needs a timeout of its own: each fits the suite's 30 s
  *  (`e2e/playwright.config.ts`). */
-import { expect, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, editArtifact, listComments } from "./api";
 import {
@@ -28,7 +27,7 @@ import {
   openSpec,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const SPEC = [
@@ -70,10 +69,6 @@ const UNREMEMBERED_MESSAGE =
   "them says which one this comment is about. " +
   "Your draft is kept — select the text again to attach it.";
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 /** Samples whether `markId`'s span is in `page` every `SAMPLE_MS` until `untilMs` after
  *  `writtenAt`, appending `<milliseconds>ms:<present|gone>` to `log`. The row waits by sampling,
  *  so nothing else touches the page while it runs. */
@@ -88,6 +83,9 @@ async function watchMark(
     const present = (await markSpan(page, markId).count()) > 0;
     const at = Math.round((Date.now() - writtenAt) / SAMPLE_MS) * SAMPLE_MS;
     log.push(`${at}ms:${present ? "present" : "gone"}`);
+    // The sampler's period: `SAMPLE_MS` is the shortest step the server takes here, so sampling
+    // that often resolves every one of them. This row waits by sampling, and the log it builds
+    // is the measurement.
     await page.waitForTimeout(SAMPLE_MS);
   }
 }
@@ -428,6 +426,9 @@ test("a comment on words that read twice keeps the reading its author selected",
 
     transport.hold();
     await transport.sever();
+    // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
+    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
+    // past this window the server has taken the mark.
     await page.waitForTimeout(PAST_THE_SWEEP_MS);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
@@ -759,6 +760,9 @@ test("a comment on words that run across two paragraphs keeps its anchor", async
 
     transport.hold();
     await transport.sever();
+    // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
+    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
+    // past this window the server has taken the mark.
     await page.waitForTimeout(PAST_THE_SWEEP_MS);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
@@ -905,6 +909,9 @@ test("a comment on a whole block is not attached to either reading a rewrite of 
       },
       { actor: { id: "e2e-compose-wait", kind: "session" }, as: "agent" }
     );
+    // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
+    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
+    // past this window the server has taken the mark.
     await page.waitForTimeout(PAST_THE_SWEEP_MS);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
@@ -966,6 +973,9 @@ test("a comment on a whole block that is deleted is not moved to the one reading
       },
       { actor: { id: "e2e-compose-wait", kind: "session" }, as: "agent" }
     );
+    // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
+    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
+    // past this window the server has taken the mark.
     await page.waitForTimeout(PAST_THE_SWEEP_MS);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
@@ -1034,6 +1044,9 @@ test("a comment on a whole block is not moved to a line of another paragraph", a
       },
       { actor: { id: "e2e-compose-wait", kind: "session" }, as: "agent" }
     );
+    // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
+    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
+    // past this window the server has taken the mark.
     await page.waitForTimeout(PAST_THE_SWEEP_MS);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");

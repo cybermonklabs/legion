@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import {
   acceptSuggestion,
@@ -27,8 +26,9 @@ import {
   setSheet,
 } from "./editor";
 import { commentWithBody } from "./margin-helpers";
-import { resetDatabase, setCommentAuthorService } from "./seed";
+import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -42,10 +42,6 @@ async function expandedConversationThread(page: Page, rootId: string): Promise<L
   await turn.getByRole("button", { name: "Expand thread" }).click();
   return turn;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two browser contexts, three document loads and three composer round trips.
 test("the selection bar comments, suggests, and asks on marks that both users see", async ({
@@ -677,7 +673,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await navigateInApp(page, "/");
     const inboxCard = page.getByTestId(`ask-${askId}`);
     await inboxCard.getByRole("checkbox", { name: "Ship" }).check();
-    await inboxCard.getByRole("button", { name: "Answer" }).click();
+    await inboxCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({

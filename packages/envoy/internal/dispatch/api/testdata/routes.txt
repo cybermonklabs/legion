@@ -31,6 +31,8 @@ GET /api/v1/asks/open any
 GET /api/v1/asks/{id} any
 PATCH /api/v1/asks/{id} any
 POST /api/v1/asks/{id}/answer any
+PUT /api/v1/asks/{id}/asked-of any
+POST /api/v1/asks/{id}/decline any
 GET /api/v1/asks/{id}/followers any
 DELETE /api/v1/asks/{id}/followers/{session_id} any
 PUT /api/v1/asks/{id}/followers/{session_id} any
@@ -39,6 +41,7 @@ GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
 GET /api/v1/broadcasts/{id} any
+GET /api/v1/ci-reconcile/passes any
 GET /api/v1/comments/{id} any
 PATCH /api/v1/comments/{id} any
 POST /api/v1/comments/{id}/accept any

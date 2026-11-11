@@ -251,6 +251,11 @@ const (
 	// AnsweredByVersion is a spec version newer than the one waited on, which hands the approval
 	// request back to the architect.
 	AnsweredByVersion Answer = "version"
+	// AnsweredByDecline is a person's decline to answer an ask of the root, the one the wait
+	// names or any other: they closed the question with no answer, so nobody will answer it, and
+	// the detail is that ask. The resume prints what Dispatch wrote for the asking agent and the
+	// person's own note, kept on the ask's mirror row (RootAsk.Decline).
+	AnsweredByDecline Answer = "declined"
 )
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
@@ -399,7 +404,26 @@ type PhaseRow struct {
 	// compares Rounds - ConflictRounds with the cap, so such a round costs the issue nothing,
 	// whichever fact made the move (workflow's recordRound).
 	ConflictRounds int
-	Verdict        string
+	// BackwardMoves is how many times the issue moved back by each kind of move, keyed
+	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. Like Rounds it is
+	// counted on the implementer's row alone (workflow's recordRound), and the two count the same
+	// moves to different ends: Rounds keeps its meaning exactly, rising on every backward move,
+	// because a phase completion's idempotency key is built from it (api/handoff.go's
+	// handoffPosition), while this map says what kind each move was, which is what a hook reads.
+	// A conflict round is the one move the two part company on: it raises Rounds and
+	// ConflictRounds and no pair, since nobody sent the work back, so no hook fires for it.
+	// The map starts empty when the migration lands and is never filled in from the past, so an
+	// issue already in flight reads counts that add up to less than its Rounds.
+	BackwardMoves map[string]int
+	// CapTold is the review_round_cap value this row last posted the cap's message and its
+	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
+	// once for each value of the cap rather than on every round after the first that reaches it:
+	// the round that tells writes the cap it read here, and a later round compares the two.
+	// A new generation clears it (ClearGeneration), so a tree sent back to the start tells again
+	// from its own first crossing.
+	CapTold int
+	Verdict string
 	// Summary is what the role reported with its completion. The merger's is its READY packet,
 	// which the daemon posts when the issue reaches awaiting_merge.
 	Summary string
@@ -975,6 +999,14 @@ func SpecGate(gates map[DesignStep]DesignGate) *DesignGate {
 // gate's document: the mirror needs no binding to know it. PersonAnswerSeq is the newest answer of
 // the ask by a person, and PersonSeq the newest other act of a person that would answer a root
 // waiting on that person (workflow's personAct); PersonActSeq is the newest of the two that does.
+//
+// Decline is a person's decline to answer the ask, nil where nobody declined it: the resume
+// prints Dispatch's own words and the person's note from it (workflow's resumeTask), so the
+// daemon keeps no copy of those words and the two packages cannot drift apart. A decline is a
+// fact of the ask, kept whatever order its events arrive in, and nothing takes it off the row:
+// the question was closed with no answer, and no later event of that ask says otherwise, since
+// Dispatch refuses every transition of a resolved ask and its settlement restores a retracted
+// ask alone.
 type RootAsk struct {
 	Issue           string
 	Ask             string
@@ -989,6 +1021,19 @@ type RootAsk struct {
 	ByTree          bool
 	PersonSeq       int64
 	PersonAnswerSeq int64
+	Decline         *AskDecline
+}
+
+// AskDecline is a person's decline to answer an ask, which Dispatch records as the resolution
+// kind `declined`: Note is the person's own note ("" where they wrote none) and Words the
+// sentences Dispatch wrote beside it for the asking agent (Dispatch's model.DeclineDispatchWords),
+// each as Dispatch recorded it. The two are one value because they are one act: a reader asks
+// whether a decline is there, not whether three fields agree. It travels whole, from the
+// Dispatch event (intake's DispatchAskClosed) through the mirror row (RootAsk.Decline) to the
+// task the root's architect resumes with.
+type AskDecline struct {
+	Note  string
+	Words string
 }
 
 // The ask kinds the mirror knows (RootAsk.Kind): an ordinary question, and the approval request

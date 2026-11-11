@@ -519,6 +519,13 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/broadcasts",
 		"GET /api/v1/broadcasts/{id}",
 		"POST /api/v1/asks/{id}/answer",
+		// A decline is the person's own word that they will not answer, which nobody may give
+		// for them: no agent and no deployment credential declines a question on their behalf.
+		"POST /api/v1/asks/{id}/decline",
+		// Handing an ask to another person is this change's own row, and it is the person's as
+		// the answer above it is: Dispatch takes who hands the question on from the credential,
+		// and a credential the deployment configured is nobody to hand one on.
+		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
 		"PATCH /api/v1/comments/{id}",

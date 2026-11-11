@@ -39,6 +39,34 @@
 #       It prints each file with its size and its sha256, and refuses the job naming the row
 #       when a fetch, a digest or a repack does not come out right.
 #
+#   shorten-ladder
+#       Writes a stand-in curl to $RUNNER_TEMP/ci-tools-proof/bin/curl and puts that directory
+#       on this job's PATH through $GITHUB_PATH, so every step after it runs that one rather
+#       than the runner's.
+#       The `tool-fallback` job calls it with the fault about to come up, and not before its
+#       own honest fetches: `stage` and that job's jj-primary case each fetch a host the job
+#       faults, and each must succeed on the pinned ladder, so the stand-in goes on PATH
+#       after them and in front of the fault.
+#       The stand-in runs the real curl with the arguments it was handed, and appends
+#       `--retry-max-time 1` to them where the request is one this job arranged to fail: a host
+#       FAULT_HOSTS holds, the dead address DEAD_ADDRESS below, or a dead proxy. curl reads the
+#       last word on that option, so the appended bound wins over the helper's own
+#       `--retry-max-time 60`, and nothing else of the request changes.
+#       Every other fetch keeps the pinned ladder, which is what rides out a flap of npm, PyPI,
+#       get.pulumi.com or the local origin, each of which this job reaches through the fault
+#       proxy and none of which it faults.
+#       It takes no argument, as `stage` does, and it refuses the job where no curl is on PATH
+#       for the stand-in to run.
+#       It logs one line per fetch to $RUNNER_TEMP/ci-tools-proof/curl.log — the seconds it
+#       took, the decision, the host, curl's exit and the name CI_TOOLS_PROOF_FULL_LADDER
+#       carries — and of the arguments only the host of the request, never the rest of its URL
+#       and never another argument, because .github/scripts/ci-tools.sh hands curl its
+#       credentials as arguments.
+#       It exists because this job spent 1952 s of its 1994 s inside retry ladders the proof
+#       does not read: a case here is a refusal this rig arranged, and a refusal arranged is a
+#       ladder nobody reads (dispatch://INFRA-2621). One case keeps the ladder, and
+#       `ladder-report` below is the reading of it.
+#
 #   start-fault
 #       Starts .github/scripts/ci-fault-proxy.py --mode fail over FAULT_HOSTS below, the release
 #       hosts both jobs fault, which is written there and in no step of either job, waits for its
@@ -119,7 +147,8 @@
 #       Writes the control file the origin reads, with those rows or with none, and prints what
 #       it wrote.
 #       It also marks where both logs stand, so the `report` after it prints the lines of its own
-#       case and of no other.
+#       case and of no other, and the second it ran in, so that `report` reads how long the
+#       install between the two took.
 #       Every case calls it, the cases that corrupt nothing included: the control file is one
 #       file for the whole job, and a case that did not empty it would read the case before it.
 #
@@ -155,6 +184,13 @@
 #       holds, so a case about the bytes mise installed would spend the outage downloading
 #       through a 504, and the job that proves the outage survivable would fail in it.
 #
+#   install-bound
+#       The seconds no timed install may reach, printed and nothing else.
+#       INSTALL_BOUND below is the one place that number is written, and the `tool-fallback`
+#       job's control over its eight installs with nowhere to go reads it through this verb, so
+#       the bound the rig holds the sixteen corrupted cases to and the bound that step holds
+#       those eight installs to cannot drift apart.
+#
 #   report <case> --outcome <the step's outcome> --row <row>
 #          [--expect-source <name>] [--expect-untried <name>]
 #       Prints the case, the outcome the install step reached, the lines the origin logged for
@@ -164,9 +200,38 @@
 #       stopping at the first install that refuses.
 #       Every case of this job is a refusal, so the outcome it holds the step to is `failure`;
 #       the row the case is about is given rather than worked out of the case's name.
-#       It fails when the step did not fail, when `--expect-source` names a source this case's
-#       reading does not, and when `--expect-untried` names a source the origin served for this
-#       case's row after all.
+#       It fails when the step did not fail, when the install took INSTALL_BOUND seconds or more
+#       — the reading that tells a step the runner ended at its `timeout-minutes` from a step
+#       that refused the payload, since both leave `outcome=failure` behind them — when
+#       `--expect-source` names a source this case's reading does not, and when
+#       `--expect-untried` names a source the origin served for this case's row after all.
+#
+#   ladder-report
+#       Every fetch the stand-in above measured, printed as the host, the decision, curl's
+#       exit, the seconds it took and the name that fetch carried, and then the reading that
+#       holds the one measurement this job keeps.
+#       Every run that reads the log through, whether that reading passes or refuses, also
+#       prints the count of the fetches that carried CI_TOOLS_PROOF_FULL_LADDER, beside the
+#       LADDER_RECORDS below that bounds it. Three refusals stop before the count is taken:
+#       an argument handed to the verb, an absent or empty log, and a line of another shape,
+#       each of which ends the verb where it stands.
+#       It takes no argument, as `shorten-ladder` does.
+#       It refuses the job where the log is absent or empty, which is what a stand-in that
+#       never reached PATH leaves behind, so that refusal is also the reading that says the
+#       appended bound applied on the runner at all; where no fetch carried
+#       CI_TOOLS_PROOF_FULL_LADDER, since one case must keep the pinned ladder; where more than
+#       one name did, since the rig keeps one measurement and not several; where the longest
+#       fetch carrying that name is outside LADDER_FLOOR..LADDER_CEILING below, the floor being
+#       the reading that catches a kept case which stopped driving the real ladder; where more
+#       fetches carried that variable, whatever name they carried it under, than the
+#       LADDER_RECORDS below, which is a second step's `env:` carrying that variable, or a
+#       kept case that makes more requests than it did; where a fetch the stand-in left on the
+#       pinned ladder spent one and then failed, which is a fault shape its rule did not
+#       recognise; where a fetch the stand-in shortened exited 0, which is a fetch this job
+#       means to succeed and not one it arranged to fail; and where a line of the log is not
+#       the five-field line the stand-in writes.
+#       A fetch that spent a ladder and served the bytes is the ladder doing the work it is
+#       kept for, and it is printed as a warning that refuses nothing.
 #
 # HOW `--expect-source` IS READ.
 # A composite action writes its refusal to the job's log, and no later step can read that log, so
@@ -202,6 +267,9 @@ origin_log="$work/origin.log"
 fault_log="$work/fault.log"
 fault_state="$work/fault.state"
 mark="$work/mark"
+curl_log="$work/curl.log"
+stand_in_bin="$work/bin"
+stand_in="$stand_in_bin/curl"
 
 # The rows a case installs, which are the rows `stage` fetches the correct bytes of.
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
@@ -221,6 +289,60 @@ STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cl
 # row, which is what a primary that answered after all leaves behind.
 FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubusercontent.com"
 
+# The address .github/workflows/ci.yaml's `tool-fallback` job writes at every seam and every
+# dead proxy that stands for a second source that cannot be reached: the CI_TOOLS_GHCR_BASE,
+# CI_TOOLS_NPM_BASE and CI_TOOLS_URL_BASE of its controls, and the http_proxy and https_proxy
+# of its base-pulumi control, each of them `http://127.0.0.1:1`.
+# The rig holds a copy of the address the job writes, so a fetch the job meant to fail is
+# recognised here whichever of those seams carried it. Where the two copies drift apart, the
+# fetch keeps the pinned ladder and fails, and `ladder-report` refuses the job for it.
+DEAD_ADDRESS="127.0.0.1:1"
+
+# The window in seconds the one case that keeps the pinned ladder must measure inside.
+# The pinned flags are `--retry 7 --retry-all-errors --retry-max-time 60` against a source that
+# refuses at once, whose back-off is 1+2+4+8+16+32 = 63 s; job 129874475871, whose stand-in
+# measured every fetch of the job, read that case at 63 s. The floor is those 63 s less the
+# headroom a slow runner needs, and the ceiling is the worst the bound allows: a minute in
+# which a new attempt may still start, and one last attempt of the row's own `max_time` of
+# 60 s, with headroom on top.
+# Job 129743677408 ran without the stand-in, so it measured no fetch at all and can say
+# nothing about how long a fetch takes. Job 129874475871 did measure them: of its 36 fetches
+# that kept the pinned ladder, the npm fetch of the 107 MB Bun tarball reads 0 s, the PyPI
+# wheel 0 s and the package blobs 0 s or 1 s, and the only one above 1 s is the kept case at
+# 63 s. A reading of about 30 s for that tarball is a step duration and no fetch: setup-bun
+# measured 38 s, 40 s and 34 s in that job, and that step is the Node action and the unpack
+# around the fetch.
+# So the floor stands about 44 s above the largest honest fetch measured, and not about 15 s.
+# A fetch that merely rode out a flap of its source reads as the warning `ladder-report` prints
+# below and not as a refusal.
+LADDER_FLOOR=45
+LADDER_CEILING=150
+
+# How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
+# over the log the stand-in wrote.
+# That variable is set at exactly one step's `env:` in .github/workflows/ci.yaml, the head's
+# install-crane step, so one install keeps the pinned ladder. That one install makes three
+# fetches through the stand-in: the release asset behind the fault, which
+# ci_tools__fetch_release reads (.github/scripts/ci-tools.sh:1006), and then the pull token and
+# the blob of the copy the `crane` row names as its second source, which ci_tools__fetch_ghcr
+# asks for one after the other (.github/scripts/ci-tools.sh:770, 775). Merge_group run
+# 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read those three
+# as records 18 to 20 of its listing, at 63 s, 0 s and 1 s.
+# A retry adds no record, because ci_tools_curl is one curl process with `--retry 7` and the
+# stand-in writes one line for each time it is called; a redirect is followed inside that same
+# process, so it adds none either. Of the five second-source words only `ghcr-mirror` costs two
+# requests, so another second source for that row can only lower this count, and a primary that
+# answers after all lowers it to one.
+# What moves this number is a change in this tree: a ghcr path that reads a manifest before it
+# asks for the blob, or a second attempt inside ci_tools_fetch. The ladder-report step prints
+# the count it read beside this bound, so the reading that moves it is in the log of the job
+# that holds it.
+# This line is not the only place the number stands: .github/scripts/ci-tools-proof.test.sh
+# writes it in the text of every case that reads the count and builds its fixture on a kept
+# case of three records, so a bound moved here alone reddens that file, which is the reading
+# that asks for the measurement.
+LADDER_RECORDS=3
+
 # RFC 2606's reserved suffix, which `probe` hangs on the faulted host to make its control.
 # Nobody owns a name under it and no resolver answers for one, so only the proxy can answer a
 # request for it, and a request made around the proxy reads as nothing at all.
@@ -230,6 +352,27 @@ RESERVED_SUFFIX=".invalid"
 # Both answers are the proxy's own and immediate, so this is spent only where nothing answers at
 # all, which is the reading the probe refuses the job for.
 PROBE_BOUND=15
+
+# The seconds no timed install may reach, read by `report` over the mark `corrupt` wrote. The
+# twenty-four installs whose control accepts a failure are the timed ones; the head's own eight,
+# which no control lets fail, are not checked against it.
+# Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
+# step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
+# `report` holds a case to, so a hung install would otherwise pass as a refusal.
+# A step held to its bound takes about 660 to 672 s. The longest single install measured over
+# 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
+# sleeping (dispatch://INFRA-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
+# over the slowest healthy install there has been and at least 60 s under the fastest a held
+# step can be, and it reads no ladder's length. Since the ladders stopped sleeping, the slowest
+# timed install is far shorter: 42 s, the Bun second-source case, in job 130289341628.
+# It is the one wall-clock bound `report` and the control step judge an install by, and this line
+# is the one place it is written. Two other bounds are not it: `timeout-minutes: 11`, which the
+# runner enforces on the step rather than reading after it, and `PROBE_BOUND` above, which
+# bounds the probe's two requests. The `tool-fallback` job holds its eight
+# installs with nowhere to go to the same seconds, and its control step reads them from here
+# through the `install-bound` verb rather than writing a second number that nothing keeps equal
+# to this one.
+INSTALL_BOUND=600
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . "$root/.github/scripts/ci-tools.sh"
@@ -278,7 +421,6 @@ with the row it belongs to and whether it was corrupted.
 """
 
 import http.server
-import io
 import json
 import os
 import re
@@ -296,6 +438,8 @@ document = yaml.safe_load(manifest.read_text()) or {}
 ROWS = document.get("tools") or []
 GHCR_BLOB = re.compile(r"^/ghcr/v2/(?P<path>.+)/blobs/sha256:(?P<digest>[0-9a-f]{64})$")
 NPM_TARBALL = re.compile(r"^/npm/(?P<package>.+)/-/(?P<file>[^/]+\.tgz)$")
+# The size of one read of a payload, which is the size of one write to the socket.
+CHUNK = 64 * 1024
 
 
 # The source words each route is reached by, which is what decides the row a request is about:
@@ -375,23 +519,27 @@ def corrupted_rows():
     return set(control.read_text().split())
 
 
-def member_data_end(body, member):
+def member_data_end(file, member):
     """Where that member's own stored bytes end inside that zip, or None where the archive
     holds no such member. The local header is read for its two length fields, because the extra
-    field a writer puts there is not the one the central directory carries."""
+    field a writer puts there is not the one the central directory carries.
+    The archive is read from the open file rather than from a body in memory, because a payload
+    is never held whole here."""
     try:
-        with zipfile.ZipFile(io.BytesIO(body)) as held:
+        with zipfile.ZipFile(file) as held:
             info = held.getinfo(member)
-        head = body[info.header_offset:info.header_offset + 30]
+        file.seek(info.header_offset)
+        head = file.read(30)
         name_length, extra_length = struct.unpack("<HH", head[26:30])
         return info.header_offset + 30 + name_length + extra_length + info.compress_size
     except (KeyError, OSError, struct.error, zipfile.BadZipFile):
         return None
 
 
-def corrupted_body(row, name, body):
-    """That body with one byte changed: the smallest edit that moves the sha256 of what the
-    reader of these bytes is held to.
+def corrupted_offset(row, name, file, size):
+    """The one byte a corrupted case changes, as an offset into the payload file: the smallest
+    edit that moves the sha256 of what the reader of these bytes is held to, and None for a file
+    of no bytes, which has no byte to change.
     For most names it is the last byte of the file, which is what the row's digest is of, and
     for a gzipped tarball it is part of the framing `tar -xz` reads, so the member read refuses
     it before any digest does.
@@ -402,11 +550,13 @@ def corrupted_body(row, name, body):
     row's `digest` answers for, and python3's zipfile then hands over no member at all, because
     the CRC the archive carries for it no longer matches what it holds.
     """
+    if size == 0:
+        return None
     if name.endswith((".whl", ".zip")):
-        end = member_data_end(body, str(row.get("second_member") or ""))
+        end = member_data_end(file, str(row.get("second_member") or ""))
         if end is not None:
-            return body[: end - 1] + bytes([body[end - 1] ^ 0x01]) + body[end:]
-    return body[:-1] + bytes([body[-1] ^ 0x01])
+            return end - 1
+    return size - 1
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -422,20 +572,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not file.is_file():
             self.answer(404, b"ci-tools-proof: the rig staged no payload for this row\n", row["name"], "no")
             return
-        body = file.read_bytes()
         corrupt = row["name"] in corrupted_rows()
-        if corrupt:
-            body = corrupted_body(row, name, body)
-        self.answer(200, body, row["name"], "yes" if corrupt else "no")
+        with open(file, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            flip = corrupted_offset(row, name, handle, size) if corrupt else None
+            handle.seek(0)
+            self.serve(handle, size, flip, row["name"], "yes" if corrupt else "no")
 
     def answer(self, status, body, row, corrupt):
+        """One of the small answers this program holds in memory: the ghcr token and the two
+        refusals."""
+        self.log_served(status, len(body), row, corrupt)
+        self.send_headers(status, len(body))
+        self.wfile.write(body)
+
+    def serve(self, file, size, flip, row, corrupt):
+        """That payload, copied from the file to the socket a chunk at a time and never held
+        whole, with the one byte a corrupted case changes flipped in the chunk that carries it.
+        It is read this way because the largest payload this manifest pins is 119816773 bytes:
+        one request for it held those bytes twice, the body read whole and the corrupting
+        path's copy of it, while the fault proxy in front of this origin relays 64 KiB at a
+        time."""
+        self.log_served(200, size, row, corrupt)
+        self.send_headers(200, size)
+        sent = 0
+        while sent < size:
+            chunk = file.read(min(CHUNK, size - sent))
+            if not chunk:
+                break
+            if flip is not None and sent <= flip < sent + len(chunk):
+                chunk = bytearray(chunk)
+                chunk[flip - sent] ^= 0x01
+            self.wfile.write(chunk)
+            sent += len(chunk)
+
+    def log_served(self, status, count, row, corrupt):
         with open(logfile, "a") as log:
-            log.write(f"GET {self.path} row={row} corrupt={corrupt} status={status} bytes={len(body)}\n")
+            log.write(f"GET {self.path} row={row} corrupt={corrupt} status={status} bytes={count}\n")
+
+    def send_headers(self, status, count):
         self.send_response(status)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(count))
         self.send_header("Content-Type", "application/octet-stream")
         self.end_headers()
-        self.wfile.write(body)
 
     def log_message(self, *args):
         """The log above is the one this rig reads, one line per request and in its own words."""
@@ -692,6 +871,164 @@ stage() {
   [ -z "$failures" ] ||
     die "no correct bytes for$failures, so the origin cannot stand in for their source; the copy of every ghcr-mirror row is filled by .github/scripts/mirror-ci-tools.sh in the ci-images job this job needs"
   note "the payload the origin serves is $payload"
+}
+
+# ---------------------------------------------------------------- shorten-ladder
+
+# write_stand_in <the real curl>: the stand-in curl, in the directory the whole rig writes to.
+# The real curl is resolved by the caller and written in here as an absolute path, because the
+# stand-in is first on PATH and a `command -v curl` of its own would find itself.
+# The four values this rig decides are written in at the top of it for the same reason: the
+# stand-in takes the hosts and the address from this one file, and nobody writes a second copy
+# of them by hand.
+# The four values go through `%q`, so each reads back as the one word it is, whatever it holds;
+# written between double quotes instead, a value carrying a dollar or a backtick would be
+# expanded each time the stand-in runs. Both heredocs are quoted, so the body is plain shell
+# with no escape in it.
+write_stand_in() {
+  local real_curl=$1
+  {
+    cat <<'SH'
+#!/usr/bin/env bash
+# Written by the shorten-ladder verb of .github/scripts/ci-tools-proof.sh, which states what
+# this claims and what it leaves untouched.
+# It is deliberately not the two-line stand-in .github/scripts/ci-tools.test.sh and
+# .github/scripts/mirror-ci-tools.test.sh each write. Those two shorten every fetch, because no
+# case of theirs needs a real ladder. This one shortens only a fetch the job arranged to fail,
+# so that the pinned ladder still rides out a flap of npm, PyPI, get.pulumi.com or the local
+# origin, each of which this job reaches through the fault proxy and none of which it faults.
+#
+# errexit is left off on purpose: this script must write its line and then exit with the status
+# the real curl exited with, whatever that status is.
+set -uo pipefail
+
+SH
+    printf '%s=%q\n' \
+      real_curl "$real_curl" \
+      curl_log "$curl_log" \
+      fault_hosts "$FAULT_HOSTS" \
+      dead_address "$DEAD_ADDRESS"
+    cat <<'SH'
+
+# The request is the first argument that starts with http:// or https://, and its authority is
+# the text up to the first /, ? or #, with any user@ before that removed.
+# Of the arguments, only the host of that URL reaches the log: never its path, query, fragment
+# or user, and no other argument. This helper is handed credentials as arguments — -u for a
+# ghcr token, an Authorization header for a blob — and .github/scripts/ci-tools.sh passes them
+# that way exactly so that they reach no log line.
+url=""
+for argument in "$@"; do
+  case $argument in
+    http://* | https://*)
+      url=$argument
+      break
+      ;;
+  esac
+done
+authority=${url#*://}
+authority=${authority%%[/?#]*}
+authority=${authority##*@}
+# A bracketed IPv6 literal carries colons inside its brackets, so a cut at the first colon
+# would leave `[` alone in the host field. The first arm keeps such a literal whole, with its
+# brackets, and drops the port after it.
+case $authority in
+  "["*"]"*) host=${authority%%]*}] ;;
+  *) host=${authority%%:*} ;;
+esac
+# An authority that is only a port, as in http://:443/ or http://u@:80/, leaves the host
+# empty, and the ladder-report verb refuses a line that holds an empty host=, so an empty host
+# is written as none.
+[ -n "$host" ] || host=none
+
+# faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
+# (.github/scripts/ci-fault-proxy.py lines 64 to 67 hold that same rule): github.com holds
+# github.com and x.github.com, and it does not hold github.com.invalid, the reserved control
+# name the probe verb asks for.
+faulted() {
+  local host=${1,,} held
+  local IFS=,
+  for held in $fault_hosts; do
+    case $host in
+      "$held" | *".$held") return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# dead_proxy: whether a proxy variable carries this request to the dead address, which is the
+# shape the base-pulumi control of the job writes where the others write a seam.
+dead_proxy() {
+  local value
+  for value in "${http_proxy:-}" "${https_proxy:-}" "${HTTP_PROXY:-}" "${HTTPS_PROXY:-}"; do
+    value=${value%/}
+    [ "${value#*://}" != "$dead_address" ] || return 0
+  done
+  return 1
+}
+
+# CI_TOOLS_PROOF_FULL_LADDER is the way back to the pinned ladder, and the one case that
+# measures that ladder is the case that sets it.
+decision=full
+if [ -z "${CI_TOOLS_PROOF_FULL_LADDER:-}" ] &&
+  { faulted "$host" || [ "$authority" = "$dead_address" ] || dead_proxy; }; then
+  decision=shortened
+fi
+
+started=$(printf '%(%s)T' -1)
+status=0
+if [ "$decision" = shortened ]; then
+  # curl reads the last word on --retry-max-time, so this bound wins over the helper's own
+  # --retry-max-time 60. It is appended after the arguments and changes nothing else of them.
+  "$real_curl" "$@" --retry-max-time 1 || status=$?
+else
+  "$real_curl" "$@" || status=$?
+fi
+ended=$(printf '%(%s)T' -1)
+# Both of those times are readings of the wall clock. A clock stepped back during the fetch
+# would make this difference negative, and the ladder-report verb refuses a line that holds a
+# negative seconds=, so the difference is held at zero or above here.
+elapsed=$((ended - started))
+[ "$elapsed" -ge 0 ] || elapsed=0
+
+# The one line per fetch the ladder-report verb reads, and the whole of what this script writes
+# of its own: curl's stdout and stderr pass through untouched, because the probe verb parses
+# what curl printed.
+printf 'seconds=%s decision=%s host=%s exit=%s full-ladder=%s\n' \
+  "$elapsed" "$decision" "$host" "$status" \
+  "${CI_TOOLS_PROOF_FULL_LADDER:-none}" >> "$curl_log"
+exit "$status"
+SH
+  } > "$stand_in"
+  chmod 0755 "$stand_in"
+}
+
+# shorten_ladder: the stand-in curl of the paragraph above, on this job's PATH.
+shorten_ladder() {
+  [ "$#" -eq 0 ] || die "shorten-ladder takes no argument, and this call gave $#"
+  local real_curl version search
+  # The real curl is resolved with this rig's own directory taken off PATH, and written into
+  # the stand-in as an absolute path. A second run of this verb — a job that runs it again, or
+  # a shell that already has that directory on PATH — would otherwise find the stand-in the
+  # first run left there and write a script that runs itself until the shell gives up.
+  search=":$PATH:"
+  search=${search//":$stand_in_bin:"/:}
+  search=${search#:}
+  search=${search%:}
+  real_curl=$(PATH="$search" command -v curl) ||
+    die "shorten-ladder: no curl is on this job's PATH, so there is none for the stand-in to run"
+  mkdir -p "$stand_in_bin"
+  : > "$curl_log"
+  write_stand_in "$real_curl"
+  # Off a runner there is no $GITHUB_PATH, and the line is printed and written nowhere, which
+  # is what fault_env does with the proxy variables.
+  [ -z "${GITHUB_PATH:-}" ] || printf '%s\n' "$stand_in_bin" >> "$GITHUB_PATH"
+  version=$("$real_curl" --version)
+  note "the stand-in curl every step after this one runs, which shortens only a fetch this job arranged to fail"
+  printf '  %s\n' "$stand_in"
+  note "the line it adds to this job's PATH:"
+  printf '  %s\n' "$stand_in_bin"
+  echo "  the curl it runs is $real_curl: ${version%%$'\n'*}"
+  echo "  what it measures goes to $curl_log, which the ladder-report verb reads"
 }
 
 # ---------------------------------------------------------------- start-fault
@@ -1080,10 +1417,12 @@ corrupt() {
   done
   printf '%s\n' "$*" > "$control"
   # Where both logs stand now, so the `report` of this case prints its own lines and no earlier
-  # case's. Every case calls this verb, so every case has a mark of its own.
+  # case's, and when this case began, so that `report` reads how long its install took.
+  # Every case calls this verb, so every case has a mark of its own.
   {
     printf 'origin=%s\n' "$([ -f "$origin_log" ] && wc -l < "$origin_log" || echo 0)"
     printf 'fault=%s\n' "$([ -f "$fault_log" ] && wc -l < "$fault_log" || echo 0)"
+    printf 'started=%s\n' "$(date +%s)"
   } > "$mark"
   if [ "$#" -eq 0 ]; then
     note "the origin now serves every row whole"
@@ -1096,9 +1435,9 @@ corrupt() {
 
 # flip_last_byte <file>: that file with its last byte changed, and the sha256 it has afterwards.
 # It is the origin's own corruption rule for a file nothing takes a member out of (write_origin
-# above), applied to a file on the runner rather than to a body in memory: the smallest edit
-# that moves the sha256 of the whole file, and the one that leaves an archive's own framing
-# alone until the digest is read.
+# above), applied to a file that stays on the runner rather than to one the origin serves: the
+# smallest edit that moves the sha256 of the whole file, and the one that leaves an archive's own
+# framing alone until the digest is read.
 # The cases whose corrupted bytes are a binary on the runner rather than a body the origin
 # serves use it.
 flip_last_byte() {
@@ -1172,6 +1511,15 @@ seed_mise_jj() {
   install -m 0755 -- "$file" "$dir/jj"
   note "mise's install of $jj_tool is now $dir/jj"
   sha256sum -- "$dir/jj"
+}
+
+# ---------------------------------------------------------------- install-bound
+
+# install_bound: the bound above, printed and nothing else, for the one reader outside this
+# script: the step of the `tool-fallback` job that holds the eight installs with nowhere to go
+# to the same seconds `report` holds a case's install to.
+install_bound() {
+  printf '%s\n' "$INSTALL_BOUND"
 }
 
 # ---------------------------------------------------------------- report
@@ -1248,6 +1596,20 @@ report() {
   # Every case of this job is a refusal, so this is the one outcome a case is held to.
   local wanted=failure problems=0
 
+  # How long this case's install took, read from the mark its own `corrupt` wrote immediately
+  # before it. The time is read here rather than given as an argument, so that the reading can
+  # never drift away from the step it measures.
+  # A mark whose started= line is missing or unreadable stops the rig: a case read with no clock
+  # is exactly the case this clock exists to catch, so it may not pass quietly.
+  local started elapsed
+  started=$(sed -n 's/^started=//p' "$mark")
+  case $started in
+    '' | *[!0-9]*)
+      die "report: the mark of case '$name' holds '${started:-no started= line}', so this rig cannot read how long that install took, and that reading is the one thing that tells an install the runner ended at its timeout-minutes from an install that refused the payload"
+      ;;
+  esac
+  elapsed=$(($(date +%s) - started))
+
   local served asked
   served=$(case_lines "$origin_log" origin)
   asked=$(case_lines "$fault_log" fault)
@@ -1264,9 +1626,14 @@ report() {
   else
     echo "    nothing: this case asked no faulted host"
   fi
+  echo "  the install of this case took ${elapsed}s, against the ${INSTALL_BOUND}s no timed install may reach"
 
   if [ "$outcome" != "$wanted" ]; then
     echo "::error::ci-tools-proof: case $name: the install step's outcome is $outcome, and this case is the proof that the install reaches $wanted: read the step's own log above for what it did instead." >&2
+    problems=$((problems + 1))
+  fi
+  if [ "$elapsed" -ge "$INSTALL_BOUND" ]; then
+    echo "::error::ci-tools-proof: case $name: the install took ${elapsed}s, which reaches the ${INSTALL_BOUND}s no timed install may, so the runner ended that step at its own timeout-minutes rather than the step refusing the payload: a step the runner ends leaves outcome=failure behind it, which the reading above accepts, so the wall time is the only reading that tells the two apart; read this job's step record (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and that step's log for 'The action has timed out.'" >&2
     problems=$((problems + 1))
   fi
   if [ -n "$expect_source" ]; then
@@ -1301,13 +1668,111 @@ report() {
   echo "  the case reads as it must"
 }
 
+# ---------------------------------------------------------------- ladder-report
+
+ladder_report() {
+  [ "$#" -eq 0 ] || die "ladder-report takes no argument, and this call gave $#"
+  # The stand-in writes a line for every fetch it is handed, so a log that is not there or
+  # holds nothing is a stand-in that never reached this job's PATH. This refusal is therefore
+  # also the reading that says the appended bound applied on the runner at all.
+  [ -s "$curl_log" ] ||
+    die "ladder-report: there is no fetch at all in $curl_log, so the stand-in curl the shorten-ladder step above writes never ran: read that step for the directory it adds to this job's PATH, because a job that runs the runner's own curl rides the pinned ladder for every one of its refusals"
+  local problems=0 names="" longest=0 bypass_records=0 unrecognised="" rode_out="" served=""
+  local kept measured who
+  local seconds decision host status bypass line
+  note "every fetch the stand-in curl of the shorten-ladder step measured"
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Every line is matched whole against the shape write_stand_in's printf writes, and a line
+    # of any other shape refuses the job. The match holds seconds to six digits and exit to
+    # three, so each [ … -le … ], [ … -lt … ], [ … -gt … ] and [ … -eq … ] below reads a number
+    # bash can hold; a value past that limit makes such a test fail with `integer expression
+    # expected` and read false, which would pass the job with no refusal. Each key carries its
+    # `=`, and the `$` anchor ends the line at the fifth field.
+    # The `|| [ -n "$line" ]` of the loop header reads a last line that has no newline, which a
+    # plain `read` drops.
+    [[ $line =~ ^seconds=([0-9]{1,6})\ decision=(full|shortened)\ host=([^ ]+)\ exit=([0-9]{1,3})\ full-ladder=([^ ]+)$ ]] ||
+      die "ladder-report: this line of $curl_log is not the five-field line write_stand_in's printf writes (seconds= decision= host= exit= full-ladder=, each value without a space): $line"
+    seconds=${BASH_REMATCH[1]} decision=${BASH_REMATCH[2]} host=${BASH_REMATCH[3]} status=${BASH_REMATCH[4]} bypass=${BASH_REMATCH[5]}
+    printf '  %s: %s, curl exit %s, %ss, full-ladder %s\n' "$host" "$decision" "$status" "$seconds" "$bypass"
+    if [ "$bypass" != none ]; then
+      bypass_records=$((bypass_records + 1))
+      case " $names " in
+        *" $bypass "*) ;;
+        *) names="$names $bypass" ;;
+      esac
+      [ "$seconds" -le "$longest" ] || longest=$seconds
+    elif [ "$decision" = full ] && [ "$seconds" -ge "$LADDER_FLOOR" ]; then
+      # curl's exit status is what tells the two apart. A fetch that spent a whole ladder and
+      # failed is a refusal this job arranged whose shape the stand-in's rule did not
+      # recognise, and that sleep is what this change exists to take out. A fetch that spent as
+      # long and served the bytes rode out a flap of its source, which is the work the pinned
+      # ladder is kept for, so refusing that one would be the opposite of what this change is
+      # for.
+      if [ "$status" -eq 0 ]; then
+        rode_out="$rode_out $host"
+      else
+        unrecognised="$unrecognised $host"
+      fi
+    elif [ "$decision" = shortened ] && [ "$status" -eq 0 ]; then
+      # A fetch this job arranged to fail cannot serve the bytes: the fault proxy refuses every
+      # request for a host it holds, the dead address answers none, and a dead proxy carries
+      # none. So a shortened fetch that exited 0 is a fetch this job meant to succeed, and
+      # shortening it took the retries that ride out a flap of that source off a required job,
+      # which is the opposite of what this rig claims below.
+      served="$served $host"
+    fi
+  done < "$curl_log"
+  kept=${names# }
+
+  for who in $rode_out; do
+    echo "::warning::ci-tools-proof: the fetch of $who stayed on the pinned ladder, took at least $LADDER_FLOOR s and served the bytes, so it rode out a flap of that source or it is one of this job's large downloads; that is the work this ladder is kept for, and this reading refuses nothing for it"
+  done
+  measured="$longest s"
+  [ -n "$kept" ] || measured="no fetch at all"
+  echo "  the case that keeps the pinned ladder must measure inside $LADDER_FLOOR..$LADDER_CEILING s, and it measured $measured"
+  echo "  $bypass_records of those fetches carried CI_TOOLS_PROOF_FULL_LADDER, and this rig holds that count to $LADDER_RECORDS"
+
+  if [ -z "$kept" ]; then
+    echo "::error::ci-tools-proof: no fetch of this job carried CI_TOOLS_PROOF_FULL_LADDER, so no case kept the pinned ladder and this job measured that ladder nowhere: one case must carry that variable, and the window above is read of that one case." >&2
+    problems=$((problems + 1))
+  elif [ "$(wc -w <<<"$kept")" -gt 1 ]; then
+    echo "::error::ci-tools-proof: these names kept the pinned ladder: $kept. This rig keeps one measurement of it and not several, so one case carries CI_TOOLS_PROOF_FULL_LADDER and every other case is shortened." >&2
+    problems=$((problems + 1))
+  elif [ "$longest" -lt "$LADDER_FLOOR" ]; then
+    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, under the floor of $LADDER_FLOOR s, so it stopped driving the real ladder: its fetch now ends before the back-off of 1+2+4+8+16+32 s does, and nothing in this job measures the ladder an outage is ridden out on." >&2
+    problems=$((problems + 1))
+  elif [ "$longest" -gt "$LADDER_CEILING" ]; then
+    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is more than a minute of new attempts and one last attempt of a row's max_time of 60 s: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 63 s and one that hangs about 124 s, so a reading over this ceiling is a ladder those flags no longer bound." >&2
+    problems=$((problems + 1))
+  fi
+  # This reading stands on its own and is no further arm of the chain above: a job whose kept
+  # measurement is also out of window would otherwise take one of those arms and say nothing
+  # of the records at all.
+  if [ "$bypass_records" -gt "$LADDER_RECORDS" ]; then
+    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the $LADDER_RECORDS this rig holds that count to, and the names they carried it under are: $kept. The variable belongs at one step's env: in .github/workflows/ci.yaml and nowhere else, so a second step's env: that carries it is what to read that file for. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script. Move .github/scripts/ci-tools-proof.test.sh with it: that file writes this number in the text of every case that reads the count and builds its fixture on a kept case of three records, so a bound moved alone reddens it, which is the reading that asks for the measurement." >&2
+    problems=$((problems + 1))
+  fi
+  if [ -n "$unrecognised" ]; then
+    echo "::error::ci-tools-proof: the fetch of$unrecognised stayed on the pinned ladder, took at least $LADDER_FLOOR s and failed, so this job arranged a refusal whose shape the stand-in curl does not recognise and slept a whole ladder for it: read the seam that carried it against FAULT_HOSTS and DEAD_ADDRESS at the top of this script." >&2
+    problems=$((problems + 1))
+  fi
+  if [ -n "$served" ]; then
+    echo "::error::ci-tools-proof: the fetch of$served was shortened and then served the bytes, so it is no refusal this job arranged: the shortening took the pinned ladder off a fetch this job means to succeed, and a flap of that source now reddens this job where the ladder rode it out. Read the point the shorten-ladder step runs at against the fetches this job makes before its fault is up." >&2
+    problems=$((problems + 1))
+  fi
+
+  [ "$problems" -eq 0 ] || exit 1
+  echo "  every fetch this job shortened is one it arranged to fail, and the one case that kept the pinned ladder measured it inside the window"
+}
+
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|shorten-ladder|start-fault|stop-fault|probe|version-answers|refusals|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|install-bound|report|ladder-report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
   stage) stage "$@" ;;
+  shorten-ladder) shorten_ladder "$@" ;;
   start-fault) start_fault "$@" ;;
   stop-fault) stop_fault "$@" ;;
   probe) probe "$@" ;;
@@ -1319,6 +1784,8 @@ case $verb in
   flip-last-byte) flip_last_byte "$@" ;;
   payload-path) payload_path "$@" ;;
   seed-mise-jj) seed_mise_jj "$@" ;;
+  install-bound) install_bound "$@" ;;
   report) report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
+  ladder-report) ladder_report "$@" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, shorten-ladder, start-fault, stop-fault, probe, version-answers, refusals, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, install-bound, report, ladder-report)" ;;
 esac
