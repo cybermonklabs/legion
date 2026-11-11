@@ -1302,7 +1302,8 @@ jobs:
           # this job used to declare, for the reason and at the cost the job's head gives. The
           # digest is a literal, as the visual job below writes it: .github/scripts/
           # check-ci-images.sh resolves a reference to a row of that file and cannot resolve
-          # one holding a `${{ }}`.
+          # one written as a workflow expression. Actions reads an expression inside a `run:`
+          # body even in a comment, so none is written in one.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           bun run e2e:multiprocess:run
@@ -1444,7 +1445,8 @@ jobs:
           # this job used to declare, for the reason and at the cost the job's head gives. The
           # digest is a literal, as the visual job below writes it: .github/scripts/
           # check-ci-images.sh resolves a reference to a row of that file and cannot resolve
-          # one holding a `${{ }}`.
+          # one written as a workflow expression. Actions reads an expression inside a `run:`
+          # body even in a comment, so none is written in one.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
