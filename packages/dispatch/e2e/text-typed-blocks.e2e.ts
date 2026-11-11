@@ -23,10 +23,14 @@ import { documentEditor, indexedBlockAsk, openWithCaret } from "./editor";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
-// A typed block written in a text body (a comment, an ask, a message) is drawn as a document
-// draws it: a callout carries its header, the block's name with its kind badge and its title on
-// one row, and a decision (`:::ask`) block is the decision card, its urgency pill and "Decision"
-// in the header and its options as the card's rows, with the source list folded away.
+// A typed block in a text body (a comment, an ask, a message) is drawn as a document draws it: a
+// callout carries its header, the block's name with its kind badge and its title on one row, and
+// a decision (`:::ask`) block is the decision card, its urgency pill and "Decision" in the header
+// and its options as the card's rows, with the source list folded away. A decision block is no
+// shape the API takes in a body: it refuses such a body with 400 DECISION_BLOCK_IN_BODY, so every
+// row below that needs one seeds the body straight into `comments` (`e2e/decision-bodies.ts`).
+// The card a body draws differs from a document's in one thing: it carries the line saying the
+// question is text and must be opened as an ask, and offers nothing to answer it with.
 
 const agent = {
   actor: { id: "e2e-text-blocks-agent", kind: "session" as const },
@@ -100,8 +104,8 @@ test("a comment's callout shows the document's header with its kind and title", 
 test("a comment's ask block shows the decision card @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Decision in a comment" });
-  // The server refuses a body holding a decision block, so the comment is seeded straight into
-  // `comments` (`e2e/decision-bodies.ts`).
+  // The server refuses a body holding a decision block (400 DECISION_BLOCK_IN_BODY), so the
+  // comment is seeded straight into `comments` (`e2e/decision-bodies.ts`).
   const commentId = await seedDecisionBody({
     author: agent.actor,
     body: ':::ask{urgency="high"}\nWhich one?\n\n- A: first\n- B: second\n:::\n',
@@ -311,7 +315,8 @@ test("a malformed decision's blank option shows no bullet in a body or a read-on
     { content: source, name: "blank.md" },
     { as: "agent" }
   );
-  // The server refuses this body too: the block it holds is a decision block, malformed or not.
+  // The server refuses this body too (400 DECISION_BLOCK_IN_BODY): what it holds is a decision
+  // block, malformed or not, so this comment is seeded the same way.
   const commentId = await seedDecisionBody({
     author: agent.actor,
     body: source,
