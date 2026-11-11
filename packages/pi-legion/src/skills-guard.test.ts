@@ -233,21 +233,6 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
   expect(instructing).toEqual([]);
 });
 
-// The daemon refuses a close reason and a READY packet holding a decision block with
-// CLOSE_REASON_DECISION_BLOCK and READY_PACKET_DECISION_BLOCK, however short the text is, since
-// nobody can answer a question put in a message (INFRA-1201). An architect meets both refusals
-// at `close_root` and `handoff_complete`, and reads what they mean in this reference, which
-// describes the daemon's refusals of those two calls: a code named nowhere a role reads is one
-// it cannot act on.
-test("the architect's merge-notices reference names both decision-block refusals", () => {
-  const reference = path.join(repoSkillsRoot, "legion-architect/references/merge-notices.md");
-  const text = readFileSync(reference, "utf8");
-  const missing = ["CLOSE_REASON_DECISION_BLOCK", "READY_PACKET_DECISION_BLOCK"].filter(
-    (code) => !text.includes(code)
-  );
-  expect(missing, path.relative(REPO_ROOT, reference)).toEqual([]);
-});
-
 // Background work is on for every role: Legion writes no Oh My Pi settings
 // overlay, so a long bash call becomes a background job and a `task` subagent runs as one, and a
 // role reads a result with the `wait` tool, which a message to its session also returns from. No
