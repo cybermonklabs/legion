@@ -345,9 +345,11 @@ Service reaches it at. It connects to NATS at `serviceUrl` with `ENVOY_ALLOW_REM
 `streamMaxBytes` are. `NATS_NKEY_SEED_FILE` names the mounted seed.
 
 `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is what lets the API serve `/v1` off loopback with no
-credential. There is no `ENVOY_API_TOKEN`. The NetworkPolicy above decides who may call `/v1`, and
-the listener's own `Host` check answers 421 to every name outside `ENVOY_ALLOWED_HOSTS`, as for
-`gcp:NatsHub`'s listener ([The hub's listener](docs/nats-hub.md#the-hubs-listener)).
+credential. There is no `ENVOY_API_TOKEN`. The NetworkPolicy above is what decides who may call
+`/v1`. The listener's own `Host` check answers 421 to every name that is neither a loopback name
+or address nor one of `ENVOY_ALLOWED_HOSTS`, as for `gcp:NatsHub`'s listener ([The hub's
+listener](docs/nats-hub.md#the-hubs-listener)); it stops a page that rebinds its own name, not a
+caller the NetworkPolicy already admits, which reaches `/v1` with `Host: localhost`.
 
 Three probes read the pod's own loopback, two routes between them:
 

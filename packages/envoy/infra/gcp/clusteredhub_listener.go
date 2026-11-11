@@ -22,7 +22,7 @@ const (
 	// SIGTERM: the HTTP server's 10 s, the role lane's 5 s (a 3 s drain of the lane's own client,
 	// and the 2 s receipt window for the forwards its handler handed over, roleLane.drain) and the
 	// NATS connection's 13 s drain, run one after another
-	// (packages/envoy/cmd/listener/main.go:1225,1263,1270, its sum stated at :1267-1269).
+	// (packages/envoy/cmd/listener/main.go:1611,1652,1659, its sum stated at :1656-1658).
 	clusteredHubListenerShutdownSeconds = 10 + 5 + 13
 	// clusteredHubListenerGraceSeconds is the listener pod's terminationGracePeriodSeconds: it
 	// holds the preStop wait and the listener's own stop (clusteredHubListenerPreStopSeconds +

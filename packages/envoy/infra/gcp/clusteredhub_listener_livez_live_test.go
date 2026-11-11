@@ -15,11 +15,13 @@ import (
 )
 
 // The other half of decision 15 (dispatch://INFRA-2739/artifact/open-items-md): a probe path has
-// to be a path the listener's own binary serves. The listener mounts /metrics, /healthz, each
-// webhook and /v1 and nothing else (packages/envoy/cmd/listener/main.go:957-977), so GET /livez
-// answers 404 today. A startup or liveness probe of this pod is curl -sS with no -f, which exits
-// 0 on a 404, so the pod would stay up on a probe that cannot report anything at all. The answer
-// is counted, so a read that made no request fails here rather than passing on an empty set.
+// to be a path the listener's own binary serves. Before this change the listener mounted
+// /metrics, /healthz, each webhook and /v1 and nothing else, so GET /livez answered 404; a
+// startup or liveness probe of this pod is curl -sS with no -f, which exits 0 on a 404, so the
+// pod would have stayed up on a probe that reported nothing at all. This change mounts the route
+// (packages/envoy/cmd/listener/main.go:968), and this test reads the built binary's answer. The
+// answer is counted, so a read that made no request fails here rather than passing on an empty
+// set.
 func TestClusteredNatsHubListenerAnswersLivez(t *testing.T) {
 	binary := buildLiveListener(t)
 	ports := newLoopbackPorts()

@@ -924,9 +924,11 @@ How it is reached. Each host forwards the Tailscale Service's port 9020 to the S
 tailnet hosts' pods alone, and every other port of the listener's pod is admitted to nobody. The
 listener binds `0.0.0.0` and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is what lets its
 `/v1` answer with no credential off loopback. It carries no `ENVOY_API_TOKEN`: the NetworkPolicy
-keeps `/v1` to the hosts, and the listener answers 421 to every `Host` outside
-`ENVOY_ALLOWED_HOSTS`. The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside
-the hosts.
+is what keeps `/v1` to the hosts. The listener answers 421 to every `Host` that is neither a
+loopback name or address nor one of `ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its
+own name rather than a caller the NetworkPolicy admits, since such a caller reaches `/v1` with
+`Host: localhost`. The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the
+hosts.
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
 `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness

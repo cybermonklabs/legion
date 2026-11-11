@@ -1,6 +1,21 @@
 kind: Changed
 body: |-
   `gcp:ClusteredNatsHub` runs Envoy's session listener as a workload of its own, one pod, with a Service, a NetworkPolicy that admits the tailnet entry's pods alone, a ServiceAccount that mounts no token and a budget that allows that pod's eviction. The tailnet entry's pods now run the tailscale container and the advertiser alone and forward the Tailscale Service's port 9020 to the listener's Service, and each host advertises the Service on its own readiness, so a listener fault no longer takes NATS's port 4222 off the tailnet. The listener binds every address of its own pod and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is now a supported mode for a listener a network policy fences rather than a temporary flag; its readiness reads the HTTP status of `/healthz` alone, while its startup and liveness probes read `/livez`, which costs no bus traffic. `name` must now be a DNS-1035 label of at most 43 bytes, a letter first, because the chart renders the Service `<name>-headless` and the component the Service `<name>-listener`, which Kubernetes holds to that shape: a name with a leading digit was accepted before and failed at apply. A tailnet host no longer takes a health URL: nothing set one after the split, so the advertiser's health gate is gone with the constants and the test rig that drove it.
+  **Three things to do before you upgrade a deployed hub.** First, `tailnet.listener.cpu` must now
+  be at least `250m` and `tailnet.listener.memory` at least `512Mi` on their own, because the
+  listener's container is its own pod's whole request where before it shared the tailnet pod with
+  the tailscale container's `250m`/`512Mi` and the advertiser's `50m`/`64Mi`, which carried it over
+  Autopilot's floor; a smaller value is refused at `pulumi preview`, naming the input, and the
+  defaults, `500m` and `1Gi`, need no change. Second, re-point the listener's pod-down alert: the
+  container is still named `listener`, but its pod is now `<name>-listener-…` and no longer
+  `<name>-tailnet-…`, so an alert that selects the old `pod_name` matches nothing after the
+  rollout, and that alert is the whole watch on a listener that runs one pod, since the advertiser's
+  health gate, which used to drain the Tailscale Service after three failed reads of `/healthz`, is
+  gone. Third, a hub already named with 44 bytes or a leading digit cannot be renamed in place:
+  `name` is the Helm release name and the chart's Pulumi logical name, so changing it deletes one
+  resource and creates another, and the chart's StatefulSet is protected, which Pulumi refuses to
+  delete; such a hub needs the StatefulSet unprotected and re-imported by hand, with its JetStream
+  volume claims at stake. No hub deployed today carries such a name.
 time: 2026-11-11T04:43:00.000000000Z
 custom:
     Issue: pr3537
