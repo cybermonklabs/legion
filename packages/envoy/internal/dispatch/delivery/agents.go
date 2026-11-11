@@ -2,6 +2,38 @@ package delivery
 
 import "context"
 
+// resolveSessionTitlesQuery answers, for each id it is given, that session's newest event whose
+// stamped title is not empty, as one ordered read a session that stops at that session's newest
+// titled row. It reads events_session_actor_created_at_idx (migration 0026), the partial index
+// on ((actor->>'id'), created_at desc) for a session actor, once per id.
+//
+// It replaced `select distinct on (actor->>'id') … order by actor->>'id', created_at desc` over
+// that same index: `Unique` consumes its whole input, so that read walked every event of every
+// listed session to keep one of them, and this read's largest caller (sessionsTitled,
+// groups.go) lists every session of the stored delivery population at once. The lateral is the
+// shape this repository already uses for the same table and the same index, for the same
+// question of the same population (agentLastActivityQuery, dispatch/api/agents.go), whose own
+// measurement is 1,875 rows and 470 buffers to answer five sessions against 20 buffers here.
+//
+// The lateral repeats actor->>'kind' = 'session' because that index is partial on it, and it is
+// joined with `cross join`, not a left join: a session with no titled event must answer no row,
+// which is what the caller's map needs. The title condition is not in the index, so this is not
+// one row read a session: the read skips a session's untitled rows on the way to its newest
+// titled one, and a session that never stamped a title is read to the end of its own events and
+// answers no row at all.
+const resolveSessionTitlesQuery = `
+		select s.id, e.session_title
+		from unnest($1::text[]) s(id)
+		cross join lateral (
+			select actor->'origin'->>'session_title' as session_title
+			from events
+			where actor->>'kind' = 'session' and actor->>'id' = s.id
+				and nullif(actor->'origin'->>'session_title', '') is not null
+			order by created_at desc
+			limit 1
+		) e
+	`
+
 // ResolveSessionTitles answers the newest title each session stamped, which the Delivery page
 // shows a session by (LEGION-567): a subagent's own commit trailer carries no parent-session
 // reference, so a pull request's Parent agent is the first session its Omp-Session trailers name,
@@ -10,7 +42,7 @@ import "context"
 // A session's title is never stored in a dedicated table; every write stamps a model.Actor
 // (including its ActorOrigin.SessionTitle) as JSONB onto the row it wrote and onto the matching
 // events row, and events_session_actor_created_at_idx (migration 0026) makes this one indexed
-// query per id. The name is the newest title the session stamped, not the title on its newest
+// read per id. The name is the newest title the session stamped, not the title on its newest
 // event: a later write carrying none -- a delivery reply stamps no origin at all
 // (postDeliveryReply) -- does not take the name away (INFRA-1368). It is durable -- it survives
 // the session ending, unlike Envoy's live, TTL-expiring session registry -- for any session that
@@ -24,15 +56,7 @@ func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string) (
 	}
 	// One statement for every id of the read, over that index, rather than one query per id: a
 	// Delivery timeline page can name hundreds of distinct sessions across its window.
-	rows, err := q.Query(ctx, `
-		select distinct on (actor->>'id')
-			actor->>'id' as session_id,
-			actor->'origin'->>'session_title' as session_title
-		from events
-		where actor->>'kind' = 'session' and actor->>'id' = any($1)
-			and nullif(actor->'origin'->>'session_title', '') is not null
-		order by actor->>'id', created_at desc
-	`, sessionIDs)
+	rows, err := q.Query(ctx, resolveSessionTitlesQuery, sessionIDs)
 	if err != nil {
 		return nil, err
 	}
