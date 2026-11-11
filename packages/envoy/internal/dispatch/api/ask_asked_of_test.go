@@ -264,9 +264,10 @@ func TestAskAskedOf(t *testing.T) {
 		}
 	})
 
-	// Nothing but a person's own hand-on writes the field: the create routes do not take it, and
-	// an ask opens empty whatever its author sent.
-	t.Run("the create route accepts no asked_of and an ask opens with it empty", func(t *testing.T) {
+	// Nothing but a person's own hand-on writes the field: the create routes declare no
+	// `asked_of`, so they ignore one a caller sends, as every route of this build ignores a
+	// member it does not declare (decodeJSON), and an ask opens empty whatever its author sent.
+	t.Run("the create route ignores an asked_of it does not declare and an ask opens with it empty", func(t *testing.T) {
 		handler, _ := newTestHandlerWithStore(t)
 		issue := createInteractionIssue(t, handler, "CREATE", "An ask opens on nobody", "A spec")
 		document := createProjectDocument(t, handler, "CREATE", "Design notes", "# Design notes\n")
@@ -275,12 +276,16 @@ func TestAskAskedOf(t *testing.T) {
 			"/api/v1/issues/" + issue.Key + "/asks",
 			"/api/v1/artifacts/" + document.ID + "/asks",
 		} {
-			refused := sessionRequest(t, handler, http.MethodPost, target, map[string]any{
+			created := sessionRequest(t, handler, http.MethodPost, target, map[string]any{
 				"question": "Who decides?", "asked_of": "bob", "actor": sessionActor(),
 			})
-			if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"INVALID_JSON"`) {
-				t.Fatalf("create an ask on %s naming asked_of: status=%d body=%s, want 400 INVALID_JSON",
-					target, refused.Code, refused.Body.String())
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create an ask on %s naming asked_of: status=%d body=%s, want 201 with the member ignored",
+					target, created.Code, created.Body.String())
+			}
+			if strings.Contains(created.Body.String(), `"asked_of":"bob"`) {
+				t.Fatalf("create an ask on %s naming asked_of: body=%s, want an ask that holds no asked_of",
+					target, created.Body.String())
 			}
 		}
 		opened := createIssueAsk(t, handler, issue.Key, "Which transport?")
