@@ -267,6 +267,38 @@ async function panelPlacement(page: Page, where: string): Promise<"column" | "ma
   return inTheMargin === 1 ? "margin" : "column";
 }
 
+/**
+ * The element is inside the viewport sideways: its box starts at or after the left edge and
+ * ends at or before the right one. This is the half of "in the viewport" that a column which
+ * scrolls down by design can be held to - the issue page's right-hand panel holds the
+ * properties, the focused node's facts and the whole conversation, so a value further down it
+ * is below the fold and reached by scrolling, which R17 allows (it bans two dimensions, never
+ * one). Sideways it allows nothing: the rail this redesign removed hid 744 px of the issue's
+ * properties to the right of an inner scroller, and an element pushed out that way keeps its
+ * box, its size and its text, so it is drawn still and only its place says it is gone.
+ *
+ * What this cannot read is a value hidden *below* the fold of a box that was never meant to
+ * scroll; that is `assertWholeAcross`'s reading of the same element, which fails on a scroller
+ * between it and the document.
+ */
+async function expectInsideTheViewportSideways(
+  page: Page,
+  at: Locator,
+  where: string
+): Promise<void> {
+  const box = await at.boundingBox();
+  const width = page.viewportSize()?.width ?? 0;
+  expect(box, `${where} draws no box at ${width} px`).not.toBeNull();
+  expect(
+    Math.round(box?.x ?? -1),
+    `${where} starts left of the ${width} px viewport`
+  ).toBeGreaterThanOrEqual(0);
+  expect(
+    Math.round((box?.x ?? 0) + (box?.width ?? 0)),
+    `${where} ends past the right edge of the ${width} px viewport`
+  ).toBeLessThanOrEqual(width);
+}
+
 function idsOf(rows: readonly DrawnRow[]): string[] {
   return rows.map((row) => row.id ?? "<no id>");
 }
@@ -1008,9 +1040,12 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     ).toEqual([]);
 
     // Those rows are not counted against the fold budget: with the question answered, the fold
-    // closes its path and leaves every other branch exactly as it was.
+    // closes its path and unfolds no other branch to spend what it freed.
     const withQuestion = idsOf(await drawnRows(page));
     const branch = await ancestorsOfRow(page, question);
+    const outside = (ids: readonly string[]) =>
+      ids.filter((id) => !branch.includes(id) && id !== question);
+    const traffic = watchApiRequests(page);
     await answerAsk(seeded.openQuestion.askId, {
       expected_edited_at: null,
       selected: [],
@@ -1018,12 +1053,22 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     });
     await page.reload();
     await expectIssuePageDrawn(page);
-    // The set a cold load draws is not the set a reload draws, because the reader's own state
-    // decides which path is unfolded, so the wait is for a row that is always there and never
-    // for the whole set: the tree's root, and the document the question's own block sits in,
-    // both of which the tree draws whichever path it unfolds. The question's own row is not
-    // waited for - the answer takes it off the tree, which is what the first reading below
-    // asserts.
+    // `expectIssuePageDrawn` is satisfied by the tree's own element, which is drawn empty and
+    // fills as the reads land, and every reading below passes on a tree that holds nothing: it
+    // draws no row for the question, it adds no row outside the question's path, and it draws
+    // fewer rows than the tree that held the question. So the tree is waited for until the
+    // page has stopped reading, which is what says it has every row it is going to draw, and
+    // then read for drawing rows outside the question's path at all.
+    //
+    // The wait is not for a named row of another branch, because which rows a reload draws is
+    // not which rows a cold load drew: the reader's own state decides which path is unfolded,
+    // and on this seed the reload leaves the spec's summary row (`spec#b-summary`) folded
+    // away, which is why the reading below is of what the fold added outside the path and
+    // never of the whole set. The two ends of the branch are waited for by name, since the
+    // tree draws them whichever path it unfolds: its root, and the document the question's own
+    // block sat in. The question's own row is not waited for - the answer takes it off the
+    // tree, which is the first reading below.
+    await expectLoadSettled(traffic);
     const holder = branch[branch.length - 1] ?? seeded.key;
     await expect(
       nodeRow(page, seeded.key).first(),
@@ -1033,9 +1078,11 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
       nodeRow(page, holder).first(),
       `the reloaded tree draws no row for ${holder}, which holds the question's own block`
     ).toBeVisible();
-    const outside = (ids: readonly string[]) =>
-      ids.filter((id) => !branch.includes(id) && id !== question);
     const withoutQuestion = idsOf(await drawnRows(page));
+    expect(
+      outside(withoutQuestion).length,
+      "the reloaded tree draws no row outside the question's own path, so the two readings below are read against nothing"
+    ).toBeGreaterThan(0);
     expect(
       withoutQuestion,
       "the answered question's row is still drawn as an open question's path would be"
@@ -1169,8 +1216,14 @@ test("every property with a value is visible at every width @phone", async ({ br
     // value. A reading of the page's own text would count text an inner scroller has pushed
     // out of sight - which is exactly how the rail this redesign removed hid 744 px of the
     // issue's properties - and a substring of that text ("11", "alice") can be met by another
-    // value; so each value is read where it is drawn, for being drawn and for having nothing
-    // between it and the document that clips it (`e2e/unclipped.ts`).
+    // value; so each value is read where it is drawn: for being drawn, for being where the
+    // reader can see it, and for having nothing between it and the document that clips it
+    // (`e2e/unclipped.ts`). Drawn is not enough on its own, because an element a scroller has
+    // pushed past its edge keeps its box, its size and its text and is drawn still; what says
+    // the reader can see it is where that box is. The block's values are on the first screen,
+    // so they are read against the whole viewport; the panel's are read sideways only, which
+    // is what a column that scrolls down by design can be held to
+    // (`expectInsideTheViewportSideways`).
     const panel = marginSlot(page);
     const inTheBlock: readonly (readonly [string, Locator])[] = [
       [
@@ -1185,9 +1238,10 @@ test("every property with a value is visible at every width @phone", async ({ br
       ["the third label", page.getByTestId("issue-labels").getByText("redesign", { exact: true })],
     ];
     // The panel is a column of its own that scrolls down by design, so what is read inside it
-    // is the sideways half of the same walk (R17 bans two dimensions, never one). The
-    // repository is read as the assignee is, at the badge its control draws, since its select
-    // and the description beside it carry the same words.
+    // is the sideways half of both readings: its box inside the viewport sideways, and the
+    // sideways half of the clipping walk (R17 bans two dimensions, never one). The repository
+    // is read as the assignee is, at the badge its control draws, since its select and the
+    // description beside it carry the same words.
     const inThePanel: readonly (readonly [string, Locator])[] = [
       ["the repository", badgeValue(page, `Repository of ${seeded.key}`)],
       ["the pull request", panel.getByRole("link", { name: /^#11\b/ })],
@@ -1209,6 +1263,10 @@ test("every property with a value is visible at every width @phone", async ({ br
           at,
           `${name} is not drawn at ${width} px with no control opened`
         ).toBeVisible();
+        await expect(
+          at,
+          `${name} is drawn outside the ${width} px viewport with no control opened`
+        ).toBeInViewport();
         await assertWhole(at);
       }
       for (const [name, at] of inThePanel) {
@@ -1216,6 +1274,7 @@ test("every property with a value is visible at every width @phone", async ({ br
           at,
           `${name} is not drawn at ${width} px with no control opened`
         ).toBeVisible();
+        await expectInsideTheViewportSideways(page, at, `${name} at ${width} px`);
         await assertWholeAcross(at);
       }
       // The claim is the holder's own link, which `AgentName` draws the title in: a reading
@@ -1229,17 +1288,27 @@ test("every property with a value is visible at every width @phone", async ({ br
       await expectIssuePageDrawn(page);
       await assertPageFits(page);
 
-      // The status, the priority, the assignee and the labels stay with the title.
-      const title = (await identityBlock(page).innerText()).replace(/\s+/g, " ");
-      for (const [name, value] of [
-        ["the assignee", "alice"],
-        ["the first label", "dispatch"],
-      ] as const) {
-        expect(title, `${name} left the title block at ${width} px`).toContain(value);
-      }
+      // The status, the priority, the assignee and the labels stay with the title, each read
+      // at the element that draws it inside the block and never as a substring of the block's
+      // own text: that text holds "alice" in the assignee control's own `option` list and
+      // "dispatch" wherever another value of this seed spells it, so a substring of it says
+      // nothing about where the value is drawn.
       expect(
         await identityBlock(page).getByRole("combobox", { name: "Status" }).count(),
         `the status control left the title block at ${width} px`
+      ).toBe(1);
+      expect(
+        await identityBlock(page)
+          .getByRole("combobox", { name: `Assignee of ${seeded.key}` })
+          .count(),
+        `the assignee left the title block at ${width} px`
+      ).toBe(1);
+      expect(
+        await identityBlock(page)
+          .getByTestId("issue-labels")
+          .getByText("dispatch", { exact: true })
+          .count(),
+        `the first label left the title block at ${width} px`
       ).toBe(1);
       expect(
         await identityBlock(page)
@@ -1567,8 +1636,18 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
         await gotoIssue(page, presetAddress(seeded.key, preset));
-        await readChrome(`the ${PRESET_NAMES[preset]} preset at ${size.width} px`);
         await expectIssuePageDrawn(page);
+        // `gotoIssue` waits for the head alone and the tree is drawn empty, so the view is
+        // waited for by its rows: a preset read before its own query landed is a head and a
+        // frame, which draw no internal word because they draw almost nothing. What this
+        // cannot say is that the tree has finished filling - it reads the preset's first rows
+        // and the ten views below cover the rest.
+        await expect
+          .poll(async () => await nodeRows(page).count(), {
+            message: `the ${PRESET_NAMES[preset]} preset draws no row at ${size.width} px, so its words are not on the page yet`,
+          })
+          .toBeGreaterThan(0);
+        await readChrome(`the ${PRESET_NAMES[preset]} preset at ${size.width} px`);
       }
     }
 
@@ -1590,9 +1669,20 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
       await row.focus();
       // The focus opens the body, and a document's body reads its own text as it opens: until
       // that read lands the body draws the line for a document that has not arrived (R16), so
-      // a reading taken at once reads that line instead of the words this check is about.
-      await expect(rowBody(row)).toBeAttached();
-      await expect(rowBody(row)).not.toContainText(EMPTY_STATE_LINES.document_reading);
+      // a reading taken at once reads that line instead of the words this check is about. The
+      // body is waited for in both directions - the loading line gone and words of its own
+      // drawn - because a body still empty carries no loading line either, and `readChrome`
+      // over an empty body reads the rest of the page and passes. What the wait cannot say is
+      // which words those are; that is what `readChrome` is for.
+      await expect(rowBody(row), `row ${index} opens no body on focus`).toBeAttached();
+      await expect(
+        rowBody(row),
+        `the body of row ${index} still draws the line for a document that has not arrived`
+      ).not.toContainText(EMPTY_STATE_LINES.document_reading);
+      await expect(
+        rowBody(row),
+        `the body of row ${index} drew no text of its own, so there is nothing in it to read`
+      ).not.toHaveText(/^\s*$/u);
       await readChrome(`the body of row ${index}`);
     }
   });
@@ -1694,6 +1784,19 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
     for (const width of [320, 390, 768, 1024, 1280, 1440]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      // Nothing below is measured until the tree has drawn rows. `gotoIssue` waits for the
+      // head and `expectIssuePageDrawn` for the tree's own element, which is drawn empty and
+      // fills as the reads land, so every measurement taken here would read a page that holds
+      // no row - and a page that holds no row is a page that fits, which is the first thing
+      // `assertPageFits` retries its way into passing on. What this wait cannot say is that
+      // the last row has landed; the walk below reads the rows that are drawn when it runs,
+      // and six widths read them six times.
+      await expect
+        .poll(async () => await nodeRows(page).count(), {
+          message: `the tree draws no row at ${width} px, so nothing here measures a page that holds its rows`,
+        })
+        .toBeGreaterThan(0);
       await assertWhole(identityBlock(page));
       // The walk is read against the rows it covers, so the count is an assertion of its own: a
       // walk over no row would pass every clipping check for want of anything to measure.
@@ -1702,12 +1805,9 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
         walked.length,
         `the clipping walk covered no row of the tree at ${width} px: the page draws none`
       ).toBeGreaterThan(0);
-      await expectIssuePageDrawn(page);
-      // The fit is measured with the tree's rows on the page. `assertPageFits` retries until
-      // the page fits, so read straight after the navigation it answers for a page that holds
-      // none of them yet - which is the moment every page fits - and the rows that make a page
-      // scroll sideways would never be measured at all (the two rows below this one wait for
-      // their own words for the same reason).
+      // The fit is measured with the tree's rows on the page, which the wait above is for: the
+      // rows that make a page scroll sideways are measured only where they are drawn (the two
+      // rows below this one wait for their own words for the same reason).
       await assertPageFits(page);
       await assertWhole(presetRow(page));
       // The panel holds the properties, the focused node's facts and the whole conversation, so

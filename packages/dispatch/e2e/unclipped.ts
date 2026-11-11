@@ -40,11 +40,9 @@ import { expect, type Locator, type Page } from "@playwright/test";
  * `span: 128x20 in 1x1`). What is inside such an element is not drawn either, so the walk
  * stops there rather than descending.
  *
- * These two ask **does the reader have every word**, so a box that cuts counts however it
- * cuts: `overflow: hidden` is a finding exactly as an ellipsis is, because a word cut off is
- * a word gone whether or not the box advertised the cut. `assertFitsItsBox` below asks the
- * other question - does this box scroll sideways - and there `hidden` is no finding; a scope
- * picks the reading it means.
+ * Both of these ask `"every-word"` (`Reading` below, where the two readings are explained):
+ * a box that cuts counts however it cuts, because a word cut off is a word gone whether or
+ * not the box advertised the cut.
  *
  * **A box that holds one line hides nothing below it.** `white-space: nowrap` puts every word
  * of a box on a single line, so its height is that one line's and a `scrollHeight` past its
@@ -64,34 +62,27 @@ import { expect, type Locator, type Page } from "@playwright/test";
  * helper's.
  */
 export async function assertWhole(locator: Locator): Promise<void> {
-  await assertUnclipped(locator, { clamps: true, cuts: true, down: true });
+  await assertUnclipped(locator, { down: true, reading: "every-word" });
 }
 
 /**
  * The same walk for a box that is meant to scroll down: the issue page's right-hand panel holds
  * the properties, the focused node's facts and the whole conversation, so it is taller than the
  * screen and scrolls vertically by design (`features/margin/MarginSheet.tsx`'s `overflow-y-auto`
- * on a `h-dvh` rail). R17 bans scrolling in *two* dimensions, never in one, so this reading
- * drops the vertical half of the overflow rule and keeps the rest: a sideways clip still
- * fails, and so does a line clamp that is cutting lines, since a line a clamp took is a line
- * the reader does not have whichever way the box scrolls.
+ * on a `h-dvh` rail). R17 bans scrolling in *two* dimensions, never in one, so this is the same
+ * `"every-word"` reading with `down: false`: a sideways clip still fails, and so does a line
+ * clamp that is cutting lines, since a line a clamp took is a line the reader does not have
+ * whichever way the box scrolls.
  */
 export async function assertWholeAcross(locator: Locator): Promise<void> {
-  await assertUnclipped(locator, { clamps: true, cuts: true, down: false });
+  await assertUnclipped(locator, { down: false, reading: "every-word" });
 }
 
 /**
  * The weaker of the two readings, for a box that may shorten its own text: no box inside
  * `locator` *scrolls* past its own edge, and `locator`'s own right edge is inside the box that
- * holds it. Neither a clamp nor a box that cuts is read at all.
- *
- * The two readings answer two different questions, which is the whole of the difference
- * between them. `assertWhole` and `assertWholeAcross` ask **does the reader have every word**:
- * there, `overflow: hidden` is a finding exactly as an ellipsis is, because a word cut off is
- * a word gone whether the box advertised the cut or not. This asks **does this box scroll
- * sideways**, which is R17's question (it bans scrolling in two dimensions, never cutting), so
- * here only a box that can actually be scrolled counts - `overflow` of `auto`, `scroll` or
- * `overlay` - and `hidden` and `clip` do not.
+ * holds it. Neither a clamp nor a box that cuts is read at all - this is `"scrolls-only"`,
+ * and `Reading` below says what that counts and what the other one does.
  *
  * A row of the issue tree is the case this exists for (`e2e/issue-layout.e2e.ts`, c-reflow). A
  * row is one line by design and cuts its first line at a sentence end, or at a word boundary
@@ -104,12 +95,11 @@ export async function assertWholeAcross(locator: Locator): Promise<void> {
  * promises every word on screen. A row promises something else, which is what this reads:
  * whatever it shortened, it fits the box it is drawn in and takes the page nowhere sideways.
  *
- * So the two readings stand side by side and a scope picks the one it means. This is not an
- * exception inside `assertWhole`: the identity block, the preset row and the panel keep that
- * reading unchanged, and a scope that wants this one asks for it by name.
+ * This is not an exception inside `assertWhole`: the identity block, the preset row and the
+ * panel keep that reading unchanged, and a scope that wants this one asks for it by name.
  */
 export async function assertFitsItsBox(locator: Locator): Promise<void> {
-  await assertUnclipped(locator, { clamps: false, cuts: false, down: true });
+  await assertUnclipped(locator, { down: true, reading: "scrolls-only" });
   const over = await locator.evaluate((element) => {
     const parent = element.parentElement;
     if (parent === null) return null;
@@ -121,6 +111,26 @@ export async function assertFitsItsBox(locator: Locator): Promise<void> {
   expect(over, over ?? "").toBeNull();
 }
 
+/**
+ * Which question a scope is asking, said once here because the two readings differ in one
+ * thing: what counts as a box holding content past its own edge.
+ *
+ * - `"every-word"` asks **does the reader have every word**. Every box that is not `visible`
+ *   counts, so `overflow: hidden` is a finding exactly as an ellipsis is - a word cut off is a
+ *   word gone whether or not the box advertised the cut - and a clamp that is cutting counts
+ *   too. `assertWhole` and `assertWholeAcross` read this.
+ * - `"scrolls-only"` asks **does this box scroll sideways**, which is R17's question: it bans
+ *   scrolling in two dimensions and never cutting. Only a box that can be scrolled counts -
+ *   `overflow` of `auto`, `scroll` or `overlay` - `hidden` and `clip` do not, and a clamp is
+ *   not read at all. `assertFitsItsBox` reads this.
+ *
+ * `down` is the other half of what a caller means: whether the reading covers what a box hides
+ * *below* its own edge. A box that scrolls down by design - the issue page's right-hand panel -
+ * takes `down: false`, which drops the vertical half of the overflow rule and keeps every other
+ * part, the sideways cut and the cutting line clamp included.
+ */
+type Reading = "every-word" | "scrolls-only";
+
 /** How many clipped elements a failure names. A scope holds hundreds, and a page that clips at
  *  all usually clips in several places at once; ten of them, each with its tag, its classes and
  *  its two sizes, say where to look without printing a subtree. */
@@ -128,12 +138,12 @@ const CLIPS_NAMED = 10;
 
 async function assertUnclipped(
   locator: Locator,
-  reading: { clamps: boolean; cuts: boolean; down: boolean }
+  asked: { down: boolean; reading: Reading }
 ): Promise<void> {
   // One `evaluate` over the whole subtree: a round trip per element would be hundreds of them
   // per scope, and the six widths of c-reflow pay for every one.
   const clips = await locator.evaluate(
-    (element, { named, readsClamps, readsCuts, readsDown }) => {
+    (element, { named, readsDown, readsEveryWord }) => {
       const found: string[] = [];
       const where = (node: Element) => {
         const classes = node.getAttribute("class");
@@ -160,7 +170,7 @@ async function assertUnclipped(
         // that declaration cuts: an ellipsis takes words off the end of a line, a line clamp
         // takes lines off the end of a box.
         if (
-          readsClamps &&
+          readsEveryWord &&
           ((style.textOverflow === "ellipsis" && cutsAcross) ||
             (style.webkitLineClamp !== "none" && cutsDown))
         ) {
@@ -169,10 +179,10 @@ async function assertUnclipped(
           );
         }
         // What counts as a box holding content past its edge: every box that is not `visible`
-        // for the reading that asks whether the reader has every word, and only a box that can
-        // be scrolled for the reading that asks whether anything scrolls sideways.
+        // for `"every-word"`, and only a box that can be scrolled for `"scrolls-only"` (the
+        // `Reading` above).
         const holds = (overflow: string) =>
-          readsCuts
+          readsEveryWord
             ? overflow !== "visible"
             : overflow === "auto" || overflow === "scroll" || overflow === "overlay";
         if (
@@ -196,9 +206,8 @@ async function assertUnclipped(
     },
     {
       named: CLIPS_NAMED,
-      readsClamps: reading.clamps,
-      readsCuts: reading.cuts,
-      readsDown: reading.down,
+      readsDown: asked.down,
+      readsEveryWord: asked.reading === "every-word",
     }
   );
   expect(clips, clips.join(", ")).toEqual([]);
