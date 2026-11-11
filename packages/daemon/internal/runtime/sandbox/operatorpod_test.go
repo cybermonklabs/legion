@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // operatorRouteFixture is the Go live harnesses' operator pod (deploy/kubernetes/operator-route/
@@ -201,6 +202,11 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "the live harnesses' operator pod", pod: fixture, keys: map[string]string{"ANTHROPIC_API_KEY": "anthropic"}},
 		{name: "an operator's own overlays, which the role's are composed after",
 			pod: Pod{Env: map[string]string{"PI_CONFIG_FILES": "/etc/operator/overlay.yml"}}},
+		// The attributes the operator's whole deployment is billed under, which every launch's
+		// issue and role are composed after (roleOperatorEnv): the operator's to set, as the
+		// overlays are.
+		{name: "an operator's own spend attributes, which the launch's issue and role are composed after",
+			pod: Pod{Env: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}}},
 		// Dispatch's dashboard as people open it, which the dispatch command links to in place of the
 		// in-cluster DISPATCH_URL the runtime hands every agent.
 		{name: "Dispatch's public dashboard", pod: env("DISPATCH_PUBLIC_URL", "https://dispatch.example.org")},

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
@@ -967,5 +968,39 @@ esac
 	}
 	if want := []string{"GEMINI_API_KEY=the-provider-key"}; !slices.Equal(got, want) {
 		t.Errorf("the probe ran with %q, want %q: the provider key, as a pane's shim exports it", got, want)
+	}
+}
+
+// The boot gate probes under the environment a pane gets, so it carries the operator's own spend
+// attributes as the operator wrote them in `runtime.tmux.pane_env` and nothing more: the probe
+// serves no issue and runs in no role, so the composition every launch goes through
+// (runtime.SpendResourceAttributes with the zero spec, gateEnvironment) writes neither
+// legion.issue nor legion.role, and the probe's minutes are billed under the deployment's own
+// attributes rather than under some launch's issue.
+func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
+	// The live deployment's own value, the shape an operator writes: the project, the lane, the
+	// credential the gateway bills and the person who owns the spend.
+	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
+	block := &config.Tmux{PaneEnv: map[string]string{runtime.SpendAttributesVariable: operator}}
+	env, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, ok := env[runtime.SpendAttributesVariable]
+	if !ok || value != operator {
+		t.Errorf("the gate is told %s = %q (set %v), want the operator's own %q", runtime.SpendAttributesVariable, value, ok, operator)
+	}
+	if strings.Contains(value, runtime.SpendIssueAttribute) || strings.Contains(value, runtime.SpendRoleAttribute) {
+		t.Errorf("the gate is told %s = %q, want no %s and no %s: the probe serves no issue and runs in no role",
+			runtime.SpendAttributesVariable, value, runtime.SpendIssueAttribute, runtime.SpendRoleAttribute)
+	}
+	// An operator who sets no attributes leaves the gate told none, rather than an empty variable
+	// invented for it.
+	bare, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := bare[runtime.SpendAttributesVariable]; ok {
+		t.Errorf("a gate under no operator attributes is told %s = %q, want no such variable", runtime.SpendAttributesVariable, value)
 	}
 }

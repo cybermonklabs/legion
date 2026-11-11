@@ -21,7 +21,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
-import { onFakeClock } from "../../__tests__/fake-clock";
+import { jump, onFakeClock, tick } from "../../__tests__/fake-clock";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -375,7 +375,7 @@ test("the live view retries a read mark that failed to save", async () => {
   });
 
   await waitFor(() => expect(agentsLink()).toHaveTextContent("New replies 2"));
-  await waitFor(() => expect(agentsLink().textContent).toBe("Agents"), { timeout: 4000 });
+  await waitFor(() => expect(agentsLink().textContent).toBe("Agents"));
 });
 
 // A session's stored conversation holds every message sent to it: the viewer's direct messages,
@@ -943,17 +943,17 @@ test("leaving the live view leaves its send being tried, under its key", async (
 
   await onFakeClock(async () => {
     await sendFromLiveView(userOnFakeClock(), "try the other branch");
-    await tick(1_000);
+    await jump(1_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(2);
 
     cleanup();
-    await tick(2_000);
-    await tick(4_000);
+    await jump(2_000);
+    await jump(4_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(4);
     // Dispatch is back: the send lands, and nothing is tried after it.
     createAgentMessage.mockResolvedValueOnce(message("sent", "try the other branch"));
-    await tick(8_000);
-    await tick(30 * 60_000);
+    await jump(8_000);
+    await jump(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
   });
   expect(createAgentMessage.mock.calls.map(([, , bounds]) => bounds)).toEqual(
@@ -961,14 +961,6 @@ test("leaving the live view leaves its send being tried, under its key", async (
   );
   expect(new Set(sentKeys(createAgentMessage)).size).toBe(1);
 });
-
-/** Moves the fake clock `ms` on and lets every promise the move released run. */
-async function tick(ms: number): Promise<void> {
-  await act(async () => {
-    jest.advanceTimersByTime(ms);
-    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-  });
-}
 
 /** The live view for SESSION, its mode settled on Send. */
 async function renderSendingView(): Promise<void> {
@@ -1021,7 +1013,7 @@ test("Send stays open with text while an earlier send is out or late, and each p
     // In press order: the second waits while the first is being tried.
     expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
-    await tick(SEND_DEADLINE_MS);
+    await jump(SEND_DEADLINE_MS);
     const [late] = screen.getAllByTestId("agent-send-held");
     expect(within(late as HTMLElement).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
     expect(within(late as HTMLElement).getByRole("button", { name: "Stop trying" })).toBeTruthy();
@@ -1097,15 +1089,15 @@ test("Stop trying ends a late live view send, and its Retry goes under the same 
   await onFakeClock(async () => {
     const user = userOnFakeClock();
     await sendFromLiveView(user, "try the other branch");
-    for (const wait of [1_000, 2_000, 4_000, 8_000]) await tick(wait);
+    for (const wait of [1_000, 2_000, 4_000, 8_000]) await jump(wait);
     expect(screen.queryByRole("button", { name: "Stop trying" })).not.toBeInTheDocument();
-    await tick(15_000);
+    await jump(15_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
 
     await user.click(screen.getByRole("button", { name: "Stop trying" }));
     await tick(0);
     expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendStoppedError().message);
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
 
     createAgentMessage.mockResolvedValueOnce(message("sent", "try the other branch"));
@@ -1560,8 +1552,10 @@ test("no completion is offered without a command list or in BTW", async () => {
   const user = userEvent.setup();
   const silent = await renderWithCommands();
   expect(silent.placeholder).not.toContain("/");
-  await type(user, silent, "/");
-  await Bun.sleep(50);
+  await onFakeClock(async () => {
+    await type(userOnFakeClock(), silent, "/");
+    await jump(50);
+  });
   expect(slashList()).not.toBeInTheDocument();
 
   cleanup();
@@ -1571,8 +1565,10 @@ test("no completion is offered without a command list or in BTW", async () => {
   await user.selectOptions(screen.getByRole("combobox", { name: "Delivery mode" }), "btw");
   await waitFor(() => expect(input.placeholder).toContain("delivered as BTW"));
   expect(input.placeholder).not.toContain("/");
-  await type(user, input, "/co");
-  await Bun.sleep(50);
+  await onFakeClock(async () => {
+    await type(userOnFakeClock(), input, "/co");
+    await jump(50);
+  });
   expect(slashList()).not.toBeInTheDocument();
 });
 
@@ -1606,14 +1602,13 @@ async function optionsFor(
 }
 
 /** Whether the menu opens at all for `text`. Nothing opening is no event to wait for, so this
- *  gives the view its moment and then looks, as the cases above for a BTW do. */
-async function opensFor(
-  user: UserEvent,
-  input: HTMLTextAreaElement,
-  text: string
-): Promise<boolean> {
-  await typeAfresh(user, input, text);
-  await Bun.sleep(50);
+ *  gives the view its moment on the fake clock, where the moment costs no real time, and then
+ *  looks, as the cases above for a BTW do. */
+async function opensFor(input: HTMLTextAreaElement, text: string): Promise<boolean> {
+  await onFakeClock(async () => {
+    await typeAfresh(userOnFakeClock(), input, text);
+    await jump(50);
+  });
   return slashList() !== null;
 }
 
@@ -1644,8 +1639,8 @@ test("the menu opens for a / at the start, after a space and after a line break,
     `/skill:asd-ste100${ASD_DESCRIPTION}`,
   ]);
 
-  expect(await opensFor(user, input, "please read/asd")).toBe(false);
-  expect(await opensFor(user, input, "docs/asd")).toBe(false);
+  expect(await opensFor(input, "please read/asd")).toBe(false);
+  expect(await opensFor(input, "docs/asd")).toBe(false);
 });
 
 // What a pick writes is what the message means there. At the start it is the command line the
@@ -1972,7 +1967,9 @@ test("a switch whose key has run out says so, and frees the pickers", async () =
     await tick(0);
     expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
-    await tick(IDEMPOTENCY_KEY_TTL_MS);
+    // One jump crosses the key's whole life in a single round, which the shared stepping `tick`
+    // would walk 500 ms at a time.
+    await jump(IDEMPOTENCY_KEY_TTL_MS);
     expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendExpiredError().message);
     expect(held(picker("Model"))).toBe(false);
   });
@@ -2141,10 +2138,14 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
   ).toHaveLength(0);
 
   // Send is `aria-disabled`, never `disabled`, so the press is delivered and refused.
-  await user.click(send);
-  await user.click(input);
-  await user.keyboard("{Enter}");
-  await Bun.sleep(50);
+  await onFakeClock(async () => {
+    // The presses are the fake clock's user, so user-event's own waits move the held clock.
+    const user = userOnFakeClock();
+    await user.click(send);
+    await user.click(input);
+    await user.keyboard("{Enter}");
+    await jump(50);
+  });
   expect(createAgentMessage).not.toHaveBeenCalled();
   await waitFor(() =>
     expect(
@@ -2215,9 +2216,14 @@ test("a refusal that lands after switching sessions stays with the session that 
   const other = await switchTo(user, "Reviewer");
   await type(user, other, "Reviewer's own words");
   expect(sendButton()).not.toHaveAttribute("disabled");
-  await act(async () => {
-    held[0]?.reject(new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" }));
-    await Bun.sleep(50);
+  // The rejection and the 50 ms it is given to reach the screen run on the fake clock, so the
+  // wait costs no real time. The checks below then hold that nothing of the refusal reached the
+  // session on screen; the refusal itself is read after switching back.
+  await onFakeClock(async () => {
+    await act(async () => {
+      held[0]?.reject(new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" }));
+    });
+    await jump(50);
   });
   expect(composerInput().value).toBe("Reviewer's own words");
   expect(screen.queryByTestId("agent-send-error")).not.toBeInTheDocument();
@@ -2381,9 +2387,14 @@ test("a pending switch holds its own session's Send, and a send out on another h
   expect(sendButton().disabled).toBe(true);
   expect(within(composer()).getByText(wait)).toBeTruthy();
   expect(composerHint()).toBe(wait);
-  // The paste left the caret in the box: a switch holds this press, and nothing is sent.
-  await user.keyboard("{Enter}");
-  await Bun.sleep(50);
+  // The press and the 50 ms it is given run on the fake clock, so the wait costs no real time and
+  // a send the Enter put out at once is counted below. That the Enter sent nothing at all is held
+  // after the switch back, where the box still holds the draft.
+  await onFakeClock(async () => {
+    // The paste left the caret in the box: a switch holds this press, and nothing is sent.
+    await userOnFakeClock().keyboard("{Enter}");
+    await jump(50);
+  });
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
   const other = await switchTo(user, "Reviewer");
@@ -2407,11 +2418,14 @@ test("a pending switch holds its own session's Send, and a send out on another h
   expect(back.value).toBe("and then run the tests");
   expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
 
-  // Both messages land, so neither session is left with a write of its own out.
-  await act(async () => {
-    answers[0]?.resolve(message("switch-1", "/model anthropic/model-b"));
-    answers[1]?.resolve(message("sent", "review the diff"));
-    await Bun.sleep(50);
+  // Both messages land, so neither session is left with a write of its own out. The moment they
+  // are given to reach the screen runs on the fake clock, so it costs no real time.
+  await onFakeClock(async () => {
+    await act(async () => {
+      answers[0]?.resolve(message("switch-1", "/model anthropic/model-b"));
+      answers[1]?.resolve(message("sent", "review the diff"));
+    });
+    await jump(50);
   });
   await switchTo(user, "Reviewer");
   expect(sendButton().disabled).toBe(false);

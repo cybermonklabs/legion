@@ -29,6 +29,8 @@ export const realStackReasons: Record<string, string> = {
     "the header's pin is written to Dispatch and read back from its stored state, and every row opens on a view the relay builds from the session's replay",
   "agent-live-views.e2e.ts":
     "a view that sleeps and comes back is answered with the session's replay, which the live relay alone gives; a reply seeded through Dispatch after load changes the unread count the rail reads, and the view in front writes the read mark that clears it",
+  "agent-name-band.e2e.ts":
+    "writes the session's two replies, one carrying a title and one carrying none, and then reads the name the server resolves from them (`delivery.ResolveSessionTitles`); the fake registry must drop the session before the page loads, or the roster names it and the read proves nothing",
   "agent-name.e2e.ts":
     "margin comment on the live document, plus the fake registry; lands on the live view, whose frames come from the relay; a registry change after load must reach the open page",
   "agent-rail.e2e.ts":

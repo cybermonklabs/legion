@@ -1,6 +1,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { AGENT_STREAM_WATCH_TTL_MS } from "@legion/contracts";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { LiveViews } from "./live-views";
 
 const PLANNER = "01a0e090-4848-7473-acc5-fc96e6a646d3";
@@ -8,19 +9,21 @@ const REVIEWER = "01a0e090-4848-7473-acc5-fc96e6a646d4";
 const TESTER = "01a0e090-4848-7473-acc5-fc96e6a646d5";
 
 afterEach(() => {
-  jest.useRealTimers();
+  realClock();
   window.__dispatchNoViewSleep = undefined;
   window.__dispatchLiveViews = undefined;
 });
 
-/** A store on a clock the test drives, as every view-state rule is a rule about time. */
-function onFakeClock(): LiveViews {
+/** A store on a clock the test drives, as every view-state rule is a rule about time. The rows
+ *  below move that clock by hand rather than through `fake-clock`'s `tick`: this store is no
+ *  React component, so a move of the clock has nothing to render and needs no `act`. */
+function storeOnFakeClock(): LiveViews {
   jest.useFakeTimers();
   return new LiveViews();
 }
 
 test("the view in front is live and the view left last lingers", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
 
   views.show(PLANNER);
   expect(views.state(PLANNER)).toBe("live");
@@ -36,7 +39,7 @@ test("the view in front is live and the view left last lingers", () => {
 // comes back inside it finds the session still on the wire. A linger of one second would pass
 // every browser check there is: this is the row that holds it to thirty.
 test("the lingering view is still mounted at 29 seconds and asleep at 31", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   views.setPinned([PLANNER]);
   views.show(PLANNER);
   views.show(REVIEWER);
@@ -52,7 +55,7 @@ test("the lingering view is still mounted at 29 seconds and asleep at 31", () =>
 });
 
 test("opening a third view puts the first to sleep at once", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   views.setPinned([PLANNER, REVIEWER, TESTER]);
   views.show(PLANNER);
   views.show(REVIEWER);
@@ -68,7 +71,7 @@ test("opening a third view puts the first to sleep at once", () => {
 });
 
 test("leaving every live view lets the last one linger and then sleep", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   views.setPinned([PLANNER]);
   views.show(PLANNER);
 
@@ -81,7 +84,7 @@ test("leaving every live view lets the last one linger and then sleep", () => {
 });
 
 test("a sleeping view keeps its draft and its place", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   views.show(PLANNER);
   views.setDraft(PLANNER, "half a question");
   views.setPlace(PLANNER, { id: "dispatch:m-4", top: -120 });
@@ -98,7 +101,7 @@ test("a sleeping view keeps its draft and its place", () => {
 // out of the front and lingering pair is discarded - unless it holds an unsent draft, which is
 // never thrown away.
 test("an unpinned sleeping view is discarded, and one holding a draft is kept", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   views.show(PLANNER);
   views.setPlace(PLANNER, { id: "dispatch:m-4", top: -120 });
   views.show(REVIEWER);
@@ -117,7 +120,7 @@ test("an unpinned sleeping view is discarded, and one holding a draft is kept", 
 });
 
 test("a pinned sleeping view is kept, and unpinning one that holds nothing discards it", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   views.setPinned([PLANNER]);
   views.show(PLANNER);
   views.show(REVIEWER);
@@ -134,7 +137,7 @@ test("a pinned sleeping view is kept, and unpinning one that holds nothing disca
 });
 
 test("the snapshot names each view's state and draft length", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   // Another owner's reading on the same handle - the live socket's open subscriptions - is left
   // where it is.
   window.__dispatchLiveViews = { agentSubscriptions: 2 };
@@ -154,7 +157,7 @@ test("the snapshot names each view's state and draft length", () => {
 // The negative control of the browser check that counts what a sleeping view holds (D15).
 test("the no-sleep switch leaves every opened view mounted", () => {
   window.__dispatchNoViewSleep = true;
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
 
   views.show(PLANNER);
   views.show(REVIEWER);
@@ -167,7 +170,7 @@ test("the no-sleep switch leaves every opened view mounted", () => {
 });
 
 test("every change tells the subscribers, and letting go stops them", () => {
-  const views = onFakeClock();
+  const views = storeOnFakeClock();
   let told = 0;
   const unsubscribe = views.subscribe(() => {
     told += 1;

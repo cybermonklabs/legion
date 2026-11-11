@@ -8,7 +8,11 @@ import { ApiError, api } from "../api/client";
 import type { Agent, InboxRow, IssueDetails, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
+import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
+// The issue page is a lazy route of the app. Its module's first compile is not what a wait is
+// for, so the module is loaded here, with the test file, and no wait measures that load.
+import "../features/issue/IssuePage";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -410,10 +414,9 @@ test("a pin write Dispatch refuses leaves the browser's old key as it was", asyn
   try {
     renderShellAt(1280);
     await waitFor(() => expect(putAgentState).toHaveBeenCalled());
-    // Long enough for a second write to have gone out, had the refusal not stopped the run.
-    await act(async () => {
-      await Bun.sleep(50);
-    });
+    // Long enough for a second write to have gone out, had the refusal not stopped the run; the
+    // 50 ms runs on the fake clock, so the wait costs no real time.
+    await onFakeClock(() => jump(50));
     expect(putAgentState.mock.calls.map(([session]) => session)).toEqual(["planner-session"]);
     expect(window.localStorage.getItem(PINS_KEY)).toBe(kept);
   } finally {

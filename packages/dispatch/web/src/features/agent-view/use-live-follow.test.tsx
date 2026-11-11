@@ -1,7 +1,8 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import { type ReactNode, useCallback, useState } from "react";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import type { LivePlace } from "./live-views";
 import { type LiveFollowControl, useLiveFollow } from "./use-live-follow";
 
@@ -282,13 +283,11 @@ function startHarness(
     },
     updateRendered: async (renderedIds) => {
       props = { ...props, renderedIds };
-      const delivered = Promise.withResolvers<void>();
-      await act(async () => {
+      act(() => {
         view.rerender(<Harness {...props} control={control} geometry={geometry} />);
-        // The watcher answers the turns changing a task later, as a browser's does.
-        setTimeout(delivered.resolve, 0);
-        await delivered.promise;
       });
+      // The watcher answers the turns changing a task later, as a browser's does.
+      await tick(0);
     },
   };
 }
@@ -563,6 +562,7 @@ test("a rebuild while following stays at the live end", () => {
 });
 
 test("a rebuild whose turns reach the DOM a commit later still holds the remembered turn", async () => {
+  jest.useFakeTimers();
   const live = startHarness([...SIX]);
 
   try {
@@ -587,11 +587,13 @@ test("a rebuild whose turns reach the DOM a commit later still holds the remembe
     expect(live.atEnd()).toBe(false);
     expect(live.count()).toBe(1);
   } finally {
+    realClock();
     live.stop();
   }
 });
 
 test("a rebuild whose turns reach the DOM a commit later still finds the reader's turn gone", async () => {
+  jest.useFakeTimers();
   const live = startHarness([...SIX]);
 
   try {
@@ -610,6 +612,7 @@ test("a rebuild whose turns reach the DOM a commit later still finds the reader'
     expect(live.atEnd()).toBe(true);
     expect(live.count()).toBe(0);
   } finally {
+    realClock();
     live.stop();
   }
 });
@@ -641,6 +644,7 @@ test("a view that wakes with a place starts on that turn, counting nothing new",
 // k2 found every woken view back at the live end with its draft intact and its place gone. The
 // place is kept until the turns are drawn, and settled in the commit that draws them.
 test("a view that wakes before its turns arrive still lands on the turn it was left on", async () => {
+  jest.useFakeTimers();
   const live = startHarness([], { id: "c", top: -10 });
 
   try {
@@ -665,6 +669,7 @@ test("a view that wakes before its turns arrive still lands on the turn it was l
     expect(live.position()).toBe(210);
     expect(live.count()).toBe(1);
   } finally {
+    realClock();
     live.stop();
   }
 });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -156,6 +157,67 @@ func (s *Store) ReleasedClaimsIn(ctx context.Context, project, issue string) ([]
 	return claims, err
 }
 
+// ClaimRoleState is one claim of an issue as a log line names it: the role, and the state the
+// record holds that role's claim in. It is the claim's state alone and never the whole claim,
+// because the one reader of it logs what a pod's roles were doing when the pod went, and a
+// reader of that line needs no session, no locator and no budget to understand it.
+type ClaimRoleState struct {
+	Role  claim.Role
+	State supervise.ClaimState
+}
+
+// ClaimStates is every claim of one issue, in role order, in the one shape a log line renders:
+// `architect=retired implementer=failed`. The release of a pod no role can use logs it beside
+// the issue and the Sandbox it deleted (outbox.releaseIssue), since the whole case for that
+// release is that every one of those claims is failed, retired or suspended, and the line is
+// what lets a reader of the daemon's log check that for themselves.
+type ClaimStates []ClaimRoleState
+
+// String is the states as that line renders them, one `role=state` per claim, space separated.
+func (c ClaimStates) String() string {
+	states := make([]string, 0, len(c))
+	for _, s := range c {
+		states = append(states, string(s.Role)+"="+string(s.State))
+	}
+	return strings.Join(states, " ")
+}
+
+// MarshalText is String for a handler that encodes an attribute rather than formatting it:
+// slog's text handler reads a TextMarshaler and its JSON handler marshals the value, and
+// encoding/json writes a TextMarshaler as its text, so the line reads the same under either and
+// a deployment that ships JSON logs gets one field rather than an array of objects.
+func (c ClaimStates) MarshalText() ([]byte, error) { return []byte(c.String()), nil }
+
+// ClaimStatesIn is the state of every claim of issue, in role order, whatever state it is in:
+// what the teardown of a release that suspends no role reads before it deletes the pod
+// (outbox.releaseIssue). It is ReleasedClaimsIn's neighbour and not its sibling — that read
+// answers the released claims a wake resumes, and this one answers every claim, since a release
+// whose whole case is that no claim of the issue can take a turn must say so claim by claim.
+//
+// One statement reads it, so it runs on the pool rather than in a transaction of its own: there
+// is nothing here for a transaction to make consistent, and the read is of a pod the release is
+// about to delete anyway.
+func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (ClaimStates, error) {
+	rows, err := s.pool.Query(ctx, `select role, state from claims
+		where project = $1 and issue = $2 order by role`, project, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	var states ClaimStates
+	for rows.Next() {
+		var role, state string
+		if err := rows.Scan(&role, &state); err != nil {
+			return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+		}
+		states = append(states, ClaimRoleState{Role: claim.Role(role), State: supervise.ClaimState(state)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+	}
+	return states, nil
+}
+
 // PodWakeBackstop is one armed backstop: the phase worker it wakes and when it comes due.
 type PodWakeBackstop struct {
 	ID      int64
@@ -223,12 +285,27 @@ func RecordPodWakeTx(ctx context.Context, tx pgx.Tx, res PodResume) (int64, erro
 	return id, nil
 }
 
-// LatestPodRelease is the newest release recorded for issue, or 0 when none is: the release a
-// wake of that pod ends, which is what pairs a resume with the release it measures.
+// LatestPodRelease is the newest release of issue that suspended a role, or 0 when none is: the
+// release a wake of that pod ends, which is what pairs a resume with the release it measures.
+//
+// A release that suspended no role is passed over, whichever rule wrote it, and the filter on a
+// roles column that is not empty is what says so. Two releases record their roles empty: every
+// release of a pod no claim of the issue can use (workflow.UnownedPodRelease), which changes no
+// claim and saves no bundle, and the rare idle release whose every role stop found a claim that
+// had failed or retired since the mark, which suspends nobody and so records nobody
+// (pod_releases.roles, written from the set ReleaseSuspendedClaim accumulated). Neither comes
+// back on a wake — the first's pod comes back at the next start of a claim of the issue, and
+// the second suspended no claim for a wake to resume — so no wake ends either, and a wake that
+// paired with one would leave the release it really ends with no woken moment of its own: the
+// pod hours of that release would run from its own moment to every later read, for ever, and
+// the woken share would count it as a release nothing ever woke. The claim a wake is for was
+// suspended by the release it pairs with, and that release named a role. So the filter is of
+// what a release did and never of which rule wrote it: narrowing it to the second rule would
+// pair a wake with an idle release that ended nothing.
 func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `select id from pod_releases where project = $1 and issue = $2
-		order by id desc limit 1`, project, issue).Scan(&id)
+		and roles <> '' order by id desc limit 1`, project, issue).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}

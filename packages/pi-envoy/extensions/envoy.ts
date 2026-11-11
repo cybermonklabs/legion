@@ -3432,6 +3432,58 @@ export default function envoyExtension(pi: PiApi): void {
   const registerSession = () =>
     trackRegistration(sessionID, sendRegistration(registrationState.refreshRegistration));
 
+  // The session title the `dispatch` command reads from the session's `title` file. A shell
+  // command takes the environment Oh My Pi captured at the last session event, and a session is
+  // named after it starts (the host's automatic title, a Legion pane's), so the name goes
+  // through a file, rewritten whenever it changed: at each registration heartbeat while Envoy is
+  // on, and at each tool call of the main agent, whatever the tool. A title the host changes
+  // reaches the file at the next of those two, and the file is stale until then. The memo is
+  // what keeps an unchanged session from writing the file again at every one of them.
+  let writtenTitle: { readonly sessionID: string; readonly title: string } | undefined;
+  /** Writes the host's live session name to the title file of the session the environment names.
+   *  That id is the `dispatch` command's own (`DISPATCH_SESSION_ID`), not the registration's
+   *  `sessionID`, which can differ from it, so both writers share one memo and one file: the one
+   *  that command reads. Nothing is written while that name is unset, and nothing is written for
+   *  an empty title, which would take the session's name away rather than leave it standing
+   *  (`readSessionTitle` answers `undefined` for a file holding one). It throws what
+   *  `sessionDirectory` throws for a session id that is not one plain path segment, and what the
+   *  write itself throws; the writers `dispatchTitleWriter` builds swallow that for both of its
+   *  call sites, since a cosmetic title must fail neither a heartbeat nor a tool call. */
+  const writeDispatchTitle = (context: SessionContext): void => {
+    const id = process.env.DISPATCH_SESSION_ID;
+    if (id === undefined || id === "") return;
+    const title = context.sessionManager.getSessionName?.() ?? "";
+    if (title === "") return;
+    if (writtenTitle?.sessionID === id && writtenTitle.title === title) return;
+    writeSessionTitle(dispatchSessionDirectory(process.env, id), title);
+    writtenTitle = { sessionID: id, title };
+  };
+
+  /** Builds one call site's title writer: it writes the file and swallows a failed write, saying
+   *  so once. The flag is the writer's own closure variable, as this module's other
+   *  once-per-episode flags are (`heartbeatOutageNotified`, `stallNotified`), so its lifetime is
+   *  the writer's: each site builds a writer of its own — the heartbeat's, which lives as long as
+   *  that heartbeat, and the main agent's tool call's, which lives as long as the session — and a
+   *  site cannot be handed another site's flag by mistake. So a session whose writes fail at both
+   *  sites still says one line per site, and says it once, since a write that fails fails the same
+   *  way at every tick and every call. */
+  const dispatchTitleWriter = (): ((context: SessionContext) => void) => {
+    // Never cleared: a write that cannot reach the session's state directory fails the same way
+    // at every tick and every call, and one line says it.
+    let notified = false;
+    return (context: SessionContext): void => {
+      try {
+        writeDispatchTitle(context);
+      } catch (error) {
+        if (notified) return;
+        notified = true;
+        logger.warn(
+          `envoy: could not write the session title for the dispatch command (${messageFor(error)}); the dispatch command's writes carry no session title`
+        );
+      }
+    };
+  };
+
   const ensureHeartbeat = (context: SessionContext): void => {
     if (heartbeatRegistered) return;
     // Never let a heartbeat tick reject unhandled: OMP treats unhandled
@@ -3453,6 +3505,9 @@ export default function envoyExtension(pi: PiApi): void {
     // Whether the one extra call a failed tick buys is already owed. Armed by a failed interval
     // tick, spent by the call it schedules, and cleared by any pass that settles.
     let retryArmed = false;
+    // This heartbeat's own title writer, which says a failed write once (`dispatchTitleWriter`):
+    // a write that cannot reach the session's state directory fails the same way at every tick.
+    const writeHeartbeatTitle = dispatchTitleWriter();
     // The pane hears about a stall as it hears about a registry outage, and for the same reason:
     // the session is at risk of being reaped by the listener while the pane runs on.
     const noteStall = (detail: string): void => {
@@ -3474,6 +3529,14 @@ export default function envoyExtension(pi: PiApi): void {
       // Sessions can be created lazily after session_start (a fresh TUI has no session yet); until
       // the host mints an id there is nothing to register.
       if (context.sessionManager.getSessionId() === "") return;
+      // The session's title file, so a session that runs without a tool call of its own — a pane
+      // waiting on a message, a session renamed after it started — still has the name the
+      // `dispatch` command reads. Written here, synchronously, rather than in the registration
+      // body: that body runs inside a promise this tick does not wait for, and a throw there
+      // would fail the registration. A failure never fails a heartbeat, as `stampOnce` in
+      // packages/claude-envoy/src/envoy-channel-server.ts holds for its own stamp; it is said
+      // once, since a title write that fails fails the same way at every tick.
+      writeHeartbeatTitle(context);
       // A held inert card or replay notice, or a card the host withdrew unwritten, is handed first,
       // while the host is settled (`hostSettled`), so the sweep finds its frame still claimed.
       // Every tick also sweeps the stream, outside the pass, so a sweep never waits on one: it
@@ -4719,20 +4782,20 @@ export default function envoyExtension(pi: PiApi): void {
     );
   }
 
-  // The session title the `dispatch` command reads from the session's `title` file. A shell
-  // command takes the environment Oh My Pi captured at the last session event, and a session is
-  // named after it starts (the host's automatic title, a Legion pane's), so the name goes
-  // through a file, rewritten before a main-agent shell command whenever it changed.
-  let writtenTitle: { readonly sessionID: string; readonly title: string } | undefined;
-  pi.on("tool_call", async (event, context) => {
-    if (event.toolName !== "bash" && event.toolName !== "eval") return undefined;
+  // The title file again (`writeDispatchTitle`, above the heartbeat): the main agent's tool call
+  // is the other moment it is written, whatever the tool, so a session whose Dispatch writes
+  // come from any path at all carries its name, and a session with Dispatch on and Envoy off,
+  // which has no heartbeat, has this as its only writer. A subagent writes nothing:
+  // `DISPATCH_SESSION_ID` belongs to the process, so a subagent would put its own name in its
+  // parent's file. The write is wrapped as the heartbeat's is: it runs before every tool call of
+  // the main agent now, and a title the plugin cannot write — a session id that is no path
+  // segment, a state directory it cannot reach — must fail none of them. Said once, since it
+  // fails the same way at every call; this writer is built once per session, beside the handler
+  // that is registered once per session, so its flag is that session's.
+  const writeToolCallTitle = dispatchTitleWriter();
+  pi.on("tool_call", async (_event, context) => {
     if (context.agent?.kind !== "main") return undefined;
-    const id = process.env.DISPATCH_SESSION_ID;
-    if (id === undefined || id === "") return undefined;
-    const title = context.sessionManager.getSessionName?.() ?? "";
-    if (writtenTitle?.sessionID === id && writtenTitle.title === title) return undefined;
-    writeSessionTitle(dispatchSessionDirectory(process.env, id), title);
-    writtenTitle = { sessionID: id, title };
+    writeToolCallTitle(context);
     return undefined;
   });
 
