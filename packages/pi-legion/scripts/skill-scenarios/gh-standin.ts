@@ -24,7 +24,11 @@
 //   the call falls through to the next route whose pattern matches it, or to the 404.
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
 // in fixtures.json, as the route's `answered`, written back with the body keep's own
-// read-modify-write.
+// read-modify-write. That write happens where this call changed what the file holds — a body edit,
+// or an `answered` that is read back: a route carrying `spends` or `replies`, or one another
+// route's `replies` follow — and never for the calls of a plain route. It is atomic: a sibling
+// temporary file in the run directory, renamed over fixtures.json, so a second `gh` process of the
+// same turn never parses a half-written file.
 // `publish` is an envelope a route publishes once it has answered: the stand-in POSTs it as it
 // stands to $ENVOY_URL/v1/messages/publish, with the bearer the file $ENVOY_TOKEN_FILE names, so a
 // role that subscribes to the pull request's checks topic and ends its turn is woken by the
@@ -33,7 +37,7 @@
 // call's exit status to the route, since a non-zero one would read to the agent as a failed `gh`
 // call; what became of it is the call's record `published`.
 //   gh-standin.ts gh <args...>
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 
 /** One answer: what a route serves a call, and what each entry of a route's `replies` serves. */
@@ -147,7 +151,10 @@ function withBody(stdout: unknown, edit: string): unknown {
 /** Publishes the envelope a route names, as the settlement GitHub's checks would raise: a POST of
  * what the fixture wrote, nothing of it filled in here, to $ENVOY_URL/v1/messages/publish with the
  * bearer the file $ENVOY_TOKEN_FILE names. A publish that fails is the stand-in's own trouble, not
- * the agent's: it is answered with what went wrong, for the call's record. */
+ * the agent's: it is answered with what went wrong, for the call's record. The POST is bounded at
+ * five seconds, as the rig's other probes are (rig.sh's pg_sql and nats_ready): a listener that
+ * takes the request and never answers would otherwise hold the agent's own `gh` call until the
+ * run's timeout, and the abort lands in the catch below as the call's `published.error`. */
 async function publish(envelope: unknown): Promise<Published> {
   const url = process.env.ENVOY_URL;
   const tokenFile = process.env.ENVOY_TOKEN_FILE;
@@ -158,6 +165,7 @@ async function publish(envelope: unknown): Promise<Published> {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(envelope),
+      signal: AbortSignal.timeout(5000),
     });
     return { status: answer.status, body: (await answer.text()).trim() };
   } catch (error) {
@@ -179,21 +187,36 @@ const followed =
     : fixtures.routes.find((candidate) => candidate.match === route.follows);
 const answer = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? route;
 // The count of calls each route has answered outlives this process in fixtures.json, with the body
-// where this call edited the pull request's: one read-modify-write of the file carries both.
-const edited = fixtures.routes.map((candidate) => ({
-  ...candidate,
-  answered: candidate === route ? (candidate.answered ?? 0) + 1 : candidate.answered,
-  ...(body === undefined
-    ? {}
-    : {
-        stdout: withBody(candidate.stdout, body),
-        replies: candidate.replies?.map((reply) => ({
-          ...reply,
-          stdout: withBody(reply.stdout, body),
-        })),
-      }),
-}));
-writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
+// where this call edited the pull request's: one read-modify-write of the file carries both. The
+// file is written only where this call changed what it holds: a body edit, or an `answered` that
+// is read back — this route carries `spends`, it carries `replies`, or another route's `replies`
+// follow it by `match`. The calls of a plain route change nothing a later call reads.
+const counted =
+  route.spends !== undefined ||
+  route.replies !== undefined ||
+  fixtures.routes.some(
+    (candidate) => candidate.replies !== undefined && candidate.follows === route.match
+  );
+if (body !== undefined || counted) {
+  const edited = fixtures.routes.map((candidate) => ({
+    ...candidate,
+    answered: candidate === route ? (candidate.answered ?? 0) + 1 : candidate.answered,
+    ...(body === undefined
+      ? {}
+      : {
+          stdout: withBody(candidate.stdout, body),
+          replies: candidate.replies?.map((reply) => ({
+            ...reply,
+            stdout: withBody(reply.stdout, body),
+          })),
+        }),
+  }));
+  // The rename is what makes the write atomic: the temporary file is a sibling, in the run
+  // directory, so the rename is within one filesystem.
+  const temporary = `${run}/fixtures.${process.pid}.json`;
+  writeFileSync(temporary, JSON.stringify({ ...fixtures, routes: edited }));
+  renameSync(temporary, `${run}/fixtures.json`);
+}
 if (body !== undefined) kept = body;
 let output: unknown = answer.stdout ?? "";
 const jsonIndex = args.indexOf("--json");

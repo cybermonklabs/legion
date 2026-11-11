@@ -464,8 +464,14 @@ SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 
 
 The scenarios and every input are in the script's header (`./rig.sh` with no arguments prints it),
 and each scenario's scoring rule is on the `score.ts` function that scores it. It needs a model
-route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml)
-and Docker; every container a batch or a judge starts has CPU and memory limits.
+route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml).
+A batch starts its Postgres and its NATS as two containers, unless `SKILL_SCENARIOS_POSTGRES_URL`
+and `SKILL_SCENARIOS_NATS_URL` name two servers of your own, both or neither: set both and the
+batch starts no container. `SKILL_SCENARIOS_OMP` runs the Oh My Pi binary it names in place of
+the install mise made for the label's pin, and each run's agent is then a process group of the
+rig's own shell rather than a tmux pane, so a box with neither mise nor tmux runs a batch too.
+The judges are what still needs Docker: `rig.sh judge-omp` runs each one in a container, and
+every container a batch or a judge starts has CPU and memory limits.
 `SKILL_SCENARIOS_WORK` must have no `.omp` in it or above it, so not under your home directory: Oh
 My Pi would load that directory's plugins and not the label's. Its bounded waits, port picks and
 process stops are

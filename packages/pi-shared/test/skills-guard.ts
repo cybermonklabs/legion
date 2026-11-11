@@ -364,10 +364,12 @@ const RETIRED_RERUN_PROHIBITIONS = [
  * so the rule is written over whole partitions rather than over the eight files it cleared: a
  * ninth file that acquires one fails here too.
  *
- * Each prohibition is matched against the whitespace-collapsed text, because each crosses a line
- * in the file it came from, and the hit's offset is mapped back through `collapsedWithOffsets` to
- * the line a reader opens. One hit per prohibition per file: the patterns carry no `g` flag, so a
- * file that says it twice is named once and reads the same after the first is fixed.
+ * Each prohibition is matched against the whitespace-collapsed text `prosePinFaults` reads, both
+ * of them the same collapse, because each prohibition crosses a line in the file it came from.
+ * The hit's offset is mapped back through `collapsedWithOffsets`, whose per-character map is
+ * built for a file that holds a hit and for no other, to the line a reader opens. One hit per
+ * prohibition per file: the patterns carry no `g` flag, so a file that says it twice is named
+ * once and reads the same after the first is fixed.
  */
 export function retiredRerunProhibitions(roots: readonly string[]): string[] {
   return roots.flatMap((root) =>
@@ -375,7 +377,7 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
       .filter((file) => file.endsWith(".md"))
       .flatMap((file) => {
         const markdown = readFileSync(file, "utf8");
-        const { text, offsets } = collapsedWithOffsets(markdown);
+        const text = markdown.replace(/\s+/g, " ");
         // A hit under the repository reads from its root (`skills/…`, `packages/daemon/…`); a hit
         // in a staged partition reads as that partition has it
         // (`legion-worker/references/pr-body.md`), since its root is a temporary directory.
@@ -385,6 +387,7 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
         return RETIRED_RERUN_PROHIBITIONS.flatMap((prohibition) => {
           const found = text.match(prohibition);
           if (found?.index === undefined) return [];
+          const { offsets } = collapsedWithOffsets(markdown);
           return [`${name}:${markdown.slice(0, offsets[found.index]).split("\n").length}`];
         });
       })

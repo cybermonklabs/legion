@@ -891,12 +891,18 @@ try {
 }' -- "$2"
 }
 
-# pg_database_url URL NAME prints URL with NAME as its database and its query kept: where a run's
-# own Dispatch server reaches the database own_dispatch made for it.
+# pg_database_url URL NAME prints URL with NAME as its database and its query kept, less a
+# `dbname` key: where a run's own Dispatch server reaches the database own_dispatch made for it.
+# A `dbname` in the query outranks the path for libpq and for pgx, the rule
+# scripts/e2e/lib/loopback-dsn.sh's run_database_url states and solves for a loopback DSN, so a
+# SKILL_SCENARIOS_POSTGRES_URL carrying one would give every run the operator's own database
+# while $R/dispatch.json records NAME: the per-run isolation own_dispatch exists for would be
+# gone, and score.ts refuses two runs that name one database.
 pg_database_url() {
   local scheme=${1%%://*} rest=${1#*://} query=''
   case $rest in *\?*)
-    query="?${rest#*\?}"
+    query=$(printf '%s' "?${rest#*\?}" |
+      sed -E 's/(\?|&)dbname=[^&]*/\1/g; s/\?&+/?/; s/&&+/\&/g; s/[?&]$//')
     rest=${rest%%\?*}
     ;;
   esac
@@ -1747,7 +1753,7 @@ red_fixture() {
     test_name=''
     step='Check the pull request title'
     summary="The title \"feat: greet() ($worker_key)\" has no scope: the pattern is <type>(<scope>): <subject>."
-    log="The title \"feat: greet() ($worker_key)\" has no scope: the pattern is <type>(<scope>): <subject>."
+    log=$summary
     ;;
   g)
     check='ci'

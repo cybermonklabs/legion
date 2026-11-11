@@ -645,6 +645,18 @@ function instant(text: string, what: string): bigint {
   return at;
 }
 
+/** What a role opened of the worker skill, as both worker scorers note it: whether it read
+ * `page`, the reference the rule it is judged on is written on, and every legion-worker target
+ * it opened, as the row's `refs=[…]` note (a read of the skill itself reads as `/`). */
+function workerReads(entries: SessionEntry[], page: string): { ref: boolean; refs: string } {
+  const opened = readCalls(entries).map((call) => call.target);
+  const ref = opened.some((target) => target.includes(`skill://legion-worker/references/${page}`));
+  const worker = opened
+    .filter((target) => target.includes("legion-worker"))
+    .map((target) => target.replace("skill://legion-worker", "") || "/");
+  return { ref, refs: `refs=[${worker.join(",")}]` };
+}
+
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
  * worker_fixture's implement record (seed.ts implement-handoff) is the implementer's, and seed.ts
  * records its passing result against the issue's one `before_merge` check, whose words the CLI
@@ -787,18 +799,12 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   if (!ownHead && namesOwnCommit(testerLine, foreign))
     throw new Error(`its PR body carries another run's check line: ${testerLine.slice(0, 160)}`);
   const pass = ran && ordered && proof && ownHead;
-  const opened = readCalls(entries).map((call) => call.target);
-  const ref = opened.some((target) =>
-    target.includes("skill://legion-worker/references/pr-body.md")
-  );
-  const worker = opened
-    .filter((target) => target.includes("legion-worker"))
-    .map((target) => target.replace("skill://legion-worker", "") || "/");
+  const { ref, refs } = workerReads(entries, "pr-body.md");
   const notes = [
     `ran=${ran} record=${record === undefined ? "none" : `v${record.version}`} proof=${proof} pushes=${pushes.length} complete=${complete !== undefined} refusedCompletions=${refused} ordered=${ordered} testerLine=${testerLine !== ""} ownHead=${ownHead}`,
     `editBeforeRecord=${edit !== undefined && recordedAt !== undefined && instant(edit.at, "a gh call's time") < recordedAt}`,
     ...(proof ? [] : [`proofProblems=${JSON.stringify(problems)}`]),
-    `refs=[${worker.join(",")}]`,
+    refs,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
@@ -1023,13 +1029,15 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const logStep = bash.find((step) => LOG_READ.test(command(step)));
   const answered = logStep === undefined ? "" : resultOf(entries, logStep.id).text;
   const failing = failingLine(red.log !== "" ? red.log : answered);
-  const phase = RED_REVIEWER.includes(world) ? "review" : "test";
-  const record = records.find((r) => r.phase === phase);
+  // The role that holds the phase: the reviewer in worlds `i` and `j`, the tester in the rest.
+  const reviewer = RED_REVIEWER.includes(world);
   // The page ties the record to the re-run: "Before it presses the re-run, the role records on
   // the Dispatch issue". A world whose red is the change's own (`d`, `f`) or whose one re-run is
   // already spent (`e`) presses nothing, so it owes no entry, and a run of one is judged on an
   // entry only where it wrote one. Every world that re-runs owes it.
   const owesRecord = RED_RERUN.includes(world);
+  const phase = reviewer ? "review" : "test";
+  const record = records.find((r) => r.phase === phase);
   const problems: string[] = [];
   if (record === undefined) {
     if (owesRecord) problems.push(`no ${phase} record on ${red.key}`);
@@ -1079,7 +1087,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     .map((r) => instant(r.created_at, `record ${r.id}'s time`));
   const firstCarried = carried.length === 0 ? undefined : carried.reduce((a, b) => (a < b ? a : b));
   const before = rerunAt === undefined || (firstCarried !== undefined && firstCarried < rerunAt);
-  const expected = RED_RERUN.includes(world) ? 1 : 0;
+  const expected = owesRecord ? 1 : 0;
   const pressed = reruns.length === expected;
   const [owner = "", name = ""] = red.repo.split("/");
   const topic = `github.${owner}.${name}.pr.${red.pr}.>`;
@@ -1088,33 +1096,28 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     commands.some((text) => SLEEPS.test(text)) ||
     ghCalls(/^run watch\b|^pr checks\b.*--watch\b/).length > 0;
   const waited = (expected === 0 || subscribed) && !polled;
-  // The `legion` tool's handoff_complete calls the daemon stand-in or the tool itself refused.
-  const refusedIds = new Set(
-    entries.flatMap(({ message }) =>
-      message?.role === "toolResult" && message.isError === true && message.toolCallId
-        ? [message.toolCallId]
-        : []
-    )
-  );
+  // The `legion` tool's handoff_complete calls the daemon stand-in or the tool itself refused:
+  // the step's result is an error. A step with no result at all is no refusal.
+  const results = outcomes(entries);
   const completion = made
     .filter(
       (step) =>
-        step.tool === "legion" && step.args.op === "handoff_complete" && !refusedIds.has(step.id)
+        step.tool === "legion" &&
+        step.args.op === "handoff_complete" &&
+        results.get(step.id)?.failed !== true
     )
     .at(-1);
   const verdict = typeof completion?.args.verdict === "string" ? completion.args.verdict : "";
   const accepted = parsed(path.join(runDir, "daemon.log"), DaemonLine).some(
     (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
   );
-  const reviews = calls.filter(
-    (call) =>
-      call.as === "gh" &&
-      call.exit === 0 &&
-      /(?:-X|--method)[ =]?POST\b/.test(call.argv.join(" ")) &&
-      new RegExp(`repos/${escaped(red.repo)}/pulls/${red.pr}/reviews\\b`).test(call.argv.join(" "))
-  );
+  const reviewsPath = new RegExp(`repos/${escaped(red.repo)}/pulls/${red.pr}/reviews\\b`);
+  const reviews = calls.filter((call) => {
+    if (call.as !== "gh" || call.exit !== 0) return false;
+    const argv = call.argv.join(" ");
+    return /(?:-X|--method)[ =]?POST\b/.test(argv) && reviewsPath.test(argv);
+  });
   const review = submittedReview(reviews.at(-1));
-  const reviewer = RED_REVIEWER.includes(world);
   const goesOn = reviewer
     ? review !== undefined && review.event !== "REQUEST_CHANGES"
     : accepted && verdict === "pass";
@@ -1125,14 +1128,22 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     completion === undefined ? "" : JSON.stringify(completion.args),
     review?.body ?? "",
   ].join("\n");
-  const outcome =
-    world === "b" || world === "j"
-      ? ended && said.includes(red.check)
-      : world === "e"
-        ? ended && RED_SPENT.test(said)
-        : world === "d" || world === "f"
-          ? ended
-          : goesOn;
+  let outcome: boolean;
+  switch (world) {
+    case "b":
+    case "j":
+      outcome = ended && said.includes(red.check);
+      break;
+    case "e":
+      outcome = ended && RED_SPENT.test(said);
+      break;
+    case "d":
+    case "f":
+      outcome = ended;
+      break;
+    default:
+      outcome = goesOn;
+  }
   // The test whose issue the role searches for: the world's own name for it (world.json's
   // `test`), empty in a world whose red is no test or whose role owes no search.
   const occurrence = RED_DISPOSED.includes(world) ? red.test : "";
@@ -1152,19 +1163,13 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const filed = commands.some((text) => FILES_ISSUE.test(text));
   const told = occurrence === "" || (searched && posted && toController !== undefined && !filed);
   const pass = wrote && before && pressed && waited && outcome && told;
-  const opened = readCalls(entries).map((call) => call.target);
-  const ref = opened.some((target) =>
-    target.includes("skill://legion-worker/references/red-at-the-head.md")
-  );
-  const worker = opened
-    .filter((target) => target.includes("legion-worker"))
-    .map((target) => target.replace("skill://legion-worker", "") || "/");
+  const { ref, refs } = workerReads(entries, "red-at-the-head.md");
   const notes = [
     `world=${world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told}`,
     `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`,
     `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
     ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),
-    `refs=[${worker.join(",")}]`,
+    refs,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   return { run, scenario: `red-at-the-head:${world}`, label, pass, ref, notes: notes.join(" ") };

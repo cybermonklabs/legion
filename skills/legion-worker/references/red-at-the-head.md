@@ -76,25 +76,37 @@ gh api --paginate "repos/<o>/<r>/commits/<head>/check-runs?filter=all&per_page=1
   --jq '.check_runs[] | [.id,.name,.conclusion] | @tsv'
 ```
 
-The head's one re-run is spent when any check at that head already carries an earlier run whose
-conclusion was `failure`, whatever check that is. The reviewer's existing re-run of a cancelled or
-absent required check (`skill://legion-worker/references/merge-gate.md`) neither spends the head's
-re-run nor is spent by it. That earlier `failure` conclusion tells the two apart. A
-`gh run rerun <run-id> --failed` call pressed while a check of that head is `failure` spends the
-head's re-run, whatever else that call clears.
+The head's one re-run is spent when a check at that head carries a run whose conclusion was
+`failure` **and a later run of that same check**, whatever check that is: the earlier failure was
+superseded by a run somebody already pressed. The red the role is judging is not itself that
+case. It has one run at the head and no later one, which is why the listing above is read with
+`filter=all`, where a superseded check shows both of its runs. The reviewer's existing re-run of
+a cancelled or absent required check
+(`skill://legion-worker/references/merge-gate.md`) neither spends the head's re-run nor is spent
+by it, because it leaves no such superseded failure. A `gh run rerun <run-id> --failed` call
+pressed while a check of that head is `failure` spends the head's re-run, whatever else that
+call clears.
 
 When the re-run is spent, the role re-runs nothing. It fails the round, or it requests changes,
 and it names the check.
 
 ## The act and the wait
 
-The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then it
-subscribes to `github.<owner>.<repo>.pr.<n>.>` and ends the turn with a line that starts WAITING.
-It runs no sleep loop, no `gh run watch` and no `gh pr checks --watch`.
+The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
+same turn, it does these two things and nothing else:
 
-The wait is not time inside the turn. Under `runtime: kubernetes` the daemon may release the
+1. Subscribes to the pull request's own topic, `github.<owner>.<repo>.pr.<n>.>`, with the Envoy
+   subscribe tool its host gives it (`skill://envoy`, *Wait for CI or a merge*).
+2. Ends the turn, with a last line that starts WAITING and names the re-run it waits on.
+
+The wait is the end of the turn, never time inside it. Re-reading the head to see whether the
+re-run has settled is the poll this forbids, with a `sleep` in it or without one, and so are
+`gh run watch` and `gh pr checks --watch`. Under `runtime: kubernetes` the daemon may release the
 issue's pod while the role waits, and the wake brings the role back with its session, its phase
 and its task kept.
+
+The settlement wakes the role in that same session. One read of the head's checks then is the
+result of the wait and no poll at all:
 
 - Green: the round goes on, and the role records that it re-ran, with the run and the attempt.
 - Red again: the round fails, or the reviewer requests changes, and the check is named.
@@ -109,16 +121,23 @@ goes to the implementer with the work. The role starts nothing new.
 
 ## What becomes of the record
 
-The role does all four of these after the re-run settles and before it completes its phase. A red
-cleared and never written up is a flaky test nobody fixes, which is the cost this page is paid to
-stop.
+After the re-run settles and before it completes its phase, the role runs these three commands in
+this order. A red cleared and never written up is a flaky test nobody fixes, which is the cost
+this page is paid to stop.
 
-- The role finds the issue that tracks the test with `dispatch search` on the test's full name.
-- It posts the occurrence as a `dispatch comment` on that issue, whatever that issue's status.
-- It tells the controller by the route `skill://legion-worker/references/findings.md` gives.
-- Where no issue tracks the test, or where the one that does reads `done`, the role says so in
-  that message. It names the test, the job, the head and both results, and it files nothing
-  itself.
+1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
+   that test.
+2. `dispatch comment --issue <that KEY> --body-file -`, the occurrence on that issue, whatever
+   its status: the test, the job, the head, and both results, the failing run and the green
+   re-run.
+3. The message to the controller, by the route
+   `skill://legion-worker/references/findings.md` gives, which is an `envoy_publish` to the
+   controller topic the role's `Legion addressing` line names.
+
+Where step 1 finds no issue, or finds one that reads `done`, step 2 has nowhere to go: the role
+says so in step 3's message instead, naming the test, the job, the head and both results. It
+files no issue itself in either case. The controller keeps the census, one issue per test
+(`skill://legion-controller/references/finding-asks.md`).
 
 ## The merge queue, for the merger
 
