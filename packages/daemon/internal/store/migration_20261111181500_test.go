@@ -1,0 +1,142 @@
+package store
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
+)
+
+// seenReleaseVersion is the version of the migration this file tests, so the test can migrate
+// through everything before it whatever lands beside it.
+const seenReleaseVersion = 20261111181500
+
+// A resume records the release it was taken after, and the heal of a stuck resume reads that
+// column (ClosePodGoneResume). The rows a deployment is upgraded with were written before the
+// column existed, so what the backfill gives them decides, at the deploy, which of them the first
+// wake heals: it is the writer's own definition — the issue's newest release at that resume's own
+// moment — and not the newest release now, which would call every row fresh and leave a role
+// whose pod went away before the deploy refusing every workflow wake it is sent.
+//
+// The negative control is the column's absence, read before the migration: a write naming it is
+// refused, so no row could have carried one.
+//
+// The three rows are the three readings a deployment's table holds: a resume a release of the
+// issue came after, which is stale and is healed by its first wake; one that saw every release
+// there is, which is a pod on its way back and is left alone; and one of an issue with no release
+// at all, which keeps the default and waits for that issue's first release to make it stale.
+func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, seenReleaseVersion-1)
+
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	release := func(issue string, when time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := store.Pool().QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
+			values ('legion', $1, 1, 'implementer', $2, 0) returning id`, issue, when).Scan(&id); err != nil {
+			t.Fatalf("seed the release of %s: %v", issue, err)
+		}
+		return id
+	}
+	resume := func(issue string, releaseID int64, when time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := store.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
+			values ($1, 'legion', $2, 'implementer', $3, $4) returning id`,
+			releaseID, issue, pods.WakeRoleMessage, when).Scan(&id); err != nil {
+			t.Fatalf("seed the resume of %s: %v", issue, err)
+		}
+		return id
+	}
+
+	if _, err := store.Pool().Exec(ctx, `update pod_resumes set seen_release = 1`); err == nil {
+		t.Fatal("writing seen_release before the migration was taken, want the column to be unknown: it is what the migration adds")
+	}
+
+	// LEGION-208's pod went away under its resume: the wake came, and a release of the issue
+	// followed it. LEGION-209's resume saw that issue's only release and is the pod coming back.
+	// LEGION-210 has no release at all.
+	stale := release("LEGION-208", at.Add(-3*time.Hour))
+	staleResume := resume("LEGION-208", stale, at.Add(-2*time.Hour))
+	gone := release("LEGION-208", at.Add(-time.Hour))
+	live := release("LEGION-209", at.Add(-3*time.Hour))
+	liveResume := resume("LEGION-209", live, at.Add(-2*time.Hour))
+	noRelease := resume("LEGION-210", 0, at.Add(-2*time.Hour))
+	// A resume whose role took its turn is no wake's to heal, so the backfill leaves it alone
+	// although a release of its issue came after it, which is what would stamp it otherwise.
+	turned := release("LEGION-211", at.Add(-3*time.Hour))
+	finished := resume("LEGION-211", turned, at.Add(-2*time.Hour))
+	if _, err := store.Pool().Exec(ctx, `update pod_resumes set first_turn_at = $2 where id = $1`,
+		finished, at.Add(-80*time.Minute)); err != nil {
+		t.Fatalf("stamp the finished resume's first turn: %v", err)
+	}
+	release("LEGION-211", at.Add(-time.Hour))
+
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the resume's own anchor: %v", err)
+	}
+
+	seen := func(id int64) int64 {
+		t.Helper()
+		var value int64
+		if err := store.Pool().QueryRow(ctx, `select seen_release from pod_resumes where id = $1`, id).Scan(&value); err != nil {
+			t.Fatalf("read the anchor of resume %d: %v", id, err)
+		}
+		return value
+	}
+	if got := seen(staleResume); got != stale {
+		t.Fatalf("the anchor of the resume its pod went away under = %d, want %d, the release it saw: the backfill gives the newest release at the resume's own moment, never the newest release now (%d)",
+			got, stale, gone)
+	}
+	if got := seen(liveResume); got != live {
+		t.Fatalf("the anchor of the resume whose pod is coming back = %d, want %d, the release it saw", got, live)
+	}
+	if got := seen(noRelease); got != 0 {
+		t.Fatalf("the anchor of the resume of an issue with no release = %d, want 0, the default", got)
+	}
+	if got := seen(finished); got != 0 {
+		t.Fatalf("the anchor of a resume with a first turn = %d, want 0: the backfill writes the open rows alone", got)
+	}
+
+	// What those anchors decide, driven through the heal itself: the stale row is closed at its
+	// first wake, the live one is not, and the one with no release is not.
+	records := podRecords(t, store)
+	for _, tc := range []struct {
+		name   string
+		issue  string
+		id     int64
+		closed bool
+		gone   int64
+	}{
+		{"a release came after the wake", "LEGION-208", staleResume, true, gone},
+		{"the pod is coming back", "LEGION-209", liveResume, false, 0},
+		{"the issue has no release", "LEGION-210", noRelease, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inTx(t, store, func(tx pgx.Tx) error {
+				answered, err := records.ClosePodGoneResume(ctx, tx, tc.issue, claim.RoleImplementer)
+				if err != nil {
+					t.Fatalf("the heal of %s: %v", tc.issue, err)
+				}
+				if answered != tc.gone {
+					t.Fatalf("the heal of %s answered release %d, want %d: it names the release that made the row stale, and 0 where it closed none",
+						tc.issue, answered, tc.gone)
+				}
+				return nil
+			})
+			var closed *time.Time
+			if err := store.Pool().QueryRow(ctx, `select closed_at from pod_resumes where id = $1`, tc.id).Scan(&closed); err != nil {
+				t.Fatalf("read the resume of %s: %v", tc.issue, err)
+			}
+			if (closed != nil) != tc.closed {
+				t.Fatalf("the resume of %s closed = %t, want %t", tc.issue, closed != nil, tc.closed)
+			}
+		})
+	}
+}

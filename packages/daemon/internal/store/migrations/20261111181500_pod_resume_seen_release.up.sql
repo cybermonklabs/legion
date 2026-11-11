@@ -24,9 +24,21 @@
 -- There is no down file: migrations here are forward-only.
 alter table pod_resumes add column seen_release bigint not null default 0;
 
--- Every row standing now is given the issue's newest release as it stands, so no resume already
--- open is read as stale by the first wake after the deploy: only a release recorded after this
--- migration makes one so. A resume of an issue with no release row keeps the default, and the
--- next release of that issue is what makes it stale.
+-- Every resume still open is given the release the writer would have given it: the issue's newest
+-- release AT THAT RESUME'S OWN MOMENT, which is what `p.at <= r.at` says, and not the newest
+-- release now. The difference is the whole of this backfill. A resume whose pod went away before
+-- the deploy — a release of the issue recorded after that wake — is stamped with the release it
+-- saw, so a release stands above it and its first wake heals it, which is the lost task this
+-- migration exists to end; stamping it with the newest release now would hide that row for ever,
+-- since nothing later makes a resume stale that the backfill already called fresh. A resume whose
+-- pod is genuinely coming back saw every release there is, so nothing stands above it and no wake
+-- closes it. A resume of an issue with no release keeps the default, and the next release of that
+-- issue is what makes it stale.
+--
+-- Only the open rows are written. A resume with a first turn or a closed_at is no wake's to heal
+-- and the heal passes over it (store's ClosePodGoneResume), so a value there would say something
+-- about a row nothing reads.
 update pod_resumes r set seen_release = coalesce(
-  (select max(p.id) from pod_releases p where p.project = r.project and p.issue = r.issue), 0);
+  (select max(p.id) from pod_releases p
+    where p.project = r.project and p.issue = r.issue and p.at <= r.at), 0)
+  where r.first_turn_at is null and r.closed_at is null;

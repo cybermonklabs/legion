@@ -32,9 +32,6 @@ func GateDocuments(gates map[DesignStep]DesignGate) []DesignGateDocument {
 // caller's transaction, so it is the whole set as that write left it rather than the one row the
 // caller touched.
 //
-// That read of the issue's gates is given back, so a caller that needs the set the write left —
-// to decide what the tree does next — takes this one rather than reading the same rows again.
-//
 // The comparison is of the pairs alone. A write that moves only a version, a review mark or
 // ever_opened leaves them as they were and queues nothing: every review and every version of every
 // gated tree reaches this helper, and each would otherwise cost Dispatch a write that says what it

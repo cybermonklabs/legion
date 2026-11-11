@@ -533,20 +533,30 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 // rather than after a refusal: a resume of a pod still coming back was written after the newest
 // release there is, so no release stands above its own, and the row stands.
 //
+// It answers the release that made the row stale, and 0 where it closed none, so the caller can
+// say in the log that a pod went away under an open resume. Nothing else records that: the row it
+// closes leaves the stuck warning and the stranded report with it (release_records.go's
+// podResumesWithoutAFirstTurn), so without the line a pod vanishing under a waiting role is
+// written down nowhere.
+//
 // The other way a resume sticks — a daemon that stopped between the take and the resume it leads
 // to, with no release since — is the outbox's to heal, in process, because the claim's own state
 // is what tells it (the delivery wake, internal/daemon's wakeForDelivery).
-func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
+func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error) {
 	newest, err := newestPodRelease(ctx, tx, p.project, issue)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := tx.Exec(ctx, `update pod_resumes set closed_at = now()
+	tag, err := tx.Exec(ctx, `update pod_resumes set closed_at = now()
 		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
-		and seen_release < $4`, p.project, issue, string(role), newest); err != nil {
-		return fmt.Errorf("close the stale resume of %s's %s: %w", issue, role, err)
+		and seen_release < $4`, p.project, issue, string(role), newest)
+	if err != nil {
+		return 0, fmt.Errorf("close the stale resume of %s's %s: %w", issue, role, err)
 	}
-	return nil
+	if tag.RowsAffected() == 0 {
+		return 0, nil
+	}
+	return newest, nil
 }
 
 // FirePodBackstop marks backstop id fired and answers whether this call was the one that fired
