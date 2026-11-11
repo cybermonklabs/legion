@@ -788,7 +788,8 @@ test("a draft's Retry after Dispatch's refusal sends that file and leaves the st
 // summary go, the row says what was stored, and the row's Upload is the picker again, so a second
 // press sends nothing.
 test("an upload answered KEY_COMMITTED lets go of the staged file, says it was stored, and a second press sends nothing", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
@@ -811,9 +812,10 @@ test("an upload answered KEY_COMMITTED lets go of the staged file, says it was s
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Upload" }));
-    await Bun.sleep(20);
+    await tick(20);
     expect(uploadArtifact).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     view.unmount();
     uploadArtifact.mockRestore();
     ownerArtifactText.mockRestore();
