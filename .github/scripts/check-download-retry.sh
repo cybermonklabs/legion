@@ -651,7 +651,24 @@ class Mapping(dict):
     lines: dict[str, int]
 
 
+# Every key written twice in a mapping of a workflow or an action, with the line of the second
+# one. GitHub refuses such a file outright and runs nothing of it - no job, and no annotation a
+# reader can find - while PyYAML takes the last of the two and says nothing, so a gate reading
+# the file is more permissive than the runtime that runs it. That is how a fold of
+# dispatch://INFRA-1545 wrote two `timeout-minutes` into one job, passed every check this
+# repository owns, and produced a run of zero jobs (42947086450).
+DUPLICATE_KEYS: list[tuple[str, int]] = []
+
+
 def _mapping_with_line(loader, node):
+    seen: set[str] = set()
+    for key, _ in node.value:
+        name = getattr(key, "value", None)
+        if name is None:
+            continue
+        if name in seen:
+            DUPLICATE_KEYS.append((name, key.start_mark.line + 1))
+        seen.add(name)
     mapping = Mapping(loader.construct_mapping(node, deep=False))
     mapping.lines = {
         key.value: key.start_mark.line + 1 for key, _ in node.value if hasattr(key, "value")
@@ -2389,11 +2406,19 @@ def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mappin
 
 
 for path in workflows + actions:
+    DUPLICATE_KEYS.clear()
     try:
         document = yaml.load(Path(path).read_text(), Loader=LineLoader)
     except yaml.YAMLError as error:
         problem(path, 1, f"this file is not valid YAML, so its downloads cannot be read: {error}")
         continue
+    for name, line in DUPLICATE_KEYS:
+        problem(path, line,
+                f"`{name}` is written twice in one mapping here. GitHub refuses a workflow with a "
+                "duplicate key and runs nothing of it - a run of zero jobs, with no annotation to "
+                "read - while this check's own YAML reader takes the last of the two and says "
+                "nothing, so without this line a file CI will not start passes every rule below. "
+                "Delete one of them, and say in the comment which figure survived and why.")
     if not isinstance(document, Mapping):
         continue
     credentialed = credentialed_jobs(path, document)

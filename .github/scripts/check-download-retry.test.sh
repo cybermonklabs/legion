@@ -2621,4 +2621,34 @@ check "the renamed job is named" \
 check "and its stale exemption is named too" \
   "$(contains "$out" "GO_BUILD_EXEMPT holds 'airlock-lean' of this file")"
 
+echo "case: a workflow whose job writes one key twice"
+# GitHub refuses such a file and runs nothing of it, where PyYAML takes the last of the two, so
+# this check reads it before any rule below can pass a file CI will not start. Driven both ways:
+# the duplicate is refused by name and line, and the same tree with one of them deleted passes.
+root=$(fixture duplicate-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    timeout-minutes: 75
+    steps:
+      - run: echo hi
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the key and the second line" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=7::`timeout-minutes` is written twice')"
+check "says GitHub runs nothing of it" "$(contains "$out" 'runs nothing of it')"
+
+python3 - "$root/.github/workflows/case.yaml" <<'PY_EDIT'
+import sys
+p = sys.argv[1]
+open(p, "w").write(open(p).read().replace("    timeout-minutes: 22\n", "", 1))
+PY_EDIT
+run_check "$root"
+check "and the same tree with one of them gone passes" "$(is "$status" 0)"
+
 summary "check-download-retry.sh"
