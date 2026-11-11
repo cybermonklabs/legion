@@ -125,34 +125,41 @@ export function NodeRow({
   const stateGlyphs: Readonly<Record<string, Readonly<Record<string, string>>>> =
     GLYPH_TOKENS.states;
   const stateGlyph = node.state === undefined ? undefined : stateGlyphs[node.type]?.[node.state];
-  /** What a folded row says it holds, which is drawn beside the node's own text. */
+  /** What a folded row says it holds: drawn beside the node's own text where the row wraps,
+   *  and in the body where it is one line. */
   const counted =
     folded === undefined || expanded !== false
       ? undefined
       : `${folded} ${CONTROL_LABELS.folded_nodes}`;
   // The node's own first line. Where the row wraps, it is the whole of `firstLineOf`'s line;
-  // where the row is one line, it is cut again to what the row's other words leave of the
-  // measure its width band carries, at a word (R1).
+  // where the row is one line, it is cut again to what the words drawn beside it leave of the
+  // measure its width band carries, at a word (R1). The count is no longer one of those words
+  // there - it is the body's - so it takes nothing from the line.
   const first = oneLine
     ? oneLineFirstLine(node.text, oneLineMeasure, [
         NODE_TYPE_NAMES[node.type],
         node.author?.id,
         state,
-        counted,
       ])
     : firstLineOf(node.text);
-  // What a one-line row gives up when its parts do not fit, and what it never gives up (R1,
-  // R17). A phone's row is 258 px and a type's word, a session's id and a state's word are long
-  // enough together to fill it. None of those three holds a word boundary to cut at - a type's
-  // word and a state's word are one word each, and a session's id is one token - so none of
-  // them is cut at all: each is drawn whole (`shrink-0`), and what gives width up is the node's
-  // own text, cut above by the measure rather than here by a CSS ellipsis that would stop
-  // inside a word. Only the element the text itself sits in is cut, never one that holds
-  // another: a box that reached past its row would be drawn over whatever sits beside it
-  // (c-checks-readable), so where a width or a font leaves that measure generous the line's own
-  // box hides what reaches past it, with no ellipsis of its own to claim a cut the words do not
-  // carry. The whole of every cut word is in the body the row opens on focus (R2). Above
-  // 1024 px the row wraps instead and nothing is cut.
+  // THE CUT DECIDES THE WORDS AND THE BOX DECIDES THE FIT. They are two rules and the row needs
+  // both (R1, R17).
+  //
+  // The cut is `oneLineFirstLine` above: it decides what the line says, at a word and never
+  // inside one, from a measure that is an estimate of a font's advance width and so is
+  // sometimes generous and sometimes mean.
+  //
+  // The fit is here. The line keeps `min-w-0` with its `overflow-hidden`, so flexbox may shrink
+  // it below the characters the cut gave it and the box hides the tail - with no ellipsis of
+  // its own, which would claim a cut the words do not carry. Everything beside it is drawn
+  // whole (`shrink-0`): a phone's row is 258 px and a type's word, a session's id and a state's
+  // word fill it, and not one of the three holds a word boundary to cut at - a type's word and
+  // a state's word are one word each, and a session's id is one token - so a row that shrank
+  // them would cut inside a word, which is the one thing R1 bans. Only the element the text
+  // itself sits in gives way, never one that holds another: a box that reached past its row
+  // would be drawn over whatever sits beside it (c-checks-readable). The whole of every cut
+  // word is in the body the row opens on focus (R2). Above 1024 px the row wraps instead and
+  // nothing is cut.
   const whole = oneLine ? "shrink-0" : "";
 
   // The focused row is brought inside the viewport and clear of the sticky identity block
@@ -229,8 +236,17 @@ export function NodeRow({
         {oneLine ? null : <NodeEdges node={node} />}
         {/* A row whose own twisty is closed says how many nodes it holds. A branch below the
             drawn levels says it on the one line it folds to, under this row, so the count is
-            drawn once however the nodes came to be out of sight. */}
-        {counted === undefined ? null : (
+            drawn once however the nodes came to be out of sight.
+
+            On a one-line row the count is the body's, as the chips and the gaps are, and for
+            the same reason: its words are a sentence of the page's own and they are the one
+            part of the row that is neither the node's name nor its text. Measured in the
+            Checks preset at 390 px, where the row has 328 px: the twisty's touch target 44,
+            the type 61, this count 132 and the state 62, with the four gaps 32, leave the
+            node's own first line nothing at all - it was drawn 0 px wide - and the state 21 px
+            past the card (c-checks-readable). The count is what gives way, because R1's row
+            carries its type, its author, its own first line and its state. */}
+        {oneLine || counted === undefined ? null : (
           <span className={`text-xs ${textMutedOnCanvas} ${whole}`} {...pageChrome}>
             <span {...authorText}>{folded}</span> {CONTROL_LABELS.folded_nodes}
           </span>
@@ -247,6 +263,7 @@ export function NodeRow({
       {body ? (
         <NodeBody
           artifact={artifact}
+          {...(oneLine && counted !== undefined ? { counted } : {})}
           document={document}
           edges={oneLine}
           editing={editing}
@@ -297,7 +314,7 @@ export const WIDE_ONE_LINE_MEASURE = 114;
 
 /**
  * The node's own text as a one-line row draws it: `firstLineOf`'s line, cut again to what the
- * row's other words - its type, its author, its state, the count a folded row draws - leave of
+ * row's words drawn beside it - its type, its author, its state - leave of
  * `measure`, at a space and never inside a word (R1). `cut` says the text carries on past the
  * line, which is what the row draws its ellipsis for.
  *
@@ -457,6 +474,7 @@ const BODY_MEASURE = 660;
  */
 function NodeBody({
   artifact,
+  counted,
   document,
   edges,
   editing,
@@ -466,6 +484,10 @@ function NodeBody({
   pinned,
 }: {
   artifact?: Artifact;
+  /** How many nodes a folded row holds, in the page's words, where the row itself has no width
+   *  for them: a one-line row's count belongs here, as its chips and its gaps do (R17).
+   *  Undefined for a row that draws its own count, and for a row that is not folded. */
+  counted?: string;
   document?: Artifact;
   /** Whether the chips and gaps of the node belong here: they do wherever the row is one line
    *  and has no width for them (R17). */
@@ -501,6 +523,11 @@ function NodeBody({
           <NodeEdges node={node} />
         </p>
       ) : null}
+      {counted === undefined ? null : (
+        <p className={`text-xs ${textMutedOnCanvas}`} {...pageChrome}>
+          {counted}
+        </p>
+      )}
       {node.gaps.map((gap) => (
         <p className={`text-xs ${textMutedOnCanvas}`} key={gap} {...pageChrome}>
           {GAP_LINES[gap]}
