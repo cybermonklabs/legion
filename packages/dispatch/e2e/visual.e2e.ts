@@ -47,10 +47,52 @@
  *    switches the scheme are mid-ease. Two things cover it: the assertion waits until two
  *    consecutive screenshots are identical before it compares, and a finite transition is
  *    fast-forwarded to completion by the default above.
- *  - The caret and the focus ring. No row clicks, types or focuses anything: it signs in,
- *    navigates and waits. A page that focuses an element of its own on load draws the same ring
- *    in the baseline and in the comparison, and the text caret is hidden by `caret: "hide"`,
- *    `toHaveScreenshot`'s default.
+ *  - The caret and the focus ring, and the write that hiding a caret used to make. No row
+ *    clicks, types or focuses anything: it signs in, navigates and waits. A page that focuses
+ *    an element of its own on load draws the same ring in the baseline and in the comparison,
+ *    and no caret is drawn on any of these pages at all. That is why the shot is taken with
+ *    `caret: "initial"` rather than with `toHaveScreenshot`'s default of `caret: "hide"`: the
+ *    default is not a way of reading the page but a WRITE to it. It sets `caret-color:
+ *    transparent !important` on every `input`, `textarea` and `[contenteditable]` of the page
+ *    before each shot and takes it off again after (`hideCaret`,
+ *    playwright-core/lib/coreBundle.js).
+ *
+ *    What that write costs is paid by this corpus. The Inbox's reading pane draws its ask
+ *    inside the document's own ProseMirror editor, so the write lands on an ANCESTOR of the ask
+ *    card and `caret-color` is an inherited property: the editor's whole subtree is repainted,
+ *    and the repaint rasterises every anti-aliased curve in it one 8-bit step differently - the
+ *    arcs of the option rows' rounded corners (`web/src/features/inbox/AskOptionRow.tsx`), the
+ *    corners of the header's urgency pill, the radios, a copy icon's strokes. One unchanged
+ *    frame therefore has two rasterisations - 41 pixels apart in light and 39 in dark, on a
+ *    host whose own counts are not the container's, which is where the figures below come from
+ *    and why they are counts of a flip and not of a baseline. Each shot can move the page from
+ *    one of the two to the other: six shots in a row, with this row's own mask list, in each of
+ *    two sessions, held one rasterisation under `initial` in all 24 and flipped to the other in
+ *    4 of the 24 under `hide`. Nor does the stabilisation above outlast it: run as the row runs
+ *    it, eight times over, the two consecutive identical shots came in 2 shots every time under
+ *    `initial` and took 5 to 12 under `hide`, two of the eight never reaching them, and the
+ *    eight runs read four different dark images instead of one. Which rasterisation a
+ *    comparison reads is therefore whichever the last shot held, and that is what run
+ *    43082888475 reported as 54, 62 and 54 pixels on `inbox-dark` over three attempts - every
+ *    one of them an arc.
+ *
+ *    Nothing on the page is what moves. No animation is left running when the light shot is
+ *    taken; the dark one is taken while the 150 ms eases above are, and finishing them is not
+ *    what moves these pixels - the shots are byte-identical whether the eases run or a
+ *    stylesheet turns them off. The page makes no mutation of its own between two shots, and an
+ *    option row's box reads the same floats - x 756.390625, y 587.1875 - in every run, so no
+ *    layout moved, by a LayoutUnit or at all.
+ *
+ *    `initial` hides nothing from a baseline: a session's first shot is the same image under
+ *    either option, which is how a caret nothing draws is told apart from one hidden.
+ *
+ *    What it does not reach is the rasterisation the page's own load left, which the first
+ *    scheme of a session is shot in: under `initial` the scheme shot SECOND, after
+ *    `emulateMedia` has really changed and repainted the page, was one image in all eight runs,
+ *    while the first was one of two, 11 pixels apart on this host - under the `maxDiffPixels`
+ *    this row carries, and whichever of the two the page's load left it in. Shooting the first
+ *    scheme after a real change of its own would settle that too, at the price of re-taking
+ *    every baseline, which is not this row's to spend.
  *  - The landing highlight, which is the one state here that ends on a clock. An address that
  *    names an artifact rings that artifact's header for two seconds, to say which thing on the
  *    page the reader navigated to (`web/src/features/artifacts/ArtifactHeader.tsx`), and this
@@ -178,6 +220,11 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
       // reported as one, and the reader fixed light, re-ran, and met dark the round after.
       // It also costs one screenshot on a failing row only, which a failing row can afford.
       await expect.soft(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
+        // No caret is hidden, because none is drawn: `toHaveScreenshot`'s default writes a
+        // style on every input and contenteditable of the page before each shot, and on the
+        // Inbox that write repaints the editor the ask card is drawn in and re-rasterises its
+        // curves. The head of this file has the measurement.
+        caret: "initial",
         fullPage: true,
         // The one thing on these pages that is not the same twice and cannot be waited for:
         // the moment the page answered. A `<time>` carries the relative labels of the Inbox

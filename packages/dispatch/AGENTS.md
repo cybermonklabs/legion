@@ -2982,7 +2982,7 @@ Keep the other layers green while you do it: `sky-700` in place of `slate-700` d
 offline pill below AA and reddens the unit step, and a control whose earlier step is red hides
 the reading it exists to take.
 
-Four rules follow from what controls of this layer have measured. The figures are in
+Five rules follow from what controls of this layer have measured. The figures are in
 `e2e/visual.e2e.ts`'s comment on the bound, which owns them; they are not repeated here.
 
 **What bounds this layer is a count, not a per-pixel distance.** `threshold` is `0` and
@@ -3009,6 +3009,18 @@ which is what the spec's `SKIP_REASON` says, and the skip is defeated by setting
 `DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails
 every row at thousands of pixels. Every figure a control of this layer reports comes from a
 container run, and the way to know the rig is honest is to run it once with nothing changed.
+
+**A shot option that writes to the page can move the page.** `toHaveScreenshot`'s default
+`caret: "hide"` is not a way of reading the page: it sets `caret-color: transparent !important`
+on every input, textarea and contenteditable before each shot and takes it off after. On the
+Inbox that write lands on an ancestor of the ask card, since the reading pane draws the ask
+inside the document's own ProseMirror editor, and the repaint it causes rasterises that
+subtree's anti-aliased curves one 8-bit step differently - so one unchanged page has two
+rasterisations and a comparison reads whichever one the last shot of the stabilisation held.
+That is why these rows pass `caret: "initial"`: no row clicks, types or focuses anything, so
+there is no caret to hide, and the shot reads the page without writing to it. Read a
+comparison whose count moves between attempts as the shot writing to the page before reading it
+as the page moving; `e2e/visual.e2e.ts`'s head has the measurement and how it was taken.
 
 A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
 disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
