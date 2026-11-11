@@ -139,7 +139,13 @@ issue pod, on the issue's own disk, by the issue's roles together.
 of the default selection, so its command names its project:
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts`.
 `packages/dispatch/AGENTS.md` carries both of those as the three commands to copy as they stand.
-The whole browser suite runs in CI's `dispatch-browser` job on the pull request. One spec needs
+CI's `dispatch-browser` job runs one of two lanes, and neither is the whole suite on every pull
+request. An unlabelled pull request gets the pull-request lane: `chromium`, `iphone`, `stub`
+and `stub-phone`, held to the rows tagged `@pr`. The full lane - every project over every row,
+the three `-alone` ones among them - runs on a pull request labelled `full-ci`, on the merge
+queue and nightly, and the `alone` job that holds the wall-clock rows is gated on it
+(`if: inputs.lane == 'full'`, `.github/workflows/dispatch-browser.yaml:684`), so no unlabelled
+pull request runs a wall-clock row at all. One spec needs
 the same stack as all of them: a Postgres with pgvector. On a digest
 carrying `legion-testpg`, use the pod's own server
 (`skill://legion-worker/references/tools.md#the-database-your-tests-use`) and

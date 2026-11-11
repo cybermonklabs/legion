@@ -10,6 +10,11 @@
  *  select their rows, a filter holding part of a wall-clock name rather than the whole of it, and
  *  an argv that is not a Playwright command line at all.
  *
+ *  The user-interface carve-out pulls the other way, and the rows hold both of its edges: a
+ *  `--ui` an option swallowed (`--grep --ui <file>`) and a `--ui` behind the `--` are no
+ *  user-interface run and the file is refused, while a `--ui` written after the file is one and
+ *  the file is left alone.
+ *
  *  Every row is a command a person or CI can type, written as the whole `process.argv` the
  *  Playwright process reads: the executable, the script, the `test` command word and the rest.
  */
@@ -65,6 +70,23 @@ const refused: readonly { title: string; argv: readonly string[]; answer: string
     // flag of its own, so the path behind it is a file this command does name.
     title: "a wall-clock file behind `--shuffle --headed`, whose dash token is no seed",
     argv: playwrightArgv("--shuffle", "--headed", "e2e/heavy-bodies.e2e.ts"),
+    answer: "e2e/heavy-bodies.e2e.ts",
+  },
+  {
+    // `--ui` here is `--grep`'s value and no mode: a required-value option takes the token after
+    // it whatever it looks like (e2e/playwright-argv.ts). Driven at this head, `--list --grep
+    // --ui e2e/heavy-bodies.e2e.ts` exits 1 with `Error: No tests found.`, which is the answer
+    // this refusal exists to replace.
+    title: "a wall-clock file where the `--ui` before it is `--grep`'s value",
+    argv: playwrightArgv("--grep", "--ui", "e2e/heavy-bodies.e2e.ts"),
+    answer: "e2e/heavy-bodies.e2e.ts",
+  },
+  {
+    // Reading stops at the `--`, so the `--ui` behind it is no carve-out; Playwright reads it as
+    // nothing at all. Driven at this head, `--list e2e/heavy-bodies.e2e.ts -- --ui` exits 1 with
+    // `Error: No tests found.`
+    title: "a wall-clock file whose only `--ui` stands behind the `--` separator",
+    argv: playwrightArgv("e2e/heavy-bodies.e2e.ts", "--", "--ui"),
     answer: "e2e/heavy-bodies.e2e.ts",
   },
 ];
@@ -146,10 +168,30 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
   },
   {
     // `--ui-port` takes the token after it, so the port is read as its value either way: what
-    // this row holds is the carve-out, which reads `--ui` and every `--ui-*` spelling over the
-    // whole argv (`clockFileOnCommandLine`, e2e/configurations.ts).
+    // this row holds is the carve-out, read inside the scan and before the `valuesTakenAt` step
+    // (`clockFileOnCommandLine`, e2e/configurations.ts). Driven at this head, `--list --ui-port
+    // 0 e2e/heavy-bodies.e2e.ts` is not refused: it printed `Listening on
+    // http://localhost:54655` and held the port open until a 45-second `timeout` killed it,
+    // exit 124.
     title: "that file under `--ui-port`, a user-interface run in another spelling",
     argv: playwrightArgv("--ui-port", "0", "e2e/heavy-bodies.e2e.ts"),
+  },
+  {
+    // The attached spelling carries its own value, so `valuesTakenAt` takes nothing after it and
+    // the carve-out is read off the token itself. Driven at this head, `--list --ui-port=0
+    // e2e/heavy-bodies.e2e.ts` is not refused: it printed `Listening on http://localhost:22991`
+    // and held the port open until a 45-second `timeout` killed it, exit 124.
+    title: "that file under `--ui-port=0`, the attached spelling of the same run",
+    argv: playwrightArgv("--ui-port=0", "e2e/heavy-bodies.e2e.ts"),
+  },
+  {
+    // The scan holds the first wall-clock filter rather than answering for it, so a `--ui` after
+    // the file still yields. Driven at this head, `--list e2e/heavy-bodies.e2e.ts --ui` is not
+    // refused: it reaches the user interface's own path and exits 1 on `ProtocolError: Protocol
+    // error (Browser.getVersion): Internal server error, session closed.`, this container having
+    // no X server.
+    title: "a wall-clock file with the `--ui` written after it, which is a user-interface run",
+    argv: playwrightArgv("e2e/heavy-bodies.e2e.ts", "--ui"),
   },
   {
     // Measured at this head: `--list nested` is not refused and Playwright answers "No tests
@@ -189,7 +231,7 @@ describe("the reader against the option classes it steps over", () => {
       ...[...optionValueClasses.optional].map((spelling) => ({ spelling, taking: "optional" })),
       ...[...optionValueClasses.variadic].map((spelling) => ({ spelling, taking: "variadic" })),
       // Two tokens no class holds: a flag, which takes nothing and leaves the path a filter,
-      // and the user interface's own, which answers before any of this.
+      // and the user interface's own, which ends the scan wherever in it the token stands.
       { spelling: "--headed", taking: "nothing" },
       { spelling: "--ui", taking: "nothing" },
     ];
@@ -210,9 +252,9 @@ describe("the reader against the option classes it steps over", () => {
     // exception in both forms, because the project question is asked before the scan: it names
     // `--headed` and the path as its projects, so the command names a project and this reader
     // answers for no file. The user-interface spellings - `--ui`, `--ui-host` and `--ui-port` -
-    // name no file either way: the user interface lists the non-default projects and a file
-    // filter does select their rows, so the refusal's premise does not hold for such a command
-    // (e2e/configurations.ts).
+    // name no file either way, since the scan ends on them: the user interface lists the
+    // non-default projects and a file filter does select their rows, so the refusal's premise
+    // does not hold for such a command (e2e/configurations.ts).
     const expected = rows.map(({ spelling, taking }) => {
       const userInterface = spelling === "--ui" || spelling.startsWith("--ui-");
       const namesAFilter = taking === "nothing" && !userInterface;

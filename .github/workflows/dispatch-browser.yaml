@@ -552,9 +552,15 @@ jobs:
           # four machines. `visual` and `visual-phone` are in the default selection, and their
           # image comparisons belong to the `visual` job, which runs them one row at a time, so
           # naming the projects above is what keeps them off these machines. The three `-alone`
-          # projects stay out without being named: each sets `default: false`
-          # (e2e/playwright.config.ts), so a run that names no project holds no row of theirs.
-          # The alone job names them, one machine each.
+          # projects stay out because this list does not name them, and for no other reason:
+          # `filterProjects` reads `default` only where the command line named no project
+          # (`projects.filter((project) => includeNonDefault || project.default)` at
+          # node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
+          # under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
+          # the pull-request lane and ten in the full one. The `default: false` each `-alone`
+          # project carries (e2e/playwright.config.ts:513, :521, :530) is what keeps them out of
+          # a run that names no project, which this is not. The alone job names them, one
+          # machine each.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -889,9 +895,12 @@ jobs:
           #
           # `--workers=1` says the thing the measurement rests on instead of leaning on a
           # default. The configuration's own default is the same one worker (`workers: 1`,
-          # e2e/playwright.config.ts) and nothing here refuses a count that disagrees with it,
-          # so this line is what keeps the run what it always was: one project, one row at a
-          # time, on a machine with nothing else on it.
+          # e2e/playwright.config.ts:689), and a wider count is refused rather than measured:
+          # `refuseASharedRun` (e2e/main-thread-hold.ts:62) fails every row that calls
+          # `measureDraw` when `config.workers` is above one, printing the one-worker command
+          # that fixes it. So this line is not what makes the reading honest - that guard is -
+          # and it is what keeps this leg green while saying what the run is: one project, one
+          # row at a time, on a machine with nothing else on it.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge

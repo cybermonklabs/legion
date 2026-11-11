@@ -333,9 +333,14 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  a wall-clock file - `nested-directive.e2e.ts` - and this reader says nothing about it.
  *
  *  A user-interface command line answers `undefined`: any `--ui` token and any spelling
- *  beginning `--ui-`, read over the whole argv. Playwright has two listing paths and they read
- *  `default: false` differently. A plain command line leaves the flag unset -
- *  `runAllTestsWithConfig` calls `filterProjects(config.projects, options.projectFilter)`
+ *  beginning `--ui-`, read INSIDE the scan below and before the `valuesTakenAt` step, so that a
+ *  `--ui` an option swallowed is no carve-out and a `--ui` behind the `--` is none either. A
+ *  wall-clock file the scan has already found is held rather than answered until the scan ends,
+ *  so a `--ui` written after the file yields all the same.
+ *
+ *  Playwright has two listing paths and they read `default: false` differently. A plain command
+ *  line leaves the flag unset - `runAllTestsWithConfig` calls
+ *  `filterProjects(config.projects, options.projectFilter)`
  *  (`playwright/lib/runner/index.js:7131`), and that function (`:2134`) answers
  *  `projects.filter((project) => includeNonDefault || project.default)` at `:2136` - while the
  *  user interface's own `listFiles` (`:6937`) and `listTests` (`:6971`, under the comment
@@ -343,10 +348,22 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  `includeNonDefaultProjects: true`. So in user-interface mode `chromium-alone` IS listed and
  *  its rows ARE selectable by a file filter: the refusal's premise - that such a command selects
  *  no row at all - is false there, and the command it prints drops the `--ui` the reader asked
- *  for. Measured at this head by importing `e2e/playwright.config.ts` with `process.argv` set to
- *  the command line and nothing started: `--ui e2e/heavy-bodies.e2e.ts` imports the module with
- *  no throw of any kind, and the same line less `--ui` throws this refusal, whose first line is
- *  `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts`.
+ *  for.
+ *
+ *  Measured at this head, each line driven as `bunx playwright test --config
+ *  e2e/playwright.config.ts --list <rest>`. Not refused: `--ui e2e/heavy-bodies.e2e.ts` and
+ *  `e2e/heavy-bodies.e2e.ts --ui` each reach the user interface's own path and exit 1 on
+ *  `ProtocolError: Protocol error (Browser.getVersion): Internal server error, session
+ *  closed.`, this container having no X server; `--ui-port=0 e2e/heavy-bodies.e2e.ts` and
+ *  `--ui-port 0 e2e/heavy-bodies.e2e.ts` each print a listener of their own - `Listening on
+ *  http://localhost:22991` and `Listening on http://localhost:54655`, the ports those runs
+ *  chose - and hold it open until a 45-second `timeout` killed them, exit 124. Refused:
+ *  `--grep --ui e2e/heavy-bodies.e2e.ts`, where `--ui` is `--grep`'s value, and
+ *  `e2e/heavy-bodies.e2e.ts -- --ui`, where it is behind the `--` and
+ *  reaches Playwright as nothing at all. Read flat over the whole argv, as this carve-out was
+ *  before this round, both of those last two answered `undefined`, and each then exited 1 with
+ *  Playwright's own `Error: No tests found.` above a `Listing tests:` line - the answer this
+ *  refusal exists to replace.
  *
  *  The carve-out gives up no measurement: a wall-clock row started from the user interface still
  *  meets `refuseASharedRun` (`e2e/main-thread-hold.ts`), which fails a measuring row whenever
@@ -365,19 +382,24 @@ export function clockFileOnCommandLine(argv: readonly string[]): string | undefi
   const command = argv.indexOf("test");
   if (command === -1) return undefined;
   if (projectsOnCommandLine(argv).length > 0) return undefined;
-  // The user-interface carve-out above, over the whole argv: `--ui` and every `--ui-*`.
-  if (argv.some((word) => word === "--ui" || word.startsWith("--ui-"))) return undefined;
   const separator = argv.indexOf("--", command + 1);
   const end = separator === -1 ? argv.length : separator;
+  let file: string | undefined;
   for (let index = command + 1; index < end; index += 1) {
     const word = argv[index] ?? "";
+    // The user-interface carve-out above, read here rather than over the whole argv: a token an
+    // option swallowed is that option's value and no mode, and the scan has already stopped at
+    // the `--`. It is read before the `valuesTakenAt` step because `--ui-host` and `--ui-port`
+    // take a value of their own and are user-interface spellings all the same.
+    if (word === "--ui" || word.startsWith("--ui-")) return undefined;
     const values = valuesTakenAt(argv, index);
     if (values > 0) {
       index += values;
       continue;
     }
     if (word.startsWith("-")) continue;
-    if (clockSpecNames.some((name) => word.includes(name))) return word;
+    // The first such filter is held rather than answered, so that a `--ui` after it still wins.
+    if (file === undefined && clockSpecNames.some((name) => word.includes(name))) file = word;
   }
-  return undefined;
+  return file;
 }

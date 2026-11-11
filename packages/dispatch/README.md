@@ -545,9 +545,13 @@ runs only the `@phone` tests, and it holds no wall-clock row: that command names
 the three wall-clock projects are out of the default selection. Listed at this head, a deployed
 run holds 1,164 rows in 148 files, and the other 50 are a wall-clock run of its own, under the
 same base URL:
-`PLAYWRIGHT_BASE_URL=… playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
-which is `bun run e2e:clock` without the SPA build that script runs first and a deployed run has
-no use for. The stubbed layer is left out of a deployed run because it replays a recording
+`bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
+which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
+no use for. `bunx` and not a bare `playwright`, which is on no PATH here (`command -v
+playwright` in this package exits 1), and `build:contracts` because a fresh checkout has no
+`@legion/contracts` build for the configuration to load - the same build `bun run e2e:deployed`
+runs before its own Playwright command. The stubbed layer is left out of a deployed run because
+it replays a recording
 against a build this checkout made, which says nothing about a deployed image, and because that
 command builds no `web/dist` for its server to serve. `webkit` and `firefox` select by tag as
 well, `@webkit` and `@firefox`: each tagged row exercises one engine behaviour the comment above

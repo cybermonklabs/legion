@@ -1683,8 +1683,12 @@ With `firefox` and `webkit` not downloaded, a UI session stops at its
 `bun run e2e:install` downloads all three. A UI session is also the one run
 that holds the wall-clock projects without naming them — it lists the
 non-default projects so that they can be selected by name — so the
-configuration's refusal of a wall-clock file named with no project yields to
-any `--ui` command line (`clockFileOnCommandLine`, `e2e/configurations.ts`).
+configuration's refusal of a wall-clock file named with no project yields to a
+user-interface command line: one whose `--ui`, `--ui-host` or `--ui-port`
+Playwright's own parser reads as the mode. It does not yield to a `--ui`
+another option swallowed (`--grep --ui <file>`), nor to one behind the `--`,
+since neither starts a user interface
+(`clockFileOnCommandLine`, `e2e/configurations.ts`).
 
 To point a session at a stack that is already up instead, export that stack's
 variables first, from `packages/dispatch`:
@@ -1881,9 +1885,13 @@ fixtures the check did not read are not fixtures it saw. It reads four
 Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 `DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
-projects, whose rows a listing naming no project holds none of. The four collect
-at once and cost about five seconds together on a two-core pod, the reading that
-file's own comment carries. A row may stand all the same as a named exemption
+projects, whose rows a listing naming no project holds none of. The four
+collect at once, and the readings that file's own comment carries
+(`e2e/__tests__/no-browser-rows.test.ts:60-66`) are of the whole file: 13.72,
+17.11 and 23.22 seconds in three runs of it, with the default listing 3.59
+seconds on its own and the wall-clock one 1.25. The file allows three minutes,
+which is a ceiling for something being wrong rather than a budget for a
+listing. A row may stand all the same as a named exemption
 with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
 the check refuses a stale exemption too — one naming a row the suite no longer
 holds, or one that drives a browser now — so the rule cannot come to lie in the
@@ -2763,8 +2771,9 @@ every file whose rows stayed, each with the server behaviour those rows depend o
 committed file and a fresh generation differ. The generation reads two listings and takes the
 rows of both, because one listing is no longer the suite: a listing that names no project holds
 no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
-`nested-directive.e2e.ts` reach the map from it alone. The two cost about four and a half
-seconds together on a two-core pod, the reading that tool's own comment carries.
+`nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
+on a two-core pod, the reading that tool's own comment carries (`e2e/tools/row-map.ts:75-79`:
+the default listing about three and a half seconds on its own and the wall-clock one about one).
 The map carries no count and names no `@pr` row, deliberately: both are read from those
 listings, which hold the whole suite, so a map that held them would be red on every pull
 request of every tree that adds or removes a row here. A **new spec file** still moves it,
