@@ -61,9 +61,14 @@ function card(overrides: Partial<LegionBoardCard> = {}): LegionBoardCard {
     priority: 1,
     roles: [],
     slot: null,
+    slot_since: null,
+    slot_use: null,
     title: "Ship the widgets",
     tree: "ACME-1",
+    tree_slot: null,
+    waiting: null,
     waiting_on: null,
+    waiting_place: null,
     ...overrides,
   };
 }

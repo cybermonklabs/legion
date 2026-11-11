@@ -17,6 +17,11 @@ const tables = [
   "agent_tokens",
   "repo_projects",
   "architecture_sources",
+  // The per-issue Legion facts and the consumer's cursors (migration 20261111090000). No
+  // foreign key ties either table to issues or to projects, so the cascade below never reaches
+  // them and a row of one spec would be read by the next.
+  "issue_facts",
+  "issue_facts_cursor",
   "legion_observations",
   "legion_reads",
   "legion_settings",
