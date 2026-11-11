@@ -1922,47 +1922,65 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // back-to-back case the daemon has always had: two transitions before the worker runs leave one
 // start, the later one.
 //
-// It updates that row in place rather than deleting it and inserting a fresh one because the
-// row's id and created_at are the waiting line's own ordering key (OwedStart): the issue queued
-// when its work first came back, and a second transition arriving while it waits is the same
-// wait carrying a newer task, not a new turn at the back of the line. The earlier task is
-// already dead whichever path wrote it — the transition minted a new assignment onto the role's
-// phases row in its own transaction, so a completion of the earlier one is refused
-// HANDOFF_STALE_ASSIGNMENT — so no information is lost with it.
+// It takes that row out and writes the later task as a row of its own, carrying the earlier
+// row's created_at, because the waiting line is ordered on created_at before id (OwedStart):
+// the issue queued when its work first came back, and a second transition arriving while it
+// waits is the same wait carrying a newer task, not a new turn at the back of the line. The
+// earlier task is already dead whichever path wrote it — the transition minted a new assignment
+// onto the role's phases row in its own transaction, so a completion of the earlier one is
+// refused HANDOFF_STALE_ASSIGNMENT — so no information is lost with it.
 //
-// A row under a live lease is not updated: its slot came, its lane has it, and the caller's own
-// row is the next start. A lapsed lease is no lane holding anything — the outbox's own due
-// predicate reads it as free (outboxUnleasedDue) and only a finished delivery takes the row
-// away — so such a row is still the start this issue is owed and is replaced like any other.
-// The lease is tested in the update's own where clause and not only in the sub-select that picks
-// the row: a lane claiming the row while this statement waits on its row lock would otherwise
-// have the task under it changed, and deliver the earlier task while the phases row already
-// carries the later assignment. It is ClaimRow's own shape — one conditional update, never a
-// read and then a write — because Postgres rechecks the quals against the row's new version once
-// the lock is released, so the claim's lease is seen and nothing is written. ClaimRow's advisory
-// lock is for the one rule of its own the row lock does not cover, a subquery over other rows;
-// this statement's lease test is on the row it writes, so it needs none. The moment the test is
-// made against is the one the caller is acting at, which rides in on the row it hands over
-// (NewOutboxRow's nextAt), so one transition reads one clock throughout.
+// The id is the one thing the replacement may not keep, and that is what this function is:
+// one outbox row is one task. A claim gives its worker nothing from a row it has already
+// queued a task from (supervise.Claim.DeliveredRows), so that no retry of a row prompts the
+// same work twice, and that record is kept by the row alone. A row this rewrote in place could
+// therefore be one whose earlier payload had already reached the claim — RetryOutbox clears the
+// lease for any failure that follows a delivery, and an unleased row is replaced like any other
+// below — and the lane running it then recognised the row and dropped the later task, finishing
+// clean. What that left was a phase with no task and nothing saying so: no error and no row
+// behind it, a claim owing no task of the new assignment, so every completion its worker
+// reported was refused HANDOFF_STALE_ASSIGNMENT, and no restart cured it, since the record a
+// restart rebuilds the claim from carries that same row. Only a start under a row of its own
+// did (dispatch://INFRA-2800).
 //
-// A row whose lease has lapsed takes a fresh lease token with its new payload, in the shape the
-// ready_merge conflict already uses: the lane that wrote the lapsed lease may be slow rather
-// than dead, and every move it has left is matched on the token it holds — RenewOutboxLease
-// renews by the token alone, and FinishOutbox deletes by the id and the token. Left in place,
-// that token would let such a lane renew its lease, deliver the earlier task it had already
-// read, and then finish the row now carrying the later one, which would delete the later task
-// with nothing to re-place it: the issue's pending delivery holds the resume pass off
-// (StillWorked) and every completion of it is refused HANDOFF_STALE_ASSIGNMENT. A row that has
-// never been leased keeps the empty token, which is what an unleased row carries.
+// A row under a live lease is left where it is: its slot came, its lane has it, and the
+// caller's own row is the next start. A lapsed lease is no lane holding anything — the outbox's
+// own due predicate reads it as free (outboxUnleasedDue) and only a finished delivery takes the
+// row away — so such a row is still the start this issue is owed and is replaced like any
+// other. The lease is tested in the delete's own where clause and not only in the sub-select
+// that picks the row: a lane claiming the row while this statement waits on its row lock would
+// otherwise have the row taken from under it, and deliver the earlier task while the phases row
+// already carries the later assignment. It is ClaimRow's own shape — one conditional write,
+// never a read and then a write — because Postgres rechecks the quals against the row's new
+// version once the lock is released, so the claim's lease is seen and nothing is deleted, and
+// with nothing deleted the insert that reads that delete writes no row either. ClaimRow's
+// advisory lock is for the one rule of its own the row lock does not cover, a subquery over
+// other rows; this statement's lease test is on the row it takes out, so it needs none. The
+// moment the test is made against is the one the caller is acting at, which rides in on the row
+// it hands over (NewOutboxRow's nextAt), so one transition reads one clock throughout.
 //
-// The rewrite takes a fresh number from outbox_write_mark_seq, the sequence an insert takes one
-// from through the column's own default. The row keeps the id that holds its place in the line,
-// so its id says when the issue first came to wait and nothing about when this payload was
-// written; the write mark says the second, which is what the stop rule needs of it (admit's
-// stopOutlivedStart, and store's putClaim for what the sequence orders). A rewrite that left
-// the mark where it stood would hand that rule a start written after an operator's stop under
-// the number the row took before it, and the rule would end the start the retry had just
+// A row whose lease has lapsed is taken out with the rest, which is stronger than the rotated
+// lease token a rewrite in place had to take: the lane that wrote that lease may be slow rather
+// than dead, and every move it has left is matched on the row it holds — RenewOutboxLease
+// renews by the token alone, and FinishOutbox deletes by the id and the token — so with the row
+// gone it renews nothing and finishes nothing. Rewritten in place, that lane could renew its
+// lease, deliver the earlier task it had already read, and then finish the row now carrying the
+// later one, which would delete the later task with nothing to re-place it: the issue's pending
+// delivery holds the resume pass off (StillWorked) and every completion of it is refused
+// HANDOFF_STALE_ASSIGNMENT.
+//
+// The replacement takes a fresh number from outbox_write_mark_seq through the column's own
+// default, as every insert does. The row keeps the created_at that holds its place in the line,
+// so its created_at says when the issue first came to wait and nothing about when this payload
+// was written; the write mark says the second, which is what the stop rule needs of it (admit's
+// stopOutlivedStart, and store's putClaim for what the sequence orders). A replacement that
+// carried the earlier row's mark would hand that rule a start written after an operator's stop
+// under the number the row took before it, and the rule would end the start the retry had just
 // written.
+//
+// Everything else of the earlier row rides over unchanged — its attempts, when it is next due
+// and the error it last recorded — so a row backing off keeps its backoff and carries the later
+// task into it, exactly as the rewrite in place left it.
 //
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
@@ -1971,14 +1989,15 @@ func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRo
 	if !json.Valid(row.Payload) {
 		return false, fmt.Errorf("replace the owed start of %s: payload is not JSON", row.Issue)
 	}
-	tag, err := tx.Exec(ctx, `update outbox set payload = $2, lease_until = null,
-			write_mark = nextval('outbox_write_mark_seq'),
-			lease_token = case when lease_token = '' then '' else gen_random_uuid()::text end
-		where id = (select id from outbox
-			where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-				and payload->>'needsSlot' = 'true' and (lease_until is null or lease_until <= $3)
-			order by id limit 1)
-			and (lease_until is null or lease_until <= $3)`,
+	tag, err := tx.Exec(ctx, `with owed as (
+			delete from outbox where id = (select id from outbox
+				where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
+					and payload->>'needsSlot' = 'true' and (lease_until is null or lease_until <= $3)
+				order by id limit 1)
+				and (lease_until is null or lease_until <= $3)
+			returning attempts, next_at, last_error, created_at)
+		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+		select 'supervise', $1, $2, owed.attempts, owed.next_at, owed.last_error, owed.created_at, '', null from owed`,
 		row.Issue, string(row.Payload), row.NextAt)
 	if err != nil {
 		return false, fmt.Errorf("replace the owed start of %s: %w", row.Issue, err)

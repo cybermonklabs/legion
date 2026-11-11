@@ -1499,12 +1499,15 @@ type Store interface {
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
 	EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int64, error)
-	// ReplaceOwedStart writes row's payload over the issue's oldest supervise start that waits
-	// for the issue's admission slot (SuperviseRequest.NeedsSlot) and that no live lease holds,
-	// and says whether it found one, so two transitions before that slot leave exactly one
-	// start, the later one, in the place in the waiting line the first one took. A row a lane
-	// holds now is not touched, including one it takes while the call waits on its row lock; the
-	// caller then enqueues its own. A lapsed lease holds nothing and is replaced like any other.
+	// ReplaceOwedStart replaces the issue's oldest supervise start that waits for the issue's
+	// admission slot (SuperviseRequest.NeedsSlot) and that no live lease holds with row's
+	// payload, and says whether it found one, so two transitions before that slot leave exactly
+	// one start, the later one, in the place in the waiting line the first one took. The
+	// replacement is a row of its own carrying the earlier row's creation time, never the
+	// earlier row rewritten: one outbox row is one task, which is what a claim's record of the
+	// rows it has taken a task from rests on. A row a lane holds now is not touched, including
+	// one it takes while the call waits on its row lock; the caller then enqueues its own. A
+	// lapsed lease holds nothing and is replaced like any other.
 	ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRow) (bool, error)
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among
