@@ -2971,10 +2971,12 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
   What people wrote that Dispatch delivered to one session, newest first:
-  each ask's current answer (`replaced` when it changed an earlier one), each comment at its current body (`edited_at` when edited) and each message, once however it arrived:
-  a person's `ask.answered`, `comment.created`, `message.created` or `message.answered` event whose `published_destinations` hold the session's own topic, its sent message deliveries, and its sent comment deliveries (mentions).
-  Never an agent's or the system's words, an ask's resolution or hand-back, or a delivery to a `role:` route.
-  Each item carries its `relation`, the `ask` and its question where it answers or replies in one, and its `owner`, `ref` and `href`.
+  each ask's current answer (`replaced` when it changed an earlier one), each decline of an ask (a question a person closed without answering it), each comment at its current body (`edited_at` when edited) and each message, once however it arrived:
+  a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent message deliveries, and its sent comment deliveries (mentions).
+  Never an agent's or the system's words, any other resolution of an ask or its hand-back, or a delivery to a `role:` route.
+  Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, and its `owner`, `ref` and `href`.
+  A decline is the kind `declined` under the relation `declined_your_ask`, and it carries both parts apart:
+  `text` is the person's own note, empty where they wrote none, and `dispatch_words` the sentences Dispatch wrote beside it for the asking agent.
   `since` defaults to 72 hours ago (older than 7 days or in the future is `400 INVALID_QUERY`);
   `max_chars` (1–100,000) stops the list after the item whose text takes the running sum past it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
@@ -3296,8 +3298,24 @@ Each item below names a path with its method and identity, then its purpose.
   Retract or self-resolve an open ask with a recorded reason.
   On a block ask the block's `state` is written with it, and that is not weighed, so an ask on a document past what one upload may hold can still be resolved.
   A reason beginning `removed from the document in version`, which marks a retraction settlement wrote and would have the retract undone when the block returns, is `400 INVALID_RESOLUTION`.
-  The kind is `retracted` or `resolved`, and any other is `400 INVALID_RESOLUTION`: `withdrawn` is written only by an issue's close.
+  The kind is `retracted` or `resolved`, and any other is `400 INVALID_RESOLUTION`: `withdrawn` is written only by an issue's close, and `declined` only by `POST /api/v1/asks/{id}/decline`, below.
   An ask on a closed issue is `409 ISSUE_CLOSED`; reopen the issue first.
+
+- `/api/v1/asks/{id}/decline` (POST; cookie, trusted header, or bearer; needs the `person` scope)
+
+  Decline to answer an open ask: the person closed the question without answering it.
+  The body is `{note?, actor?}`, both optional:
+  a person who writes no note declines all the same, and `actor` names the acting session a personal token's credential proves none of, as the answer route reads it.
+  The note is trimmed, and one over 32,000 UTF-16 units (`contracts.DispatchEventBodyMax`, the bound it takes because the note rides the `ask.resolved` event) is `400 CAP_EXCEEDED`, with nothing written.
+  The ask resolves with the kind `declined`:
+  `reason` holds the person's own note alone, and `dispatch_words` the four sentences Dispatch writes for the asking agent (`model.DeclineDispatchWords`), which tell it to decide the next step without an answer, to ask again only if the facts change, and to write in its work what it assumed.
+  No note is refused for how it opens, unlike a resolve's reason:
+  a decline is no retraction, so nothing a person writes here can be read as settlement's own work.
+  On a block ask the block's `state` is written as the resolve route writes it, and that is not weighed either.
+  An ask of kind `approval` is `409 ASK_NOT_DECLINABLE`, decided inside the transaction under the ask's row lock, since an ask's kind is known only once its row is read:
+  an approval request is answered `Approve` or `Request changes`.
+  An ask on a closed issue is `409 ISSUE_CLOSED`.
+  The whole resolution rides `ask.resolved` to every session following the ask, `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask`, and a write that opens another question on the issue is answered the issue's `declined_asks`.
 
 - `/api/v1/issues/{key}/comments?artifact=` (GET; cookie, trusted header, or bearer)
 

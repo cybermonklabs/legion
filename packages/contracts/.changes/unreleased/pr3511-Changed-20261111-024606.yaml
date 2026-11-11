@@ -1,0 +1,5 @@
+kind: Changed
+body: The ask event payload's resolution kind is an open string rather than the kinds the server writes today, and the resolution carries dispatch_words, the words Dispatch writes beside a person's own note when they decline to answer a question. SESSION_ANSWER_RELATIONS has a ninth member, declined_your_ask, LEGION_WAIT_ANSWERS a ninth value, declined, and the daemon API contract is 60.
+time: 2026-11-11T02:46:06.307799418Z
+custom:
+    Issue: pr3511
