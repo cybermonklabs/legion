@@ -950,6 +950,7 @@ package api
 // declaration. It is held from here: a later forward merge keeps both sides' entries and leaves
 // this number alone, as it keeps both sides of validNoticeKinds, and it moves again only when
 // main's own DaemonAPIVersion reaches or passes it, because renumbering changes this branch's
-// own diff and costs the tester a round for nothing. Read main's own number, and every open
-// branch's, again at the next forward merge rather than from this line.)
+// own diff, and a renumber made after a result stands against this head costs the tester a
+// round rather than a commit. So do not re-derive a number from this line at the next merge:
+// read main's own DaemonAPIVersion alone, and move this one only when that number reaches 67.)
 const DaemonAPIVersion = 67
