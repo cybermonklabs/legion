@@ -146,15 +146,11 @@ test.skipIf(!live)("keeps each caller's statements together when two calls overl
 // that wait in another, so an overlapping call must reach the database beside the session's
 // transaction rather than behind it.
 // This row costs at least 3 s by construction: it holds `SELECT pg_sleep(3)` open in one call
-// while a second call reads pg_stat_activity for it. Under this issue's calibrated load (2 CPUs,
-// 6 busy loops), over 8 runs of the whole lane, its worst reading was 3.15 s - the fixed 3 s
-// sleep plus about 0.15 s of work - so on the slow pod shape spawn-test-ms.ts describes it is
-// about 3.3 s, since only the 0.15 s follows the machine and the sleep does not. The limit it
-// takes bounds a direct `bun test <file>` run of this file, where Bun's unwritten 5 s default
-// would otherwise apply; it beats no lane budget, because in the lane this row already carries
-// main's 60 s. The `60_000` numbers near the top of this file are the `beforeAll` and `afterAll`
-// hook timeouts: they bound no test body, so a reader who scans this file for a number and finds
-// those would wrongly read these rows as covered.
+// while a second call reads pg_stat_activity for it. So it takes `SPAWN_TEST_MS`, whose comment
+// in spawn-test-ms.ts gives the row's readings and what the limit bounds. The `60_000` numbers
+// near the top of this file are the `beforeAll` and `afterAll` hook timeouts: they bound no test
+// body, so a reader who scans this file for a number and finds those would wrongly read these
+// rows as covered.
 test.skipIf(!live)(
   "runs a call that overlaps another on a second connection",
   async () => {
