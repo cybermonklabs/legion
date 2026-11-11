@@ -382,19 +382,13 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	// (artifact_id, number), the same read the owed listing makes for the version it indexes.
 	// `envoy-dispatch census --store --sizing` reads the same two figures from the database
 	// alone (graphcensus's blockIndexBacklogQuery), so an operator who cannot read the server's
-	// log can still read the backlog.
+	// log can still read the backlog; both derive the debts from one text
+	// (refs.OwedBlockIndexDebts).
 	var oldestOwed *time.Time
 	if err := s.store.Pool.QueryRow(ctx, `
 		select (select count(*) from document_block_versions where version is null),
-		       (select min(owed.owed_at) from (
-		            select coalesce(
-		                     (select v.created_at from artifact_versions v
-		                      where v.artifact_id = b.artifact_id and v.markdown is not null
-		                      order by v.number desc limit 1),
-		                     a.created_at) as owed_at
-		            from document_block_versions b
-		            left join artifacts a on a.id = b.artifact_id
-		            where b.version is null) owed),
+		       (select min(owed.owed_at) from (`+refs.OwedBlockIndexDebts+`
+		       ) owed),
 		       (select count(*) from block_grammar_owed),
 		       (select count(*) from refs_grammar_owed),
 		       (select count(*) from comment_block_state where owed_at is not null) +

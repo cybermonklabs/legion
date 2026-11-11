@@ -816,16 +816,19 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			reachedTopics = append(reachedTopics, topic)
 		}
 	}
-	// The store's arms are numbered after this statement's own ten parameters and bound after
-	// them; a batch that reached no node of the store adds neither text nor parameter.
-	arms, stored, err := graphstore.WriteArms(11, reached.nodes, reached.tuples, reached.claims)
+	// The store's arms are numbered after this statement's own parameters and bound after
+	// them, so the first arm's number is read off the list rather than written out: a column
+	// added to or dropped from the record statement would otherwise misnumber every $n the
+	// arms bind. A batch that reached no node of the store adds neither text nor parameter.
+	args := []any{publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics}
+	arms, stored, err := graphstore.WriteArms(len(args)+1, reached.nodes, reached.tuples, reached.claims)
 	if err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}
 	if arms != "" {
 		arms = ",\n" + arms
 	}
-	args := append([]any{publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics}, stored...)
+	args = append(args, stored...)
 	var holds bool
 	if err := deps.lanes.statement(func() error {
 		return deps.Store.Pool.QueryRow(ctx, `
@@ -1006,12 +1009,16 @@ func deliveredGraph(events []*batchEvent, at time.Time) graphWrite {
 			At: at, Who: graphWriter, SourceEvent: claim.event,
 		})
 		// A session holds one role at a time, so the first role of this batch that resolved to
-		// it is the one it is part of; a second would state two parents from one read.
+		// it is the one it is part of; a second would state two parents from one read. The
+		// tuple alone, for the reason the node side states above: a holder this batch resolved
+		// over the bus is in no table this child projects, so its node is not this writer's to
+		// make and one written here would be a node the census rightly reports as projected by
+		// no row. A holder a comment or a settled attempt does name takes its node from the
+		// writer that saw that row (graphstore.Authored, graphstore.Reached).
 		if _, holds := held[claim.holder]; claim.holder == "" || holds {
 			continue
 		}
 		held[claim.holder] = struct{}{}
-		write.nodes = append(write.nodes, graphstore.SessionNode(claim.holder, graphWriter, at, claim.event))
 		write.claims = append(write.claims,
 			partOf(graphstore.KindSession, claim.holder, graphstore.KindRole, role, at, claim.event))
 	}

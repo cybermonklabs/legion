@@ -15,7 +15,8 @@ const (
 	myAnswersMaxLimit     = 200
 )
 
-// parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers always returns.
+// parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each always return.
 func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
 	query := r.URL.Query()
 	limit = myAnswersDefaultLimit

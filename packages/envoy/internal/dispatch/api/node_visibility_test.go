@@ -243,6 +243,12 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	if len(recorder.statements) == 0 {
 		t.Fatal("the reads issued no statement to read")
 	}
+	// A statement that binds no predicate at all passes the count below at 0 == 0, so the
+	// recorded reads are first held to binding the registry somewhere: a read that stopped
+	// binding it is the regression this block exists to catch, and only this can fail on it.
+	if !strings.Contains(strings.Join(recorder.statements, "\n"), refs.VisibilityMarker) {
+		t.Error("the recorded reads bind no predicate of the registry's")
+	}
 	for _, statement := range recorder.statements {
 		if strings.Count(statement, refs.VisibilityMarker) != strings.Count(statement, ".visibility") {
 			t.Errorf("a read states a visibility rule the registry did not render:\n%s", statement)

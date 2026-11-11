@@ -779,6 +779,15 @@ export function ProofDocument({
         }
       };
     };
+    // The installed block schema, read again rather than taken from the cache: both callers
+    // below read it to learn whether the store moved under this tab, which a cached value
+    // cannot say.
+    const readInstalledSchema = () =>
+      queryClient.fetchQuery({
+        queryFn: reloadBlockSchema,
+        queryKey: ["block-schema"],
+        staleTime: 0,
+      });
     // Each admission - this mount, a socket the server refused as outside the Proof schema, and a
     // blocked admission's re-admission - opens a connection only once its own fresh `/text` read
     // succeeds, and that read alone decides: a browser editor normalizes a tree it cannot
@@ -842,13 +851,7 @@ export function ProofDocument({
               if (!readOnly || isClosedRef.current || !mounted) {
                 return;
               }
-              void queryClient
-                .fetchQuery({
-                  queryFn: reloadBlockSchema,
-                  queryKey: ["block-schema"],
-                  staleTime: 0,
-                })
-                .catch(() => undefined);
+              void readInstalledSchema().catch(() => undefined);
             },
             onOutsideSchema: () => {
               if (!mounted) {
@@ -878,24 +881,18 @@ export function ProofDocument({
               // read that fails leaves the schema query in error, which is what asks the reader
               // to reload, and admits again all the same so the ladder still ends.
               refusalTimer = window.setTimeout(() => {
-                void queryClient
-                  .fetchQuery({
-                    queryFn: reloadBlockSchema,
-                    queryKey: ["block-schema"],
-                    staleTime: 0,
-                  })
-                  .then(
-                    (installed: BlockSchema) => {
-                      if (mounted && installed.version === blockSchema.version) {
-                        admit();
-                      }
-                    },
-                    () => {
-                      if (mounted) {
-                        admit();
-                      }
+                void readInstalledSchema().then(
+                  (installed: BlockSchema) => {
+                    if (mounted && installed.version === blockSchema.version) {
+                      admit();
                     }
-                  );
+                  },
+                  () => {
+                    if (mounted) {
+                      admit();
+                    }
+                  }
+                );
               }, delay);
             },
             onStatus: (status) => {

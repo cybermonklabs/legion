@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // reportedDifferences is how many differences of one direction of one kind the report prints by
@@ -287,10 +288,11 @@ const addressedRoles = `
 // gone; a row whose shared fields disagree with its node's; and a live node no row projects.
 //
 // Two writes can state one fact twice by design and nothing here reads wrong for it: a tuple at
-// the source_event sentinel is outside both repeat keys, and a second backfill run carries an
-// event of its own, so each appends a second tuple stating what the store already holds. The
-// current read takes the newest asserting tuple per far end, which is that same fact, and this
-// census counts nodes and projection rows rather than tuples.
+// the source_event sentinel is outside both repeat keys, and the backfill writes every fact it
+// cannot date from a row's own event at that sentinel, so a second run appends a second tuple
+// stating what the store already holds. The current read takes the newest asserting tuple per
+// far end, which is that same fact, and this census counts nodes and projection rows rather
+// than tuples.
 //
 // sizing adds the growth pass (SizingReport), which reads the same snapshot.
 func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreReport, error) {
@@ -329,21 +331,19 @@ func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreRe
 
 // censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
 // each direction with the first reportedDifferences of them.
+//
+// The four counts are four scalar subqueries of one statement rather than four round trips, so
+// a census of seven kinds costs seven reads here and not twenty-eight. Each subquery is the
+// statement it was on its own, so each is planned and streamed exactly as before.
 func censusOfKind(ctx context.Context, tx pgx.Tx, held projection) (KindReport, error) {
 	kind := KindReport{Kind: held.name, NodeKind: held.nodeKind, Table: held.table, Note: held.note}
-	counts := []struct {
-		sql  string
-		into *int64
-	}{
-		{`select count(*) from (` + held.rows + `) rows (row_label, node_kind, node_address, digest)`, &kind.Rows},
-		{`select count(*) from (` + liveNodes(held) + `) nodes (id, digest)`, &kind.Nodes},
-		{`select count(*) from (` + rowDifferences(held) + `) found`, &kind.RowDifferences},
-		{`select count(*) from (` + nodeDifferences(held) + `) found`, &kind.NodeDifferences},
-	}
-	for _, count := range counts {
-		if err := tx.QueryRow(ctx, count.sql).Scan(count.into); err != nil {
-			return KindReport{}, fmt.Errorf("census of %s: %w", held.name, err)
-		}
+	if err := tx.QueryRow(ctx, `select
+		(select count(*) from (`+held.rows+`) rows (row_label, node_kind, node_address, digest)),
+		(select count(*) from (`+liveNodes(held)+`) nodes (id, digest)),
+		(select count(*) from (`+rowDifferences(held)+`) rows_found),
+		(select count(*) from (`+nodeDifferences(held)+`) nodes_found)`,
+	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences); err != nil {
+		return KindReport{}, fmt.Errorf("census of %s: %w", held.name, err)
 	}
 	var err error
 	if kind.RowDifferences > 0 {
@@ -447,8 +447,8 @@ func readCutover(ctx context.Context, tx pgx.Tx) ([]CutoverState, error) {
 func (r *StoreReport) Write(w io.Writer) {
 	for _, kind := range r.Kinds {
 		fmt.Fprintf(w, "census: store kind=%s nodes=%s rows=%s table=%s rows_without_a_node=%s nodes_without_a_row=%s\n",
-			kind.Kind, thousands(kind.Nodes), thousands(kind.Rows), kind.Table,
-			thousands(kind.RowDifferences), thousands(kind.NodeDifferences))
+			kind.Kind, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
+			pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences))
 		fmt.Fprintf(w, "census: store kind=%s checks %s\n", kind.Kind, kind.Note)
 		writeDifferences(w, kind.Kind, kind.RowDifferences, kind.ReportedRows)
 		writeDifferences(w, kind.Kind, kind.NodeDifferences, kind.ReportedNodes)
@@ -457,7 +457,7 @@ func (r *StoreReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: store cutover kind=%s complete=%t\n", state.Kind, state.Complete)
 	}
 	fmt.Fprintf(w, "census: store rows_checked=%s differences=%s\n",
-		thousands(r.Rows()), thousands(r.Differences()))
+		pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()))
 	if r.Sizing != nil {
 		r.Sizing.Write(w)
 	}
@@ -465,7 +465,7 @@ func (r *StoreReport) Write(w io.Writer) {
 	case r.Rows() == 0:
 		fmt.Fprintln(w, "census: store REFUSED (the census read no projection row at all, so it proves nothing)")
 	case r.Differences() > 0:
-		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", thousands(r.Differences()))
+		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", pgmigrate.Thousands(r.Differences()))
 	case r.Sizing != nil && r.Sizing.Refused():
 		fmt.Fprintf(w, "census: store ok, sizing REFUSED (%d reason(s))\n", len(r.Sizing.Refusals))
 	default:
@@ -479,16 +479,6 @@ func writeDifferences(w io.Writer, kind string, total int64, found []Difference)
 	}
 	if total > int64(len(found)) {
 		fmt.Fprintf(w, "census: store kind=%s and %s more difference(s) not printed\n",
-			kind, thousands(total-int64(len(found))))
+			kind, pgmigrate.Thousands(total-int64(len(found))))
 	}
-}
-
-// thousands writes n with , separators, as the pre-deploy census writes the counts a human
-// compares (pgmigrate's own thousands).
-func thousands(n int64) string {
-	text := strconv.FormatInt(n, 10)
-	for index := len(text) - 3; index > 0; index -= 3 {
-		text = text[:index] + "," + text[index:]
-	}
-	return text
 }

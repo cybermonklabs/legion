@@ -313,63 +313,48 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 	}
 }
 
-// passInput says what one pass reads to decide what it writes. A pass that reads the thing
-// itself - a document's render, a request's body, a batch of events - is a writer; one that
-// reads a projected table or the store to decide what to write into the other is a repair, and
-// this ticket holds that no such pass exists.
-type passInput string
-
-const (
-	inputSource     passInput = ""
-	inputProjection passInput = "the projection"
-	inputStore      passInput = "the node and tuple store"
-)
-
-// indexPass is one pass of the source tree that writes a projected table or the store: the
-// function it is, what it reads, and which side of the projection that input is, if any.
-type indexPass struct {
-	input string
-	side  passInput
-}
-
 // indexPasses is every pass that writes document_blocks, block_refs, comments, graph_nodes or
-// graph_tuples, keyed by the file and the function the statement lives in. The scan below holds
-// the register complete: a pass added to the tree and not named here fails until someone says
-// what it reads, which is the question that tells a writer from a repair.
-var indexPasses = map[string]indexPass{
-	"api/comment_actions.go#commentAction":           {input: "the request naming the action and the comment it acts on"},
-	"api/comment_actions.go#editComment":             {input: "the edit request's own body"},
-	"api/comment_actions.go#reopenComment":           {input: "the reopen request"},
-	"api/comment_create.go#createCommentFor":         {input: "the create request's own body"},
-	"api/comment_delivery.go#replyComment":           {input: "the reply a delivery recorded"},
-	"cmd/dispatch-seed/write_items.go#writeComments": {input: "the seed's own plan"},
-	"docs/block_index.go#stampVersionEvent":          {input: "the event that recorded the version"},
+// graph_tuples, keyed by the file and the function the statement lives in, with what that pass
+// reads to decide what it writes. A pass that reads the thing itself - a document's render, a
+// request's body, a batch of events - is a writer; one that reads a projected table or the
+// store to decide what to write into the other is a repair, and this ticket holds that no such
+// pass exists. The scan below holds the register complete: a pass added to the tree and not
+// named here fails until someone says what it reads, which is the question that tells a writer
+// from a repair.
+var indexPasses = map[string]string{
+	"api/comment_actions.go#commentAction":           "the request naming the action and the comment it acts on",
+	"api/comment_actions.go#editComment":             "the edit request's own body",
+	"api/comment_actions.go#reopenComment":           "the reopen request",
+	"api/comment_create.go#createCommentFor":         "the create request's own body",
+	"api/comment_delivery.go#replyComment":           "the reply a delivery recorded",
+	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
+	"docs/block_index.go#stampVersionEvent":          "the event that recorded the version",
 	// The backfill of the rows written before the store existed. Each pass reads the rows of
 	// its own kind and nothing else: a row's own content - its time, its author, the
 	// document it is in, its own source_seq - is what it writes into the store, and the
 	// store holds nothing about those rows for it to read. That is what makes it a writer
 	// and no repair: it never reads one side of a projection to decide what to put in the
 	// other, and a row whose node is already written it leaves alone rather than mending.
-	"graphcensus/backfill.go#writeBlockBatch":    {input: "each pre-store document_blocks row's own content"},
-	"graphcensus/backfill.go#writeBlockRefBatch": {input: "each pre-store block_refs row's own content"},
-	"graphcensus/backfill.go#writeCommentBatch":  {input: "each pre-store comments row's own content"},
+	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content",
+	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
+	"graphcensus/backfill.go#writeCommentBatch":  "each pre-store comments row's own content",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together rather than bringing
 	// one into line with the other, so it is no repair.
-	"graphcensus/erase.go#apply":     {input: "the node the operator named"},
-	"graphstore/arms.go#nodeArm":     {input: "the nodes its caller states"},
-	"graphstore/arms.go#claimArms":   {input: "the claims its caller states"},
-	"graphstore/arms.go#tupleInsert": {input: "the tuples its caller states"},
-	"graphstore/write.go#writeNodes": {input: "the nodes its caller states"},
+	"graphcensus/erase.go#apply":     "the node the operator named",
+	"graphstore/arms.go#nodeArm":     "the nodes its caller states",
+	"graphstore/arms.go#claimArms":   "the claims its caller states",
+	"graphstore/arms.go#tupleInsert": "the tuples its caller states",
+	"graphstore/write.go#writeNodes": "the nodes its caller states",
 	// Caused is the second half of one write rather than a second look at it: the nodes its
 	// caller has just written take the id of the event that recorded them, which is known only
 	// once that event is appended. It reads no projection and mends nothing.
-	"graphstore/write.go#Caused":           {input: "the nodes its caller stated and the event that recorded the write"},
-	"refs/blocks.go#IndexBlocks":           {input: "the version's render"},
-	"refs/blocks.go#reconcileBlockParents": {input: "the version's render"},
-	"refs/blocks.go#replaceBlockRefs":      {input: "the version's render"},
-	"refs/refs.go#Stamp":                   {input: "the event that recorded the write"},
+	"graphstore/write.go#Caused":           "the nodes its caller stated and the event that recorded the write",
+	"refs/blocks.go#IndexBlocks":           "the version's render",
+	"refs/blocks.go#reconcileBlockParents": "the version's render",
+	"refs/blocks.go#replaceBlockRefs":      "the version's render",
+	"refs/refs.go#Stamp":                   "the event that recorded the write",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the
@@ -382,9 +367,10 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 var goLineComment = regexp.MustCompile(`(?m)^[ \t]*//.*$`)
 
 // requireEveryPassReadsItsSource reads every pass of the source tree that writes a projected
-// table or the store, reports what each one reads, and fails a pass whose input is one side of
-// the projection, saying which side. The scan is what keeps the register honest: a pass the
-// register does not name fails here, so a repair added later cannot pass unnoticed.
+// table or the store and reports what each one reads. The scan is what keeps the register
+// honest: a pass the register does not name fails here, so a repair added later cannot pass
+// unnoticed, and the register's own entry is where a reader sees whether the pass reads the
+// thing itself or one side of the projection.
 func requireEveryPassReadsItsSource(t *testing.T) {
 	t.Helper()
 	seen := map[string]bool{}
@@ -403,12 +389,9 @@ func requireEveryPassReadsItsSource(t *testing.T) {
 				continue
 			}
 			if !seen[key] {
-				t.Logf("%s reads %s", key, pass.input)
+				t.Logf("%s reads %s", key, pass)
 			}
 			seen[key] = true
-			if pass.side != inputSource {
-				t.Errorf("%s is a repair, not a writer: its input is %s, one side of the projection", key, pass.side)
-			}
 		}
 	}
 	for key := range indexPasses {

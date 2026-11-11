@@ -144,12 +144,15 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	login := model.CanonicalLogin(r.PathValue("login"))
+	// The acting credential is marshalled once and bound by both reads: it is one value for
+	// the request, and the two statements name the same reader.
+	seen := refs.VisibilityArg(caller)
 	var held bool
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		select exists (
 			select 1 from graph_nodes
 			where kind = $1 and id = $2 and state = $3 and `+refs.VisibleRow("graph_nodes", "$4")+`
-		)`, graphstore.KindPerson, login, graphstore.StateLive, refs.VisibilityArg(caller)).Scan(&held); err != nil {
+		)`, graphstore.KindPerson, login, graphstore.StateLive, seen).Scan(&held); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -157,7 +160,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), personNodesQuery, login, refs.VisibilityArg(caller), limit, offset)
+	rows, err := s.deps.Store.Pool.Query(r.Context(), personNodesQuery, login, seen, limit, offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

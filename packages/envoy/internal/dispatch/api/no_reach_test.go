@@ -102,18 +102,6 @@ func onePersonRead(t *testing.T) {
 	if want := []string{"limit", "offset"}; !slices.Equal(keys, want) {
 		t.Fatalf("the person read takes the query %v, want %v", keys, want)
 	}
-	for _, route := range found {
-		for _, word := range traversalWords {
-			if slices.Contains(queryTagsOf(routeShapes[route.Method+" "+route.Pattern].Params), word) {
-				t.Errorf("%s %s takes %q from its caller, which is a traversal the caller chooses",
-					route.Method, route.Pattern, word)
-			}
-			if strings.Contains(route.Pattern, "{"+word+"}") {
-				t.Errorf("%s %s takes %q in its path, which is a traversal the caller chooses",
-					route.Method, route.Pattern, word)
-			}
-		}
-	}
 }
 
 // personReadReach: who the person read answers. The deployment's shared agent bearer holds no

@@ -472,9 +472,56 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-All three source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
-missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
-without printing it, unsetting both so no process the script starts inherits it.
+`e2e/acceptance/graph-store.sh` drives the people and the agents of the node and tuple store: what
+each person authored, what reached each session, a comment that reached nobody, a failed attempt,
+and the role, the session and the page a delivery writes. It takes the first three inputs,
+`DATABASE_URL` (the database that server serves, on this machine, which it reads the tuples no
+route answers through) and `FAKE_ENVOY_PORT` (the harness's fake Envoy, whose session fixture it
+adds a role-less session and a role's holder to and puts back on exit), with `DEV_SIGNIN_LOGIN`
+optional. Its delivery checks need the server to have a bus: `bun run dispatch:local` leaves NATS
+off, and without `NATS_URLS` the publisher writes no `delivered_to` tuple and those checks wait
+out their 30 s poll. Against `bun run dispatch:local` started with a bus:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=9023 \
+  DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
+```
+
+`e2e/acceptance/graph-erase.sh` drives `envoy-dispatch erase`, the one statement in Dispatch that
+removes bytes: the refusal until it has listed what it would remove, the erase itself, the
+version and the review it ends, the `graph_erasures` row that holds no erased text, and the 404
+the route that does not exist answers. It takes the first three inputs, `DATABASE_URL`, the built
+`envoy-dispatch` on `PATH` (the command takes a database credential and no bearer), and
+`DEV_SIGNIN_LOGIN` optional, the person who approves the version it then erases. It refuses a
+`DATABASE_URL` whose host is not loopback, and erases only the comment it wrote itself:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/graph-erase.sh
+```
+
+`e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
+by kind, every table this branch's migrations touch, where the two store tables reach in a year,
+two runs printing one report, and the block-index backlog, with the reconciliation's own drain
+timed against a request that indexes the same document itself. It takes the first three inputs,
+`DATABASE_URL` and the built `envoy-dispatch` on `PATH`, and two optional inputs of the
+production reading: `PRODUCTION_WINDOW_DAYS` (21 unset, refused below 14) and
+`PRODUCTION_DATABASE_ID`, the Cloud SQL instance whose disk use it reads from Cloud Monitoring
+through this pod's own Google identity. It writes a corpus under an issue of its own and removes
+it on exit, since a corpus left behind is read by the next run as growth:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  bash packages/dispatch/e2e/acceptance/graph-sizing.sh
+```
+
+All six source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they share: it
+refuses an unset input or a missing command with exit 2, reads the bearer from `DISPATCH_TOKEN` or
+`DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the script starts inherits
+it, and holds the `pass`, `fail`, `want_status`, `expect` and `query` every driver checks with.
 
 ## Acceptance run against the deployed image
 

@@ -774,9 +774,6 @@ totals as (
 }
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
 		return

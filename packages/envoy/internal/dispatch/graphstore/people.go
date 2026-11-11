@@ -168,7 +168,8 @@ const DeliverySent = "sent"
 // appends its receipt after this, so the node is made at the sentinel (NoEvent), under which a
 // repeat appends nothing because the node row is already there.
 func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) error {
-	if state != DeliverySent || strings.TrimSpace(session) == "" {
+	session = strings.TrimSpace(session)
+	if state != DeliverySent || session == "" {
 		return nil
 	}
 	arms, params, err := WriteArms(1, []Node{SessionNode(session, who, at, NoEvent)}, nil, nil)

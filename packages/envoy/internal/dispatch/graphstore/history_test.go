@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
@@ -188,11 +189,6 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 // project to.
 func writeStep(t *testing.T, ctx context.Context, pool *store.Pool, nodeKind, nodeID, attribute, relation string, written step) {
 	t.Helper()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
 	node := Node{
 		Kind: nodeKind, ID: nodeID, Supertag: "block",
 		Visibility: VisibilityProject, State: StateLive,
@@ -205,12 +201,7 @@ func writeStep(t *testing.T, ctx context.Context, pool *store.Pool, nodeKind, no
 		{FromKind: nodeKind, FromID: nodeID, Kind: relation, ToKind: "artifact", ToID: written.far,
 			At: written.at, Who: written.who, SourceEvent: written.event, Asserted: true},
 	}
-	if err := Write(ctx, tx, []Node{node}, tuples); err != nil {
-		t.Fatalf("write the step written at %s: %v", written.at, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the step written at %s: %v", written.at, err)
-	}
+	writeInOneTransaction(t, ctx, pool, []Node{node}, tuples, fmt.Sprintf("the step written at %s", written.at))
 }
 
 // readTupleLog answers every tuple row the store holds, oldest first.

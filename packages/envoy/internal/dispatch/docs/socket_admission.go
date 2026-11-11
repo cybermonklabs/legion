@@ -163,11 +163,9 @@ func (s *Service) CloseDocumentSockets() int {
 	}
 	closed := 0
 	s.documentSockets.Range(func(_, value any) bool {
-		close, ok := value.(context.CancelCauseFunc)
-		if !ok {
-			return true
-		}
-		close(schemaSwitchClose{reason: reason})
+		// holdDocumentSocket is the one writer of this map and stores a
+		// context.CancelCauseFunc every time, so the value is one.
+		value.(context.CancelCauseFunc)(schemaSwitchClose{reason: reason})
 		closed++
 		return true
 	})

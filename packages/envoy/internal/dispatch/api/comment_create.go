@@ -1073,10 +1073,11 @@ type commentStoreWrite struct {
 }
 
 // commentStored is what the comment rowID states: its node, project-visible and live, made by
-// its author at the row's own created_at; the two base attributes every node carries; and the
-// artifact it is anchored to and the artifact that owns it, each stated only where the comment
-// has one. Both relations name the artifact by its address, which is its ref_key, so the two
-// artifacts' addresses are read here, in the caller's transaction, in one statement.
+// its author at the row's own created_at, whose two base attributes graphstore.Write states
+// for it; and the artifact it is anchored to and the artifact that owns it, each stated only
+// where the comment has one. Both relations name the artifact by its address, which is its
+// ref_key, so the two artifacts' addresses are read here, in the caller's transaction, in one
+// statement.
 func commentStored(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1102,8 +1103,6 @@ func commentStored(
 		Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}}
-	write.states(tupleVisibility, graphstore.KindValue, graphstore.VisibilityProject)
-	write.states(tupleState, graphstore.KindValue, graphstore.StateLive)
 	if anchor != nil {
 		write.states(tupleAnchoredTo, "artifact", addresses[anchor.ArtifactID])
 	}
@@ -1128,8 +1127,10 @@ func (w *commentStoreWrite) states(kind, toKind, toID string) {
 }
 
 // writeNode writes the comment's node, which the row that projects it names. It states no
-// tuple: a fact of this store carries the event that caused it, and on the request path that
-// event is appended after the row.
+// relation of its own: a relation of this store carries the event that caused it, and on the
+// request path that event is appended after the row. The node's two base attributes are the
+// one exception, and they are not this writer's to state: graphstore.Write states them for
+// every node its insert makes, under the sentinel that node carries.
 func (w commentStoreWrite) writeNode(ctx context.Context, tx pgx.Tx) error {
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{w.node}, nil); err != nil {
 		return fmt.Errorf("write the node of comment %s: %w", w.node.ID, err)

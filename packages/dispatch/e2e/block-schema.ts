@@ -17,7 +17,6 @@
  * transaction, as the Go test's own flip is, so no reader sees half a change.
  */
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 import type { BlockSchema } from "@legion/contracts";
 
@@ -40,9 +39,7 @@ export function documentWithAddedType(line: string): string {
 export const builtSchemaVersion: number = (
   JSON.parse(
     readFileSync(
-      fileURLToPath(
-        new URL("../../envoy/internal/dispatch/pmdoc/schema/blocks.json", import.meta.url)
-      ),
+      new URL("../../envoy/internal/dispatch/pmdoc/schema/blocks.json", import.meta.url),
       "utf-8"
     )
   ) as BlockSchema
@@ -63,7 +60,7 @@ export async function installedSchema(process?: DispatchProcess): Promise<BlockS
   return (await response.json()) as BlockSchema;
 }
 
-/** The version one process serves now, and whether it serves the added type with it. */
+/** The version one process serves now. */
 export async function installedVersion(process?: DispatchProcess): Promise<number> {
   return (await installedSchema(process)).version;
 }
@@ -73,16 +70,22 @@ export async function servesAddedType(process?: DispatchProcess): Promise<boolea
   return (await installedSchema(process)).types.some((type) => type.name === ADDED_TYPE);
 }
 
-/** The statements that take the added type out of the store and set every block type's version.
- *  Writing the nodes is what announces the change, so a caller runs these and then waits for the
- *  processes to install what they leave. */
+/** The statements that take the added type out of the store and set every block type's version,
+ *  in one transaction: writing the nodes is what announces the change, and two writes outside a
+ *  transaction announce it twice and leave a window in which the type is gone and the version
+ *  still the old one. The version is written only where it moves, so a restore that changes
+ *  nothing announces nothing and no process reinstalls a schema it already serves. A caller runs
+ *  these and then waits for the processes to install what they leave. */
 function storeSchemaStatements(version: number): string[] {
   return [
+    "begin",
     `delete from graph_tuples where from_kind = 'attribute' and from_id like '${ADDED_TYPE}/%'`,
     `delete from graph_nodes where (kind = 'supertag' and id = '${ADDED_TYPE}')
        or (kind = 'attribute' and id like '${ADDED_TYPE}/%')`,
     `update graph_nodes set attributes = jsonb_set(attributes, '{version}', to_jsonb(${version}::int))
-     where kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false)`,
+     where kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false)
+       and attributes->>'version' is distinct from '${version}'`,
+    "commit",
   ];
 }
 

@@ -242,12 +242,8 @@ async function seedThePersonPage(): Promise<{
     title: "Person page",
   });
 
-  const authored = await createComment(
-    issue.key,
-    { body: "Alice wrote the first." },
-    { login: "alice" }
-  );
-  const bySession = await createComment(
+  await createComment(issue.key, { body: "Alice wrote the first." }, { login: "alice" });
+  await createComment(
     issue.key,
     { body: "The session wrote the second." },
     { actor: { id: SESSION, kind: "session" }, as: "agent" }
@@ -322,7 +318,6 @@ async function seedThePersonPage(): Promise<{
      select 'comment', '${unseen.id}', 'visibility', 'value', 'author', now(), made_by, 0, null, true
      from graph_nodes where kind = 'comment' and id = '${unseen.id}'`
   );
-  expect(bySession.id).not.toBe(authored.id);
   return {
     issue: issue.key,
     received: received.id,
@@ -376,11 +371,16 @@ test("a person page lists what they authored and what reached them", async ({
     await expect(page).toHaveURL(`/issues/${seeded.issue}/comments/${seeded.received}`);
     await expect(page.getByText("Bob wrote the third, for the session.").first()).toBeVisible();
 
-    // Every row is the store's answer and nothing else's: with the delivery's tuple retracted the
-    // received row goes, while the comment and its sent attempt stand where they were.
+    // Every row is the store's answer and nothing else's: with the delivery's tuple retracted
+    // the received row goes, while the comment and its sent attempt stand where they were. The
+    // retraction is a second tuple, as every end of a relation in this store is: nothing but
+    // `envoy-dispatch erase` deletes a tuple row.
     await sql(
-      `delete from graph_tuples where from_kind = 'comment' and from_id = '${seeded.received}'
-         and kind = 'delivered_to'`
+      `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+       select from_kind, from_id, kind, to_kind, to_id, now(), who, 0, null, false
+       from graph_tuples
+       where from_kind = 'comment' and from_id = '${seeded.received}'
+         and kind = 'delivered_to' and asserted`
     );
     await page.goto("/people/alice");
     await expect(

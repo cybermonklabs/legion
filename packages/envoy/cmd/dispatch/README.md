@@ -2249,7 +2249,7 @@ The kinds are:
 It passes only when it checked more than zero rows and found zero differences in both directions:
 a census over a database whose projections are empty proves nothing, and passing it would read as green on a fresh database or on a read that reached the wrong one.
 
-Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and a second backfill run carries an event of its own — so the census counts nodes and projection rows, never tuples.
+Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
 
 `envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
 the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with the rate its rows arrive at; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
@@ -2268,7 +2268,7 @@ the output says so on the line that uses it.
 
 `envoy-dispatch backfill-graph-store` writes the nodes and tuples of the comments, document blocks and block references written before the store existed — every row of the three projected tables that names no node, since migration `20261109022248` added the columns and filled none of them.
 It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
-It appends one event of its own first and uses it as the cause of every fact whose row's own event cannot be found:
+It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
 a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
 Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
 Once every row of a kind the store can hold names its node, the run sets that kind's row in `graph_store_cutover`.
@@ -2288,7 +2288,7 @@ It migrates the database first, as the other backfills do, and exits 1 when it s
 `envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
 It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
 
-It removes, in one transaction: the tuples out of the node, the tuples whose far end it is, every projection row of it (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, the `artifact_versions` rows whose markdown holds the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
+It removes, in one transaction: the tuples out of the node, the tuples whose far end it is, every projection row of it (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, the whole text of every block it projects onto (`document_block_texts`, which references `artifacts` alone, so no foreign key into those tables names it and it is deleted by the block's own `artifact_id` and `block_id`), the `artifact_versions` rows whose markdown holds the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
 It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document and its version.
 
 It refuses to remove anything until it has listed what it would.

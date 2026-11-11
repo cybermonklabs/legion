@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -37,10 +38,14 @@ const (
 		" on PostgreSQL 18.6, table, seven indexes and TOAST"
 )
 
+// sizingWindow is the window every rate is read over, spliced into each statement from
+// sizingWindowDays so the SQL and the divisor the Go side applies cannot read two windows.
+var sizingWindow = fmt.Sprintf("now() - interval '%d days'", sizingWindowDays)
+
 // eventRateQuery is the write rate by kind: what the database recorded over the sizing window,
 // a day at a time. It is read as one statement over events and printed row by row.
-const eventRateQuery = `select type, count(*) / 28.0 as per_day
-	from events where created_at > now() - interval '28 days' group by type order by 2 desc`
+var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
+	from events where created_at > %s group by type order by 2 desc`, sizingWindowDays, sizingWindow)
 
 // blockIndexBacklogQuery is what the block-index reconciliation still owes documents: how many
 // hold no indexed version (document_block_versions.version null), and when the oldest of those
@@ -48,25 +53,11 @@ const eventRateQuery = `select type, count(*) / 28.0 as per_day
 // (docs.ReconcileBlockIndex); this is the read for somebody holding the database and not the
 // log.
 //
-// Nothing dates a debt. document_block_versions is (artifact_id, version) and no more
-// (migration 0121), and neither 0122's trigger nor rebuild-refs writes a time when it sets the
-// version back to null. So a debt is dated by the write that owed it: the created_at of the
-// latest markdown version the document holds, the version the tick would index. A document
-// that holds no markdown version is dated by its own creation, since it has been owed since
-// its row existed and no tick can settle it. The smallest change that would date the mark
-// itself is an `owed_at timestamptz not null default now()` column on
-// document_block_versions, written wherever the version goes back to null; it needs a
-// migration and its census file, which this change does not.
-const blockIndexBacklogQuery = `
-	select count(*), min(owed.owed_at) from (
-		select coalesce(
-		         (select v.created_at from artifact_versions v
-		          where v.artifact_id = b.artifact_id and v.markdown is not null
-		          order by v.number desc limit 1),
-		         a.created_at) as owed_at
-		from document_block_versions b
-		left join artifacts a on a.id = b.artifact_id
-		where b.version is null
+// Nothing dates a debt, so the rows are dated by the write that owed them, which is what
+// refs.OwedBlockIndexDebts derives; the tick's own read of the same backlog derives it from
+// that one text too, so the two figures cannot drift.
+var blockIndexBacklogQuery = `
+	select count(*), min(owed.owed_at) from (` + refs.OwedBlockIndexDebts + `
 	) owed`
 
 // backlogClockQuery is the newest write the database recorded: the created_at of its highest
@@ -121,16 +112,19 @@ var branchTables = []struct {
 // StoreKind is one kind of row this tree writes beside the store, with how many nodes and how
 // many tuples one such row states and the rate its rows arrive at.
 //
-// The tuple counts are this tree's, read off its writers:
-//   - a comment states its visibility, its state, the artifact it is anchored to and the one
-//     that owns it (api's commentStored), and the authored_by tuple of whoever wrote it
-//     (graphstore.Authored): five on a comment that has both relations and an author the store
-//     can name, which is the upper bound this projection takes;
-//   - a block states the block or document that holds it and its membership of that document
-//     (refs.IndexBlocks); a block that moves states a retraction and an assertion, which is
-//     the same two;
+// The tuple counts are this tree's, read off its writers, and each counts the two base
+// attributes graphstore.Write states for a node its insert makes beside the relations the
+// writer states itself:
+//   - a comment states its visibility and its state, which that call states for its node, the
+//     artifact it is anchored to and the one that owns it (api's commentStored), and the
+//     authored_by tuple of whoever wrote it (graphstore.Authored): five on a comment that has
+//     both relations and an author the store can name, which is the upper bound this
+//     projection takes;
+//   - a block states its visibility and its state the same way, the block or document that
+//     holds it and its membership of that document (refs.IndexBlocks): four; a block that
+//     moves states a retraction and an assertion, which is the same two relations again;
 //   - a block reference states the pair's own tuple, and its node is its block's, so it makes
-//     no node of its own;
+//     no node and no base attribute of its own;
 //   - a delivery states one delivered_to tuple (outbox.deliveredGraph). The role, session and
 //     page nodes under it, and each role's held_by, are written only where they change, so
 //     they are no part of a steady rate.
@@ -150,18 +144,18 @@ type StoreKind struct {
 func storeKinds() []StoreKind {
 	return []StoreKind{{
 		Name: "comment", Driver: "comments.created_at", Nodes: 1, Tuples: 5,
-		rateQuery: `select count(*) from comments where created_at > now() - interval '28 days'`,
+		rateQuery: fmt.Sprintf(`select count(*) from comments where created_at > %s`, sizingWindow),
 	}, {
-		Name: "block", Driver: "document_blocks.created_at", Nodes: 1, Tuples: 2,
-		rateQuery: `select count(*) from document_blocks where created_at > now() - interval '28 days'`,
+		Name: "block", Driver: "document_blocks.created_at", Nodes: 1, Tuples: 4,
+		rateQuery: fmt.Sprintf(`select count(*) from document_blocks where created_at > %s`, sizingWindow),
 	}, {
 		Name: "block_ref", Driver: "block_refs.created_at", Nodes: 0, Tuples: 1,
-		rateQuery: `select count(*) from block_refs where created_at > now() - interval '28 days'`,
+		rateQuery: fmt.Sprintf(`select count(*) from block_refs where created_at > %s`, sizingWindow),
 	}, {
 		Name: "delivery", Driver: "comment_deliveries and message_deliveries, sent", Nodes: 0, Tuples: 1,
-		rateQuery: `select
-			(select count(*) from comment_deliveries where state = 'sent' and created_at > now() - interval '28 days')
-			+ (select count(*) from message_deliveries where state = 'sent' and created_at > now() - interval '28 days')`,
+		rateQuery: fmt.Sprintf(`select
+			(select count(*) from comment_deliveries where state = 'sent' and created_at > %[1]s)
+			+ (select count(*) from message_deliveries where state = 'sent' and created_at > %[1]s)`, sizingWindow),
 	}}
 }
 
@@ -222,12 +216,19 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 		return nil, err
 	}
 	report.Events = events
+	// Each branch table is measured once, and the growth projection below reads the two store
+	// tables out of this map rather than measuring them again: readTableSize is a
+	// pg_total_relation_size and a full count(*), and the two it would repeat are the largest
+	// tables of the branch. The snapshot is the one repeatable-read transaction's, so the
+	// figures the two passes print are the same figures.
+	sizes := make(map[string]TableSize, len(branchTables))
 	for _, table := range branchTables {
 		size, err := readTableSize(ctx, tx, table.name)
 		if err != nil {
 			return nil, err
 		}
 		size.Altered = table.altered
+		sizes[table.name] = size
 		report.Tables = append(report.Tables, size)
 		if table.altered && size.Held && size.Bytes >= report.Limit {
 			report.Refusals = append(report.Refusals, fmt.Sprintf(
@@ -255,9 +256,9 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 		name     string
 		rowsADay float64
 	}{{"graph_tuples", tuplesADay}, {"graph_nodes", nodesADay}} {
-		size, err := readTableSize(ctx, tx, growth.name)
-		if err != nil {
-			return nil, err
+		size, measured := sizes[growth.name]
+		if !measured {
+			return nil, fmt.Errorf("the sizing projects %s, which branchTables does not name", growth.name)
 		}
 		projected := StoreTableGrowth{
 			Name: growth.name, Bytes: size.Bytes, Rows: size.Rows, RowsADay: growth.rowsADay,
@@ -388,7 +389,7 @@ func (s *SizingReport) Write(w io.Writer) {
 			verdict = "at-or-above"
 		}
 		fmt.Fprintf(w, "census: sizing table name=%s altered=%t rows=%s bytes=%d limit_bytes=%d verdict=%s\n",
-			table.Name, table.Altered, thousands(table.Rows), table.Bytes, s.Limit, verdict)
+			table.Name, table.Altered, pgmigrate.Thousands(table.Rows), table.Bytes, s.Limit, verdict)
 	}
 	for _, kind := range s.Kinds {
 		fmt.Fprintf(w, "census: sizing tuples-a-write kind=%s tuples=%d nodes=%d rows_a_day=%.2f"+

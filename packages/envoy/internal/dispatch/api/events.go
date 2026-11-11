@@ -32,9 +32,6 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 	left join artifacts ar on ar.id = e.artifact_id`
 
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
 		return
@@ -63,9 +60,6 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
 		return

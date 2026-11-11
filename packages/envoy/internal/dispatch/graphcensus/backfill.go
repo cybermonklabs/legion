@@ -60,9 +60,6 @@ type KindBackfill struct {
 
 // BackfillReport is what one run of the backfill did.
 type BackfillReport struct {
-	// Event is the id of the event the run appended for itself, which is the cause every
-	// node and tuple it wrote carries where the row's own event cannot be found.
-	Event int64
 	Kinds []KindBackfill
 }
 
@@ -72,10 +69,10 @@ type BackfillReport struct {
 //
 // It walks each kind in batches, writing a batch's nodes, its tuples and the projection
 // columns that name them in one transaction, so a row and its node commit together or not at
-// all, exactly as a live write does. It appends one event of its own first and uses it as the
-// cause of every fact whose row's own event cannot be found: a comment's is the comment.created
-// that stored it, a block's the event that recorded the version its row was written at, and a
-// block reference's is its own source_seq, which is that event's id already.
+// all, exactly as a live write does. It appends no event of its own, and the cause of a fact
+// whose row's own event cannot be found is the store's sentinel: a comment's own event is the
+// comment.created that stored it, a block's the event that recorded the version its row was
+// written at, and a block reference's is its own source_seq, which is that event's id already.
 //
 // Each tuple takes its row's own created_at as its time and its row's own source_seq as its
 // legacy_source_seq, so a backfilled edge is dated and sequenced exactly as the graph_edges arm
@@ -103,18 +100,11 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// a fact twice, since the repeat keys skip the sentinel, and nothing reads wrong for it: a
 	// current read takes the newest asserting tuple and the census counts nodes and projection
 	// rows rather than tuples.
-	event := graphstore.NoEvent
-	report.Event = event
-	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", event)
-	for _, kind := range []struct {
-		name  string
-		write func(context.Context, *store.Store, int64) (KindBackfill, error)
-	}{
-		{refs.BlockNodeKind, backfillBlocks},
-		{"block_ref", backfillBlockRefs},
-		{commentNodeKind, backfillComments},
+	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
+	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
+		backfillBlocks, backfillBlockRefs, backfillComments,
 	} {
-		done, err := kind.write(ctx, database, event)
+		done, err := write(ctx, database)
 		if err != nil {
 			return report, err
 		}
@@ -149,12 +139,12 @@ type blockRow struct {
 // and marks each document it touched owed a block index. A block whose address is past
 // refs.MaxBlockNodeBytes is no node of the store by design, so it is neither written nor
 // counted as skipped: the writers leave it unprojected too.
-func backfillBlocks(ctx context.Context, database *store.Store, event int64) (KindBackfill, error) {
+func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	documents := map[string]struct{}{}
 	after := ""
 	for {
-		rows, err := readBlockRows(ctx, database, after, event)
+		rows, err := readBlockRows(ctx, database, after)
 		if err != nil {
 			return done, err
 		}
@@ -192,27 +182,47 @@ func backfillBlocks(ctx context.Context, database *store.Store, event int64) (Ki
 
 // readBlockRows reads one batch of the blocks naming no node, by their node address so the
 // walk is a keyset over a column every row of the batch carries. Each row's event is the one
-// that recorded the version it was last written at (docs' versionEventID), and the run's own
-// event where that is not found.
-func readBlockRows(ctx context.Context, database *store.Store, after string, event int64) ([]blockRow, error) {
+// that recorded the version it was last written at (docs' versionEventID), and the store's
+// sentinel where that is not found.
+//
+// The event is resolved once per (document, changed version) of the batch and joined back to
+// the rows, not once per row: every block of one version of one document shares that pair and
+// would otherwise run the same unindexed lookup over events up to backfillBatch times.
+func readBlockRows(ctx context.Context, database *store.Store, after string) ([]blockRow, error) {
 	rows, err := database.Pool.Query(ctx, `
-		select d.artifact_id::text, d.block_id, d.node_id, a.ref_key, d.created_at,
-		       coalesce((
-			select e.id from events e
-			where coalesce(e.issue_key, e.artifact_id::text, e.project_key)
-			      = coalesce(a.issue_key, a.id::text, a.project_key)
-			  and e.type = 'artifact.version'
-			  and e.payload->>'artifact_id' = a.id::text
-			  and e.payload->'version'->>'number' = d.changed_version::text
-			order by e.id desc limit 1
-		       ), $3)
-		from document_blocks d
-		join artifacts a on a.id = d.artifact_id
-		where d.node_kind is null and octet_length(d.node_id) <= `+blockBound+`
-		  and d.node_id > $1
-		order by d.node_id
-		limit $2
-	`, after, backfillBatch, event)
+		with batch as (
+			select d.artifact_id, d.block_id, d.node_id, d.created_at, d.changed_version,
+			       a.ref_key, a.issue_key, a.project_key
+			from document_blocks d
+			join artifacts a on a.id = d.artifact_id
+			where d.node_kind is null and octet_length(d.node_id) <= `+blockBound+`
+			  and d.node_id > $1
+			order by d.node_id
+			limit $2
+		),
+		caused as (
+			select version.artifact_id, version.changed_version, found.id
+			from (
+				select distinct artifact_id, issue_key, project_key, changed_version
+				from batch
+			) version
+			left join lateral (
+				select e.id from events e
+				where coalesce(e.issue_key, e.artifact_id::text, e.project_key)
+				      = coalesce(version.issue_key, version.artifact_id::text, version.project_key)
+				  and e.type = 'artifact.version'
+				  and e.payload->>'artifact_id' = version.artifact_id::text
+				  and e.payload->'version'->>'number' = version.changed_version::text
+				order by e.id desc limit 1
+			) found on true
+		)
+		select batch.artifact_id::text, batch.block_id, batch.node_id, batch.ref_key,
+		       batch.created_at, coalesce(caused.id, $3)
+		from batch
+		left join caused on caused.artifact_id = batch.artifact_id
+			and caused.changed_version is not distinct from batch.changed_version
+		order by batch.node_id
+	`, after, backfillBatch, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks naming no node: %w", err)
 	}
@@ -230,8 +240,13 @@ func readBlockRows(ctx context.Context, database *store.Store, after string, eve
 }
 
 // writeBlockBatch writes one batch's nodes and in_document tuples and names them on the rows,
-// in one transaction. The nodes go in before the projection columns: the foreign key on
-// (node_kind, node_address) is checked inside the statement that writes them.
+// in one transaction, and answers how many tuples that wrote. The nodes go in before the
+// projection columns: the foreign key on (node_kind, node_address) is checked inside the
+// statement that writes them.
+//
+// The count is this batch's own tuples and the two base attributes graphstore.Write states
+// for each node its insert makes, which this batch does not state itself: every node here is
+// new, since a row that already names one is never read.
 func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRow) (int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -272,7 +287,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit a block batch: %w", err)
 	}
-	return int64(len(tuples)), nil
+	return int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
 
 // markDocumentsOwed marks every document the run gave blocks nodes owed a block index, which
@@ -317,14 +332,14 @@ type blockRefRow struct {
 // past the address bound, or one with no document_blocks row at all - is skipped and counted.
 //
 // The row's own source_seq is the event that stamped it, which is both the cause of its tuple
-// and that tuple's legacy_source_seq; a row with none takes the run's own event as its cause
+// and that tuple's legacy_source_seq; a row with none takes the store's sentinel as its cause
 // and keeps no legacy sequence, exactly as the graph_edges arm over block_refs answers null
 // for it.
-func backfillBlockRefs(ctx context.Context, database *store.Store, event int64) (KindBackfill, error) {
+func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "block_ref"}
 	after := []any{"", "", "", ""}
 	for {
-		batch, err := readBlockRefRows(ctx, database, after, event)
+		batch, err := readBlockRefRows(ctx, database, after)
 		if err != nil {
 			return done, err
 		}
@@ -363,7 +378,7 @@ func backfillBlockRefs(ctx context.Context, database *store.Store, event int64) 
 
 // readBlockRefRows reads one batch of the block references naming no node, by the key a row of
 // block_refs is keyed on past its artifact, so the walk never reads one row twice.
-func readBlockRefRows(ctx context.Context, database *store.Store, after []any, event int64) ([]blockRefRow, error) {
+func readBlockRefRows(ctx context.Context, database *store.Store, after []any) ([]blockRefRow, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select r.artifact_id::text, r.block_id, r.from_node, r.kind, r.to_kind, r.to_id,
 		       r.created_at, r.source_seq, coalesce(r.source_seq, $6),
@@ -374,7 +389,7 @@ func readBlockRefRows(ctx context.Context, database *store.Store, after []any, e
 		  and (r.from_node, r.kind, r.to_kind, r.to_id) > ($1, $2, $3, $4)
 		order by r.from_node, r.kind, r.to_kind, r.to_id
 		limit $5
-	`, after[0], after[1], after[2], after[3], backfillBatch, event)
+	`, after[0], after[1], after[2], after[3], backfillBatch, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the block references naming no node: %w", err)
 	}
@@ -456,11 +471,11 @@ type commentRow struct {
 // written before the store existed: the two base attributes every node carries, the artifact
 // it is anchored to and the artifact that owns it where it has them (api's commentStored), and
 // the authored_by tuple of whoever wrote it with that author's own node (graphstore.Authored).
-func backfillComments(ctx context.Context, database *store.Store, event int64) (KindBackfill, error) {
+func backfillComments(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: commentNodeKind}
 	after := "00000000-0000-0000-0000-000000000000"
 	for {
-		batch, err := readCommentRows(ctx, database, after, event)
+		batch, err := readCommentRows(ctx, database, after)
 		if err != nil {
 			return done, err
 		}
@@ -487,7 +502,7 @@ func backfillComments(ctx context.Context, database *store.Store, event int64) (
 	return done, nil
 }
 
-func readCommentRows(ctx context.Context, database *store.Store, after string, event int64) ([]commentRow, error) {
+func readCommentRows(ctx context.Context, database *store.Store, after string) ([]commentRow, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select c.id::text, c.author, c.created_at,
 		       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''),
@@ -505,7 +520,7 @@ func readCommentRows(ctx context.Context, database *store.Store, after string, e
 		where c.node_kind is null and c.id > $1::uuid
 		order by c.id
 		limit $2
-	`, after, backfillBatch, event)
+	`, after, backfillBatch, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the comments naming no node: %w", err)
 	}

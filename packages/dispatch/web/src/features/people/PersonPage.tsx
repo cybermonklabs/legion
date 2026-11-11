@@ -3,10 +3,11 @@ import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { PersonNodes } from "../../api/types";
+import { nextOffsetPage } from "../../api/queries";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { ShowMore } from "../../components/ShowMore";
 import {
   borderDefault,
   card,
@@ -37,10 +38,7 @@ export function PersonPage(): ReactNode {
   const { login = "" } = useParams();
   useDocumentTitle(`${login} · Dispatch`);
   const nodes = useInfiniteQuery({
-    getNextPageParam: (last: PersonNodes) =>
-      last.offset + (last.rows ?? []).length < last.total
-        ? last.offset + (last.rows ?? []).length
-        : undefined,
+    getNextPageParam: nextOffsetPage,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listPersonNodes(login, { limit: PAGE_SIZE, offset: pageParam }),
     queryKey: ["people", login, "nodes"],
@@ -95,16 +93,11 @@ export function PersonPage(): ReactNode {
           ))}
         </ul>
       )}
-      {nodes.hasNextPage ? (
-        <button
-          className={`mt-4 min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
-          disabled={nodes.isFetchingNextPage}
-          onClick={() => void nodes.fetchNextPage()}
-          type="button"
-        >
-          {nodes.isFetchingNextPage ? "Loading…" : "Show more"}
-        </button>
-      ) : null}
+      <ShowMore
+        fetching={nodes.isFetchingNextPage}
+        hasMore={nodes.hasNextPage}
+        onFetch={() => void nodes.fetchNextPage()}
+      />
     </section>
   );
 }

@@ -26,7 +26,7 @@ func CurrentOut(ctx context.Context, q Queryer, fromKind, fromID string, kinds [
 		select `+tupleColumns+` from (
 			select distinct on (kind, to_kind, to_id) `+tupleColumns+`
 			from graph_tuples
-			where from_kind = $1 and from_id = $2 and to_kind <> 'value'
+			where from_kind = $1 and from_id = $2 and to_kind <> '`+KindValue+`'
 				and ($3::text[] is null or kind = any($3::text[]))
 			order by kind, to_kind, to_id, seq desc
 		) newest
@@ -47,7 +47,7 @@ func CurrentIn(ctx context.Context, q Queryer, toKind, toID string, kinds []stri
 		select `+tupleColumns+` from (
 			select distinct on (kind, from_kind, from_id) `+tupleColumns+`
 			from graph_tuples
-			where to_kind = $1 and to_id = $2 and to_kind <> 'value'
+			where to_kind = $1 and to_id = $2 and to_kind <> '`+KindValue+`'
 				and ($3::text[] is null or kind = any($3::text[]))
 			order by kind, from_kind, from_id, seq desc
 		) newest
@@ -71,7 +71,7 @@ func CurrentValue(ctx context.Context, q Queryer, fromKind, fromID, attribute st
 	err := q.QueryRow(ctx, `
 		select to_id, asserted
 		from graph_tuples
-		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = 'value'
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = '`+KindValue+`'
 		order by seq desc
 		limit 1
 	`, fromKind, fromID, attribute).Scan(&value, &asserted)
@@ -116,7 +116,7 @@ func AsOfIn(ctx context.Context, q Queryer, toKind, toID string, at time.Time, k
 		select `+tupleColumns+` from (
 			select distinct on (kind, from_kind, from_id) `+tupleColumns+`
 			from graph_tuples
-			where to_kind = $1 and to_id = $2 and to_kind <> 'value' and at <= $3
+			where to_kind = $1 and to_id = $2 and to_kind <> '`+KindValue+`' and at <= $3
 				and ($4::text[] is null or kind = any($4::text[]))
 			order by kind, from_kind, from_id, at desc, seq desc
 		) newest
@@ -138,7 +138,7 @@ func AsOfIn(ctx context.Context, q Queryer, toKind, toID string, at time.Time, k
 // touches about limit rows per kind however long the inbox is.
 //
 // Naming no kind leaves the statement with no kind to scan by and falls to that scan, so a
-// caller names the kinds it wants; TupleKinds answers which ones the store holds.
+// caller names the kinds it wants.
 func TuplesIntoNode(ctx context.Context, q Queryer, toKind, toID string, kinds []string, limit int) ([]Tuple, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("read tuples into %s/%s: limit %d is below one row", toKind, toID, limit)
@@ -176,31 +176,9 @@ func TuplesIntoNode(ctx context.Context, q Queryer, toKind, toID string, kinds [
 func inboxBranch(kind string) string {
 	return `(select ` + tupleColumns + `
 		from graph_tuples
-		where to_kind = $1 and to_id = $2 and to_kind <> 'value'` + kind + `
+		where to_kind = $1 and to_id = $2 and to_kind <> '` + KindValue + `'` + kind + `
 		order by at desc, seq desc
 		limit $3)`
-}
-
-// TupleKinds answers the kinds the store holds, so a caller binds its kind list from the store
-// rather than from a list in Go that a newer writer's kind would not be in.
-func TupleKinds(ctx context.Context, q Queryer) ([]string, error) {
-	rows, err := q.Query(ctx, `select distinct kind from graph_tuples order by kind`)
-	if err != nil {
-		return nil, fmt.Errorf("read tuple kinds: %w", err)
-	}
-	defer rows.Close()
-	var kinds []string
-	for rows.Next() {
-		var kind string
-		if err := rows.Scan(&kind); err != nil {
-			return nil, fmt.Errorf("read tuple kinds: %w", err)
-		}
-		kinds = append(kinds, kind)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read tuple kinds: %w", err)
-	}
-	return kinds, nil
 }
 
 // History answers every tuple of one node under one kind, in the order they were written, each

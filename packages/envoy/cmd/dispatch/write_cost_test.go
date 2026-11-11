@@ -62,8 +62,11 @@ const (
 	// docs.BlockIndexReconcileInterval (30 s) of the pass's lease being given back.
 	writeCostTickWait = 5 * time.Minute
 	// writeCostTickPath names the tick among the five, which the run measures differently from
-	// the four that are requests.
+	// the four that are requests, and writeCostOverPath the 8,001-block request, whose own
+	// absolute bound is read beside the table: a name written out at each of those sites would
+	// quietly read no reading at all the day one of them was renamed.
 	writeCostTickPath = "reconciliation tick"
+	writeCostOverPath = "document version, 8,001 blocks"
 )
 
 // The readings already in the source tree, which the run prints beside its own. They were taken
@@ -329,7 +332,7 @@ func writeCostPaths() []writeCostPath {
 		{name: "document version, 1,999 blocks rewritten", perStoreRow: writeCostRewriteRowBudget, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, run, -1)
 		}},
-		{name: "document version, 8,001 blocks", absolute: writeCostAbsolute, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
+		{name: writeCostOverPath, absolute: writeCostAbsolute, readings: costWriteRuns, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "over.md", writeCostOverBlocks, run, -1)
 		}},
 		{name: writeCostTickPath, readings: costWriteRuns, take: writeCostTick},
@@ -452,17 +455,20 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 	// The 8,001-block path takes 20 readings, so its verdict below is read from its p50, and
 	// this line is read from the same figure: two statements about one bound that disagreed
 	// would tell a reader nothing.
-	absolute := readings["document version, 8,001 blocks"][head]
-	bound, from := writeCostAbsoluteBound(readings["document version, 8,001 blocks"][base])
-	verdict := "passed"
-	if absolute.p50() >= bound {
+	absolute := readings[writeCostOverPath][head]
+	bound, from := writeCostAbsoluteBound(readings[writeCostOverPath][base])
+	against, verdict := bound.String(), "passed"
+	switch {
+	case bound == 0:
+		against, verdict = "no bound here", "not bounded"
+	case absolute.p50() >= bound:
 		verdict = "FAILED"
 	}
 	t.Logf("the 8,001-block request's own absolute bound: p50 %.1f ms against %s - %s (p99 %.1f ms). The bound is %s. The readings already in the "+
 		"source tree, beside it: 234, 239 and 252 ms for 1,999 blocks indexed in its own write, 144, 145 and 157 ms for "+
 		"2,001 blocks whose index the write defers, and 347 ms inside IndexDocumentReferences for 8,001 blocks, of a "+
 		"request total of 939-1,130 ms (docs/reference_excerpts.go).",
-		costMilliseconds(absolute.p50()), bound, verdict, costMilliseconds(absolute.p99()), from)
+		costMilliseconds(absolute.p50()), against, verdict, costMilliseconds(absolute.p99()), from)
 
 	for _, path := range writeCostPaths() {
 		here, before := readings[path.name][head], readings[path.name][base]
@@ -495,10 +501,10 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 			statistic, here99, before99 = "p50", here.p50(), before.p50()
 		}
 		if path.absolute > 0 {
-			// The bound this environment allows, which is the stated one where the commit
-			// before this child measures inside it and that commit's own reading where it does
-			// not: a bound a build this change has not touched already breaks is a statement
-			// about the pod and not about the change.
+			// The bound this environment allows: the stated one where the commit before this
+			// child measures inside it, and none at all where it does not, since a bound a
+			// build this change has not touched already breaks is a statement about the pod
+			// and not about the change.
 			path.absolute, _ = writeCostAbsoluteBound(before)
 		}
 		rise := here99 - before99
@@ -946,15 +952,17 @@ func costDocumentText(blocks, deep, pointers int, targets []string, revision, ch
 // run measures in, with the words that say where it came from. The stated bound was read off
 // gVisor; this pod runs syscall-heavy work 2.2 to 3.8 times slower, and where the commit before
 // this child already measures above the stated bound on this path, holding this child to it
-// would fail it for the pod rather than for the change. So the bound becomes that commit's own
-// reading there, and the relative budget alone decides whether this child made the path slower.
+// would fail it for the pod rather than for the change. The path then carries no absolute
+// bound at all - zero, which is what the caller reads as "unbounded" - and the relative budget
+// alone decides whether this child made the path slower. Answering that commit's own reading
+// instead would hold this child to being faster than it, which is a bound nobody stated.
 func writeCostAbsoluteBound(before costReading) (time.Duration, string) {
 	if before.p50() <= writeCostAbsolute {
 		return writeCostAbsolute, fmt.Sprintf("the stated %s, which the commit before this child measures inside at %.1f ms",
 			writeCostAbsolute, costMilliseconds(before.p50()))
 	}
-	return before.p50(), fmt.Sprintf("the commit before this child's own p50 of %.1f ms, read from this environment because that commit, "+
-		"which this change has not touched, already measures above the stated %s here: this pod runs syscall-heavy work 2.2 to 3.8 "+
-		"times slower than the machine the stated bound was read on, so the relative budget alone decides this path",
+	return 0, fmt.Sprintf("no absolute bound - the relative budget alone decides. The commit before this child, which this "+
+		"change has not touched, already measures %.1f ms here, above the stated %s: this pod runs syscall-heavy work 2.2 to "+
+		"3.8 times slower than the machine the stated bound was read on",
 		costMilliseconds(before.p50()), writeCostAbsolute)
 }

@@ -15,19 +15,20 @@
 #   - Whether the store holds a session at all is read through `GET /api/v1/references`, whose
 #     node loader reads `graph_nodes` for a session (refs.loadStoreNodes): a session the store
 #     never recorded is absent from the answer, and no read writes one.
-#   - `held_by`, a session's and a page's `part_of`, and the history of a claim are served by no
-#     route at all - the tuple arm of `graph_edges` carries none of those kinds, and no handler
-#     reads them - so they are read through DATABASE_URL, the database this driver already holds
-#     for the census it runs. The same goes for a tuple's time, its writer and the event that
-#     caused it, which no read answers and which this driver holds against the records.
+#   - A page's `part_of` is served by no route at all - the tuple arm of `graph_edges` carries
+#     that kind for no page, and no handler reads it - so it is read through DATABASE_URL, the
+#     database this driver already holds for the census it runs. The same goes for a tuple's
+#     time, its writer and the event that caused it, which no read answers and which this
+#     driver holds against the records. `held_by` and the history of a claim are read in Go
+#     instead (G9): no resolution here reaches a holder at all.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
 # server serves), FAKE_ENVOY_PORT (the harness's fake Envoy listener, e2e/fake-envoy.ts, whose
-# session fixture this driver adds a role-less session and a role's holder to, and whose holder
-# it then takes off live to read a claim's retraction - as block-graph.sh takes FAKE_GITHUB_PORT
-# for the fixture it needs), `envoy-dispatch` on PATH, and optionally DEV_SIGNIN_LOGIN (default
-# alice), the person the dev sign-in route signs in. Each unmet input is exit 2.
+# session fixture this driver adds a role-less session and a role's holder to - as
+# block-graph.sh takes FAKE_GITHUB_PORT for the fixture it needs), and optionally
+# DEV_SIGNIN_LOGIN (default alice), the person the dev sign-in route signs in. Each unmet input
+# is exit 2.
 #
 # One row of the identity table is not here, and this is where it went. A session the server
 # itself proved a person's is recorded by one credential alone - a token the secrets broker
@@ -51,16 +52,18 @@ usage() {
 Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/db FAKE_ENVOY_PORT=9023 \
          DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
          [DEV_SIGNIN_LOGIN=alice] graph-store.sh
-       (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; the built
-       `envoy-dispatch` must be on PATH, DATABASE_URL must name the database that server serves,
-       on this machine, and FAKE_ENVOY_PORT the fake Envoy listener it delivers through)
+       (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; DATABASE_URL
+       must name the database that server serves, on this machine, and FAKE_ENVOY_PORT the fake
+       Envoy listener it delivers through. The server must have been started with a bus
+       (NATS_URLS): without one the publisher writes no delivered_to tuple and the delivery
+       checks here wait out their poll.)
 USAGE
 }
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL PROJECT DATABASE_URL FAKE_ENVOY_PORT
-require_commands curl envoy-dispatch jq psql sleep
+require_commands curl jq psql sleep
 read_bearer
 
 readonly base="${DISPATCH_URL%/}"
@@ -81,7 +84,7 @@ readonly stamp
 session="graph-store-$stamp"
 readonly session
 # The two sessions this run adds to the listener's fixture: one that claims no role, and one
-# holding a role of this run's own, so the claim this driver asserts and retracts is nobody
+# holding a role of this run's own, so the role this driver routes a comment to is nobody
 # else's.
 readonly loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
 readonly holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
@@ -114,12 +117,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
-fail() {
-  printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
-  exit 1
-}
-
 # request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, with the bearer in $work/auth;
 # `person`, with the cookie the dev sign-in left in $work/jar.<login> and the dashboard's origin,
 # which the server requires of every write a cookie authenticates; or a personal token's own
@@ -140,31 +137,6 @@ request() {
 send() { request agent "$@"; }
 # get PATH: send GET PATH.
 get() { send GET "$1"; }
-body() { head -c 600 "$work/body"; }
-
-# want_status CODE SECTION WHAT: the last answer's status is CODE.
-want_status() {
-  [[ "$status" == "$1" ]] || fail "$2" "$3" "HTTP $status, want $1: $(body)"
-}
-
-# expect SECTION WHAT WANT JQ-ARGS...: jq -cS JQ-ARGS over the last answer's body prints WANT.
-expect() {
-  local section="$1" what="$2" want="$3" got
-  shift 3
-  got="$(jq -cS "$@" "$work/body" 2>&1)" || fail "$section" "$what" "jq: $got; body: $(body)"
-  [[ "$got" == "$want" ]] || fail "$section" "$what" "got $got, want $want"
-  pass "$section" "$what"
-}
-
-q() { jq -rn --arg v "$1" '$v|@uri'; }
-
-# query SECTION WHAT SQL: one value of one row, read through DATABASE_URL into $answer. psql runs
-# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host.
-query() {
-  local section="$1" what="$2" sql="$3"
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
-    fail "$section" "$what" "psql: $(<"$work/psql")"
-}
 
 # want_value SECTION WHAT WANT SQL: the one value SQL reads is WANT.
 want_value() {
@@ -363,13 +335,12 @@ request "person:$person" GET "/api/v1/people/$(q "$raw_actor")/nodes"
 want_status 200 G4 "read the page of the raw actor id '$raw_actor'"
 expect G4 "the raw actor id '$raw_actor' resolves to $person" "\"$person\"" '.person'
 
-# G5: a comment that reaches nobody earns no tuple, which is read before any route is set on the
-# issue.
+# G5: a comment that reaches nobody earns no tuple. It is written before any route is set on
+# the issue, and read after G5b below, where a later comment is proven delivered: the count is
+# 0 the moment the comment is written, so polling for 0 here would pass before the delivery
+# path had run at all.
 comment G5 "a comment that reaches nobody" agent "A note nobody is told about."
 readonly quiet_comment="$comment"
-settles G5 "the comment that reached nobody has no delivered_to tuple" 0 \
-  "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$quiet_comment'
-     and kind = 'delivered_to'"
 
 # G5b: a delivery to a session. The issue's route names the session that claims no role, so every
 # comment on it reaches that session over the bus and the record of what the batch delivered
@@ -386,6 +357,9 @@ readonly loose_comment="$comment"
 settles G5 "the store holds one delivered_to tuple of it" 1 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$loose_comment'
      and kind = 'delivered_to' and to_kind = 'session' and to_id = '$loose_session' and asserted"
+want_value G5 "the comment that reached nobody has no delivered_to tuple" 0 \
+  "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$quiet_comment'
+     and kind = 'delivered_to'"
 want_value G5 "the delivery reached that session alone" 1 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$loose_comment'
      and kind = 'delivered_to'"

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // TestStatementTimings measures this package's changed statements on the seeded measurement
@@ -54,7 +55,7 @@ func TestStatementTimings(t *testing.T) {
 	issueIDs := []string{subjects.Issue}
 	runner.Pair(t, "refs.BacklinkCounts over an issue",
 		benchtime.Statement{SQL: oracleBacklinkCountSQL("issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
-		benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds}})
+		benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds, VisibilityArg(model.Actor{})}})
 
 	// The ask page's count: every ask of one issue at once, each ask's own clarification thread
 	// and its own parts excluded, which is what the page's cards show. Its subject is the issue
@@ -68,7 +69,7 @@ func TestStatementTimings(t *testing.T) {
 	}
 	runner.Pair(t, "refs.BacklinkCounts over an issue's asks",
 		benchtime.Statement{SQL: oracleBacklinkCountSQL("ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
-		benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, AskBacklinkExclusions}})
+		benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, VisibilityArg(model.Actor{}), AskBacklinkExclusions}})
 }
 
 // askPageSubject is every ask of the issue that carries the most, the set the ask page counts

@@ -86,12 +86,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
-fail() {
-  printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
-  exit 1
-}
-
 # request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, with the bearer in $work/auth,
 # or `person`, with the session cookie the dev sign-in left in $work/jar and the dashboard's
 # origin, which the server requires of every write a cookie authenticates. The answer's body goes
@@ -112,22 +106,6 @@ request() {
 send() { request agent "$@"; }
 # person_send METHOD PATH [JSON]: request as the person DEV_SIGNIN_LOGIN signed in.
 person_send() { request person "$@"; }
-body() { head -c 600 "$work/body"; }
-
-# want_status CODE SECTION WHAT: the last answer's status is CODE.
-want_status() {
-  [[ "$status" == "$1" ]] || fail "$2" "$3" "HTTP $status, want $1: $(body)"
-}
-
-q() { jq -rn --arg v "$1" '$v|@uri'; }
-
-# query SECTION WHAT SQL: one value of one row, read through DATABASE_URL into $answer. psql runs
-# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host.
-query() {
-  local section="$1" what="$2" sql="$3"
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
-    fail "$section" "$what" "psql: $(<"$work/psql")"
-}
 
 # want_rows SECTION WHAT WANT SQL: the count SQL reads is WANT.
 want_rows() {
@@ -284,7 +262,7 @@ jq -e '(.removed.rows | length) > 0 and (.removed.versions | length) > 0 and (.r
 jq -e '(.ran_by.database_user | length) > 0 and (.ran_at | length) > 0' "$work/erasure.json" >/dev/null ||
   fail E6 "the record holds who ran it and when" "$(<"$work/erasure.json")"
 pass E6 "the graph_erasures row holds what was removed, who ran it and when"
-grep -Fq "$secret" "$work/erasure.json" &&
+jq -e --arg s "$secret" 'tostring | contains($s) | not' "$work/erasure.json" >/dev/null ||
   fail E6 "the record holds no erased text" "the graph_erasures row holds the erased secret"
 pass E6 "the graph_erasures row holds no erased text"
 

@@ -286,14 +286,11 @@ func IndexBlocks(
 		changed[id] = struct{}{}
 	}
 	write := BlockIndexWrite{Nodes: make([]graphstore.Node, 0, len(ids)+len(deleted))}
-	for index, block := range nodes {
-		if !fits[index] {
+	for _, id := range ids {
+		if !blockIDFits(refKey, id) {
 			continue
 		}
-		if _, moved := changed[block.ID]; !moved {
-			continue
-		}
-		write.Nodes = append(write.Nodes, blockNode(blockNodeAddress(refKey, block.ID), writer, versionAt, graphstore.StateLive))
+		write.Nodes = append(write.Nodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateLive))
 	}
 	// A block the version no longer holds has its node stated gone. The tuple that says so is
 	// not written here: graphstore.Write states a base attribute it moved, with this write's
@@ -362,9 +359,11 @@ func IndexBlocks(
 			return nil, false, BlockIndexWrite{}, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
-	if err := reconcileBlockParents(ctx, tx, artifactID, refKey, nodes, fits, versionAt, writer, &write); err != nil {
+	parents, err := reconcileBlockParents(ctx, tx, artifactID, refKey, nodes, fits, versionAt, writer)
+	if err != nil {
 		return nil, false, BlockIndexWrite{}, err
 	}
+	write.Tuples = append(write.Tuples, parents...)
 
 	pairs := blockPairs(nodes, located, pointers)
 	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, firstIndexing, pairs)
@@ -410,21 +409,40 @@ func IndexBlocks(
 // indexOwedDocument's own early return is a short cut, not this fence: it spares the work of a
 // pass whose version is already settled, and it reads before the write rather than deciding it.
 func standsAtVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int) (bool, error) {
-	var stands int
 	err := tx.QueryRow(ctx, `
 		insert into document_block_versions (artifact_id, version) values ($1, $2)
 		on conflict (artifact_id) do update set version = excluded.version
 		where document_block_versions.version is null or document_block_versions.version < excluded.version
 		returning version
-	`, artifactID, version).Scan(&stands)
+	`, artifactID, version).Scan(new(int))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("record the blocks of %s indexed at version %d: %w", artifactID, version, err)
 	}
-	return stands == version, nil
+	return true, nil
 }
+
+// OwedBlockIndexDebts is one row per document owed a block index
+// (document_block_versions.version null), each dated by the write that owed it: the created_at
+// of the latest markdown version the document holds, which is the version a tick would index,
+// or the document's own created_at where it holds no markdown version at all.
+//
+// Nothing dates the mark itself - document_block_versions is (artifact_id, version) and no more
+// (migration 0121) - so the date is derived, and the two readers of the backlog derive it from
+// this one text: the tick's own logged figure (docs.ReconcileBlockIndex) and the one
+// `envoy-dispatch census --store --sizing` prints for somebody holding the database and not the
+// log (graphcensus's blockIndexBacklogQuery). Each wraps it in its own aggregate.
+const OwedBlockIndexDebts = `
+		select coalesce(
+		         (select v.created_at from artifact_versions v
+		          where v.artifact_id = b.artifact_id and v.markdown is not null
+		          order by v.number desc limit 1),
+		         a.created_at) as owed_at
+		from document_block_versions b
+		left join artifacts a on a.id = b.artifact_id
+		where b.version is null`
 
 // indexedVersionRecord is what the version's own row says of the pass: the document's ref_key,
 // which every block's address starts with, and the actor that row records as the version's
@@ -479,11 +497,12 @@ func scanFreshBlocks(rows pgx.Rows, err error) (map[string]time.Time, error) {
 type blockFarEnd struct{ kind, id string }
 
 // reconcileBlockParents states the parent of every block of the version and projects it into
-// document_blocks.
+// document_blocks. It returns the tuples it states, which its caller appends to the pass's
+// write as it appends the reference pass's.
 //
 // It reads the parent each block holds in the store, over every block of the document and not
 // the changed ones alone, so a block another block now holds, whose own text no version
-// changed, gets its new parent here. It appends a tuple only where the render disagrees with
+// changed, gets its new parent here. It states a tuple only where the render disagrees with
 // what the store asserts: one retraction for the parent that changed, one assertion for the new
 // one. A re-index of a document nothing moved states nothing, which is what keeps a second pass
 // from asserting a parent twice, since no code may update or delete a tuple row.
@@ -506,10 +525,9 @@ func reconcileBlockParents(
 	fits []bool,
 	at time.Time,
 	writer model.Actor,
-	write *BlockIndexWrite,
-) error {
+) ([]BlockTuple, error) {
 	if len(nodes) == 0 {
-		return nil
+		return nil, nil
 	}
 	// A block whose address is no key of the store is no node of it: the parent it reaches is
 	// the nearest block above it that is one, or the document, and nothing is stated about the
@@ -539,16 +557,17 @@ func reconcileBlockParents(
 		parentIDs = append(parentIDs, parent)
 	}
 	if len(blockIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs)
 	if err != nil {
-		return fmt.Errorf("read the parents the blocks of %s hold: %w", artifactID, err)
+		return nil, fmt.Errorf("read the parents the blocks of %s hold: %w", artifactID, err)
 	}
+	var tuples []BlockTuple
 	for _, difference := range differences {
 		address := blockNodeAddress(refKey, blockIDs[difference.block])
 		for _, far := range difference.retract {
-			write.Tuples = append(write.Tuples, parentTuple(address, far.kind, far.id, at, writer, false))
+			tuples = append(tuples, parentTuple(address, far.kind, far.id, at, writer, false))
 		}
 		if difference.holds {
 			continue
@@ -557,7 +576,7 @@ func reconcileBlockParents(
 		if parent := parentIDs[difference.block]; parent != nil {
 			toKind, toID = BlockNodeKind, blockNodeAddress(refKey, *parent)
 		}
-		write.Tuples = append(write.Tuples, parentTuple(address, toKind, toID, at, writer, true))
+		tuples = append(tuples, parentTuple(address, toKind, toID, at, writer, true))
 	}
 	if _, err := tx.Exec(ctx, `
 		update document_blocks d
@@ -568,9 +587,9 @@ func reconcileBlockParents(
 		       or d.node_kind is distinct from $3
 		       or d.node_address is distinct from $4 || '#' || p.block_id)
 	`, artifactID, blockIDs, BlockNodeKind, refKey, parentIDs); err != nil {
-		return fmt.Errorf("project the parents of the blocks of %s: %w", artifactID, err)
+		return nil, fmt.Errorf("project the parents of the blocks of %s: %w", artifactID, err)
 	}
-	return nil
+	return tuples, nil
 }
 
 // parentTuple is one statement about the block that holds another: an assertion of the parent
@@ -1137,10 +1156,10 @@ func replaceBlockRefs(
 	}
 	for _, row := range written {
 		moved = append(moved, Target{Kind: row.toKind, ID: row.toID})
-		address := blockNodeAddress(refKey, row.blockID)
-		if !row.inserted || !blockNodeFits(address) {
+		if !row.inserted || !blockIDFits(refKey, row.blockID) {
 			continue
 		}
+		address := blockNodeAddress(refKey, row.blockID)
 		// Outside a first indexing the insert leaves source_seq null and the version's event
 		// fills it in this same transaction, which is what FromVersionEvent names.
 		tuples = append(tuples, BlockTuple{

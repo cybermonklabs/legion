@@ -70,6 +70,8 @@ const referencesSinceWait = time.Second
 // nothing else: a whole id is read whatever owner the reference names, as this route has always
 // read one (refs.loadAskNodes filters on the id alone). That asymmetry is deliberate. A whole id
 // already names one row, so an owner that disagrees with it says nothing this read needs; a
+// prefix names a row only within some set, and the set the reference itself names is the one
+// its writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -608,9 +610,6 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
 		return

@@ -125,7 +125,7 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 				address, state.nodeKind, state.nodeAddress, refs.BlockNodeKind)
 		}
 	}
-	gate := takeStoreCensus(t, database, false)
+	gate := takeStoreCensus(t, database)
 	gateBlocks := censusOfBlocks(t, gate)
 	if !gate.Refused() || gateBlocks.RowDifferences != int64(len(before)) {
 		t.Fatalf("the census right after the backfill refused=%t with %d block difference(s), want a refusal naming all %d blocks",
@@ -163,7 +163,7 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 	}
 
 	// The census reads zero differences, in both directions and over every kind.
-	passed := takeStoreCensus(t, database, false)
+	passed := takeStoreCensus(t, database)
 	for _, kind := range passed.Kinds {
 		for _, difference := range append(append([]graphcensus.Difference{},
 			kind.ReportedRows...), kind.ReportedNodes...) {
@@ -295,10 +295,11 @@ func currentBlockParent(t *testing.T, database *store.Store, address string) (st
 }
 
 // takeStoreCensus runs `census --store` over the test's own database, on a connection of its
-// own, exactly as the subcommand runs it.
-func takeStoreCensus(t *testing.T, database *store.Store, sizing bool) *graphcensus.StoreReport {
+// own, exactly as the subcommand runs it. It takes no growth pass: that is `--sizing`, and
+// nothing here reads it.
+func takeStoreCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), sizing)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

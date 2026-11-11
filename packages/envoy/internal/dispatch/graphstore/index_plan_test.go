@@ -36,9 +36,8 @@ const (
 )
 
 // crowdedInboxKinds are the kinds the crowded node's inbox holds, which the kinded inbox read
-// names. TupleKinds answers the same list from the store plus the kinds no tuple points into
-// this node under; the list is written out here so the count of index scans the plan must hold
-// is a number this test knows.
+// names. The list is written out here rather than read from the store, so the count of index
+// scans the plan must hold is a number this test knows.
 var crowdedInboxKinds = []string{"replies_to", "mentions", "answers", "part_of", "anchored_to"}
 
 // How many rows each shape of the seed appends. The total is above a million, which is the size
@@ -620,11 +619,11 @@ func seedTupleLog(t *testing.T, ctx context.Context, pool *store.Pool) {
 
 // kindArray writes kinds as a SQL text array literal.
 func kindArray(kinds []string) string {
-	quoted := make([]string, len(kinds))
+	literals := make([]string, len(kinds))
 	for index, kind := range kinds {
-		quoted[index] = "'" + kind + "'"
+		literals[index] = quoted(kind)
 	}
-	return "array[" + strings.Join(quoted, ",") + "]"
+	return "array[" + strings.Join(literals, ",") + "]"
 }
 
 // The probe node's own attribute and relations, and the moment the as-of reads are taken at.
@@ -1095,10 +1094,10 @@ var requiredGraphIndexes = []requiredGraphIndex{
 
 // declaredIndex is one create index a migration file holds.
 type declaredIndex struct {
-	migration            string
-	name, table          string
-	keys, predicate      string
-	unique, concurrently bool
+	migration       string
+	name, table     string
+	keys, predicate string
+	unique          bool
 }
 
 // requireIndexSetOfTheFirstMigration reads the migration files in version order and holds the
@@ -1119,7 +1118,7 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		}
 		if table := graphNodesCreateTable.FindStringSubmatch(body); table != nil {
 			if graphNodesTable != "" {
-				t.Errorf("%s creates graph_nodes, which %s already created", file, graphStoreMigration)
+				t.Errorf("%s creates graph_nodes, which %s already created", file, graphNodesTable)
 			}
 			graphNodesTable = file
 			if !strings.Contains(normalise(table[1]), "primary key (kind, id)") {
@@ -1244,13 +1243,12 @@ func indexesOf(migration, body string) []declaredIndex {
 	for _, match := range indexDeclaration.FindAllStringSubmatch(body, -1) {
 		keys, predicate := splitIndexBody(match[5])
 		indexes = append(indexes, declaredIndex{
-			migration:    migration,
-			name:         match[3],
-			table:        match[4],
-			keys:         keys,
-			predicate:    predicate,
-			unique:       strings.TrimSpace(match[1]) != "",
-			concurrently: strings.TrimSpace(match[2]) != "",
+			migration: migration,
+			name:      match[3],
+			table:     match[4],
+			keys:      keys,
+			predicate: predicate,
+			unique:    strings.TrimSpace(match[1]) != "",
 		})
 	}
 	return indexes

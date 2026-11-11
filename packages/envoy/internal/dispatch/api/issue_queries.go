@@ -514,9 +514,6 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
 		return

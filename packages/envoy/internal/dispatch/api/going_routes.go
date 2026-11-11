@@ -105,9 +105,12 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := caller.Recorded()
-	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. Refused here,
-	// before the record, so no run is stored and no quota is spent on an answer no reader of it
-	// would ever be served.
+	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. The rule is
+	// graphstore.ProvesAuthor, which lives beside the store that records an author, and which
+	// every author-private read of the graph asks too, in Go and in SQL
+	// (graphstore.AuthorIsSQL): a credential this route calls nobody is the credential those
+	// reads call nobody. Refused here, before the record, so no run is stored and no quota is
+	// spent on an answer no reader of it would ever be served.
 	if !graphstore.ProvesAuthor(actor) {
 		writeError(w, codeGoingAskerNamesNobody, http.StatusForbidden,
 			"this credential names nobody, so the run it asked for would be nobody's to read: ask under a credential that names a session, a person or a workload")
@@ -291,9 +294,11 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
 	// would make any two personal tokens one writer: a run is read by the credential that
 	// asked it. A run whose author names nobody is read by nobody, and that is a test of its
-	// own because SameCredential calls two credentials that name nobody the one credential:
-	// without it, such a row would be served to every holder of the deployment's shared token,
-	// which resolves as {} exactly as that author does.
+	// own - graphstore.ProvesAuthor again, asked here of the author the row holds - because
+	// SameCredential calls two credentials that name nobody the one credential: without it,
+	// such a row would be served to every holder of the deployment's shared token, which
+	// resolves as {} exactly as that author does. The POST refuses such an asker before
+	// anything is recorded, so no row this route writes carries one.
 	if !graphstore.ProvesAuthor(request.Author) || !request.Author.SameCredential(actor) {
 		writeGoingRequestNotFound(w)
 		return
@@ -365,19 +370,6 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-
-// The one rule that answers whether a credential proves an author lives beside the store that
-// records one: graphstore.ProvesAuthor. It is asked twice here, of the asker and of the run's
-// author. The POST refuses an asker that proves none (codeGoingAskerNamesNobody) before
-// anything is recorded, so no row this route writes has such an author. The stream asks it of
-// the author it read all the same, because model.Actor.SameCredential reports two credentials
-// that prove no author as one: that comparison alone would serve a row authored by {} to every
-// holder of the shared bearer, and the stream serves a run to the credential that asked it and
-// to no other.
-//
-// Every author-private read of the graph asks the same rule, in Go and in SQL
-// (graphstore.AuthorIsSQL), so a credential this route calls nobody is the credential those
-// reads call nobody too.
 
 // goingResumeFrom is the sequence a reader holds, from the Last-Event-ID header the stream's own
 // `id:` lines set: the stream answers the frames past it. Anything that is not a sequence this

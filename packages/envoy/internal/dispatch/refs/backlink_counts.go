@@ -3,6 +3,7 @@ package refs
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -14,7 +15,7 @@ import (
 
 // BacklinkCounts is how many edges point at each of ids, in one grouped query: the number a
 // list carries beside a row, counted the same way the rows behind it are listed. It unions only
-// the arms of graph_edges that can point at a node of toKind - the five mention arms every kind
+// the arms of graph_edges that can point at a node of toKind - the six mention arms every kind
 // has and the structural arms declared for that kind (backlinkArms) - and counts them in one
 // statement, each arm read through its own index, rather than leaving the planner the whole
 // 26-arm view on every call. The counts are the view's, arm for arm. A kind with no entry in the
@@ -500,12 +501,7 @@ var backlinkArms = map[string][]backlinkArm{
 // counts the same kinds the count itself declares rather than keeping a list of its own
 // (docs.TestGraphEdgesLosesEveryArmOverAMovedKind).
 func BacklinkKinds() []string {
-	kinds := make([]string, 0, len(backlinkArms))
-	for kind := range backlinkArms {
-		kinds = append(kinds, kind)
-	}
-	slices.Sort(kinds)
-	return kinds
+	return slices.Sorted(maps.Keys(backlinkArms))
 }
 
 // mentionBacklinkArms is the six arms of graph_edges whose edge kind and target kind are

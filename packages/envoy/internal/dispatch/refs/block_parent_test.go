@@ -3,6 +3,7 @@ package refs
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -338,7 +339,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 			t.Errorf("block %s's parent was caused by event %d, want the version's own %d", block, tuple.SourceEvent, first.event)
 		}
 	}
-	if got := nested.projectedParents(t); !mapsEqual(got, wantParents) {
+	if got := nested.projectedParents(t); !maps.Equal(got, wantParents) {
 		t.Errorf("document_blocks projects the parents %v, want %v", got, wantParents)
 	}
 	// The block's node carries the same cause, and the write that made it names the version's
@@ -433,7 +434,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 		t.Errorf("the history of the moved block is %v, want the retraction of the parent it left", history)
 	}
 	wantMoved := map[string]string{"left": "", "right": "", "mover": "right"}
-	if got := mover.projectedParents(t); !mapsEqual(got, wantMoved) {
+	if got := mover.projectedParents(t); !maps.Equal(got, wantMoved) {
 		t.Errorf("after the move document_blocks projects %v, want %v", got, wantMoved)
 	}
 	for block, was := range wasChanged {
@@ -480,17 +481,4 @@ func statesParent(stated []graphstore.Tuple, address string, asserted bool) bool
 	return slices.ContainsFunc(stated, func(tuple graphstore.Tuple) bool {
 		return tuple.Kind == graphstore.TuplePartOf && tuple.FromID == address && tuple.Asserted == asserted
 	})
-}
-
-// mapsEqual compares two readings of the same set of blocks.
-func mapsEqual(got, want map[string]string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for key, value := range want {
-		if got[key] != value {
-			return false
-		}
-	}
-	return true
 }

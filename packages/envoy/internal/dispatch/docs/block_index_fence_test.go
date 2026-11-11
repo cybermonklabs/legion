@@ -464,12 +464,13 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 			t.Fatalf("read %s: %v", file, err)
 		}
 		text := string(body)
-		for _, statement := range owedRowWrite.FindAllString(text, -1) {
+		for _, match := range owedRowWrite.FindAllStringIndex(text, -1) {
+			statement := text[match[0]:match[1]]
 			if strings.Contains(statement, "version = null") {
 				continue
 			}
 			found++
-			enclosing := enclosingFunction(text, strings.Index(text, statement))
+			enclosing := enclosingFunction(text, match[0])
 			if !strings.HasSuffix(filepath.ToSlash(file), fenceWriterFile) || !strings.HasPrefix(enclosing, fenceWriterFunction) {
 				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writer %s in %s:\n%s",
 					file, enclosing, fenceWriterFunction, fenceWriterFile, statement)

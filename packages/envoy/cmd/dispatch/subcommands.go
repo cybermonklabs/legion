@@ -233,12 +233,13 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 
 // backfillGraphStore runs `envoy-dispatch backfill-graph-store`: it writes the nodes and
 // tuples of every comment, document block and block reference written before the node and
-// tuple store existed, in batches, one transaction each, under one event of its own
-// (graphcensus.Backfill). It is safe to run again: a row that already names its node is left
-// alone, so a run interrupted anywhere carries on from where it stopped.
+// tuple store existed, in batches, one transaction each (graphcensus.Backfill). It appends no
+// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
+// as its cause. It is safe to run again: a row that already names its node is left alone, so a
+// run interrupted anywhere carries on from where it stopped.
 //
 // A block's parent is left to the block index: the run marks each document it touched owed
-// one, and `census --store` reads a difference on every nested block until that
+// one, and `census --store` reads a difference on every backfilled block until that
 // reconciliation has drained the mark, since the reconciliation is the one writer of
 // document_blocks.parent_block_id.
 func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) int {

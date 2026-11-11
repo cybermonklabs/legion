@@ -257,12 +257,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
-fail() {
-  printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
-  exit 1
-}
-
 # send METHOD PATH [JSON]: sends METHOD PATH as the agent, with the bearer in $work/auth. The
 # answer's body goes to $work/body and its HTTP status to $status.
 send() {
@@ -270,20 +264,6 @@ send() {
   [[ $# -lt 3 ]] || data=(-H 'Content-Type: application/json' --data-binary "$3")
   status="$(curl -sS -X "$1" -o "$work/body" -w '%{http_code}' -H "@$work/auth" "${data[@]}" \
     "$base$2" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-body() { head -c 600 "$work/body"; }
-
-# want_status CODE SECTION WHAT: the last answer's status is CODE.
-want_status() {
-  [[ "$status" == "$1" ]] || fail "$2" "$3" "HTTP $status, want $1: $(body)"
-}
-
-# query SECTION WHAT SQL: one value of one row, read through DATABASE_URL. psql runs without
-# PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host.
-query() {
-  local section="$1" what="$2" sql="$3"
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
-    fail "$section" "$what" "psql: $(<"$work/psql")"
 }
 
 # remove_corpus deletes the documents this run wrote under its own issue, the blocks they hold
@@ -371,7 +351,7 @@ SQL
   printf 'graph-sizing.sh: removed the corpus it wrote under %s: %s document(s), %s block(s), %s node(s) and %s tuple(s), with every row that references those documents\n' \
     "$key" "${counted%%|*}" "${counted##*|}" \
     "$(echo "$removed" | cut -d'|' -f2)" "$(echo "$removed" | cut -d'|' -f3)"
-  printf 'graph-sizing.sh: it leaves %s itself, closed, and the one comment C2 wrote with that comment own node and tuples, which no run of this driver grows; the spec this run wrote with the issue went with the corpus, as a document of that issue\n' "$key"
+  printf 'graph-sizing.sh: it leaves %s itself, closed, and the one comment C2 wrote with that comment'"'"'s own node and tuples, which no run of this driver grows; the spec this run wrote with the issue went with the corpus, as a document of that issue\n' "$key"
 }
 
 # want_line SECTION WHAT PATTERN: the report holds a line matching the extended regex PATTERN.
@@ -380,12 +360,12 @@ want_line() {
   pass "$1" "$2"
 }
 
-# census SECTION WHAT FILE: runs `envoy-dispatch census --store --sizing` with DATABASE_URL and
-# nothing else of this driver's, its output in FILE, and sets $census_code to its exit status.
+# census FILE: runs `envoy-dispatch census --store --sizing` with DATABASE_URL and nothing else
+# of this driver's, its output in FILE, and sets $census_code to its exit status.
 census() {
   census_code=0
   env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
-    envoy-dispatch census --store --sizing >"$3" 2>&1 || census_code=$?
+    envoy-dispatch census --store --sizing >"$1" 2>&1 || census_code=$?
 }
 
 # want_line_in SECTION WHAT FILE PATTERN: FILE holds a line matching the extended regex PATTERN,
@@ -466,11 +446,11 @@ google_identity() {
   local status
   status="$(curl -sS -m 20 -H 'Metadata-Flavor: Google' -o "$work/metadata" -w '%{http_code}' \
     "$metadata_token_url" 2>"$work/curl")" ||
-    fail "$1" "read this pod own Google identity" "curl: $(<"$work/curl")"
+    fail "$1" "read this pod's own Google identity" "curl: $(<"$work/curl")"
   [[ "$status" == 200 ]] ||
-    fail "$1" "read this pod own Google identity" "the metadata server answered HTTP $status"
+    fail "$1" "read this pod's own Google identity" "the metadata server answered HTTP $status"
   jq -er '.access_token | select(length > 0)' "$work/metadata" >"$work/google-token" ||
-    fail "$1" "read this pod own Google identity" "the metadata server answer carries no access_token"
+    fail "$1" "read this pod's own Google identity" "the metadata server answer carries no access_token"
   { printf 'Authorization: Bearer '; cat "$work/google-token"; } >"$work/google-auth"
   pass "$1" "the metadata server gave this pod its own access token, $(($(wc -c <"$work/google-token") - 1)) characters beginning $(head -c 4 "$work/google-token")"
 }
@@ -557,7 +537,7 @@ node_rows_before="$answer"
 pass C3 "the store holds $tuple_rows_before tuple(s) through seq $tuples_before and $node_rows_before node(s)"
 
 # C4: the command itself.
-census C4 "run the sizing census" "$work/report"
+census "$work/report"
 [[ "$census_code" == 0 ]] ||
   fail C4 "run the sizing census" "envoy-dispatch census --store --sizing exited $census_code: $(cat "$work/report")"
 pass C4 "envoy-dispatch census --store --sizing exited 0"
@@ -594,7 +574,7 @@ done
 want_line C7 "the sizing's own verdict" '^census: sizing ok$'
 
 # C8: two runs over one unchanged database print one report.
-census C8 "run the sizing census again" "$work/report2"
+census "$work/report2"
 [[ "$census_code" == 0 ]] ||
   fail C8 "run the sizing census again" "the second run exited $census_code: $(cat "$work/report2")"
 diff -u "$work/report" "$work/report2" >"$work/diff" ||
@@ -653,11 +633,18 @@ write_document() { # BLOCKS FILE
 }
 write_document "$((defer_blocks + 1))" "$work/document.md"
 write_document "$((defer_blocks - 1))" "$work/inline.md"
-write_started="$(date +%s.%N)"
+# Both corpora's request bodies are built before either timer starts. Each window below is a
+# reading of the server, and a jq run inside one would be charged to the side that window
+# measures - which on the request side is the very figure C13 holds the loop against.
 for index in $(seq 1 "$drain_documents"); do
   jq -cn --arg name "sizing-drain-$index.md" --rawfile content "$work/document.md" --arg s "$session" \
-    '{name: $name, content: $content, actor: {kind: "session", id: $s}}' >"$work/document.json"
-  send POST "/api/v1/issues/$key/artifacts" "@$work/document.json"
+    '{name: $name, content: $content, actor: {kind: "session", id: $s}}' >"$work/drain-$index.json"
+  jq -cn --arg name "sizing-inline-$index.md" --rawfile content "$work/inline.md" --arg s "$session" \
+    '{name: $name, content: $content, actor: {kind: "session", id: $s}}' >"$work/inline-$index.json"
+done
+write_started="$(date +%s.%N)"
+for index in $(seq 1 "$drain_documents"); do
+  send POST "/api/v1/issues/$key/artifacts" "@$work/drain-$index.json"
   want_status 201 C10 "write document $index of the corpus"
 done
 write_seconds="$(since "$write_started")"
@@ -670,7 +657,7 @@ pass C10 "the window wrote $drain_documents document(s) in ${write_seconds}s, ev
 # C11: the backlog the report states while that corpus is owed. The two lines are the whole of
 # what somebody holding the database can read about this loop's debt, so an absent one is a
 # failure: a backlog nobody can read is one nobody will notice.
-census C11 "run the sizing census over the owed corpus" "$work/backlog"
+census "$work/backlog"
 [[ "$census_code" == 0 ]] ||
   fail C11 "run the sizing census over the owed corpus" \
     "envoy-dispatch census --store --sizing exited $census_code: $(cat "$work/backlog")"
@@ -761,9 +748,7 @@ pass C12 "the loop drains no slower than deferred work arrives: $(a_minute "$dra
 # bound, so their writes index them and own them: nothing of them is owed when they are written.
 inline_started="$(date +%s.%N)"
 for index in $(seq 1 "$drain_documents"); do
-  jq -cn --arg name "sizing-inline-$index.md" --rawfile content "$work/inline.md" --arg s "$session" \
-    '{name: $name, content: $content, actor: {kind: "session", id: $s}}' >"$work/document.json"
-  send POST "/api/v1/issues/$key/artifacts" "@$work/document.json"
+  send POST "/api/v1/issues/$key/artifacts" "@$work/inline-$index.json"
   want_status 201 C13 "write document $index of the in-request corpus"
 done
 inline_seconds="$(since "$inline_started")"

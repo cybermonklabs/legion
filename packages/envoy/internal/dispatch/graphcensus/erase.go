@@ -373,11 +373,36 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, kind, id string) 
 	return nil
 }
 
-// apply removes everything the run read, in the one order the foreign keys allow: the rows that
-// cannot exist without a projection row, then the projection rows, then the approvals and the
-// versions they stood on, then the tuples of both sides, then the node, and last the record of
-// what went.
+// eraseBlockTexts deletes the whole text of every block the node projects onto, which is the
+// most of the bytes an erased block holds. document_block_texts is keyed by
+// (artifact_id, block_id, version) and carries a foreign key to artifacts alone (migration
+// 0121), so the walk of single-column references into a projected table never names it and
+// the text would outlive the node that held it. It is deleted here by the pair the block's
+// own document_blocks row holds, while that row is still there, for every version of the
+// block, and counted like any other table the run emptied. A node with no document_blocks
+// row - a comment, a person - names no pair and deletes nothing.
+func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx) error {
+	tag, err := tx.Exec(ctx, `
+		delete from document_block_texts erased
+		where (erased.artifact_id, erased.block_id) in (
+			select held.artifact_id, held.block_id from document_blocks held
+			where held.node_kind = $1 and held.node_address = $2
+		)`, e.Kind, e.ID)
+	if err != nil {
+		return fmt.Errorf("delete the texts of the blocks of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	e.removed("document_block_texts", tag.RowsAffected())
+	return nil
+}
+
+// apply removes everything the run read, in the one order the foreign keys allow: the whole
+// text of every block of the node, then the rows that cannot exist without a projection row,
+// then the projection rows, then the approvals and the versions they stood on, then the tuples
+// of both sides, then the node, and last the record of what went.
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, artifacts []string, numbers []int32) error {
+	if err := e.eraseBlockTexts(ctx, tx); err != nil {
+		return err
+	}
 	for _, held := range projectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
 		if err != nil {
@@ -401,10 +426,10 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, artifacts []string, numb
 		e.removed(held.Table, tag.RowsAffected())
 	}
 	if len(artifacts) > 0 {
-		doomed := `(select 1 from unnest($1::uuid[], $2::int[]) as doomed(artifact, number)
-			where doomed.artifact = %s.artifact_id and doomed.number = %s.version)`
-		tag, err := tx.Exec(ctx, `delete from artifact_reviews where exists `+
-			fmt.Sprintf(doomed, "artifact_reviews", "artifact_reviews"), artifacts, numbers)
+		tag, err := tx.Exec(ctx, `delete from artifact_reviews where exists (
+			select 1 from unnest($1::uuid[], $2::int[]) as doomed(artifact, number)
+			where doomed.artifact = artifact_reviews.artifact_id and doomed.number = artifact_reviews.version)`,
+			artifacts, numbers)
 		if err != nil {
 			return fmt.Errorf("delete the reviews over the erased bytes: %w", err)
 		}

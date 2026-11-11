@@ -1,7 +1,8 @@
 package refs
 
 import (
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -74,12 +75,7 @@ const VisibilityMarker = "/* visibility predicate: "
 
 // VisibilityKinds is every node kind the registry holds a predicate for, sorted.
 func VisibilityKinds() []string {
-	kinds := make([]string, 0, len(visibilityPredicates))
-	for kind := range visibilityPredicates {
-		kinds = append(kinds, kind)
-	}
-	sort.Strings(kinds)
-	return kinds
+	return slices.Sorted(maps.Keys(visibilityPredicates))
 }
 
 // VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
