@@ -1328,6 +1328,11 @@ type Store interface {
 	// gates one look over many trees judges from (ReadLineFacts), rather than a read per tree
 	// under the fact lock. An issue with no gate has no entry.
 	Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[string]map[DesignStep]DesignGate, error)
+	// GatedIssues is the record of each issue of project that holds at least one design gate, by
+	// key: the records a pass over every recorded gate judges from (the daemon's boot
+	// publication), read in one query rather than one per record. An issue with no gate is left
+	// out.
+	GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	// GatesForArtifact is every gate registered on artifactID, in issue order: the document owner's
 	// gate and each copy a hand-over carried to a child of its tree. Each row carries its own step.
 	GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)

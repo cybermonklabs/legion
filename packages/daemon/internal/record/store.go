@@ -1379,6 +1379,21 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 	return gates, nil
 }
 
+// GatedIssues is the record of each issue of project that holds at least one design gate, by key;
+// an issue with no gate is left out. It is the boot's look over every recorded gate (the daemon's
+// queueRecordedGatesPublish), which judges each of these records by its own Dispatch status and
+// then reads the gates of the ones it keeps (Gates): two queries whatever the number of issues the
+// project has recorded, rather than a read per record.
+func (s *Postgres) GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error) {
+	issues, err := queryIssues(ctx, tx, "select "+issueColumns+` from issues
+		where project = $1 and exists (select 1 from design_gates where design_gates.issue = issues.key)
+		order by key`, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	return issues, nil
+}
+
 // GatesForArtifact is every gate registered on artifactID, in issue and then step order: one row
 // for each step of the document's owner that names it, and each copy a hand-over carried to a
 // child of its tree. Each row carries its own step.
