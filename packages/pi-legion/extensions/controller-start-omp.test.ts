@@ -743,57 +743,64 @@ interface SentCard {
 /**
  * How long one attempt of `ControllerInbound.noticeOnceHeld` waits for the server's answer.
  * Nothing answers a notice (`expectsLaneReceipt`, packages/envoy-client/src/delivery.ts,
- * acknowledges only a frame on the session's own agent subject), so the ordinary end of an
- * attempt is this timeout and every run pays it once. An answer that arrived after the bound
- * would be read as delivery and the notice would be lost, so the bound stands far above one:
- * the worst answer of the forty-one at-claim runs measured at this publish point cost 24.53 ms,
- * and this is ten times that. It came down from 1_000 ms to buy the cap below, which must be
- * twice the worst count those runs read while the hold stays under the listener's call
- * timeout; the three numbers trade against each other, and this is the trade measured.
+ * acknowledges only a frame on the session's own agent subject), so this timeout is the ordinary
+ * end of an attempt and every run pays it once. An answer that arrived after the bound would be
+ * read as delivery and the notice would be lost, so the bound stands at least five times the
+ * worst single answer measured under load (two busy workers against this pod's two CPUs): 600 ms
+ * is 5.4 times the 110.87 ms worst of the tester's sample of 1500 answers and 6.2 times the
+ * 96.35 ms worst of the implementer's own 1500, and of those 3000 answers none reached 600 ms.
+ * The cap below is bought with the interval and the allowance; this number is never traded down
+ * for it.
  */
-const NOTICE_PROBE_TIMEOUT_MS = 250;
+const NOTICE_PROBE_TIMEOUT_MS = 600;
 
 /**
  * How long `noticeOnceHeld` waits after an answer that the server held no subscription: the poll
- * `startController`'s `until` already uses for everything this file waits on. The cap below is
- * a count of answers read at this interval, so the two move together.
+ * `startController`'s `until` already uses for everything this file waits on. The cap below is a
+ * count of answers read at this interval, and was measured at it, so the two move together.
  */
 const NOTICE_PROBE_INTERVAL_MS = 25;
 
 /**
  * How many answers of "the server delivered it to nobody" `noticeOnceHeld` reads before it gives
- * up. The arms that read any of them are the two that publish from `beforeRoleClaimAnswer`,
- * before the role claim's answer and so before the subscription can exist. Over forty-one
- * at-claim runs at that publish point, thirty-two of them under the load k-runs asks for (two
- * busy workers against this pod's two CPUs), the probe read 47 answers at worst, which is 1.5 s
- * of waiting for the session to subscribe, and 3 at the median. This is twice that worst count,
- * so the patience it buys is about 3 s, and it is the largest the hold below allows under the
- * listener's call timeout.
+ * up. Only the arms that publish from `beforeRoleClaimAnswer` read answers at all, before the
+ * role claim's answer and so before the subscription can exist. Over the tester's eighteen
+ * loaded at-claim runs at that publish point the probe read 51, 45, 40, 37, 4, 3, 3, 3, 3, 3, 3,
+ * 3, 2, 2, 2, 2, 2 and 2 answers: a median of 3 and a worst of 51, where the rule asks for twice
+ * the worst, so this is 2.45 times it. What it covers is a run whose own worst count is 62, some
+ * 2.2 s of waiting for the session to subscribe, and 62 is as far as it reaches: at the bound
+ * and allowance above and below, the cap may not pass 125 and hold the allowance under the
+ * listener's call timeout. A later sample worse than 62 asks for a wider interval and the counts
+ * measured again, not for a lower bound.
  */
-const NOTICE_PROBE_ANSWER_CAP = 94;
+const NOTICE_PROBE_ANSWER_CAP = 125;
 
 /**
- * What the hold below allows one answer beyond the interval that follows it. The worst answer of
- * those forty-one runs was 24.53 ms, so this rounds it up. An unloaded pod answers in 4.30 ms cold
- * and 0.79 to 2.01 ms warm, which is the reading this constant carried before: a loaded answer
- * costs several times that, and the hold must bound the loaded run.
+ * What the hold allowance below allows one answer beyond the interval that follows it. It is a
+ * p99 and not a worst case: 10 ms stands above the 9.01 ms p99 of the implementer's sample of
+ * 1500 answers under load and the 6.03 ms p99 of the tester's, while the worst answer of those
+ * samples is ten times it (110.87 ms). What the expression below gives is therefore an allowance
+ * over a run of answers rather than a bound on any single one, which is why the measured
+ * `dead-subject` hold stands beside it.
  */
-const NOTICE_PROBE_ANSWER_CEILING_MS = 25;
+const NOTICE_PROBE_ANSWER_ALLOWANCE_MS = 10;
 
 /**
- * The longest `noticeOnceHeld` can hold the caller that awaits it: the attempt that ends it, plus
- * every answer the cap allows with the interval after each. 250 + 94 * (25 + 25) = 4_950 ms,
- * under LISTENER_CALL_TIMEOUT_MS (@legion/contracts,
+ * What `noticeOnceHeld` allows itself to hold the caller that awaits it: the attempt that ends
+ * it, plus every answer the cap allows with the interval after each. 600 + 125 * (25 + 10) =
+ * 4_975 ms, under LISTENER_CALL_TIMEOUT_MS (@legion/contracts,
  * packages/contracts/src/envoy-session.ts:56, 5_000 ms), which is the bound that matters: the
  * probe runs inside the handler that answers the registration `subscribeNotice` sends, and a
  * handler held for LISTENER_CALL_TIMEOUT_MS or more makes the session send that registration
- * again. Only the arms that publish from `beforeRoleClaimAnswer` read answers at all, and they
- * hold no handler; the shipped shape, which holds that registration, reads no answer and holds
- * it for the bound alone.
+ * again. Built on the p99 of one answer, this is an allowance and not the longest the probe can
+ * hold. Two arms hold a handler at all: the shipped shape, where the probe reads no answer and
+ * the hold is the bound alone, and `dead-subject`, which runs to the cap and whose hold measured
+ * 2746.23 ms at the previous head. The arms that publish from `beforeRoleClaimAnswer` hold
+ * nothing, since the stand-in drops that hook's result.
  */
-const NOTICE_PROBE_HOLD_MS =
+const NOTICE_PROBE_HOLD_ALLOWANCE_MS =
   NOTICE_PROBE_TIMEOUT_MS +
-  NOTICE_PROBE_ANSWER_CAP * (NOTICE_PROBE_INTERVAL_MS + NOTICE_PROBE_ANSWER_CEILING_MS);
+  NOTICE_PROBE_ANSWER_CAP * (NOTICE_PROBE_INTERVAL_MS + NOTICE_PROBE_ANSWER_ALLOWANCE_MS);
 
 /**
  * What reaches a controller session over the real NATS server: a card on the controller role's
@@ -939,7 +946,9 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
               throw new Error(
                 `nothing holds ${subject}: the server answered ${unheld} times, over ` +
                   `${(performance.now() - startedAt).toFixed(2)} ms, that it delivered the ` +
-                  `notice to nobody. The probe holds its caller ${NOTICE_PROBE_HOLD_MS} ms at most.`
+                  `notice to nobody. The probe allows itself ` +
+                  `${NOTICE_PROBE_HOLD_ALLOWANCE_MS} ms for a run of answers, an allowance and ` +
+                  `not a bound on the hold above.`
               );
             }
             await Bun.sleep(NOTICE_PROBE_INTERVAL_MS);
@@ -1155,8 +1164,8 @@ test.skipIf(skip)(
       },
       onNoticeInterest: async () => {
         // Awaited: the registration that follows the controller topic's subscription is answered
-        // only once the server has taken the notice, which is the hold `NOTICE_PROBE_HOLD_MS`
-        // keeps under the listener's call timeout.
+        // only once the server has taken the notice, which is the hold
+        // `NOTICE_PROBE_HOLD_ALLOWANCE_MS` keeps under the listener's call timeout.
         if (!atClaim) await publish();
       },
       fault: () => probeFault,
