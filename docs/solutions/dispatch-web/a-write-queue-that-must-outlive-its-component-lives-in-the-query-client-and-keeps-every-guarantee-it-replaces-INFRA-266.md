@@ -43,7 +43,7 @@ state does not work for this.
 - **When you move state from one scope to another, list every property the old scope enforced and
   keep a test for each.** The properties nobody names are the ones that get dropped. Changing the
   expected wire order in an existing test is a behaviour change, not test maintenance. It needs
-  the ruling of whoever owns the behaviour (the architect), not the implementer's judgement.
+  the decision of whoever owns the behaviour (the architect), not the implementer's judgement.
 - **For a native `<select>`, coalescing is a requirement, not an optimisation.** Each ArrowDown
   on a closed select fires `change`, so a reader passing through the list makes one pick per key
   press. Here every stored intermediate pick is a project default that an issue created at that

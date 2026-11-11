@@ -1741,7 +1741,7 @@ Each item below names a check, then what it does and what it requires.
 
 - `secrets-approval-ask`
 
-  a request for the approval-gated secret comes back pending with a credential-request record id (ruling 16:
+  a request for the approval-gated secret comes back pending with a credential-request record id (decision 16:
   the secret's owner and tier pick the approver at request time, naming no issue);
   the approver the broker names for it is `LEGION_E2E_APPROVAL`'s single owner, not the shared marker `anyone`, so the card is on that one owner's page and not on every signed-in person's, and the check's evidence line names the approver it read;
   the harness then cancels its own request (`agent-secrets cancel <request id>`) and reads the request back `cancelled`

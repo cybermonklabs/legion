@@ -1194,7 +1194,7 @@ test("the state golden carries each issue's repository and the project's mapping
 // discovery on; claude-code too, since one worker image carries the claude-envoy plugin and the
 // pin a pod installs Claude Code from for a role whose worker_backends names it) and withheld
 // rows, and the six live rows unchecked — no session has reported, so
-// the deployment renders each as `unchecked` with its ruling (contract 21) — and the report is
+// the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
 // (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
