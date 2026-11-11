@@ -138,10 +138,20 @@ One spec by hand is the Playwright command itself, as in
 (`bun run e2e` runs the same after the contracts and SPA builds). Playwright stops the harness
 when the run ends, a Ctrl-C included, and exits with its own status.
 
+A SIGTERM stops the stacks this suite starts and no more. A run that holds a stubbed row also
+starts Playwright's own `webServer` (`e2e/stub/static-server.ts`), which Playwright stops on a
+SIGINT and leaves running on a SIGTERM: measured at `162de706`, a signalled mixed run exited 143
+with every stack of this suite gone and that static server still serving its fixed port, so the
+next run holding a stubbed row was refused with
+`http://127.0.0.1:4319/index.html is already used`. It is Playwright's own leak, not this
+suite's - a run of the stubbed layer alone, which installs no signal handler here, leaks the
+same server - so `kill` that process, or use a Ctrl-C, which stops everything.
+
 Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
 when a client connects rather than when it begins listening, so a session
 opened on the listening URL starts its own stacks, runs rows against them, and
-stops them when the session ends: measured at this head, a second Run all in
+stops them when the session ends: measured at `162de706` on playwright 1.64.1,
+a second Run all in
 the one session left no second set of stacks, and closing it left nothing
 behind. Every project is in play in such a session, whatever `--project` the
 command line held, so it needs all three engines downloaded

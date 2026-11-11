@@ -53,14 +53,14 @@ test("an error that belongs to no row fails a run whose every row passed", async
   fresh.recordRow(false);
   expect(fresh.runPassed(), "the import under a query answered with the first tally").toBe(true);
 
-  // A worker that died, or an `afterAll` that threw after the last row of its file: the run
-  // fails and no row ends, so `e2e/failure-reporter.ts`'s `onError` is the only thing that
-  // reports it. Without it the teardown reads this run as green and deletes the stack logs
-  // that are the whole account of why the worker died.
+  // A worker-scoped fixture whose teardown threw, or another failure the runner has no row to
+  // put on: the run fails and no row ends, so `e2e/failure-reporter.ts`'s `onError` is the only
+  // thing that reports it. Without it the teardown reads this run as green and deletes the
+  // stack logs that are the whole account of why it failed.
   fresh.recordError();
   expect(
     fresh.runPassed(),
-    "A run whose only failure reached `onError` must not read as green: that is review round " +
-      "1's finding 1 with the failure one step further out."
+    "A run whose only failure reached `onError` must not read as green: a failure that belongs " +
+      "to no row still fails the run, and the logs of that run are what its reader came for."
   ).toBe(false);
 });

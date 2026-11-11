@@ -1,12 +1,12 @@
-/** `e2e/ui-argv.ts`'s classification, against the help of the Playwright this checkout installs.
+/** `e2e/playwright-argv.ts`'s classification, against the help of the Playwright this checkout
+ *  installs.
  *
- *  Two readers of one command line take their rule from that classification: `projectsOnCommandLine`
+ *  One reader in this tree takes its rule from that classification: `projectsOnCommandLine`
  *  (`e2e/configurations.ts`), which asks about a DASH token - is this `--project` an option of
- *  the run or another option's value? - and the INFRA-1280 tree's, which asks about a POSITIONAL
- *  - is this path a test-file filter or another option's value? A raise of Playwright that adds,
- *  renames, drops or reclassifies an option that takes a value moves both readings silently, and
- *  each answers wrongly in a direction nobody looks at: a run given the stubbed layer's answer
- *  meets no stack, a spec path read as a seed runs the whole suite.
+ *  the run or another option's value? A raise of Playwright that adds, renames, drops or
+ *  reclassifies an option that takes a value moves that reading silently, and it answers
+ *  wrongly in a direction nobody looks at: a run given the stubbed layer's answer meets no
+ *  stack.
  *
  *  Which options take a value is a fact about another program's interface, so this checkout
  *  cannot derive it - it can only read it where that program states it and keep the reading
@@ -18,7 +18,7 @@
 
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { optionValueClasses, valuesTakenAt } from "../ui-argv";
+import { optionValueClasses, valuesTakenAt } from "../playwright-argv";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 

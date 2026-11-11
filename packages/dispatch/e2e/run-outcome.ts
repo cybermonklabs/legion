@@ -49,9 +49,11 @@ export function recordRow(rowFailed: boolean): void {
 }
 
 /** Called for a failure that belongs to no row (`e2e/failure-reporter.ts`'s `onError`): the
- *  error of a worker that died, or of an `afterAll` that failed after the last row. It does NOT
- *  set `recorded`, which answers "did a row reach this module" and nothing else; a failure is
- *  enough on its own, since a run that recorded one has not passed whatever its rows did. */
+ *  error of a worker-scoped fixture whose teardown threw, and the other errors the runner has
+ *  no row left to put on (`e2e/failure-reporter.ts` names each path and cites the runner's
+ *  lines). It does NOT set `recorded`, which answers "did a row reach this module" and nothing
+ *  else; a failure is enough on its own, since a run that recorded one has not passed whatever
+ *  its rows did. */
 export function recordError(): void {
   failed = true;
 }

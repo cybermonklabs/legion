@@ -1,15 +1,14 @@
 /** What each `playwright test` option takes of the tokens after it, read the way the runner's own
  *  parser reads argv.
  *
- *  Two readers of one command line ask this, and they ask it of different targets.
- *  `e2e/configurations.ts`'s `projectsOnCommandLine` asks about a DASH token: is this `--project`
- *  an option of the run, or another option's value? The INFRA-1280 tree asks about a POSITIONAL:
- *  is this path a test-file filter, or another option's value? A flat `argv.some()` answers
- *  neither, because a flat argv cannot tell an option from an option's VALUE: `--grep --ui` hands
- *  Playwright `--ui` as `--grep`'s value and the run is an ordinary one, and `--shuffle
- *  e2e/claim.e2e.ts` names no spec file, because the path is the seed (dispatch://INFRA-1410,
- *  dispatch://INFRA-1280). Both readers take the classification below and `valuesTakenAt`, so
- *  neither carries a rule of its own and a reader of a positional is right by construction.
+ *  One reader in this tree asks it, and it asks about a DASH token: `e2e/configurations.ts`'s
+ *  `projectsOnCommandLine`, whose question is whether a `--project` is an option of the run or
+ *  another option's value. A flat `argv.some()` answers it wrongly, because a flat argv cannot
+ *  tell an option from an option's VALUE: `--output --project=stub` hands Playwright
+ *  `--project=stub` as the output directory and names no project at all, and `--grep --ui`
+ *  hands it `--ui` as `--grep`'s value and the run is an ordinary one (dispatch://INFRA-1410).
+ *  That reader takes the classification below and `valuesTakenAt` rather than carrying a rule
+ *  of its own.
  *
  *  The readings this is built on were taken against a configuration that refuses nothing and
  *  holds one trivial row, each command `bunx playwright test --config <that config> <arguments>`.
@@ -46,25 +45,32 @@
  *  gave `http://localhost:57029` and `--project chromium --ui-port 0 --list` gave
  *  `http://localhost:35679`.
  *
- *  A NON-DASH target, measured in the INFRA-1280 tree against that tree's own suite, where the
- *  target is a spec path and the reading is the listing it produced:
+ *  A NON-DASH target, measured in ANOTHER CHECKOUT: the INFRA-1280 tree, against that tree's
+ *  own suite, where the target is a spec path and the reading is the listing it produced. This
+ *  checkout cannot reproduce either row - its own suite lists 1,346 tests in 179 files - and
+ *  they are kept because they are the evidence for the half of the OPTIONAL rule that this
+ *  tree's reader never exercises: what such an option does with a token that does NOT begin
+ *  with a dash (dispatch://INFRA-1280).
  *
- *    --list --shuffle e2e/claim.e2e.ts       listed 1,384 tests in 179 files: the whole suite,
- *                                            the path taken as the seed and no file filtered
+ *    --list --shuffle e2e/claim.e2e.ts       listed 1,384 tests in 179 files: that tree's whole
+ *                                            suite, the path taken as the seed and no file
+ *                                            filtered
  *    --list --only-changed e2e/claim.e2e.ts  listed 0 tests in 0 files, `--only-changed <path>`
  *                                            printing `Cannot detect changed files for
  *                                            --only-changed mode: git diff <path> --name-only`
  *
  *  Together the two sets of readings settle every class. A REQUIRED-value option takes the next
  *  token whatever it looks like, a `--ui` included, which is why `--grep --ui` lists rows. An
- *  OPTIONAL-value option leaves a token that begins with a dash alone, which is why `--debug
- *  --ui` opens the UI - and takes one that does not, which is why `--shuffle e2e/claim.e2e.ts`
- *  shuffles by that path and lists every file. The dash-token readings alone would put the
- *  optional four out of a flat set and read a positional after them wrongly; the INFRA-1280
- *  readings are what fix the other half of that rule. A VARIADIC option (`--project
- *  <project-name...>`) behaves as a required one for its first value and stops at the next dash
- *  token, so `--project --ui` reads `--ui` as a project name and `--project chromium --ui`
- *  leaves `--ui` a flag.
+ *  OPTIONAL-value option leaves a token that begins with a dash ALONE, which is why `--debug
+ *  --ui` opens the UI - and that half is the one that matters here: it is why `--shuffle
+ *  --project chromium` names `chromium` to `projectsOnCommandLine`, rather than swallowing the
+ *  `--project` and answering that the run names no project
+ *  (`e2e/__tests__/projects-on-command-line.test.ts` holds the row). It TAKES a token that does
+ *  not begin with a dash, which is why `--shuffle e2e/claim.e2e.ts` shuffles by that path and
+ *  filters no file; nothing in this tree asks that, and the INFRA-1280 readings above are the
+ *  whole evidence for it. A VARIADIC option (`--project <project-name...>`) behaves as a
+ *  required one for its first value and stops at the next dash token, so `--project --ui` reads
+ *  `--ui` as a project name and `--project chromium --ui` leaves `--ui` a flag.
  */
 
 /** The class an option's value belongs to, as `bunx playwright test --help` writes it: a required
@@ -77,9 +83,9 @@ export type OptionValueClass = "optional" | "required" | "variadic";
  *  both spellings on one line where an option has a short one (`-g, --grep <grep>`), which is
  *  where the short names below come from.
  *
- *  `e2e/__tests__/ui-argv.test.ts` runs that help and asserts all three sets against it, so a
- *  raise of Playwright that adds, renames, drops or RECLASSIFIES one of these fails a test rather
- *  than silently moving where some command line's values end a year later. */
+ *  `e2e/__tests__/playwright-argv.test.ts` runs that help and asserts all three sets against
+ *  it, so a raise of Playwright that adds, renames, drops or RECLASSIFIES one of these fails a
+ *  test rather than silently moving where some command line's values end a year later. */
 export const optionValueClasses: Readonly<Record<OptionValueClass, ReadonlySet<string>>> = {
   optional: new Set(["--debug", "--only-changed", "--shuffle", "-u", "--update-snapshots"]),
   required: new Set([

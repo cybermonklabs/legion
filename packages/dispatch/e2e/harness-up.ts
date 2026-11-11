@@ -42,12 +42,19 @@ for (const [variable, value] of Object.entries(stack.env)) {
 }
 console.log("export DISPATCH_E2E_REUSE_SERVERS=1");
 
-// Until the caller stops it. The stack's processes are this process's children, so a signal that
-// ends this run has to stop them rather than leave them serving loopback ports.
+// Until the caller stops it. SIGINT is Playwright's and this script's own: the pool hands that
+// signal back once its stacks are up (`e2e/harness-pool.ts`, `unwatchInterrupt`), so from here
+// on nothing else handles it, and the stack's processes are this process's children, which a
+// Ctrl-C would otherwise leave serving loopback ports.
+//
+// SIGTERM is not listened for here. The pool keeps its own listener for that one as long as the
+// stack is up, and that listener stops this same stack and then re-raises the signal, so this
+// process ends with SIGTERM's own disposition. A second listener for it would stop one stack
+// twice at once: the other caller finds the Supervisor's children already taken and goes on to
+// `pg_ctl -m immediate stop` and to clear the run directory under a server that is still
+// shutting down, which the server reports as a failed deregistration (dispatch://INFRA-1410).
 const interrupted = Promise.withResolvers<void>();
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => interrupted.resolve());
-}
+process.once("SIGINT", () => interrupted.resolve());
 await interrupted.promise;
 // The stack wrote its output to this process's stderr rather than to a log directory, which is
 // what a run of one stack does, so there are no logs to keep.

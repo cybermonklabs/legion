@@ -1636,7 +1636,8 @@ Playwright's UI mode starts this suite's stacks itself. The UI server runs no
 `globalSetup` when it begins listening; it runs one when a client connects
 (`runGlobalSetup`, playwright 1.64.1 `lib/runner/index.js:6896-6915`), so a
 session opened on the listening URL starts its own stacks, runs rows against
-them, and stops them when the session ends. Measured at this head: with nothing
+them, and stops them when the session ends. Measured at `162de706` on
+playwright 1.64.1: with nothing
 up, the UI listened and started nothing; a browser opened on that URL made one
 run directory and listed the file's rows; Run all passed the row; a second Run
 all passed it again and made no second set of stacks; closing the session left
@@ -2245,7 +2246,20 @@ environment each worker inherits, so the config, every worker that re-evaluates 
 helper that
 reads a port at import (`e2e/api.ts`'s `baseUrl`, `e2e/plain-http-origin.ts`'s
 `plainHttpOrigin`) see the real ports. `e2e/global-teardown.ts` stops them, on a Ctrl-C as much
-as at the end of a run. Before any of that, the hook refuses a run when Playwright has not
+as at the end of a run.
+
+A signal stops the stacks this suite starts, and a SIGTERM stops no more than those. A run that
+holds a stubbed row also starts Playwright's own `webServer` (`e2e/stub/static-server.ts`,
+`e2e/playwright.config.ts`), which Playwright stops on a SIGINT and leaves running on a SIGTERM:
+measured at `162de706`, a mixed run signalled mid-row exited 143 with every stack of this suite
+gone - no Postgres, no server, no run directory - and the static server still serving on its
+fixed port, so the next run holding a stubbed row was refused by name
+(`http://127.0.0.1:4319/index.html is already used, make sure that nothing is running on the
+port/url or set reuseExistingServer:true`). It is Playwright's own, not this suite's: a run of
+the stubbed layer alone, where this suite installs no signal handler at all, leaks the same
+server. `kill` that process, or use a Ctrl-C, which stops everything.
+
+Before any of that, the hook refuses a run when Playwright has not
 downloaded a browser the run's projects launch, naming
 `bun run e2e:install` and how large that download is: Playwright's own message comes at the first
 browser launch, with every stack's harness and Postgres already up. A `--project` on the command
