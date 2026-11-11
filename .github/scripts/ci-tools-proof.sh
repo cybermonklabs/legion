@@ -210,8 +210,11 @@
 #       Every fetch the stand-in above measured, printed as the host, the decision, curl's
 #       exit, the seconds it took and the name that fetch carried, and then the reading that
 #       holds the one measurement this job keeps.
-#       It prints on every run, pass or fail, the count of the fetches that carried
-#       CI_TOOLS_PROOF_FULL_LADDER, beside the LADDER_RECORDS below that bounds it.
+#       Every run that reads the log through, whether that reading passes or refuses, also
+#       prints the count of the fetches that carried CI_TOOLS_PROOF_FULL_LADDER, beside the
+#       LADDER_RECORDS below that bounds it. The two refusals that stop before the count is
+#       taken are the absent log and the line of another shape, each of which ends the verb
+#       where it stands.
 #       It takes no argument, as `shorten-ladder` does.
 #       It refuses the job where the log is absent or empty, which is what a stand-in that
 #       never reached PATH leaves behind, so that refusal is also the reading that says the
@@ -220,13 +223,13 @@
 #       one name did, since the rig keeps one measurement and not several; where the longest
 #       fetch carrying that name is outside LADDER_FLOOR..LADDER_CEILING below, the floor being
 #       the reading that catches a kept case which stopped driving the real ladder; where more
-#       fetches carried that name than the LADDER_RECORDS below, the reading that catches that
-#       variable set wider than the one step's `env:` which carries it, since at job scope and
-#       at workflow scope the stand-in shortens nothing; where a fetch the stand-in left on the
-#       pinned ladder spent one and then failed, which is a fault shape its rule did not
-#       recognise; where a fetch the stand-in shortened exited 0, which is a fetch this job
-#       means to succeed and not one it arranged to fail; and where a line of the log is not
-#       the five-field line the stand-in writes.
+#       fetches carried that variable, whatever name they carried it under, than the
+#       LADDER_RECORDS below, the reading that catches it set wider than the one step's `env:`
+#       which carries it, since at job scope and at workflow scope the stand-in shortens
+#       nothing; where a fetch the stand-in left on the pinned ladder spent one and then
+#       failed, which is a fault shape its rule did not recognise; where a fetch the stand-in
+#       shortened exited 0, which is a fetch this job means to succeed and not one it arranged
+#       to fail; and where a line of the log is not the five-field line the stand-in writes.
 #       A fetch that spent a ladder and served the bytes is the ladder doing the work it is
 #       kept for, and it is printed as a warning that refuses nothing.
 #
@@ -319,11 +322,12 @@ LADDER_CEILING=150
 # over the log the stand-in wrote.
 # That variable is set at exactly one step's `env:` in .github/workflows/ci.yaml, the head's
 # install-crane step, so one install keeps the pinned ladder. That one install makes three
-# fetches through the stand-in: the release asset behind the fault, then the pull token and
-# then the blob of the copy the `crane` row names as its second source, which
-# ci_tools__fetch_ghcr asks for one after the other (.github/scripts/ci-tools.sh:763, 770,
-# 775). Merge_group run 42975857631, job 130374882879 (`tool-fallback`, success, head
-# 9300f28b1c), read those three as records 19 to 21 of its listing, at 63 s, 0 s and 1 s.
+# fetches through the stand-in: the release asset behind the fault, which
+# ci_tools__fetch_release reads (.github/scripts/ci-tools.sh:1006), and then the pull token and
+# the blob of the copy the `crane` row names as its second source, which ci_tools__fetch_ghcr
+# asks for one after the other (.github/scripts/ci-tools.sh:770, 775). Merge_group run
+# 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read those three
+# as records 19 to 21 of its listing, at 63 s, 0 s and 1 s.
 # A retry adds no record, because ci_tools_curl is one curl process with `--retry 7` and the
 # stand-in writes one line for each time it is called; a redirect is followed inside that same
 # process, so it adds none either. Of the five second-source words only `ghcr-mirror` costs two
@@ -331,8 +335,8 @@ LADDER_CEILING=150
 # answers after all lowers it to one.
 # What moves this number is a change in this tree: a ghcr path that reads a manifest before it
 # asks for the blob, or a second attempt inside ci_tools_fetch. The ladder-report step prints
-# the count it read beside this bound on every run, so the reading that moves it is in the log
-# of the job that holds it.
+# the count it read beside this bound, so the reading that moves it is in the log of the job
+# that holds it.
 LADDER_RECORDS=3
 
 # RFC 2606's reserved suffix, which `probe` hangs on the faulted host to make its control.
@@ -1741,7 +1745,7 @@ ladder_report() {
   # measurement is also out of window would otherwise take one of those arms and say nothing
   # of the records at all.
   if [ "$bypass_records" -gt "$LADDER_RECORDS" ]; then
-    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER under the name $kept, over the $LADDER_RECORDS this rig holds that count to. The variable belongs at one step's env: in .github/workflows/ci.yaml and nowhere else, so a second env: that carries it is what to read that file for. At job scope or at workflow scope the stand-in shortens nothing, and this job then rides a full ladder for every refusal it arranges, which is the sleep this rig exists to take out. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script, which is the one place that number is written." >&2
+    echo "::error::ci-tools-proof: $bypass_records fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the $LADDER_RECORDS this rig holds that count to, and the names they carried it under are: $kept. The variable belongs at one step's env: in .github/workflows/ci.yaml and nowhere else, so a second env: that carries it is what to read that file for. At job scope or at workflow scope the stand-in shortens nothing, and this job then rides a full ladder for every refusal it arranges, which is the sleep this rig exists to take out. Where instead the one kept case now makes more requests than it did, measure them again and move LADDER_RECORDS at the top of this script, which is the one place that number is written." >&2
     problems=$((problems + 1))
   fi
   if [ -n "$unrecognised" ]; then

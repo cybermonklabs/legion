@@ -86,7 +86,7 @@ fourth="seconds=0 decision=full host=ghcr.io exit=0 full-ladder=crane-head"
 run_report "$log"$'\n'"$fourth"
 check "exits 1" "$(is "$status" 1)"
 check "names the count it read and the bound" \
-  "$(contains "$out" "4 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER under the name crane-head, over the 3 this rig holds that count to")"
+  "$(contains "$out" "4 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to, and the names they carried it under are: crane-head")"
 check "prints no closing sentence" "$(is "$(contains "$out" "$closing")" false)"
 check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 
@@ -97,13 +97,15 @@ echo "case: a log whose every record carries the name is refused"
 run_report "$(repeat 65 "seconds=63 decision=full host=github.com exit=22 full-ladder=crane-head")"
 check "exits 1" "$(is "$status" 1)"
 check "names the count it read and the bound" \
-  "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER under the name crane-head, over the 3 this rig holds that count to")"
+  "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to, and the names they carried it under are: crane-head")"
 check "prints no closing sentence" "$(is "$(contains "$out" "$closing")" false)"
 check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 
 echo "case: a log with no record of that name still refuses for the old reason"
-# The legitimate log with one field changed on every record and nothing else, which is what a
-# run makes where the variable reaches no step at all.
+# The legitimate log with one field changed on every record and nothing else. A run where the
+# variable reaches no step writes a log of another shape as well, since the stand-in then
+# shortens every fetch of a faulted host; this fixture holds the records where they were, so
+# that the count is the one thing between it and the case above.
 run_report "${log//full-ladder=crane-head/full-ladder=none}"
 check "exits 1" "$(is "$status" 1)"
 check "the refusal that was there before speaks" \
