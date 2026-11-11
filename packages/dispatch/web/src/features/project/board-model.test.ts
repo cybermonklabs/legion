@@ -16,7 +16,7 @@ import {
   priorityLanes,
   rankInputForInsertion,
 } from "./board-model";
-import { buildItems } from "./issues-table-model";
+import { buildItems, countBy } from "./issues-table-model";
 import { boardWithFacts } from "./legion-board.fixture";
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
@@ -155,7 +155,7 @@ test("omits status columns outside the view filter while retaining in-view targe
   });
 });
 
-test("keeps a project without Legion board cards in Dispatch status columns", () => {
+test("uses the lifecycle stage mapping without a Legion board card", () => {
   const [item] = buildItems(
     [issue({ key: "CORE-1", labels: ["legion"], status: "in_progress" })],
     (actor) => actor.id
@@ -164,8 +164,28 @@ test("keeps a project without Legion board cards in Dispatch status columns", ()
 
   const columns = groupItemsByStage([item]);
 
-  expect(columns.map((column) => column.stage)).not.toContain("phase:implementing");
-  expect(columns.find((column) => column.stage === "status:in_progress")?.items).toEqual([item]);
+  expect(columns.find((column) => column.stage === "phase:implementing")?.items).toEqual([item]);
+  expect(columns.find((column) => column.stage === "status:in_progress")?.items).toEqual([]);
+});
+
+test("groups the same populated stages the bar counts", () => {
+  const items = buildItems(
+    [
+      issue({ key: "CORE-1", labels: ["legion"], status: "in_progress" }),
+      issue({ key: "CORE-2", status: "in_progress" }),
+    ],
+    (actor) => actor.id
+  );
+  const barCounts = countBy(items, "stage", true).map(({ count, value }) => [value, count]);
+  const boardCounts = groupItemsByStage(items)
+    .filter((column) => column.items.length > 0)
+    .map((column) => [column.stage, column.items.length]);
+
+  expect(barCounts).toEqual([
+    ["status:in_progress", 1],
+    ["phase:implementing", 1],
+  ]);
+  expect(boardCounts).toEqual(barCounts);
 });
 
 test("keeps an optimistic reorder in place instead of re-sorting the column by stale rank", () => {

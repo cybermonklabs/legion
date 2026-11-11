@@ -109,8 +109,10 @@ test("writing keeps only state that differs from a view", () => {
   ).toBe("view=slots&f.slot_use=");
 });
 
-test("a view change ignores paging and size but keeps explicit controls", () => {
-  const unchanged = new URLSearchParams("view=in-flight&page=2&size=100");
+test("a view change ignores page-owned layout, columns, paging and size", () => {
+  const unchanged = new URLSearchParams(
+    "view=in-flight&layout=board&cols=key,title&page=2&size=100"
+  );
   expect(viewIsChanged(unchanged, readUrl(unchanged, true), true)).toBe(false);
 
   const overridden = new URLSearchParams("view=in-flight&f.stage=phase:implementing");

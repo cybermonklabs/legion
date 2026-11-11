@@ -66,16 +66,6 @@ export interface BoardStageFilter {
   readonly statuses?: readonly string[];
 }
 
-/** A phase exists on the Board only when its card came from the Legion board response.
- * `stageOf` gives a Legion-labelled issue a table stage before that response arrives; without
- * a card the Board keeps the project's normal Dispatch status columns. */
-function boardStageOf(item: Item): string {
-  const stage = stageOf(item);
-  return item.legion === undefined && stage.startsWith("phase:")
-    ? `status:${item.issue.status}`
-    : stage;
-}
-
 /** Places the Dispatch status targets and occupied Legion phases the active view can hold in
  * lifecycle order. A Status filter limits drop targets, while a Stage filter limits both kinds
  * of column directly. */
@@ -87,7 +77,7 @@ export function groupItemsByStage(
   const allowedStatuses = filter?.statuses === undefined ? undefined : new Set(filter.statuses);
   const itemsByStage = new Map<string, Item[]>();
   for (const item of items) {
-    const stage = boardStageOf(item);
+    const stage = stageOf(item);
     const current = itemsByStage.get(stage);
     if (current === undefined) itemsByStage.set(stage, [item]);
     else current.push(item);
@@ -320,7 +310,7 @@ export function groupItemsByLane(items: readonly Item[], filter?: BoardStageFilt
   const columns = groupItemsByStage(items, filter);
   const cells = new Map<string, Item[]>();
   for (const item of items) {
-    const key = `${laneKey(issuePriority(item.issue.priority))}|${boardStageOf(item)}`;
+    const key = `${laneKey(issuePriority(item.issue.priority))}|${stageOf(item)}`;
     const current = cells.get(key);
     if (current === undefined) cells.set(key, [item]);
     else current.push(item);

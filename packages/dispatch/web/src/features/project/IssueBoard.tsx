@@ -20,7 +20,7 @@ import { userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
-import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { LabelPill, Pill } from "../../components/Pill";
 import { copyText } from "../../lib/clipboard";
 import {
   borderDefault,
@@ -69,7 +69,6 @@ import {
   type PriorityLane,
   type StageColumn,
   type StageLane,
-  statusLabel,
 } from "./board-model";
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
@@ -245,11 +244,7 @@ const BoardColumnView = memo(function BoardColumnView({
         <div
           className={`flex items-center justify-between gap-2 text-base font-semibold ${textPrimaryOnSurface}`}
         >
-          {status === undefined ? (
-            <span>{stageText(column.stage)}</span>
-          ) : (
-            <StatusPill>{statusLabel(status)}</StatusPill>
-          )}
+          <span>{stageText(column.stage)}</span>
           <Pill>{column.items.length}</Pill>
         </div>
       </header>

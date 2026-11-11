@@ -996,7 +996,7 @@ export function writeUrl(params: URLSearchParams, state: View, hasLegion = false
 /** Whether serializing this view leaves a control that differs from the selected view. */
 export function viewIsChanged(params: URLSearchParams, state: View, hasLegion = false): boolean {
   return [...new Set(writeUrl(params, state, hasLegion).keys())].some(
-    (key) => !["view", "page", "size"].includes(key)
+    (key) => !["view", "layout", "cols", "page", "size"].includes(key)
   );
 }
 

@@ -18,12 +18,13 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { projectIssuesQuery } from "../../api/queries";
-import type { Issue, IssueSummary, UserState } from "../../api/types";
+import type { Issue, IssueSummary, LegionBoardResponse, UserState } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
 import { IssueBoard } from "./IssueBoard";
 import { buildItems } from "./issues-table-model";
+import { boardWithFacts } from "./legion-board.fixture";
 
 function CurrentRoute(): ReactNode {
   const location = useLocation();
@@ -74,7 +75,8 @@ function renderBoard(
   showEdges?: boolean,
   list: IssueSummary[] = issues,
   initialEntry = "/projects/CORE",
-  lanes?: boolean
+  lanes?: boolean,
+  board?: LegionBoardResponse
 ) {
   const listIssues = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
     const labels = options.label ?? [];
@@ -89,7 +91,7 @@ function renderBoard(
     const listing = useQuery(projectIssuesQuery("CORE", [], true));
     return (
       <IssueBoard
-        items={buildItems(listing.data ?? [], (actor) => actor.id)}
+        items={buildItems(listing.data ?? [], (actor) => actor.id, [], undefined, board)}
         lanes={lanes}
         listingKeys={[boardListKey]}
         project="CORE"
@@ -148,6 +150,33 @@ test("board shows all nine columns when the edges are expanded", async () => {
         name: "CORE-3 Shipped",
       })
     ).toBeDefined();
+  } finally {
+    cleanup();
+  }
+});
+
+test("Board status and phase headers use the same plain heading style", async () => {
+  const { cleanup } = renderBoard(
+    {},
+    true,
+    [
+      issue({ key: "ACME-1", status: "in_progress" }),
+      issue({ key: "CORE-2", status: "in_progress" }),
+    ],
+    "/projects/CORE",
+    undefined,
+    boardWithFacts()
+  );
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const headers = ["In progress", "Implementing"].map((stage) =>
+      within(within(board).getByRole("region", { name: stage })).getByTestId("board-column-header")
+    );
+
+    for (const header of headers) {
+      expect(header.querySelector(".uppercase")).toBeNull();
+      expect(header.querySelector('[aria-hidden="true"]')).toBeNull();
+    }
   } finally {
     cleanup();
   }
