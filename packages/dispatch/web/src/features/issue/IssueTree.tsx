@@ -138,11 +138,18 @@ export function IssueTree({
   // A reader who zoomed into a node reads the tree from there: the node is the tree's root,
   // the path above it the breadcrumb, and everything below it folded as it was. At 1024 px and
   // below the tree is always zoomed, one node at a time, which is `zoomedRows`.
-  const rooted =
-    zoom === undefined || zoom === root.id ? root : (pathTo(root, zoom)?.at(-1) ?? root);
+  const rootedPath = (zoom === undefined || zoom === root.id ? undefined : pathTo(root, zoom)) ?? [
+    root,
+  ];
+  const rooted = rootedPath.at(-1) ?? root;
+  // The fold is seeded with the path the breadcrumb holds, so a row is keyed by its path from
+  // the issue whether or not the reader has zoomed: a body they pinned, the row they are
+  // editing and the tree's one tab stop are held by that key, and a zoom either way leaves
+  // them where they are (`rowKeyOf`).
+  const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
   const rows = zoomed
     ? zoomedRows(root, on, context)
-    : treeRows(rooted, cycle === EVERYTHING ? everythingOpened(rooted) : shown);
+    : treeRows(rooted, cycle === EVERYTHING ? everythingOpened(rooted) : shown, rootedAbove);
   const breadcrumb: readonly TreeNode[] = zoomed
     ? zoomBreadcrumb(root, on)
     : zoom === undefined
@@ -225,12 +232,17 @@ export function IssueTree({
       // parent: the node itself is then one of the rows, whatever the zoom was and however
       // deep it sits. Leaving the zoom where it stood drew the second open question nowhere,
       // and the key reported nothing because the row it asked for was never on the page.
+      // A zoom that already names the target is left alone: that is `.`, which zooms into the
+      // focused node and then takes the reader to it (`useTreeKeymap.ts`'s `tree-zoom-in`),
+      // and zooming to the parent there undid the zoom the key had just made.
       // Zooming out of a node the target sits outside of holds the issue's own id rather than
       // nothing chosen: nothing chosen falls back to where the tree opened (`on`, above), not
       // to the whole issue.
       setZoom((held) =>
         zoomed
-          ? (above.at(-1) ?? root.id)
+          ? held === id
+            ? held
+            : (above.at(-1) ?? root.id)
           : held === undefined || held === id || above.includes(held)
             ? held
             : root.id

@@ -307,3 +307,91 @@ test("q reaches every open question while the tree is read one node at a time", 
   await waitFor(() => expect(focusedRow(view.container)).toBe("ask-2"));
   expect(view.reports.at(-1)).toBe("");
 });
+
+// R6: `.` zooms into the focused node, and the key then takes the reader to that node so its
+// row keeps the focus (`useTreeKeymap.ts`'s `tree-zoom-in`). Where the tree is read one node
+// at a time, taking a reader to a node zooms to that node's parent, which undid the zoom the
+// key had just made: `.` drew the rows it started from, and on the zoomed node's own row it
+// walked back out one level instead.
+test(". zooms into the focused node while the tree is read one node at a time", async () => {
+  setViewport(1024);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "spec#b-r1", type: "requirement" })],
+        id: "spec",
+        type: "document",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  const [row] = rowsFor(view.container, "spec");
+  if (row === undefined) throw new Error("the document has no row");
+
+  await act(async () => row.focus());
+  await user.keyboard(".");
+  // The tree is on the document now: its own row and what it holds, with the issue left
+  // behind in the breadcrumb above the rows.
+  await waitFor(() => expect(rowsFor(view.container, "spec#b-r1").length).toBe(1));
+  expect(rowsFor(view.container, KEY).length).toBe(0);
+  expect(view.getByRole("button", { name: KEY })).toBeTruthy();
+
+  // On the zoomed node's own row - which is where the key left the focus - `.` holds the zoom
+  // where it is rather than taking the reader back out of it.
+  await user.keyboard(".");
+  expect(rowsFor(view.container, "spec#b-r1").length).toBe(1);
+  expect(rowsFor(view.container, KEY).length).toBe(0);
+});
+
+// R9: a row's key is the path from the issue down to it, and it holds the pin, the open body
+// and the tree's one tab stop. The whole tree drawn from a zoomed node keyed its rows from
+// that node, so a zoom re-keyed every row below it: a pin made before the zoom closed as the
+// reader zoomed in, and one made while zoomed was lost on the way out.
+test("a row keeps its key, and its pin, through a zoom in and back out", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "verification#b-c1", type: "check" })],
+        id: "spec#b-r1",
+        type: "requirement",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  const [check] = rowsFor(view.container, "verification#b-c1");
+  const [requirement] = rowsFor(view.container, "spec#b-r1");
+  if (check === undefined || requirement === undefined) throw new Error("the tree drew no rows");
+  const keyOfCheck = check.getAttribute("data-row-key");
+
+  await act(async () => check.focus());
+  await user.keyboard("o");
+  await waitFor(() => expect(check.querySelector("[data-pinned]")).toBeTruthy());
+
+  // Zoomed into the requirement, the check is the same row under the same key, so the body
+  // the reader pinned open is still open.
+  await act(async () => requirement.focus());
+  await user.keyboard(".");
+  await waitFor(() => expect(rowsFor(view.container, KEY).length).toBe(0));
+  const [zoomedCheck] = rowsFor(view.container, "verification#b-c1");
+  expect(zoomedCheck?.getAttribute("data-row-key")).toBe(keyOfCheck);
+  expect(zoomedCheck?.querySelector("[data-pinned]")).toBeTruthy();
+
+  // A pin made while zoomed is on the same row once the reader is back out of the zoom.
+  await user.keyboard("o");
+  await waitFor(() =>
+    expect(rowsFor(view.container, "spec#b-r1")[0]?.querySelector("[data-pinned]")).toBeTruthy()
+  );
+  await user.keyboard(",");
+  await waitFor(() => expect(rowsFor(view.container, KEY).length).toBe(1));
+  expect(rowsFor(view.container, "spec#b-r1")[0]?.querySelector("[data-pinned]")).toBeTruthy();
+  expect(
+    rowsFor(view.container, "verification#b-c1")[0]?.querySelector("[data-pinned]")
+  ).toBeTruthy();
+});

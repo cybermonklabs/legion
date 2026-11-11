@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
-import { treeRows } from "./tree-fold";
+import { pathTo, treeRows, zoomedRows } from "./tree-fold";
 import {
   decisionBehind,
   everythingOpened,
@@ -131,5 +131,48 @@ test("a node drawn under two requirements gives every row below it a key of its 
   expect(folded.filter((key) => key.startsWith("deeper:"))).toEqual([
     "deeper:CORE-1>spec#b-r1>verification-md#b-c1",
     "deeper:CORE-1>spec#b-r2>verification-md#b-c1",
+  ]);
+});
+
+// R9: a reader who zooms into a node at 1440 px reads the tree from that node
+// (`IssueTree.tsx`), and what a key holds - the pin, the open body, the tree's one tab stop -
+// outlives the zoom in both directions. So the rows drawn from a node are keyed by the path
+// from the issue, which the fold is seeded with, and not by the path from the zoom.
+test("a row keeps its key when the tree is drawn from the node a zoom is on", () => {
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [node("verification-md#b-c1", "check")]),
+  ]);
+  const above = pathTo(root, "spec#b-r1") ?? [];
+
+  const whole = treeRows(root, everythingOpened(root)).map(rowKeyOf);
+  const zoomed = treeRows(
+    above.at(-1) ?? root,
+    everythingOpened(root),
+    above.slice(0, -1).map((one) => one.id)
+  ).map(rowKeyOf);
+  expect(zoomed).toEqual(["CORE-1>spec#b-r1", "CORE-1>spec#b-r1>verification-md#b-c1"]);
+  expect(whole).toEqual(["CORE-1", ...zoomed]);
+});
+
+// R9: the zoomed tree hoists a match out of a context ancestor and carries the trail down to
+// the first open question after the child the trail runs through (`zoomedRows`), so one node
+// is reached both ways. Given one trail apiece those rows shared a key: over the tree below,
+// `zoomedRows(root, undefined, new Set(["spec"]))` drew `spec#b-r1` and `spec#b-q1` twice,
+// keyed `CORE-1>spec#b-r1` and `CORE-1>spec#b-q1` both times. Each row carries the path it is
+// drawn under instead, so two placements are two keys.
+test("every row of a zoomed drawing has a key of its own", () => {
+  const under = node("spec#b-r1", "requirement", [
+    node("spec#b-q1", "ask", [], { question: true, state: "open" }),
+  ]);
+  const root = node("CORE-1", "issue", [node("spec", "document", [under]), under]);
+
+  const keys = zoomedRows(root, undefined, new Set(["spec"])).map(rowKeyOf);
+  expect(new Set(keys).size).toBe(keys.length);
+  expect(keys).toEqual([
+    "CORE-1",
+    "CORE-1>spec>spec#b-r1",
+    "CORE-1>spec>spec#b-r1>spec#b-q1",
+    "CORE-1>spec#b-r1",
+    "CORE-1>spec#b-r1>spec#b-q1",
   ]);
 });

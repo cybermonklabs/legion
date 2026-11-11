@@ -113,8 +113,17 @@ export function frontier(root: TreeNode): ReadonlySet<string> {
  * the frontier runs through it, when the reader opened it, or when it is the reasoning rather
  * than a set the reader opens - and folded shut, whichever of those holds, once the reader has
  * folded it by hand, because a branch a reader cannot close is a branch they cannot read past.
+ *
+ * `above` is the path down to `root` itself, outermost first: the ids a reader who zoomed into
+ * it left above the tree (`IssueTree.tsx`). It seeds the trails, so every row is keyed by its
+ * path from the issue however much of the tree is drawn, and the pin, the open body and the
+ * tree's one tab stop a key holds survive a zoom in both directions (`rowKeyOf`).
  */
-export function treeRows(root: TreeNode, opened: OpenedBranches = NOTHING_OPENED): DrawnRow[] {
+export function treeRows(
+  root: TreeNode,
+  opened: OpenedBranches = NOTHING_OPENED,
+  above: readonly string[] = []
+): DrawnRow[] {
   const path = frontier(root);
   const rows: DrawnRow[] = [];
   const walk = (node: TreeNode, level: number, trail: readonly string[]): void => {
@@ -155,8 +164,16 @@ export function treeRows(root: TreeNode, opened: OpenedBranches = NOTHING_OPENED
     const below = [...trail, node.id];
     for (const child of node.children) walk(child, level + 1, below);
   };
-  walk(root, 1, []);
+  walk(root, 1, above);
   return rows;
+}
+
+/** One row the zoomed tree draws below the node it is on: the node, and the path it is drawn
+ *  under. That path is the row's own rather than the zoomed node's, because one node is drawn
+ *  under two parents (R23) and the zoomed tree reaches it both ways. */
+interface ZoomedRow {
+  readonly node: TreeNode;
+  readonly under: readonly string[];
 }
 
 /**
@@ -190,18 +207,36 @@ export function zoomedRows(
   const above = pathTo(root, zoom ?? root.id) ?? [root];
   const node = above.at(-1) ?? root;
   const trail = firstQuestion(root, [root]) ?? [];
-  const matched = (of: TreeNode): TreeNode[] =>
-    of.children.flatMap((child) => (context.has(child.id) ? matched(child) : [child]));
-  // Every row below the node, in reading order: its children, with the rest of the trail
-  // after whichever of them the trail runs through.
-  const below: TreeNode[] = [];
-  for (const child of matched(node)) {
-    const at = trail.findIndex((one) => one.id === child.id);
-    below.push(...(at === -1 ? [child] : trail.slice(at)));
-  }
   // The path down to the node the tree is zoomed on, which its rows are told apart by even
   // though the breadcrumb draws it rather than a row apiece.
   const path = above.slice(0, -1).map((one) => one.id);
+  const under = [...path, node.id];
+  // The children of `of` the preset kept, each with the path it is drawn under: a match
+  // hoisted out of a context ancestor hangs under that ancestor, not under the zoomed node.
+  const matched = (of: TreeNode, within: readonly string[]): ZoomedRow[] =>
+    of.children.flatMap((child) =>
+      context.has(child.id)
+        ? matched(child, [...within, child.id])
+        : [{ node: child, under: within }]
+    );
+  // Every row below the node, in reading order: its children, with the rest of the trail
+  // after whichever of them the trail runs through. Each node of that trail tail hangs under
+  // the node of the trail above it, so a node this walk reaches twice - hoisted out of a
+  // context ancestor and again down a trail - is two rows with two keys rather than one key
+  // drawn twice (`rowKeyOf`).
+  const below: ZoomedRow[] = [];
+  for (const child of matched(node, under)) {
+    const at = trail.findIndex((one) => one.id === child.node.id);
+    if (at === -1) {
+      below.push(child);
+      continue;
+    }
+    let within = child.under;
+    for (const one of trail.slice(at)) {
+      below.push({ node: one, under: within });
+      within = [...within, one.id];
+    }
+  }
   const rows: DrawnRow[] = [
     {
       ...(node.children.length > 0 ? { expanded: true } : {}),
@@ -211,11 +246,11 @@ export function zoomedRows(
       trail: path,
     },
   ];
-  const under = [...path, node.id];
-  for (const [index, child] of below.entries()) {
+  for (const [index, drawn] of below.entries()) {
     // Its own twisty says "open" exactly where the trail carries its next node into the row
     // under it, and "closed", with a count, wherever its branch is a zoom away.
-    const next = below[index + 1];
+    const child = drawn.node;
+    const next = below[index + 1]?.node;
     const unfolded = next !== undefined && child.children.includes(next);
     rows.push({
       ...(child.children.length === 0
@@ -226,7 +261,7 @@ export function zoomedRows(
       kind: "node",
       level: 2,
       node: child,
-      trail: under,
+      trail: drawn.under,
     });
   }
   return rows;
