@@ -1550,6 +1550,166 @@ func (s *Postgres) CarryMemory(ctx context.Context, tx pgx.Tx, project, key, fro
 	return tag.RowsAffected() == 1, nil
 }
 
+const assignmentColumns = `issue_key, experiment, unit, variant, mode, drawn_at, carried`
+
+// scanAssignment reads an assignment row with the issue it is keyed by, since the readers of many
+// issues' rows group by that key and the reader of one issue's rows already knows it.
+func scanAssignment(row scanner) (string, Assignment, error) {
+	var issue string
+	var assignment Assignment
+	var drawnAt *time.Time
+	if err := row.Scan(&issue, &assignment.Experiment, &assignment.Unit, &assignment.Variant,
+		&assignment.Mode, &drawnAt, &assignment.Carried); err != nil {
+		return "", Assignment{}, err
+	}
+	if drawnAt != nil {
+		utc := drawnAt.UTC()
+		assignment.DrawnAt = &utc
+	}
+	return issue, assignment, nil
+}
+
+// PutAssignments records what issue's unit runs each of rows' experiments under, once: the insert
+// does nothing where a row for that issue and experiment stands, so an experiment the unit has
+// been running under keeps the arm, the mode and the instant it was drawn with, whatever the
+// project's file says by now. Nothing here ever updates a row. It reports how many rows it wrote.
+//
+// The write is guarded by the issue's own record, which it selects from: a key the daemon holds no
+// record for — an operator's spawn, whose tree's root the daemon never recorded — writes no row
+// and raises nothing, exactly as DrawMemory's `where key = $1` does. Without the guard the row's
+// foreign key would refuse such a write instead, and an operator's tree would fail its admission
+// rather than quietly run under no recorded arm.
+func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	experiments := make([]string, len(rows))
+	units := make([]string, len(rows))
+	variants := make([]string, len(rows))
+	modes := make([]string, len(rows))
+	drawnAt := make([]*time.Time, len(rows))
+	carried := make([]bool, len(rows))
+	for i, row := range rows {
+		experiments[i], units[i] = row.Experiment, row.Unit
+		variants[i], modes[i] = row.Variant, row.Mode
+		drawnAt[i], carried[i] = row.DrawnAt, row.Carried
+	}
+	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
+		select target.key, drawn.experiment, drawn.unit, drawn.variant, drawn.mode, drawn.drawn_at, drawn.carried
+		from issues target
+		cross join unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::boolean[])
+			as drawn(experiment, unit, variant, mode, drawn_at, carried)
+		where target.key = $1
+		on conflict (issue_key, experiment) do nothing`,
+		issue, experiments, units, variants, modes, drawnAt, carried)
+	if err != nil {
+		return 0, fmt.Errorf("record %d experiment assignments of %s: %w", len(rows), issue, err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// CarryAssignments settles the assignments of key, a child handed over as a tree of its own, from
+// the tree it left. The copy comes first: every assignment row of from's root, onto key with its
+// arm, its mode and its instant verbatim and the carried mark set, so the work that has been
+// running under those arms goes on running under them. Then each experiment of settled — the
+// experiments declared at the hand-over — is written at no variant, no mode and no instant, under
+// the same write-once insert, so it lands only for an experiment the copy left unwritten: an
+// experiment the old tree held a row for keeps the copy, and one it held none for is settled here
+// at no variant and is never drawn for later. A row key already holds stands either way. It
+// reports how many rows the two wrote.
+//
+// The driver row is the old tree's lifecycle row, under project, the normalized runtime token
+// tree_lifecycles is keyed by (issues.project is the Dispatch key). A tree with no such row was
+// never opened and hands nothing over, so key is drawn for at its own first open, which is
+// CarryMemory's rule and the same join. The old tree's root record is not required — an operator
+// opened a tree the daemon recorded no root for — since the copy reads the assignment rows
+// themselves, of which such a tree has none, and the settled rows then answer for it. key's own
+// record is required, as the target of CarryMemory's update is: a child the daemon holds no record
+// of takes no row and raises nothing.
+func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []Assignment) (int, error) {
+	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
+		select target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true
+		from tree_lifecycles life
+		join issues target on target.key = $2
+		join experiment_assignments source on source.issue_key = $3
+		where life.project = $1 and life.tree = $3
+		on conflict (issue_key, experiment) do nothing`, project, key, from)
+	if err != nil {
+		return 0, fmt.Errorf("carry the experiment assignments of %s to %s: %w", from, key, err)
+	}
+	written := int(tag.RowsAffected())
+	if len(settled) == 0 {
+		return written, nil
+	}
+	// Only the name and the unit of a settled row are written: what it settles the child at is no
+	// variant, no mode and no instant, whatever else the caller's row carries.
+	experiments := make([]string, len(settled))
+	units := make([]string, len(settled))
+	for i, row := range settled {
+		experiments[i], units[i] = row.Experiment, row.Unit
+	}
+	tag, err = tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
+		select target.key, declared.experiment, declared.unit, '', '', null::timestamptz, true
+		from tree_lifecycles life
+		join issues target on target.key = $2
+		cross join unnest($4::text[], $5::text[]) as declared(experiment, unit)
+		where life.project = $1 and life.tree = $3
+		on conflict (issue_key, experiment) do nothing`, project, key, from, experiments, units)
+	if err != nil {
+		return 0, fmt.Errorf("settle %d experiments of %s at the hand-over out of %s: %w", len(settled), key, from, err)
+	}
+	return written + int(tag.RowsAffected()), nil
+}
+
+// AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of one
+// unit agree. An issue with no assignment gives none.
+func (s *Postgres) AssignmentsOf(ctx context.Context, tx pgx.Tx, issue string) ([]Assignment, error) {
+	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
+		where issue_key = $1 order by experiment`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the experiment assignments of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	var assignments []Assignment
+	for rows.Next() {
+		_, assignment, err := scanAssignment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the experiment assignments of %s: %w", issue, err)
+		}
+		assignments = append(assignments, assignment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the experiment assignments of %s: %w", issue, err)
+	}
+	return assignments, nil
+}
+
+// AssignmentsFor is the assignments of each of issues, by issue and then experiment, in one read;
+// an issue with no assignment has no entry, and an empty list reads nothing.
+func (s *Postgres) AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]Assignment, error) {
+	assignments := make(map[string][]Assignment, len(issues))
+	if len(issues) == 0 {
+		return assignments, nil
+	}
+	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
+		where issue_key = any($1) order by issue_key, experiment`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the experiment assignments of %d issues: %w", len(issues), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		issue, assignment, err := scanAssignment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the experiment assignments of %d issues: %w", len(issues), err)
+		}
+		assignments[issue] = append(assignments[issue], assignment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the experiment assignments of %d issues: %w", len(issues), err)
+	}
+	return assignments, nil
+}
+
 func (s *Postgres) Declare(ctx context.Context, tx pgx.Tx, issue string, mark EventMark) error {
 	if mark.Seq <= 0 {
 		return fmt.Errorf("declare a hand-back of %s: the hand-back has no sequence", issue)

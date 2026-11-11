@@ -164,6 +164,37 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
 }
 
+// Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
+// when it was drawn and the instant, recorded once for that unit and never changed
+// (Store.PutAssignments). It is the declared experiments' record, which the four issues.memory_*
+// columns on Issue are the single hard-coded experiment's: a project declares as many experiments
+// as it likes (config.Project.ExperimentsDeclared), so each answer is a row named by its
+// experiment rather than a column named after it.
+//
+// The unit the row belongs to is the issue it is keyed by, read as that issue's tree where Unit is
+// `tree` — the key is then the tree's root — and as that issue alone where Unit is `issue`.
+type Assignment struct {
+	// Experiment is the name the project declares the experiment under (config.Experiment.Name).
+	Experiment string
+	// Unit is what the draw covered, a config.ExperimentUnit word: `tree` or `issue`. It is taken
+	// as a string because internal/config reads internal/store, whose own tests read this
+	// package, so an import of config here would close a cycle.
+	Unit string
+	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
+	// off, which draws for no unit, and the answer a hand-over settles a child at for an
+	// experiment the tree it left held no row for.
+	Variant string
+	// Mode is the experiment's mode when the draw was made (a config.ExperimentMode word), "" where
+	// a hand-over settled the row and the old tree held none, so no draw was ever made under any
+	// mode.
+	Mode string
+	// DrawnAt is when the draw was made, nil where a hand-over settled the row with no draw.
+	DrawnAt *time.Time
+	// Carried marks a row a hand-over wrote rather than a draw: the answer this unit took from the
+	// tree it left, whether that answer was an arm or no arm at all (Store.CarryAssignments).
+	Carried bool
+}
+
 // HandedOff is an issue whose implementer recorded its handoff, with the commit the handoff
 // recorded (PhaseRow.HandoffCommit).
 type HandedOff struct {
@@ -1390,6 +1421,32 @@ type Store interface {
 	// which is wider than whether a draw was copied, and writes nothing when key already carries a
 	// draw of its own or a hand-over settled it before.
 	CarryMemory(ctx context.Context, tx pgx.Tx, project, key, from string) (bool, error)
+	// PutAssignments records rows, the answers drawn for issue, and reports how many rows it
+	// wrote. Each is written once: an experiment issue already holds a row for keeps that row
+	// whatever is passed for it now, so a later pass under another mode leaves a unit on the arm
+	// it has been running under, and nothing ever updates a row. Writing nothing is no error, and
+	// an issue the daemon holds no record of — an operator's spawn — takes no row at all, as
+	// DrawMemory's own write does.
+	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error)
+	// CarryAssignments settles the assignments of key, a child handed over as a tree of its own,
+	// from the tree it left: every assignment of from's root copied verbatim — its arm, its mode
+	// and the instant it was drawn — and then each experiment of settled, the experiments declared
+	// at the hand-over, written at no variant, no mode and no instant for the experiments the copy
+	// left unwritten. Every row is marked carried, and every write is the write-once one, so an
+	// experiment the old tree held a row for keeps the copy, one it held none for is settled at no
+	// variant and is never drawn for later, and a row key already holds stands. It reports how
+	// many rows it wrote.
+	//
+	// project is the normalized runtime token tree_lifecycles is keyed by, whose row for from is
+	// the fact that the old tree was opened at all: a child out of a tree the daemon never opened
+	// carries nothing, and its own first draw answers for it, as CarryMemory's hand-over does.
+	CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []Assignment) (int, error)
+	// AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of
+	// one unit agree. An issue with no assignment gives none, which is no error.
+	AssignmentsOf(ctx context.Context, tx pgx.Tx, issue string) ([]Assignment, error)
+	// AssignmentsFor is the assignments of each of issues, by issue and then experiment, in one
+	// read; an issue with no assignment has no entry, and an empty list reads nothing.
+	AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]Assignment, error)
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error
