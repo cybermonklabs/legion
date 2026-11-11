@@ -1936,7 +1936,7 @@ export default function envoyExtension(pi: PiApi): void {
         // caller: the next frame does not wait for the model.
         noteBtw(identity?.event_id);
         if (identity?.event_id !== undefined) {
-          await ledger?.recordDeliveredFor(session, { event_id: identity.event_id });
+          await recordTaken({ event_id: identity.event_id });
         }
         const delivery = rendered.delivery;
         const answer = sideTurn(activeSessionContext);

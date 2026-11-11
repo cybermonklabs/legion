@@ -109,15 +109,19 @@ claim once written. `recordDeliveredFor(sessionID, frame)` records the same way 
 frame was delivered in while the host shuts down: it writes while the host's optional
 `writeSessionID()` still names that session, once `sessionID()` already answers none, and the
 ledger holds the frame from the call on (Oh My Pi records every BTW's event id so, before its side
-turn and before any reply is posted).
+turn and before any reply is posted). It answers whether the write that keeps the record reached
+the host, so a caller told `false` - the host moved while the write waited behind the writes
+before it, or the write failed - reports the loss rather than settling the frame in silence.
 
 The state holds the topics the session follows, so a host can follow them again after the
 listener reaped its interests;
 `restore(snapshot)` loads what a host persisted, dropping expired ledger entries and keeping the
 state at any age. A write carries the state only when it changed. A frame the host fails to show is answered `nak` and sent again, and
 on its third delivery the host shows a notice naming it instead (`showFailureNotice`); a host whose
-delivery path failed a frame outside the relay calls `liveFailed(envelope, error)`, which shows
-that notice at once. `failureNoticeFields` words that card, and
+delivery path failed a frame outside the relay calls `liveFailed(sessionID, envelope, error)`,
+which shows that notice at once, to the session the frame was addressed to and to no other: a
+frame that failed because the host moved on names a session that is closed here now, and nothing
+is shown or recorded for it then. `failureNoticeFields` words that card, and
 `envoyNoticeText` renders a notice's fields under `envoy:` in TOON, so a sender's summary that
 holds a newline stays inside its own field. Work started for one session stops, writing nothing, once
 `sessionID()` names another.

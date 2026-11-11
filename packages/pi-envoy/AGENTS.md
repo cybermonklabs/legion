@@ -547,7 +547,9 @@ a failure) is recorded at that answer, which the person gets on Dispatch. A BTW 
 refused on Dispatch and never shown as a card: it is recorded by its event id alone the moment its
 delivery starts, before the side turn and before any reply is posted, in the transcript of the
 session it was delivered in, even while that session shuts down (`recordDeliveredFor`, through
-the host's `writeSessionID`), so the stream's copy never comes back as a card that starts a turn:
+the host's `writeSessionID`, whose answer says whether that record reached the host, so a write the
+host moved past is logged as a loss rather than settled in silence), so the stream's copy never
+comes back as a card that starts a turn:
 not while the side turn runs or a reply is in flight, not when a reply fails, and not after the
 process ends mid-turn or mid-reply and the session is resumed. An answered BTW's reply records
 its dedupe key too once posted. A same-mode Retry of a refused one, a new event id under the same
