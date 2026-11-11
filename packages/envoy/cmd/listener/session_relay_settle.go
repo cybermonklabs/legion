@@ -18,12 +18,9 @@ const (
 	// pod taking the session over, is settleStoppedFrames' doc, the one statement of the rule.
 	//
 	// 750 ms is one frame's round trip - the session's reply and the relay's ack after it, all
-	// the grace has to cover - with room for a loaded box. Measured on the test host over 200
-	// frames sent one at a time, from the frame reaching the session to the consumer's ack floor
-	// passing it: p50 2.44 ms, p99 11.8 ms, slowest 37.2 ms on a quiet box, and p50 2.58 ms,
-	// p99 8.26 ms, slowest 111 ms with the rest of this package running beside it
-	// (TestAFramesRoundTripIsFarInsideTheRelaysSettleGrace, which gates on that p99), so the
-	// grace is many times the round trip it covers. The grace is a cost as well as a cover: a
+	// the grace has to cover - with room for a loaded box. That round trip is measured and
+	// gated by TestAFramesRoundTripIsFarInsideTheRelaysSettleGrace, whose doc holds the
+	// measurements and the sizing they support. The grace is a cost as well as a cover: a
 	// frame nothing answers delays nothing but its own session, whose later messages the
 	// successor sends only after relayFormerSettle anyway, and it is paid on the shutdown path
 	// too, where sessionRelays.stop waits for it out of what the receive stop left of the

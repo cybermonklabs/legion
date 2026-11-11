@@ -1,8 +1,8 @@
-// The sweep of the stream's session consumers: the loop that runs every interval and once as the
-// listener starts, and the pass it makes, which deletes the consumer of every session the session
-// registry judges gone. It is the bound behind the deregistration's own delete
-// (sessionDelivery.deleteAfterAnswer, api.go), which reaches only a registration this listener
-// removed.
+// The sweep of the stream's session consumers: the loop that runs every interval, and once as
+// the receive term that holds it starts, and the pass it makes, which deletes the consumer of
+// every session the session registry judges gone. It is the bound behind the deregistration's
+// own delete (sessionDelivery.deleteAfterAnswer, api.go), which reaches only a registration
+// this listener removed.
 
 package main
 
@@ -67,14 +67,15 @@ type sessionConsumerSweep struct {
 	delivery *sessionDelivery
 	// sessions is the fleet's record of which sessions have ended.
 	sessions sweptSessions
-	// relays holds this task's machine durable binding (sessionRelays.owned), which the pass
-	// requires: the task of a rolling deploy that relays nothing sweeps nothing either.
+	// relays holds this pod's receive term (sessionRelays.owned), which the pass requires: a pod
+	// that relays nothing sweeps nothing either. Inside holderLoops the term's own context
+	// already stops a pass, so this is the check for a caller that starts the sweep elsewhere.
 	relays *sessionRelays
 	logger *logging.Logger
 }
 
-// startSessionConsumerSweep runs a pass every interval, and one as the listener starts
-// (startSweep), under the context the listener's other KV loops run under.
+// startSessionConsumerSweep runs a pass every interval, and one as the receive term starts
+// (startSweep), under the context that term's holder-only loops run under (holderLoops, main.go).
 func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep, interval time.Duration) <-chan struct{} {
 	return startSweep(ctx, interval, sweep.pass)
 }
@@ -169,8 +170,8 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 
 // trusted reports whether this listener's copy of the session bucket may be swept on. A pass that
 // read a cold or stale copy would find every session of the fleet gone and delete every consumer
-// on the stream, so it runs only where all three hold: this task holds its machine's durable
-// binding, so it is the task of its machine that serves the session consumers at all; the copy's
+// on the stream, so it runs only where all three hold: this pod serves its machine's receive
+// term, so it is the pod of its machine that serves the session consumers at all; the copy's
 // first read of the bucket has completed (CacheReady); and the copy may be served and needs no
 // read of its own (Servable, NeedsRead), which a listener whose watcher lost its connection fails
 // until the read that restores it. A pass that is not trusted does nothing and says nothing: the

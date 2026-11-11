@@ -45,9 +45,9 @@ func newSweepRigKeeping(t *testing.T, ttl time.Duration) *sweepRig {
 		session.WithSessionLiveWindow(sweepSessionWindow),
 		session.WithSessionGoneHorizon(sweepSessionWindow),
 	)
-	// A pass runs only on the task holding its machine's durable binding (sessionRelays.owned).
-	// The rig starts no relay - nothing here pulls a consumer - so the binding is held on a relay
-	// set of its own, which the pass reads and nothing else touches.
+	// A pass runs only on the pod serving its machine's receive term (sessionRelays.owned). The
+	// rig starts no relay - nothing here pulls a consumer - so the term is held on a relay set
+	// of its own, which the pass reads and nothing else touches.
 	relays := &sessionRelays{}
 	relays.owned.Store(true)
 	return &sweepRig{
@@ -139,11 +139,11 @@ func TestTheSweepKeepsTheConsumerOfASessionOnAnotherMachine(t *testing.T) {
 	rig.requireConsumer(t, sessionID)
 }
 
-// A task that does not hold its machine's durable binding serves no session consumer of that
-// machine (sessionRelays.owned, the same binding the relays follow), so it sweeps none: its
-// pass does nothing, however plainly its copy of the bucket says the session has ended. Every
-// other row of this file holds the binding, so without this one the whole cmd/listener suite
-// passes with that gate taken out of sessionConsumerSweep.trusted (measured at 726f91df8).
+// A pod that serves no receive term of its machine serves no session consumer of that machine
+// (sessionRelays.owned, the same ownership the relays follow), so it sweeps none: its pass does
+// nothing, however plainly its copy of the bucket says the session has ended. Every other row
+// of this file holds that ownership, so without this one the whole cmd/listener suite passes
+// with that gate taken out of sessionConsumerSweep.trusted (measured at 726f91df8).
 func TestTheSweepDeletesNothingWhileAnotherTaskHoldsTheDurableBinding(t *testing.T) {
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_unbound_task"

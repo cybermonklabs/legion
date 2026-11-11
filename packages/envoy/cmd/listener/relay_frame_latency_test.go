@@ -33,9 +33,15 @@ const relayFrameP99Bound = relaySettleGrace / 2
 // which the session reads as the frame it already has, so such a frame is seen twice at worst
 // and never lost (settleStoppedFrames, and cmd/listener/README.md, "When a session can see a
 // message twice"). A p99 at the bound is the relay itself slowing, which is what would leave
-// the grace too small. Measured on the pod over 40 runs of this row (the tester's round 36):
-// the worst run had p50 5.0 ms, p90 9.6 ms and p99 116.9 ms, with its slowest single round trip
-// 520.1 ms, and the other 39 runs' slowest stayed under 169 ms.
+// the grace too small.
+//
+// The measurements the 750 ms grace is sized on, all of them, are here. On the test host over
+// 200 frames: p50 2.44 ms, p99 11.8 ms, slowest 37.2 ms on a quiet box, and p50 2.58 ms,
+// p99 8.26 ms, slowest 111 ms with the rest of this package running beside it. On the pod over
+// 40 runs of this row (the tester's round 36): the worst run had p50 5.0 ms, p90 9.6 ms and
+// p99 116.9 ms, with its slowest single round trip 520.1 ms, and the other 39 runs' slowest
+// stayed under 169 ms. So the grace is many times the round trip it covers, and the bound this
+// row gates on is many times the p99 that was measured.
 func TestAFramesRoundTripIsFarInsideTheRelaysSettleGrace(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_frame_latency"

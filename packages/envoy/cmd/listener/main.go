@@ -1785,11 +1785,13 @@ func main() {
 			// longer. It is also what retires the consumers a hub already holds from before the
 			// sweep existed. A pass that found a cold or stale copy of the session bucket would
 			// read the whole fleet as gone, so it runs here, on the pod holding the delivery
-			// lease alone, and only over a copy that is ready, servable and needs no read. The
-			// pass reads this pod's receive term again itself (sessionConsumerSweep.trusted), so
-			// a term that ends between a tick and its pass sweeps nothing, and among the pods of
-			// one machine id only the one receiving deletes a consumer
-			// (startSessionConsumerSweep, session_consumer_sweep.go).
+			// lease alone, and only over a copy that is ready, servable and needs no read. It
+			// runs under this receive term's context, which the term's end cancels before it
+			// clears the relays' ownership (receive.go, stopLoops then end), so a term that
+			// ends between a tick and its pass sweeps nothing and among the pods of one machine
+			// id only the one receiving deletes a consumer (startSessionConsumerSweep,
+			// session_consumer_sweep.go, whose trusted also reads that ownership for a caller
+			// that starts it anywhere else).
 			startSessionConsumerSweep(ctx, &sessionConsumerSweep{
 				delivery: delivery,
 				sessions: sessions,
