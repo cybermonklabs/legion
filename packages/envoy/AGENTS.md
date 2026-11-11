@@ -114,7 +114,9 @@ Each item below names a task and where its code is, then notes on it.
   `internal/bus/stream.go` (`streamMaxConsumers`, `serverDefaultsAnUnsetCap`, `ownedStream`, `refusedSettings`), `internal/bus/keeper.go`
 
   The `ENVOY_NOTIFICATIONS` stream's consumer cap is compiled in rather than read from a setting:
-  `streamMaxConsumers`, 24000, which bounds how many sessions can hold a session consumer of their own.
+  `streamMaxConsumers`, 24000, the most session consumers the stream holds at once.
+  What keeps the count under it is the two deletes ("Session consumers" below): the population is the live sessions, those that ended without deregistering within about the gone horizon plus one reap interval plus one sweep interval, and the consumers a hub holds from before that sweep.
+  The server's inactive threshold only backs those deletes up, and each listener derives it to stand above that bound (`bus.InactiveThresholdFor`).
   A start and the keeper raise a smaller deployed cap to it and never lower one, as for the copies and the byte limit.
   A deployed `-1` or `0`, a stream that sets no cap, is raised only where the connected server is nats-server 2.15.0 or later (`serverDefaultsAnUnsetCap`, read from `ConnectedServerVersion`):
   only from 2.15 does the server cap such a stream itself, at its own default of 1000 (`JSDefaultMaxConsumersPerStream`), and every server before that leaves it unlimited, so there the raise would write a cap no deployment asked for.
@@ -2400,7 +2402,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
 - Every issue has a nullable `assignee`:
-  the **lowercase** email of the person who answers its asks (`issues.assignee`, migration `0034`, indexed on open issues).
+  the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
@@ -2423,7 +2425,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - Every issue has a nullable claim: the session that intends to implement it (`issues.claimed_by` — the actor JSON
   — and `issues.claimed_at`, migration `0045`, both set or both null by `issues_claim_complete`).
-  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the human who answers the asks).
+  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on).
   The whole rule lives in `api/issue_claim.go`.
   `POST /api/v1/issues/{key}/claim` (any authenticated actor) claims it:
   the claimant is the request's own actor, the same identity every other write carries
@@ -2737,10 +2739,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `thread_logins` is every login whose Inbox the write can have moved, sorted and never nil:
   on `comment.created` and `comment.answered` the logins with a Replies row (`user_threads`) on the thread its trigger files it under (`events.ThreadLogins`:
   its ask, else the root it replies to, else itself), on an issue message's `message.created` and `message.answered` the logins with a row on its root up `in_reply_to`, and on `ask.opened`, `ask.answered` and `ask.resolved` the logins with a row on the ask's own thread.
+  `ask.asked_of` names two people instead, the person the ask waited on and the person it waits on now (`api/ask_asked_of.go`, over `api/thread_logins.go`'s `movedLogins`, the fold an assignee move's two logins go through as well), since a hand-on moves the ask between their lists and changes nothing for a reader of its thread.
   A direct (issue-less) conversation keeps no `user_threads` row, so its `message.created` and `message.answered` name the thread root's author instead, the one person whose Inbox holds that conversation's Agent row (`api/thread_logins.go`, `directThreadLogins`), and `[]` when no person opened the thread.
   An `issue.updated` or `issue.closed` that moved the status or the assignee carries it too (`issueWriteThreadLogins`), as the sorted union of two sets:
-  for a close or a reopen `events.IssueThreadLogins`, the logins with a row on one of the issue's open asks, which the Replies list leaves out while the issue is open and assigned to them, and `[]` for any other status move;
-  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves those rows out of one Inbox and into the other.
+  for a close or a reopen `events.IssueThreadLogins`, the logins with a row on one of the issue's open asks, which the Replies list leaves out while the issue is open and the ask waits on them, and `[]` for any other status move;
+  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other.
   A login in both sets is named once, and a write that moved neither carries no `thread_logins` at all.
   `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved from the row it read (`api/state.go`), or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`askSnoozeEvent`, `api/ask_snooze.go`), whose payload is exactly `{login, changed: ["snoozed"]}`:
   the stream has no per-viewer filter, so every signed-in person and agent replays it, and it names no ask and no `state` of the writer's (the writer's tabs refetch their whole Inbox);
@@ -2777,16 +2780,16 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `GET /api/v1/issues/{key}` carries the same `last_reply` and `waiting_on` on every `open_asks` row (`issueOpenAsk`, `issue_queries.go`), so the issue header applies the inbox's whose-turn rule without the inbox the `person` scope opens.
   A `comment.created` payload that replies to an ask carries `ask_state` (the ask's state at posting time) beside `ask_question`, so an agent can tell a clarification request on its open ask from discussion after the answer.
 
-- `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the owning issue's assignee (`inboxAssigneeFilter`, `api/inbox.go`):
+- `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the person each ask waits on (`inboxAssigneeFilter`, `api/inbox.go`):
   `me` is the caller's lowercase email; an `<email>` is canonicalised (`strings.ToLower(strings.TrimSpace(...))`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
-  `me` / `<email>` keep issue-owned asks with `i.assignee = $login`, `unassigned` keeps asks on unassigned issues **and every project-document ask** (a document has no assignee, so it is unassigned by definition); no value returns everything.
+  `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee)` is that login — the asks handed to them, and the asks on the issues assigned to them that nobody has handed on (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks nobody waits on, so an ask nobody was handed on an issue nobody holds **and every project-document ask nobody was handed** (a document has no assignee to fall back to); no value returns everything.
   This is the contract for shareable links and humans' scripts: the SPA asks for no assignee at all.
   It fetches the unfiltered inbox once (the one `["inbox"]` query every surface shares) and splits it client-side by the reader's own `?assignee=` filter, whose values are repeated on the page's URL and are a lowercase login or the literal `unassigned` (`features/refs/routes.ts`, `inAssigneeFilter` in `features/inbox/sections.ts`):
   no `assignee` at all is the reader's own work, every visit and nothing remembered, and the single value `everyone` is the cleared filter.
   The two `?assignee=` vocabularies spell their default the opposite way round on purpose
   — absent means everybody here and the reader alone there
   — because the page must keep reading the whole list: its counts stay about the reader while the list on screen widens.
-  A row's `Assign to me` PATCH is offered wherever an issue-owned row with no assignee is listed, and a project-document row never carries one.
+  A row's `Assign to me` PATCH is offered wherever an issue-owned row nobody waits on is listed, and a project-document row never carries one.
 
 - `GET /api/v1/asks/open` takes exactly one scope selector.
   `?author_session=<session-id>` lists every active open ask authored by that session across open issues and unlinked project documents;
@@ -2971,7 +2974,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
     The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
 
   - A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
-    that is an open ask on an open issue assigned to the caller alone (`myRepliesOwner`), so an open ask on a project document, on an unassigned issue or on another person's issue is a Reply row here.
+    that is an open ask on an open issue that waits on the caller alone (`myRepliesOwner`, over `askedOfPersonExpression`: the person the ask was handed to, and the assignee of its issue until somebody hands it on), so an open ask on a project document, on an issue nobody holds, or on another person's issue and handed to nobody, is a Reply row here.
     A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
     its row stays, since the Inbox hides it.
 
@@ -4267,7 +4270,8 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - A registration may carry `delivery`, `{"consumer": true, "epoch": "<a random string per plugin NATS connection>", "resume": {"stream_id": "<envoy_stream_id>", "seq": <n>}}` (`resume` optional).
   One that asks for a consumer, and every registration with a `port` above 0, gets the session's consumer created, or its filter set to the session's agent subject and stored topics, before the registration answers, so a message published on a newly followed stored topic after the answer is the consumer's to deliver;
-  the answer then carries `delivery`: `{"mode": "consumer", "subject": "notifications.envoy.deliver.<session id>", "stream_id": "<envoy_stream_id>", "gap": <bool>}`, or `{"mode": "core", "reason": "<no_grant | invalid_session_id | consumer_error | not_requested>"}` for a session left on the core path.
+  the answer then carries `delivery`: `{"mode": "consumer", "subject": "notifications.envoy.deliver.<session id>", "stream_id": "<envoy_stream_id>", "gap": <bool>, "consumer_start": <stream sequence>}`, or `{"mode": "core", "reason": "<no_grant | invalid_session_id | consumer_error | not_requested>"}` for a session left on the core path.
+  `consumer_start` is the stream sequence the consumer starts at (`deliveryAnswer.ConsumerStart`, from `bus.SessionConsumers.Ensure`; left out when it is 0, as a listener of an earlier release leaves it out), and the plugin keeps it as the floor of its resume point, so a session that has received nothing still comes back at its consumer's start rather than at the stream's end (`packages/envoy-client/src/consumer-delivery.ts`).
   A registration with neither gets no `delivery` field, which is also what a listener of an earlier release answers;
   a client reads a missing field as `core` ("Session consumers" below).
 
@@ -4489,14 +4493,36 @@ The listener has acknowledged a stored message without delivering it to a self-s
 
 A session that registers with `delivery.consumer` set (pi-envoy and claude-envoy ask at every registration) gets a durable JetStream pull consumer of its own on `ENVOY_NOTIFICATIONS`, `s-<session id>` (`bus.SessionConsumerName`).
 A session id that is empty or holds `.`, `*`, `>`, whitespace, `/` or `\` names no consumer, and its registration is answered `core` with `invalid_session_id`.
+The consumer lives from that registration until the session's registration ends or the listener's sweep finds the session gone, each of which deletes it ("Deleted" below);
+the server removes one neither reached after its inactive threshold.
 Only the listener's NATS user manages the consumer: it creates, reads, pulls, acknowledges and deletes it (`packages/envoy/infra/README.md`, "Permission sets").
 The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`, gets no JetStream API.
 
 - **Settings** (`bus.SessionConsumers`):
-  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited, `InactiveThreshold` 72 hours (the stream's retention, `contracts.DeliveryDuplicateWindow`), and the stream's replica count.
-  A new consumer starts at the sequence after the stream's last, which delivers what `DeliverNew` delivers, and that start is recorded on the session's entry (`consumer_start`), which is what the durable path skips by.
-  When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the consumer starts at `resume.seq + 1` instead, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
-  A `resume` without `seq`, or naming another `envoy_stream_id`, leaves the start at the stream's end.
+  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited, the stream's replica count, and an `InactiveThreshold` the listener derives at start.
+  That threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below), and it must stand above the sweep's own bound, because the server's removal writes no resume record: `bus.InactiveThresholdFor` takes the longer of `ENVOY_SESSION_GONE_HORIZON` and the session bucket's maximum age, adds one `ENVOY_SESSION_REAP_INTERVAL` and one sweep interval and a 15-minute margin, and never answers below `bus.SessionConsumerInactiveThreshold` (1 hour, which is also what a listener that set nothing carries); a listener logs the value and those windows once at start.
+  It is no bound of its own: nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
+  A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
+  That start is recorded on the session's entry and carried in the registration's answer, both as `consumer_start`: the entry's is what the durable path skips by, the answer's is the floor the plugin keeps for its resume point.
+  When the registration's `resume` names the stream's current `envoy_stream_id` and carries a `seq`, the consumer starts at `resume.seq + 1`, a `seq` of 0 included (a session that holds nothing of the stream starts at sequence 1), and a start below the stream's first sequence answers `gap: true`.
+  A `resume` without `seq`, or naming another `envoy_stream_id`, leaves the start to the session's resume record, and to the stream's end where the stream holds no record of this stream's identity for the session.
+
+- **Deleted** (`bus.SessionConsumers.Delete`):
+  the listener deletes a session's consumer in two places, so it holds a slot of the stream's consumer cap no longer.
+  A deregistration takes the consumer with the registration it removed (`deleteSessionHandler`, `sessionDelivery.deleteConsumer`): after the unconditional `DELETE /v1/sessions/<id>`, and after a conditional one answered `session.EntryDeleted`.
+  Every outcome that leaves a registration standing keeps the consumer, since a live registration stands behind it.
+  A session whose pane closed or whose box went deregisters nothing, so a sweep deletes the consumer of every session the session registry judges gone, confirmed against the `envoy_sessions` bucket itself (only `nats.ErrKeyNotFound` confirms it), at most 256 a pass (`sessionConsumerSweepCap`), every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5m by default), and only on the task that holds its machine's durable binding and over a session cache that is ready, servable and needs no read (`cmd/listener/session_consumer_sweep.go`).
+  Either delete runs under the session's lock, which a registration holds from its consumer call through its entry's `PutWithin`.
+  Under that lock it reads the session's record again from the `envoy_sessions` stream's leader (`session.SessionRegistry.RefreshFromLeader`: a `$JS.API.STREAM.MSG.GET.KV_envoy_sessions` with `last_by_subj`, not the KV direct get, which a follower of a replicated bucket can answer before it has applied a write), and deletes only on `nats.ErrKeyNotFound`.
+  Across two listener tasks the lock and that read narrow the window without closing it: the next registration creates a consumer lost there again, at the floor the delete recorded.
+  The sweep is the bound: a consumer goes within one sweep interval of the moment its session's record has left the `envoy_sessions` bucket, since the pass deletes only once the bucket holds no record.
+  That is the session reaper's first pass after `ENVOY_SESSION_GONE_HORIZON` (within one `ENVOY_SESSION_REAP_INTERVAL` of the horizon, 1m by default), or the bucket's own `MaxAge` (`ENVOY_SESSION_MAX_AGE`) when that drops the record first, each counted from the session's last registration.
+  It is also what retires the consumers a hub holds from before the sweep existed, 256 a pass.
+  Before each delete the listener records the consumer's ack floor and the stream's identity on the session's resume lane, `notifications.envoy.resume.<session id>` (`bus.SessionResumeSubject`), one message per session:
+  the stream carries that prefix (`bus.StreamCarriedSubjects`) where no consumer filter takes it (`bus.StreamSubjects`, and `consumerFilterSubjects` for a legacy durable's), no session may register a topic reaching it (`bus.ReachesPrivateStreamSubject`), and `POST /v1/messages/publish` refuses a topic under it `400`.
+  A consumer created for a session that carries no resume point of its own starts at that floor plus one rather than at the stream's end, so the session loses nothing it had not acked;
+  a record naming another `envoy_stream_id` is ignored, and a record expires with the stream's own 72-hour retention, by when its floor would name a sequence the stream no longer holds.
+  A delete whose resume record could not be published deletes nothing and leaves that consumer to the next pass.
 
 - **Filter:** the session's agent subject and each followed topic the stream stores (`bus.StreamCaptures`), reduced so that no two filters overlap (`bus.ReduceFilterSubjects`:
   a subject another contains is dropped, two that partly overlap become their common token prefix and `>`, and `X` and `X.>` both stay).
@@ -4517,7 +4543,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   it updates the filter and settings in place and sends no delete or create, which leaves no window without a consumer and writes nothing to the server's store.
   Once a restart that deletes has read the floor, the start after it stays pending on the listener's session-consumer connection until a create at it is confirmed:
   a delete or create that failed (a timeout included, and a delete the server applied whose answer was lost) leaves the consumer to the relay's retry, after 1 s doubling to 30 s while the listener owns the session, which creates a consumer it finds missing at that start, and a registration that finds it missing meanwhile creates it there too, not at its resume point or the stream's end.
-  Only a consumer missing with no pending start (never created, removed after its inactive threshold) pauses the relay until the next registration.
+  Only a consumer missing with no pending start (never created, deleted with the session's registration or by the sweep, or removed by the server after its inactive threshold) pauses the relay until the next registration, which creates it again at the resume point that registration carries, or at the session's resume record ("Deleted" above).
   The rule holds under the listener's per-session lock;
   a second listener knows nothing of the pending start, nor does a listener killed between the delete and the create.
   At most 32 relays of one listener restart at once (`relayRestartLimit`);
@@ -4559,10 +4585,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   a dedupe key written for a message this listener handed to nobody would have the next copy of the same event skipped as one the session already has, and an attempt record would have a redelivery of it skipped as one already on its way, so the fan-out records nothing for such a session, its own refusals included.
   The fan-out decides that once per recipient, from the session's entry, which `judgeFollowedTopic` reads for every verdict and not only the ones it judges against that entry, so a delivery mode it cannot read unambiguously -- a mode no session can be shown to advertise, and one any publisher can send on a followed topic -- is judged for such a session too rather than left to a resolution that only skips it.
   The relay publishes every frame unjudged (`sessionRelays.relayNATS`), and the plugin drops a frame whose delivery mode it cannot read without a word, so the fan-out publishes that session's `delivery_failed` itself -- and records no attempt for it, because this path records nothing for a session whose own consumer relays the message (above).
-  It records none of its own refusals where its resolution of the recipient failed either (`session.ErrNoSessionRecord`, a session whose entry has lapsed while its interest stays for at least ten minutes and its consumer for three days, so the fan-out still judges messages for it).
+  It records none of its own refusals where its resolution of the recipient failed either (`session.ErrNoSessionRecord`, a session whose entry has lapsed while its interest stays for at least ten minutes and its consumer until the sweep's next pass finds the session gone, so the fan-out still judges messages for it).
   So an attempt record names a delivery this path made, or a refusal it resolved and reported, and never a message it left to a relay or a session it could not read.
   What those two branches cost is the exception dedupe: each further copy of the event, and each redelivery of it, is reported again rather than skipped as an attempt already made.
-  The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`), and only a message at or after it is the consumer's:
+  The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`, the same number that registration's answer carries), and only a message at or after it is the consumer's:
   one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, so the durable path delivers it as it would for a session with none.
   An entry an earlier release wrote carries no start, which reads as today: the consumer holds every stored message of it.
 

@@ -88,6 +88,19 @@ Each item below names a script, then what it proves.
   closing an issue deletes its Sandbox with the role Secrets and leaves no disk, and the resume after it brings Sandbox, pod and disk afresh with `LEGION_WORKSPACE_RECREATED=true`; and the namespace matches its snapshot.
   Devbox only
 
+- `leak-guard-image-job.sh`
+
+  the published worker image's own `git` and `jj` refuse a push that names something private, driven as one Kubernetes Job on the image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
+  k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, and the run failed outright where a shape the script drives is gone from jj;
+  and k7's two shared-check failures at those same call sites, the stand-in check removed so that none resolves and a stand-in that exits 2 for an internal error, each of which must refuse under both commands and name the failure it met.
+  The Job holds no credential, so it writes its own stand-in shared check into its `emptyDir` and the rule file embedded in the image's `legion` decides every verdict;
+  k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the Job says in its own log.
+  The probe the Job runs is `leak-guard-image-probe.sh` beside the harness, which reads it in and writes it into the Job's command, since a Job holds no checkout to read it from, so the two files are one recipe and neither is changed without the other.
+  Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), the image to prove by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class (`--node-selector`), whose value is in that deployment's own declaration and in no file of this repository.
+  Its negative control is the base branch's published image (`--control`), which carries no wrappers and lets all five cases through, and a run without it proves only the head;
+  `--dry-run` renders the manifest and validates it with `kubectl` without creating anything.
+  Legion pod only
+
 - `controller-start-tmux.sh`
 
   the operator-launched controller on the Go daemon under tmux:
@@ -215,6 +228,14 @@ Each item below names a script, then what it proves.
   text an older build of Dispatch writes gets this build's reference grammar with no edit and no command run, driven over HTTP through two real `envoy-dispatch` binaries against one loopback PostgreSQL the caller names — the build of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, and the build of this checkout, the way a rolling release serves both at once:
   under the base build alone a comment citing an issue by its bare key leaves that issue referenced by nothing for a bounded wait, which is the negative control, since the base build's grammar reads no bare key;
   this build then starts beside it and migrates the schema forward, the base build writes a second such comment and edits the first, and once the base build has stopped this build's own reconciliation drains the queue those writes enqueued, so both comments show in the target's "Referenced by"
+
+- `dispatch-search-two-builds.sh`
+
+  a search carrying one of the five narrowing members reaches an older build of Dispatch as 404 no route rather than as unnarrowed rows, driven over HTTP through two real `envoy-dispatch` binaries against one loopback PostgreSQL the caller names — the build of the commit `--base-commit` names, which for this proof is `legion-envoy-v29.47.1`, the release before those members, and the build of this checkout, both serving at once with the dev embedder so meaning search runs:
+  for `number_project`, `status`, `author`, `updated_since` and `keywords_only` in turn, `GET /api/v1/search` carrying the member answers the base build's own unnarrowed answer, which is the hazard this proof records;
+  `GET /api/v1/search/results` carrying it answers 404 `NOT_FOUND` there;
+  this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
+  Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
 
 - `verification-results.sh`
 
@@ -4664,9 +4685,10 @@ Do not edit the script while a run is going: bash reads it as it runs.
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
 Nine call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
-Eight are proofs of their own:
-[`plan-pointer-drive.sh`](#plan-pointer-drivesh), `dispatch-two-builds.sh`, [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
-Each of the eight calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
+Seven are proofs of their own:
+[`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
+The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
+Each of those eight call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
 Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own:
 
 ```sh
@@ -4678,12 +4700,12 @@ The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prere
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the seven whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those seven run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
-That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the three proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
+That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the four proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
 
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
-Each of the eight proofs drops the three before its first connection: seven in the sweep of the environment it does not inherit, and `plan-pointer-drive.sh` in an `unset` of its own.
+Each of the nine proofs those eight call sites serve drops the three before its first connection: eight in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
@@ -5398,6 +5420,12 @@ Each item below names a function, then what it does.
   the digits right after the first match of the extended regex PATTERN in LOG (`'Listening for client connections on [^ ]*:'` for `nats-server -p -1`).
   It fails while no line matches, so it is also the poll that waits for one
 
+- `port_answers PORT`
+
+  succeeds when something accepts a connection on `127.0.0.1:PORT`, through bash's own `/dev/tcp`.
+  It is how a proof refuses a port of its own that is already answering, before it starts anything.
+  It asks a different question from `listening_holders` below, which reads who holds a socket that is already listening
+
 - `listening_holders PORT`
 
   prints the pid of every process holding the one socket listening on PORT:
@@ -5446,6 +5474,50 @@ Each item below names a function, then what it does.
 
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
 it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
+
+## lib/two-builds.sh
+
+The harness the two live two-builds proofs share: `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`, each of which runs the `envoy-dispatch` binary of an older commit beside this checkout's against one PostgreSQL, the way a rolling release serves both at once.
+Everything both proofs do before their own cases is here, so a fix to the loopback guard or to the schema reset lands in one place: the `--base-commit` argument, the sweep of what a pane exports, the teardown, the HTTP call, the prerequisites, the build of both binaries, the reset of the database's `public` schema, the fake Envoy and the start of a server.
+Each proof keeps its own header, its own ports, its own seed and its own cases.
+
+```sh
+. "$root/scripts/e2e/lib/two-builds.sh"     # sourced, never run
+```
+
+It sources [`lib/rig.sh`](#librigsh) itself, so a proof sources this file alone and gets both.
+Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, keeps `check` and `started`, which `cleanup` reads, and sets its three ports.
+
+Each item below names a function, then what it does.
+
+- `two_builds_setup LABEL ARGUMENT…`
+
+  reads the run's `--base-commit` and its `DATABASE_URL`, drops every inherited `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`, and arms the teardown.
+  LABEL is the run's name in `cleanup`'s last line (`dispatch two builds e2e: PASS in Ns`), which is the one thing the two proofs' teardown differs in
+
+- `two_builds_prerequisites REFUSAL [CHECK…]`
+
+  makes every check the two proofs share, in the order they make them: the required `DATABASE_URL`, the caller's own `--base-commit` refusal REFUSAL, the URL scheme, the tool list, the loopback guard ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn`, which is why `python3` is in that list and why the guard runs after it), the `--base-commit` resolution into `base_sha`, the three ports and the `vector` extension.
+  CHECK, when given, is the proof's own prerequisite, run after the shared ones and before the two notes, so what it notes lands where it did
+
+- `two_builds_build NAME`, `two_builds_reset_database`, `two_builds_fake_envoy`
+
+  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener
+
+- `two_builds_identity`
+
+  sets `agent_token`, `signin_key`, `base_url` and `head_url`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live
+
+- `start_server NAME BINARY PORT [VAR=VALUE…]`
+
+  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`
+
+- `call METHOD PATH [BODY]`, `json_field FIELD`, `cleanup RC`
+
+  the HTTP call as an agent bearer against `target_url`, waiting `call_seconds` (20 here; a proof whose reads take longer sets its own), one string member of a JSON object on stdin, and the teardown the three traps run
+
+Running the two proofs at once takes a database each: both reset their own `DATABASE_URL`'s `public` schema, so one database given to both leaves each build migrating a schema the other emptied.
+Their ports differ, so nothing else collides.
 
 ## lib/omp-home.sh
 

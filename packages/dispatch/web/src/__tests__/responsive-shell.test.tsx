@@ -128,6 +128,8 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
       rank: issue.rank,
       title: issue.title,
       updated_at: issue.updated_at,
+      created_by: issue.created_by,
+      created_at: issue.created_at,
     },
   ];
   api.getMyState = async () => ({
@@ -216,15 +218,20 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
       anchor: null,
       answer: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-1", kind: "session" },
       block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-waiting",
-      // The badge counts the reader's own: the shell signs in as `alice`.
+      // The badge counts the questions waiting on the reader, which is what the server answers
+      // in `waiting_on_person`; the shell signs in as `alice`.
       issue: { assignee: "alice", key: "CORE-1", title: "Responsive shell" },
       issue_key: "CORE-1",
       last_reply: null,
+      waiting_on_person: "alice",
       kind: "question",
       multiple: false,
       opened_event_id: 1,
@@ -251,6 +258,9 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
       anchor: null,
       answer: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-2", kind: "session" },
       block_id: null,
       created_at: "2026-09-10T00:00:00Z",

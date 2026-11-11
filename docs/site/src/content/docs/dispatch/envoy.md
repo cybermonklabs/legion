@@ -222,6 +222,20 @@ A session registers no port of its own, and the listener opens no connection to 
 registration naming a port above 0 is refused `400` naming the `port` field, and the answer's
 `port` is always 0.
 
+The consumer itself does not outlive the session: the listener deletes it when the session
+deregisters, and a sweep deletes the consumer of every session whose registration record has gone
+quiet long enough to read `gone` (`ENVOY_SESSION_GONE_HORIZON`, an hour by default) and has left
+the `envoy_sessions` bucket, within one `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` of that. The
+record leaves the bucket at the session reaper's first pass after the horizon (within one
+`ENVOY_SESSION_REAP_INTERVAL`), or earlier when the bucket's `ENVOY_SESSION_MAX_AGE` drops it
+first. What outlives the consumer is the place in the stream the
+session had reached: before each delete the listener records that place on a lane of the stream
+only it reads, `notifications.envoy.resume.<session_id>`, which the stream keeps for its 72 hours,
+which no session may follow and which the publish route refuses. A session that comes back is
+given a new consumer starting where the old one stopped — at the resume point its own plugin
+kept, or at that record when the plugin has none, as after a `/clear` or a fresh install — so it
+is handed what was published while it was away, each message once.
+
 - **What comes this way:** the session's inbox, `notifications.agent.<session_id>` (direct
   messages, Dispatch deliveries, and the forwards of role messages to a role it holds), and the
   topics it follows that the stream keeps, such as an issue's
@@ -491,6 +505,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_SESSION_LIVE_WINDOW` | How long after its last registration a session reads `live`, as a Go duration; default `5m`. Past it the session reads `unresponsive`, which is not dead ([Live, unresponsive, gone](#live-unresponsive-gone)). It is also how long a role claim stands renewed after its holder's last registration: a claim renewed inside it is kept, and the process that holds it keeps the role. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value. |
 | `ENVOY_SESSION_GONE_HORIZON` | How long after its last registration a session reads `unresponsive` before it reads `gone`, as a Go duration; default `1h`. Only a `gone` session loses its role claim, and then only when nobody renewed that claim inside the live window; the one claim released while its holder's session still answers is one a hand-back marked. Keep it at or below `ENVOY_SESSION_MAX_AGE`, or a record the bucket expires first reads `gone` before the horizon. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value: a horizon only the listener carries has Dispatch count an event sent to a holder the listener still calls `unresponsive`, with nothing sent ([Live, unresponsive, gone](#live-unresponsive-gone)). |
 | `ENVOY_SESSION_REAP_INTERVAL` | How often the session reaper deletes the records of `gone` sessions, and settles the session bucket's maximum age, as a Go duration; default `1m`. |
+| `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` | How often the listener deletes the stream consumers of sessions that read `gone`, as a Go duration; default `5m`. A session that deregisters has its consumer deleted with its registration, and one that simply ended — its pane closed, its box rebooted — deregisters nothing, so this sweep is what frees the slot it holds, within one pass of the session's record leaving the `envoy_sessions` bucket ([Messages a session missed](#messages-a-session-missed)). A pass deletes at most 256 consumers, each checked against the `envoy_sessions` bucket before it goes, and runs only on the listener task that holds its machine's durable binding; the rest wait for the next pass. |
 | `ENVOY_ROLE_CLAIM_REAP_INTERVAL` | How often the role claim reaper looks for role claims nobody has renewed inside the live window whose holder is `gone`, or which a hand-back marked, and releases them, as a Go duration; default `5m`. Nothing else releases a claim, and a claim its holder still renews is kept whatever that holder's session record says. While `ENVOY_SESSION_MAX_AGE` is below `ENVOY_SESSION_GONE_HORIZON`, keep it at or above that age: a record the bucket expires reads `gone` before the horizon, so a shorter period takes a merely stalled holder's role that much sooner. Once the maximum age covers the horizon no record goes early, and the period only says how long past the horizon a `gone` holder keeps its role: keep it well inside the horizon instead. |
 | `ENVOY_SESSION_MAX_AGE` | The `envoy_sessions` bucket's `MaxAge`, as a Go duration: how long a registration record survives in NATS. Unset, the listener leaves the bucket as it is. `/healthz` reports the age in use as `session_max_age`. |
 | `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. |
@@ -541,30 +556,36 @@ with `replicas="1 -> 3"`). A pass that fails logs `envoy nats keeper could not r
 or `envoy nats keeper could not raise a bucket` and is tried again 30 seconds later; it never
 stops the program.
 
-The consumer cap is the one of these the binary carries rather than reads from a setting: 24000
-session consumers, which is what bounds how many sessions can hold a consumer of their own. What
-a stream whose cap reads `-1` or `0` means is the NATS server's: from nats-server 2.15 the server
-caps such a stream at its own default of 1000, and every server before that leaves it with no
-limit at all. So a start and the keeper raise a `-1` or `0` to 24000 only on 2.15 or later, where
-that 1000 is the limit sessions run into, and leave it as it is on an older server, which has no
-such limit to fix; a cap that is already a positive number below 24000 is raised on every server.
-The keeper reads the server's version on each pass, so a stream left as it is has its cap
-written at the first pass after the server is upgraded to 2.15. That rule assumes a server
-configured as the hub's is: the 1000 is the NATS server's own server-wide default,
-`default_max_consumers`, and nothing in the listener checks it. A server started with
-`jetstream { limits { default_max_consumers: <n> } }` puts that number in place of the 1000; at
-`-1`, or at a number above 24000, a stream with no cap allows more consumers than this binary's
-cap, so a start and the keeper lower it to 24000 rather than raise it. An account holding its own
-positive `max_consumers` applies it to every stream of the account: above 24000 it is lowered the
-same way, and below 24000 the server refuses any stream whose cap is above the account's, so the
-listener's create and its raise are both refused. An account `max_consumers` of `-1` counts as
-not set and changes nothing. No deployment described here sets either: the hub's `nats.conf`
-carries `max_file_store`, `max_memory_store` and `store_dir` and no `accounts` block. An
-operator who sets one of them and wants a larger limit sets it on the stream instead, with
-`nats stream edit ENVOY_NOTIFICATIONS --max-consumers=<n>` above 24000 and within any account
-limit, which a start and the keeper leave as it is. Setting the cap on a stream the server
-already holds needs nats-server v2.12.5 or later: every server before it refuses an update that
-changes `MaxConsumers` with
+The consumer cap is the one of these the binary carries rather than reads from a setting: 24000,
+the most session consumers the stream holds at once. What keeps the count under it is not the cap
+but the deletes: a session's consumer goes with its deregistration, and the listener's sweep
+deletes the consumer of every session that reads `gone` within one
+`ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` of its record leaving the `envoy_sessions` bucket, so
+what the stream carries is the live sessions, those that ended without deregistering within
+about the last `ENVOY_SESSION_GONE_HORIZON` and one sweep interval, and whatever a long-running
+hub still holds from before that sweep, which drains 256 a pass. What a stream whose cap reads
+`-1` or `0` means is the NATS
+server's: from nats-server 2.15 the server caps such a stream at its own default of 1000, and
+every server before that leaves it with no limit at all. So a start and the keeper raise a `-1`
+or `0` to 24000 only on 2.15 or later, where that 1000 is the limit sessions run into, and leave
+it as it is on an older server, which has no such limit to fix; a cap that is already a positive
+number below 24000 is raised on every server. The keeper reads the server's version on each pass,
+so a stream left as it is has its cap written at the first pass after the server is upgraded to
+2.15. That rule assumes a server configured as the hub's is: the 1000 is the NATS server's own
+server-wide default, `default_max_consumers`, and nothing in the listener checks it. A server
+started with `jetstream { limits { default_max_consumers: <n> } }` puts that number in place of
+the 1000; at `-1`, or at a number above 24000, a stream with no cap allows more consumers than
+this binary's cap, so a start and the keeper lower it to 24000 rather than raise it. An account
+holding its own positive `max_consumers` applies it to every stream of the account: above 24000
+it is lowered the same way, and below 24000 the server refuses any stream whose cap is above the
+account's, so the listener's create and its raise are both refused. An account `max_consumers`
+of `-1` counts as not set and changes nothing. No deployment described here sets either: the
+hub's `nats.conf` carries `max_file_store`, `max_memory_store` and `store_dir` and no `accounts`
+block. An operator who sets one of them and wants a larger limit sets it on the stream instead,
+with `nats stream edit ENVOY_NOTIFICATIONS --max-consumers=<n>` above 24000 and within any
+account limit, which a start and the keeper leave as it is. Setting the cap on a stream the
+server already holds needs nats-server v2.12.5 or later: every server before it refuses an
+update that changes `MaxConsumers` with
 `nats: stream configuration update can not change MaxConsumers` (measured on v2.10.29, v2.11.0 and
 v2.12.0). That stops the listener's start with an error naming `max_consumers` and that version,
 and Dispatch's server, which keeps serving, retries the reconcile and logs

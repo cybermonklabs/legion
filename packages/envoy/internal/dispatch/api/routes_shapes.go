@@ -297,8 +297,27 @@ type myRepliesQuery struct {
 }
 
 // searchRouteQuery is GET /api/v1/search's query. The name carries `route` because search.go
-// already has a searchQuery of its own, the parsed query a search runs on.
+// already has a searchQuery of its own, the parsed query a search runs on. It names the four
+// members every build of the server has served. The handler still reads the other five on this
+// route, for a page served by a release before this one, and those five are declared on
+// GET /api/v1/search/results (searchResultsRouteQuery), the path a caller asks them of.
 type searchRouteQuery struct {
+	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
+	Q string `query:"q"`
+	// Project searches within one project; empty searches every project. It narrows every leg
+	// of the search rather than striking rows out of the page it answers.
+	Project string `query:"project"`
+	// Limit is the page size, 1 to 50, default 20.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all nine members: the four
+// searchRouteQuery names and the five a build released before them does not serve, which is why
+// that path exists. The nine are written out rather than embedded because the emitter reads a
+// query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
+type searchResultsRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
 	Q string `query:"q"`
 	// Project searches within one project; empty searches every project. It narrows every leg
@@ -599,7 +618,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/me/inbox/dismiss": {
 		Status: http.StatusOK, Response: inboxDismissResponse{}, Request: inboxDismissRequest{},
 	},
-	"GET /api/v1/search":          {Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
+	"GET /api/v1/search": {Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
+	"GET /api/v1/search/results": {
+		Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchResultsRouteQuery{},
+	},
 	"GET /api/v1/search/coverage": {Status: http.StatusOK, Response: model.SearchCoverage{}},
 	"GET /api/v1/related-checks": {
 		Status: http.StatusOK, Response: model.RelatedChecksReport{}, Params: relatedChecksQuery{},
@@ -651,6 +673,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: model.Ask{}, Request: editAskInput{}},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {

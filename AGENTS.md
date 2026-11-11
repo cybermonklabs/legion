@@ -168,7 +168,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
   It holds each row to its shape — every field present, and not empty but for the six a row may leave empty (`primary`, `mirror_member`, `second_member` and the three `primary_*` fields), one name per row, a `primary_source` and a `second_source` each written in one of the five words the helper names a source by (`github-release`, `ghcr-mirror`, `npm`, `pypi` and `pulumi-releases`), of which a primary may take the three that are an origin of the bytes alone (`github-release`, `pypi` and `pulumi-releases`), the two further fields the second word decides (`mirror_from` and `mirror_member` for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, `second_url` and `second_member` for the other three), a bare 64-hex lower-case `digest`, and a `primary`, a `mirror_from` and a `second_url` that each hold the row's own `version` where they are not empty.
   A member field holds that same `version` where it holds a version at all — `primary_member`, `mirror_member`, `npm_member` and `second_member` alike, a version being a dotted run of digits such as `0.13.5` — so a member that holds no such token is left alone, which is what keeps `./jj`, `package/bin/bun` and `uv-x86_64-unknown-linux-gnu/uv` right, and a member left behind at the old version while its row and its URLs move names a path the new archive does not hold, which is an install that fetches the right bytes and then finds no tool inside them.
-  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `test` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about half an hour; the gate says either in `lint` in a second.
+  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `test` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about five minutes (job 129885098900 ran 284 s); the gate says either in `lint` in a second.
   `primary_digest` is bare 64-hex too where it is set, a row that sets `primary_member` sets `primary_digest`, and a row that sets `primary_digest` sets `primary_digest_of`, because a digest that does not say what it is of is how an archive comes to be checked against a binary and called equal.
   It holds each row to the pin that installs it as well: `.bun-version`; `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile, and that same file's `ARG UV_VERSION` and `ARG UV_SHA256`, which the `uv` row's `version` and its `primary_digest` answer to; `const DockerPluginVersion` of `packages/envoy/infra/internal/pulumitest/pulumitest.go`, which the `pulumi-docker` row's `version` answers to; and the `crane`, `changie`, `elan` and `pulumi-cli` rows, which are their own pins, since their installs hold no version of their own.
 
@@ -636,6 +636,14 @@ Each item below names a task and where its code is, then notes on it.
   — its machine (`src/phase-stall.ts`), its runner (`src/phase-reminder.ts`) and the four `LEGION_STALL_*` numbers (`src/stall-limits.ts`), one copy for both harnesses.
   See `packages/pi-shared/AGENTS.md`
 
+- Change what a write to a public repository is checked against — `packages/daemon/internal/leakguard/`
+
+  The one guard every Legion write passes before it writes:
+  the shared public leak check, resolved again at each call, and this repository's own four private-name rules in `private-names.toml`, which the `legion` binary embeds and the gitleaks engine linked into it reads in process.
+  Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the rescue helper's push, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
+  See `docs/kubernetes.md`;
+  the live proof of the image's half is `scripts/e2e/leak-guard-image-job.sh`
+
 - Worker image (Kubernetes) — `packages/daemon/docker/worker.Dockerfile`, `.github/workflows/worker-image.yaml`
 
   See `docs/kubernetes.md`
@@ -813,6 +821,9 @@ Each item below names a task and where its code is, then notes on it.
   It names a comment it refuses by kind and id (`comment:<id>`, `review:<id>`, `review-comment:<id>`), never its text;
   delete that comment (a submitted review cannot be deleted, so edit its body), since an edit leaves the old text in its edit history, then re-run the newest failed run of each check that reported it on the current head (`ci.yaml`'s `pr-title` job, which carries the push's check, and `pr-title.yaml`'s run once for each other event that is red), never an older run, since a re-run checks the commits of the head its own event named and reports its check there.
   The check reads the title, body and branch name as the pull request has them when it runs, not as its event carried them, so the push-time `pr-title` of `ci.yaml`'s job, which can land after a later edit's run, never passes over text that run refused
+
+  - **The guard runs before the write; both scans above still run after it** — a pod's `git push`, its `jj git push` and its `legion gh` run Legion's leak guard before they write, so a name of any of these classes is refused in the pod rather than found on GitHub afterwards (`packages/daemon/internal/leakguard`, `docs/kubernetes.md`).
+    Neither scan is changed by that, and deleting the pull-request half of them, once the guard has been driven in production, is dispatch://INFRA-1825
 
 - **A skill, a role prompt and an `AGENTS.md` name no person**
   — write the role instead: "a person" for whoever sends a message or makes a request, "the operator" for whoever runs this deployment, "the human" for whoever an agent asks for a decision.
