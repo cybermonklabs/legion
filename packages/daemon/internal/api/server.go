@@ -632,9 +632,11 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // the contract that added the claim views' step record, is served it without `step`
 // (withoutStallRecord); a caller below waitingLineContract, the contract that added each
 // waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine);
-// and a caller below backwardMovesContract, the contract that added each worker's counts of the
-// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves).
-// The nine compose: each is applied when the state carries something of its own, so a caller
+// a caller below backwardMovesContract, the contract that added each worker's counts of the
+// moves back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves);
+// and a caller below waitContract, the contract that added the holds of the daemon's own making
+// to `admission.blocked`, is served that list without the rows that carry one (withoutWaits).
+// The ten compose: each is applied when the state carries something of its own, so a caller
 // below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
 // of the twelve keys, each of them absent rather than empty, since a strict reader before the
 // contract that added a key refuses it whether or not it names anything, and with no retired
@@ -701,6 +703,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	}
 	if contract < backwardMovesContract && carriesBackwardMoves(state) {
 		state = withoutBackwardMoves(state)
+	}
+	if contract < waitContract && carriesWaits(state) {
+		state = withoutWaits(state)
 	}
 	return state
 }
@@ -878,6 +883,42 @@ func withoutWaitingLine(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// waitContract is the daemon contract that added the daemon's own holds to `admission.blocked`
+// (version.go's 71): a row of an issue nothing in Dispatch blocks, carrying `wait` — the
+// condition and the issue it turns on — with `blockedBy` empty. A plugin before it reads a row
+// of that list as one issue and the unfinished issues it waits on, so the row says it waits on
+// nothing; and one built before sjawhar/legion#2788 reads the state with a strict schema that
+// knows no `wait` and refuses the whole body for it. Such a caller is served the list without
+// those rows, which is the list its contract describes: the issues a Dispatch link or an open
+// child holds, and no other.
+const waitContract = 71
+
+// carriesWaits is whether any row of `admission.blocked` carries a hold of the daemon's own.
+func carriesWaits(state State) bool {
+	for _, row := range state.Admission.Blocked {
+		if row.Wait != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutWaits is state with no `admission.blocked` row carrying `wait`, the field waitContract
+// added to the state; nothing else of that contract is on the route. The row is dropped whole
+// rather than emptied: it carries no `blockedBy`, so a reader before the contract would read
+// the issue as waiting on nothing at all, where before the contract the daemon reported no row
+// for it. The list is copied, so the state the source answered is left as it was.
+func withoutWaits(state State) State {
+	blocked := make([]BlockedIssue, 0, len(state.Admission.Blocked))
+	for _, row := range state.Admission.Blocked {
+		if row.Wait == nil {
+			blocked = append(blocked, row)
+		}
+	}
+	state.Admission.Blocked = blocked
 	return state
 }
 

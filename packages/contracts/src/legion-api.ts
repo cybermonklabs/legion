@@ -496,26 +496,46 @@ const daemonInfo = z.object({
   startedAt: timestamp,
 });
 
+/** `record.Wait` — a wait of the daemon's own making, which no Dispatch link records: the
+ * condition and the issue it turns on. `kind` is one of `tree_closed` (the issue's tree has
+ * closed and owes it a hand-over), `design_gate` (a person has not approved the tree's current
+ * design), `awaiting_person` (the tree's root has asked a person and has no answer),
+ * `accepted_ancestor` (an ancestor the daemon has accepted must close first), `unreleased_work`
+ * (its Dispatch chain reaches another tree, whose architect releases it), `unlabelled` (a person
+ * has taken the legion label off the root, which names no issue) and `unexplained` (the daemon
+ * places it nowhere and cannot say why, which is a defect in the daemon). It is read as a string
+ * rather than an enum on purpose: a daemon that names a kind this build does not know must still
+ * be readable, since the alternative is a reader that refuses the whole state over one row. */
+const legionWait = z.object({
+  kind: nonEmptyString,
+  issue: issueKey.optional(),
+});
+
 /** `api.BlockedIssue` (`record.BlockedIssue`, and `api.HeldChild` on a wave release) — one issue
- * Legion is waiting to start and the issues it waits on that are not done, in the order Dispatch
- * lists them. A blocker the daemon has not yet observed as an issue of its own counts as
- * unfinished, so `blockedBy` can name a key the state's `issues` does not. */
+ * Legion is waiting to start and what it waits for. `blockedBy` is the issues it waits on that
+ * are not done, in the order Dispatch lists them; a blocker the daemon has not yet observed as
+ * an issue of its own counts as unfinished, so it can name a key the state's `issues` does not.
+ * `wait` is the other kind of wait, one of the daemon's own decisions, and a row carries one or
+ * the other: a row with a `wait` leaves `blockedBy` empty, so a reader of `blockedBy` reads
+ * unfinished issues alone and never a finished root named as a dependency. A daemon before
+ * dispatch://INFRA-2964 sends no `wait` and reports no such row at all. */
 const legionBlockedIssue = z.object({
   issue: issueKey,
   blockedBy: z.array(issueKey),
+  wait: legionWait.optional(),
 });
 
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
- * `active` is every issue holding a slot and `waiting` the admission line, children as much as
- * roots, so one tree with three started children holds three slots. An issue takes its slot when
+ * `active` is every issue holding a slot and `waiting` the issues that wait for one, children as
+ * much as roots, so one tree with three started children holds three slots. An issue takes its
+ * slot when
  * the daemon starts it and keeps it
  * until it is done, leaves the workflow or waits only for its merge, so `active` carries an issue
  * waiting on a person, one in `accepting`, one `held` and one whose `merging` waits on a closed
- * design gate, while an issue in `awaiting_merge` is in neither list. An issue holding a slot is
- * in `waiting` as well while its work comes back to it, an answered root until the pass that
- * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
+ * design gate, while an issue in `awaiting_merge` is in neither list.
+ * `trees` is the root of every live tree, sorted, which a reader needs because a running
  * tree may hold no slot at all — the controller reads it where it read `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
@@ -523,9 +543,14 @@ const legionBlockedIssue = z.object({
  * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
- * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
- * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
- * The controller names them in the day's report and takes nothing for them. */
+ * `blocked` is every root and every child Legion is waiting to start, by issue key, with what it
+ * waits for: a Dispatch issue nobody has finished, or a hold of the daemon's own (`wait`).
+ * The three lists are a partition of the issues the daemon records as admitted: each of them is
+ * in exactly one, and never in none (dispatch://INFRA-2964). So an admitted issue holding a slot
+ * is in `active` alone and one something holds is in `blocked` alone, while the admission QUEUE
+ * — the line admission promotes from, which carries both — is each issue's own `waitingLine`
+ * place, where nothing is filtered out. The controller names the blocked in the day's report and
+ * takes nothing for them. */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative(),
   active: z.array(nonEmptyString),

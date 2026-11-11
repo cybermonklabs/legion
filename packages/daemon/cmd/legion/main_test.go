@@ -2155,14 +2155,19 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 			name: "a held child and a waiting root",
 			blocked: `[{"issue":"LEGION-209","blockedBy":["LEGION-300"]},` +
 				`{"issue":"LEGION-211","blockedBy":["LEGION-301","LEGION-302"]}]`,
-			want: "blocked on Dispatch links: 2 — LEGION-209 waits on LEGION-300; LEGION-211 waits on LEGION-301, LEGION-302\n",
+			want: "blocked: 2 — LEGION-209 waits on LEGION-300; LEGION-211 waits on LEGION-301, LEGION-302\n",
 		},
 		{
 			name:    "one",
 			blocked: `[{"issue":"LEGION-209","blockedBy":["LEGION-300"]}]`,
-			want:    "blocked on Dispatch links: 1 — LEGION-209 waits on LEGION-300\n",
+			want:    "blocked: 1 — LEGION-209 waits on LEGION-300\n",
 		},
-		{name: "none", blocked: `[]`, want: "blocked on Dispatch links: none\n"},
+		{name: "none", blocked: `[]`, want: "blocked: none\n"},
+		{
+			name:    "a hold of the daemon's own",
+			blocked: `[{"issue":"LEGION-321","blockedBy":[],"wait":{"kind":"tree_closed","issue":"LEGION-320"}},` + "\n" + `{"issue":"LEGION-350","blockedBy":[],"wait":{"kind":"unlabelled"}}]`,
+			want:    "blocked: 2 — LEGION-321 is held: tree_closed of LEGION-320; LEGION-350 is held: unlabelled\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			served := "{" + daemon + admission(tc.blocked) + `,"issues":{},"pendingStatusWrites":[]}`

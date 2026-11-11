@@ -273,7 +273,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	if err != nil {
 		return api.State{}, err
 	}
-	waiting := record.WaitingIssues(line)
+	// Where each issue stands, and the line it stands in, from the one judgement
+	// (blockers.Place): `active` is every slot holder, `waiting` the line's order less the
+	// admitted issues the other two lists hold, and `blocked` every issue Legion is waiting to
+	// start with what it waits for.
+	placement := blockers.Place(rows, own, slots, line, facts)
 	projected.Admission.Active = active
 	// The roots of the live trees, which no slot says any more: a slot counts one issue the
 	// daemon has started, and a tree is live before the daemon has started anything of it — a
@@ -284,17 +288,22 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// that is not its own.
 	trees := record.LiveRoots(own, facts)
 	projected.Admission.Trees = slices.Sorted(maps.Keys(trees))
-	projected.Admission.Waiting = make([]string, len(waiting))
-	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
-	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
-	// Dispatch link blocks stands in the line and takes its place like every other member, and
-	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here
-	// already, so the place is set where the key is listed: the line is built from `own`, the
-	// issues of this project among the issues the loop above gave a view to, each of them.
-	for i, issue := range waiting {
+	projected.Admission.Waiting = make([]string, len(placement.Waiting))
+	for i, issue := range placement.Waiting {
 		projected.Admission.Waiting[i] = issue.Key
+	}
+	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
+	// front, beside the length of the line it stands in. The place is the SCHEDULING QUEUE and
+	// is read off the whole line: nothing is filtered out of it, so a member a Dispatch link
+	// blocks and a slot holder whose work came back each keep the place they have always had,
+	// while `admission.waiting` beside it is where those two issues STAND, which is `blocked`
+	// and `active` (blockers.Place). Every issue of the line has a view here already: the line
+	// is built from `own`, the issues of this project among the issues the loop above gave a
+	// view to, each of them.
+	queue := record.WaitingIssues(line)
+	for i, issue := range queue {
 		view := projected.Issues[issue.Key]
-		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(waiting)}
+		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(queue)}
 		projected.Issues[issue.Key] = view
 	}
 	// Every issue this project's records call admitted is in exactly one of `active`, `waiting`
@@ -302,8 +311,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// hold, and record.Unplaced names what holds every other admitted issue the line does not
 	// carry — read over this pass's own records, slots, line and facts, so no issue of it is
 	// left in none of the three (dispatch://INFRA-2964).
-	projected.Admission.Blocked = blockers.Blocked(rows, own, line,
-		append(record.ChildWaitRows(facts.ChildWaits), record.Unplaced(own, slots, line, facts)...))
+	projected.Admission.Blocked = placement.Blocked
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {

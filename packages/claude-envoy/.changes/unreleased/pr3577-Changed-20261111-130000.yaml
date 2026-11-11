@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Declares daemon API contract 71, which names every admitted issue the daemon has not started under `admission.blocked`, each with what it waits for: the unfinished Dispatch issues it waits on, or one hold of the daemon''s own as `wait`, naming the condition and the issue it turns on. `admission.waiting` is now where the issues that wait for a slot stand, the admission line less the admitted issues `admission.active` and `admission.blocked` hold; the line itself is each issue''s own `waitingLine` place, which carries every member as before.'
+time: 2026-11-11T13:00:00.000000000Z
+custom:
+    Issue: pr3577

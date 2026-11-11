@@ -511,8 +511,14 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 	if !reflect.DeepEqual(got.Admission.Blocked, want) {
 		t.Fatalf("blocked = %#v, want %#v", got.Admission.Blocked, want)
 	}
-	if !reflect.DeepEqual(got.Admission.Waiting, []string{"LEGION-211", "LEGION-212"}) {
-		t.Fatalf("waiting = %#v, want the roots' waiting line unchanged", got.Admission.Waiting)
+	// LEGION-212's link holds it, so it is named under `blocked` and stands in no other list:
+	// the three are a partition of the admitted issues (blockers.Place). Its place in the
+	// scheduling line is unchanged and is read off its own `waitingLine`.
+	if !reflect.DeepEqual(got.Admission.Waiting, []string{"LEGION-211"}) {
+		t.Fatalf("waiting = %#v, want the root nothing holds alone", got.Admission.Waiting)
+	}
+	if place := got.Issues["LEGION-212"].WaitingLine; place == nil || place.Place != 2 || place.Length != 2 {
+		t.Fatalf("LEGION-212's waitingLine = %+v, want place 2 of 2: a blocked member keeps its place in the line", place)
 	}
 
 	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, projectedAt)
@@ -525,26 +531,34 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 }
 
 // Every issue the record calls admitted stands in exactly one of `active`, `waiting` and
-// `blocked`: the three are a partition of them, so a reader of the state can always say where
-// one stands and what moves it next.
+// `blocked`: the three are a partition of them — complete and pairwise disjoint — so a reader
+// of the state can always say where one stands and what moves it next.
 //
-// The waiting line drops a candidate silently at three places, and nothing else reported any of
-// them: where its tree is not live, where its tree's design gate is not open, and where its own
-// Dispatch chain reaches another live root (record.Waiting). The state's `blocked` read the
+// The waiting line drops a candidate silently, and nothing else reported any of those drops:
+// where its tree is not live, where its tree's design gate is not open, where its tree's root
+// waits on a person, where its own Dispatch chain reaches another live root and where an
+// ancestor the daemon has accepted holds it (record.Waiting). The state's `blocked` read the
 // mirror's blocked-by links and the children-first wait and nothing more, so an issue any of
-// those three stopped stood in none of the three lists — at admitted in the daemon's own
-// records, holding no slot, in no line, with nothing naming what it waited on, and no later
-// pass looking at it again. Nineteen issues of the INFRA daemon stood there at once
+// them stopped stood in none of the three lists — at admitted in the daemon's own records,
+// holding no slot, in no line, with nothing naming what it waited on, and no later pass
+// looking at it again. Nineteen issues of the INFRA daemon stood there at once
 // (dispatch://INFRA-2964).
 //
-// The fixture is those three drops as that daemon showed them. LEGION-320's tree closed: its
-// root is done and its lifecycle no longer stands open, so the line passes its member over, and
-// that member carries no legion label, as a child recorded under a live tree never does
-// (workflow's recordChildUnderLiveTree). LEGION-330's gate opened once and its architect has
-// since revised the document, so the gate is shut again while the root itself works on the slot
-// it has held throughout, and the line passes its released child over at the gate. LEGION-340
-// is a root whose Dispatch chain reaches LEGION-330's live tree: it is that tree's unreleased
-// work and waits for its architect's release.
+// The fixture is those drops as that daemon showed them. LEGION-320's tree closed: its root is
+// done and its lifecycle no longer stands open, so the line passes its member over, and that
+// member carries no legion label, as a child recorded under a live tree never does (workflow's
+// recordChildUnderLiveTree). LEGION-330's gate opened once and its architect has since revised
+// the document, so the gate is shut again while the root itself works on the slot it has held
+// throughout, and the line passes its released child over at the gate. LEGION-340 is a root
+// whose Dispatch chain reaches LEGION-330's live tree: it is that tree's unreleased work and
+// waits for its architect's release. LEGION-350 is a root a person has taken the legion label
+// off: Legion runs nothing for it, which is what taking the label off asks for, and the row
+// that says so is the only way a reader learns that this admitted record is paused rather than
+// forgotten.
+//
+// Each row names what it waits for and not a Dispatch dependency it does not have: the closed
+// tree owes its member a hand-over, and the root that owes it is already done, which `blockedBy`
+// may never name (record.BlockedIssue).
 func TestProjectPlacesEveryAdmittedIssueInActiveWaitingOrBlocked(t *testing.T) {
 	approved := 1
 	closedRoot, revisingRoot := "LEGION-320", "LEGION-330"
@@ -555,10 +569,6 @@ func TestProjectPlacesEveryAdmittedIssueInActiveWaitingOrBlocked(t *testing.T) {
 			{Key: revisingRoot, Project: "LEGION", Tree: revisingRoot, Status: "in_progress", Phase: phase.Admitted, Rank: "C", HandedOver: true},
 			{Key: "LEGION-331", Project: "LEGION", Tree: revisingRoot, Parent: &revisingRoot, Status: "todo", Phase: phase.Admitted, Rank: "D"},
 			{Key: "LEGION-340", Project: "LEGION", Tree: "LEGION-340", Status: "todo", Phase: phase.Admitted, Rank: "E", HandedOver: true, Ancestry: []string{revisingRoot}},
-			// A root a person has taken the legion label off is the one admitted issue none of
-			// the three lists holds, and deliberately so: Legion runs nothing for it and starts
-			// nothing for it, which is what taking the label off asks for, and there is no
-			// issue to name as what it waits on. Its todo with the label back queues it again.
 			{Key: "LEGION-350", Project: "LEGION", Tree: "LEGION-350", Status: "todo", Phase: phase.Admitted, Rank: "F"},
 		},
 		slots:      []record.Slot{{Issue: revisingRoot, Index: 0, AdmittedAt: projectedAt}},
@@ -572,39 +582,46 @@ func TestProjectPlacesEveryAdmittedIssueInActiveWaitingOrBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	placed := make(map[string][]string)
-	for _, key := range got.Admission.Active {
-		placed[key] = append(placed[key], "active")
-	}
-	for _, key := range got.Admission.Waiting {
-		placed[key] = append(placed[key], "waiting")
-	}
-	for _, row := range got.Admission.Blocked {
-		placed[row.Issue] = append(placed[row.Issue], "blocked")
+	for key, where := range placements(got) {
+		if len(where) != 1 {
+			t.Fatalf("%s stands in %v, want exactly one of active, waiting and blocked", key, where)
+		}
 	}
 	for _, issue := range store.issues {
 		if issue.Phase != phase.Admitted || !record.InWorkflow(issue) {
 			continue
 		}
-		if claim.IsTreeRoot(issue.Key, issue.Tree) && !issue.HandedOver {
-			if where := placed[issue.Key]; len(where) != 0 {
-				t.Fatalf("%s carries no legion label and stands in %v, want none of them: Legion runs nothing for a root a person has paused", issue.Key, where)
-			}
-			continue
-		}
-		if where := placed[issue.Key]; len(where) != 1 {
+		if where := placements(got)[issue.Key]; len(where) != 1 {
 			t.Fatalf("%s is recorded admitted and stands in %v, want exactly one of active, waiting and blocked: in none of them nothing starts it where it stands and the state says nothing about it",
 				issue.Key, where)
 		}
 	}
 	want := []api.BlockedIssue{
-		{Issue: "LEGION-321", BlockedBy: []string{closedRoot}},
-		{Issue: "LEGION-331", BlockedBy: []string{revisingRoot}},
-		{Issue: "LEGION-340", BlockedBy: []string{revisingRoot}},
+		{Issue: "LEGION-321", Wait: &record.Wait{Kind: record.WaitTreeClosed, Issue: closedRoot}},
+		{Issue: "LEGION-331", Wait: &record.Wait{Kind: record.WaitDesignGate, Issue: revisingRoot}},
+		{Issue: "LEGION-340", Wait: &record.Wait{Kind: record.WaitUnreleased, Issue: revisingRoot}},
+		{Issue: "LEGION-350", Wait: &record.Wait{Kind: record.WaitUnlabelled}},
 	}
 	if !reflect.DeepEqual(got.Admission.Blocked, want) {
-		t.Fatalf("blocked = %#v, want %#v: each names the issue that must move before it can run", got.Admission.Blocked, want)
+		t.Fatalf("blocked = %#v, want %#v: each names what it waits for and the issue that waits turns on", got.Admission.Blocked, want)
 	}
+}
+
+// placements is where each issue of a state stands, by issue key: the lists that name it, in
+// the order `active`, `waiting`, `blocked`. An issue no list names has no entry, and an issue
+// two of them name has two, which is what the partition is read by.
+func placements(state api.State) map[string][]string {
+	placed := make(map[string][]string, len(state.Issues))
+	for _, key := range state.Admission.Active {
+		placed[key] = append(placed[key], "active")
+	}
+	for _, key := range state.Admission.Waiting {
+		placed[key] = append(placed[key], "waiting")
+	}
+	for _, row := range state.Admission.Blocked {
+		placed[row.Issue] = append(placed[row.Issue], "blocked")
+	}
+	return placed
 }
 
 // lineIssue is one record of the waiting line's fixture, carrying the fields the line reads and
@@ -803,13 +820,17 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 	}
 }
 
-// Every issue `admission.waiting` names carries its own place in the line and the length of that
-// list (contract 58): the places run 1 to the length in the order the list is published in, and
-// no two issues stand at the same one. Nothing is filtered out of it — a member a Dispatch link
-// blocks, a root a person has answered and a root whose first phase has never started each take
-// their place, and what holds the blocked one is `admission.blocked` beside this. An issue
-// holding a slot and an issue the line does not name carry no place at all: they stand in no
-// line.
+// Every issue the admission line carries knows its own place in that line and the line's length
+// (contract 58): the places run 1 to the length in the line's order, and no two issues stand at
+// the same one. Nothing is filtered out of the LINE — a member a Dispatch link blocks, a root a
+// person has answered and a root whose first phase has never started each keep their place —
+// because the place is the scheduling queue, which is what admission promotes from.
+//
+// Where each of them STANDS is the other question, and `admission.waiting` is its answer: the
+// line less the admitted issues `active` and `blocked` hold (blockers.Place). So the blocked
+// member is named under `blocked`, keeps its place in the queue, and is in `waiting` no more
+// than a slot holder is. An issue holding a slot that the line does not carry, and an issue of
+// another project, carry no place at all: they stand in no line.
 //
 // The case runs under two Dispatch project keys, with nothing else between the runs: nothing of
 // this field reads a project key, so each run gives the same places over the same line.
@@ -846,28 +867,37 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}
-			line := got.Admission.Waiting
-			for _, member := range []string{key(20), key(30), key(40)} {
-				if !slices.Contains(line, member) {
-					t.Fatalf("admission.waiting = %v, want %s among them: the blocked member, the answered root and the queued root all stand in the line", line, member)
-				}
-			}
-			if blocked := got.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != key(30) {
-				t.Fatalf("admission.blocked = %#v, want %s alone: what holds a member is read there, and holds it out of no place", blocked, key(30))
-			}
-			stands := make(map[int]string, len(line))
-			for i, member := range line {
-				place := got.Issues[member].WaitingLine
+			// The queue, read back from the places alone: the answered root first, whose work
+			// came back, then the two whose first phase can start, by their rank.
+			queue := make([]string, 0, 3)
+			stands := make(map[int]string, 3)
+			for member, view := range got.Issues {
+				place := view.WaitingLine
 				if place == nil {
-					t.Fatalf("%s stands at %d in %v and carries no waitingLine", member, i+1, line)
-				}
-				if place.Place != i+1 || place.Length != len(line) {
-					t.Errorf("%s's waitingLine = %+v, want place %d of %d, its place in %v", member, *place, i+1, len(line), line)
+					continue
 				}
 				if taken, twice := stands[place.Place]; twice {
-					t.Errorf("%s and %s both stand at place %d of %v", taken, member, place.Place, line)
+					t.Errorf("%s and %s both stand at place %d", taken, member, place.Place)
 				}
 				stands[place.Place] = member
+				queue = append(queue, member)
+			}
+			slices.SortFunc(queue, func(a, b string) int {
+				return got.Issues[a].WaitingLine.Place - got.Issues[b].WaitingLine.Place
+			})
+			if want := []string{key(40), key(20), key(30)}; !reflect.DeepEqual(queue, want) {
+				t.Fatalf("the places give the line %v, want %v: the blocked member keeps its place in the queue", queue, want)
+			}
+			for i, member := range queue {
+				if place := *got.Issues[member].WaitingLine; place.Place != i+1 || place.Length != len(queue) {
+					t.Errorf("%s's waitingLine = %+v, want place %d of %d", member, place, i+1, len(queue))
+				}
+			}
+			if want := []string{key(40), key(20)}; !reflect.DeepEqual(got.Admission.Waiting, want) {
+				t.Fatalf("admission.waiting = %v, want %v: the member a link holds stands under `blocked`, not here", got.Admission.Waiting, want)
+			}
+			if blocked := got.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != key(30) {
+				t.Fatalf("admission.blocked = %#v, want %s alone: what holds a member is read there", blocked, key(30))
 			}
 			for _, member := range []string{key(10), "OTHER-70"} {
 				if place := got.Issues[member].WaitingLine; place != nil {

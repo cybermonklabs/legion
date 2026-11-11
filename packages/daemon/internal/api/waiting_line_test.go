@@ -16,8 +16,11 @@ import (
 
 // waitingLineState is a state whose admission line holds three members — a root a person has
 // answered, a root whose first phase has never started, and a member a Dispatch link blocks,
-// which stands in the line like any other — beside an issue holding a slot and a closed issue
-// the line does not name. Each member carries the place the projection gave it.
+// which keeps its place in the line like any other — beside an issue holding a slot and a
+// closed issue the line does not name. Each member carries the place the projection gave it.
+// `admission.waiting` is where those members stand rather than the line itself, so the blocked
+// one is under `blocked` and not there (blockers.Place): the line is three long and the list
+// two.
 func waitingLineState() State {
 	admittedAt := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	line := []string{"LEGION-40", "LEGION-20", "LEGION-30"}
@@ -35,7 +38,7 @@ func waitingLineState() State {
 			WaitingLine: &WaitingLineView{Place: i + 1, Length: len(line)}}
 	}
 	return State{
-		Admission: Admission{Cap: 2, Active: []string{"LEGION-10"}, Waiting: line,
+		Admission: Admission{Cap: 2, Active: []string{"LEGION-10"}, Waiting: []string{"LEGION-40", "LEGION-20"},
 			Blocked: []BlockedIssue{{Issue: "LEGION-30", BlockedBy: []string{"LEGION-99"}}}},
 		Issues: issues,
 	}
@@ -69,19 +72,20 @@ func waitingLinesServed(t *testing.T, body []byte) map[string]WaitingLineView {
 	return places
 }
 
-// The state route serves each issue of `admission.waiting` its own place in that line and the
-// line's length: the places run 1 to the length in the order the list is published in, and no two
-// issues stand at the same one. The member a link blocks stands in the line like the answered
-// root and the queued root, and what holds it is `admission.blocked` beside this. An issue
-// holding a slot and an issue the line does not name are served no `waitingLine` key at all.
+// The state route serves each member of the admission line its own place in that line and the
+// line's length: the places run 1 to the length in the line's order, and no two issues stand at
+// the same one. The member a link blocks keeps its place like the answered root and the queued
+// root, though `admission.waiting` places it under `blocked` instead. An issue holding a slot
+// and an issue the line does not name are served no `waitingLine` key at all.
 func TestTheWaitingLinePlaceIsServedOnEachIssue(t *testing.T) {
 	state := waitingLineState()
 	body := stateFrom(t, state, "10.1.24.9:4100", podClaims(DaemonAPIVersion))
-	line, served := state.Admission.Waiting, waitingLinesServed(t, body)
+	line, served := []string{"LEGION-40", "LEGION-20", "LEGION-30"}, waitingLinesServed(t, body)
 
 	if blocked := state.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != "LEGION-30" ||
-		!slices.Contains(line, "LEGION-30") {
-		t.Fatalf("the line %v and the blocked %#v must hold LEGION-30 together; this test proves nothing", line, blocked)
+		!slices.Contains(line, "LEGION-30") || slices.Contains(state.Admission.Waiting, "LEGION-30") {
+		t.Fatalf("the line %v must hold LEGION-30 with the blocked %#v and `waiting` %v must not; this test proves nothing",
+			line, blocked, state.Admission.Waiting)
 	}
 	stands := make(map[int]string, len(line))
 	for i, key := range line {
@@ -121,7 +125,7 @@ func TestTheWaitingLinePlaceIsStrippedBelowItsContract(t *testing.T) {
 
 	at := stateFrom(t, state, statePodAddr+":4100", podClaims(waitingLineContract))
 	served := waitingLinesServed(t, at)
-	for _, key := range state.Admission.Waiting {
+	for _, key := range []string{"LEGION-40", "LEGION-20", "LEGION-30"} {
 		if _, carried := served[key]; !carried {
 			t.Errorf("the pod at %d is served no %s for %s, want its place: %s",
 				waitingLineContract, WaitingLineField, key, at)

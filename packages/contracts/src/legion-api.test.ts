@@ -1039,6 +1039,33 @@ test("the state golden names what every blocked issue waits on", () => {
   expect(LegionStateResponse.safeParse(malformed).success).toBeFalse();
 });
 
+// Contract 71: a blocked row carries either the unfinished Dispatch issues it waits on or one
+// hold of the daemon's own — the condition and the issue it turns on — so an issue the waiting
+// line places nowhere is named rather than left out of every list, and the hand-over a finished
+// root owes a stranded member is never written as an unfinished dependency on that root. The
+// field is optional, since a daemon below the contract sends no such row and the route strips
+// them from a caller below it; `kind` is required where the key is at all.
+test("a blocked row carries a hold of the daemon's own", () => {
+  const held = fixture("state.json") as { admission: { blocked: unknown[] } };
+  held.admission.blocked = [
+    { issue: "LEGION-209", blockedBy: ["LEGION-210"] },
+    { issue: "LEGION-321", blockedBy: [], wait: { kind: "tree_closed", issue: "LEGION-320" } },
+    { issue: "LEGION-350", blockedBy: [], wait: { kind: "unlabelled" } },
+  ];
+  const parsed = LegionStateResponse.parse(held);
+  expect(parsed.admission.blocked).toEqual([
+    { issue: "LEGION-209", blockedBy: ["LEGION-210"] },
+    { issue: "LEGION-321", blockedBy: [], wait: { kind: "tree_closed", issue: "LEGION-320" } },
+    { issue: "LEGION-350", blockedBy: [], wait: { kind: "unlabelled" } },
+  ]);
+
+  const kindless = fixture("state.json") as { admission: { blocked: unknown[] } };
+  kindless.admission.blocked = [
+    { issue: "LEGION-321", blockedBy: [], wait: { issue: "LEGION-320" } },
+  ];
+  expect(LegionStateResponse.safeParse(kindless).success).toBeFalse();
+});
+
 // Contract 51: the cap counts the issues at work, so `active` and `waiting` name issues of any
 // depth and say nothing about which trees run. `trees` says it instead — the root of every live
 // tree — and each issue's `tree` names its own root, so a child is told from a root. The computed

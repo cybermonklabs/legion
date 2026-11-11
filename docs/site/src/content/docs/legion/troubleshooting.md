@@ -317,8 +317,10 @@ approval on a deployment that gates no step, or when the last gated step was tak
 `gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
 issue keeps its admission slot from the moment the daemon starts it
 until it is done, leaves the workflow or waits only for its merge;
-once it is answered it stands in `admission.waiting` too,
-among the issues whose work came back, oldest first, until the pass that resumes it. That resume
+once it is answered the daemon puts it in the admission line,
+among the issues whose work came back, oldest first, until the pass that resumes it; it stays
+in `admission.active`, since it holds a slot, and `admission.waiting` is where the issues that
+wait for one stand. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
 opened. While the root stands in the line, `waitingLine` on the
 issue gives its place in the line and the line's length. Nothing is sent to its architect about

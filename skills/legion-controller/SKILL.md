@@ -139,14 +139,14 @@ starts it and keeps it
 until it is done, leaves the workflow or waits only for its merge,
 so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
 roots of the live trees. The free slots are `admission.cap`, less every issue in
-`admission.active`, which is every issue holding a slot, and less again each issue of
-`admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the
-daemon counts a slot a waiting issue will take as taken already, and an issue in
-`admission.blocked` waits on a blocker rather than on a slot. Count no issue twice. An issue
-that holds a slot and waits for a promotion stands in both lists — a root a person answered,
-a tree's own root at `admitted` under a design gate a person has opened, a root another tree
-handed over with the slot it held there, and a child the daemon started that a person set back
-to `todo` — and subtracting such an issue a second time would hide a slot that is free. Every
+`admission.active`, which is every issue holding a slot, and less again every issue of
+`admission.waiting`: the daemon counts a slot a waiting issue will take as taken already. No
+issue is counted twice, because the three lists no longer overlap that way — an issue that
+holds a slot and waits for a promotion is in `admission.active` alone (a root a person
+answered, a tree's own root at `admitted` under a design gate a person has opened, a root
+another tree handed over with the slot it held there, and a child the daemon started that a
+person set back to `todo`), and an issue something holds is in `admission.blocked` alone, since
+it waits on that hold rather than on a slot. Every
 move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a

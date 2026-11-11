@@ -1058,7 +1058,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
-  blocked on Dispatch links: none
+  blocked: none
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
@@ -1153,7 +1153,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
-  `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
+  `answeredAt` with `answeredBy` once it was answered), for an issue the admission line carries
   `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
   read; a daemon below contract 58 serves none) and, for a closed
   issue whose

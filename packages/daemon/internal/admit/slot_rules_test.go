@@ -320,14 +320,16 @@ func TestSlotPerPhase(t *testing.T) {
 
 	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-7",
 		"LEGION-8", "LEGION-9", "LEGION-20", "LEGION-30", "LEGION-32")
-	// LEGION-1 keeps its row at admitted because an open Dispatch child holds it there, and
-	// LEGION-31 is the unstarted child of a root waiting on a person: that wait is what holds
-	// it where it stands, and the state names it rather than leaving the issue in none of
-	// `active`, `waiting` and `blocked` (record.Unplaced). LEGION-32, the re-entered child
-	// beside it, holds a row and so stands in `active` instead.
+	// LEGION-1 keeps its row at admitted because an unfinished Dispatch issue holds it there,
+	// which is a dependency and reads as one. LEGION-31 is the unstarted child of a root
+	// waiting on a person: that wait is no Dispatch dependency, so the row names the hold and
+	// the root it turns on rather than naming that root as an unfinished blocker, and the
+	// state reports it rather than leaving the issue in none of `active`, `waiting` and
+	// `blocked` (record.Unplaced). LEGION-32, the re-entered child beside it, holds a row and
+	// so stands in `active` instead.
 	want := []record.BlockedIssue{
 		{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}},
-		{Issue: "LEGION-31", BlockedBy: []string{"LEGION-30"}},
+		{Issue: "LEGION-31", Wait: &record.Wait{Kind: record.WaitAwaitingPerson, Issue: "LEGION-30"}},
 	}
 	if got := blockedNow(t, pool, admission); !reflect.DeepEqual(got, want) {
 		t.Fatalf("blocked = %#v, want %#v", got, want)

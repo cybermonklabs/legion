@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Declares daemon API contract 71, which names every admitted issue the daemon has not started under `admission.blocked`, with what each one waits for: the unfinished Dispatch issues it waits on, or one hold of the daemon''s own as `wait` — its tree has closed and owes it a hand-over, a person has not approved the tree''s design, the root has asked a person and has no answer, an accepted ancestor must close first, its chain reaches another tree''s unreleased work, or a person has taken the legion label off the root. An issue any of those stopped used to stand in none of `admission.active`, `admission.waiting` and `admission.blocked`. `admission.waiting` is now where the issues that wait for a slot stand, the admission line less the admitted issues the other two lists hold; the line itself is each issue''s own `waitingLine` place, which carries every member as before.'
+time: 2026-11-11T13:00:00.000000000Z
+custom:
+    Issue: pr3577

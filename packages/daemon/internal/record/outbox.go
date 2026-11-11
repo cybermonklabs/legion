@@ -385,14 +385,22 @@ func (u UpdateStalled) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// BlockedIssue is one issue Legion is waiting to start and the issues it waits on that are not
-// done, in the order Dispatch lists them (blockers.Unfinished): a root admission skips, or a
-// child the workflow holds at `admitted`. It lives here, below both readers, so the tick notice
-// above and the state's `blocked` (api.BlockedIssue, an alias of this type) carry one shape
-// rather than two that could drift.
+// BlockedIssue is one issue Legion is waiting to start and what it waits for: a root admission
+// skips, a child the workflow holds at `admitted`, or an issue the waiting line places nowhere
+// at all (Unplaced). It lives here, below both readers, so the tick notice above and the
+// state's `blocked` (api.BlockedIssue, an alias of this type) carry one shape rather than two
+// that could drift.
+//
+// BlockedBy is the issues it waits on that are not done, in the order Dispatch lists them
+// (blockers.Unfinished), and nothing else: a Dispatch dependency, or an open child that goes
+// first. Wait is the other kind of wait — one of the daemon's own decisions, which no Dispatch
+// link records — naming the condition and the issue it turns on (Wait.Issue). A row carries one
+// or the other, so a reader of BlockedBy still reads unfinished issues alone: an issue waiting
+// on the hand-over a finished root owes it is held, not blocked by a done issue.
 type BlockedIssue struct {
 	Issue     string   `json:"issue"`
 	BlockedBy []string `json:"blockedBy"`
+	Wait      *Wait    `json:"wait,omitempty"`
 }
 
 // MarshalJSON keeps `blockedBy` an array on the wire, empty rather than `null`: the plugin's

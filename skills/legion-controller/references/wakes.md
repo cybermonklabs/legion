@@ -51,7 +51,7 @@ fixes a live row's session.
 `blocked`, when present, is `[{issue, blockedBy}, …]`: every root and child Legion is waiting to
 start, each with what it waits on — the unfinished Dispatch issues of its `blocked_by` links, or,
 for a parent, the open children beneath it that children-first holds it for. `read_state` shows the
-same list under `admission.blocked`, and `legion state` prints it as `blocked on Dispatch links:`.
+same list under `admission.blocked`, and `legion state` prints it as `blocked:`.
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
 link is taken off (by a person or the tree's architect), and a children-first wait ends when the
 last open child leaves the workflow: name the waits in the day's report and

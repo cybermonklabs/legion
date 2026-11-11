@@ -147,41 +147,114 @@ func LineWaitsOn(rows map[string]Row, entry record.LineEntry) []string {
 // are two. The children-first wait (record.ChildWaitRows) reads the mirror's parent column
 // against the daemon's records rather than an issue's blocked-by links; and the issues the
 // waiting line places nowhere (record.Unplaced) are read from that line, the slots and the
-// pass's line facts, which is what makes this list and the two beside it a partition of the
-// issues the record calls admitted (dispatch://INFRA-2964). Neither rule can be made here, and
-// both must still reach the one list a reader reads. A key more than one decider names keeps
-// one row, with each one's issues in it — the deciders are independent, and an issue can wait
-// on a link and on a child at once.
+// pass's line facts, each carrying the wait of the daemon's own making that keeps it there
+// (record.Wait). Neither rule can be made here, and both must still reach the one list a
+// reader reads. A key more than one decider names keeps one row, with each one's issues in it
+// — the deciders are independent, and an issue can wait on a link and on a child at once — and
+// the first wait named on that key stands, since a row carries one.
 func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry, more []record.BlockedIssue) []record.BlockedIssue {
 	blocked := make([]record.BlockedIssue, 0, len(line)+len(more))
 	at := make(map[string]int, len(line)+len(more))
-	add := func(key string, waits []string) {
+	add := func(key string, waits []string, wait *record.Wait) {
 		if index, named := at[key]; named {
 			for _, wait := range waits {
 				if !slices.Contains(blocked[index].BlockedBy, wait) {
 					blocked[index].BlockedBy = append(blocked[index].BlockedBy, wait)
 				}
 			}
+			if blocked[index].Wait == nil {
+				blocked[index].Wait = wait
+			}
 			return
 		}
 		at[key] = len(blocked)
-		blocked = append(blocked, record.BlockedIssue{Issue: key, BlockedBy: waits})
+		blocked = append(blocked, record.BlockedIssue{Issue: key, BlockedBy: waits, Wait: wait})
 	}
 	for _, entry := range line {
 		if waits := LineWaitsOn(rows, entry); len(waits) > 0 {
-			add(entry.Issue.Key, waits)
+			add(entry.Issue.Key, waits, nil)
 		}
 	}
 	for _, issue := range issues {
 		if waits := Holds(rows, issue); len(waits) > 0 {
-			add(issue.Key, waits)
+			add(issue.Key, waits, nil)
 		}
 	}
 	for _, row := range more {
-		add(row.Issue, row.BlockedBy)
+		add(row.Issue, row.BlockedBy, row.Wait)
 	}
 	slices.SortFunc(blocked, func(a, b record.BlockedIssue) int { return cmp.Compare(a.Issue, b.Issue) })
 	return blocked
+}
+
+// Placement is where every issue the daemon's records call admitted stands, as the state
+// publishes it: `active` is every issue holding one of the cap's slots, which the caller reads
+// off the slots table; Waiting and Blocked are the other two, built here.
+//
+// Every admitted issue is in one of the three (dispatch://INFRA-2964): that is record.Unplaced's
+// half, which gives a row to every admitted issue nothing else accounts for. Waiting is
+// exclusive, which is this function's half: an issue in it is in neither of the others.
+//
+// Waiting is exclusive because the SCHEDULING QUEUE and an issue's PLACEMENT are two different
+// questions, and the state answers them in two places:
+//
+//   - The queue is the waiting line in its own order, which admission promotes from. It carries
+//     a slot holder whose work came back and an issue a Dispatch link holds, and a reader reads
+//     it off each issue's own place in it (api.WaitingLineView, contract 58), where it has
+//     always been. Nothing here changes which issues the line carries or in what order: the
+//     line is record.Waiting's, promotion reads it, and this reads it.
+//   - The placement is where the issue stands and what moves it next. An issue already holding
+//     a slot is not waiting for one, and an issue promotion skips is not next up, so naming
+//     either under `waiting` answers that question wrongly — and it was the same report that
+//     left an issue in none of the three.
+//
+// Active and Blocked are NOT made exclusive of each other, and that is deliberate. They are two
+// true things about one issue rather than two places: the slot says the cap counts this issue
+// among the ones the daemon has started, and the row says what its own next phase waits for. A
+// tree's root at admitted holds a slot from the moment its architect began, so every root whose
+// own children go first (record.ChildWaitRows) and every root a link holds is in both; taking
+// those rows out of Blocked would delete the daemon's whole report of what a started root waits
+// for, which is the report this issue exists to complete, and taking the issue out of Active
+// would make `active` disagree with the slots the cap counts.
+type Placement struct {
+	// Waiting is the line's own order, less the admitted issues Active or Blocked hold.
+	Waiting []record.Issue
+	// Blocked is every issue Legion is waiting to start with what it waits for.
+	Blocked []record.BlockedIssue
+}
+
+// Place is the one placement of a pass's issues, which the state (projection.Project) and the
+// controller's tick notice (admit's Admission.blocked) both read, so the two can never place one
+// issue differently. rows, issues, line and facts are the pass's own, as Blocked takes them, and
+// slots the caller's own read of the slots table — the project's own rows, where the caller
+// holds more than that (admit's ownSlots).
+func Place(rows map[string]Row, issues []record.Issue, slots []record.Slot, line []record.LineEntry,
+	facts record.LineFacts,
+) Placement {
+	started := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		started[slot.Issue] = struct{}{}
+	}
+	blocked := Blocked(rows, issues, line, append(record.ChildWaitRows(facts.ChildWaits),
+		record.Unplaced(issues, slots, line, facts)...))
+	held := make(map[string]struct{}, len(blocked))
+	for _, row := range blocked {
+		held[row.Issue] = struct{}{}
+	}
+	waiting := make([]record.Issue, 0, len(line))
+	for _, entry := range line {
+		issue := entry.Issue
+		if issue.Phase == phase.Admitted && record.InWorkflow(issue) {
+			if _, active := started[issue.Key]; active {
+				continue
+			}
+			if _, blocks := held[issue.Key]; blocks {
+				continue
+			}
+		}
+		waiting = append(waiting, issue)
+	}
+	return Placement{Waiting: waiting, Blocked: blocked}
 }
 
 // Exempt says whether an issue starts whatever its links say, and so is neither held by the

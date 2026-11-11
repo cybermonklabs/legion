@@ -923,4 +923,45 @@ package api
 // this entry was first written. As
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 64
+// 71: INFRA-2964 -- `admission.blocked` of `GET /legion/v1/state`, and the `blocked` list of the
+// controller's tick notice, name every issue the daemon records as admitted that nothing has
+// started, with what each one waits for. Two kinds of wait reach the list. One is a Dispatch
+// dependency, which `blockedBy` has always carried: an unfinished issue a blocked_by link names,
+// or an open child that goes before its parent. The other is a decision of the daemon's own,
+// which no Dispatch link records and the waiting line used to make silently — the issue's tree
+// has closed and owes it a hand-over, a person has not approved the tree's current design, the
+// tree's root has asked a person and has no answer, an ancestor the daemon has accepted must
+// close first, the issue's Dispatch chain reaches another tree's unreleased work, or a person
+// has taken the legion label off the root. Such a row carries `wait`, its `kind` and the
+// `issue` that decision turns on, and leaves `blockedBy` empty, so a reader of `blockedBy`
+// still reads unfinished issues alone and never a finished root named as a dependency. Before
+// this, an issue any of those decisions stopped stood in none of `admission.active`,
+// `admission.waiting` and `admission.blocked`: at `admitted` in the daemon's own records,
+// holding no slot, in no line, with nothing naming what it waited on, and no later pass looking
+// at it again. Twenty-three issues of one deployment stood there at once.
+// `admission.waiting` is the other half of the same shape, and it changes meaning without
+// changing its name: it is now where the issues that wait for a slot STAND, which is the
+// admission line less the admitted issues `active` and `blocked` hold, rather than the line
+// itself. The line — the queue admission promotes from, which carries a slot holder whose work
+// came back and an issue a link holds — is each issue's own `waitingLine` place (58 above),
+// where nothing is filtered out, so no reader loses the queue. A reader that counted free slots
+// by taking `admission.waiting` and dropping the issues of `active` and `blocked` from it
+// (skill://legion-controller) reads the same number it always did.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 71 is served `admission.blocked` without the rows that carry `wait` (api's
+// stateFor, withoutWaits), which is the list its own contract describes; the membership of
+// `admission.waiting` is no key of its own and no downgrade can carry it, as `active` and
+// `waiting` counting issues rather than trees could not at 51. A plugin at 70 does not refuse
+// the field — every answer-side schema of `packages/contracts` has stripped a key it does not
+// name since sjawhar/legion#2788 — and the strip is still what serves such a caller: one that
+// did not ask for the field is not given it, and a plugin built before #2788 is strict and
+// would refuse the body. `legion state` prints the list as `blocked:` where it read `blocked on
+// Dispatch links:`, since a link is no longer the only wait it carries.
+// (Read on 2026-11-11 of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
+// request of this repository, 153 of them: the highest declared is 70 (#3573), with 69 (#3536,
+// #2539), 68 (#3511), 67 (#3519), 66 (#3534) and 65 (#2731) below it, and main declares 64.
+// None of them carries these shapes, so this change takes 71, the number above them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. Read main's own number, and every open branch's, again at the next forward merge rather
+// than from this line.)
+const DaemonAPIVersion = 71

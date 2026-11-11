@@ -638,18 +638,28 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 }
 
 // blockedSummary is the one line an operator reads for the issues Legion is waiting to start
-// behind a Dispatch issue nobody has finished (api.Admission.Blocked): how many, and each by
-// issue with what it waits on, in the state's own key order. Nothing here is the daemon's to
-// clear — a blocker is finished in Dispatch by a person — so the line names them and stops.
+// (api.Admission.Blocked): how many, and each by issue with what it waits for, in the state's
+// own key order. A row names either the Dispatch issues nobody has finished or the daemon's own
+// hold and the issue that hold turns on (record.Wait), which is the shape of the row. The line
+// read `blocked on Dispatch links:` while a link was the only wait it could carry. Nothing
+// here is the daemon's to clear — a blocker is finished in Dispatch by a person, a design gate
+// approved by one, a paused root labelled again by one — so the line names them and stops.
 func blockedSummary(blocked []api.BlockedIssue) string {
 	if len(blocked) == 0 {
-		return "blocked on Dispatch links: none"
+		return "blocked: none"
 	}
 	waits := make([]string, len(blocked))
 	for i, issue := range blocked {
-		waits[i] = issue.Issue + " waits on " + strings.Join(issue.BlockedBy, ", ")
+		switch {
+		case issue.Wait == nil:
+			waits[i] = issue.Issue + " waits on " + strings.Join(issue.BlockedBy, ", ")
+		case issue.Wait.Issue == "":
+			waits[i] = issue.Issue + " is held: " + string(issue.Wait.Kind)
+		default:
+			waits[i] = issue.Issue + " is held: " + string(issue.Wait.Kind) + " of " + issue.Wait.Issue
+		}
 	}
-	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
+	return fmt.Sprintf("blocked: %d — %s", len(blocked), strings.Join(waits, "; "))
 }
 
 // memorySummary is the one line an operator reads for the memory groups the project's work was

@@ -60,10 +60,14 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   message gave (the `message.created` just before `issue.closed` among `Events:`).
 - **Running.** Each root in `admission.trees`, the live trees, with its `issues.<KEY>.phase`, and
   under it each issue of that tree in `admission.active`, the slot holders, with its own phase;
-  then the issues in `admission.waiting`. Name as waiting on a claim each root that this turn's
+  then the issues in `admission.waiting`, which wait for a slot. Name as waiting on a claim each root that this turn's
   "Trees waiting on a root claim" check found, with the holder its `Claimed by:` line names.
-- **Waiting on Dispatch links.** Each root and child in `admission.blocked`, with what it waits
-  on: the issues of its `blocked_by` links, or the open children children-first holds it for. A
+- **Waiting to start.** Each root and child in `admission.blocked`, with what it waits
+  for: the issues of its `blocked_by` links, the open children children-first holds it for, or
+  the hold of the daemon's own its `wait` names (a closed tree that owes it a hand-over, an
+  unapproved design gate, a root's unanswered question, an accepted ancestor, another tree's
+  unreleased work, or a root a person has taken the label off) with the issue that hold turns
+  on. A
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.

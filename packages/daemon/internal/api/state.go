@@ -325,12 +325,18 @@ type Admission struct {
 	// person, one in accepting, one held and one merging under a closed gate are each here,
 	// while one in awaiting_merge is in neither list.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: the issues whose work came back,
-	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
-	// rank. It carries children as well as roots, for the same reason `active` does. An owed
-	// start in it holds no row and waits for one; an issue in it that holds a row already (the
-	// kinds record.LineEntry.Holds names) stands in both lists until the pass that promotes it,
-	// which takes no second row.
+	// Waiting is where the issues that wait for one of the cap's slots stand, in the admission
+	// line's own order: the issues whose work came back, oldest first, then the issues whose
+	// first phase can start, by their tree root's Dispatch rank. It carries children as well as
+	// roots, for the same reason `active` does.
+	//
+	// It is a placement, not the queue. An admitted issue that holds a slot is in Active alone
+	// and an admitted issue something holds is in Blocked alone, so the three lists are a
+	// partition of the issues the record calls admitted: each of them is in exactly one, and
+	// never in none (dispatch://INFRA-2964, blockers.Place). The QUEUE — the line admission
+	// promotes from, which carries a slot holder whose work came back and an issue a link
+	// holds — is each issue's own place in it (Issue.WaitingLine, contract 58), and nothing is
+	// filtered out of that.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
@@ -339,16 +345,17 @@ type Admission struct {
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees"`
-	// Blocked is every issue Legion is waiting to start, by issue key, with the issue it waits
-	// on: one that waits on a Dispatch issue nobody has finished (INFRA-225) — a waiting root
-	// admission skips and a child the workflow holds at `admitted` — and one the waiting line
-	// does not carry at all, which waits on the issue that must move before it can run
-	// (record.Unplaced): the ancestor the daemon has accepted, the live root its Dispatch chain
-	// reaches, or its own tree's root, whose promotion, approval, answer, hand-over or
-	// re-admission is the one move that places it. The three lists together are a partition of
-	// the issues the record calls admitted: every one of them is in Active, in Waiting, or here,
-	// and never in none of them (dispatch://INFRA-2964). A blocked issue the line carries is in
-	// Waiting too. Never null; empty when Legion waits to start nothing.
+	// Blocked is every issue Legion is waiting to start, by issue key, with what it waits for.
+	// Two kinds of wait reach it. One is a Dispatch dependency (INFRA-225): a waiting root
+	// admission skips and a child the workflow holds at `admitted`, each carrying under
+	// `blockedBy` the issues it waits on that are not done. The other is a decision of the
+	// daemon's own, which no Dispatch link records and the waiting line used to make silently
+	// (record.Unplaced): its tree closed and owes it a hand-over, its design gate is not
+	// approved, its root's question to a person is unanswered, an accepted ancestor holds it,
+	// its chain reaches another tree's unreleased work, or a person has taken the legion label
+	// off it. Such a row carries `wait`, which names the condition and the issue it turns on,
+	// and leaves `blockedBy` empty: the hand-over a finished root owes is not an unfinished
+	// dependency on that root. Never null; empty when Legion waits to start nothing.
 	Blocked []BlockedIssue `json:"blocked"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
@@ -432,9 +439,11 @@ type Issue struct {
 	// asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
-	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
-	// only for an issue that list names, a slot holder whose work came back among them, and
-	// absent for every other issue.
+	// WaitingLine is this issue's place in the admission line (contract 58), which is the
+	// scheduling queue admission promotes from and carries every member of it: a slot holder
+	// whose work came back and an issue a Dispatch link holds keep their place here, though
+	// `admission.waiting` places them in `active` and `blocked` instead. It is absent for every
+	// issue the line does not carry.
 	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
@@ -728,8 +737,11 @@ type SlotView struct {
 // looks for the field rather than repeating the string.
 const WaitingLineField = "waitingLine"
 
-// WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
-// and the length of that list at this read. It says where the issue stands, not what holds it:
+// WaitingLineView is the issue's place in the admission line, where 1 is first, and the length
+// of that line at this read. The line is the scheduling queue, which nothing is filtered out
+// of, so the length can be greater than `admission.waiting` is long: that list is where the
+// line's members stand, and a member a slot or a hold places elsewhere is in `active` or
+// `blocked` instead. It says where the issue stands in the queue, not what holds it:
 // `admission.blocked` names what holds it.
 type WaitingLineView struct {
 	Place  int `json:"place"`

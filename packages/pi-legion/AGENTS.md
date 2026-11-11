@@ -94,7 +94,18 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 64's launch spend
+number is the one `DaemonAPIVersion` declares, last bumped by contract 71's account of every
+admitted issue
+(dispatch://INFRA-2964: `admission.blocked` of `GET /legion/v1/state` names every issue the
+daemon records as admitted that nothing has started, with what each one waits for — the
+unfinished Dispatch issues it waits on, or one hold of the daemon's own as `wait`, its `kind`
+and the `issue` that hold turns on, with `blockedBy` empty — so an issue the waiting line drops
+is no longer in none of `admission.active`, `admission.waiting` and `admission.blocked`;
+`admission.waiting` is now where the issues that wait for a slot stand, which is the admission
+line less the admitted issues the other two hold, while the line itself, which carries a slot
+holder whose work came back and an issue a link holds, is each issue's own place in it, 58
+below; a caller from a pod below 71 is served the list without the rows that carry `wait`),
+after contract 64's launch spend
 attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
 issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
 after the attributes the deployment's own `runtime.kubernetes.pod.env` or
@@ -110,9 +121,9 @@ reader every worker's `read_record` parses the state through requires, so the bo
 controller's `legion` tool gains `compact (issue, role)` and `fresh_session (issue, role)`, which
 post `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`), after
 contract 58's waiting line
-(INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
-`waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
-an issue the list does not name carries no such key, and a caller
+(INFRA-1100: an issue of the admission line carries
+`waitingLine`, its `place` in that line, 1 at the front, and the line's `length` at that read;
+an issue the line does not carry has no such key, and a caller
 from a pod below 58 is served every issue without the field), after contract 57's claim step
 record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
 carries `step`, what the daemon last saw that claim's agent do — the turn it is in, the call it
