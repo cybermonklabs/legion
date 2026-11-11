@@ -3,10 +3,13 @@ package routes
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -656,6 +659,156 @@ func TestTheDrawTheBudgetBeatIsNotCancelledUnderIt(t *testing.T) {
 	}
 	if err := <-drawn; err != nil {
 		t.Fatalf("the draw ran under a context the budget had already ended (%v): a query on it would cost the pool its connection", err)
+	}
+}
+
+// A draw the page has stopped waiting for still ends. It is detached from the request on
+// purpose, so neither the reader leaving nor the budget nor shutdown can end it - these
+// goroutines are registered with nothing that waits for them - and its own deadline
+// (firstScreenDrawCap) is all there is. Without one, a draw that parks - on a failed room's
+// recovery, on the rooms pool's four connections, on the sign-in issuer - holds a goroutine and
+// its slot for the life of the process, and this row holds the draw open to read that it ends
+// anyway.
+func TestADetachedDrawEndsByItself(t *testing.T) {
+	ended := make(chan error, 1)
+	page, path := pageWithADraw(t, beatenFirstScreenBudget,
+		func(ctx context.Context, _ *http.Request, _ api.FirstScreenAddress) api.FirstScreen {
+			<-ctx.Done()
+			ended <- ctx.Err()
+			return api.FirstScreen{}
+		})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+theDocumentAddress, nil)
+	page.servePageForDocument(response, request, path, theDocumentAddress)
+	if response.Body.String() != firstScreenPage {
+		t.Fatalf("the page past its budget drew:\n%s", response.Body.String())
+	}
+
+	// Not a verdict on the clock: the draw above ends when its context does and never otherwise,
+	// so this bound only turns a draw nothing can end into a failure rather than a hung test.
+	select {
+	case err := <-ended:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the detached draw ended with %v, want the draw cap's own deadline", err)
+		}
+	case <-time.After(firstScreenDrawCap + 30*time.Second):
+		t.Fatalf("a draw the page gave up on was still running %s later: nothing can end it, and it holds its slot and a rooms-pool connection for the life of the process",
+			firstScreenDrawCap+30*time.Second)
+	}
+}
+
+// withoutRecoveryWaitMark is how a context spells the mark docs.WithoutRecoveryWait puts on one.
+// It is read off a context this row marks itself rather than written out here, so what the row
+// looks for is the mark the docs package actually sets.
+func withoutRecoveryWaitMark(t *testing.T) string {
+	t.Helper()
+	mark := strings.TrimPrefix(
+		fmt.Sprint(docs.WithoutRecoveryWait(context.Background())), fmt.Sprint(context.Background()))
+	if mark == "" {
+		t.Fatal("docs.WithoutRecoveryWait leaves no mark a context spells")
+	}
+	return mark
+}
+
+// A failed document room refuses the draw at once instead of holding it for the room's recovery:
+// the eviction that recovery waits for compacts under the document's advisory lock, which any
+// transaction may hold, so the wait has no bound of its own and the page has no use for it - the
+// reader is sent the shell and their own editor meets the room's refusal with its reason.
+func TestADetachedDrawWaitsForNoFailedRoomsRecovery(t *testing.T) {
+	drawing := make(chan string, 1)
+	page, path := pageWithADraw(t, unreachableFirstScreenBudget,
+		func(ctx context.Context, _ *http.Request, _ api.FirstScreenAddress) api.FirstScreen {
+			drawing <- fmt.Sprint(ctx)
+			return api.FirstScreen{}
+		})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+theDocumentAddress, nil)
+	page.servePageForDocument(response, request, path, theDocumentAddress)
+
+	if got, mark := <-drawing, withoutRecoveryWaitMark(t); !strings.Contains(got, mark) {
+		t.Fatalf("the draw ran under %s, which carries no %s: a failed room would hold it for its recovery", got, mark)
+	}
+}
+
+// The draws in flight are capped (firstScreenDrawSlots), because a draw past the budget is work
+// nobody is waiting for and its heaviest step takes one of the four connections document loads
+// share. A page view that finds no slot free sends the shell there and then, which is what the
+// budget sends and what a refused draw sends; it does not queue behind the draws in flight.
+func TestAPageViewWithNoDrawSlotSendsTheShell(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	started := make(chan struct{}, cap(firstScreenDrawSlots)+1)
+	// A budget no draw loses, so what this row reads is the cap on the draws in flight and never
+	// the clock: a page that answers at all here answered without waiting for a draw.
+	page, path := pageWithADraw(t, unreachableFirstScreenBudget,
+		func(context.Context, *http.Request, api.FirstScreenAddress) api.FirstScreen {
+			started <- struct{}{}
+			<-release
+			return api.FirstScreen{Drawn: true, HTML: `<p data-block-id="b-1">The document</p>`}
+		})
+	for range cap(firstScreenDrawSlots) {
+		go func() {
+			request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+theDocumentAddress, nil)
+			page.servePageForDocument(httptest.NewRecorder(), request, path, theDocumentAddress)
+		}()
+		// Every slot taken before the row asks for one more: the slot is taken before the draw
+		// runs, so a draw that has started holds one.
+		<-started
+	}
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+theDocumentAddress, nil)
+		page.servePageForDocument(response, request, path, theDocumentAddress)
+		answered <- response
+	}()
+	select {
+	case response := <-answered:
+		if response.Body.String() != firstScreenPage {
+			t.Fatalf("a page view with no draw slot free drew the document:\n%s", response.Body.String())
+		}
+		if got := response.Header().Get("Cache-Control"); got != pageCacheControl {
+			t.Fatalf("the shell's Cache-Control = %q, want %q", got, pageCacheControl)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a page view with no draw slot free waited on a draw of its own instead of sending the shell: the draws in flight are capped by nothing")
+	}
+	select {
+	case <-started:
+		t.Fatal("a page view with no draw slot free started a draw anyway: the draws in flight are capped by nothing")
+	default:
+	}
+}
+
+// A HEAD of a drawn document page answers how long its body is. The drawn page writes its own
+// bytes rather than going through http.ServeContent, which is what sets the length for the shell,
+// so a HEAD that answered without one would leave a browser - or a proxy, or a monitor - reading
+// a page whose length the server never told it, while the same address under GET sends the bytes.
+func TestAHeadOfADocumentPageAnswersItsLength(t *testing.T) {
+	rig := newFirstScreenRig(t)
+	key, slug := rig.seedDocument(t, theDocument)
+	address := "/issues/" + key + "/artifacts/" + slug
+
+	drawn := rig.call(t, http.MethodGet, address, true, nil)
+	if !strings.Contains(drawn.Body.String(), "data-first-screen-address") {
+		t.Fatalf("the page carries no document to measure:\n%s", drawn.Body.String())
+	}
+	if got := drawn.Header().Get("Content-Length"); got != strconv.Itoa(drawn.Body.Len()) {
+		t.Fatalf("the drawn page's Content-Length = %q, want %d, the bytes it sent", got, drawn.Body.Len())
+	}
+
+	head := rig.call(t, http.MethodHead, address, true, nil)
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD %s: status=%d", address, head.Code)
+	}
+	if got := head.Header().Get("Content-Length"); got != strconv.Itoa(drawn.Body.Len()) {
+		t.Fatalf("a HEAD of the drawn page answers Content-Length %q, want %d, what its GET sends", got, drawn.Body.Len())
+	}
+	if head.Body.Len() != 0 {
+		t.Fatalf("a HEAD of the drawn page carries %d bytes of body", head.Body.Len())
 	}
 }
 

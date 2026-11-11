@@ -21,6 +21,23 @@ Task items, ticked and not:
 - [ ] open the window
 - [x] close it
 
+Task items of a loose list:
+
+- [ ] air the room
+
+- [x] lock up
+
+A task item holding more than a line, whose box stays inside its paragraph:
+
+- [ ] water the plants
+
+  before the weekend
+
+A task item holding a list of its own:
+
+- [ ] open the window
+  - [x] unlatch it first
+
 A list item holding more than a line:
 
 - the first line

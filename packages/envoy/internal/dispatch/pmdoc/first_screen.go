@@ -32,7 +32,8 @@ const (
 // more than FirstScreenBytes, cut at whichever comes first, and the whole document when it fits.
 // A document whose first block alone passes FirstScreenBytes draws nothing, since the cap is
 // what keeps a page from carrying megabytes of one block. complete says the HTML holds every
-// top-level block the document has; the rows of the cut read it.
+// top-level block the document has; only the rows of the cut read it, since what the page
+// handler takes from this is the HTML alone (`docs.FirstScreenHTML`).
 //
 // It takes a document node (a tree the server already holds) and writes no error: a node outside
 // the Proof schema is skipped rather than refused, since a page drawing most of a document is
@@ -45,7 +46,7 @@ func FirstScreenHTML(doc *Node) (html string, complete bool) {
 	var out strings.Builder
 	var block strings.Builder
 	drawn := 0
-	for index, child := range doc.Children {
+	for _, child := range doc.Children {
 		if drawn == FirstScreenBlocks {
 			return out.String(), false
 		}
@@ -59,9 +60,6 @@ func FirstScreenHTML(doc *Node) (html string, complete bool) {
 		}
 		out.WriteString(block.String())
 		drawn++
-		if out.Len() >= FirstScreenBytes && index < len(doc.Children)-1 {
-			return out.String(), false
-		}
 	}
 	return out.String(), true
 }
@@ -211,8 +209,9 @@ func writeOrderedListHTML(out *strings.Builder, n *Node) {
 }
 
 // writeListItemHTML writes one list item, with the two passes the page runs over a painted body
-// (`refs/paint-block.ts`): a task item carries a drawn checkbox inside its first child, and a
-// tight item's one paragraph is unwrapped, so the item reads as a line rather than a paragraph.
+// (`refs/paint-block.ts`), in the order it runs them: a task item's checkbox is drawn inside the
+// item's first child, and only then is a tight item's one paragraph unwrapped, with the box in
+// it, so the item reads as a line rather than a paragraph.
 func writeListItemHTML(out *strings.Builder, n *Node) {
 	item := attrs{}
 	checked, isTask := n.Attrs["checked"].(bool)
@@ -231,16 +230,45 @@ func writeListItemHTML(out *strings.Builder, n *Node) {
 	tight := n.Attrs["spread"] == false && len(n.Children) == 1 && n.Children[0] != nil &&
 		n.Children[0].Type == "paragraph"
 	for index, child := range n.Children {
-		if index == 0 && isTask {
-			writeTaskCheckbox(out, checked)
-		}
-		if index == 0 && tight {
+		switch {
+		case index == 0 && tight:
+			// The unwrapped paragraph's content, the box first: the page prepends the box into
+			// the paragraph and then replaces that paragraph with its own child nodes, so the
+			// box comes out of the unwrap ahead of the item's words.
+			if isTask {
+				writeTaskCheckbox(out, checked)
+			}
 			writeInlineChildren(out, child)
-			continue
+		case index == 0 && isTask:
+			writeTaskItemFirstChild(out, child, checked)
+		default:
+			writeNodeHTML(out, child)
 		}
-		writeNodeHTML(out, child)
 	}
 	out.WriteString("</li>")
+}
+
+// writeTaskItemFirstChild writes a task item's first child with the item's checkbox inside it,
+// which is where the page's own pass puts it (`refs/task-checkboxes.ts`: `paragraph.prepend(box)`
+// into the item's first element child). It is what every item the unwrap above does not reach is
+// drawn by - an item that is itself spread, and one holding a second block such as a nested
+// list - and the box has to go inside that child rather than beside it, because `<p>` is
+// block-level: a box written before the paragraph stands alone on a line above the item's own
+// words until the editor arrives.
+//
+// The schema makes that child a paragraph (`list_item` is `paragraph block*`), which is the shape
+// this draws into; a tree from outside the schema keeps its box beside its item rather than
+// losing it.
+func writeTaskItemFirstChild(out *strings.Builder, child *Node, checked bool) {
+	if child == nil || child.Type != "paragraph" {
+		writeTaskCheckbox(out, checked)
+		writeNodeHTML(out, child)
+		return
+	}
+	writeOpenTag(out, "p", nil, child)
+	writeTaskCheckbox(out, checked)
+	writeInlineChildren(out, child)
+	out.WriteString("</p>")
 }
 
 // writeTaskCheckbox writes the box `drawTaskCheckboxes` draws: disabled, because that is the only

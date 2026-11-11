@@ -390,3 +390,101 @@ func TestFirstScreenOfNoDocument(t *testing.T) {
 		t.Fatalf("a nil document drew %q (complete %v)", rendered, complete)
 	}
 }
+
+// A task item's checkbox goes where the page puts it, in each of the shapes a task item comes
+// in. The page prepends the box INTO the item's first child and only then unwraps a tight
+// one-paragraph item with the box in it (`refs/task-checkboxes.ts`'s `paragraph.prepend(box)`,
+// run by `refs/paint-block.ts` before its unwrap), so the box ends up a child of the `li` only
+// where the unwrap reaches the item, and stays inside the `p` everywhere else. A box written as
+// a child of the `li` beside the paragraph would stand alone on a line above the item's own
+// words, since `<p>` is block-level, until the editor replaced it.
+func TestFirstScreenDrawsATaskCheckboxWhereThePageDraws(t *testing.T) {
+	var lists firstScreenFixture
+	for _, fixture := range loadFirstScreenFixtures(t) {
+		if fixture.Name == "lists" {
+			lists = fixture
+		}
+	}
+	if lists.Name == "" {
+		t.Fatal("no lists fixture")
+	}
+	tree, err := FromJSON(lists.PMJSON)
+	if err != nil {
+		t.Fatalf("decode fixture tree: %v", err)
+	}
+	rendered, _ := FirstScreenHTML(tree)
+	// The shapes, in the order testdata/first-screen/lists.md writes them. The unwrap reads the
+	// item's own `spread` and its one paragraph, so it reaches the two tight items and the two
+	// items of the loose list, whose own spread is false, and their boxes come out of the
+	// paragraph with the words. It reaches neither the item that is itself spread, which holds
+	// two paragraphs, nor the item holding a list of its own, which holds a second child; their
+	// boxes stay in the paragraph. The nested item is tight again.
+	want := []drawnCheckbox{
+		{Parent: "li", Text: "open the window"},
+		{Parent: "li", Text: "close it"},
+		{Parent: "li", Text: "air the room"},
+		{Parent: "li", Text: "lock up"},
+		{Parent: "p", Text: "water the plants"},
+		{Parent: "p", Text: "open the window"},
+		{Parent: "li", Text: "unlatch it first"},
+	}
+	got := checkboxesOfHTML(t, rendered)
+	if len(got) != len(want) {
+		t.Fatalf("the lists fixture drew %d task checkboxes, want %d: %v", len(got), len(want), got)
+	}
+	for index, box := range got {
+		if box != want[index] {
+			t.Fatalf("task checkbox %d sits in <%s> holding %q, the page draws it in <%s> holding %q",
+				index, box.Parent, box.Text, want[index].Parent, want[index].Text)
+		}
+	}
+}
+
+// drawnCheckbox is one task checkbox as a row reads it back: the tag of the element holding it
+// and the text that element holds, which is the item's own words.
+type drawnCheckbox struct {
+	Parent string
+	Text   string
+}
+
+func checkboxesOfHTML(t *testing.T, rendered string) []drawnCheckbox {
+	t.Helper()
+	boxes := []drawnCheckbox{}
+	for _, input := range elementsOfHTML(t, rendered, "input") {
+		for _, attribute := range input.Attr {
+			if attribute.Key != "data-markdown-task-checkbox" {
+				continue
+			}
+			if input.Parent == nil {
+				t.Fatalf("a task checkbox was drawn with no element around it: %s", rendered)
+			}
+			boxes = append(boxes, drawnCheckbox{Parent: input.Parent.Data, Text: textOf(input.Parent)})
+			break
+		}
+	}
+	return boxes
+}
+
+// A document whose drawn blocks land exactly on the byte cap, with nothing left that draws, is
+// drawn whole: the cap refuses the block that would pass it, and a document with no such block
+// has had all of itself drawn. Landing on the cap is not itself a cut (dispatch://INFRA-341).
+func TestFirstScreenLandingExactlyOnItsByteCapIsComplete(t *testing.T) {
+	empty := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Attrs: Attrs{BlockIDAttr: "b-001"}}}}
+	around, _ := FirstScreenHTML(empty)
+	doc := &Node{Type: "doc", Children: []*Node{
+		{
+			Type:     "paragraph",
+			Attrs:    Attrs{BlockIDAttr: "b-001"},
+			Children: []*Node{{Type: "text", Text: strings.Repeat("x", FirstScreenBytes-len(around))}},
+		},
+		// A node outside the Proof schema, which draws nothing here and nothing on the page.
+		{Type: "nothing-the-schema-knows", Attrs: Attrs{BlockIDAttr: "b-002"}},
+	}}
+	rendered, complete := FirstScreenHTML(doc)
+	if len(rendered) != FirstScreenBytes {
+		t.Fatalf("the document drew %d bytes, want exactly the %d-byte cap", len(rendered), FirstScreenBytes)
+	}
+	if !complete {
+		t.Fatalf("a document drawn whole, landing on the %d-byte cap, reads as cut", FirstScreenBytes)
+	}
+}

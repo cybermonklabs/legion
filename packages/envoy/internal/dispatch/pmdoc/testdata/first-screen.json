@@ -242,10 +242,16 @@
       "thirdfourth",
       "Task items, ticked and not:",
       "open the windowclose it",
+      "Task items of a loose list:",
+      "air the roomlock up",
+      "A task item holding more than a line, whose box stays inside its paragraph:",
+      "water the plantsbefore the weekend",
+      "A task item holding a list of its own:",
+      "open the windowunlatch it first",
       "A list item holding more than a line:",
       "the first lineand a paragraph under it"
     ],
-    "markdown": "A tight list, whose items read as lines:\n\n- one\n- two\n  - nested under two\n- three\n\nA loose list, whose items keep their paragraphs:\n\n- one\n\n- two\n\nAn ordered list that does not start at one:\n\n3. third\n4. fourth\n\nTask items, ticked and not:\n\n- [ ] open the window\n- [x] close it\n\nA list item holding more than a line:\n\n- the first line\n\n  and a paragraph under it\n",
+    "markdown": "A tight list, whose items read as lines:\n\n- one\n- two\n  - nested under two\n- three\n\nA loose list, whose items keep their paragraphs:\n\n- one\n\n- two\n\nAn ordered list that does not start at one:\n\n3. third\n4. fourth\n\nTask items, ticked and not:\n\n- [ ] open the window\n- [x] close it\n\nTask items of a loose list:\n\n- [ ] air the room\n\n- [x] lock up\n\nA task item holding more than a line, whose box stays inside its paragraph:\n\n- [ ] water the plants\n\n  before the weekend\n\nA task item holding a list of its own:\n\n- [ ] open the window\n  - [x] unlatch it first\n\nA list item holding more than a line:\n\n- the first line\n\n  and a paragraph under it\n",
     "name": "lists",
     "pm_json": {
       "type": "doc",
@@ -592,14 +598,14 @@
           "content": [
             {
               "type": "text",
-              "text": "A list item holding more than a line:"
+              "text": "Task items of a loose list:"
             }
           ]
         },
         {
           "type": "bullet_list",
           "attrs": {
-            "spread": false,
+            "spread": true,
             "blockId": "b-000031"
           },
           "content": [
@@ -608,8 +614,8 @@
               "attrs": {
                 "label": "•",
                 "listType": "bullet",
-                "spread": true,
-                "checked": null,
+                "spread": false,
+                "checked": false,
                 "blockId": "b-000032"
               },
               "content": [
@@ -621,6 +627,210 @@
                   "content": [
                     {
                       "type": "text",
+                      "text": "air the room"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "list_item",
+              "attrs": {
+                "label": "•",
+                "listType": "bullet",
+                "spread": false,
+                "checked": true,
+                "blockId": "b-000034"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "attrs": {
+                    "blockId": "b-000035"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "lock up"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000036"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "A task item holding more than a line, whose box stays inside its paragraph:"
+            }
+          ]
+        },
+        {
+          "type": "bullet_list",
+          "attrs": {
+            "spread": false,
+            "blockId": "b-000037"
+          },
+          "content": [
+            {
+              "type": "list_item",
+              "attrs": {
+                "label": "•",
+                "listType": "bullet",
+                "spread": true,
+                "checked": false,
+                "blockId": "b-000038"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "attrs": {
+                    "blockId": "b-000039"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "water the plants"
+                    }
+                  ]
+                },
+                {
+                  "type": "paragraph",
+                  "attrs": {
+                    "blockId": "b-000040"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "before the weekend"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000041"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "A task item holding a list of its own:"
+            }
+          ]
+        },
+        {
+          "type": "bullet_list",
+          "attrs": {
+            "spread": false,
+            "blockId": "b-000042"
+          },
+          "content": [
+            {
+              "type": "list_item",
+              "attrs": {
+                "label": "•",
+                "listType": "bullet",
+                "spread": false,
+                "checked": false,
+                "blockId": "b-000043"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "attrs": {
+                    "blockId": "b-000044"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "open the window"
+                    }
+                  ]
+                },
+                {
+                  "type": "bullet_list",
+                  "attrs": {
+                    "spread": false,
+                    "blockId": "b-000045"
+                  },
+                  "content": [
+                    {
+                      "type": "list_item",
+                      "attrs": {
+                        "label": "•",
+                        "listType": "bullet",
+                        "spread": false,
+                        "checked": true,
+                        "blockId": "b-000046"
+                      },
+                      "content": [
+                        {
+                          "type": "paragraph",
+                          "attrs": {
+                            "blockId": "b-000047"
+                          },
+                          "content": [
+                            {
+                              "type": "text",
+                              "text": "unlatch it first"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000048"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "A list item holding more than a line:"
+            }
+          ]
+        },
+        {
+          "type": "bullet_list",
+          "attrs": {
+            "spread": false,
+            "blockId": "b-000049"
+          },
+          "content": [
+            {
+              "type": "list_item",
+              "attrs": {
+                "label": "•",
+                "listType": "bullet",
+                "spread": true,
+                "checked": null,
+                "blockId": "b-000050"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "attrs": {
+                    "blockId": "b-000051"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
                       "text": "the first line"
                     }
                   ]
@@ -628,7 +838,7 @@
                 {
                   "type": "paragraph",
                   "attrs": {
-                    "blockId": "b-000034"
+                    "blockId": "b-000052"
                   },
                   "content": [
                     {
