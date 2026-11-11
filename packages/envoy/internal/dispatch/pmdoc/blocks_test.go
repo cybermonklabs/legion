@@ -247,6 +247,62 @@ func TestMoveBlockRejectsABlockThatCannotStandAtDocumentLevel(t *testing.T) {
 	}
 }
 
+// A list item moved onto an anchor inside a list is relocated inside that list, beside the item
+// holding the anchor: the boundary an insert of list content takes there. The document-level move
+// could not take the item at all.
+func TestMoveBlockRelocatesAListItemInsideTheAnchorsList(t *testing.T) {
+	sequentialBlockIDs(t)
+	// b1 top list, b2 item a, b3 its paragraph, b4 nested list, b5 item x, b6 its paragraph,
+	// b7 item y, b8 its paragraph, b9 item b, b10 its paragraph.
+	doc := parseFixture(t, "- a\n  - x\n  - y\n- b\n")
+	anchor, err := blockRange(doc, "b6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := MoveBlock(doc, "b9", anchor, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRenderedMarkdown(t, out, "- a\n  - x\n  - b\n  - y\n")
+	out, err = MoveBlock(doc, "b9", anchor, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRenderedMarkdown(t, out, "- a\n  - b\n  - x\n  - y\n")
+}
+
+// A move onto a list's own block takes the item as that list's last or first item.
+func TestMoveBlockOntoAListsOwnBlockTakesTheItemIntoIt(t *testing.T) {
+	sequentialBlockIDs(t)
+	// b1 top list, b2 item a, b3 its paragraph, b4 nested list, b5 item x, b6 its paragraph,
+	// b7 item b, b8 its paragraph.
+	doc := parseFixture(t, "- a\n  - x\n- b\n")
+	nested, err := blockRange(doc, "b4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := MoveBlock(doc, "b7", nested, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRenderedMarkdown(t, out, "- a\n  - x\n  - b\n")
+}
+
+// A move that empties the very list it anchored on has nowhere to put the item, and says so.
+func TestMoveBlockRejectsAListAnchorTheMoveEmpties(t *testing.T) {
+	sequentialBlockIDs(t)
+	// b1 list, b2 item, b3 its paragraph, b4 paragraph.
+	doc := parseFixture(t, "- only\n\nAfter.\n")
+	list, err := blockRange(doc, "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = MoveBlock(doc, "b2", list, true)
+	if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), "emptied") {
+		t.Fatalf("moving a list's only item into that list error = %v, want ErrSchema naming the emptied list", err)
+	}
+}
+
 func TestRetypeBlockRetypesATypedBlock(t *testing.T) {
 	sequentialBlockIDs(t)
 	doc := parseFixture(t, ":::ask{#decision urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich?\n\n- A: first\n:::\n")

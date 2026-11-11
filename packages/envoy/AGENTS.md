@@ -1104,8 +1104,11 @@ Every refusal names its operation index and its anchor:
 it also drops a list, list item, or blockquote it empties, hoists a nested list into the place of a bullet whose text goes, and refuses a bullet with other content with `ErrListItemContent` naming `delete {block:"<item id>"}`;
 `pmdoc.DeleteBlock` serves `block` and reports any emptied container's content rule as `INVALID_OP`;
 both leave an emptied footnote definition holding one empty paragraph, which both parsers read back as the definition, so its reference stays a reference).
-`move` relocates the block with `block` to the document-level boundary of an insert anchor (`pmdoc.MoveBlock`);
+`move` relocates the block with `block` to the document-level boundary of an insert anchor (`pmdoc.MoveBlock`), and a list item to the boundary inside the list holding that anchor, where the document-level move could not take it at all (`pmdoc.moveListItem`);
 insert and move anchors are a quote, `start`, `end`, `heading:<title>`, or `block:<id>`.
+An insert of list content - markdown whose every block is a list (`pmdoc.ListContent`) - anchored inside a list joins that list too: it becomes a sibling of the item holding the anchor, or an item of the list whose own block the anchor is (`pmdoc.ValidDocument.ListBoundary`).
+Content that is no list content keeps the document-level boundary, so an insert anchored on a block of a list lands after the whole list and one anchored on a block of a decision beside the decision.
+A block id an operation names that the document does not carry is `404 TARGET_NOT_FOUND` naming the quote form of the field it stood in, and the id the block whose text the operation quotes carries now, where exactly one block holds that text (`docs.ErrBlockNotFound`).
 An insert's `markdown` is read as text written into the document (`pmdoc.ParseFragment`), so a leading `---` line is a rule, as `***` is, except that a closed front-matter block is front matter where the insert lands at the document's start (`start`, or before the first block);
 the accept and the insert decide that with one rule (`docs.opensDocument`).
 A document with nothing in it holds one empty paragraph (`pmdoc.EmptyDocument`:
@@ -1224,7 +1227,8 @@ Within one atomic batch, an operation that names a block cascaded away by an ear
 `POST /api/v1/artifacts/{id}/edits` accepts an optional precondition choosing exactly one document token or one-or-more `{id, token}` block tokens.
 A document token protects every operation;
 a block guard must name every content block the resolved batch changes, while unrelated sections can change concurrently.
-Insert and move require the document token because their meaning depends on document order.
+A block guard covers an insert or a move whose anchor is a block id or a quote: it names the anchor's block, and a move's moved block as well (`docs.anchoredPreconditionBlocks`).
+An operation naming no block that way - an insert at `start` or `end`, or on a `heading:` anchor - is `400 INVALID_PRECONDITION` saying the document token guards it.
 Tokens include inline marks, so a fresh anchor makes the relevant document or block guard stale.
 After resolving the artifact, the conditional path joins the document's bounded queue before starting the write transaction or warming its room (`AcquireConditionalEdit`).
 The queue is an in-memory queue per process plus a count across processes in `doc_conditional_edit_queue` (migration 20261101181502).
