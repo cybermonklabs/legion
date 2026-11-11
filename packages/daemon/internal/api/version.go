@@ -939,8 +939,10 @@ package api
 // file at refs/pull/<n>/head, over every open pull request of the repository. Neither carries
 // the merge marks, so this branch took the number above them rather than one of theirs, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. 64 was the third of them when that reading was made and is no gap now: INFRA-312's entry
-// above is it, landed on main since. Two gaps, left so the history reads as it happened.
+// says. 64 was the third of them at that reading and is no gap: INFRA-312's entry above is it,
+// which cybermonklabs/legion#3521 landed on main on 2026-11-11, between that reading and the
+// forward merge of main 3956a7a66c10 into this branch. Two gaps, left so the history reads as it
+// happened.
 //
 // 66: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon's enqueue at
 // READY jumps the merge queue, and can hold a path still while a window runs. `GET
@@ -971,20 +973,24 @@ package api
 // and that the controller was told. A rollback is not free: an older daemon's payload decoder is
 // strict, so it refuses those three fields on every retry of every ready_merge row this daemon
 // wrote, and that daemon's reader knows neither of the two new notice kinds, `merge-held` and
-// `merge-jump-refused`. (main carried 59 when this branch was cut and carries 62 now, which
-// INFRA-2551 landed as cybermonklabs/legion#3522 at 07:47Z on 2026-11-11, so this entry was
-// renumbered at the forward merge that took that tip. The open pull requests of this repository
-// declare 63 (#3573, beside this branch's own earlier 63), 64 (#3521) and 65 (#3511), and two more
-// declare 62, the base's own number, which the gate refuses as it stands; read at 2026-11-11T08:59Z
-// with `gh api graphql` over every open pull request's file list — a list GitHub cut short read as
-// touching the file — and then each one's `version.go` at refs/pull/<n>/head. 66 is the lowest
-// number above the base's that no open pull request holds, which is the number this repository's
-// own gate names in its refusal (.github/scripts/check-daemon-api-contract.sh). 66 is held from
-// there on and through every forward merge, with another tree's entry absorbed beside it rather
-// than moved out of the way: only main's own DaemonAPIVersion reaching 66 moves this number, and
-// a number another open pull request declares moves it not at all, since whichever of the two
-// lands second renumbers then and a renumber made earlier is a change to this branch's own diff,
-// which costs its tester a full round. That is why the entries above this one at 64 and 62 are
-// main's, absorbed at the two forward merges of 2026-11-11, and why this number did not move at
-// either. Read main's own number again at the next forward merge rather than from this line.)
+// `merge-jump-refused`. (Every number below that this branch does not own is written here as a
+// dated event rather than as a present state, because a sentence saying what main carries now
+// goes stale with nobody touching the file, and twice on 2026-11-11 one did. This branch was cut
+// from a main that declared 59. INFRA-2551 landed 62 as cybermonklabs/legion#3522 at 07:47Z on
+// 2026-11-11, and the forward merge that took that tip renumbered this entry. INFRA-312 landed 64
+// as #3521 later that day, and the forward merge of main 3956a7a66c10 brought it in without
+// renumbering this entry, so the entries above this one at 62 and 64 are main's, absorbed at
+// those two merges. Read at 2026-11-11T08:59Z with `gh api graphql` over every open pull request
+// of this repository — by each one's `version.go` at refs/pull/<n>/head, since a file list GitHub
+// cuts short reads as not touching the file — #3573 declared 63 beside this branch's own earlier
+// 63, #3511 declared 65, and two more declared 62, which was the base's own number at that
+// reading, so the gate refused them as they stood. 66 was then the lowest number above the base's
+// that no open pull request declared, which is the number this repository's own gate names in its
+// refusal (.github/scripts/check-daemon-api-contract.sh). 66 is held from there on and through
+// every forward merge, with another tree's entry absorbed beside it rather than moved out of the
+// way: only main's own DaemonAPIVersion reaching 66 moves this number, and a number another open
+// pull request declares moves it not at all, since whichever of the two lands second renumbers
+// then and a renumber made earlier is a change to this branch's own diff, which costs its tester
+// a full round. Read main's own number, and this file on every open pull request, again at the
+// next forward merge rather than from this line.)
 const DaemonAPIVersion = 66
