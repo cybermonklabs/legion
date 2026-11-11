@@ -1965,7 +1965,7 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
-		return m.relaunchAfterFailure(ctx)
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -2025,7 +2025,9 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
-	m.claim.Budgets.LaunchFailures = 0
+	// The pending cause goes with the launch failures it names: the episode they measure ended
+	// when this agent came up (Claim.PendingCause).
+	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)
@@ -2076,7 +2078,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
 // operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	m.claim.Budgets = Budgets{}
+	m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 	return m.revive(ctx, exemptWake(ev))
 }
 

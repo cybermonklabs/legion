@@ -46,19 +46,72 @@ type Limits struct {
 	PromptRetires  int
 }
 
+// FailureCause is the one word for what failed a claim, chosen by the site that fails it rather
+// than read back out of the sentence that site writes (Claim.Failure): one sentence covers four
+// different events today, and a reader of it cannot tell a dead process from an agent that never
+// came up. The set is closed, so an agent choosing between a retry and an escalation reads a word
+// it can decide on and the sentence stays for the person behind it.
+type FailureCause string
+
+const (
+	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out
+	// (launchNow), with no other cause pending for the relaunch it refused.
+	CauseLaunchRefused FailureCause = "launch_refused"
+	// CauseDied: the process died until the deaths or the launch budget ran out (died, directly
+	// and through relaunchAfterFailure).
+	CauseDied FailureCause = "died"
+	// CauseNeverRegistered: the agent did not register before its deadline, or registered and
+	// never said it was ready, until the launch budget ran out (registrationDeadline). The one
+	// word covers both, which is what the deadline itself does.
+	CauseNeverRegistered FailureCause = "never_registered"
+	// CauseStalePlugin: a relaunch onto the daemon's own plugin contract that ran out
+	// (staleRegistration).
+	CauseStalePlugin FailureCause = "stale_plugin"
+	// CausePromptRetiresExhausted: the prompt retirements ran out (chargePrompt).
+	CausePromptRetiresExhausted FailureCause = "prompt_retires_exhausted"
+	// CauseProviderError: a provider error that cannot clear ended the claim's turn
+	// (providerErrored).
+	CauseProviderError FailureCause = "provider_error"
+	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
+	// it; the migration that adds the column writes it for every stored failure whose sentence
+	// does not say which event wrote it.
+	CauseUnrecorded FailureCause = "unrecorded"
+)
+
+// Valid is whether c is one of the seven causes above. The zero value is not one of them: it is a
+// claim that carries no cause at all, which is every claim but one the daemon has failed and not
+// launched again.
+func (c FailureCause) Valid() bool {
+	switch c {
+	case CauseLaunchRefused, CauseDied, CauseNeverRegistered, CauseStalePlugin,
+		CausePromptRetiresExhausted, CauseProviderError, CauseUnrecorded:
+		return true
+	}
+	return false
+}
+
 // relaunchAfterFailure charges one launch failure for a process that did not survive, and
 // relaunches the same session after it, once the backoff for the failures charged so far has
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
 // when the budget is spent. A relaunch the tree lifecycle refuses (its cleanup reserved) is
 // checked before the charge, so it costs none; one whose process is already stopped is
 // relaunchRefused's.
-func (m *Machine) relaunchAfterFailure(ctx context.Context) error {
+//
+// cause is what failed the process this relaunch replaces, from the caller that saw it, and it is
+// recorded on the claim before the charge: it is what the claim fails under when this budget runs
+// out, and what a launch the runtime refuses on the way fails under too (launchNow,
+// Claim.PendingCause). The retry of a relaunch the lifecycle check refused carries the same
+// cause, which is why it is handed over in a closure rather than as the method value.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) error {
 	if err := m.checkLaunch(ctx); err != nil {
-		return m.relaunchRefused(ctx, m.relaunchAfterFailure, err)
+		return m.relaunchRefused(ctx, func(ctx context.Context) error {
+			return m.relaunchAfterFailure(ctx, cause)
+		}, err)
 	}
+	m.claim.PendingCause = cause
 	m.claim.Budgets.LaunchFailures++
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
-		return m.fail(ctx, "launch failures ran out")
+		return m.fail(ctx, cause, "launch failures ran out")
 	}
 	return m.launchAfter(ctx, true, false)
 }
@@ -108,7 +161,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		"relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
 	if last {
 		m.claim.Budgets.PromptFailures = failures
-		return m.fail(ctx, "prompt retirements ran out")
+		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
 	return m.launch(ctx)

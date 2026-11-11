@@ -176,7 +176,29 @@ type Claim struct {
 	// Failure is the reason a terminally failed claim could not continue. It is cleared before a
 	// retry and persisted so a daemon restart can report the same failure to the workflow.
 	Failure string
-	Pending *Delivery
+	// FailureCause is the one word for what failed the claim, written beside that sentence by the
+	// site that failed it (fail), and FailedAt is when it did. Both are cleared where Failure is,
+	// by the launch that runs the claim again (launchNow), so a claim carries them from its
+	// failure until it launches again — a claim an operator retired after it failed still carries
+	// them — and they are persisted with it, so an agent reading the claim after a daemon restart
+	// reads the cause the daemon that failed it chose.
+	FailureCause FailureCause
+	FailedAt     time.Time
+	// PendingCause is what failed the process whose relaunch is now under way
+	// (relaunchAfterFailure), and "" for a claim relaunching after no failure. It is the cause a
+	// launch the runtime then refuses fails under, so a claim that died and whose relaunch the
+	// runtime refused reads died rather than launch_refused, which is what the architect must act
+	// on (launchNow).
+	//
+	// It is durable for the reason Claim.DeathCharged is: the relaunch that carries it lives in
+	// memory — a parked wake's turn, and the retry relaunchLater holds in m.relaunch — while a
+	// restored claim is taken up from what the store holds, so a daemon replaced between the
+	// charge and the budget running out would write launch_refused for a claim that died. It is
+	// cleared exactly where Budgets.LaunchFailures is put back to zero, by the agent's ready and
+	// by the whole-budget reset of a retry, because the pending cause and the launch-failure
+	// count measure one episode.
+	PendingCause FailureCause
+	Pending      *Delivery
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -1804,7 +1826,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		m.claim.BootTokenHash = HashBootToken(token)
 
 		m.claim.State = StateLaunching
-		m.claim.Failure = ""
+		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		if err := m.persist(ctx); err != nil {
 			err = errors.Join(err, m.stopPrevious(ctx))
 			if ctx.Err() != nil {
@@ -1849,7 +1871,14 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
-			return errors.Join(err, m.fail(ctx, fmt.Sprintf("launch failures ran out: %v", err)))
+			// The refusal is this claim's own cause only where nothing else is already being
+			// relaunched after: a claim that died and whose relaunch the runtime then refused
+			// reads died (Claim.PendingCause).
+			cause := m.claim.PendingCause
+			if cause == "" {
+				cause = CauseLaunchRefused
+			}
+			return errors.Join(err, m.fail(ctx, cause, fmt.Sprintf("launch failures ran out: %v", err)))
 		}
 		charged = true
 	}
@@ -2018,11 +2047,11 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.endHeld(ctx)
 	}
 	if m.claim.DeathCharged {
-		return m.relaunchAfterFailure(ctx)
+		return m.relaunchAfterFailure(ctx, CauseDied)
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath() {
-		return m.fail(ctx, "deaths with work outstanding ran out")
+		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the
@@ -2033,7 +2062,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx))
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, CauseDied))
 }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
@@ -2068,7 +2097,11 @@ func (m *Machine) forgetSession() {
 // records — found dead, or never stopped — is suspended first, so nothing of it keeps holding
 // what it ran on until the tree closes; a suspension that fails is logged, and the claim fails
 // all the same.
-func (m *Machine) fail(ctx context.Context, why string) error {
+//
+// cause is the word for what failed it, from the site that decided: it is written with the
+// sentence and the moment, and the pending cause this call has just consumed is cleared, since
+// the episode it named has ended here (Claim.PendingCause).
+func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) error {
 	if loc := m.claim.Locator; loc != nil {
 		if err := m.endProcess(ctx); err != nil {
 			m.log.Error("supervise: could not suspend the failed claim's process", "incarnation", loc.Incarnation, "error", err)
@@ -2076,7 +2109,10 @@ func (m *Machine) fail(ctx context.Context, why string) error {
 	}
 	m.letGo()
 	m.claim.State, m.claim.Failure = StateFailed, why
-	m.log.Error("supervise: claim failed", "why", why, "launchFailures", m.claim.Budgets.LaunchFailures,
+	m.claim.FailureCause, m.claim.FailedAt = cause, m.deps.Clock.Now()
+	m.claim.PendingCause = ""
+	m.log.Error("supervise: claim failed", "cause", string(cause), "why", why,
+		"launchFailures", m.claim.Budgets.LaunchFailures,
 		"deaths", m.claim.Budgets.Deaths, "promptFailures", m.claim.Budgets.PromptFailures,
 		"promptRetires", m.claim.Budgets.PromptRetires)
 	return m.durableWrite(ctx, StateFailed, m.persist)
