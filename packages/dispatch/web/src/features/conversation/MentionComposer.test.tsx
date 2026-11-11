@@ -8,6 +8,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
@@ -83,6 +84,8 @@ const createdComment: Comment = {
   author: { id: "alice", kind: "user" },
   body: "sent",
   created_at: "2026-09-18T00:00:00Z",
+  deleted_at: null,
+  deleted_by: null,
   deliveries: [],
   edited_at: null,
   id: "comment-1",
@@ -1669,6 +1672,7 @@ const createdMessage: Message = {
   reply_block: null,
   created_at: "2026-09-18T00:00:00Z",
   deliveries: [],
+  ...messageCorrectionFields(),
   id: "message-1",
   in_reply_to: null,
   issue_key: null,

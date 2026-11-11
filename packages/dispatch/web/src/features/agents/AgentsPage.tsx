@@ -63,7 +63,8 @@ import {
   AgentUnresponsiveNote,
   useAgentText,
 } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
@@ -221,7 +222,7 @@ function AgentExchangeReply({
       author={reply.author}
       body={
         <div className={textPrimaryOnCanvas}>
-          <MarkdownBody markdown={reply.body} />
+          <PostBody deleted={postDeletion(reply)} markdown={reply.body} />
         </div>
       }
       delivery={
@@ -240,6 +241,7 @@ function AgentExchangeReply({
               targetName: rowTarget(agent),
             }
       }
+      edited={reply.edited_at}
       onReply={() => onReply(agentReplyTo(agent, read, reply))}
       quote={
         parent === undefined
@@ -247,6 +249,7 @@ function AgentExchangeReply({
           : {
               author: parent.author,
               block: reply.reply_block,
+              deleted: postDeletion(parent),
               excerpt: parent.body,
               ...(parent.issue_key === null
                 ? {}
@@ -295,10 +298,13 @@ function AgentTargetedMessage({
         <>
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnCanvas}`}>
             <AgentName actor={read.message.author} className="font-semibold" inline />
-            <Timestamp at={read.message.created_at} />
+            <span>
+              <Timestamp at={read.message.created_at} />
+              <EditedMark at={read.message.edited_at} deleted={postDeletion(read.message)} />
+            </span>
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} />
+            <PostBody deleted={postDeletion(read.message)} markdown={read.message.body} />
           </div>
         </>
       }

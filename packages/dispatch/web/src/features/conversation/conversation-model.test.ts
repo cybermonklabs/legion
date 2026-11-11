@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type {
   Actor,
   Ask,
@@ -74,6 +75,8 @@ function comment(overrides: Partial<Comment> & Pick<Comment, "id" | "created_at"
     ask_id: null,
     author: bob,
     body: `body of ${overrides.id}`,
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     issue_key: "CORE-1",
@@ -95,6 +98,7 @@ function message(overrides: Partial<Message> & Pick<Message, "id" | "created_at"
     reply_block: null,
     body: `body of ${overrides.id}`,
     deliveries: [],
+    ...messageCorrectionFields(),
     in_reply_to: null,
     issue_key: "CORE-1",
     target: null,

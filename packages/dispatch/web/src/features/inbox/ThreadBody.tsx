@@ -57,7 +57,8 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
@@ -66,12 +67,17 @@ import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
 
-/** One message of a thread, whatever route it was read from. */
+/** One message of a thread, whatever route it was read from. A flattened view model, so the two
+ *  marks a corrected post carries are read into it rather than from the row. */
 interface ThreadTurn {
   readonly id: string;
   readonly author: Actor;
   readonly body: string;
   readonly created_at: string;
+  /** The post's deletion, null for one nobody deleted. */
+  readonly deleted: PostDeletion | null;
+  /** When the post's author last replaced its body; null for one nobody edited. */
+  readonly edited: string | null;
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
@@ -113,6 +119,7 @@ function ThreadTurnView({
       <p className={`mb-1 flex flex-wrap items-center gap-x-2 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
+          <EditedMark at={turn.edited} deleted={turn.deleted} />
         </span>
         {unread ? (
           <span
@@ -123,7 +130,7 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} />
+        <PostBody deleted={turn.deleted} markdown={turn.body} />
       </div>
       {turn.note}
     </div>
@@ -353,6 +360,8 @@ function commentTurn(comment: Comment): ThreadTurn {
     author: comment.author,
     body: comment.body,
     created_at: comment.created_at,
+    deleted: postDeletion(comment),
+    edited: comment.edited_at,
     id: comment.id,
   };
 }
@@ -362,6 +371,8 @@ function messageTurn(message: Message, note?: ReactNode): ThreadTurn {
     author: message.author,
     body: message.body,
     created_at: message.created_at,
+    deleted: postDeletion(message),
+    edited: message.edited_at,
     id: message.id,
     ...(note === undefined ? {} : { note }),
   };

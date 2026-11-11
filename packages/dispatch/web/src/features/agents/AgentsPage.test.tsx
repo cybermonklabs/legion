@@ -11,6 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -165,6 +166,7 @@ function message(body: string, overrides: Partial<Message> = {}): Message {
     broadcast_id: null,
     created_at: "2026-09-14T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id: "message-1",
     in_reply_to: null,
     issue_key: null,
@@ -4275,6 +4277,34 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
     jest.advanceTimersByTime(1);
     jest.useRealTimers();
     onlineManager.setOnline(online);
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("the Agents page marks an edited message and reads a deleted one as deleted", async () => {
+  const user = userEvent.setup();
+  const edited = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const deletedReply = message("", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    deleted_at: "2026-09-14T01:05:00Z",
+    deleted_by: { id: "planner-session", kind: "session" },
+    id: "reply-1",
+    in_reply_to: "message-1",
+  });
+  const page = renderAgents({ messages: [{ message: edited, replies: [deletedReply] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Can this ship?");
+    await waitFor(() => expect(planner.textContent).toContain("edited"));
+    await waitFor(() => expect(planner.textContent).toContain("Deleted by"));
+  } finally {
     page.view.unmount();
     page.restore();
   }

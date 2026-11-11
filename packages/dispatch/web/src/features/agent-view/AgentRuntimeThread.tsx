@@ -10,6 +10,7 @@ import type { Message, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { isViewer } from "../refs/actor";
+import { postDeletion } from "../refs/post-marks";
 import { AgentThread } from "./AgentThread";
 import {
   type AgentConversation,
@@ -135,12 +136,19 @@ export function AgentRuntimeThread({
         const content = [{ text: message.body, type: "text" as const }];
         const createdAt = new Date(message.created_at);
         const id = dispatchId(message.id);
+        // A deleted message's body is cleared, and an edited one carries the time of the edit:
+        // the turn reads both from the marks and draws the deleted line where the text was.
+        const deleted = postDeletion(message);
+        const corrected = {
+          ...(deleted === null ? {} : { deleted }),
+          ...(message.edited_at === null ? {} : { edited: message.edited_at }),
+        };
         if (message.author.kind === "session" && message.author.id === sessionId) {
           return {
             content,
             createdAt,
             id,
-            metadata: dispatchMetadata({ dispatch: true }),
+            metadata: dispatchMetadata({ ...corrected, dispatch: true }),
             role: "assistant" as const,
             status: { reason: "stop", type: "complete" } as const,
           };
@@ -149,7 +157,7 @@ export function AgentRuntimeThread({
           content,
           createdAt,
           id,
-          metadata: dispatchMetadata({ author: otherAuthor(message, viewer) }),
+          metadata: dispatchMetadata({ ...corrected, author: otherAuthor(message, viewer) }),
           role: "user" as const,
         };
       });

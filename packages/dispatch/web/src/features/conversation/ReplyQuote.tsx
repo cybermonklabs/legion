@@ -5,6 +5,8 @@ import type { Actor } from "../../api/types";
 import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { DeletedBody } from "../refs/PostBody";
+import type { PostDeletion } from "../refs/post-marks";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
@@ -30,7 +32,9 @@ export function passageItem<T extends { readonly id: string }>(
  *
  *  A reply that names one block of its parent (`block`, the reply's `reply_block`) quotes that
  *  passage instead, worded `Replying to <author>'s passage — <text>`; once the parent's edit
- *  removed the passage, the quote says so in place of its text.
+ *  removed the passage, the quote says so in place of its text. Once the parent's author
+ *  deleted the parent, the quote says that instead of either, since a delete gives no part of
+ *  the body to any read that quotes it.
  *
  *  The author is drawn by `AgentName`, whose name links to the agent, so it sits outside the
  *  quote's link, which holds the rest: the body, or with no author the whole line. */
@@ -38,6 +42,7 @@ export function ReplyQuote({
   author,
   block,
   className = "",
+  deleted = null,
   excerpt,
   to,
 }: {
@@ -45,6 +50,8 @@ export function ReplyQuote({
   /** The block of the parent the reply answers; null or absent when it answers the whole. */
   block?: ReplyBlock | null;
   className?: string;
+  /** The parent's deletion, where the host read one; null for a parent nobody deleted. */
+  deleted?: PostDeletion | null;
   /** The quoted parent's body as its author wrote it (Markdown); `""` when none is known. */
   excerpt: string;
   to?: string;
@@ -55,7 +62,12 @@ export function ReplyQuote({
   // The dash opens the quoted body, so the body is never an element of its own text: a reader
   // (or a test) matching the parent's body finds the parent's turn, not its every quote.
   const quoted =
-    passage && block.removed ? (
+    deleted !== null ? (
+      <span className="block truncate">
+        {author === undefined ? `${unknownParent} — ` : "— "}
+        <DeletedBody deleted={deleted} />
+      </span>
+    ) : passage && block.removed ? (
       <span className="block truncate">
         {author === undefined ? `${unknownParent} — ` : "— "}
         This passage was removed.

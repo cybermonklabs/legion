@@ -20,6 +20,8 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -98,7 +100,12 @@ function AnswerRow({
       {row.kind === "reply" && row.reply !== undefined ? (
         <p className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           <span className={`font-medium ${textMutedOnCanvas}`}>Replied:</span>{" "}
-          <MarkdownBody markdown={row.reply.body} source={source} variant="inline" />
+          <PostBody
+            deleted={postDeletion(row.reply)}
+            markdown={row.reply.body}
+            source={source}
+            variant="inline"
+          />
         </p>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">

@@ -13,6 +13,7 @@ import {
   type Placement,
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
@@ -83,6 +84,7 @@ function message(id: string, overrides: Partial<Message> = {}): Message {
     body: `Body of ${id}`,
     created_at: "2026-09-09T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: "CORE-1",
@@ -2449,5 +2451,30 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     stub.restore();
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
+  }
+});
+
+test("the Conversation marks an edited message and reads a deleted one as deleted", async () => {
+  const root = message("message-1", { edited_at: "2026-09-09T01:00:00Z" });
+  const deletedReply = message("message-2", {
+    body: "",
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const turn = await screen.findByText("Body of message-1");
+    const card = turn.closest("[data-turn]") as HTMLElement;
+    expect(card.textContent).toContain("edited");
+    await waitFor(() => expect(card.textContent).toContain("Deleted by alice"));
+    expect(card.textContent).not.toContain("Body of message-2");
+  } finally {
+    view.unmount();
+    stub.restore();
   }
 });

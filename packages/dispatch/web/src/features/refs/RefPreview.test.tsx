@@ -1235,3 +1235,56 @@ test("a comment card names its agent by its current title and state, without a s
     getIssue.mockRestore();
   }
 });
+
+test("a comment card of a deleted comment reads as deleted and gives no part of its body", async () => {
+  const getIssue = mockIssues();
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      deleted_at: "2026-09-09T01:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+    replies: [],
+  };
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);
+  jest.useFakeTimers();
+  const view = render(
+    <Harness>
+      <Link
+        to="/issues/CORE-1/comments/comment-1"
+        {...referenceTriggerProps({ id: "comment-1", key: "CORE-1", kind: "comment" })}
+      >
+        the comment
+      </Link>
+    </Harness>
+  );
+  try {
+    fireEvent.pointerOver(screen.getByRole("link", { name: "the comment" }), {
+      pointerType: "mouse",
+    });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    const card = screen.getByRole("tooltip");
+    jest.useRealTimers();
+    await waitFor(() => expect(card.textContent).toContain("Deleted by alice"));
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getIssue.mockRestore();
+  }
+});

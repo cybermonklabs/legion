@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
@@ -39,6 +40,7 @@ function reply(id: string): Message {
     broadcast_id: null,
     created_at: "2026-10-03T12:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: "message-1",
     issue_key: null,

@@ -1,12 +1,27 @@
 import type { DispatchEvent } from "../../api/types";
 import { capabilityLabel } from "../conversation/delivery";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
+import { type DeletablePost, postDeletion } from "../refs/post-marks";
 
 /** An event's line in the Pinned tab, as `AgentPart`s: an agent it names keeps its identity
  *  until `EventBody` draws it through `AgentName`. */
 export function eventDescription(event: DispatchEvent): AgentPart[] {
   const description = describe(event);
   return typeof description === "string" ? [description] : description;
+}
+
+/**
+ * The line a deleted post's event shows in place of its body. The read of the event takes
+ * `body` out of the payload and stamps `deleted_at` and `deleted_by` in its place
+ * (`api/events.go`), so there is no text here to print and the mark is what a reader meets.
+ * `undefined` for a post nobody deleted, which prints its body as it always has.
+ */
+function deletedPost(payload: DeletablePost, kind: string): AgentPart[] | undefined {
+  const deleted = postDeletion(payload);
+  if (deleted === null) {
+    return undefined;
+  }
+  return deleted.by === null ? [`${kind} deleted`] : [`${kind} deleted by `, { actor: deleted.by }];
 }
 
 function describe(event: DispatchEvent): string | AgentPart[] {
@@ -63,9 +78,15 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return "Comment reopened";
     case "comment.edited":
       return "Comment edited";
+    case "comment.deleted":
+      return deletedPost(event.payload, "Comment") ?? "Comment deleted";
+    case "message.edited":
+      return "Message edited";
+    case "message.deleted":
+      return deletedPost(event.payload, "Message") ?? "Message deleted";
     case "message.created":
     case "message.answered":
-      return event.payload.body;
+      return deletedPost(event.payload, "Message") ?? event.payload.body;
     case "message.delivery":
       // A duplicate attempt reached the listener and the stream stored nothing new; its state is
       // still `sent`, so reporting the state alone would read as a fresh delivery.
@@ -82,7 +103,7 @@ function describe(event: DispatchEvent): string | AgentPart[] {
         : "Ask re-anchored after an edit";
     case "comment.created":
     case "comment.answered":
-      return event.payload.body;
+      return deletedPost(event.payload, "Comment") ?? event.payload.body;
     case "comment.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Comment lost its quote"

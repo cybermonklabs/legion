@@ -5,7 +5,7 @@ import { PinButton } from "../../components/PinButton";
 import { borderDefault, textMutedOnSurface } from "../../theme/classes";
 import { EventBody, isAskEvent } from "../activity/EventBody";
 import { AgentName } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
 import { Timestamp } from "../refs/Timestamp";
 import type { PinnedConversationCard } from "./useMarginItems";
 
@@ -33,10 +33,11 @@ export function PinnedTab({
         <article className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={conversation.id}>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <MarkdownBody markdown={conversation.body} />
+              <PostBody deleted={conversation.deleted} markdown={conversation.body} />
               <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
                 <AgentName actor={conversation.author} inline /> ·{" "}
                 <Timestamp at={conversation.at} />
+                <EditedMark at={conversation.edited} deleted={conversation.deleted} />
               </p>
             </div>
             <PinButton

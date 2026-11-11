@@ -71,3 +71,23 @@ test("a passage belongs to the item its node names, which can be another reply i
   expect(passageItem({ ...passage, node: `comment/${nested.id}#b1` }, [root, nested])).toBe(nested);
   expect(passageItem({ ...passage, node: "message/elsewhere#b1" }, [root, nested])).toBeUndefined();
 });
+
+test("a quote of a deleted parent says so in place of the parent's text", async () => {
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>
+        <ReplyQuote
+          author={planner}
+          deleted={{ at: "2026-09-09T03:00:00Z", by: { id: "Planner", kind: "user" } }}
+          excerpt="Alpha."
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => expect(view.container.textContent).toContain("Deleted by Planner"));
+    expect(view.container.textContent).not.toContain("Alpha.");
+  } finally {
+    view.unmount();
+  }
+});

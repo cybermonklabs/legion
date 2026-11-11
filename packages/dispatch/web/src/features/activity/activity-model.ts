@@ -135,6 +135,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `requested changes on ${event.payload.name} v${event.payload.version}`;
     case "comment.edited":
       return `edited a comment on ${event.payload.artifact_name}`;
+    case "comment.deleted":
+      return `deleted a comment on ${event.payload.artifact_name}`;
     case "suggestion.accepted":
       return `accepted a suggestion on ${event.payload.artifact_name}`;
     case "suggestion.rejected":
@@ -167,6 +169,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "took a message as its own turn";
     case "message.answered":
       return "answered a message";
+    case "message.edited":
+      return "edited a message";
+    case "message.deleted":
+      return "deleted a message";
     case "child.status":
       return `moved ${event.payload.child_key} from ${event.payload.from} to ${event.payload.to}`;
     case "child.added":

@@ -27,6 +27,7 @@ import type {
 } from "../../api/types";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
+import { type PostDeletion, postDeletion } from "./post-marks";
 import {
   buildDispatchReference,
   buildReferencePath,
@@ -68,6 +69,10 @@ export interface ReferenceTarget {
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's
    *  text. `undefined` while loading or for a target with nothing to say. */
   readonly description: string | undefined;
+  /** The deletion of the comment or the issue message a reference names, once read; null for
+   *  every other target and for a post nobody deleted. A deleted post's body is cleared, so a
+   *  card that drew `description` alone would say nothing at all. */
+  readonly deleted: PostDeletion | null;
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */
   readonly picture: string | undefined;
@@ -575,16 +580,25 @@ export function useReferenceTarget(
       break;
   }
   const headline = useMarkdownHeadline(authored, TITLE_HEADLINE_MAX);
+  const deleted = postDeletion(
+    kind === "comment" ? comment?.comment : kind === "message" ? message?.message : undefined
+  );
 
   if (kind === "message") {
     // A message reads as the head of what it says, the way a comment does; its own body is the
     // description, which the cards under a message reference render formatted.
-    return { title: headline?.text, description: message?.message.body, picture: undefined };
+    return {
+      title: headline?.text,
+      description: message?.message.body,
+      deleted,
+      picture: undefined,
+    };
   }
   if (kind === "ask" || kind === "comment" || kind === "block") {
     return {
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
+      deleted,
       picture: undefined,
     };
   }
@@ -593,6 +607,7 @@ export function useReferenceTarget(
   return {
     title: artifact?.name ?? issue?.title,
     description: text ?? (artifact === undefined ? issue?.status : undefined),
+    deleted,
     picture: named === undefined ? undefined : picturePath(named, artifact),
   };
 }

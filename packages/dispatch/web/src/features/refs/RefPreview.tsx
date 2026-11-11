@@ -19,6 +19,8 @@ import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { PostPreview } from "./PostBody";
+import { type PostDeletion, postDeletion } from "./post-marks";
 import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import {
@@ -332,12 +334,22 @@ function Heading({ children }: { children: ReactNode }): ReactNode {
   return <span className={`block font-semibold ${linkText}`}>{children}</span>;
 }
 
-/** The card's body: three rendered lines of what the target says, formatted, then cut. A `#id`
- *  in it names a question block of `source`, the document the target's own text belongs to. */
-function Body({ markdown, source }: { markdown: string; source?: TextSource }): ReactNode {
+/** The card's body: three rendered lines of what the target says, formatted, then cut, or the
+ *  deleted line where the target is a post its author withdrew. A `#id` in it names a question
+ *  block of `source`, the document the target's own text belongs to. */
+function Body({
+  deleted = null,
+  markdown,
+  source,
+}: {
+  deleted?: PostDeletion | null;
+  markdown: string;
+  source?: TextSource;
+}): ReactNode {
   return (
-    <MarkdownPreview
+    <PostPreview
       className={`mt-1 ${textSecondaryOnSurface}`}
+      deleted={deleted}
       lines={3}
       markdown={markdown}
       source={source}
@@ -527,7 +539,11 @@ function CommentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode
       <Heading>
         <AgentName actor={comment.comment.author} kind="static" />
       </Heading>
-      <Body markdown={comment.comment.body} source={textSourceOf("comment", comment.comment.id)} />
+      <Body
+        deleted={postDeletion(comment.comment)}
+        markdown={comment.comment.body}
+        source={textSourceOf("comment", comment.comment.id)}
+      />
     </>
   );
 }
@@ -542,7 +558,11 @@ function MessagePreview({ route }: { route: DispatchReferenceRoute }): ReactNode
       <Heading>
         <AgentName actor={message.message.author} kind="static" />
       </Heading>
-      <Body markdown={message.message.body} source={textSourceOf("message", message.message.id)} />
+      <Body
+        deleted={postDeletion(message.message)}
+        markdown={message.message.body}
+        source={textSourceOf("message", message.message.id)}
+      />
     </>
   );
 }

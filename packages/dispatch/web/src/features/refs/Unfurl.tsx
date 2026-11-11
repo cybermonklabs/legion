@@ -9,8 +9,8 @@ import {
   surfaceMutedBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-
-import { MarkdownPreview } from "./MarkdownPreview";
+import { PostPreview } from "./PostBody";
+import type { PostDeletion } from "./post-marks";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
@@ -29,10 +29,22 @@ interface GitHubIssue {
   title?: string;
 }
 
-/** The card's body: two rendered lines of what the target says, formatted, then cut. */
-function Body({ markdown }: { markdown: string }): ReactNode {
+/** The card's body: two rendered lines of what the target says, formatted, then cut, or the
+ *  deleted line where the target is a post its author withdrew. */
+function Body({
+  deleted = null,
+  markdown,
+}: {
+  deleted?: PostDeletion | null;
+  markdown: string;
+}): ReactNode {
   return (
-    <MarkdownPreview className={`mt-1 ${textSecondaryOnSurface}`} lines={2} markdown={markdown} />
+    <PostPreview
+      className={`mt-1 ${textSecondaryOnSurface}`}
+      deleted={deleted}
+      lines={2}
+      markdown={markdown}
+    />
   );
 }
 
@@ -57,7 +69,7 @@ interface ReferenceCards {
 }
 
 function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
-  const { title, description } = useReferenceTarget(card.route, { text: true });
+  const { title, deleted, description } = useReferenceTarget(card.route, { text: true });
   const path = useReferencePath(card.route);
 
   return (
@@ -66,7 +78,9 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
       href={path}
     >
       <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
-      {description === undefined ? null : <Body markdown={description} />}
+      {deleted === null && description === undefined ? null : (
+        <Body deleted={deleted} markdown={description ?? ""} />
+      )}
     </a>
   );
 }

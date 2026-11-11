@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import type { Actor } from "../../api/types";
 import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, type AgentPart } from "../refs/AgentName";
+import { EditedMark } from "../refs/PostBody";
+import type { PostDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import { Avatar } from "./Avatar";
@@ -56,7 +58,9 @@ interface ReplyDelivery {
 
 /** One reply in a thread: author, time, the quoted parent, the body, and - when the reply was
  *  itself delivered to a session - what became of that delivery. `actions` sit beside the Reply
- *  button (the Conversation adds copy-reference). */
+ *  button (the Conversation adds copy-reference). `edited` marks the byline where the reply's
+ *  author replaced its body; the deleted line for a deleted reply is in `body`, which its host
+ *  draws through `PostBody`. */
 export function ReplyTurn({
   actions,
   at,
@@ -64,6 +68,7 @@ export function ReplyTurn({
   body,
   current = false,
   delivery,
+  edited,
   markRef,
   onReply,
   quote,
@@ -76,6 +81,8 @@ export function ReplyTurn({
   body: ReactNode;
   current?: boolean;
   delivery?: ReplyDelivery;
+  /** When the reply's author last replaced its body; null or absent on one nobody edited. */
+  edited?: string | null;
   /** The shared thread read mark (`useMarkThreadRead`), on the newest reply of a thread: the
    *  element it watches. */
   markRef?: DwellRef;
@@ -85,6 +92,7 @@ export function ReplyTurn({
   quote?: {
     readonly author: Actor | undefined;
     readonly block?: ReplyBlock | null;
+    readonly deleted?: PostDeletion | null;
     readonly excerpt: string;
     readonly to?: string;
   };
@@ -111,13 +119,17 @@ export function ReplyTurn({
       <div className="min-w-0 flex-1">
         <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
           <AgentName actor={author} className="font-semibold" inline />
-          <Timestamp at={at} />
+          <span>
+            <Timestamp at={at} />
+            <EditedMark at={edited} />
+          </span>
         </p>
         {quote === undefined ? null : (
           <ReplyQuote
             author={quote.author}
             block={quote.block}
             className="mb-1"
+            deleted={quote.deleted}
             excerpt={quote.excerpt}
             to={quote.to}
           />

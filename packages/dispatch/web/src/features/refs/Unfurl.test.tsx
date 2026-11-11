@@ -589,3 +589,43 @@ test("Unfurl renders a GitHub issue's body formatted, on one run of text, with n
     view.unmount();
   }
 });
+
+test("Unfurl says a referenced comment was deleted and gives no part of its body", async () => {
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      deleted_at: "2026-09-09T01:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+    replies: [],
+  };
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Unfurl body="dispatch://CORE-1/comment/comment-1" />
+    </QueryClientProvider>
+  );
+
+  try {
+    await within(view.container).findByText(/Deleted by/);
+  } finally {
+    getComment.mockRestore();
+    view.unmount();
+  }
+});

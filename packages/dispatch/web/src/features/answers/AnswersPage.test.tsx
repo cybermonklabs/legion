@@ -389,3 +389,40 @@ test("a row's Change answer opens the seeded form; after Save the row and the ca
     answerAsk.mockRestore();
   }
 });
+
+test("a reply row whose comment was deleted reads as deleted and gives no part of its body", async () => {
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
+    page([
+      {
+        ask_id: "ask-2",
+        ask_kind: "question",
+        ask_state: "open",
+        at: "2026-10-08T02:00:00Z",
+        current: false,
+        edited_at: null,
+        kind: "reply",
+        owner: { issue: { key: "CORE-1", title: "Release train" } },
+        question: "Which colour?",
+        ref: "/issues/CORE-1/asks/ask-2",
+        reply: {
+          body: "",
+          deleted_at: "2026-10-08T02:30:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          id: "comment-1",
+        },
+      },
+    ])
+  );
+  const { view } = renderPage();
+
+  try {
+    await waitFor(() => {
+      const row = view.container.querySelector('[data-answer-row="ask-2"]');
+      expect(row?.textContent).toContain("Deleted by alice");
+      expect(row?.textContent).not.toContain("Does blue count?");
+    });
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+  }
+});

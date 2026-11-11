@@ -427,3 +427,33 @@ test("EventBody links a cut comment on a project document through that document"
     view.unmount();
   }
 });
+
+test("the event of a deleted post reads as deleted, with no body and no whole-post link", async () => {
+  // The read of the event takes `body` and `body_truncated` out of the payload and stamps the
+  // two marks in their place (`api/events.go`), which is the payload this row carries.
+  const { body: _gone, ...payload } = markdownMessage.payload as unknown as Record<string, unknown>;
+  const view = render(
+    <MemoryRouter>
+      <EventBody
+        event={
+          {
+            ...markdownMessage,
+            payload: {
+              ...payload,
+              deleted_at: "2026-09-10T00:05:00Z",
+              deleted_by: { id: "alice", kind: "user" },
+            },
+          } as DispatchEvent
+        }
+      />
+    </MemoryRouter>
+  );
+
+  try {
+    await waitFor(() => expect(screen.getByText(/Deleted by/)).toBeDefined());
+    expect(screen.queryByRole("heading", { name: "Status" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Read the whole/ })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});

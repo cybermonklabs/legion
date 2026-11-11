@@ -35,8 +35,8 @@ import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
-import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark, PostBody, PostPreview } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -156,6 +156,7 @@ function CommentBody({
   showReference: boolean;
 }): ReactNode {
   const anchor = comment.anchor;
+  const deleted = postDeletion(comment);
   const suggestion = comment.suggestion;
   const reference = itemRoute("comment", comment, owner.kind === "document" ? owner : undefined);
   let orphanNotice: ReactNode = null;
@@ -197,14 +198,22 @@ function CommentBody({
       )}
       {orphanNotice}
       {suggestion === null ? (
-        <MarkdownBody markdown={comment.body} source={textSourceOf("comment", comment.id)} />
+        <PostBody
+          deleted={deleted}
+          markdown={comment.body}
+          source={textSourceOf("comment", comment.id)}
+        />
       ) : null}
       {suggestion !== null && anchor !== null ? (
         <div className="space-y-1 font-mono text-xs">
           <SuggestionDiff clamp={false} quote={anchor.quote} suggestion={suggestion} />
           {comment.body === "Suggested replacement." ? null : (
             <div className={`font-sans ${textSecondaryOnSurface}`}>
-              <MarkdownBody markdown={comment.body} source={textSourceOf("comment", comment.id)} />
+              <PostBody
+                deleted={deleted}
+                markdown={comment.body}
+                source={textSourceOf("comment", comment.id)}
+              />
             </div>
           )}
         </div>
@@ -213,7 +222,7 @@ function CommentBody({
       <p className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
-          {comment.edited_at === null ? null : " · edited"}
+          <EditedMark at={comment.edited_at} deleted={deleted} />
         </span>
         {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
       </p>
@@ -252,6 +261,7 @@ export function ThreadCard({
   const { focusBlock } = useMargin();
   const active = expanded || selected;
   const root = thread.root.comment;
+  const rootDeleted = postDeletion(root);
   const rootSuggestion = root.suggestion;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
@@ -488,6 +498,9 @@ export function ThreadCard({
                             }
                             block={reply.reply_block}
                             className="mb-2"
+                            deleted={postDeletion(
+                              passageItem(reply.reply_block, [root, ...thread.replies])
+                            )}
                             excerpt=""
                           />
                         )}
@@ -537,8 +550,9 @@ export function ThreadCard({
                     <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
                   </span>
                   {root.body === "Suggested replacement." ? null : (
-                    <MarkdownPreview
+                    <PostPreview
                       className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                      deleted={rootDeleted}
                       lines={1}
                       links="live"
                       markdown={root.body}
@@ -555,7 +569,8 @@ export function ThreadCard({
                       {root.anchor.quote}
                     </blockquote>
                   )}
-                  <MarkdownPreview
+                  <PostPreview
+                    deleted={rootDeleted}
                     lines={2}
                     links="live"
                     markdown={root.body}

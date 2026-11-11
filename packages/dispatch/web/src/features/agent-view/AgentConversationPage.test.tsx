@@ -28,6 +28,7 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
@@ -81,6 +82,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-09-27T21:16:15Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -2210,4 +2212,39 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
     )
   );
   expect(screen.getByTestId("agent-takes-no-messages")).toBeTruthy();
+});
+
+// A corrected issue message reaches the session's own page too: its byline carries the edit,
+// and a deleted one reads as deleted where its text was.
+test("the live view marks an edited issue message and reads a deleted one as deleted", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [
+      {
+        message: message("m1", "Bob on the issue: ship it?", {
+          author: { id: "bob", kind: "user" },
+          edited_at: "2026-09-27T21:19:10Z",
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+      {
+        message: message("m2", "", {
+          author: { id: "bob", kind: "user" },
+          created_at: "2026-09-27T21:20:00Z",
+          deleted_at: "2026-09-27T21:21:00Z",
+          deleted_by: { id: "bob", kind: "user" },
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+    ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  await within(thread).findByText("Bob on the issue: ship it?");
+  const others = within(thread).getAllByTestId("agent-message-other");
+  expect(others[0]?.textContent).toContain("edited");
+  await waitFor(() => expect(others[1]?.textContent).toContain("Deleted by bob"));
 });

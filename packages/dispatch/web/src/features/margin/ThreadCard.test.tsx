@@ -779,3 +779,22 @@ test("a comment of several references shows a card for each of them", async () =
     view.unmount();
   }
 });
+
+test("a deleted comment reads as deleted where its body was, and its reply keeps its own text", async () => {
+  const deletedRoot = comment("root-1", "", "2026-09-10T00:00:00Z", {
+    deleted_at: "2026-09-10T00:05:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  });
+  const view = renderCard(thread({ root: { comment: deletedRoot, kind: "comment" } }));
+
+  try {
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+    expect(card).toHaveTextContent("Deleted by alice");
+    expect(card).not.toHaveTextContent("Root comment");
+    // The thread keeps its shape: the reply below the deleted root still reads as its author
+    // wrote it.
+    expect(await screen.findByText("First reply")).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
