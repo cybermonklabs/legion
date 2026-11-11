@@ -5,8 +5,10 @@ package launcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -132,9 +134,22 @@ func ackPod(pod *fleet, set *shimwire.LauncherVolumeTrim) {
 // case that blocks the sweep this tick starts cannot wait for its end.
 func offerTick(t *testing.T, f *trimFixture) {
 	t.Helper()
+	offerTickOf(t, f, f.interval(), "an interval clock")
+}
+
+// offerSettingsTick delivers one tick of the clock a trimmer with no settings it can run asks
+// for settings on (volumeSettingsWait, trimmer.awaitSettings), which is how a case drives the
+// wait without waiting the period out.
+func offerSettingsTick(t *testing.T, f *trimFixture) {
+	t.Helper()
+	offerTickOf(t, f, volumeSettingsWait, "the clock it asks for settings on")
+}
+
+func offerTickOf(t *testing.T, f *trimFixture, period time.Duration, what string) {
+	t.Helper()
 	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
 	for time.Now().Before(deadline) {
-		at, live := f.ticks.live(f.interval())
+		at, live := f.ticks.live(period)
 		if !live {
 			time.Sleep(testwait.Poll)
 			continue
@@ -143,7 +158,7 @@ func offerTick(t *testing.T, f *trimFixture) {
 			return
 		}
 	}
-	t.Fatal("the trimmer took no tick: it is not waiting on an interval clock")
+	t.Fatalf("the trimmer took no tick: it is not waiting on %s", what)
 }
 
 // awaitClosed waits for a channel the trimmer's own work closes, naming what it waited for.
@@ -341,9 +356,19 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		testwait.Eventually(t, "the trimmer to stay off", func() bool {
 			return f.logged("no settings are in force, so the trimmer stays off") == 1
 		})
-		awaitClosed(t, trims.stopped, "the trimmer's loop to return")
-		if made := f.ticks.count(); made != 0 {
-			t.Errorf("the trimmer made %d clocks, want none: it starts no ticker where no settings are in force", made)
+		// The trimmer waits rather than ending with the pod, and waits on the one clock it
+		// polls the settings with: an interval ticker here would be a trimmer sweeping a volume
+		// the daemon asked it to leave alone.
+		if trims.hasStopped() {
+			t.Error("the trimmer's loop returned when the answer carried no settings, want it waiting for settings to come back")
+		}
+		for at := range f.ticks.count() {
+			if period := f.ticks.periodOf(at); period != volumeSettingsWait {
+				t.Errorf("the trimmer made a clock of %s, want none but the %s it waits for settings on", period, volumeSettingsWait)
+			}
+		}
+		if reads := f.readCount(); reads != 0 {
+			t.Errorf("the trimmer read the volume %d times where no settings are in force, want none", reads)
 		}
 		if gone := len(f.gone()); gone != 0 {
 			t.Errorf("%d entries were deleted by a trimmer that was never to run", gone)
@@ -547,10 +572,15 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	pod.conns[podRoles[0]] = again
 	releaseSweep()
 
-	testwait.Eventually(t, "the trimmer to stop on an answer that carries no settings", func() bool {
+	testwait.Eventually(t, "the trimmer to stop sweeping on an answer that carries no settings", func() bool {
 		return f.logged("the sweep ended at an entry boundary with its deletions standing, no report is sent, and a report it was holding is discarded") == 1
 	})
-	awaitClosed(t, trims.stopped, "the trimmer's loop to return")
+	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
+	})
+	if trims.hasStopped() {
+		t.Error("the trimmer's loop returned on an answer that carried no settings, want it waiting for the answer that carries them again")
+	}
 
 	// The entry the sweep was removing when the answer arrived is never interrupted, so the
 	// deletions that stand are the seven it had made and that one.
@@ -566,4 +596,195 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	again.refuseVolumeReport(500 * time.Millisecond)
 	f.assertNothingHalfRemoved()
 	f.assertProtected()
+}
+
+// plantEntries puts count more entries into the pod's `go-build` root, aged as the fixture ages
+// its own: a role filling its caches again while the trimmer has no settings to run by. The
+// modelled volume counts them, so the reading rises with them as a real one would.
+func plantEntries(t *testing.T, f *trimFixture, count int) {
+	t.Helper()
+	for _, root := range f.roots {
+		if root.Entry != GoBuildTrees {
+			continue
+		}
+		for at := range count {
+			f.addTree(filepath.Join(root.Path, fmt.Sprintf("go-build%09d", 1_000_000+at)), root.Entry)
+		}
+		return
+	}
+	t.Fatal("the fixture has no go-build root to fill")
+}
+
+// A pod keeps its trimmer for the life of the pod: an answer that carries no settings stops the
+// sweeping, and the next answer that carries settings starts it again, in the same launcher
+// process and under the same trimmer identifier. That is `enabled: false` and the operator
+// turning it back on, and a daemon rolled back below contract 60 and the roll-forward after it —
+// neither of which replaces a pod, which is why the settings are no part of the pod shape record.
+// A trimmer that ended with the first such answer would leave the volume of a pod that lives for
+// days unguarded with nothing told to anybody.
+func TestThePodsTrimmerSweepsAgainWhenTheSettingsComeBack(t *testing.T) {
+	f := newTrimFixture(t, 25) // a hundred entries, ten points: the first sweep ends above the low mark
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+	trims := useLauncherTrimmer(t, f)
+
+	pod := newFleetDialed(t, 2*time.Second, podRoles...)
+	ackPod(pod, trimSettings())
+	trim := trims.await()
+
+	f.tick("the sweep ended")
+	first := pod.role(podRoles[0]).awaitVolumeReport()
+	if first.Episode != 1 {
+		t.Fatalf("the first report carries episode %d, want the first", first.Episode)
+	}
+
+	// The daemon is rolled back to a release that does not know this work, and its answer to
+	// the redial carries no settings.
+	_ = pod.role(podRoles[0]).conn.Close()
+	rolledBack := acceptRole(t, pod.listener)
+	rolledBack.acknowledgeWith(shimwire.LauncherHelloAck{})
+	pod.conns[podRoles[0]] = rolledBack
+	f.tick("sweeps nothing more")
+	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
+	})
+	if trims.hasStopped() {
+		t.Fatal("the trimmer's loop returned on an answer that carried no settings, want it waiting: the pod keeps its trimmer for the life of the pod")
+	}
+
+	// The roles fill the volume again while nothing is guarding it, and the roll-forward
+	// answers the next redial with settings.
+	plantEntries(t, f, 60) // six points on top of the eighty the first sweep left: above the high mark again
+	_ = pod.role(podRoles[0]).conn.Close()
+	rolledForward := acceptRole(t, pod.listener)
+	rolledForward.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
+	pod.conns[podRoles[0]] = rolledForward
+
+	started := volumeTrimLog + "started: trimmer " + trim.id
+	offerSettingsTick(t, f)
+	testwait.Eventually(t, "the trimmer to start again on the settings that came back", func() bool {
+		return f.logged(started) == 2
+	})
+	f.tick("the sweep ended")
+	if gone := len(f.gone()); gone != len(f.entries) {
+		t.Errorf("the sweep deleted %d of the %d entries on the volume, want every one of them: the trimmer must sweep again once the settings are back",
+			gone, len(f.entries))
+	}
+
+	// Nothing of the trimmer's own counting line was reset by the wait: the same identifier and
+	// the same episode, which is what the daemon's three-notice bound counts against.
+	second := rolledForward.awaitVolumeReport()
+	switch {
+	case second.Trimmer != trim.id:
+		t.Errorf("the report after the settings came back names trimmer %q, want the %q this launcher minted", second.Trimmer, trim.id)
+	case second.Episode != first.Episode:
+		t.Errorf("the report after the settings came back carries episode %d, want the %d the pod was counting: the wait resets nothing", second.Episode, first.Episode)
+	}
+	assertIntervals(t, f, settingsInterval(*trimSettings()), volumeSettingsWait)
+	f.assertProtected()
+}
+
+// A trimmer the first answer gave nothing to run by — no settings at all, or settings outside
+// the ranges it refuses — starts when an answer carrying settings it can run arrives. It sweeps
+// nothing and reads nothing while it waits, which is what R2 asks of a value outside the ranges:
+// the trimmer stays off rather than starting its ticker.
+func TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first *shimwire.LauncherVolumeTrim
+	}{
+		{"an answer that carries no settings", nil},
+		{"an answer whose interval would panic time.NewTicker",
+			&shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 30, IntervalSeconds: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrimFixture(t, 25)
+			f.useVolume(f.modelled(90))
+			f.setSettings(trimSettings())
+			trims := useLauncherTrimmer(t, f)
+
+			pod := newFleetDialed(t, 2*time.Second, podRoles...)
+			ackPod(pod, tc.first)
+			trim := trims.await()
+			testwait.Eventually(t, "the trimmer to stay off on the answer it cannot run", func() bool {
+				return f.logged("stays off") > 0
+			})
+			switch {
+			case trims.hasStopped():
+				t.Fatal("the trimmer's loop returned, want it waiting for settings it can run")
+			case f.readCount() != 0:
+				t.Errorf("the trimmer read the volume %d times with nothing it can run by, want none", f.readCount())
+			case len(f.gone()) != 0:
+				t.Errorf("%d entries were deleted by a trimmer with nothing it can run by", len(f.gone()))
+			}
+
+			_ = pod.role(podRoles[0]).conn.Close()
+			again := acceptRole(t, pod.listener)
+			again.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
+			pod.conns[podRoles[0]] = again
+			offerSettingsTick(t, f)
+			testwait.Eventually(t, "the trimmer to start on the settings it can run", func() bool {
+				return f.logged(volumeTrimLog+"started: trimmer "+trim.id) == 1
+			})
+
+			f.tick("the sweep ended")
+			if gone := len(f.gone()); gone != len(f.entries) {
+				t.Errorf("the sweep deleted %d of the %d entries, want every one of them once the settings arrived", gone, len(f.entries))
+			}
+			if report := again.awaitVolumeReport(); report.Trimmer != trim.id {
+				t.Errorf("the report names trimmer %q, want the %q this launcher minted before any answer", report.Trimmer, trim.id)
+			}
+			f.assertProtected()
+		})
+	}
+}
+
+// The faults are the one ending nothing comes back from: three recovered panics in a row stop
+// the pod's trimmer for the life of the launcher process, and an answer carrying settings after
+// that starts nothing. A trimmer that came back from them would recover a panic, sweep, recover
+// it again and go on for ever in the process that is PID 1 of the roles container.
+func TestThreeFaultsInARowEndThePodsTrimmerForTheLifeOfTheProcess(t *testing.T) {
+	f := newTrimFixture(t, 5)
+	f.setOnRead(func(call int) { panic(fmt.Sprintf("the volume reader fell over on call %d", call)) })
+	f.useVolume(steady(50))
+	f.setSettings(trimSettings())
+	trims := useLauncherTrimmer(t, f)
+
+	pod := newFleetDialed(t, 2*time.Second, podRoles...)
+	ackPod(pod, trimSettings())
+	trim := trims.await()
+
+	for range volumeFaultLimit {
+		f.tick("recovered a panic")
+	}
+	awaitClosed(t, trims.stopped, "the trimmer's loop to return for good")
+	report := pod.role(podRoles[0]).awaitVolumeReport()
+	switch {
+	case !report.SwitchedOff:
+		t.Errorf("the last report %+v does not say the trimmer switched itself off", report)
+	case report.Trimmer != trim.id:
+		t.Errorf("the last report names trimmer %q, want %q", report.Trimmer, trim.id)
+	}
+
+	// Settings that arrive afterwards start nothing: the launcher builds one trimmer per
+	// process (serveVolumeTrim), and this one is off.
+	_ = pod.role(podRoles[0]).conn.Close()
+	again := acceptRole(t, pod.listener)
+	again.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: laterTrimSettings()})
+	pod.conns[podRoles[0]] = again
+	again.refuseVolumeReport(500 * time.Millisecond)
+	if started := f.logged(volumeTrimLog + "started: trimmer " + trim.id); started != 1 {
+		t.Errorf("the trimmer started %d times, want the one start before the faults stopped it", started)
+	}
+	if gone := len(f.gone()); gone != 0 {
+		t.Errorf("%d entries were deleted after the faults stopped the trimmer", gone)
+	}
+
+	// Run still returns only once that loop has returned, which it has.
+	if err := pod.stop(); !errors.Is(err, context.Canceled) {
+		t.Errorf("Run = %v, want the container's own context ending it", err)
+	}
+	if !trims.hasStopped() {
+		t.Fatal("Run returned with the pod's trimmer still running")
+	}
 }

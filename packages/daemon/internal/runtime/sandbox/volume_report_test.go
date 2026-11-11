@@ -7,10 +7,12 @@ package sandbox
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +198,67 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the launcher with no volume seam is connected=%t state=%+v after a report, want the connection still serving", connected, state)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A report the frame's own rule refuses never reaches the seam: one naming no trimmer, which is
+// the identity the notice bounds count a restarted roles container apart by, and one whose
+// episode is below the 1 the trimmer counts from (LauncherVolumeReport.Validate). Each is logged
+// with the reason the rule gives and dropped, and the connection is left open, because closing
+// it costs a redial a second for every role of the pod over a frame the daemon could not have
+// counted anyway. The control is the valid report after them, which reaches the seam on the same
+// connection.
+func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *testing.T) {
+	logs := &bytes.Buffer{}
+	seam := newVolumeSeam()
+	launchers := newLaunchers(nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))
+	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	server, peer := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
+	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
+	writer := shimwire.NewWriter(peer)
+
+	for _, refused := range []shimwire.LauncherVolumeReport{
+		{Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst, UsedBytes: 48 << 30},
+		{Trimmer: "trim-1", Episode: 0, RaisedBy: shimwire.VolumeEpisodeFirst, UsedBytes: 48 << 30},
+	} {
+		if err := writer.WriteFrame(refused); err != nil {
+			t.Fatalf("write the report the frame's rule refuses: %v", err)
+		}
+	}
+	if err := writer.WriteFrame(shimwire.LauncherVolumeReport{Trimmer: "trim-1", Episode: 2,
+		RaisedBy: shimwire.VolumeEpisodeRise, UsedBytes: 49 << 30}); err != nil {
+		t.Fatalf("write the report the daemon can count: %v", err)
+	}
+
+	// The frame loop hands the reports over in the order they arrived, so the first the seam is
+	// given is the first one that was not dropped.
+	got := seam.took(t, "the report the daemon can count")
+	if got.report.Trimmer != "trim-1" || got.report.Episode != 2 {
+		t.Fatalf("the seam was given trimmer %q episode %d, want the valid report alone: a report the frame's rule refuses must be dropped",
+			got.report.Trimmer, got.report.Episode)
+	}
+	for _, want := range []string{"carries no trimmer", "episode is 0", "the connection stays open"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("the daemon logged no line holding %q for the reports it dropped: %s", want, logs.String())
+		}
+	}
+
+	// The connection is still the session's: the state frame after the dropped reports is read,
+	// and the session answers as connected.
+	if err := writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 9}}); err != nil {
+		t.Fatalf("write the state frame after the dropped reports: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, connected := launchers.state(workerToken, "pod-uid")
+		if connected && state.Child != nil && state.Child.Generation == 9 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after a report the frame's rule refuses the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

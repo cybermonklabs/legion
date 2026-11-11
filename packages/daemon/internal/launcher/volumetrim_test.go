@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -731,19 +733,22 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 			f.setSettings(&set)
 			tr := f.trimmer()
 
+			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				tr.run(context.Background())
+				tr.run(ctx)
 			}()
-			select {
-			case <-done:
-			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
-				t.Fatal("run did not return on settings it must refuse: it is running a ticker it should never have started")
-			}
+			testwait.Eventually(t, "the trimmer to refuse the settings and stay off", func() bool {
+				return f.logged("stays off") > 0
+			})
 
-			if made := f.ticks.count(); made != 0 {
-				t.Errorf("the trimmer made %d interval clocks on refused settings, want none: it must not start a ticker it would have to panic on", made)
+			// The only clock it may have made is the one it asks for settings on again: a
+			// ticker of the refused interval is the panic this check exists for.
+			for at := range f.ticks.count() {
+				if period := f.ticks.periodOf(at); period != volumeSettingsWait {
+					t.Errorf("the trimmer made a clock of %s on refused settings, want none but the %s it waits for settings on: it must not start a ticker it would have to panic on", period, volumeSettingsWait)
+				}
 			}
 			if reads := f.readCount(); reads != 0 {
 				t.Errorf("the trimmer read the volume %d times on refused settings, want none", reads)
@@ -755,6 +760,12 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 			}
 			if f.logged("stays off") == 0 {
 				t.Errorf("the trimmer did not log that it stays off; it wrote %q", f.linesWritten())
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+				t.Fatal("run did not return when the container's own context ended")
 			}
 			f.assertPrefixed()
 		})
@@ -2306,10 +2317,13 @@ func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 		f.refuseSends(nil)
 		f.setSettings(nil)
 		f.tick("discarded")
+		testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+			return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
+		})
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
-			t.Fatal("run did not return on settings that stop the trimmer")
+			t.Fatal("run returned when the settings went away, want it waiting for them to come back: the pod keeps its trimmer for the life of the pod")
+		default:
 		}
 		if reports := f.reports(); len(reports) != 0 {
 			t.Errorf("the trimmer sent %d reports after being stopped, want the held one discarded: %+v", len(reports), reports)
@@ -2318,4 +2332,157 @@ func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 			t.Errorf("the trimmer still holds a report after being stopped: %+v", tr.held)
 		}
 	})
+}
+
+// plantWalkTargets puts count directories under the volume's scratch, each named with the 255
+// bytes a directory component allows. Every one is a target of the size walk, which measures
+// every directory two levels under the volume root, and every one is one mkdir by any role of
+// the pod: /legion/scratch is writable by the role uid (measured in an issue pod of this
+// deployment at 2026-11-11T08:05Z, `drwx--S--- legion legion /legion/scratch`, the role process
+// being uid 1000).
+func plantWalkTargets(t *testing.T, scratch string, count int) {
+	t.Helper()
+	for at := range count {
+		name := fmt.Sprintf("%09d", at) + strings.Repeat("n", 255-9)
+		if err := os.Mkdir(filepath.Join(scratch, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// What one report carries is this launcher's own bound and never a size the volume happened to
+// have. A role can make thousands of directories under /legion/scratch, each a target of the
+// size walk and each named with as many bytes as a directory component allows, and a report that
+// carried them whole would be a line over shimwire.MaxFrameBytes: the writer refuses it, deliver
+// holds it, flush tries the held one first and keeps it on failure, and every later report of
+// that hour carries the same cached walk — the trimmer goes silent on exactly the pod the notice
+// exists to describe. The bound says how many entries it left out rather than dropping them
+// quietly.
+func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t *testing.T) {
+	f := newTrimFixture(t, 1)
+	const planted = 4000
+	plantWalkTargets(t, filepath.Join(f.root, "scratch"), planted)
+	f.useVolume(func(call int) volumeUsage {
+		if call <= 8 {
+			return usageAt(50) // the eight interval readings of the fault phase, below the high mark
+		}
+		return usageAt(90) // the interval that sweeps, and every reading the sweep takes
+	})
+	f.setOnRead(func(call int) {
+		if call <= 7 && call%2 == 1 {
+			panic(fmt.Sprintf("the volume reader fell over on call %d", call))
+		}
+	})
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	// Half the targets are measured and the walk is cut at the rest, so both lists of paths the
+	// report carries are as long as the volume made them.
+	const walkedTargets = planted / 2
+	walked := 0
+	tr.measure = func(ctx context.Context, path string, at time.Time) measured {
+		walked++
+		if walked > walkedTargets {
+			return measured{size: shimwire.LauncherVolumeSize{Path: path}, cut: true}
+		}
+		return measureTree(ctx, path, at)
+	}
+	f.start(tr)
+
+	// Four faults, never three in a row: a clean interval between them resets the count, so the
+	// trimmer goes on and the sweep's report is what carries them.
+	const faults = 4
+	for range faults {
+		f.tick("recovered a panic")
+		f.tick("nothing to sweep")
+	}
+	f.tick("the sweep ended")
+	testwait.Eventually(t, "the report of the sweep that followed the faults", func() bool { return len(f.reports()) == 1 })
+	report := f.reports()[0]
+
+	var line bytes.Buffer
+	if err := shimwire.NewWriter(&line).WriteFrame(report); err != nil {
+		t.Fatalf("the connection refuses the report of a volume holding %d directories: %v", planted, err)
+	}
+	if line.Len() >= shimwire.MaxFrameBytes {
+		t.Fatalf("the report encodes to %d bytes, and one line may carry %d: a report this long is one no connection takes",
+			line.Len(), shimwire.MaxFrameBytes)
+	}
+
+	switch {
+	case len(report.Sizes) != volumeReportSizes:
+		t.Errorf("the report carries %d measured directories, want the %d this launcher bounds it to", len(report.Sizes), volumeReportSizes)
+	case len(report.Sizes)+report.SizesOmitted != walkedTargets:
+		t.Errorf("the report carries %d measured directories and says %d were left out, want the %d the walk measured",
+			len(report.Sizes), report.SizesOmitted, walkedTargets)
+	case len(report.SizesMissing) != volumeReportSizesMissing:
+		t.Errorf("the report names %d unmeasured directories, want the %d this launcher bounds it to", len(report.SizesMissing), volumeReportSizesMissing)
+	case len(report.SizesMissing)+report.SizesMissingOmitted < planted-walkedTargets:
+		t.Errorf("the report names %d unmeasured directories and says %d were left out, want at least the %d the walk never reached",
+			len(report.SizesMissing), report.SizesMissingOmitted, planted-walkedTargets)
+	case len(report.Faults) != volumeReportFaults:
+		t.Errorf("the report carries %d faults, want the newest %d", len(report.Faults), volumeReportFaults)
+	case len(report.Faults)+report.FaultsOmitted != faults:
+		t.Errorf("the report carries %d faults and says %d were left out, want the %d the trimmer recovered",
+			len(report.Faults), report.FaultsOmitted, faults)
+	}
+
+	cut := 0
+	for _, path := range append(pathsOf(report.Sizes), report.SizesMissing...) {
+		if runes := utf8.RuneCountInString(path); runes > volumeReportPathRunes {
+			t.Errorf("the report carries a path of %d runes, want none over the %d bound", runes, volumeReportPathRunes)
+		}
+		if strings.HasSuffix(path, "…") {
+			cut++
+		}
+	}
+	if cut == 0 {
+		t.Error("no path of the report was cut, although every planted directory is named with 255 bytes: the case proves nothing")
+	}
+	for _, fault := range report.Faults {
+		if runes := utf8.RuneCountInString(fault); runes > volumeReportFaultRunes {
+			t.Errorf("the report carries a fault of %d runes, want none over the %d bound", runes, volumeReportFaultRunes)
+		}
+	}
+	if said := f.logged("leaves out"); said != 1 {
+		t.Errorf("the trimmer wrote %d lines saying what the report leaves out, want one: a person reading the pod's log must know the report is not the whole truth; it wrote %q",
+			said, f.linesWritten())
+	}
+
+	t.Run("a /proc the kernel refused for hundreds of processes", func(t *testing.T) {
+		f := newTrimFixture(t, 1)
+		const refusedProcesses = 200
+		for at := range refusedProcesses {
+			placeRefusedProcess(t, f.proc, 1000+at, filepath.Join(f.root, "scratch", "tmp"))
+		}
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+		f.start(f.trimmer())
+
+		f.tick("the sweep ended")
+		testwait.Eventually(t, "the report of the sweep that deleted nothing", func() bool { return len(f.reports()) == 1 })
+		report := f.reports()[0]
+		switch {
+		case len(report.RefusedReads) != volumeReportRefusedReads:
+			t.Errorf("the report names %d refused reads, want the %d this launcher bounds it to", len(report.RefusedReads), volumeReportRefusedReads)
+		case len(report.RefusedReads)+report.RefusedReadsOmitted != refusedProcesses:
+			t.Errorf("the report names %d refused reads and says %d were left out, want the %d processes the sweep met",
+				len(report.RefusedReads), report.RefusedReadsOmitted, refusedProcesses)
+		case utf8.RuneCountInString(report.StopReason) > volumeReportStopReasonRunes:
+			t.Errorf("the report's stop reason is %d runes, want none over the %d bound: it carries the joined text of every refused read",
+				utf8.RuneCountInString(report.StopReason), volumeReportStopReasonRunes)
+		}
+		var line bytes.Buffer
+		if err := shimwire.NewWriter(&line).WriteFrame(report); err != nil {
+			t.Fatalf("the connection refuses the report of a pod whose /proc was refused %d times: %v", refusedProcesses, err)
+		}
+	})
+}
+
+// pathsOf is the path of each size a report carries.
+func pathsOf(sizes []shimwire.LauncherVolumeSize) []string {
+	paths := make([]string, len(sizes))
+	for at, size := range sizes {
+		paths[at] = size.Path
+	}
+	return paths
 }

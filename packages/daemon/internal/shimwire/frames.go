@@ -268,21 +268,31 @@ const (
 // Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
 // report no sweep produces: the trimmer has stopped itself after three faults in a row, and this
 // is the last the daemon hears from it until the launcher restarts.
+//
+// Every list above is bounded by the launcher that built the report, because a path two levels
+// under /legion is a name a role of the pod chose and a pod may hold thousands of them
+// (internal/launcher's bound): the four Omitted counts are how many entries that bound left
+// out, so a reader is never shown a cut list as the whole of what the trimmer measured. Each
+// path, the stop reason and each fault are cut in runes there too.
 type LauncherVolumeReport struct {
-	Trimmer      string               `json:"trimmer"`
-	Episode      int                  `json:"episode"`
-	RaisedBy     string               `json:"raisedBy"`
-	UsedBytes    int64                `json:"usedBytes"`
-	FreeBytes    int64                `json:"freeBytes"`
-	FreedBytes   int64                `json:"freedBytes"`
-	StopReason   string               `json:"stopReason"`
-	RefusedReads []string             `json:"refusedReads,omitempty"`
-	Sizes        []LauncherVolumeSize `json:"sizes"`
-	SizesAt      time.Time            `json:"sizesAt"`
-	SizesPartial bool                 `json:"sizesPartial,omitempty"`
-	SizesMissing []string             `json:"sizesMissing,omitempty"`
-	Faults       []string             `json:"faults,omitempty"`
-	SwitchedOff  bool                 `json:"switchedOff,omitempty"`
+	Trimmer             string               `json:"trimmer"`
+	Episode             int                  `json:"episode"`
+	RaisedBy            string               `json:"raisedBy"`
+	UsedBytes           int64                `json:"usedBytes"`
+	FreeBytes           int64                `json:"freeBytes"`
+	FreedBytes          int64                `json:"freedBytes"`
+	StopReason          string               `json:"stopReason"`
+	RefusedReads        []string             `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int                  `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []LauncherVolumeSize `json:"sizes"`
+	SizesOmitted        int                  `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time            `json:"sizesAt"`
+	SizesPartial        bool                 `json:"sizesPartial,omitempty"`
+	SizesMissing        []string             `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int                  `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string             `json:"faults,omitempty"`
+	FaultsOmitted       int                  `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool                 `json:"switchedOff,omitempty"`
 }
 
 // LauncherChild is the actual worker-shim child the launcher has running, if any.

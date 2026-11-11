@@ -165,10 +165,12 @@ func Run(ctx context.Context, cfg Config) error {
 //
 // Nothing of it runs until that connection's first acknowledgement has been applied, because
 // the settings and the writer become readable in the same moment and under the same lock
-// (applyAck): a trimmer that asked before that would read the absence that means "run no
-// trimmer" and stop for the life of the pod. A connection that merely drops afterwards leaves
-// the settings in force (volumeTrim) and the trimmer sweeping, holding any report it cannot
-// write until that connection is up again (sendVolumeReport).
+// (applyAck): a trimmer that asked before that would wait out its first settings poll for
+// nothing. A connection that merely drops afterwards leaves the settings in force (volumeTrim)
+// and the trimmer sweeping, holding any report it cannot write until that connection is up
+// again (sendVolumeReport); an acknowledgement that carries none stops the sweeping and leaves
+// the trimmer waiting for settings to come back, which is the whole of the trimmer's life in
+// this process (trimmer.run).
 func serveVolumeTrim(ctx context.Context, m *manager) <-chan struct{} {
 	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf)
 	done := make(chan struct{})
@@ -490,9 +492,10 @@ type manager struct {
 // send the settings that produced it. Settings present replace whatever the last
 // acknowledgement left in force, which the next sweep runs by and never one in flight (the
 // trimmer reads them at the top of each interval); settings absent make them nil, which stops
-// the trimmer for the life of this launcher process — that is a daemon rolled back to a release
-// that does not know this work, and turning every pod's trimmer off is cheaper than meeting a
-// frame it would close the connection on.
+// the trimmer's sweeping until an acknowledgement carries settings again — that is a daemon
+// rolled back to a release that does not know this work, and turning every pod's trimmer off is
+// cheaper than meeting a frame it would close the connection on, while the roll-forward after
+// it puts every pod's trimmer back without replacing a pod (trimmer.awaitSettings).
 func (m *manager) applyAck(writer *shimwire.Writer, ack shimwire.LauncherHelloAck) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

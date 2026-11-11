@@ -478,12 +478,25 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 // architect from the one after it. That is the same bargain restoreReported makes with its
 // delete, for the same reason.
 //
+// A report the frame's own rule refuses — one naming no trimmer, which is the identity the
+// notice bounds count a restarted roles container apart by, and one whose episode is below the 1
+// the trimmer counts from (LauncherVolumeReport.Validate) — is logged with the reason and
+// dropped, as the launcher drops a bundle slice it cannot validate (internal/launcher's
+// bundleRestore.receive). The connection is not closed on it: closing costs a redial a second
+// for every role of the pod (ServeLauncher's `default: return`) over a frame the daemon could
+// not have counted anyway.
+//
 // It runs on the launcher's own frame loop rather than in a goroutine of its own, as
 // restoreReported does and under the same bounded context: two reports of one launcher then
 // reach the fact path in the order the trimmer made them, which is what the notice bounds count
 // episodes by, and the cost is the one the precedent already accepts — the launcher's other
 // frames wait behind one row's write.
 func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherVolumeReport) {
+	if err := report.Validate(); err != nil {
+		d.log.Warn("launcher volume: the pod's cache trimmer sent a report the daemon cannot count, which is dropped; the connection stays open",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
+		return
+	}
 	if d.volume == nil || s.issue == "" {
 		return
 	}

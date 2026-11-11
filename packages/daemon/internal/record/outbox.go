@@ -355,25 +355,34 @@ type Notice struct {
 // and the daemon sends that one whatever its bounds stand at, since the protection this notice
 // exists for has stopped on exactly the pod that has been reporting.
 //
+// The four Omitted counts are how many entries the launcher's own bound left out of each list,
+// which it cuts because a path two levels under /legion is a name a role of the pod chose and a
+// pod may hold thousands of them (internal/launcher's bound): a reader of a notice is never
+// shown a cut list as the whole of what the trimmer measured.
+//
 // It is a shape of this package rather than the wire's because it is a durable payload: an
 // outbox row's JSON is read back by a daemon of a later release (the re-hold's decode, Notice's
 // own), so the shape a row carries must be one this package owns and can keep.
 type VolumeNearFull struct {
-	PodUID       string       `json:"podUid"`
-	Trimmer      string       `json:"trimmer"`
-	Episode      int          `json:"episode"`
-	RaisedBy     string       `json:"raisedBy"`
-	UsedBytes    int64        `json:"usedBytes"`
-	FreeBytes    int64        `json:"freeBytes"`
-	FreedBytes   int64        `json:"freedBytes"`
-	StopReason   string       `json:"stopReason"`
-	RefusedReads []string     `json:"refusedReads,omitempty"`
-	Sizes        []VolumeSize `json:"sizes"`
-	SizesAt      time.Time    `json:"sizesAt"`
-	SizesPartial bool         `json:"sizesPartial,omitempty"`
-	SizesMissing []string     `json:"sizesMissing,omitempty"`
-	Faults       []string     `json:"faults,omitempty"`
-	SwitchedOff  bool         `json:"switchedOff,omitempty"`
+	PodUID              string       `json:"podUid"`
+	Trimmer             string       `json:"trimmer"`
+	Episode             int          `json:"episode"`
+	RaisedBy            string       `json:"raisedBy"`
+	UsedBytes           int64        `json:"usedBytes"`
+	FreeBytes           int64        `json:"freeBytes"`
+	FreedBytes          int64        `json:"freedBytes"`
+	StopReason          string       `json:"stopReason"`
+	RefusedReads        []string     `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int          `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []VolumeSize `json:"sizes"`
+	SizesOmitted        int          `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time    `json:"sizesAt"`
+	SizesPartial        bool         `json:"sizesPartial,omitempty"`
+	SizesMissing        []string     `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int          `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string     `json:"faults,omitempty"`
+	FaultsOmitted       int          `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool         `json:"switchedOff,omitempty"`
 }
 
 // VolumeSize is one directory two levels under the pod's volume root as the trimmer's size walk

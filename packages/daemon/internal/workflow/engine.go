@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -869,10 +870,21 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // own Volume member carries the same facts in a shape a reader can compute with; this is what a
 // person or an agent reads in the message.
 //
+// Everything that comes from the pod rather than from this package is rendered with %q: a
+// directory two levels under /legion is a name a role of that pod chose — /legion/scratch is
+// writable by the role uid — and the sentence is read by the architect's own agent session, so a
+// newline in such a name must be text inside the sentence and not a line of its own, with
+// nothing to mark it as data. The structured Volume member keeps the raw name, which is data a
+// reader computes with rather than prose.
+//
+// How many entries each list carries is the launcher's bound (internal/launcher's bound), and
+// where that bound left entries out the sentence says so: a reader must not take a cut list for
+// the whole of what the trimmer measured.
+//
 // The opening clause of a switched-off trimmer counts nothing, and the faults it carries do the
 // counting: what stops the trimmer is three recovered panics in a row (volumeFaultLimit,
-// launcher's volumetrim.go), while Faults holds every fault since the trimmer's last report, so
-// an earlier unreported one makes four — two numbers for one event in one sentence.
+// launcher's volumetrim.go), while Faults holds the newest faults since the trimmer's last
+// report, so an earlier one it left out makes four — two numbers for one event in one sentence.
 func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	var out strings.Builder
 	if report.SwitchedOff {
@@ -885,17 +897,26 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	fmt.Fprintf(&out, " (trimmer %s, episode %d raised by %s): %d bytes used, %d free, %d freed by this sweep",
 		report.Trimmer, report.Episode, report.RaisedBy, report.UsedBytes, report.FreeBytes, report.FreedBytes)
 	if report.StopReason != "" {
-		fmt.Fprintf(&out, "; it stopped because %s", report.StopReason)
+		fmt.Fprintf(&out, "; it stopped because %q", report.StopReason)
 	}
 	if len(report.RefusedReads) > 0 {
-		fmt.Fprintf(&out, "; the kernel refused the /proc of %s", strings.Join(report.RefusedReads, ", "))
+		fmt.Fprintf(&out, "; the kernel refused the /proc of %s", quotedList(report.RefusedReads))
+		if report.RefusedReadsOmitted > 0 {
+			fmt.Fprintf(&out, " and %d more this report leaves out", report.RefusedReadsOmitted)
+		}
 	}
 	for _, size := range report.Sizes {
-		fmt.Fprintf(&out, "; %s holds %d bytes (%d older than an hour, %d older than a day)",
+		fmt.Fprintf(&out, "; %q holds %d bytes (%d older than an hour, %d older than a day)",
 			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay)
 	}
+	if report.SizesOmitted > 0 {
+		fmt.Fprintf(&out, "; %d more measured directories are left out of this report", report.SizesOmitted)
+	}
 	if report.SizesPartial {
-		fmt.Fprintf(&out, "; that walk ended early and measured none of %s", strings.Join(report.SizesMissing, ", "))
+		fmt.Fprintf(&out, "; that walk ended early and measured none of %s", quotedList(report.SizesMissing))
+		if report.SizesMissingOmitted > 0 {
+			fmt.Fprintf(&out, " and %d more it leaves out", report.SizesMissingOmitted)
+		}
 	}
 	if !report.SizesAt.IsZero() {
 		fmt.Fprintf(&out, "; measured at %s", report.SizesAt.UTC().Format(time.RFC3339))
@@ -907,13 +928,27 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	// happened to have, as the pod end's message is bounded where it is built
 	// (runtime.PodEndRunes).
 	if len(report.Faults) > 0 {
-		fmt.Fprintf(&out, "; faults the trimmer recovered from: %d", len(report.Faults))
+		fmt.Fprintf(&out, "; faults the trimmer recovered from: %d", len(report.Faults)+report.FaultsOmitted)
 		for _, fault := range report.Faults {
 			first, _, _ := strings.Cut(fault, "\n")
-			fmt.Fprintf(&out, "; %s", first)
+			fmt.Fprintf(&out, "; %q", first)
+		}
+		if report.FaultsOmitted > 0 {
+			fmt.Fprintf(&out, "; %d older faults are left out of this report", report.FaultsOmitted)
 		}
 	}
 	return out.String()
+}
+
+// quotedList is each element of list quoted and joined, which is how every list the pod chose
+// the contents of reaches the sentence above: a name with a newline or a quotation mark in it is
+// text inside the sentence rather than a line of its own.
+func quotedList(list []string) string {
+	quoted := make([]string, len(list))
+	for at, one := range list {
+		quoted[at] = strconv.Quote(one)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {

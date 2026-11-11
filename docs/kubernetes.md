@@ -2294,6 +2294,7 @@ Every minute it reads the volume with one `statfs` and compares the used bytes o
 At or above `high_percent`, 85 by default, it sweeps: it lists every eligible entry of the four roots with its time and deletes them oldest first, and it stops at the first fresh reading at or below `low_percent`, 70 by default, when three readings in a row show no decrease, when no entry is left eligible, when its own five-minute budget runs out, or on a `/proc` read the kernel refused or a stop from the daemon or the container.
 It deletes no entry any process of the pod has open, none whose newest modification time is inside `min_age_minutes`, 15 by default, and none whose kind is not the kind its row names below; it follows no symbolic link, and it never unlinks a root itself.
 `runtime.kubernetes.volume_trim` sets all five values, and `enabled: false` runs no trimmer at all.
+A change to them reaches a running pod at its next connection to the daemon, which every daemon restart gives it, and no pod is replaced for it: a pod told `enabled: false` stops sweeping and keeps its trimmer, which starts again within ten seconds of an answer that carries settings — the same for a daemon rolled back to a release that does not know this work and the roll-forward after it.
 
 What it may delete, and what one entry is in each:
 
@@ -2315,6 +2316,7 @@ What it never writes to or deletes: `/legion/workspaces`, `/legion/repos`, `/leg
 The trimmer writes every line of its own behind the prefix `volume trim: ` in the `roles` container's log: one at its start naming the settings in force, one per interval reading naming what it decided, and one per sweep naming what it freed and why it stopped.
 A sweep that ends with the volume still above the low mark sends the daemon one report, and the daemon turns that into one `volume-near-full` notice to the issue's architect, naming the sizes of the directories two levels under `/legion` with the bytes of each untouched for more than an hour and for more than a day.
 A sweep that reaches the low mark sends none.
+The launcher bounds what one report carries — how many directories, how many names it could not measure, how many refused `/proc` reads and how many recovered faults, with each path, reason and stack cut in runes — and the report and the notice say how many entries that bound left out: a directory name under `/legion/scratch` is a name a role chose, and a report over the one-mebibyte line limit is one no connection carries at all.
 The daemon writes one line of its own for each such report, behind the prefix `volume near full: `: one when it writes the notice and one when a bound holds it back, each naming the issue, the pod, the trimmer, the episode and the count so far.
 Those bounds are at most three notices for one trimmer and episode and at most one an hour for one pod: a report whose episode a five-point rise raised skips the hour but not the three, and the report that the trimmer has switched itself off is told whatever the counts say.
 

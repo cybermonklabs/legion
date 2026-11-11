@@ -75,6 +75,14 @@ const (
 	// volumeFaultLimit is how many recovered panics in a row stop the trimmer for the life of
 	// the launcher process.
 	volumeFaultLimit = 3
+	// volumeSettingsWait is how often a trimmer with no settings it can run asks for settings
+	// again (awaitSettings). It is no part of how fast an operator's change reaches the pod:
+	// the launcher redials once a second (reconnectDelay) and an acknowledgement is put in
+	// force the moment it arrives (manager.applyAck), so this is only how long a pod goes on
+	// guarding nothing after the settings it may run by are already in force — ten seconds
+	// against an interval that is thirty by default, and against a volume that took hours to
+	// fill.
+	volumeSettingsWait = 10 * time.Second
 )
 
 // refusedTrimSettings is every reason the settings cannot be run, each naming the key as it is
@@ -117,9 +125,11 @@ type trimmer struct {
 	// daemon restart flips the bound connection repeatedly, and an identifier per connection
 	// would multiply the daemon's three-notice bound.
 	id string
-	// settings is what is in force now, read before every interval reading. Nil stops the
-	// trimmer: it ends a sweep in flight at its next entry boundary with its deletions
-	// standing, sends no report, and discards a report it was holding.
+	// settings is what is in force now, read before every interval reading and again while the
+	// trimmer waits for settings it may run by. Nil stops the sweeping: it ends a sweep in
+	// flight at its next entry boundary with its deletions standing, sends no report, and
+	// discards a report it was holding — and the trimmer then waits here for settings to come
+	// back rather than ending with the pod (awaitSettings).
 	settings func() *shimwire.LauncherVolumeTrim
 	// trimming answers whether settings are in force at all, which is the whole of what a
 	// sweep asks of them (halted). It is asked once per listed entry and once per swept entry
@@ -149,17 +159,20 @@ type trimmer struct {
 	// Everything below is the trimmer's own state across intervals. run is one goroutine and
 	// nothing else reads these, so they carry no lock: the launcher's connection goroutine
 	// reaches the trimmer through settings and send alone, which are the caller's to make safe.
-	episode     int     // 0 until the first reading at or above the high mark
-	raisedBy    string  // which of shimwire's three raised the episode above
-	aboveHigh   bool    // a reading has been at or above the high mark since the last recovery
-	anchor      float64 // the highest pre-sweep reading of a sweep that reported in this episode
-	anchored    bool    // whether a sweep has reported in this episode at all
-	pause       int     // intervals left of the pause after a sweep that freed under a point
-	last        volumeUsage
-	faults      []string // recovered panics the next report carries
-	consecutive int      // recovered panics in a row, which volumeFaultLimit bounds
-	held        *shimwire.LauncherVolumeReport
-	walk        walkResult // the last size walk, which a report between walks carries
+	episode   int     // 0 until the first reading at or above the high mark
+	raisedBy  string  // which of shimwire's three raised the episode above
+	aboveHigh bool    // a reading has been at or above the high mark since the last recovery
+	anchor    float64 // the highest pre-sweep reading of a sweep that reported in this episode
+	anchored  bool    // whether a sweep has reported in this episode at all
+	pause     int     // intervals left of the pause after a sweep that freed under a point
+	last      volumeUsage
+	faults    []string // the newest recovered panics the next report carries (volumeReportFaults)
+	// faultsDropped is how many older ones the rule above left out, which the next report says
+	// rather than dropping them silently.
+	faultsDropped int
+	consecutive   int // recovered panics in a row, which volumeFaultLimit bounds
+	held          *shimwire.LauncherVolumeReport
+	walk          walkResult // the last size walk, which a report between walks carries
 }
 
 // newTrimmer is the pod's trimmer: the volume at VolumeRoot, the container's own /proc, the four
@@ -193,21 +206,98 @@ func tickerChannel(every time.Duration) (<-chan time.Time, func()) {
 	return ticker.C, ticker.Stop
 }
 
-// run is the interval loop. It returns when ctx ends, when the settings stop the trimmer, or
-// when the trimmer has switched itself off, and it starts no ticker at all on settings it
-// refuses: time.NewTicker panics on a non-positive period, and this goroutine's panic is PID 1's
-// panic (tick).
+// trimEnding is how one interval, and one loop, of the trimmer ended. Only trimOff is final:
+// everything else leaves the trimmer in this launcher process with work still to do, which is
+// what R1 of the design asks of it — a trimmer runs in each issue pod whenever settings are in
+// force, for the life of that pod (dispatch://INFRA-2009 spec) — and what the settings reaching
+// every pod at its next connection is for.
+type trimEnding int
+
+const (
+	// trimGoesOn is no ending at all: the interval loop takes its next tick.
+	trimGoesOn trimEnding = iota
+	// trimWaits is the settings gone, in an acknowledgement that carried none or in the middle
+	// of a sweep: the interval loop ends and run waits for settings it may run by again. A pod
+	// lives through `enabled: false` and the operator turning it back on, and through a daemon
+	// rolled back below contract 60 and the roll-forward after it, and keeps its trimmer.
+	trimWaits
+	// trimOff is the one final ending: volumeFaultLimit recovered panics in a row have switched
+	// the trimmer off, and nothing starts another before the launcher process restarts (fault).
+	trimOff
+	// trimStopping is the container going: ctx has ended, and run returns with it.
+	trimStopping
+)
+
+// run is the trimmer's whole life in this launcher process: the wait for settings it may run
+// by, the interval loop those settings start, and the wait again when they go away. It returns
+// on the container's stop and on the faults, and never on settings alone, because a pod takes
+// the settings of its bound connection's latest answer and an operator who turned the trimmer
+// off may turn it on again in the pod this process is PID 1 of.
 func (t *trimmer) run(ctx context.Context) {
-	set := t.settings()
-	if set == nil {
-		t.logf(volumeTrimLog + "no settings are in force, so the trimmer stays off")
-		return
+	for {
+		inForce, ending := t.awaitSettings(ctx)
+		if ending != trimGoesOn {
+			return
+		}
+		if t.intervals(ctx, inForce) != trimWaits {
+			return
+		}
 	}
-	if refusals := refusedTrimSettings(*set); len(refusals) > 0 {
-		t.refuse(refusals)
-		return
+}
+
+// awaitSettings is the wait for settings the trimmer may run by: it answers the first ones it
+// can run, or the container's stop. Nothing of the trimmer's own state is touched here — the
+// identifier, the episode, the anchor and the pause are this pod's counting line and go on
+// across a trimmer that was turned off and on again — and no interval ticker is made, so a
+// trimmer waiting sweeps nothing and reads nothing, which is what R2 asks of settings outside
+// the ranges.
+//
+// It polls rather than being woken: the seam is a read of what the latest acknowledgement left
+// in force (manager.volumeTrim) and nothing signals a change of it. It says what it is waiting
+// for when that changes — the first time, and again when the reason changes — and never once
+// per poll, since the pod's log is what a person reads and a line every volumeSettingsWait
+// would bury the rest of the launcher's.
+func (t *trimmer) awaitSettings(ctx context.Context) (shimwire.LauncherVolumeTrim, trimEnding) {
+	var ticks <-chan time.Time
+	stop := func() {}
+	defer func() { stop() }()
+	said := ""
+	for {
+		set := t.settings()
+		var refusals []string
+		reason := "no settings are in force"
+		if set != nil {
+			refusals = refusedTrimSettings(*set)
+			if len(refusals) == 0 {
+				return *set, trimGoesOn
+			}
+			reason = strings.Join(refusals, "; ")
+		}
+		if reason != said {
+			said = reason
+			if refusals == nil {
+				t.logf(volumeTrimLog + "no settings are in force, so the trimmer stays off until the daemon sends settings it can run")
+			} else {
+				t.refuse(refusals)
+			}
+		}
+		if ticks == nil {
+			ticks, stop = t.ticks(volumeSettingsWait)
+		}
+		select {
+		case <-ctx.Done():
+			return shimwire.LauncherVolumeTrim{}, trimStopping
+		case <-ticks:
+		}
 	}
-	inForce := *set
+}
+
+// intervals is the interval loop those settings start: one reading per tick and the sweep a
+// reading at the high mark asks for, until the container stops, the faults stop the trimmer, or
+// the settings go away and run waits for them again. It is entered with settings the trimmer
+// has already accepted and starts its ticker on nothing else: time.NewTicker panics on a
+// non-positive period, and this goroutine's panic is PID 1's panic (awaitSettings, tick).
+func (t *trimmer) intervals(ctx context.Context, inForce shimwire.LauncherVolumeTrim) trimEnding {
 	t.logf(volumeTrimLog+"started: trimmer %s, high %d%%, low %d%%, minimum age %d min, interval %d s, volume %s",
 		t.id, inForce.HighPercent, inForce.LowPercent, inForce.MinAgeMinutes, inForce.IntervalSeconds, t.volumeRoot)
 	ticks, stop := t.ticks(settingsInterval(inForce))
@@ -215,12 +305,12 @@ func (t *trimmer) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return trimStopping
 		case <-ticks:
 		}
-		restart, off := t.tick(ctx, &inForce)
-		if off {
-			return
+		restart, ending := t.tick(ctx, &inForce)
+		if ending != trimGoesOn {
+			return ending
 		}
 		if restart {
 			// A new ticker rather than the old one's next tick, for the two reasons a sweep and
@@ -248,29 +338,33 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 
 // tick is one interval: the settings in force, a held report, one reading of the volume, the
 // episode that reading raises, and the sweep it asks for. restart says the interval clock must
-// be made again, and off that the loop must end.
+// be made again, and the ending what the interval loop must do now (trimEnding).
 //
 // It recovers from a panic in its own work, which is a deliberate departure from this daemon's
 // practice — no production path of it recovers a panic, because a process that cannot keep its
 // invariants should die and be restarted — because this goroutine runs in the process that is
 // PID 1 of the roles container: its panic takes the container down and costs six live roles
 // their round, over a cache sweep that nothing depends on. The fault is logged with its stack
-// and carried into the next report, and three in a row stop the trimmer for good (fault).
-func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim) (restart, off bool) {
+// and carried into the next report, and three in a row stop the trimmer for good (fault), which
+// is the one ending of the four that nothing comes back from.
+func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim) (restart bool, ending trimEnding) {
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
 			t.consecutive = 0
 			return
 		}
-		restart, off = false, t.fault(recovered, debug.Stack())
+		restart, ending = false, trimGoesOn
+		if t.fault(recovered, debug.Stack()) {
+			ending = trimOff
+		}
 	}()
 
 	next := t.settings()
 	if next == nil {
 		t.held = nil
-		t.logf(volumeTrimLog + "the trimmer is stopped: no settings are in force, and a report it was holding is discarded")
-		return false, true
+		t.logf(volumeTrimLog + "no settings are in force: the trimmer sweeps nothing more until they come back, and a report it was holding is discarded")
+		return false, trimWaits
 	}
 	if refusals := refusedTrimSettings(*next); len(refusals) > 0 {
 		// The settings in force stay in force. Switching the trimmer off here would let one bad
@@ -290,7 +384,7 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	reading, err := readVolumeUsage(t.volumeRoot)
 	if err != nil {
 		t.logf(volumeTrimLog+"the volume at %s could not be read: %v", t.volumeRoot, err)
-		return restart, false
+		return restart, trimGoesOn
 	}
 	t.last = reading
 	percent := reading.Percent()
@@ -300,11 +394,11 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): no sweep for another %d intervals, since the last one freed under %.0f point",
 			percent, reading.UsedBytes, reading.AvailableBytes, t.pause, volumeSweepMinFreedPoints)
 		t.pause--
-		return restart, false
+		return restart, trimGoesOn
 	case percent < float64(set.HighPercent):
 		t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): below the high mark %d%%, nothing to sweep",
 			percent, reading.UsedBytes, reading.AvailableBytes, set.HighPercent)
-		return restart, false
+		return restart, trimGoesOn
 	}
 	t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): at or above the high mark %d%%, sweeping to %d%%",
 		percent, reading.UsedBytes, reading.AvailableBytes, set.HighPercent, set.LowPercent)
@@ -313,8 +407,8 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	t.last = out.last
 	if out.settingsStop {
 		t.held = nil
-		t.logf(volumeTrimLog + "the trimmer is stopped: the sweep ended at an entry boundary with its deletions standing, no report is sent, and a report it was holding is discarded")
-		return false, true
+		t.logf(volumeTrimLog + "the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, no report is sent, and a report it was holding is discarded")
+		return false, trimWaits
 	}
 	// The reading is written as the sweep left it rather than as another "the volume is" line,
 	// which is the interval reading alone: an operator reading the pod's log counts the
@@ -330,7 +424,7 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		t.anchorAt(percent)
 		t.deliver(t.report(ctx, out))
 	}
-	return true, false
+	return true, trimGoesOn
 }
 
 // episodeOf raises the episode number on the reading, when the reading is one of the two things
@@ -405,9 +499,18 @@ func (t *trimmer) deliver(report shimwire.LauncherVolumeReport) {
 }
 
 // fault records one recovered panic and answers whether the trimmer must now stay off.
+//
+// Only the newest volumeReportFaults stacks are kept, and what they displace is counted: the
+// faults are cleared when a report carries them (report), so a pod whose volume stays healthy
+// never reports and would otherwise keep every stack it ever recovered for the life of the
+// launcher process, kilobytes each, in the process that is PID 1 of the roles container.
 func (t *trimmer) fault(recovered any, stack []byte) bool {
 	t.consecutive++
 	t.faults = append(t.faults, fmt.Sprintf("%v\n%s", recovered, stack))
+	if over := len(t.faults) - volumeReportFaults; over > 0 {
+		t.faultsDropped += over
+		t.faults = slices.Delete(t.faults, 0, over)
+	}
 	t.logf(volumeTrimLog+"recovered a panic in the trimmer's own work (%d in a row), passing over this interval: %v\n%s",
 		t.consecutive, recovered, stack)
 	if t.consecutive < volumeFaultLimit {
@@ -425,26 +528,28 @@ func (t *trimmer) fault(recovered any, stack []byte) bool {
 // directly rather than through deliver, whose holding has no next attempt to be made on.
 func (t *trimmer) switchOff() {
 	report := shimwire.LauncherVolumeReport{
-		Trimmer:     t.id,
-		Episode:     max(t.episode, 1),
-		RaisedBy:    t.raisedBy,
-		UsedBytes:   int64(t.last.UsedBytes),
-		FreeBytes:   int64(t.last.AvailableBytes),
-		StopReason:  fmt.Sprintf("the trimmer switched itself off after %d panics in a row", t.consecutive),
-		Faults:      t.faults,
-		SwitchedOff: true,
+		Trimmer:       t.id,
+		Episode:       max(t.episode, 1),
+		RaisedBy:      t.raisedBy,
+		UsedBytes:     int64(t.last.UsedBytes),
+		FreeBytes:     int64(t.last.AvailableBytes),
+		StopReason:    fmt.Sprintf("the trimmer switched itself off after %d panics in a row", t.consecutive),
+		Faults:        t.faults,
+		FaultsOmitted: t.faultsDropped,
+		SwitchedOff:   true,
 	}
 	if report.RaisedBy == "" {
 		// The trimmer never saw a reading at the high mark, so no episode was ever raised; the
-		// frame's own rule is that an episode is at least 1 (LauncherVolumeReport.Validate), and
-		// this is the first thing the daemon hears of this trimmer.
+		// frame's own rule is that an episode is at least 1, which the daemon applies to every
+		// report it reads (LauncherVolumeReport.Validate, sandbox's volumeReported), and this is
+		// the first thing the daemon hears of this trimmer.
 		report.RaisedBy = shimwire.VolumeEpisodeFirst
 	}
 	t.flush()
-	if err := t.send(report); err != nil {
+	if err := t.send(t.bound(report)); err != nil {
 		t.logf(volumeTrimLog+"the last report of the switched-off trimmer could not be sent: %v", err)
 	}
-	t.faults = nil
+	t.faults, t.faultsDropped = nil, 0
 }
 
 // report is one sweep as the daemon hears it, with the sizes of a fresh walk or of the last one
@@ -453,23 +558,163 @@ func (t *trimmer) switchOff() {
 // them twice would report them twice.
 func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.LauncherVolumeReport {
 	walk := t.sizes(ctx)
-	faults := t.faults
-	t.faults = nil
-	return shimwire.LauncherVolumeReport{
-		Trimmer:      t.id,
-		Episode:      t.episode,
-		RaisedBy:     t.raisedBy,
-		UsedBytes:    int64(out.last.UsedBytes),
-		FreeBytes:    int64(out.last.AvailableBytes),
-		FreedBytes:   out.freed,
-		StopReason:   out.reason,
-		RefusedReads: out.refused,
-		Sizes:        walk.Sizes,
-		SizesAt:      walk.At,
-		SizesPartial: walk.Partial,
-		SizesMissing: walk.Missing,
-		Faults:       faults,
+	faults, dropped := t.faults, t.faultsDropped
+	t.faults, t.faultsDropped = nil, 0
+	return t.bound(shimwire.LauncherVolumeReport{
+		Trimmer:       t.id,
+		Episode:       t.episode,
+		RaisedBy:      t.raisedBy,
+		UsedBytes:     int64(out.last.UsedBytes),
+		FreeBytes:     int64(out.last.AvailableBytes),
+		FreedBytes:    out.freed,
+		StopReason:    out.reason,
+		RefusedReads:  out.refused,
+		Sizes:         walk.Sizes,
+		SizesAt:       walk.At,
+		SizesPartial:  walk.Partial,
+		SizesMissing:  walk.Missing,
+		Faults:        faults,
+		FaultsOmitted: dropped,
+	})
+}
+
+// What one report may carry. Every list and every string below is the pod's own and not this
+// package's: a directory name two levels under /legion is whatever a role made, and
+// /legion/scratch is writable by the role uid (measured in an issue pod of this deployment at
+// 2026-11-11T08:05Z: `drwx--S--- legion legion /legion/scratch`, the role process is uid 1000,
+// and `test -w /legion/scratch` succeeds). So the size of the frame must be one this package
+// chose rather than one the pod's roles happened to make, as Observation.PodEnd is bounded
+// where it is built (runtime.PodEndRunes).
+//
+// The bound is here, where the report is assembled, so the frame can never reach the writer's
+// own refusal: a line over shimwire.MaxFrameBytes is refused by the writer, deliver then holds
+// that report, flush tries the held one first and keeps it on failure, and every later report of
+// that hour would carry the same oversized walk — the trimmer would go permanently silent on
+// exactly the pod the notice exists to describe.
+const (
+	// volumeReportPathRunes bounds each path of Sizes and of SizesMissing. The longest this
+	// layout makes is `/legion/scratch/bun`, and the paths a reader acts on are of that order,
+	// while one directory component may be 255 bytes and a role may make it: a few hundred
+	// runes keeps every real path whole and cuts a made-up one.
+	volumeReportPathRunes = 200
+	// volumeReportSizes is how many measured directories a report carries. The walk measures
+	// every directory two levels under the volume root in a deliberate order — the scratch
+	// children, then the go children, then the rest (volumewalk.go) — so the first of them are
+	// the ones a reader acts on, and a pod's own layout makes about fifteen. Fifty is room for
+	// a layout that grows and a cut for the thousands a role can make under /legion/scratch.
+	volumeReportSizes = 50
+	// volumeReportSizesMissing is how many unmeasured directories a report names. The missing
+	// list is the same population as the one above — the walk's own targets, from where its
+	// minute ran out — so it takes the same bound.
+	volumeReportSizesMissing = 50
+	// volumeReportRefusedReads is how many refused /proc reads a report names, one per process
+	// of the pod whose /proc the kernel refused. A pod runs six roles and their children, and
+	// an operator who must go and look needs a handful of pids rather than one per process.
+	volumeReportRefusedReads = 25
+	// volumeReportStopReasonRunes bounds the sweep's own reason, which embeds the joined text
+	// of every refused /proc read. It is the same few hundred runes runtime.PodEndRunes gives a
+	// kubelet's reason and message, and for the same reason: the sentence is stored in an outbox
+	// row and published to a role topic.
+	volumeReportStopReasonRunes = 400
+	// volumeReportFaults is how many recovered panics a report carries, the newest ones. Three
+	// in a row is what stops the trimmer (volumeFaultLimit), so the newest three are the run
+	// that stopped it, and an older one has already been reported or was separated by an
+	// interval that worked.
+	volumeReportFaults = volumeFaultLimit
+	// volumeReportFaultRunes bounds each fault. A fault is a recovered panic with the whole
+	// stack of this goroutine behind it, and the frames that name where it fell over are the
+	// first of them: two thousand runes is the trimmer's own frames and its caller's.
+	volumeReportFaultRunes = 2000
+)
+
+// bound is the report as the bound above lets it be carried: every list cut to its cap with the
+// report saying how many entries it left out, and every string the pod chose cut in runes with
+// an ellipsis, as runtime.PodEnd cuts. It is the one place either report is bounded — a sweep's
+// (report) and the switched-off trimmer's (switchOff) — and it copies rather than cutting in
+// place, because the sizes belong to the walk the trimmer keeps for the hour.
+//
+// One line says what it cut, so a person reading the pod's log knows the report the daemon got
+// is not the whole of what the trimmer measured.
+func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	sizes := report.Sizes
+	if over := len(sizes) - volumeReportSizes; over > 0 {
+		sizes, report.SizesOmitted = sizes[:volumeReportSizes], over
 	}
+	report.Sizes = nil
+	if len(sizes) > 0 {
+		report.Sizes = make([]shimwire.LauncherVolumeSize, len(sizes))
+		for at, size := range sizes {
+			size.Path = cutRunes(size.Path, volumeReportPathRunes)
+			report.Sizes[at] = size
+		}
+	}
+
+	missing := report.SizesMissing
+	if over := len(missing) - volumeReportSizesMissing; over > 0 {
+		missing, report.SizesMissingOmitted = missing[:volumeReportSizesMissing], over
+	}
+	report.SizesMissing = cutEach(missing, volumeReportPathRunes)
+
+	refused := report.RefusedReads
+	if over := len(refused) - volumeReportRefusedReads; over > 0 {
+		refused, report.RefusedReadsOmitted = refused[:volumeReportRefusedReads], over
+	}
+	report.RefusedReads = cutEach(refused, volumeReportPathRunes)
+
+	report.StopReason = cutRunes(report.StopReason, volumeReportStopReasonRunes)
+
+	faults := report.Faults
+	if over := len(faults) - volumeReportFaults; over > 0 {
+		// The newest, where the two lists above keep their first: a list of targets is in the
+		// order a reader acts on (volumewalk.go's targets), while of the faults it is the run
+		// that stopped the trimmer that says why it stopped.
+		faults, report.FaultsOmitted = faults[over:], report.FaultsOmitted+over
+	}
+	report.Faults = cutEach(faults, volumeReportFaultRunes)
+
+	var cuts []string
+	for _, cut := range []struct {
+		omitted int
+		what    string
+	}{
+		{report.SizesOmitted, "measured directories"},
+		{report.SizesMissingOmitted, "unmeasured directories"},
+		{report.RefusedReadsOmitted, "refused /proc reads"},
+		{report.FaultsOmitted, "recovered faults"},
+	} {
+		if cut.omitted > 0 {
+			cuts = append(cuts, fmt.Sprintf("%d %s", cut.omitted, cut.what))
+		}
+	}
+	if len(cuts) > 0 {
+		t.logf(volumeTrimLog+"the report the daemon is sent leaves out %s, and every path, reason and stack in it is cut at this launcher's own bound: a frame over %d bytes is refused by the connection",
+			strings.Join(cuts, ", "), shimwire.MaxFrameBytes)
+	}
+	return report
+}
+
+// cutEach is list with every entry cut to at most runes, and nil for an empty one: a report
+// carries no list where the trimmer had none.
+func cutEach(list []string, runes int) []string {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]string, len(list))
+	for at, one := range list {
+		out[at] = cutRunes(one, runes)
+	}
+	return out
+}
+
+// cutRunes is s cut to at most bound runes with an ellipsis where it was cut, as runtime.PodEnd
+// cuts a kubelet's message at runtime.PodEndRunes: "its size must be one this package chose
+// rather than one a node's message happened to have".
+func cutRunes(s string, bound int) string {
+	runes := []rune(s)
+	if len(runes) <= bound {
+		return s
+	}
+	return string(runes[:bound-1]) + "…"
 }
 
 // sizes is the size walk for one report: a fresh walk, or the last one when it is less than an
@@ -488,8 +733,17 @@ func (t *trimmer) sizes(ctx context.Context) walkResult {
 		measure: t.measure,
 	}.run(ctx)
 	if t.walk.Partial {
-		t.logf(volumeTrimLog+"the size walk ended early: it measured %d directories and left %d unmeasured (%s)",
-			len(t.walk.Sizes), len(t.walk.Missing), strings.Join(t.walk.Missing, ", "))
+		// The names are the pod's own: a role may make a directory of any name two levels under
+		// the volume root, so this line takes the same bounds the frame takes (bound) rather
+		// than joining a list of a size and a content nothing here chose. A reader who needs
+		// the whole list has the report's own SizesMissing, bounded the same way.
+		missing := cutEach(t.walk.Missing, volumeReportPathRunes)
+		left := 0
+		if len(missing) > volumeReportSizesMissing {
+			left, missing = len(missing)-volumeReportSizesMissing, missing[:volumeReportSizesMissing]
+		}
+		t.logf(volumeTrimLog+"the size walk ended early: it measured %d directories and left %d unmeasured (%q, and %d more)",
+			len(t.walk.Sizes), len(t.walk.Missing), missing, left)
 	}
 	return t.walk
 }

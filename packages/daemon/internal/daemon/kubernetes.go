@@ -611,9 +611,11 @@ func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, re
 	fact := intake.VolumeNearFull{Issue: issue, PodUID: podUID, Report: record.VolumeNearFull{
 		Trimmer: report.Trimmer, Episode: report.Episode, RaisedBy: report.RaisedBy,
 		UsedBytes: report.UsedBytes, FreeBytes: report.FreeBytes, FreedBytes: report.FreedBytes,
-		StopReason: report.StopReason, RefusedReads: report.RefusedReads,
-		Sizes: volumeSizes(report.Sizes), SizesAt: report.SizesAt, SizesPartial: report.SizesPartial,
-		SizesMissing: report.SizesMissing, Faults: report.Faults, SwitchedOff: report.SwitchedOff,
+		StopReason: report.StopReason, RefusedReads: report.RefusedReads, RefusedReadsOmitted: report.RefusedReadsOmitted,
+		Sizes: volumeSizes(report.Sizes), SizesOmitted: report.SizesOmitted,
+		SizesAt: report.SizesAt, SizesPartial: report.SizesPartial,
+		SizesMissing: report.SizesMissing, SizesMissingOmitted: report.SizesMissingOmitted,
+		Faults: report.Faults, FaultsOmitted: report.FaultsOmitted, SwitchedOff: report.SwitchedOff,
 	}}
 	eventID := fmt.Sprintf("volume-near-full:%s:%s:%s:%d:%s", issue, podUID, report.Trimmer, report.Episode, rand.Text())
 	if _, err := intake.ApplyFact(ctx, v.pool, "launcher", eventID, fact, v.handlers...); err != nil {
