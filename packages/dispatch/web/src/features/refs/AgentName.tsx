@@ -353,17 +353,18 @@ export function useAgentText(): AgentText {
 }
 
 /** The text before and after a resolution's actor. A withdrawal is the close of the ask's issue,
- *  so it names the closer: `Withdrawn when <agent> closed the issue`; else `<Verb> by <agent>`. */
+ *  so it names the closer: `Withdrawn when <agent> closed the issue`. A decline is the person's
+ *  own act, so it says what they did: `<agent> declined to answer`. Else `<Verb> by <agent>`. */
 function resolutionFrame(resolution: AskResolution): readonly [before: string, after: string] {
-  return resolution.kind === "withdrawn"
-    ? ["Withdrawn when ", " closed the issue"]
-    : [`${askResolutionBadge(resolution)} by `, ""];
+  if (resolution.kind === "withdrawn") return ["Withdrawn when ", " closed the issue"];
+  if (resolution.kind === "declined") return ["", " declined to answer"];
+  return [`${askResolutionBadge(resolution)} by `, ""];
 }
 
-/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue`:
- *  the actor sentence of a resolution, for callers that render its reason (`askResolutionReason`)
- *  with their own markup. `agent="static"` names the agent without its link, for a host that is
- *  itself one control (a listbox option). */
+/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue` /
+ *  `<agent> declined to answer`: the actor sentence of a resolution, for callers that render its
+ *  reason (`askResolutionReason`) with their own markup. `agent="static"` names the agent
+ *  without its link, for a host that is itself one control (a listbox option). */
 export function AskResolutionLine({
   agent,
   resolution,

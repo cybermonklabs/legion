@@ -436,6 +436,28 @@ test("parses an ask the close of its issue withdrew", () => {
   expect(parsed.resolution?.kind).toBe("withdrawn");
 });
 
+test("parses an ask a person declined to answer, note and Dispatch's words apart", () => {
+  const parsed = AskEventPayloadSchema.parse({
+    opened_event_id: 12,
+    question: "Ship it?",
+    resolution: {
+      kind: "declined",
+      reason: "Ask the release owner instead.",
+      dispatch_words:
+        "The person chose not to answer this question. Decide the next step without an answer. " +
+        "Do not ask this question again unless the facts change. Write in your work what you assumed.",
+      actor: { kind: "user", id: "alice@example.com" },
+      at: "2026-10-25T00:00:00Z",
+    },
+  });
+
+  expect([parsed.resolution?.kind, parsed.resolution?.reason]).toEqual([
+    "declined",
+    "Ask the release owner instead.",
+  ]);
+  expect(parsed.resolution?.dispatch_words).toStartWith("The person chose not to answer");
+});
+
 test("models answer changes, ask answer history, and the answers page", () => {
   const answer = {
     user: "alice@example.com",

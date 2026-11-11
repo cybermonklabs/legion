@@ -354,7 +354,11 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 }
 
 // waitingOn is the view of what a root in awaiting_person waits on: the gate shape when the wait
-// names a spec version, otherwise the question; the answer only once a person gave one.
+// names a spec version, otherwise the question; the answer only once a person gave one. The act
+// that answered travels as the record's own word for it (record.Answer), `declined` for a person
+// who closed an ask of the root rather than answer it among them, so a value the record gains is
+// served as it stands and the contract number is what holds a plugin to the list it parses
+// (api.DaemonAPIVersion).
 func waitingOn(w record.Awaiting) *api.WaitingOnView {
 	view := &api.WaitingOnView{Kind: "ask", Ask: w.Ask}
 	if w.GateVersion != 0 {

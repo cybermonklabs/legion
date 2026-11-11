@@ -6,6 +6,7 @@ import {
   type SessionAnswer,
   type SessionAnswerRelation,
 } from "@legion/contracts";
+import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
@@ -37,9 +38,6 @@ const READ_TIMEOUT_MS = 10_000;
 /** How long a Dispatch that has no answers route is not asked again, process-wide. */
 const NO_ROUTE_BACKOFF_MS = 5 * 60_000;
 
-/** How much of an ask's question an item quotes: the session's own words, not the person's. */
-const QUESTION_MAX = 200;
-
 /** The rendered list's first line, and the marker a host checks to find a list it already added.
  *  A list carried from the cache adds its read time on the line after, so this line never varies. */
 export const SESSION_ANSWERS_MARKER =
@@ -53,6 +51,7 @@ export const NO_ANSWERS_ROUTE_REASON = "this Dispatch build has no answers route
 
 const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
   answered_your_ask: "answered your ask",
+  declined_your_ask: "declined to answer your ask",
   replied_on_your_ask: "replied on your ask",
   replied_in_a_comment_thread: "replied in a comment thread",
   commented_on_a_document: "commented on a document",
@@ -88,8 +87,14 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
  * that replaced one, and `edited <time>` on an edited comment); its `dispatch://` reference and
  * its issue or document, or that it is a direct message; the ask's question, cut to 200
- * characters, on an answer and a reply in an ask's thread; on an answer, `Selected:` with the
- * options chosen or `none`; then the person's words in full.
+ * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
+ * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
+ * sentences Dispatch wrote for the asking agent; then the person's words in full.
+ *
+ * The person's own words and Dispatch's stand on lines of their own, the label naming whose
+ * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
+ * wherever an item carries them rather than on the `declined` kind alone, so an item kind a
+ * newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
   const phrase = isSessionAnswerRelation(item.relation)
@@ -107,15 +112,16 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
         : `${item.ref} · ${owner}`;
   const lines = [head.join(" · "), where];
   if (item.ask !== undefined) {
-    const question = item.ask.question.replace(/\s+/g, " ").trim();
-    lines.push(
-      `Question: ${question.length > QUESTION_MAX ? `${question.slice(0, QUESTION_MAX)}…` : question}`
-    );
+    // The question is the session's own words, not the person's, so cutting it to the length
+    // every surface quotes a question at (QUESTION_HEAD) loses nothing a person wrote.
+    lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
   }
   if (item.kind === "answer") {
     const selected = answerSelected(item);
     lines.push(`Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`);
   }
+  const words = dispatchWordsText(item.dispatch_words);
+  if (words !== undefined) lines.push(words);
   if (item.text !== "") lines.push(item.text);
   return lines.join("\n");
 }

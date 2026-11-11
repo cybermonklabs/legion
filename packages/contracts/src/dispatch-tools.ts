@@ -928,6 +928,8 @@ export const dispatchToolSpecs = [
       "a newer one replaces or the design made moot, resolved for one whose answer you found; an " +
       "answered ask cannot be resolved, and resolving records no decision by a person. An issue's " +
       "close withdrew its open asks (kind withdrawn, which only Dispatch writes, never this tool); " +
+      "a person who chose not to answer declined the ask on a route of their own (kind declined, " +
+      "which only they write, never this tool); " +
       "an ask on a closed issue is refused (409 ISSUE_CLOSED): reopen the issue first.",
     arguments: (z) => ({
       ask: z

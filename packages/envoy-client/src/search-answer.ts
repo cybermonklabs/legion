@@ -13,6 +13,7 @@ import {
   snippetText,
 } from "@legion/contracts";
 import { actorText } from "./actor-text";
+import { dispatchWordsText } from "./ask-answer";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
 /** The "showing a-b of N" phrasing a paged tool result builds from its offset, row count, and total. */
@@ -49,9 +50,19 @@ function answerLines(lead: string, answer: AskAnswer): string[] {
   ];
 }
 
-/** Who closed an ask, when and why; the reason is free text and can hold line breaks. */
+/** Who closed an ask, when and why: the person's own reason where the record holds one, and
+ *  where it holds them (a decline), the words Dispatch wrote for the asking agent, under the
+ *  label (`dispatchWordsText`) that keeps nobody reading them as the person's. Both are free
+ *  text and can hold line breaks. A decline the person wrote no note with holds no reason, and
+ *  leaves no separator behind. */
 function resolutionText(resolution: AskResolution): string {
-  return `${resolution.kind} by ${actorText(resolution.actor)} at ${resolution.at}: ${indentedText(resolution.reason)}`;
+  const closed = `${resolution.kind} by ${actorText(resolution.actor)} at ${resolution.at}`;
+  const parts = [
+    resolution.reason === "" ? closed : `${closed}: ${indentedText(resolution.reason)}`,
+  ];
+  const words = dispatchWordsText(resolution.dispatch_words, indentedText);
+  if (words !== undefined) parts.push(words);
+  return parts.join(" · ");
 }
 
 /** Where an ask hit stands, as the lines under its hit; `undefined` is a Dispatch that predates
