@@ -233,9 +233,10 @@ By default (`gates.design: [spec]`), no phase starts until a person approves the
 spec. The architect settles the spec's decision blocks with you first, then asks for approval with a
 summary of what the tree will do. Where the tree builds a page you open, or changes one a lot, the
 architect shows you that page first — pictures, or a page you can click — and gets your answer
-before it asks you to approve the spec; a small change, such as a label or a style fix, carries no
-pictures. You approve from the document's header or from the approval question in your Dispatch
-Inbox; **Request changes** sends it back with your reason.
+before it asks you to approve the spec; a small change, such as a label or a style fix, usually
+carries no pictures, unless the architect is unsure what you want. You approve from the document's
+header or from the approval question in your Dispatch Inbox; **Request changes** sends it back with
+your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
 approves the new version. Your own answer to a decision block in the approved spec is the one
