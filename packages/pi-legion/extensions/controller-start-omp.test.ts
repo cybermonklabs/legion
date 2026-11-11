@@ -252,6 +252,16 @@ interface StandinHooks {
    */
   readonly register?: (body: Record<string, unknown>) => Response | Promise<Response>;
   /**
+   * Called with the claiming session's id inside the controller role's claim (`/v1/roles/set`
+   * for `legion-legion-controller`), synchronously, before the stand-in writes that claim's
+   * answer. The controller session claims the role and only then subscribes to the controller
+   * topic (packages/pi-legion/src/controller-session.ts:334-339), so a publish made from here
+   * finds that subject closed every run, where a publish made from `onRoleClaim`, which
+   * `setImmediate` fires once the answer is produced, finds it closed only usually: about one
+   * run in ten the test process is descheduled past the subscribe and the frame lands.
+   */
+  readonly beforeRoleClaimAnswer?: (sid: string) => void;
+  /**
    * Called with the claiming session's id once the stand-in has answered the controller role's
    * claim (`/v1/roles/set` for `legion-legion-controller`): the next turn of its event loop, after
    * the answer went out.
@@ -387,6 +397,7 @@ async function serveController(
     hooks.onListener?.(sid);
     if (url.pathname === "/v1/roles/set") {
       if (body.role === registered.claimToken && roleHolder === "") {
+        hooks.beforeRoleClaimAnswer?.(sid);
         setImmediate(() => hooks.onRoleClaim?.(sid));
         noticeInterestDue = true;
       }
@@ -708,10 +719,11 @@ interface SentCard {
  * How long one attempt of `ControllerInbound.noticeOnceHeld` waits for the server's answer.
  * Nothing answers a notice (`expectsLaneReceipt`, packages/envoy-client/src/delivery.ts,
  * acknowledges only a frame on the session's own agent subject), so the ordinary end of an
- * attempt is this timeout and every run pays it once. It stands far above the worst
- * no-responders answer measured against this pod's server, 4.30 ms cold and 0.79 to 2.01 ms
- * warm, because an answer that arrived after the bound would be read as delivery and the notice
- * would be lost.
+ * attempt is this timeout and every run pays it once. It stands far above one answer, which
+ * cost 8.28 ms to 20.72 ms over the eight at-claim runs measured at this publish point under
+ * the load k-runs asks for (two busy workers against this pod's two CPUs), because an answer
+ * that arrived after the bound would be read as delivery and the notice would be lost. That
+ * margin of about fifty times is why the bound did not come down when the cap went up.
  */
 const NOTICE_PROBE_TIMEOUT_MS = 1_000;
 
@@ -723,25 +735,32 @@ const NOTICE_PROBE_INTERVAL_MS = 25;
 
 /**
  * How many answers of "the server delivered it to nobody" `noticeOnceHeld` reads before it gives
- * up. Forty of them, one every NOTICE_PROBE_INTERVAL_MS, is a second of patience, which covers a
- * subscription a loaded pod delays.
+ * up. The arm that reads any of them is `at-claim`, which publishes before the role claim's
+ * answer: over eight such runs under the load k-runs asks for it read 2, 2, 2, 3, 3, 4, 4 and 31
+ * answers, so 75 is more than twice the worst of them and is the largest round number the hold
+ * below keeps under the listener's call timeout. At the measured ceiling that is about 3.7 s of
+ * patience for a subscription a loaded pod delays.
  */
-const NOTICE_PROBE_ANSWER_CAP = 40;
+const NOTICE_PROBE_ANSWER_CAP = 75;
 
 /**
- * The ceiling one no-responders answer takes, from the measurement above (4.30 ms cold) rounded
- * up: what the hold below allows each answer beyond the interval that follows it.
+ * The ceiling one no-responders answer takes: the worst of those same eight runs was 20.72 ms,
+ * so this rounds it up. An unloaded pod answers in 4.30 ms cold and 0.79 to 2.01 ms warm, which
+ * is the reading this constant carried before and which the loaded one replaces, because the
+ * hold below must bound what a loaded run does.
  */
-const NOTICE_PROBE_ANSWER_CEILING_MS = 10;
+const NOTICE_PROBE_ANSWER_CEILING_MS = 25;
 
 /**
  * The longest `noticeOnceHeld` can hold the caller that awaits it: the attempt that ends it, plus
- * every answer the cap allows with the interval after each. 1_000 + 40 * (25 + 10) = 2_400 ms,
- * under half of LISTENER_CALL_TIMEOUT_MS (@legion/contracts,
+ * every answer the cap allows with the interval after each. 1_000 + 75 * (25 + 25) = 4_750 ms,
+ * under LISTENER_CALL_TIMEOUT_MS (@legion/contracts,
  * packages/contracts/src/envoy-session.ts:56, 5_000 ms), which is the bound that matters: the
  * probe runs inside the handler that answers the registration `subscribeNotice` sends, and a
  * handler held for LISTENER_CALL_TIMEOUT_MS or more makes the session send that registration
- * again.
+ * again. Only the arms that publish from `beforeRoleClaimAnswer` read answers at all, and they
+ * hold no handler; the shipped shape, which holds that registration, read 0 answers in every
+ * one of the 50 loaded runs and held it for the bound alone.
  */
 const NOTICE_PROBE_HOLD_MS =
   NOTICE_PROBE_TIMEOUT_MS +
@@ -1013,7 +1032,14 @@ test.skipIf(skip)(
     let probeFault: Error | undefined;
     // The three arms LEGION_TEST_CONTROLLER_NOTICE takes, and the shipped shape it leaves unset,
     // in one place: which stand-in hook publishes the notice, whether that publish waits on the
-    // server's word that something holds the subject, and the subject the frame goes on.
+    // server's word that something holds the subject, and the subject the frame goes on. The two
+    // claim arms publish from `beforeRoleClaimAnswer`, which the stand-in calls before it writes
+    // the claim's answer; the shipped shape and `dead-subject` publish from `onNoticeInterest`,
+    // the registration that follows the controller topic's subscription. The claim arms publish
+    // before the answer because the session subscribes to that topic only once the answer
+    // returns: from there the control arm `at-claim-unproven` publishes into a subject nothing
+    // holds on every run, where from `onRoleClaim`, which runs after the answer, the test
+    // process was descheduled past the subscribe about one run in ten and the notice landed.
     // `dead-subject`'s subject is the project's controller topic with one segment more, which no
     // subscription of a run matches: a session subscribes to the exact subject
     // (packages/pi-legion/src/controller-session.ts:336) and `expandSubscriptionTopics`
@@ -1030,13 +1056,16 @@ test.skipIf(skip)(
       }
     };
     const session = await startController({
+      beforeRoleClaimAnswer: () => {
+        // Started, not awaited: the stand-in drops this hook's result and writes the claim's
+        // answer at once, so the two claim arms go on differing only in the probe, and
+        // `at-claim-unproven` reaches `inbound.notice()`, a synchronous publish, through the
+        // same path as `at-claim` reaches the probe.
+        if (atClaim) void publish();
+      },
       onRoleClaim: (claimed) => {
         sid = claimed;
         sent = inbound.card(claimed, "role-claim");
-        // Started, not awaited: this hook is `(sid: string) => void`, whose result
-        // `serveController` drops inside `setImmediate`, so there is nothing here to await, and
-        // an awaited seam would hold `/v1/roles/set` for every other case that uses the hook.
-        if (atClaim) void publish();
       },
       onNoticeInterest: async () => {
         // Awaited: the registration that follows the controller topic's subscription is answered
