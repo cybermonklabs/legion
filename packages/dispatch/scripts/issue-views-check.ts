@@ -350,6 +350,16 @@ async function openIssuesView(
   return waitForIssuesTab(page, settle);
 }
 
+async function waitForLegionTable(page: Page): Promise<void> {
+  const skeleton = page.getByLabel("Loading Legion data");
+  try {
+    await skeleton.waitFor({ state: "visible", timeout: 3_000 });
+    await skeleton.waitFor({ state: "detached", timeout: SETTLE_MS });
+  } catch (error) {
+    if (!(error instanceof errors.TimeoutError)) throw error;
+  }
+}
+
 async function ensureSignedIn(context: BrowserContext, options: Options): Promise<string> {
   const whoami = await context.request.get(urlFor(options.base, "/auth/whoami"));
   if (whoami.status() !== 200) {
@@ -520,13 +530,14 @@ async function requireInFlightOverride(
   expectedRows: number,
   failure: string
 ): Promise<void> {
-  const root = await openIssuesView(page, options, `view=in-flight&${query}`);
+  await page.goto(projectUrl(options, `/issues?view=in-flight&${query}`));
+  await waitForLegionTable(page);
+  const root = await waitForIssuesTab(page);
   const tab = await required(tabFor(page, "in-flight"), "In flight view tab");
-  if (
-    (await rowCount(root)) !== expectedRows ||
-    (await tab.locator("[data-tab-marked]").count()) !== 1
-  )
-    throw new Error(failure);
+  const rows = await rowCount(root);
+  const marked = await tab.locator("[data-tab-marked]").count();
+  if (rows !== expectedRows || marked !== 1)
+    throw new Error(`${failure}; got ${rows} rows and ${marked} changed markers`);
 }
 
 async function checkK2(page: Page, options: Options, inputs: CheckInputs): Promise<string[]> {
@@ -590,6 +601,7 @@ async function checkK3(browser: Browser, options: Options, inputs: CheckInputs):
       "the Test saved view tab"
     );
     await saved.click();
+    await waitForLegionTable(first.page);
     await waitForIssuesTab(first.page);
     const query = new URL(first.page.url()).searchParams;
     if (query.get("f.stage") !== "phase:implementing" || query.get("sort") !== "-priority")
@@ -961,15 +973,22 @@ async function metricsFor(
 
 async function checkK8(page: Page, options: Options, inputs: CheckInputs): Promise<string[]> {
   if (!inputs.hasLegion) throw new NotYetError("the project has no Legion metrics");
+  await page.goto(projectUrl(options, "/evals"));
+  await untilLoaded(page.locator("body"), SETTLE_MS);
+  const control = await required(page.getByLabel("Window"), "the Evals window");
+  const window = await control.inputValue();
+  const match = /^(\d+)d$/u.exec(window);
+  if (match === null) throw new Error(`the Evals window is not a finished-view range: ${window}`);
   const minute = floorMinute(inputs.nowMs);
   const to = new Date(minute).toISOString();
   const now = new Date(inputs.nowMs);
   const dayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const dayStart = new Date(dayEnd.getTime() - DAY_MS);
+  const windows = [...new Set([Number(match[1]), 7])];
   const [dayMetrics, windowMetrics] = await Promise.all([
     metricsFor(options, dayStart.toISOString(), dayEnd.toISOString()),
     Promise.all(
-      [28, 7].map(async (days) => ({
+      windows.map(async (days) => ({
         days,
         metrics: await metricsFor(options, new Date(minute - days * DAY_MS).toISOString(), to),
       }))
@@ -998,12 +1017,12 @@ async function checkK8(page: Page, options: Options, inputs: CheckInputs): Promi
     throw new NotYetError("no finished Legion tree is available for exclude_tree");
   const excluded = await metricsFor(
     options,
-    new Date(minute - 28 * DAY_MS).toISOString(),
+    new Date(minute - Number(match[1]) * DAY_MS).toISOString(),
     to,
     largestTree
   );
   checks.push({
-    query: `view=finished&f.closed=28d&exclude_tree=${encodeURIComponent(largestTree)}`,
+    query: `view=finished&f.closed=${window}&exclude_tree=${encodeURIComponent(largestTree)}`,
     expected: excluded.phase_breakdown?.issues?.length ?? 0,
   });
 
@@ -1132,6 +1151,12 @@ async function checkK10(page: Page, options: Options, inputs: CheckInputs): Prom
 }
 
 async function takeScreenshots(page: Page, options: Options): Promise<void> {
+  const R21_VIEW_NAMES: Partial<Record<BuiltInViewID, string>> = {
+    open: "issues",
+    finished: "finished",
+    waiting: "waiting",
+    slots: "slots",
+  };
   for (const viewport of SCREENSHOTS) {
     await page.setViewportSize(viewport);
     for (const view of BUILT_IN_VIEW_IDS) {
@@ -1141,6 +1166,12 @@ async function takeScreenshots(page: Page, options: Options): Promise<void> {
       } catch (error) {
         if (!(error instanceof NotYetError)) throw error;
       }
+      const viewName = R21_VIEW_NAMES[view];
+      if (viewName !== undefined)
+        await page.screenshot({
+          fullPage: true,
+          path: join(options.out, `${viewName}-${viewport.width}.png`),
+        });
       await page.screenshot({
         fullPage: true,
         path: join(options.out, `issues-${view}-${viewport.width}.png`),
@@ -1152,6 +1183,18 @@ async function takeScreenshots(page: Page, options: Options): Promise<void> {
     await page.screenshot({
       fullPage: true,
       path: join(options.out, `evals-${viewport.width}.png`),
+    });
+    await page.goto(projectUrl(options, "/issues?view=in-flight&layout=board"));
+    await waitForIssuesTab(page);
+    await page.screenshot({
+      fullPage: true,
+      path: join(options.out, `board-in-flight-${viewport.width}.png`),
+    });
+    await page.goto(projectUrl(options, "/legion/INFRA-606"));
+    await untilLoaded(page.locator("body"), SETTLE_MS);
+    await page.screenshot({
+      fullPage: true,
+      path: join(options.out, `timeline-INFRA-606-${viewport.width}.png`),
     });
   }
 }

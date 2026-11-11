@@ -69,11 +69,6 @@ function cardColumns(board: ExpectedBoard): Map<string, string> {
 
 export function expectedStageOf(issue: ExpectedIssue, phase: string | undefined): string {
   if (phase !== undefined) return `phase:${phase}`;
-  if (issue.labels?.some((label) => label.toLowerCase() === "legion")) {
-    if (issue.status === "in_progress") return "phase:implementing";
-    if (issue.status === "needs_review") return "phase:reviewing";
-    if (issue.status === "todo") return "phase:queue";
-  }
   return issue.status === "testing" ? "phase:testing" : `status:${issue.status}`;
 }
 

@@ -38,7 +38,7 @@ test("the issues table shows the daemon's phases and issue facts @legion @phone"
     await expect(issue.locator('[data-legion-fact="phase-time"]')).toContainText("2 h");
     await expect(issue.locator('[data-legion-fact="slot"]')).toHaveText("0");
     await expect(issue.locator('[data-legion-fact="roles"]')).toHaveText("implementer");
-    await expect(issue.locator('[data-legion-fact="checks"]')).toHaveText("failing");
+    await expect(issue.locator('[data-legion-fact="checks"]')).toHaveText("Failing");
     expect(
       await table
         .locator("[data-issue-row]")

@@ -142,15 +142,18 @@ async function nameTheEpic(user: UserEvent, name: string) {
 }
 
 test("rows keep parent links, unread marks, asks, progress and route reach, with priority editable", async () => {
-  table([
-    issue("CORE-1", {
-      parent: "CORE-9",
-      open_asks: 2,
-      progress: { tasks: { done: 3, total: 7 }, children: { done: 1, total: 2 } },
-      route: "role:sre",
-      route_status: "no_holder",
-    }),
-  ]);
+  table(
+    [
+      issue("CORE-1", {
+        parent: "CORE-9",
+        open_asks: 2,
+        progress: { tasks: { done: 3, total: 7 }, children: { done: 1, total: 2 } },
+        route: "role:sre",
+        route_status: "no_holder",
+      }),
+    ],
+    "?cols=key,title,priority,epic,asks,progress,route"
+  );
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(within(row).getByRole("link", { name: "CORE-9" }).getAttribute("href")).toBe(
     "/issues/CORE-9"
@@ -166,7 +169,7 @@ test("rows keep parent links, unread marks, asks, progress and route reach, with
 });
 
 test("an unset table priority is a muted dash, not a Priority tag", async () => {
-  table([issue("CORE-1")]);
+  table([issue("CORE-1")], "?cols=key,title,priority");
 
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(within(row).getByText("—", { selector: "span" })).toBeTruthy();
@@ -1744,12 +1747,17 @@ test("a collapsed group keeps its heading and reopens", async () => {
 
 test("the Closed filter writes a selected date range", async () => {
   const user = userEvent.setup();
-  table([issue("CORE-1", { closed_at: "2026-11-03T05:00:00Z", status: "done" })], "?view=finished");
+  table(
+    [issue("CORE-1", { closed_at: "2026-11-03T05:00:00Z", status: "done" })],
+    "?view=finished&cols=key,title,closed"
+  );
 
   await user.click(await screen.findByRole("button", { name: "Filter Closed" }));
   await user.click(screen.getByRole("button", { name: "7 days" }));
 
-  expect(screen.getByTestId("route-search")).toHaveTextContent("?view=finished&f.closed=7d");
+  expect(screen.getByTestId("route-search")).toHaveTextContent(
+    "?view=finished&cols=key%2Ctitle%2Cclosed&f.closed=7d"
+  );
 });
 
 test("a saved view name stops at fourteen characters", async () => {

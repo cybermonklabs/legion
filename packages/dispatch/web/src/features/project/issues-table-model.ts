@@ -345,7 +345,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "title",
-    size: 280,
+    size: 240,
     min: 116,
     compactMin: 120,
     pinned: true,
@@ -370,7 +370,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "phase",
-    size: 160,
+    size: 140,
     min: 132,
     filter: {
       kind: "picks",

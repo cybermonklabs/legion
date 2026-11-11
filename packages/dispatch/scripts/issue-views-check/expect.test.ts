@@ -89,7 +89,7 @@ test("counts every closed issue in Finished without a Legion daemon", () => {
   expect(counts.finished).toBe(1);
 });
 
-test("maps a Legion-labelled in-progress issue to its lifecycle phase", () => {
+test("maps a Legion-labelled issue without a card to its Dispatch status", () => {
   const count = expectedStageCount(
     {
       openIssues: [
@@ -102,10 +102,10 @@ test("maps a Legion-labelled in-progress issue to its lifecycle phase", () => {
       login: "alice",
       nowMs: Date.parse("2026-11-11T12:00:00Z"),
     },
-    "phase:implementing"
+    "status:in_progress"
   );
 
-  expect(count).toBe(1);
+  expect(count).toBe(2);
 });
 
 test("uses the inclusive 28-day closed window", () => {

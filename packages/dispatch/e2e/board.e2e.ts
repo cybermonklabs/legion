@@ -150,8 +150,15 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await page.reload();
     await expect(triage.getByRole("article")).toHaveText([/Third card/, /Second card/]);
     await page.getByRole("button", { name: "List" }).click();
-    await page.getByRole("button", { name: "Triage 2", exact: true }).click();
-    await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
+    await page
+      .getByRole("list", { name: "Statuses" })
+      .getByRole("button", { name: /^Not started 3: Triage 2 · Todo 1$/u })
+      .click();
+    await expect(page.locator("[data-issue-row]")).toHaveText([
+      /Third card/,
+      /Second card/,
+      /First card/,
+    ]);
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
       third.key,
       second.key,
@@ -478,6 +485,12 @@ test("project list rows and board cards set an issue's priority in place", async
     const page = await context.newPage();
     await page.goto("/projects/CORE");
     const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
+    await page.getByRole("button", { name: "Columns", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { name: "Priority", exact: true })
+      .check();
+    await page.keyboard.press("Escape");
     const listControl = listRow.getByLabel(`Priority of ${issue.key}`);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
     // The badge stays small; the tap target around it is 32 px from md.
@@ -516,7 +529,7 @@ test("project list rows and board cards set an issue's priority in place", async
     ]);
 
     const unsetCard = page.getByRole("article", { name: `${unset.key} Unprioritized card` });
-    await expect(priorityBadge(unsetCard, "Priority")).toBeVisible();
+    await expect(priorityBadge(unsetCard, "—")).toBeVisible();
     const unsetPatch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&

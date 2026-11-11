@@ -115,7 +115,8 @@ test("a cold Finished view waits for the board before it draws Legion-filtered r
     await page.goto("/projects/ACME/issues?view=finished");
     await expect(page.getByLabel("Loading Legion data")).toBeVisible({ timeout: 4_000 });
     await expect(page.locator("[data-issue-row]")).toHaveCount(0);
-    await expect(page.locator("[data-issue-row]")).toHaveCount(2, { timeout: 8_000 });
+    await expect(page.getByLabel("Loading Legion data")).toHaveCount(0, { timeout: 8_000 });
+    await expect(page.locator("[data-issue-row]")).toHaveCount(0);
   } finally {
     await context.close();
     await daemon.close();

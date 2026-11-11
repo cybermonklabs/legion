@@ -59,6 +59,7 @@ function CoreTable({
   stateKey,
   columnsOverride,
   fit,
+  listedTotal,
 }: {
   columns?: readonly ColumnDef<Row>[];
   groupOrder?: (columnId: string, a: string, b: string) => number;
@@ -71,6 +72,7 @@ function CoreTable({
   stateKey?: string;
   columnsOverride?: readonly string[];
   fit?: "window" | "rows";
+  listedTotal?: number;
 }): ReactNode {
   const model = useDataTable({
     columns: tableColumns,
@@ -83,6 +85,7 @@ function CoreTable({
     layoutKey,
     pageSize,
     primary,
+    listedTotal,
     rows: tableRows,
     stateKey,
   });
@@ -115,6 +118,23 @@ function CoreTable({
     </>
   );
 }
+
+test("the pager names an unfiltered view once and a filtered view against its own total", async () => {
+  const view = draw(<CoreTable listedTotal={3} />);
+  try {
+    expect(screen.getByTestId("issues-table-pager")).toHaveTextContent("3 issues");
+    await act(async () => {
+      view.rerender(
+        <MemoryRouter initialEntries={["/projects/T/issues"]}>
+          <CoreTable listedTotal={5} />
+        </MemoryRouter>
+      );
+    });
+    expect(screen.getByTestId("issues-table-pager")).toHaveTextContent("3 of 5 issues");
+  } finally {
+    view.unmount();
+  }
+});
 
 function draw(tree: ReactNode, boxWidth = 1000) {
   measuredWidth = boxWidth;

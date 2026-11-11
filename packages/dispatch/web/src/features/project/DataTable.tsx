@@ -243,21 +243,25 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
     hiddenByDefault: options.hiddenByDefault,
     primaryColumns: primary,
   });
-  const narrow =
-    layout.boxWidth > 0 &&
-    layout.boxWidth < 640 &&
-    primary.length > 0 &&
-    options.columnsOverride === undefined;
   const visibilityChanged = useRef(false);
+  const narrow =
+    primary.length > 0 &&
+    ((typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 639px)").matches) ||
+      (layout.boxWidth > 0 && layout.boxWidth < 640));
   const visibility = useMemo(() => {
+    if (narrow) {
+      const hidden: Record<string, boolean> = {};
+      for (const id of named)
+        if (id !== "key" && id !== "select" && !primary.includes(id)) hidden[id] = false;
+      return { ...layout.visibility, ...hidden, title: false };
+    }
     if (options.columnsOverride !== undefined && !visibilityChanged.current) {
       const shown = new Set(options.columnsOverride);
       return Object.fromEntries(named.map((id) => [id, shown.has(id)]));
     }
-    if (!narrow) return layout.visibility;
-    const hidden: Record<string, boolean> = {};
-    for (const id of named) if (id !== "key" && !primary.includes(id)) hidden[id] = false;
-    return { ...hidden, ...layout.visibility, title: false };
+    return layout.visibility;
   }, [layout.visibility, named, narrow, options.columnsOverride, primary]);
   const groupOrder = options.groupOrder ?? defaultGroupOrder;
   const groupValue = options.groupValue ?? defaultGroupValue;

@@ -5,7 +5,9 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError } from "../../api/client";
 import {
   deliverySettingsQuery,
+  legionBoardQuery,
   legionMetricsQuery,
+  projectDoneIssuesQuery,
   projectMeasuresQuery,
   projectPipelineQuery,
   repoProjectsQuery,
@@ -155,6 +157,13 @@ export function LegionSections({ project }: { readonly project: string }): React
     () => metricsRange(chosen, Math.floor(Date.now() / 60_000) * 60_000),
     [chosen]
   );
+  const closedWindow = useMemo(
+    () =>
+      chosen.kind === "preset"
+        ? chosen.preset
+        : `${range.from.slice(0, 10)}..${range.to.slice(0, 10)}`,
+    [chosen, range.from, range.to]
+  );
   const against = compare ?? range;
   const metrics = useQuery(
     legionMetricsQuery({ exclude_tree: excluded, from: range.from, project, scope, to: range.to })
@@ -223,7 +232,13 @@ export function LegionSections({ project }: { readonly project: string }): React
             title="Work time"
             trend={workTimeTrendSeries}
           >
-            <TreePicker excluded={excluded} onExclude={setExcluded} report={report} />
+            <TreePicker
+              excluded={excluded}
+              onExclude={setExcluded}
+              project={project}
+              report={report}
+              window={closedWindow}
+            />
           </TrendSection>
           <TrendSection
             compare={source(compared.data)}
@@ -268,37 +283,55 @@ const count = (value: number): string => value.toLocaleString("en-US");
 /** A count of issues as the headlines write it: "1 issue", "1,259 issues". */
 const issues = (value: number): string => `${count(value)} issue${value === 1 ? "" : "s"}`;
 
-/** A selector for the most prominent finished trees, kept in the shared URL as `exclude_tree`. */
+/** A lazy selector for the five finished trees with the most issues in the chosen window. */
 function TreePicker({
   excluded,
   onExclude,
+  project,
   report,
+  window,
 }: {
   excluded: readonly string[];
   onExclude: (roots: readonly string[]) => void;
+  project: string;
   report: LegionMetricsResponse;
+  window: string;
 }): ReactNode {
-  const roots = [
-    ...new Set([
-      ...(report.largest_tree === null ? [] : [report.largest_tree.root]),
-      ...report.work_time.issues.filter((issue) => issue.root).map((issue) => issue.key),
-    ]),
-  ].slice(0, 5);
-  if (roots.length === 0) return null;
+  const [opened, setOpened] = useState(false);
+  const done = useQuery({ ...projectDoneIssuesQuery(project, window), enabled: opened });
+  const board = useQuery({ ...legionBoardQuery({ kind: "legion", project }), enabled: opened });
+  const roots = useMemo<readonly (readonly [string, number])[]>(() => {
+    if (!opened)
+      return report.largest_tree === null
+        ? []
+        : [[report.largest_tree.root, report.largest_tree.finished]];
+    const counts = new Map<string, number>();
+    for (const issue of done.data ?? []) {
+      const root = board.data?.issues?.[issue.key]?.tree;
+      if (root !== undefined) counts.set(root, (counts.get(root) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 5);
+  }, [board.data?.issues, done.data, opened, report.largest_tree]);
   const button = `rounded border px-2 py-1 text-xs ${borderDefault} ${textPrimaryOnCanvas}`;
   const selected = excluded[0] ?? "";
+  const choices = new Map<string, number>(roots);
+  for (const root of excluded) if (!choices.has(root)) choices.set(root, 0);
   return (
     <div className="flex flex-wrap items-center gap-1.5" data-legion-tree-note>
       <select
         aria-label="Leave out a tree"
         className={button}
+        onClick={() => setOpened(true)}
+        onFocus={() => setOpened(true)}
         onChange={(event) => onExclude(event.target.value === "" ? [] : [event.target.value])}
         value={selected}
       >
         <option value="">Leave out a tree</option>
-        {roots.map((root) => (
+        {[...choices.entries()].map(([root, finished]) => (
           <option key={root} value={root}>
-            {root}
+            {finished === 0 ? root : `${root} · ${finished}`}
           </option>
         ))}
       </select>
