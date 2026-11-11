@@ -437,6 +437,61 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   refusal: (value) => handoffProblem(value) ?? HANDOFF_RULE,
 };
 
+/** Every argument a record of a result carries, required ones first. A retraction takes none of
+ *  them: it names the stored result and says why that result is wrong, and nothing of a fresh
+ *  run belongs in it. */
+const RESULT_RECORD_FIELDS = [
+  "issue",
+  "check",
+  "role",
+  "verdict",
+  "commit",
+  "surface",
+  "run",
+  "observed",
+  "negative_control",
+  "failed",
+  "skipped",
+  "excluded",
+  "screenshots",
+] as const;
+
+/** What retract does, written once: the tool's description gives it, and so does the refusal of
+ *  a call that mixes a retraction with a record. */
+const RESULT_RETRACT_RULE =
+  "Pass retract with the id of a result recorded before, and reason with why that result is " +
+  "wrong, to retract it.";
+
+/** The whole rule a call of this tool keeps: one shape records a result, the other retracts one. */
+const RESULT_SHAPE_RULE =
+  `${RESULT_RETRACT_RULE} A call with retract takes reason and no other argument. A call ` +
+  "without retract records a result, and it takes issue, check, role, verdict and commit.";
+
+/** The refusal of the first rule a result call breaks, or undefined when it keeps them. The two
+ *  shapes are one command because a retraction answers for one recorded result: the reader of
+ *  `dispatch results` sees the result and its retraction together. */
+function resultProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
+  if (typeof input.retract === "string") {
+    if (typeof input.reason !== "string" || input.reason.trim() === "") {
+      return "retract needs reason, the words that say why the result is wrong.";
+    }
+    if (carried.length > 0) {
+      return `retract takes reason alone, and this call also carries ${carried.join(", ")}. Retract the result, then record a new one with a call of its own.`;
+    }
+    return undefined;
+  }
+  if (input.reason !== undefined) {
+    return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
+  }
+  const missing = RESULT_RECORD_FIELDS.slice(0, 5).filter((field) => input[field] === undefined);
+  if (missing.length > 0) {
+    return `recording a result needs ${missing.join(", ")}. ${RESULT_RETRACT_RULE}`;
+  }
+  return undefined;
+}
+
 /**
  * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units. The
  * query rides in the URL beside `project`, `limit` and `offset`, so this refusal and `project`'s
@@ -1395,37 +1450,51 @@ export const dispatchToolSpecs = [
       commit: "1111111111111111111111111111111111111111",
     },
     description:
-      "Record one result of one check of an issue's Verification document, and print the " +
-      "pull-request body line it implies. The check is named by its block id, or, when two " +
-      "Verification documents in reach share that id, by its canonical reference " +
-      "(dispatch://KEY/artifact/verification-md#b-<id>); 409 CHECK_AMBIGUOUS names them, and an " +
-      "id no Verification document of the issue or of an issue above it holds is 400 " +
-      "UNKNOWN_CHECK. A pass counting any failed, skipped or excluded case contradicts itself " +
-      "and is 400 RESULT_CONTRADICTS. Dispatch asks GitHub whether the repository of the " +
-      "check's issue holds the commit: one it does not hold is 400 RESULT_COMMIT_UNKNOWN, " +
-      "naming the commit and that owner/repo, so record the result after the commit is pushed. " +
-      "A repository Dispatch cannot read records the result as before. " +
-      "The result is recorded against the check's own issue, so " +
-      "a child's run of a parent's check appears under that check. A closed issue takes a " +
-      "result only for a check whose when is after_merge or default_branch — the production " +
-      "check after the merge — and refuses every other one with 409 ISSUE_CLOSED, as it refuses " +
-      "every other write. Write the printed line into the pull-request body unchanged: it is " +
-      "the one grammar every writer uses, and it carries no link to Dispatch. " +
+      "Record one result of one check of an issue's Verification document, or retract a result " +
+      "recorded before. A record prints the pull-request body line it implies. Write that line " +
+      "into the pull-request body unchanged: it is the one grammar every writer uses, and it " +
+      "carries no link to Dispatch. " +
+      "Name the check by its block id. Where two Verification documents in reach hold that id, " +
+      "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +
+      "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +
+      "or of an issue above it holds is 400 UNKNOWN_CHECK. " +
+      "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
+      "400 RESULT_CONTRADICTS. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. A " +
+      "commit that repository does not hold is 400 RESULT_COMMIT_UNKNOWN, which names the " +
+      "commit and that owner/repo. Record the result after the commit is pushed. A repository " +
+      "Dispatch cannot read records the result as before. " +
+      "The result is recorded against the check's own issue, so a child's run of a parent's " +
+      "check appears under that check. A closed issue takes a result only for a check whose " +
+      "when is after_merge or default_branch, the production check after the merge. It refuses " +
+      "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      RESULT_RETRACT_RULE +
+      " The retraction keeps both records: the result stays readable, and it proves nothing " +
+      "from then on. Record a new result where the check still needs one. A retraction is " +
+      "taken on a closed issue and for a check of any when. Three callers may retract: the " +
+      "session that recorded the result, a session that holds the Dispatch claim of the issue " +
+      "the result was recorded on, and a caller whose credential carries a person. Every other " +
+      "caller is 403 FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
-      issue: z.string().describe(ISSUE_REFERENCE),
+      issue: z.string().describe(ISSUE_REFERENCE).optional(),
       check: z
         .string()
         .describe(
           "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
-        ),
+        )
+        .optional(),
       role: z
         .string({ max: 32 })
         .describe(
           "Who ran it: implementer, tester, reviewer. At most 32 characters of a-z and -, printed in the pull-request line."
-        ),
-      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed."),
-      commit: z.string().describe("The 40-character lowercase hex commit the check ran at."),
+        )
+        .optional(),
+      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed.").optional(),
+      commit: z
+        .string()
+        .describe("The 40-character lowercase hex commit the check ran at.")
+        .optional(),
       surface: z.string().describe("Where a person reaches the change.").optional(),
       run: z.string().describe("The command that proved it.").optional(),
       observed: z.string().describe("What the command printed.").optional(),
@@ -1451,29 +1520,64 @@ export const dispatchToolSpecs = [
           "dispatch:// references to image documents of this issue or of the check's issue."
         )
         .optional(),
+      retract: z
+        .string()
+        .describe(
+          "The id of a result recorded before. It records that the result is wrong, and it takes reason alone beside it."
+        )
+        .optional(),
+      reason: z
+        .string()
+        .describe("Why the retracted result is wrong. It goes with retract and with nothing else.")
+        .optional(),
     }),
+    validation: {
+      check: (value) => resultProblem(value) === undefined,
+      message: RESULT_SHAPE_RULE,
+      refusal: (value) => resultProblem(value) ?? RESULT_SHAPE_RULE,
+    },
   },
   {
     name: "dispatch_results",
     example: { issue: "DSP-1" },
     description:
-      "Print each check of an issue's Verification document with its latest result and whether " +
-      "that result is current. A result is current when it ran at the commit the work stands at " +
-      "— the head of an open pull request of the check's issue, the final head of a merged one, " +
-      "for an after_merge check a commit on the branch that issue's pull request merged into or " +
-      "on the repository's default branch (which answers alone where Dispatch holds no merge of " +
-      "that issue), or for a default_branch check a commit on the repository's default branch, " +
-      "whatever branch the pull request merged into — and the check's words have not changed " +
-      "since; older otherwise, and unknown when Dispatch cannot read the repository. On an " +
-      "after_merge check's base branch a read GitHub refused — a 403 or 404, which a branch it " +
-      "no longer holds answers with — says the commit is not on that branch and leaves the " +
-      "default branch to decide; every other failure of that read, a rate limit or a 5xx " +
-      "among them, leaves the result unknown and never older. A push that moves the " +
-      "pull request's head makes a result older with no write of anyone's: record it again at " +
-      "the new head. " +
+      "Print each check of an issue's Verification document with every result recorded against " +
+      "it, newest first. " +
+      "Each check prints what Dispatch compared its results with. A before_merge check is " +
+      "compared with the head of each pull request Dispatch holds for the check's issue, open " +
+      "or merged. An after_merge check is compared with the branch that issue's pull request " +
+      "merged into and with the repository's default branch, and with the default branch alone " +
+      "where Dispatch holds no merge of the issue. A default_branch check is compared with the " +
+      "repository's default branch alone, whatever branch the pull request merged into. Where " +
+      "a check compared with nothing, it says which of three things happened: the issue has no " +
+      "pull request and no branch to compare with, Dispatch cannot read the repository, or a " +
+      "read Dispatch made did not answer. " +
+      "Each check then prints one line that answers the gate: whether a pass of it stands, and " +
+      "from which roles. A pass stands when its commit is one of the commits the check " +
+      "compared with, the check's words did not move after the result was recorded, and no " +
+      "retraction stands against it. " +
+      "The check's own words print once, under the check. Each result then prints its verdict, " +
+      "its role, its whole 40-character commit, where that commit stands, whether the check's " +
+      "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
+      "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
+      "the reason and the caller that retracted it. A check with no result says so. " +
+      "A push that moves a pull request's head leaves a result at the commit before it, with " +
+      "no write of anyone's: record the check again at the new head. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
+      at: z
+        .string()
+        .describe(
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with, and Dispatch reads GitHub for none of it."
+        )
+        .optional(),
+      brief: z
+        .boolean()
+        .describe(
+          "Cut each reading whose result stands at none of the compared commits to its first 200 characters. Every other reading prints whole."
+        )
+        .optional(),
     }),
   },
   {

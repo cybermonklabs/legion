@@ -69,6 +69,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       commit: "1111111111111111111111111111111111111111",
     }),
   issueResults: (client) => client.issueResults("DSP-1"),
+  retractResult: (client) =>
+    client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
   issueCoverage: (client) => client.issueCoverage("DSP-1"),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment("DSP-1", { body: "Shipped.", actor }),

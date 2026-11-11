@@ -10,7 +10,12 @@ import type {
   Ask,
   AskRead,
   AskUrgency,
+  BasisLearnedAt,
   BlockPath,
+  CheckBasis,
+  CheckBlock,
+  CheckPassStands,
+  CheckResult,
   ClaimedIssue,
   ClaimHolderLiveness,
   Comment,
@@ -1655,6 +1660,12 @@ async function resolveOwnerArguments(
   if (tool === "dispatch_read" && typeof args.message === "string") {
     return { args, ref, owner: null };
   }
+  // A retraction names one stored result by its id, and the server reads that result's issue for
+  // itself. LEGION_ISSUE must not fill an issue in here: issue is a record's argument, and a
+  // retraction that carried one would be refused as a record mixed with a retraction.
+  if (tool === "dispatch_result" && typeof args.retract === "string") {
+    return { args, ref, owner: null };
+  }
   const legionIssue = env.LEGION_ISSUE;
   if (!legionIssue) {
     problems.push(ownerRequiredProblem);
@@ -2259,12 +2270,162 @@ function progressText(progress: IssueProgress | undefined, sep: string): string 
   return parts.join(sep);
 }
 
-/** What `dispatch results` prints: each check of the issue's Verification document with its
- *  latest result and whether that result is current. A check with no result says so, and an
+/** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
+ *  who wants the gate alone on an issue holding hundreds of results reads this much of a reading
+ *  that stands at none of the compared commits, and the whole of every other one. */
+const BRIEF_READING_CHARACTERS = 200;
+
+/** The three reasons a check compared its results with nothing, and the three a result's commit
+ *  cannot be placed, in words a reader acts on. A reason a newer Dispatch adds prints as the
+ *  server sent it, since the word itself says more than nothing would. */
+const COMPARISON_REASONS: Readonly<Record<string, string>> = {
+  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
+  repository_unreadable: "Dispatch cannot read the repository",
+  read_failed: "a read Dispatch made did not answer",
+};
+
+function comparisonReason(reason: string): string {
+  return COMPARISON_REASONS[reason] ?? reason;
+}
+
+/** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
+ *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
+function learnedText(learned: BasisLearnedAt): string {
+  if (learned.kind === "read_at") return `Dispatch read it ${learned.at}`;
+  if (learned.kind === "updated_at") return `GitHub updated it ${learned.at}`;
+  return `learned ${learned.at}`;
+}
+
+/** One thing a check compared its results with, as the head line names it. */
+function basisText(basis: CheckBasis): string {
+  const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
+  if (basis.kind === "pull_request") {
+    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
+    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
+  }
+  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
+  if (basis.kind === "named") return `the commit you named, ${basis.commit ?? ""}${learned}`;
+  return `${basis.kind} ${basis.commit ?? basis.branch ?? ""}${learned}`.trim();
+}
+
+/** Where a result's commit stands, as the basis it matched names that place. The head line has
+ *  already printed each basis whole, so this names it short. */
+function basisPlace(basis: CheckBasis): string {
+  if (basis.kind === "pull_request") {
+    return basis.pull_request === undefined
+      ? "the head of a pull request"
+      : `the head of pull request #${basis.pull_request}`;
+  }
+  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
+  if (basis.kind === "named") return "the commit you named";
+  return basis.kind;
+}
+
+/** The first of R4's two facts: where one result's commit stands against what its check compared
+ *  with. A Dispatch server that does not answer it says so rather than reading as another
+ *  commit. */
+function commitStandsText(stands: CheckResult["commit_stands"]): string {
+  if (stands === undefined) {
+    return "Where that commit stands is not known: this Dispatch server does not say";
+  }
+  if (stands.answer === "at_basis") {
+    return stands.basis === undefined
+      ? "That commit is one of the compared commits"
+      : `That commit is ${basisPlace(stands.basis)}`;
+  }
+  if (stands.answer === "other_commit") return "That commit is none of the compared commits";
+  if (stands.answer === "unknown") {
+    const reason = stands.reason ?? "";
+    return reason === ""
+      ? "Where that commit stands is not known"
+      : `Where that commit stands is not known: ${comparisonReason(reason)}`;
+  }
+  return `Where that commit stands: ${stands.answer}`;
+}
+
+/** R4's other fact: whether the check's words moved after the result was recorded. Both versions
+ *  are named either way, because they are the handles a reader reads the two wordings with. */
+function checkWordsText(check: CheckBlock, result: CheckResult): string {
+  const versions = `result version ${result.check_version}, check version ${check.version}`;
+  if (result.check_words_moved === undefined) {
+    return `Whether the check's words moved is not known (${versions})`;
+  }
+  return result.check_words_moved
+    ? `The check's words moved after this result (${versions})`
+    : `The check's words did not move after this result (${versions})`;
+}
+
+/** R5 for one check: whether a pass of it stands, and from which roles. */
+function passStandsText(pass: CheckPassStands | undefined): string {
+  if (pass === undefined)
+    return "Whether a pass stands is not known: this Dispatch server does not say";
+  if (pass.answer === "yes") {
+    const roles = pass.roles ?? [];
+    return roles.length === 0
+      ? "A pass stands: yes"
+      : `A pass stands: yes, from ${roles.join(", ")}`;
+  }
+  if (pass.answer === "no") return "A pass stands: no";
+  if (pass.answer === "unknown") return "A pass stands: not known";
+  return `A pass stands: ${pass.answer}`;
+}
+
+/** The reading one role recorded. `brief` cuts a reading whose result stands at none of the
+ *  compared commits, and leaves every other reading whole: the reading is the record, and a
+ *  reader who asked for the gate alone still reads the whole of what stands. */
+function readingLines(result: CheckResult, brief: boolean): string[] {
+  const observed = result.observed;
+  if (observed === "") return ["    The role recorded no reading."];
+  const cut = brief && result.commit_stands?.answer !== "at_basis";
+  if (cut && observed.length > BRIEF_READING_CHARACTERS) {
+    return [`    Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`];
+  }
+  return [`    Reading: ${observed}`];
+}
+
+/** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
+ *  facts, the time, the id, the retraction that stands against it, and the reading. */
+function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): string[] {
+  const lines = [
+    `  - ${result.verdict} by ${result.role} at ${result.commit_sha}. ${commitStandsText(result.commit_stands)}. ${checkWordsText(check, result)}. Recorded ${result.created_at}. Result ${result.id}.`,
+  ];
+  const retracted = result.retracted;
+  if (retracted !== undefined) {
+    lines.push(
+      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
+    );
+  }
+  return [...lines, ...readingLines(result, brief)];
+}
+
+/** One check: a head line naming what it compared with and whether a pass of it stands, the
+ *  check's own words once, then every result recorded against it. */
+function checkLines(check: CheckBlock, brief: boolean): string[] {
+  const bases = check.compared_with ?? [];
+  const reason = check.compared_nothing ?? "";
+  const compared =
+    bases.length > 0
+      ? `Compared with ${bases.map(basisText).join(", ")}`
+      : reason === ""
+        ? "Compared with nothing, and this Dispatch server does not say why"
+        : `Compared with nothing: ${comparisonReason(reason)}`;
+  const results = check.results ?? [];
+  return [
+    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
+    `  The check's words: ${check.text}`,
+    ...(results.length === 0
+      ? ["  No result is recorded for this check."]
+      : results.flatMap((result) => resultLines(check, result, brief))),
+  ];
+}
+
+/** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
+ *  compared its results with, whether a pass of it stands, its own words once, and every result
+ *  recorded against it in the order the API serves them. A check with no result says so, and an
  *  issue with no Verification document says that instead of printing an empty list: Dispatch
  *  answers `verification_artifact_id` "" for such an issue, never null, so that is what is
  *  compared. */
-function formatCheckResults(results: IssueCheckResults): string {
+function formatCheckResults(results: IssueCheckResults, brief = false): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
   }
@@ -2272,15 +2433,8 @@ function formatCheckResults(results: IssueCheckResults): string {
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const lines = checks.map((check) => {
-    const head = `- ${check.block_id} (${check.when}): `;
-    const latest = (check.results ?? [])[0];
-    if (latest === undefined) {
-      return `${head}no result yet. ${check.text}`;
-    }
-    return `${head}${latest.verdict} at ${latest.commit_sha} by ${latest.role}, ${latest.currency ?? "unknown"}. ${check.text}`;
-  });
-  return [`Checks of ${results.issue}:`, ...lines].join("\n");
+  const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
+  return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
 /** Which repository the issue targets and where it came from: its own, or resolved through its
@@ -5253,6 +5407,21 @@ export async function executeDispatchTool(
       };
     }
     case "dispatch_result": {
+      const retract = optionalString(args, "retract");
+      if (retract !== undefined) {
+        const retraction = await client.retractResult(retract, {
+          actor,
+          reason: stringArg(args, "reason"),
+        });
+        return {
+          text: `Retracted result ${retraction.result_id}. ${actorText(retraction.actor)} retracted it at ${retraction.created_at}. The reason: ${retraction.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
+          details: {
+            result: retraction.result_id,
+            reason: retraction.reason,
+            created_at: retraction.created_at,
+          },
+        };
+      }
       const issue = stringArg(args, "issue");
       // Each optional field is omitted rather than passed as `undefined`: the input's optional
       // properties are exact (`exactOptionalPropertyTypes`, which claude-envoy compiles this
@@ -5288,10 +5457,17 @@ export async function executeDispatchTool(
     }
     case "dispatch_results": {
       const issue = stringArg(args, "issue");
-      const results = await client.issueResults(issue);
+      const at = optionalString(args, "at");
+      const brief = optionalBoolean(args, "brief") === true;
+      const results = await client.issueResults(issue, at);
+      const checks = results.checks ?? [];
       return {
-        text: formatCheckResults(results),
-        details: { issue, checks: (results.checks ?? []).length },
+        text: formatCheckResults(results, brief),
+        details: {
+          issue,
+          checks: checks.length,
+          results: checks.reduce((total, check) => total + (check.results ?? []).length, 0),
+        },
       };
     }
     case "dispatch_artifact": {

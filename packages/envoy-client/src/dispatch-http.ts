@@ -15,6 +15,8 @@ import type {
   Ask,
   AskRead,
   CheckResultRecorded,
+  CheckResultRetraction,
+  CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
   CommentRead,
@@ -1254,9 +1256,30 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it. */
-  async issueResults(issue: string): Promise<IssueCheckResults> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "results"]);
+  /** Each check of an issue's Verification document with every result recorded against it.
+   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
+   *  hex characters, and Dispatch reads GitHub for none of it. */
+  async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      undefined,
+      at === undefined ? undefined : { at }
+    );
+  }
+
+  /**
+   * Records that one stored result is wrong, with the reason, and answers the retraction. The
+   * result itself is neither changed nor deleted: a reader of the results sees the result and
+   * its retraction together. The session that recorded the result, a session holding the
+   * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
+   * person may each retract it.
+   */
+  async retractResult(
+    resultID: string,
+    input: CheckResultRetractionInput
+  ): Promise<CheckResultRetraction> {
+    return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
   }
 
   async editAsk(id: string, input: EditAskInput): Promise<Ask> {

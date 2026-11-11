@@ -7639,6 +7639,293 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // One check with the three shapes a reader must tell apart: a result that stands at the head
+  // the check compared with, a result retracted after it was recorded, and a result at a commit
+  // that head is not. Every result prints, in the order the API served them, because the gate is
+  // read over all of them and not over the newest alone.
+  const headCommit = "1111111111111111111111111111111111111111";
+  const otherCommit = "2222222222222222222222222222222222222222";
+  const longReading =
+    "bun test: 1595 pass, 3 fail. The three failures all read a stale build of the client, so " +
+    "this run proves nothing about the change. Rebuild the workspace, run it again, and record " +
+    "the result at the new head commit.";
+  const threeResults = {
+    issue: "DSP-42",
+    verification_artifact_id: "artifact-9",
+    checks: [
+      {
+        artifact_id: "artifact-9",
+        block_id: "k1",
+        issue_key: "DSP-42",
+        ref: "dispatch://DSP-42/artifact/verification-md#b-k1",
+        sha256: "d4",
+        version: 4,
+        when: "before_merge",
+        text: "Run bun test in packages/envoy-client and see every case pass.",
+        surface: "the test run",
+        run: "bun test",
+        negative_control: "Break one case and see the run fail.",
+        compared_with: [
+          {
+            kind: "pull_request",
+            commit: headCommit,
+            pull_request: 3530,
+            learned_at: { at: "2026-11-10T09:00:00Z", kind: "read_at" },
+          },
+        ],
+        pass_stands: { answer: "yes", roles: ["implementer"] },
+        results: [
+          {
+            id: "res-3",
+            issue_key: "DSP-42",
+            check_issue_key: "DSP-42",
+            check_artifact_id: "artifact-9",
+            check_block_id: "k1",
+            check_version: 3,
+            check_sha256: "d3",
+            check_words_moved: true,
+            role: "tester",
+            verdict: "fail",
+            commit_sha: otherCommit,
+            commit_stands: { answer: "other_commit" },
+            surface: "the test run",
+            run: "bun test",
+            observed: longReading,
+            negative_control: "",
+            failed: 3,
+            skipped: 0,
+            excluded: 0,
+            screenshots: null,
+            session: "session-3",
+            actor: { kind: "session", id: "session-3" },
+            created_at: "2026-11-10T11:30:00Z",
+          },
+          {
+            id: "res-2",
+            issue_key: "DSP-42",
+            check_issue_key: "DSP-42",
+            check_artifact_id: "artifact-9",
+            check_block_id: "k1",
+            check_version: 4,
+            check_sha256: "d4",
+            check_words_moved: false,
+            role: "reviewer",
+            verdict: "pass",
+            commit_sha: headCommit,
+            commit_stands: {
+              answer: "at_basis",
+              basis: { kind: "pull_request", commit: headCommit, pull_request: 3530 },
+            },
+            retracted: {
+              reason: "The reviewer read the tester's run, not their own.",
+              actor: { kind: "user", id: "alice" },
+              created_at: "2026-11-10T12:00:00Z",
+            },
+            surface: "the test run",
+            run: "bun test",
+            observed: "bun test: 1598 pass, 0 fail.",
+            negative_control: "",
+            failed: 0,
+            skipped: 0,
+            excluded: 0,
+            screenshots: null,
+            session: "session-2",
+            actor: { kind: "session", id: "session-2" },
+            created_at: "2026-11-10T10:45:00Z",
+          },
+          {
+            id: "res-1",
+            issue_key: "DSP-42",
+            check_issue_key: "DSP-42",
+            check_artifact_id: "artifact-9",
+            check_block_id: "k1",
+            check_version: 4,
+            check_sha256: "d4",
+            check_words_moved: false,
+            role: "implementer",
+            verdict: "pass",
+            commit_sha: headCommit,
+            commit_stands: {
+              answer: "at_basis",
+              basis: { kind: "pull_request", commit: headCommit, pull_request: 3530 },
+            },
+            surface: "the test run",
+            run: "bun test",
+            observed: "bun test: 1598 pass, 0 fail.",
+            negative_control: "",
+            failed: 0,
+            skipped: 0,
+            excluded: 0,
+            screenshots: null,
+            session: "session-1",
+            actor: { kind: "session", id: "session-1" },
+            created_at: "2026-11-10T10:00:00Z",
+          },
+        ],
+      },
+    ],
+  };
+
+  async function readResults(args: Record<string, unknown>, asked: string[] = []) {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        asked.push(target.search);
+        return response(threeResults);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    return await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42", ...args },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+  }
+
+  test("dispatch_results prints every result of a check with where its commit stands", async () => {
+    const read = await readResults({});
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k1 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes, from implementer.",
+        "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
+        "  - fail by tester at 2222222222222222222222222222222222222222. That commit is none of the compared commits. The check's words moved after this result (result version 3, check version 4). Recorded 2026-11-10T11:30:00Z. Result res-3.",
+        `    Reading: ${longReading}`,
+        "  - pass by reviewer at 1111111111111111111111111111111111111111. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:45:00Z. Result res-2.",
+        "    Retracted by user alice at 2026-11-10T12:00:00Z. The reason: The reviewer read the tester's run, not their own.",
+        "    Reading: bun test: 1598 pass, 0 fail.",
+        "  - pass by implementer at 1111111111111111111111111111111111111111. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result res-1.",
+        "    Reading: bun test: 1598 pass, 0 fail.",
+      ].join("\n")
+    );
+    expect(read.details).toMatchObject({ issue: "DSP-42", checks: 1, results: 3 });
+  });
+
+  // --brief is for an issue holding hundreds of results: it cuts the readings that stand at none
+  // of the compared commits, and leaves whole every reading a reader may act on.
+  test("dispatch_results --brief cuts only a reading that stands at no compared commit", async () => {
+    const read = await readResults({ brief: true });
+
+    expect(read.text).toContain(
+      "    Reading: bun test: 1595 pass, 3 fail. The three failures all read a stale build of the client, so this run proves nothing about the change. Rebuild the workspace, run it again, and record the result at the new… (result res-3)"
+    );
+    // The two results at the head keep their readings whole, retracted or not.
+    expect(
+      read.text.split("\n").filter((line) => line === "    Reading: bun test: 1598 pass, 0 fail.")
+    ).toHaveLength(2);
+  });
+
+  test("dispatch_results --at asks the route about that one commit", async () => {
+    const asked: string[] = [];
+
+    await readResults({ at: headCommit }, asked);
+
+    expect(asked).toEqual([`?at=${headCommit}`]);
+  });
+
+  // A check nobody has run yet still prints its own words: a reader decides what to run from
+  // them, and an empty line would send them to the document for it.
+  test("dispatch_results prints the words of a check with no result, and why it compared nothing", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        return response({
+          issue: "DSP-42",
+          verification_artifact_id: "artifact-9",
+          checks: [
+            {
+              ...threeResults.checks[0],
+              block_id: "k2",
+              when: "after_merge",
+              text: "Read the production dashboard and see no error.",
+              compared_with: [],
+              compared_nothing: "repository_unreadable",
+              pass_stands: { answer: "unknown" },
+              results: [],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k2 (after_merge). Compared with nothing: Dispatch cannot read the repository. A pass stands: not known.",
+        "  The check's words: Read the production dashboard and see no error.",
+        "  No result is recorded for this check.",
+      ].join("\n")
+    );
+  });
+
+  test("dispatch_result --retract records the retraction and prints what it holds", async () => {
+    const posts: Array<{ path: string; body: unknown }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/results/res-2/retract") {
+        posts.push({ path: target.pathname, body: JSON.parse(String(init?.body)) });
+        return response(
+          {
+            result_id: "res-2",
+            reason: "The reviewer read the tester's run, not their own.",
+            session: "session-1",
+            actor: { kind: "session", id: "session-1" },
+            created_at: "2026-11-10T12:00:00Z",
+          },
+          201
+        );
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const retracted = await executeDispatchTool({
+      tool: "dispatch_result",
+      args: { retract: "res-2", reason: "The reviewer read the tester's run, not their own." },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.path).toBe("/api/v1/results/res-2/retract");
+    expect(posts[0]?.body).toMatchObject({
+      actor: { kind: "session", id: "session-1" },
+      reason: "The reviewer read the tester's run, not their own.",
+    });
+    expect(retracted.text).toBe(
+      [
+        "Retracted result res-2. session session-1 retracted it at 2026-11-10T12:00:00Z. The reason: The reviewer read the tester's run, not their own.",
+        "",
+        "The result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.",
+      ].join("\n")
+    );
+    expect(retracted.details).toMatchObject({ result: "res-2" });
+  });
+
   test("dispatch_request_approval sends its summary and reports the question the Inbox shows", async () => {
     const posts: Array<{ path: string; body: unknown }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
