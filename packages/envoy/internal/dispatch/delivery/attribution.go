@@ -123,18 +123,19 @@ const (
 // that read is what refuses most of the names that look like github.com: `@` and `%` are no host
 // bytes, so `github.com@evil.test` and a percent-escaped name end the run elsewhere, and a run
 // that is longer than github.com — `evilgithub.com`, `www.github.com`, `my-github.com`,
-// `Seegithub.com` — is simply another name. net/url then separates a port and userinfo from that
+// `Seegithub.com` — is simply another name; userinfo stops the run at its `@` the same way, so
+// `https://user@github.com/…` reads the host after it. net/url then separates a port from that
 // run and says what host it names, and the comparison refuses every name but github.com, however
 // the body spells its case. A github.com URL whose path is not an issue's is refused by the same
 // read: the bytes before `/main/docs/issues/12` in a blob URL are `blob`, not a host. The path
 // comparison states what that leaves true, that the authority runs to where the match begins.
 //
-// What stands further left decides nothing. The default branch reads less than this — the ten
-// bytes `github.com/` wherever they fall — and credits every shape a reader writes; a rule for
-// the bytes before the host credited some of those shapes and dropped others, which is why there
-// is none. So a citation inside another URL's path, query or fragment is credited here as it is
-// there, and what this change does to attribution is to refuse a host that is not github.com and
-// to credit a host spelled in any case or carrying a port.
+// What stands further left decides nothing. The default branch reads less than this — the bytes
+// `github.com/` wherever they fall — and credits every lower-case, portless shape a reader
+// writes; a rule for the bytes before the host credited some of those shapes and dropped others,
+// which is why there is none. So a citation inside another URL's path, query or fragment is
+// credited here as it is there, and what this change does to attribution is to refuse a host
+// that is not github.com and to credit a host spelled in any case or carrying a port.
 func citesGitHubIssue(body string, pathAt, end int) bool {
 	host := authorityBefore(body, pathAt)
 	if host < 0 {

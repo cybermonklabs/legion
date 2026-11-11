@@ -143,10 +143,13 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 // citation ends and another begins without a space between them. Running text separates items
 // with punctuation — a comma, a semicolon, an ampersand, a plus, a closing bracket — and a bare
 // `#N` reference or a Markdown link may stand immediately before a URL. `main` credits every row
-// below, so a row that loses one is a citation this change took away from the default branch.
+// below but one, so a row that loses a citation is one this change took away from the default
+// branch.
 //
-// The expected lists are what `main` answers, measured at origin/main, and they are written out
-// rather than described: a reader comparing two implementations needs the answer, not a rule.
+// The expected lists are what `main` answers, measured at f164e6a27756, for every row but
+// "another host's path, bracketed", which spells the host in mixed case: that list is this
+// change's answer, and the comment above it says why. They are written out rather than described:
+// a reader comparing two implementations needs the answer, not a rule.
 func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 	const repo = "acme/widgets"
 	const seven = "https://github.com/acme/widgets/issues/7"

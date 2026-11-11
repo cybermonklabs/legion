@@ -14,7 +14,7 @@ import (
 //	go test ./internal/dispatch/delivery/ -run TestZZProbe        # a scratch probe over this list
 //
 // hostIsNotGitHub marks a body whose authority before the issue path is not github.com. The
-// default branch credits each of them by matching the ten bytes `github.com/` wherever they fall;
+// default branch credits each of them by matching the bytes `github.com/` wherever they fall;
 // this code reads the whole run of host bytes before the path, so a name that merely ends in
 // github.com is another host: `evilgithub.com`, `my-github.com`, `Seegithub.com`, a subdomain
 // such as `www.github.com` or `pages.github.com`, and a percent escape immediately before the
@@ -28,10 +28,10 @@ import (
 //     writes; crediting one main does not is a shape nobody has decided. Fix the code, not the row.
 //   - a hostIsNotGitHub row that credits anything is the alert reopening: this code refuses every
 //     one of them, and a change that credits `evilgithub.com` again reddens here first.
-//   - three credits this change adds on purpose are not in this corpus, because they are
-//     differences from main that were decided rather than measured: a host spelled in any case, a
-//     host carrying a port, and the two together. attribution_test.go and citation_boundary_test.go
-//     pin them with the reason each is wanted.
+//   - the credits this change adds on purpose are not in this corpus, because they are
+//     differences from main that were decided rather than measured: a host spelled in any case
+//     and a host carrying a port. attribution_test.go and citation_boundary_test.go pin them with
+//     the reason each is wanted.
 //   - the golden list is another branch's behaviour rather than a contract, so it is dated: it is
 //     f164e6a27756's answer and nothing else. Re-measure it with the command above when the base
 //     moves, and never edit a golden entry by hand to make a red test green.
@@ -43,8 +43,9 @@ type corpusRow struct {
 
 // TestCitedIssuesAgreesWithTheDefaultBranch is the rule rather than a list of shapes: this code
 // credits exactly what the default branch credits, except that it refuses a citation whose
-// authority is not github.com. The corpus is the bodies both citation test files hold, every
-// example of this change's review rounds and the shapes each round measured by hand; it exists so
+// authority is not github.com. The corpus is drawn from the bodies both citation test files hold
+// (three of them escaped once more than there, and a few left out), every example of this
+// change's review rounds and the shapes each round measured by hand; it exists so
 // the next change to this file is answerable without another round finding a shape nobody
 // thought of.
 func TestCitedIssuesAgreesWithTheDefaultBranch(t *testing.T) {

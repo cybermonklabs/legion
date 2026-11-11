@@ -48,8 +48,9 @@ import (
 // which alerts stand on a head. The write is what a dismissal of an alert whose code is right
 // needs, and the set is keyed by App rather than by workflow role, so the token serves every role
 // the review App mints for — architect, planner, tester and reviewer (AppRoleFor, identity.go) —
-// and each of them can dismiss an alert, upload SARIF or delete an analysis. Who did it stays
-// readable on the alert itself, in dismissed_by and the comment the dismissal carries.
+// and each of them can dismiss an alert, upload SARIF or delete an analysis. A dismissal names
+// the App in its dismissed_by, whichever of those roles made it, so which role acted is readable
+// only where the comment the dismissal carries says so; an upload or a deletion leaves neither.
 //
 // It is here because, in key mode, a token minted without it is refused those reads whatever the
 // installation holds: measured on 2026-11-10, every code-scanning read of both role Apps answered
