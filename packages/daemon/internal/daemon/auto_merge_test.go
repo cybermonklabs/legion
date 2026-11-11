@@ -2728,7 +2728,7 @@ func TestAJumpRecordNamesTheQueueItWentAheadOf(t *testing.T) {
 
 	t.Run("a second jump of the same repository replaces its record", func(t *testing.T) {
 		github := newQueueGitHub(t, "CLEAN")
-		pool, records, runner, _ := jumpRunner(t, github, reason)
+		pool, records, runner, clock := jumpRunner(t, github, reason)
 		seedReadyMerge(t, pool, records, "LEGION-209", awaitingREADY)
 		if err := runner.RunOnce(context.Background()); err != nil {
 			t.Fatalf("RunOnce for LEGION-208: %v", err)
@@ -2736,9 +2736,12 @@ func TestAJumpRecordNamesTheQueueItWentAheadOf(t *testing.T) {
 		// GitHub merges the first entry, so the second issue's own submission is made against a
 		// pull request with nothing armed, as the daemon always meets one.
 		github.set(func(g *armableGitHub) { g.queued = false })
-		now := time.Now().UTC().Truncate(time.Second)
-		enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-209", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
-		setMergeJump(t, pool, records, "LEGION-209", "the other release waits on this one", now)
+		// The second row is queued at the runner's own clock, which jumpRunner holds still: a row
+		// queued at the wall clock instead is due a second later than the runner reads the time
+		// whenever a second boundary falls between the two readings, and the run below then finds
+		// nothing due and leaves the first jump's record standing.
+		enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-209", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: clock}, clock))
+		setMergeJump(t, pool, records, "LEGION-209", "the other release waits on this one", clock)
 		if err := runner.RunOnce(context.Background()); err != nil {
 			t.Fatalf("RunOnce for LEGION-209: %v", err)
 		}
