@@ -842,7 +842,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		must(t, records.PutPullRequest(ctx, tx, pr))
-		must(t, records.ClearGeneration(ctx, tx, issue.Key))
+		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		got, err := records.PullRequest(ctx, tx, issue.Key)
@@ -870,7 +870,7 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "legion-286-implementer",
 			HandoffCommit: "handoff-4", Pass: 4, Rounds: 2, Verdict: "pass"}))
-		must(t, records.ClearGeneration(ctx, tx, issue.Key))
+		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		phases, err := records.Phases(ctx, tx, issue.Key)
@@ -896,7 +896,7 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", Verdict: "pass"}))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "head", HandoffRecord: "implement-record", HandoffVersion: 1, LastHandoff: "implement-record", Rounds: 1,
 			BackwardMoves: map[string]int{"testing-implementing": 1}, CapTold: 3}))
-		must(t, records.ClearGeneration(ctx, tx, issue.Key))
+		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := records.Phases(ctx, tx, issue.Key)

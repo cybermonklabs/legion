@@ -24,13 +24,15 @@
 -- `auto_merge_disable` and `merge_queue_publish`, so a database of that release can carry such a
 -- row, and 20261029120800 of this release deletes every one of them earlier in the same run.
 --
--- `hook_prompt` is named here although main added it: main's 20261110225246 admits it and a
--- database main migrated has recorded that version, so an upgrade runs this list over a hook's
--- pending prompt row, which a list without it would refuse (SQLSTATE 23514), failing the upgrade
--- and the daemon's boot. The merged daemon writes that kind itself (internal/record's lanes).
+-- `hook_prompt` and `design_gates_publish` are named here although main added them: main's
+-- 20261110225246 and 20261110235320 admit them and a
+-- database main migrated has recorded those versions, so an upgrade runs this list over a hook's
+-- pending prompt row and over a pending publication of an issue's gates, either of which a list
+-- without its kind would refuse (SQLSTATE 23514), failing the upgrade and the daemon's boot. The
+-- merged daemon writes both kinds itself (internal/record's lanes).
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
-  'gated_steps_publish', 'claim_release', 'hook_prompt'));
+  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish'));

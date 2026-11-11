@@ -285,6 +285,9 @@ func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject
 }
 func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // tickRecords is the record store the boot gives the runtime (openWorkflow): this project's
 // issues alone, with no outbox wake, since no outbox runs in a tick test.

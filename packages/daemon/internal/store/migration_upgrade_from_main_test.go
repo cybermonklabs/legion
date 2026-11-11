@@ -36,7 +36,7 @@ var thisBranchsMigrations = []int{
 // with. Every embedded version above it is this branch's own.
 const mainsNewestMigration = 20261111021610
 
-// mainsKindCheck is the constraint main's own 20261110225246 wrote, which is what a database main
+// mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
 // migrated carries. The embedded copy of that migration is the merged one — it names the kinds the
 // merged daemon writes, `role_message` among them and the merge lane's three out, since a branch
 // database with a pending role message would otherwise fail the upgrade on it — so main's own text
@@ -49,16 +49,16 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'merge_queue_publish', 'issue_branch', 'issue_suspend',
   'auto_merge_disable', 'ready_merge', 'check_wake', 'check_look', 'check_bound',
   'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release',
-  'hook_prompt'))`
+  'hook_prompt', 'design_gates_publish'))`
 
 // mainsOutboxKinds is every kind main's daemon writes, which is the list main's own
-// 20261110225246 admits. A database main migrated can carry a row of each at the upgrade.
+// 20261110235320 admits. A database main migrated can carry a row of each at the upgrade.
 var mainsOutboxKinds = []string{
 	"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 	"linger_close", "workspace_remove", "merge_queue_publish", "issue_branch", "issue_suspend",
 	"auto_merge_disable", "ready_merge", "check_wake", "check_look", "check_bound",
 	"phase_ended", "issue_bundle", "issue_release", "gated_steps_publish", "claim_release",
-	"hook_prompt",
+	"hook_prompt", "design_gates_publish",
 }
 
 // A daemon of this release is deployed over a database main migrated, and that database's outbox

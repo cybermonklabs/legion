@@ -1121,43 +1121,40 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 }
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
-// the counters of one still open, its design gate and its recorded handoffs.
-func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error {
-	return clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue))
+// the counters of one still open, its design gate and its recorded handoffs. now is when the
+// publication a cleared gate queues is due.
+func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last.
-func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error {
-	return clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree))
+func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
+		fmt.Sprintf("clear the generation of tree %s", tree), now)
 }
 
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table.
-func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string) error {
+// their issue column, and issues selects the same issues in the issues table. The design gates go
+// with them, in a statement of their own (clearGates).
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
-		// not: its checks settlement is of a head nobody has judged since, and the review round's
-		// decision goes with the phases below, and so does its head run, whose replay would put the
-		// old generation's judgement back. Its pushes stay, each a fact about two commits, and so
-		// does its newest review, which orders every review it will have. So does conflicting_head,
-		// the head the daemon last judged conflicting with its base: like mergeability beside it,
-		// it is GitHub's answer about that head and that base, which a new generation of the
-		// issue's work does not make false. A head that still does not merge still does not merge,
-		// and the count it excuses starts again with the rounds below, so nothing of the old
-		// generation's counting survives it.
-		"update pull_requests set head_run = null, checked_head = '', failing = '[]'::jsonb, " +
-			"cancelled = '[]'::jsonb, check_runs = '[]'::jsonb where " + where,
-		"delete from design_gates where " + where,
-		// The review rounds go with the generation that ran them, since review_round_cap bounds the
-		// rounds of one run. The pass does not: it is what tells one pass through a phase from the
-		// last in the handoff completion key, and a new generation's completion at a commit the last
-		// one already reported has to be a fact of its own, which a pass put back to zero would not
-		// make it.
-		//
+		// not: its checks settlement is of a head nobody has judged since, and the
+		// review round's decision goes with the phases below, and so does its head run, whose
+		// replay would put the old generation's judgement back. Its pushes stay, each a fact about
+		// two commits, and so does its newest review, which orders every review it will have, and
+		// the checks its base branch requires, which belong to the base, not the generation. So
+		// does conflicting_head, the head the daemon last judged conflicting with its base: like
+		// mergeability beside it, it is GitHub's answer about that head and that base, which a new
+		// generation of the issue's work does not make false. A head that still does not merge
+		// still does not merge, and the count it excuses starts again with the rounds below, so
+		// nothing of the old generation's counting survives it.
+		"update pull_requests set " +
+			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
+			"check_runs = '[]'::jsonb where " + where,
 		// The assignment goes with the run too: the start that re-enters the phase mints the next
 		// one, and until it does the cleared row names none, which the completion route reads as
 		// nothing to compare rather than as a mismatch to refuse. The counts go with the rounds:
@@ -1168,6 +1165,35 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 			"assignment = '' where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
+			return fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	return s.clearGates(ctx, tx, where, key, describe, now)
+}
+
+// clearGates deletes the design gates of every issue the clear covers and queues one publication
+// of the empty set for each issue it emptied: those gates recorded a document until this
+// statement, and Dispatch holds the set they recorded until something tells it otherwise. The
+// delete names the issues it emptied rather than the clear naming every issue it covers, so an
+// issue that held no gate row — the ordinary child of a re-entry, and every member of a
+// re-admitted tree whose architect registered nothing — costs no Dispatch write. A row comes back
+// for each step, so an issue gated on several steps is published once.
+//
+// The publication is queued through this store, which knows nothing of the lanes beside it, so no
+// lane is woken for it: the row waits on its issue's board lane for the next sweep, among the
+// status writes the clearing pass queues with it.
+func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string, now time.Time) error {
+	rows, err := tx.Query(ctx, "delete from design_gates where "+where+" returning issue", key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	emptied, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	slices.Sort(emptied)
+	for _, issue := range slices.Compact(emptied) {
+		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil)}, now); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
@@ -1383,6 +1409,29 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 		return nil, fmt.Errorf("read the design gates of %d issues: %w", len(issues), err)
 	}
 	return gates, nil
+}
+
+// GatedIssues is the key of each issue of project that holds at least one design gate and that
+// Dispatch does not show as done, in key order. It is the boot's look over every recorded gate
+// (the daemon's queueRecordedGatesPublish), which publishes the gates of these issues (Gates):
+// two queries whatever the number of issues the project has recorded, rather than a read per
+// record. The done ones are left out here rather than by the caller, since the rows nobody
+// publishes are rows nobody need read, and the key is the whole of what the caller carries on
+// with. The status read is dispatch_status, what Dispatch last showed (DoneStatus), rather than
+// status, which is what the daemon means by the issue.
+func (s *Postgres) GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]string, error) {
+	rows, err := tx.Query(ctx, `select key from issues
+		where project = $1 and dispatch_status <> 'done'
+		and exists (select 1 from design_gates where design_gates.issue = issues.key)
+		order by key`, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	return keys, nil
 }
 
 // GatesForArtifact is every gate registered on artifactID, in issue and then step order: one row
@@ -1768,6 +1817,44 @@ func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish Gat
 		values ($1, $2, $3::jsonb, 0, $4, '')
 		on conflict (issue) where kind = 'gated_steps_publish'
 		do update set payload = excluded.payload where outbox.payload is distinct from excluded.payload`,
+		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
+		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
+	}
+	return nil
+}
+
+// EnqueueDesignGates writes the one design_gates_publish row of publish's issue: it replaces the
+// payload of the row the outbox still holds for that issue, and inserts one when it holds none.
+// The unique partial index of 20261110235320_design_gates_publish makes that rule the table's, so
+// no path can leave an issue with two, and the upsert is one statement, so two gate changes in
+// flight at once never queue beside each other.
+//
+// A replacement is what keeps the queued set the latest one. The row waits on its issue's board
+// lane until Dispatch takes it, and every gate change inside that window writes the whole set
+// again; queueing beside the pending row would send Dispatch the older set after the newer one.
+// Replacing the payload keeps the row's attempts and its next_at, because the row is the same
+// publish waiting on the same lane and only the set it carries is newer, and a payload that
+// already says this set is left alone.
+//
+// The lease rotation is what the project's gated-steps publish needs none of: that one is written
+// at boot, before any lane claims a row, while an issue's gates change under a running daemon,
+// whose board lane may hold this very row and be inside the PUT. That worker read the older set,
+// so its finish, its retry and its payload replacement, each matched on its lease token, must
+// touch nothing — a finish that deleted the row would leave Dispatch holding the older set until
+// something changed a gate again. The row decides again on the newer payload once the lease
+// expires. Enqueue's statement already carries readyMergeConflict's one `on conflict` clause and
+// PostgreSQL takes one per statement, so this is a statement of its own.
+func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error {
+	row, err := NewOutboxRow(publish.Issue, publish, nextAt)
+	if err != nil {
+		return fmt.Errorf("enqueue the design-gates publish of %s: %w", publish.Issue, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ($1, $2, $3::jsonb, 0, $4, '')
+		on conflict (issue) where kind = 'design_gates_publish'
+		do update set payload = excluded.payload,
+			lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end
+		where outbox.payload is distinct from excluded.payload`,
 		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}

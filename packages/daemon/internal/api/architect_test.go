@@ -222,6 +222,10 @@ func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error 
 	return nil
 }
 
+func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
+
 var _ dispatch.Client = (*statusRecorder)(nil)
 
 func newArchitectHarness(t *testing.T, grants *credential.Grants, refusal *intake.Refusal) (*harness, *factRecorder, *statusRecorder) {

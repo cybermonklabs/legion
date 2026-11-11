@@ -517,7 +517,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
-	if err := e.store.ClearGeneration(ctx, tx, child.Key); err != nil {
+	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
 		return err
 	}
 	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child)); err != nil {
