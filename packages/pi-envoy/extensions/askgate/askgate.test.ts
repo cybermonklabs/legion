@@ -6471,15 +6471,31 @@ describe("rules check", () => {
     await g.device("c", "dispatch_comment", COMMENT);
     await g.device("m", "dispatch_message", { issue: "X-1", body: "Keep it as it is." });
     await g.device("e", "dispatch_edit_ask", { ask: "a-1", question: "Keep it as it is?" });
-    await g.device("d", "dispatch_doc_edit", {
-      issue: "X-1",
-      ops: [{ op: "replace", find: "Old.", with: ":::ask{#a}" }],
-    });
+    await g.device("d", "dispatch_doc_edit", replaceWith("Keep it as it is."));
     expect(g.calls.filter(isRules)).toHaveLength(0);
     expect(g.calls.filter(isCharter)).toHaveLength(4);
     expect(g.entries.map((e) => [e.decision, e.ruleOutcome])).toEqual(
       Array(4).fill(["allow", undefined])
     );
+  });
+  test("a replace whose with opens an ask block reaches the rules model, as an insert's markdown does (rules test 13a)", async () => {
+    // A `replace` writes the blocks its `with` names (dispatch://INFRA-1520), so a `with` that
+    // opens an ask block opens that ask and the rules model reviews it, where before this the
+    // gate read a `replace` as opening none.
+    const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });
+    const replaced = await g.device(
+      "r",
+      "dispatch_doc_edit",
+      replaceWith(`:::ask{#cache}\n${KEEP_INPUT.question}\n:::`)
+    );
+    expect(replaced?.block).toBe(true);
+    expect(replaced?.reason).toContain(
+      "The ask block #cache that starts 'I checked the cache path and it is fine. Should I change it?' matches the rule \"no change\": \"keep it as it is\"."
+    );
+    expect(g.calls.filter(isRules)).toHaveLength(1);
+    expect(g.entries.map((e) => [e.decision, e.rule, e.ruleOutcome])).toEqual([
+      ["revise", "no_change", "match"],
+    ]);
   });
   test("two rules refusals on one target trip its breaker: the second says so, the third goes out unasked (rules test 14)", async () => {
     const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });
