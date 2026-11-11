@@ -5641,14 +5641,15 @@ jobs:
     if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     # Both numbers take the larger reading of a pair for their own measurement. This head's pair
-    # (attempt 1, run 43007295244; attempt 2, run 43015711475) reads internal/dispatch/api, this
-    # job's one package, at 619.0 s, which asks for 21m, and the job at 768 s, which asks for
-    # 12.80 + 21 + 6 = 39.80, so 40. Both stand where an earlier pair of this branch put them -
-    # 26m, which that pair's 767.9 s asks for, and 48, which its 935 s asks for - because a
-    # bound is met when it is at least what the head's own pair needs, and this job has already
-    # been measured asking for more (dispatch://INFRA-1075, check 6224bb0e). The limit must fire
-    # before the runner cancels the job, so a hung test prints the dump that names it.
-    timeout-minutes: 48
+    # (attempt 1, run 43099751798; attempt 2, its re-run) reads internal/dispatch/api, this job's
+    # one package, at 592.6 s, which asks for 20m, and the job at 1001 s on attempt 2 (job
+    # 130805659979), 16.68 minutes, so the bound it asks for is 16.68 + 26 + 6 = 48.68, which is
+    # 49. The -timeout stands at 26m, which an earlier pair's 767.9 s asks for, because a bound
+    # is met when it is at least what the head's own pair needs and this job has been measured
+    # asking for more; the job's own bound follows the largest reading this branch has of it
+    # (dispatch://INFRA-1075, check 6224bb0e). The limit must fire before the runner cancels the
+    # job, so a hung test prints the dump that names it.
+    timeout-minutes: 49
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
