@@ -485,15 +485,15 @@ export class UnwrittenFrames {
     }
   }
 
-  // The host wrote what it was handed: the ledger records the frame for the session the frame
-  // names, the one it was shown in, so no sweep shows the stream's copy again, here or after a
-  // restart, and its claim settles. No session test belongs here: the write binds to the session
-  // it is handed (`ReplayEngine.recordDeliveredFor`, `bindTo(sessionID, writeSession)` in
-  // `packages/envoy-client/src/replay.ts`), and records nothing, answering false, once that
-  // session is not the one this process writes its transcript to. A test of this instance's own
-  // id would drop the record of a card handed in the window `sendCard` admits one for: the host
-  // has moved, the switch event has not reached this instance, and the card went to the session
-  // the host moved to, whose ledger the record belongs in.
+  // The host wrote what it was handed: the record of the frame is asked for under the session
+  // the frame names, the one it was shown in, so no sweep shows the stream's copy again, here or
+  // after a restart, and its claim settles. No test of this instance's own id belongs here:
+  // `ReplayEngine.recordDeliveredFor` makes the test itself, and records nothing, answering
+  // false, once the session it is handed is not the one this process writes its transcript to.
+  // A card the host wrote in the window `sendCard` admits one for - the host has moved, the
+  // switch event has not reached this instance - is in the file of the conversation it was shown
+  // in, and that card is the record that conversation's own restore reads
+  // (`writtenCardIdentity`, in `./missed-messages`).
   async #recordWritten(frame: Unwritten): Promise<void> {
     await this.#host.recordDelivered(frame.sessionID, frame.identity);
     frame.claim?.settle();

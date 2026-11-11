@@ -2587,18 +2587,6 @@ export default function envoyExtension(pi: PiApi): void {
     return host !== "" && host === sessionID ? host : undefined;
   };
 
-  // The session the host writes its transcript to now: an entry appended here lands in its file.
-  // The host's own live id, not this instance's, so a card handed between the host's move and
-  // the event that tells this instance of it is recorded for the conversation it was shown in
-  // rather than nowhere (`UnwrittenFrames.sendCard`, `recordDeliveredFor`). It answers that id
-  // while the session shuts down too: the host writes its transcript to the end, so a refused
-  // BTW's record still reaches it. Undefined only before the host has a session at all, when an
-  // entry would land nowhere.
-  const writeSessionID = (): string | undefined => {
-    const host = hostSessionID();
-    return host === "" ? undefined : host;
-  };
-
   // Tells the session a replay or relay notice: one about the listener as a warning, one about the
   // stream as a card held until the host is settled (`UnwrittenFrames.sendNotice`), which the
   // transcript records held, so a restart holds it again.
@@ -2619,9 +2607,9 @@ export default function envoyExtension(pi: PiApi): void {
       : createReplayEngine({
           host: {
             sessionID: () => (shuttingDown ? undefined : transcriptSessionID()),
-            // The ledger write goes to the transcript the host writes now, wherever the host is
-            // and this session's own shutdown included (`writeSessionID`).
-            writeSessionID,
+            // A session shutting down starts no replay work, but the host still writes its
+            // transcript, so a refused BTW's record still reaches it (`recordDeliveredFor`).
+            writeSessionID: transcriptSessionID,
             followedSubjects,
             deliver: showReplayed,
             // The notice is this session's, as the frame it names was swept for it. One the

@@ -81,7 +81,11 @@ import { nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
-import { REPLAY_DELIVERED_ENTRY } from "../src/missed-messages";
+import {
+  REPLAY_DELIVERED_ENTRY,
+  REPLAY_NOTICE_ENTRY,
+  REPLAY_STATE_ENTRY,
+} from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import {
   type CommandContext,
@@ -15798,10 +15802,15 @@ console.log(JSON.stringify(args));
       }
     });
 
-    /** A person's comment on LEGION-1, as Dispatch publishes it on ses_delivery's own agent
-     *  subject: a notification carrying no delivery, so no attempt of the person's is spent on
-     *  it and the listener sends it once (`targetedCommentEnvelope` carries one). */
-    const commentNotification = (slug: string, body: string): string =>
+    /** A person's comment on LEGION-1, as Dispatch publishes it on `topic`, ses_delivery's own
+     *  agent subject by default: a notification carrying no delivery, so no attempt of the
+     *  person's is spent on it and the listener sends it once (`targetedCommentEnvelope` carries
+     *  one). */
+    const commentNotification = (
+      slug: string,
+      body: string,
+      topic = "notifications.agent.ses_delivery"
+    ): string =>
       JSON.stringify({
         dedupe_key: slug,
         event_id: `dispatch-${slug}`,
@@ -15821,7 +15830,7 @@ console.log(JSON.stringify(args));
           type: "comment.created",
         }),
         source: "dispatch",
-        topic: "notifications.agent.ses_delivery",
+        topic,
       });
 
     // The picture load is the last window before a card goes out, and a `/new` or a fork inside
@@ -15893,53 +15902,130 @@ console.log(JSON.stringify(args));
     // manager first and emits `session_switch` after its resets, so inside the picture load this
     // instance's own id still reads ses_delivery while the host already writes its transcript to
     // the conversation it moved to. The comment's card is handed there - one for ses_delivery
-    // would be handed to nobody, the host being on neither - and the host writes it, so the
-    // frame belongs in the ledger of the session it was written to. Recorded nowhere, a resume
-    // of that session sweeps the stream's copy and cards the comment a second time
-    // (dispatch://INFRA-812).
-    test("records a comment's card for the conversation the host moved to with no session event", async () => {
+    // would be handed to nobody, the host being on neither - and the host writes it into that
+    // conversation's file. The card is itself the record: its `details` carry the frame's
+    // identity (`replayLedgerIdentity` in `handCard`), and a restore reads a ledger entry from
+    // every written card (`writtenCardIdentity`), so that conversation's own sweep passes the
+    // stream's copy over instead of carding the comment a second time (dispatch://INFRA-812).
+    // No ledger entry is appended for it: that write would be bound to a session this instance
+    // is not on, and would carry this session's whole replay state into the other's file.
+    test("cards a comment once when the host moved with no session event, the moved-to conversation's own sweep included", async () => {
       const slug = "card-load-comment-no-event";
       const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
       const body = `Look:\n\n![shot.png](${address})`;
+      const moved = "ses_after_no_event";
+      const movedSubject = `notifications.agent.${moved}`;
+      // A second comment the stream holds that no session was ever shown: the control that says
+      // the sweep below hands a card over at all.
+      const unshown = "card-sweep-unshown";
       let live = "ses_delivery";
       const picture = Promise.withResolvers<Response>();
       const requested = Promise.withResolvers<void>();
       const routes = pictureRoutes(slug);
+      // The stream's copy of a comment: a whole envelope, as the listener's replay answers
+      // carry one (`EnvelopeSchema`), on the moved-to conversation's own subject.
+      const storedComment = (named: string, text: string): string =>
+        JSON.stringify({
+          ...JSON.parse(commentNotification(named, text, movedSubject)),
+          payload_summary: "LEGION-1 commented",
+          source_event_id: named,
+          trace_id: `trace-${named}`,
+        });
+      // The listener's answer to every sweep: both comments, read from the stream's oldest
+      // message each time.
+      const stored = [
+        {
+          seq: 1,
+          subject: movedSubject,
+          time: "2026-11-10T00:00:00Z",
+          data: storedComment(slug, body),
+        },
+        {
+          seq: 2,
+          subject: movedSubject,
+          time: "2026-11-10T00:00:01Z",
+          data: storedComment(unshown, "No picture in this one"),
+        },
+      ];
+      const replayed = (init?: RequestInit): Response => {
+        const asked = JSON.parse(init?.body?.toString() ?? "{}") as {
+          readonly subjects: readonly { readonly subject: string }[];
+        };
+        return Response.json({
+          stream: { created: "2026-10-20T00:00:00Z", first_seq: 1, last_seq: 2 },
+          subjects: asked.subjects.map(({ subject }) => ({
+            subject,
+            messages: subject === movedSubject ? stored : [],
+            next_after: 0,
+            more: false,
+          })),
+        });
+      };
       const { agent, context, fixture } = await bootDirectSession(slug, {
-        dispatch: ((url: URL) => {
+        dispatch: ((url: URL, init?: RequestInit) => {
+          if (url.pathname === "/v1/replay") return replayed(init);
           if (url.pathname !== `/api/v1/artifacts/${slug}-id/versions/1`) return routes(url);
           requested.resolve();
           return picture.promise as unknown as Response;
-        }) as (url: URL) => Response | undefined,
+        }) as (url: URL, init?: RequestInit) => Response | undefined,
         hostSessionID: () => live,
       });
 
       agent.push(commentNotification(slug, body));
       await requested.promise;
       // The host is on another conversation from here on, with no handler fired for the move.
-      live = "ses_after_no_event";
+      live = moved;
       picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
-      const carded = () =>
-        fixture.deliveries.filter((delivery) => JSON.stringify(delivery.content).includes(address));
-      await until(() => carded().length > 0, "the comment's card");
-      expect(carded().flatMap((card) => card.content as unknown[])).toEqual([
+      const carded = (named: string) =>
+        fixture.deliveries.filter((delivery) =>
+          JSON.stringify(delivery.content).includes(`dispatch-${named}`)
+        );
+      await until(() => carded(slug).length > 0, "the comment's card");
+      expect(carded(slug).flatMap((card) => card.content as unknown[])).toEqual([
         { type: "text", text: expect.stringContaining(address) },
         image,
       ]);
 
-      // The host writes the card into the conversation it has, which is what records the frame.
-      const card = carded()[0];
+      // The host writes the card into the conversation it has: that file holds the comment's
+      // card from here on, and these are the entries that conversation restores from.
+      const card = carded(slug)[0];
       if (card === undefined) throw new Error("the card was not handed");
       const { options: _options, ...written } = card;
       await fixture.handlers.get("message_end")?.(
         { message: { role: "custom", ...written } },
         context
       );
+      const movedFile: readonly unknown[] = [{ type: "custom_message", ...written }];
+      const base = sessionContext(moved);
+      const restored: SessionContext = {
+        ...base,
+        sessionManager: {
+          ...base.sessionManager,
+          getSessionId: () => live,
+          getBranch: () => movedFile,
+          getEntries: () => movedFile,
+        },
+      };
 
-      const recorded = fixture.entries.filter(
-        (entry) => entry.customType === REPLAY_DELIVERED_ENTRY
+      // The switch event reaches this instance at last: it restores from that conversation's own
+      // entries, and each follow below sweeps. The first sweep of a subject with no cursor starts
+      // it where the stream ends and reads nothing; the next reads the comments stored there.
+      await fixture.handlers.get("session_switch")?.({ reason: "new" }, restored);
+      const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+      if (subscribe === undefined) throw new Error("the subscription tool was not registered");
+      for (const issue of ["LEGION-2", "LEGION-3"]) {
+        await subscribe.execute("", { topics: [dispatchIssueSubject(issue, ">")] });
+        await settle();
+      }
+
+      await until(
+        () => carded(unshown).length > 0,
+        "the stored comment that conversation was never shown"
       );
-      expect(JSON.stringify(recorded)).toContain(`dispatch-${slug}`);
+      await settle();
+
+      expect(carded(unshown)).toHaveLength(1);
+      expect(carded(slug)).toHaveLength(1);
     });
 
     // The other direction of that window: the card was handed in ses_delivery, and the host moved
@@ -20070,6 +20156,9 @@ describe("messages missed while the subscription was down", () => {
       readonly listenerClock?: () => number;
       /** False for a start that reads no replay before it settles, as one with NATS down. */
       readonly firstSweep?: boolean;
+      /** The host's own session id, read live: `sessionID` by default, and a closure a row moves
+       *  where the host leaves the session with no event for it (`bootDirectSession`). */
+      readonly hostSessionID?: () => string;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -20129,6 +20218,7 @@ describe("messages missed while the subscription was down", () => {
         ...base.sessionManager,
         getBranch: () => [...prior, ...fixture.entries, ...written],
         getEntries: () => [...prior, ...fixture.entries, ...written],
+        ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
       },
       setInterval: (callback) => {
         intervals.push(callback);
@@ -21907,6 +21997,70 @@ describe("messages missed while the subscription was down", () => {
       } finally {
         stopSink();
       }
+    });
+
+    // The same move with no session event, for the replay state itself. This session was told of
+    // a retention gap, which it holds as a notice of its own, and a later sweep moved its cursors
+    // and nothing else: a change of nothing but the `after`s is held for an hour
+    // (`REPLAY_STATE_REFRESH_MS`), so state the engine has not written is the ordinary case. The
+    // host then moves, with no handler fired for it, and a card handed from here on is the
+    // moved-to conversation's, which the host writes into that conversation's file. Nothing of
+    // this session may go with it: a state entry carries the whole of this session's state - its
+    // cursors, the topics it follows, the notices it holds - and a session restores the newest
+    // state its file holds as its own, whatever session wrote it (`replaySnapshot`). That
+    // conversation would follow this session's topics, be told its notices, and lose its own
+    // agent-subject cursor, which then restarts at the stream's end, so what the stream stored
+    // for it while it was closed is never swept (dispatch://INFRA-812).
+    test("appends no state of this session to the conversation the host moved to: cursors, followed topics and held notices alike", async () => {
+      const model = new StreamModel();
+      model.id = "stream-state-move";
+      let live = "ses_state";
+      const session = await bootReplay("replay-state-not-carried", model, {
+        sessionID: "ses_state",
+        turn: "idle",
+        hostSessionID: () => live,
+      });
+      // The topic this session follows, which its state names beside its own agent subject.
+      await session.follow(ISSUE_TOPIC);
+
+      // Retention drops what the stream held: this sweep moves the cursors past the gap and
+      // tells the session of it, the notice it holds from here on. Its state is written here,
+      // gap and all, which is what leaves the next change held rather than written at once.
+      const expired = model.store(ISSUE_SUBJECT, issueEvent(ISSUE_SUBJECT, 77));
+      model.expireThrough(expired);
+      await session.reconnect();
+      expect(JSON.stringify(session.entries())).toContain("no longer holds");
+
+      // A message of another session moves the stream's end: this sweep moves this session's
+      // cursors and changes nothing else, so the engine holds the change unwritten.
+      model.store("notifications.agent.ses_other", peerMessage("ses_other", "elsewhere"));
+      await session.reconnect();
+
+      // The host is on another conversation from here on, with no handler fired for the move.
+      const mark = session.fixture.entries.length;
+      live = "ses_after_state";
+      // An event on the followed issue topic names no session, so its card goes to the
+      // conversation the host has now, which writes it: the one write bound to a session this
+      // instance is not on. A frame on this session's own agent subject would not do: the host
+      // is on another conversation, so the pump leaves it in the stream (`topicAddress`).
+      session.live(ISSUE_TOPIC).push(issueEvent(ISSUE_SUBJECT, 88));
+      await until(
+        () => session.cards("dispatch-88").length > 0,
+        "the card the moved-to conversation is handed"
+      );
+      await settle();
+
+      expect(session.cards("dispatch-88")).toHaveLength(1);
+      expect(JSON.stringify(session.entries())).toContain("dispatch-88");
+      const appended = session.fixture.entries.slice(mark);
+      expect(appended.filter((entry) => entry.customType === REPLAY_STATE_ENTRY)).toEqual([]);
+      const written = JSON.stringify(appended);
+      // The three a state entry carries, each named: this session's own agent-subject cursor,
+      // the topic it follows, and the notice it was told, which its own file records as held.
+      expect(written).not.toContain(session.agentSubject);
+      expect(written).not.toContain(ISSUE_TOPIC);
+      expect(written).not.toContain("retention_gap");
+      expect(written).not.toContain(REPLAY_NOTICE_ENTRY);
     });
 
     test("a live frame still pending while its stored copy is swept, then failing, is shown once later", async () => {
