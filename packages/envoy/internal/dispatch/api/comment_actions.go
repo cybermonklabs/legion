@@ -182,6 +182,9 @@ type editCommentInput struct {
 }
 
 func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
+	if !requireUUIDPath(w, r, "comment") {
+		return
+	}
 	var input editCommentInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)

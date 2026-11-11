@@ -24,6 +24,9 @@ const deletedPostDeliveryError = "not sent: the post was deleted"
 // message delete's (lockedCommentForCorrection): the owner locked without the closed refusal,
 // then the author and a post already deleted.
 func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
+	if !requireUUIDPath(w, r, "comment") {
+		return
+	}
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
