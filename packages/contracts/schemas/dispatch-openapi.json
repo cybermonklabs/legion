@@ -1089,7 +1089,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when.",
+        "description": "Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state.",
         "operationId": "postApiV1ArtifactsByIdAsks",
         "parameters": [
           {
@@ -4785,7 +4785,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5634,7 +5634,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when.",
+        "description": "Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state.",
         "operationId": "postApiV1IssuesByKeyAsks",
         "parameters": [
           {
@@ -9566,7 +9566,7 @@
     },
     "/api/v1/projects/{key}/related": {
       "get": {
-        "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query, related and decision, with up to 3 open issues before any item of another kind and everything a done issue owns last. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
+        "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
         "operationId": "getApiV1ProjectsByKeyRelated",
         "parameters": [
           {
@@ -22102,9 +22102,6 @@
       },
       "Suggestions": {
         "properties": {
-          "decision": {
-            "$ref": "#/components/schemas/WriteSuggestion"
-          },
           "likely_duplicate": {
             "$ref": "#/components/schemas/DuplicateCandidate"
           },
@@ -22113,6 +22110,12 @@
           },
           "near_copy_check": {
             "type": "string"
+          },
+          "other_projects": {
+            "items": {
+              "$ref": "#/components/schemas/WriteSuggestion"
+            },
+            "type": "array"
           },
           "outcome": {
             "type": "string"
@@ -22895,13 +22898,6 @@
       },
       "WriteSuggestion": {
         "properties": {
-          "answered_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "answered_by": {
-            "type": "string"
-          },
           "artifact": {
             "$ref": "#/components/schemas/SearchArtifactRef"
           },
