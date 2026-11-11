@@ -100,6 +100,19 @@ func (u usedPaths) Covers(path string) bool {
 	return at < len(u.paths) && strings.HasPrefix(u.paths[at], under)
 }
 
+// Holds is whether any process holds path itself, which Covers cannot be asked: Covers answers
+// yes for a path something under it is in use, which of a reclaimable root is true the moment
+// one role has one cache entry open.
+//
+// The sweep asks it of each root. A process holding the root's own inode is a tool that took the
+// `flock` every rendered install takes on its cache root for the length of the install
+// (installBlock and claudeCodeBlock, internal/runtime/sandbox/plugins.go), and the entries under
+// it are the ones that install is filling, so the whole root is left alone until it lets go.
+func (u usedPaths) Holds(path string) bool {
+	_, held := slices.BinarySearch(u.paths, filepath.Clean(path))
+	return held
+}
+
 // procProcess is one process of the pod as this pass reads it: the paths it was found to use and
 // the first /proc read of it the kernel refused.
 type procProcess struct {
