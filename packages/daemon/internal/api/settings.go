@@ -82,6 +82,12 @@ type Settings struct {
 	// check can drive each bound inside one run.
 	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
 	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the four
+	// above are: how long a tree this daemon runs may be quiet — nothing of it at work, nothing of
+	// it waiting by design — before the daemon tells the project's controller once for that tree
+	// (dispatch://INFRA-2560 R5). No value turns that notice off, since the loader refuses zero
+	// for every key in hours; a deployment that wants fewer notices raises the number.
+	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
 	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
 	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and
 	// how many rounds one sweep may open in a minute. Each is null, and neither is omitted, when
@@ -354,6 +360,7 @@ func SettingsOf(cfg config.Config) Settings {
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
 		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
 		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		StalledTreeNoticeHours:                  cfg.StalledTreeNotice.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,

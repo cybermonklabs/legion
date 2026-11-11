@@ -237,6 +237,7 @@ func defaultsFor(port int) Config {
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateRetask:      time.Hour,
 		PodUpdateNotice:      4 * time.Hour,
+		StalledTreeNotice:    6 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
 		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets

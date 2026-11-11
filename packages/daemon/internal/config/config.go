@@ -176,6 +176,22 @@ type Config struct {
 	// inside one run rather than wait out a day of real time.
 	PodUpdateRetask time.Duration
 	PodUpdateNotice time.Duration
+	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
+	// default, a decimal number of hours as the four keys above are): when a tree this daemon runs
+	// has been quiet for longer than this, and nothing of that tree is at work or waiting by
+	// design, the daemon tells the project's controller once for that tree (dispatch://INFRA-2560
+	// R5). The quiet time and the work are what `record.QuietTrees` measures — the tree's own now
+	// less the newest movement of its root, of the issues under it the workflow still runs and of
+	// those issues' claims' steps — and it is the one measure both the admission pass and the
+	// state read, so a notice and a reported quiet time can never disagree. The pass that sends
+	// the notice is the next change of dispatch://INFRA-2560; this key is the bound that pass
+	// reads, and nothing sends a notice yet.
+	//
+	// No value turns the notice off: readHours refuses zero here as it does for every key in
+	// hours, and a deployment told about more trees than it wants to read raises the number, to
+	// 596 hours at most. Six is the default because a tree between two turns is quiet for minutes
+	// rather than hours, so a tree still quiet after six has stopped rather than paused.
+	StalledTreeNotice time.Duration
 	// PodUpdateMaxOpenRounds is how many issues may hold an open pod-update round at once
 	// (`pod_update_max_open_rounds`), and PodUpdateRoundsPerMinute how many rounds one sweep may
 	// open in a minute (`pod_update_rounds_per_minute`). Both are pointers because a file that
@@ -360,6 +376,7 @@ type fileConfig struct {
 	ProductionCheckBound   *time.Duration
 	PodUpdateRetask        *time.Duration
 	PodUpdateNotice        *time.Duration
+	StalledTreeNotice      *time.Duration
 	// PodUpdateMaxOpenRounds is `pod_update_max_open_rounds` and PodUpdateRoundsPerMinute
 	// `pod_update_rounds_per_minute`; each stays nil when the file leaves its key out, which is
 	// how resolve tells an absent key from a number and leaves Config's own pointer nil.
@@ -512,6 +529,8 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.PodUpdateRetask, err = readHours(value, key)
 		case "pod_update_notice_hours":
 			file.PodUpdateNotice, err = readHours(value, key)
+		case "stalled_tree_notice_hours":
+			file.StalledTreeNotice, err = readHours(value, key)
 		// Both round caps are read here rather than through countKeys, which carries a default
 		// for every key it holds and so could never report that the operator named neither.
 		case "pod_update_max_open_rounds":
@@ -889,12 +908,13 @@ func readInt(value *yaml.Node, key string) (*int, error) {
 }
 
 // readHours is a key in hours (`linger_hours`, `production_check_hours`,
-// `pod_update_retask_hours`, `pod_update_notice_hours`): a positive number of hours, a decimal
-// among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in whole
-// hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never read
-// as zero: the engine arms the deadline it is given, so a zero would close a finished tree at
-// once and take its workspace with it, bound a check before its first look, or ask an update
-// round's worker again at every tick.
+// `pod_update_retask_hours`, `pod_update_notice_hours`, `stalled_tree_notice_hours`): a positive
+// number of hours, a decimal among them (0.3 is 18 minutes), bounded as the shipped key is, by
+// the timer bound in whole hours (config.ts MAX_TIMER_HOURS). A value too small to be a
+// nanosecond is refused, never read as zero: the engine arms the deadline it is given, so a zero
+// would close a finished tree at once and take its workspace with it, bound a check before its
+// first look, ask an update round's worker again at every tick, or tell a project's controller
+// about every tree of it that is between two turns.
 func readHours(value *yaml.Node, key string) (*time.Duration, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -992,6 +1012,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateRetask:      time.Hour,
 		PodUpdateNotice:      4 * time.Hour,
+		StalledTreeNotice:    6 * time.Hour,
 		ReviewRoundCap:       3,
 		Warnings:             file.Warnings,
 	}

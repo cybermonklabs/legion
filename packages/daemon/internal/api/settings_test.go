@@ -85,6 +85,7 @@ var settingsEmitted = map[string]string{
 	"Config.ProductionCheckBound":                    "production_check_hours",
 	"Config.PodUpdateRetask":                         "pod_update_retask_hours",
 	"Config.PodUpdateNotice":                         "pod_update_notice_hours",
+	"Config.StalledTreeNotice":                       "stalled_tree_notice_hours",
 	"Config.PodUpdateMaxOpenRounds":                  "pod_update_max_open_rounds",
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
@@ -290,8 +291,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit",
 		"worker_wakes_per_minute", "worker_wake_burst", "envoy_url", "nats_urls",
 		"dispatch_url", "projects", "gates", "github_apps", "linger_hours", "production_check_hours",
-		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
-		"pod_update_rounds_per_minute", "review_round_cap",
+		"pod_update_retask_hours", "pod_update_notice_hours", "stalled_tree_notice_hours",
+		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
 		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
 	}
 	top := keysOf(t, encoded)
