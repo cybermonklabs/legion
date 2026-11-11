@@ -100,7 +100,9 @@ test("a document's row names its latest version's stored size", async () => {
   }
 });
 
-test("New document opens its document page", async () => {
+// The create sends the title alone: the new document holds nothing, so the heading a person
+// never typed is not there to delete.
+test("New document makes an empty document and opens its document page", async () => {
   const user = userEvent.setup();
   const { listProjectArtifacts, view } = renderList([]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(uploadResponse());
@@ -115,7 +117,7 @@ test("New document opens its document page", async () => {
     await waitFor(() =>
       expect(uploadArtifact).toHaveBeenCalledWith(
         { project: "CORE" },
-        { content: "# Design notes\n", name: "Design notes" },
+        { name: "Design notes" },
         keyedAttempt
       )
     );
@@ -168,7 +170,7 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
   }
 });
 
-test("New document refuses a name that already exists", async () => {
+test("New document refuses a title the project already holds, as a name and as a slug", async () => {
   const user = userEvent.setup();
   const { listProjectArtifacts, view } = renderList([document()]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(uploadResponse());
@@ -181,7 +183,20 @@ test("New document refuses a name that already exists", async () => {
     await user.click(screen.getByRole("button", { name: "Create" }));
 
     const error = await screen.findByRole("alert");
-    expect(error).toHaveTextContent("A document named Design notes already exists");
+    expect(error).toHaveTextContent(
+      "A document on this project already holds that title: Design notes."
+    );
+
+    // The write reads the owner's slugs too (`$2 in (name, slug)`), so the control refuses the
+    // slug of a document it lists and names the document that holds it.
+    await user.clear(screen.getByRole("textbox", { name: "Title" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("design-notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A document on this project already holds that title: Design notes."
+    );
     expect(uploadArtifact).not.toHaveBeenCalled();
   } finally {
     view.unmount();

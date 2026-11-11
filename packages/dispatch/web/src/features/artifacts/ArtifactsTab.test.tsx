@@ -1,10 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
@@ -50,6 +51,10 @@ const artifact = {
 
 const noReferences: IssueReferences = { members: [], truncated: false };
 
+function Location() {
+  return <output data-testid="location">{useLocation().pathname}</output>;
+}
+
 function renderTab(
   artifacts: Artifact[],
   references: IssueReferences = noReferences,
@@ -64,6 +69,7 @@ function renderTab(
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
       <QueryClientProvider client={queryClient}>
         <ArtifactsTab isClosed={isClosed} />
+        <Location />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -95,20 +101,29 @@ test("renders one row per artifact with no compare controls", async () => {
   }
 });
 
-// W41. A closed issue takes no upload, and Dispatch would refuse one only after its whole body went
-// up: the tab refuses before a file is picked, with the reason on its Upload control - and on the
-// line beside it, for a reader with no pointer - and a file dropped on it is not staged. W46. The
-// hidden file input is disabled too, so no keyboard path opens a chooser whose file is ignored.
-test("a closed issue's Artifacts tab refuses an upload before a file is picked", async () => {
+// W41. A closed issue takes neither a new document nor an upload, and Dispatch would refuse an
+// upload only after its whole body went up: the tab refuses both before a file is picked, with
+// the reason on each control - and on the one line beside them, for a reader with no pointer -
+// and a file dropped on it is not staged. W46. The hidden file input is disabled too, so no
+// keyboard path opens a chooser whose file is ignored.
+test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
   const pick = spyOn(HTMLInputElement.prototype, "click");
   try {
     await screen.findByTestId("artifact-diagram-png");
     const upload = screen.getByRole("button", { name: "Upload" });
+    const create = screen.getByRole("button", { name: "New document" });
+    const refusal = "This issue is closed. Reopen it to add a document.";
     expect(upload).toHaveAttribute("aria-disabled", "true");
-    expect(upload).toHaveAttribute("title", "This issue is closed. Reopen it to upload.");
-    expect(screen.getByText("This issue is closed. Reopen it to upload.")).toBeTruthy();
+    expect(upload).toHaveAttribute("title", refusal);
+    expect(create).toHaveAttribute("aria-disabled", "true");
+    expect(create).toHaveAttribute("title", refusal);
+    const line = screen.getByText(refusal);
+    expect(upload.getAttribute("aria-describedby")).toBe(line.id);
+    expect(create.getAttribute("aria-describedby")).toBe(line.id);
+    await user.click(create);
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
     await user.click(upload);
     expect(pick).not.toHaveBeenCalled();
     const file = new File(["png"], "late.png", { type: "image/png" });
@@ -123,6 +138,82 @@ test("a closed issue's Artifacts tab refuses an upload before a file is picked",
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
+  }
+});
+
+const madeDocument = {
+  ...artifact,
+  id: "artifact-design-notes",
+  kind: "doc",
+  name: "Design notes",
+  ref_key: "CORE-1/design-notes",
+  slug: "design-notes",
+  versions: artifact.versions.slice(0, 1),
+} satisfies Artifact;
+
+function madeResponse() {
+  const [version] = madeDocument.versions;
+  if (version === undefined) {
+    throw new Error("the made document fixture requires a version");
+  }
+  return { artifact: madeDocument, version };
+}
+
+// The control sends the title alone, so the new document holds nothing, and the person is taken
+// to it on the page they are already on: the issue's artifact route renders the editor.
+test("New document on an issue makes an empty document and opens it on the same page", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(uploadArtifact).toHaveBeenCalledWith(
+        { issue: "CORE-1" },
+        { name: "Design notes" },
+        keyedAttempt
+      )
+    );
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/issues/CORE-1/artifacts/design-notes"
+    );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// The write compares the title with each of the owner's names and slugs (`$2 in (name, slug)`),
+// so the control refuses a slug it lists too, and names the document that holds the title.
+test("New document on an issue refuses a title the issue already holds", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("diagram-png");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A document on this issue already holds that title: diagram.png."
+    );
+    expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
   }
 });
 
