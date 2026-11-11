@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    `dispatch artifact` refuses an upload under a name the owner already holds, naming that
+    artifact, its kind, its newest version, the actor that wrote it and the `--force` that writes
+    the next version; and it refuses `--content` or `--content-file` text that storing would
+    change, naming the `--path` that stores a file's bytes unchanged. `dispatch comment
+    --reply-to-ask` takes an id prefix of at least 8 characters, says whether a prefix matched no
+    ask or more than one, lists the issue's open asks, and prints no list of allowed flags for an
+    id it could not resolve.
+time: 2026-11-11T10:11:02.000000000Z
+custom:
+    Issue: pr3530

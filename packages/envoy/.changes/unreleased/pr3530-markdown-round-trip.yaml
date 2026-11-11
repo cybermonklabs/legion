@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+    `POST /api/v1/markdown/round-trip` answers the markdown the store would hold for the text it
+    is given, and reads and writes nothing. `dispatch artifact` calls it to refuse text that
+    storing would change.
+time: 2026-11-11T10:10:04.000000000Z
+custom:
+    Issue: pr3530
