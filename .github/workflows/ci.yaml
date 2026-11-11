@@ -2533,9 +2533,9 @@ jobs:
     # fetches about 303 MB over the real sources while the network is whole and so keeps the
     # pinned ladder (2), the jj-primary case, which runs before the fault (1), the fault and its
     # probe, whose two requests are bounded at 15 s each (1), the one case that keeps the ladder,
-    # the head's own `install-crane`, which measured 64 s and which `--retry-max-time 60` bounds
-    # at a minute in which a new attempt may start plus one last attempt of the row's `max_time`
-    # of 60 s (2), the other steps whose primary the fault or a dead port holds, each now about
+    # the head's own `install-crane`, which measured 64 s and which `--retry-max-time 120` bounds
+    # at two minutes in which a new attempt may start plus one last attempt of the row's
+    # `max_time` of 60 s (3), the other steps whose primary the fault or a dead port holds, each now about
     # a second because the stand-in shortens them: job 129874475871 made 65 fetches through the
     # stand-in, and 29 of them were shortened — 19 of github.com, 9 of the dead address and 1 of
     # get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
@@ -2544,7 +2544,7 @@ jobs:
     # which took more than a second (1), the bytes the installs and the sixteen cases move, over
     # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
     # readings, the `ladder-report` step, the stop-fault step and the report (1).
-    # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+    # That is 13, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
     # limit carries ten minutes over the sum.
     # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
     # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
@@ -2573,15 +2573,14 @@ jobs:
     # step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
     #
     # THAT GUARANTEE HOLDS BY POSITION AND NOT BY RULE, which is worth saying because the
-    # arithmetic above does not give it. Under the 65 minutes this limit is built from, a
-    # 13-minute step late in the job would exhaust its ladder at about 78 minutes, the limit
+    # arithmetic above does not give it. Under the 75 minutes this limit carries, a
+    # 13-minute step late in the job would exhaust its ladder at about 88 minutes, the limit
     # would cut it first, and it would report GitHub's bare line rather than its own. What keeps
     # every retried step of this job diagnosable is that the long ones run early: the staging
     # step first, and no retried step of job 129478173535 reached past 41.6 minutes. A step
     # added late with a ladder of its own has to be read against this limit rather than assumed
     # safe by it.
     timeout-minutes: 75
-    # one case that still drives the real ladder measured 63 s inside it.
     #
     # THIS CHANGE ADDS TEN STEPS TO THAT SUM, AND NINE OF THEM COST NOTHING A READER WOULD
     # NOTICE: eight marks, one before each install with nowhere to go, each a single `echo`
@@ -2593,7 +2592,10 @@ jobs:
     # itself is a sampler beside the job rather than a step of it, so those two steps are its
     # whole cost to this budget (dispatch://INFRA-2605).
     #
-    # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
+    # THE EIGHT INSTALLS WITH NOWHERE TO GO DECLARE `timeout-minutes: 11`, which is what the
+    # measurement below is of; every other install of this job and of tool-fallback-arm carries
+    # the budget its own ladder's arithmetic gives it instead - 13 for one `ci_tools_fetch`, 25
+    # for setup-bun's two, 33 for install-jj's two and its `mise install` -
     # and the twenty-four installs whose control accepts a failure are timed as well, against
     # the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
     # runner ends at its own bound leaves `outcome=failure` behind it, which those controls
@@ -3781,13 +3783,15 @@ jobs:
     # another job: the checkout and the runner's download of the actions (1), the healthy
     # install of the 34 MB release zip (2), the fault and its probe, whose two requests are
     # bounded at 15 s each (1), the faulted install — oven-sh/setup-bun's own download against a
-    # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, which
-    # `--retry-max-time 60` bounds at a minute of new attempts plus one last attempt of the
-    # row's `max_time` 60 s, so two minutes at worst (4) — the 107 MB npm tarball, its gunzip
+    # proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, whose
+    # `--retry-max-time 120` allows new attempts for two minutes and then one last attempt of
+    # the row's `max_time` 60 s, so three minutes at worst (5) — the 107 MB npm tarball, its gunzip
     # and the write (3), the two readings, each a sha256 of that binary (2), the report step
-    # (1), and the machine watch's start and its report (1). That is 15, and a job its own
-    # limit cuts off reports `cancelled`, which ci-ok fails, so the limit is the next minute
-    # up.
+    # (1), and the machine watch's start and its report (1). That is 16 minutes, 960 s, and this
+    # job's unretried term; a job its own limit cuts off reports `cancelled`, which ci-ok fails.
+    # The second term the rule adds is its slowest retried step alone - either setup-bun step's
+    # two `ci_tools_fetch` calls, 1482 s, above the rig steps' one of 741 s each.
+    # 960 + 1482 = 2442 s -> 41 min.
     # Measured, this job sits far inside that budget, and the ladder those two minutes allow for
     # is not driven in the runs measured. In five green runs on 2026-11-10 it took 41 s, 41 s,
     # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
@@ -3804,16 +3808,15 @@ jobs:
     # drive no such ladder, must not move. What moves here is the ceiling and not the
     # measurement: 15 minutes stood under this job's own slowest retried step, so the job would
     # have cut that step before it could name its fetch (dispatch://INFRA-1545).
-    timeout-minutes: 40
-    # drive no such ladder, must not move.
-    # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
-    # tool-fallback job's comment gives. Neither of them carries `continue-on-error`, so a held
-    # install here is loud by itself: the bound fails the job at about 11.5 minutes, the steps
-    # after it are skipped, and the job uploads its log. This job's own 16-minute limit reaches
-    # that install first only when the steps before it took more than about five minutes, which
-    # the 41 s to 50 s measured above says they do not. The reading either way is a job with a
-    # log, which is what the twenty-four installs of tool-fallback cannot give and why their
-    # clock exists.
+    timeout-minutes: 41
+    # Each of this job's two install steps declares `timeout-minutes: 25`, its own
+    # `ci_tools_fetch` arithmetic of 1482 s with the whole minute that figure takes. Neither
+    # carries `continue-on-error`, so a held install here is loud by itself: the bound fails the
+    # job, the steps after it are skipped, and the job uploads its log. This job's own limit
+    # reaches that install first only when the steps before it took more than about sixteen
+    # minutes, which the 41 s to 50 s measured above says they do not. The reading either way is
+    # a job with a log, which is what the twenty-four installs of tool-fallback cannot give and
+    # why their clock exists.
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other
     # scope.
@@ -5280,11 +5283,17 @@ jobs:
     # is the runner time this change exists to cut.
     #
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes the paragraph above derives and
-    # the budget this job was written with, plus its slowest retried step alone — the setup-bun
-    # step's two `ci_tools_fetch` calls, 1482 s, above the Go module download and the workspace
-    # install at 5 x 180 + 150 = 1050 s each and the ci-ok report's 600 s.
-    # 1800 + 1482 = 3282 s -> 55 min.
-    timeout-minutes: 55
+    # the budget this job was written with, plus its slowest retried step alone - the step that
+    # runs packages/envoy/loadtest/cluster/cluster.test.sh, which renders the nats chart through
+    # render-nats.sh and so holds that script's three retried fetches: the chart index and the
+    # chart archive at 5 x 60 + 150 = 450 s each and the helm install at 5 x 180 + 150 = 1050 s,
+    # 1950 s together. That is above setup-bun's two `ci_tools_fetch` calls at 1482 s, which this
+    # comment named while render-nats.sh fetched without a retry at all, and above the Go module
+    # download and the workspace install at 1050 s each and the ci-ok report's 600 s.
+    # 1800 + 1950 = 3750 s -> 63 min. The gate reads no script outside .github/scripts/, so it
+    # prices none of those three sites into that step: this figure is a reader's and
+    # dispatch://INFRA-2899 owns the reach that would make it the check's.
+    timeout-minutes: 63
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5606,8 +5615,11 @@ jobs:
     # 509 s measured maximum, plus its slowest retried step alone — the four `go install`s of
     # the live tests' tools, each 5 x 180 + 150 = 1050 s, so 4200 s, above both
     # packages/envoy/infra's own `go mod download` at 1050 s and the ci-ok report's 600 s.
-    # 900 + 4200 = 5100 s -> 85 min.
-    timeout-minutes: 85
+    # 900 + 4200 = 5100 s, and that step's own arithmetic is a whole number of minutes, so it
+    # takes one more (71) and this job takes it with it: 900 + 4260 = 5160 s -> 86 min. That is
+    # the rule the Budgets note states and the twelve ceilings of this change apply; this one
+    # had it on the step alone.
+    timeout-minutes: 86
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:

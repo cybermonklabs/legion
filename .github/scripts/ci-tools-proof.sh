@@ -51,7 +51,7 @@
 #       `--retry-max-time 1` to them where the request is one this job arranged to fail: a host
 #       FAULT_HOSTS holds, the dead address DEAD_ADDRESS below, or a dead proxy. curl reads the
 #       last word on that option, so the appended bound wins over the helper's own
-#       `--retry-max-time 60`, and nothing else of the request changes.
+#       `--retry-max-time 120`, and nothing else of the request changes.
 #       Every other fetch keeps the pinned ladder, which is what rides out a flap of npm, PyPI,
 #       get.pulumi.com or the local origin, each of which this job reaches through the fault
 #       proxy and none of which it faults.
@@ -291,12 +291,15 @@ FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubuserc
 DEAD_ADDRESS="127.0.0.1:1"
 
 # The window in seconds the one case that keeps the pinned ladder must measure inside.
-# The pinned flags are `--retry 7 --retry-all-errors --retry-max-time 60` against a source that
-# refuses at once, whose back-off is 1+2+4+8+16+32 = 63 s; job 129874475871, whose stand-in
-# measured every fetch of the job, read that case at 63 s. The floor is those 63 s less the
-# headroom a slow runner needs, and the ceiling is the worst the bound allows: a minute in
-# which a new attempt may still start, and one last attempt of the row's own `max_time` of
-# 60 s, with headroom on top.
+# The pinned flags are `--retry 7 --retry-all-errors --retry-max-time 120` against a source that
+# refuses at once, whose back-off is 1+2+4+8+16+32+64 = 127 s; job 130417801504 read that case
+# at 127 s. The floor is those 127 s less the headroom a slow runner needs, and the ceiling is
+# the worst the bound allows: two minutes in which a new attempt may still start, and one last
+# attempt of the row's own `max_time` of 60 s, so 180 s, with headroom on top.
+# The bound was 60 s before dispatch://INFRA-1545 raised it to meet R1's floor, where the
+# back-off was 63 s and the worst 120 s; the figures below are of the 120 s ladder this
+# repository fetches under now, and an earlier version of this comment was of the one it
+# replaced.
 # Job 129743677408 ran without the stand-in, so it measured no fetch at all and can say
 # nothing about how long a fetch takes. Job 129874475871 did measure them: of its 36 fetches
 # that kept the pinned ladder, the npm fetch of the 107 MB Bun tarball reads 0 s, the PyPI
@@ -304,11 +307,11 @@ DEAD_ADDRESS="127.0.0.1:1"
 # 63 s. A reading of about 30 s for that tarball is a step duration and no fetch: setup-bun
 # measured 38 s, 40 s and 34 s in that job, and that step is the Node action and the unpack
 # around the fetch.
-# So the floor stands about 44 s above the largest honest fetch measured, and not about 15 s.
+# So the floor stands about 108 s above the largest honest fetch measured.
 # A fetch that merely rode out a flap of its source reads as the warning `ladder-report` prints
 # below and not as a refusal.
-LADDER_FLOOR=45
-LADDER_CEILING=150
+LADDER_FLOOR=109
+LADDER_CEILING=210
 
 # RFC 2606's reserved suffix, which `probe` hangs on the faulted host to make its control.
 # Nobody owns a name under it and no resolver answers for one, so only the proxy can answer a
@@ -323,18 +326,22 @@ PROBE_BOUND=15
 # The seconds no timed install may reach, read by `report` over the mark `corrupt` wrote. The
 # twenty-four installs whose control accepts a failure are the timed ones; the head's own eight,
 # which no control lets fail, are not checked against it.
-# Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
-# step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
-# `report` holds a case to, so a hung install would otherwise pass as a refusal.
-# A step held to its bound takes about 660 to 672 s. The longest single install measured over
+# Every install of a case carries `continue-on-error: true` and a `timeout-minutes` of its own
+# ladder's arithmetic - 13 for one `ci_tools_fetch`, 25 for setup-bun's two, 33 for install-jj's
+# two and its `mise install` - and a step the runner ends at that bound leaves `outcome=failure`
+# behind it, which is the outcome `report` holds a case to, so a hung install would otherwise
+# pass as a refusal.
+# The smallest of those bounds is 13 minutes, so a step held to one takes at least 780 s and
+# this figure stands under every one of them. The longest single install measured over
 # 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
 # sleeping (dispatch://INFRA-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
-# over the slowest healthy install there has been and at least 60 s under the fastest a held
-# step can be, and it reads no ladder's length. Since the ladders stopped sleeping, the slowest
+# over the slowest healthy install there has been and at least 180 s under the fastest a held
+# step can be, since the smallest step bound is 13 minutes, and it reads no ladder's length. Since the ladders stopped sleeping, the slowest
 # timed install is far shorter: 42 s, the Bun second-source case, in job 130289341628.
 # It is the one wall-clock bound `report` and the control step judge an install by, and this line
-# is the one place it is written. Two other bounds are not it: `timeout-minutes: 11`, which the
-# runner enforces on the step rather than reading after it, and `PROBE_BOUND` above, which
+# is the one place it is written. Two other bounds are not it: each step's own
+# `timeout-minutes`, which the runner enforces on the step rather than reading after it, and
+# `PROBE_BOUND` above, which
 # bounds the probe's two requests. The `tool-fallback` job holds its eight
 # installs with nowhere to go to the same seconds, and its control step reads them from here
 # through the `install-bound` verb rather than writing a second number that nothing keeps equal
@@ -945,7 +952,7 @@ started=$(printf '%(%s)T' -1)
 status=0
 if [ "$decision" = shortened ]; then
   # curl reads the last word on --retry-max-time, so this bound wins over the helper's own
-  # --retry-max-time 60. It is appended after the arguments and changes nothing else of them.
+  # --retry-max-time 120. It is appended after the arguments and changes nothing else of them.
   "$real_curl" "$@" --retry-max-time 1 || status=$?
 else
   "$real_curl" "$@" || status=$?
