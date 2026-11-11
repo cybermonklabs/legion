@@ -207,9 +207,11 @@
 #       `--expect-untried` names a source the origin served for this case's row after all.
 #
 #   ladder-report
-#       Every fetch the stand-in above measured, printed as the host, the decision, curl's exit
-#       and the seconds it took, and then the reading that holds the one measurement this job
-#       keeps.
+#       Every fetch the stand-in above measured, printed as the host, the decision, curl's
+#       exit, the seconds it took and the name that fetch carried, and then the reading that
+#       holds the one measurement this job keeps.
+#       It prints on every run, pass or fail, the count of the fetches that carried
+#       CI_TOOLS_PROOF_FULL_LADDER, beside the LADDER_RECORDS below that bounds it.
 #       It takes no argument, as `shorten-ladder` does.
 #       It refuses the job where the log is absent or empty, which is what a stand-in that
 #       never reached PATH leaves behind, so that refusal is also the reading that says the
@@ -217,11 +219,14 @@
 #       CI_TOOLS_PROOF_FULL_LADDER, since one case must keep the pinned ladder; where more than
 #       one name did, since the rig keeps one measurement and not several; where the longest
 #       fetch carrying that name is outside LADDER_FLOOR..LADDER_CEILING below, the floor being
-#       the reading that catches a kept case which stopped driving the real ladder; where a
-#       fetch the stand-in left on the pinned ladder spent one and then failed, which is a
-#       fault shape its rule did not recognise; where a fetch the stand-in shortened exited 0,
-#       which is a fetch this job means to succeed and not one it arranged to fail; and where a
-#       line of the log is not the five-field line the stand-in writes.
+#       the reading that catches a kept case which stopped driving the real ladder; where more
+#       fetches carried that name than the LADDER_RECORDS below, the reading that catches that
+#       variable set wider than the one step's `env:` which carries it, since at job scope and
+#       at workflow scope the stand-in shortens nothing; where a fetch the stand-in left on the
+#       pinned ladder spent one and then failed, which is a fault shape its rule did not
+#       recognise; where a fetch the stand-in shortened exited 0, which is a fetch this job
+#       means to succeed and not one it arranged to fail; and where a line of the log is not
+#       the five-field line the stand-in writes.
 #       A fetch that spent a ladder and served the bytes is the ladder doing the work it is
 #       kept for, and it is printed as a warning that refuses nothing.
 #

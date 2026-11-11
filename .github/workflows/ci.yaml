@@ -3413,11 +3413,14 @@ jobs:
       # The reading of what the stand-in curl measured, before the fault stops, so that its own
       # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
       # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
-      # one did; for a kept measurement outside the window the rig holds it to; for a fetch
-      # that stayed on the ladder, spent one and then failed, which is a fault shape the
-      # stand-in's rule did not recognise; and for a fetch the stand-in shortened that then
-      # served the bytes, which is the reading that holds the shorten-ladder step at its
-      # position.
+      # one did; for a kept measurement outside the window the rig holds it to; for more
+      # fetches carrying CI_TOOLS_PROOF_FULL_LADDER than the bound the rig holds that count to,
+      # which is the reading that catches that variable set wider than the one step's `env:`
+      # above; for a fetch that stayed on the ladder, spent one and then failed, which is a
+      # fault shape the stand-in's rule did not recognise; and for a fetch the stand-in
+      # shortened that then served the bytes, which is the reading that holds the
+      # shorten-ladder step at its position. It prints that count beside the bound on every
+      # run, pass or fail.
       - name: Read what the stand-in curl measured of every fetch
         run: .github/scripts/ci-tools-proof.sh ladder-report
 
@@ -3763,9 +3766,10 @@ jobs:
       - name: Test the CI image mirror
         run: .github/scripts/mirror-ci-images.test.sh
 
-      # The three tool scripts, in the order they depend on each other: the fetch helper every
-      # install goes through, the filler that puts the bytes in the copy that helper reads, and
-      # the gate that holds every row to its pin.
+      # The tool scripts, in the order they depend on each other: the fetch helper every
+      # install goes through, the filler that puts the bytes in the copy that helper reads, the
+      # gate that holds every row to its pin, and the rig that drives that helper against a
+      # fault in the tool-fallback job.
       - name: Test the tool fetch helper
         run: .github/scripts/ci-tools.test.sh
 
