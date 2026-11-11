@@ -24,14 +24,16 @@ import { LegionSections, SectionTitle } from "./LegionSections";
 
 const CARD = `flex min-w-0 flex-col gap-2 rounded border px-4 py-3 ${surfaceBg} ${borderDefault}`;
 
-/** The phases in which a root holds its slot for its children alone. */
-const HELD_FOR_CHILDREN: Record<string, true> = {
-  accepting: true,
-  awaiting_merge: true,
-  awaiting_person: true,
+/** What the board's `slot_use` is called in the table. The rule itself is the server's
+ *  (`legionSlotUse` in packages/envoy/internal/dispatch/api/legion_board.go); this page shows
+ *  the answer and works out none of it. */
+const SLOT_USE_LABEL: Readonly<Record<string, string>> = {
+  working: "working",
+  between_turns: "between turns",
+  held_children: "held: children",
+  held_person: "held: person",
+  held_idle: "held: idle",
 };
-/** The phases of a child that keep its root's held slot busy. */
-const CHILD_WORK: Record<string, true> = { implementing: true, testing: true, reviewing: true };
 
 export function LegionTab({
   issue,
@@ -160,38 +162,33 @@ function Slots({ board, project }: { board: LegionBoardResponse; project: string
   const phases = useMemo(() => legionPhases(board), [board]);
   const rows = useMemo((): SlotRow[] => {
     const cards = board.columns.flatMap((column) => column.cards);
-    // A worker in a turn (an architect's included) makes the slot working; a root in its own
-    // phase with no worker in a turn is between turns; else the root holds it for its children.
-    const use = (card: LegionBoardCard): Pick<SlotRow, "use" | "detail"> => {
-      if (card.roles.length > 0)
-        return {
-          use: "working",
-          detail:
-            card.phase === "awaiting_person" && card.roles.includes("architect")
-              ? "the architect is in a turn while the root waits on a person"
-              : `${card.roles.join(", ")} in a turn`,
-        };
-      if (card.phase === "awaiting_person")
-        return {
-          use: "held: person",
-          detail: `Waits on a person${card.waiting_on ? ` (${card.waiting_on.kind})` : ""}`,
-        };
-      if (!HELD_FOR_CHILDREN[card.phase])
-        return { use: "between turns", detail: "Own phase, no worker in a turn" };
-      const busy = cards.some(
-        (other) =>
-          other.tree === card.key && other.key !== card.key && CHILD_WORK[other.phase] === true
-      );
-      // The children not started go in the hover: the title cell's pill already counts children.
-      const waiting = `; ${card.children} not started`;
-      return busy
-        ? { use: "held: children", detail: `Held for its children, which work${waiting}` }
-        : { use: "held: idle", detail: `Held for its children; no child works${waiting}` };
+    // The slot's use is the server's `slot_use`; what is left here is how each answer reads.
+    const detail = (card: LegionBoardCard): string => {
+      switch (card.slot_use) {
+        case "working":
+          return card.phase === "awaiting_person" && card.roles.includes("architect")
+            ? "the architect is in a turn while the root waits on a person"
+            : `${card.roles.join(", ")} in a turn`;
+        case "held_person":
+          return `Waits on a person${card.waiting_on ? ` (${card.waiting_on.kind})` : ""}`;
+        case "between_turns":
+          return "Own phase, no worker in a turn";
+        // The children not started go in the hover: the title cell's pill already counts them.
+        case "held_children":
+          return `Held for its children, which work; ${card.children} not started`;
+        default:
+          return `Held for its children; no child works; ${card.children} not started`;
+      }
     };
     return cards
       .filter((card) => card.slot !== null)
       .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
-      .map((card) => ({ key: card.key, card, ...use(card) }));
+      .map((card) => ({
+        key: card.key,
+        card,
+        use: SLOT_USE_LABEL[card.slot_use ?? ""] ?? "—",
+        detail: detail(card),
+      }));
   }, [board]);
   // Each slot in use is in exactly one of these, so they add up to the slots in use.
   const tally = (use: string) => rows.filter((row) => row.use === use).length;
@@ -307,28 +304,24 @@ function WaitingLine({
         .sort((a, b) => (a.waiting_place ?? 0) - (b.waiting_place ?? 0)),
       ...queue.filter((card) => card.waiting_place === null),
     ];
-    const started = new Set(
-      board.columns.filter((column) => column.id !== "queue").flatMap((column) => column.cards)
-    );
-    // A wait on a person counts from when the person was asked, else from the phase entry.
-    const row = (card: LegionBoardCard, place: number | null): WaitingRow => {
-      const onPerson =
-        place === null || (card.waiting_on !== null && card.waiting_on.answered_at === null);
-      return {
-        key: card.key,
-        place,
-        card,
-        why:
-          place !== null && card.blocked_by.length > 0
-            ? `held by ${card.blocked_by.join(", ")}`
-            : place !== null && started.has(card) && card.phase !== "awaiting_person"
+    // Why each issue waits and since when are the card's own `waiting`, which the server works
+    // out (`legionCardWaiting`); this page only names each reason.
+    const row = (card: LegionBoardCard, place: number | null): WaitingRow => ({
+      key: card.key,
+      place,
+      card,
+      why:
+        card.waiting === null
+          ? "ready"
+          : card.waiting.reason === "blocked"
+            ? `held by ${card.waiting.blocked_by.join(", ")}`
+            : card.waiting.reason === "slot"
               ? "waiting for a slot"
-              : onPerson
+              : card.waiting.reason === "person"
                 ? "awaiting a person"
                 : "ready",
-        since: (onPerson ? card.waiting_on?.since : null) ?? card.phase_since,
-      };
-    };
+      since: card.waiting?.since ?? null,
+    });
     return [
       ...awaiting.filter((card) => card.waiting_place === null).map((card) => row(card, null)),
       ...line.map((card, index) => row(card, index + 1)),

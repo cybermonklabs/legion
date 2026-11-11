@@ -147,8 +147,8 @@ const COUNTS = ["facet_counts", "color_counts"] as const satisfies readonly Deli
 
 type MeasureField = Exclude<keyof DeliveryMeasuresResponse, "window" | "computed_at" | "freshness">;
 type PipelineField = Exclude<keyof DeliveryPipelineResponse, "computed_at" | "freshness">;
-// phase_hours is a minute-old cache on both reads, so a probe does not hold it equal.
-type LegionField = Exclude<keyof LegionBoardResponse, "computed_at" | "phase_hours">;
+// `issues` is a minute-old cache on both reads, so a probe does not hold it equal.
+type LegionField = Exclude<keyof LegionBoardResponse, "computed_at" | "issues">;
 
 /** The measures every comparison holds equal: each field but the window, computed_at and
  *  freshness, which a live body keeps as they were last sent. A record, so a field the response

@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"testing"
 	"time"
 
@@ -117,10 +118,12 @@ func TestAnIssuesTimelineAddsUpToWhatTheMetricsCountForIt(t *testing.T) {
 	}
 }
 
-// TestTheBoardCarriesEachIssuesHoursByPhase: GET /api/v1/legion/board answers phase_hours for
-// every issue with Legion phase work, closed or open, and a closed issue's hours by phase are the
-// metrics' phase breakdown of it.
-func TestTheBoardCarriesEachIssuesHoursByPhase(t *testing.T) {
+// TestTheBoardsIssuesCarryEveryIssueLegionWorked: GET /api/v1/legion/board answers one `issues`
+// entry for every issue with Legion phase work, closed or open, with the facts one computation
+// gives of it (metrics.ProjectFacts): the hours by phase, which for a closed issue are the
+// metrics' phase breakdown of it, the work time, the review rounds, and the issue's root and
+// tree. An issue Legion never worked has no entry.
+func TestTheBoardsIssuesCarryEveryIssueLegionWorked(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -129,6 +132,7 @@ func TestTheBoardCarriesEachIssuesHoursByPhase(t *testing.T) {
 	closed := seedLegionIssue(t, database, "INFRA", 1, "A closed one", "a", nil, "")
 	open := seedLegionIssue(t, database, "INFRA", 2, "An open one", "b", nil, "")
 	idle := seedLegionIssue(t, database, "INFRA", 3, "No Legion work", "c", nil, "")
+	child := seedLegionIssue(t, database, "INFRA", 4, "A child of the closed one", "d", nil, closed)
 
 	seedLegionRoleEvent(t, database, closed, "s-impl", "implementer", closed, at(10))
 	for _, mark := range []struct {
@@ -140,25 +144,69 @@ func TestTheBoardCarriesEachIssuesHoursByPhase(t *testing.T) {
 	closeLegionIssue(t, database, closed, at(2))
 	seedLegionRoleEvent(t, database, open, "s-open", "implementer", open, at(3))
 	seedLegionObservation(t, database, "INFRA", open, legion.FieldPhase, `"implementing"`, at(3))
+	// The child works after its root closed, so no hour of the root's is the child's work and
+	// the root's own hours are the breakdown's.
+	seedLegionRoleEvent(t, database, child, "s-child", "implementer", child, at(1))
+	seedLegionObservation(t, database, "INFRA", child, legion.FieldPhase, `"implementing"`, at(1))
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project=INFRA", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET the board: status=%d body=%s", response.Code, response.Body.String())
 	}
 	board := decodeBody[legionBoardResponse](t, response)
-	if got := board.PhaseHours[closed]; got["implementing"] != 4 || got["reviewing"] != 4 {
-		t.Errorf("the closed issue's hours by phase are %v, want 4 implementing and 4 reviewing", got)
+	// A closed issue has an entry: the issues map is not the open board's cards.
+	shut, held := board.Issues[closed]
+	if !held {
+		t.Fatalf("the board's issues hold %v, want the closed issue among them", slices.Sorted(maps.Keys(board.Issues)))
 	}
-	if got := board.PhaseHours[open]["implementing"]; got < 2.9 || got > 3.1 {
+	if shut.PhaseHours["implementing"] != 4 || shut.PhaseHours["reviewing"] != 4 {
+		t.Errorf("the closed issue's hours by phase are %v, want 4 implementing and 4 reviewing", shut.PhaseHours)
+	}
+	if shut.WorkHours != 8 || shut.ReviewRounds != 1 || !shut.Root || shut.Tree != closed {
+		t.Errorf("the closed issue's facts are %+v, want 8 h of work, one review round and its own tree", shut)
+	}
+	if got := board.Issues[open].PhaseHours["implementing"]; got < 2.9 || got > 3.1 {
 		t.Errorf("the open issue has %g h implementing, want about 3 (to now)", got)
 	}
-	if _, held := board.PhaseHours[idle]; held {
-		t.Errorf("an issue with no Legion phase work has phase hours: %v", board.PhaseHours[idle])
+	if got := board.Issues[open].WorkHours; got < 2.9 || got > 3.1 {
+		t.Errorf("the open issue has %g h of work, want about 3: an open issue's work runs to now", got)
+	}
+	if kid := board.Issues[child]; kid.Root || kid.Tree != closed {
+		t.Errorf("the child's facts are %+v, want it in the closed issue's tree and no root", kid)
+	}
+	if _, held := board.Issues[idle]; held {
+		t.Errorf("an issue with no Legion phase work has an entry: %+v", board.Issues[idle])
 	}
 
 	query := url.Values{"project": {"INFRA"}, "from": {at(3).Format(time.RFC3339)}, "to": {now.Format(time.RFC3339)}}
 	report := decodeBody[metrics.Report](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/metrics?"+query.Encode(), nil, "alice"))
-	if len(report.PhaseBreakdown.Issues) != 1 || !maps.Equal(report.PhaseBreakdown.Issues[0].Phases, board.PhaseHours[closed]) {
-		t.Errorf("the metrics break %s down as %v, the board as %v", closed, report.PhaseBreakdown.Issues, board.PhaseHours[closed])
+	if len(report.PhaseBreakdown.Issues) != 1 || !maps.Equal(report.PhaseBreakdown.Issues[0].Phases, shut.PhaseHours) {
+		t.Errorf("the metrics break %s down as %v, the board as %v", closed, report.PhaseBreakdown.Issues, shut.PhaseHours)
+	}
+	if rounds := report.Rework.Issues; len(rounds) != 1 || rounds[0].ReviewRounds != shut.ReviewRounds {
+		t.Errorf("the metrics count %v review rounds, the board %d", rounds, shut.ReviewRounds)
+	}
+}
+
+// TestTheBoardsIssuesHoldAnIssueWhoseWorkTookNoTime: an issue Legion worked has an entry whatever
+// its hours are, so "has an entry" is the one rule for "Legion worked it" and no view counts a
+// different set of issues than another.
+func TestTheBoardsIssuesHoldAnIssueWhoseWorkTookNoTime(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC().Truncate(time.Minute)
+	at := func(hoursAgo float64) time.Time { return now.Add(-time.Duration(hoursAgo * float64(time.Hour))) }
+	zero := seedLegionIssue(t, database, "INFRA", 1, "Worked and closed in the same instant", "a", nil, "")
+	seedLegionRoleEvent(t, database, zero, "s-impl", "implementer", zero, at(2))
+	closeLegionIssue(t, database, zero, at(2))
+
+	board := legionBoardOf(t, handler, "INFRA")
+	facts, held := board.Issues[zero]
+	if !held {
+		t.Fatalf("the board's issues hold %v, want the issue of no hours among them", slices.Sorted(maps.Keys(board.Issues)))
+	}
+	if len(facts.PhaseHours) != 0 || facts.WorkHours != 0 || facts.Tree != zero || !facts.Root {
+		t.Errorf("the issue's facts are %+v, want no hours by phase, no work time and its own tree", facts)
 	}
 }

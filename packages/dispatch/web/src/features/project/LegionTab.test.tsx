@@ -54,10 +54,12 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
     priority: 1,
     roles: [],
     slot: null,
+    slot_use: null,
     title: `${key} title`,
     tree: key,
     tree_slot: null,
     slot_since: null,
+    waiting: null,
     waiting_place: null,
     waiting_on: null,
     ...overrides,
@@ -66,35 +68,76 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
 
 /** Four slots: one working, one held for its child who is implementing, one held with its
  *  children idle, and an accepting root whose architect is in a turn; a waiting
- *  line of a ready root and one a dependency holds, and a root awaiting a person's answer. */
+ *  line of a ready root and one a dependency holds, and a root awaiting a person's answer.
+ *  `slot_use` and `waiting` are the server's answers (`legionSlotUse`, `legionCardWaiting`),
+ *  which this page shows and no longer works out. */
 const BOARD: LegionBoardResponse = {
   columns: COLUMNS.map((column) => ({
     ...column,
     cards:
       column.id === "implementing"
         ? [
-            card("ACME-1", { slot: 0, roles: ["implementer"], checks_verdict: "green" }),
+            card("ACME-1", {
+              slot: 0,
+              slot_use: "working",
+              roles: ["implementer"],
+              checks_verdict: "green",
+            }),
             card("ACME-21", { tree: "ACME-2" }),
             // In implementing with no slot, first in the daemon's waiting line.
-            card("ACME-8", { waiting_place: 1, phase_since: "2026-11-09T12:00:00Z" }),
+            card("ACME-8", {
+              waiting_place: 1,
+              phase_since: "2026-11-09T12:00:00Z",
+              waiting: { reason: "slot", since: "2026-11-09T12:00:00Z", blocked_by: [] },
+            }),
           ]
         : column.id === "accepting"
           ? [
-              card("ACME-2", { phase: "accepting", slot: 1, children: 1, phase_since: null }),
+              card("ACME-2", {
+                phase: "accepting",
+                slot: 1,
+                slot_use: "held_children",
+                children: 1,
+                phase_since: null,
+              }),
               card("ACME-6", {
                 phase: "accepting",
                 slot: 3,
+                slot_use: "working",
                 roles: ["architect"],
                 phase_since: null,
                 slot_since: "2026-11-09T20:00:00Z",
               }),
             ]
           : column.id === "merging"
-            ? [card("ACME-3", { phase: "awaiting_merge", slot: 2, checks_verdict: "red" })]
+            ? [
+                card("ACME-3", {
+                  phase: "awaiting_merge",
+                  slot: 2,
+                  slot_use: "held_idle",
+                  checks_verdict: "red",
+                }),
+              ]
             : column.id === "queue"
               ? [
-                  card("ACME-4", { phase: "admitted", waiting_place: 2 }),
-                  card("ACME-5", { phase: "admitted", blocked_by: ["ACME-1"] }),
+                  card("ACME-4", {
+                    phase: "admitted",
+                    waiting_place: 2,
+                    waiting: {
+                      reason: "ready",
+                      since: "2026-11-09T22:00:00Z",
+                      blocked_by: [],
+                    },
+                  }),
+                  card("ACME-5", {
+                    phase: "admitted",
+                    blocked_by: ["ACME-1"],
+                    waiting: {
+                      reason: "blocked",
+                      since: "2026-11-09T22:00:00Z",
+                      blocked_by: ["ACME-1"],
+                    },
+                  }),
                 ]
               : column.id === "awaiting_person"
                 ? [
@@ -102,6 +145,11 @@ const BOARD: LegionBoardResponse = {
                       phase: "awaiting_person",
                       phase_since: null,
                       waiting_on: { kind: "ask", since: "2026-11-08T00:00:00Z", answered_at: null },
+                      waiting: {
+                        reason: "person",
+                        since: "2026-11-08T00:00:00Z",
+                        blocked_by: [],
+                      },
                     }),
                   ]
                 : [],

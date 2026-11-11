@@ -1873,6 +1873,37 @@ export interface LegionBoardWait {
   readonly answered_at: string | null;
 }
 
+/** What a slot its holder holds of its own is used for (`LegionBoardCard.slot_use`). */
+export type LegionSlotUse =
+  | "working"
+  | "between_turns"
+  | "held_children"
+  | "held_person"
+  | "held_idle";
+
+/** Why one card's issue waits (`LegionBoardCard.waiting`): it is ready for the daemon to start
+ *  it, it works nothing while it waits for a slot to come back, a blocker link holds it, or a
+ *  person has not answered it. `since` is when the wait began — when the person was asked for a
+ *  wait on a person, and the phase entry otherwise — and null where neither was recorded. */
+export interface LegionCardWaiting {
+  readonly reason: "ready" | "slot" | "blocked" | "person";
+  readonly since: string | null;
+  readonly blocked_by: readonly string[];
+}
+
+/** One issue's Legion facts (`LegionBoardResponse.issues`): its hours by phase (the board's
+ *  column ids, with `awaiting_person` and `other`), counted as the metrics' phase breakdown
+ *  counts them and `{}` where the work took no measured time; the work time those hours are
+ *  shared out of, which runs to the close for a closed issue and to now for an open one; its
+ *  review rounds; whether it is its tree's root; and its tree's root key. */
+export interface LegionIssueFacts {
+  readonly phase_hours: Readonly<Record<string, number>>;
+  readonly work_hours: number;
+  readonly review_rounds: number;
+  readonly root: boolean;
+  readonly tree: string;
+}
+
 /** One issue on the Legion board. `key`, `title` and `priority` are Dispatch's own, joined on the
  *  daemon's key; `phase`, `phase_since` (when the issue entered the phase, which is the time in
  *  the phase the card shows), `slot`, `roles` (the roles whose claim is `working`, sorted),
@@ -1899,6 +1930,16 @@ export interface LegionBoardCard {
   readonly checks_verdict: string | null;
   readonly blocked_by: readonly string[];
   readonly waiting_on: LegionBoardWait | null;
+  /** What the slot this issue holds of its own is used for; null for an issue holding no slot of
+   *  its own. The server is the one place the rule lives (`legionSlotUse` in
+   *  packages/envoy/internal/dispatch/api/legion_board.go): a worker of the issue is in a turn
+   *  (`working`), nobody of it is in a turn in a phase of its own (`between_turns`), it waits on
+   *  a person (`held_person`), or it holds the slot for its children, who work
+   *  (`held_children`) or do not (`held_idle`). */
+  readonly slot_use: LegionSlotUse | null;
+  /** Why the issue waits, since when, and the issues a blocker link holds it on; null for an
+   *  issue that waits for nothing (`legionCardWaiting`). */
+  readonly waiting: LegionCardWaiting | null;
   readonly tree: string;
   readonly children: number;
 }
@@ -1951,11 +1992,12 @@ export interface LegionBoardResponse {
   readonly columns: readonly LegionBoardColumn[];
   readonly settings: Readonly<Record<string, unknown>>;
   readonly setting_sources: Readonly<Record<string, LegionSettingSource>>;
-  /** Every issue of the project with Legion phase work, open or closed, by key: its hours by
-   *  phase (the board's column ids, with `awaiting_person` and `other`), counted as the metrics'
-   *  phase breakdown counts them. At most a minute old. The server always sends it; it is
-   *  optional so a board fixture without it still types. */
-  readonly phase_hours?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  /** Every issue of the project with Legion phase work, open or closed, by key, with the facts
+   *  one computation gives of it (`metrics.ProjectFacts` in Go). At most a minute old. An issue
+   *  has an entry whatever its hours are, so "has an entry" is the one rule for "Legion worked
+   *  it". The server always sends it; it is optional so a board fixture without it still
+   *  types. */
+  readonly issues?: Readonly<Record<string, LegionIssueFacts>>;
   readonly computed_at: string;
 }
 

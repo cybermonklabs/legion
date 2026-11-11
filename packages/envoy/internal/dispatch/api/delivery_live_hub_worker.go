@@ -273,8 +273,8 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	// board shows no session, so it names none.
 	read.issues = board.issueKeys()
 	body := legionBoardCompute(board, now)
-	// A live body carries the phase hours the route does, so a push never drops them.
-	if body.PhaseHours, err = h.server.legionPhaseHours(ctx, spec.project, now); err != nil {
+	// A live body carries the per-issue facts the route does, so a push never drops them.
+	if body.Issues, err = h.server.legionIssueFacts(ctx, spec.project, now); err != nil {
 		return nil, err
 	}
 	return body, nil

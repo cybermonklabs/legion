@@ -22,7 +22,7 @@ export interface Item {
     readonly label: string;
     readonly order: number;
   };
-  /** The issue's hours by Legion phase, from the board's own `phase_hours`; absent for an
+  /** The issue's hours by Legion phase, from the board's own `issues` facts; absent for an
    *  issue with no phase work and for every issue of a project with no daemon. */
   readonly phaseHours?: Readonly<Record<string, number>>;
   readonly queue?: number;
@@ -541,7 +541,7 @@ export function buildItems(
     return {
       issue,
       legion: legion.get(issue.key),
-      phaseHours: board?.phase_hours?.[issue.key],
+      phaseHours: board?.issues?.[issue.key]?.phase_hours,
       queue: positions.get(issue.key),
       epic: epicName,
       epicKey: epic?.key,

@@ -33,6 +33,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -137,10 +138,12 @@ type legionBoardResponse struct {
 	// never answered still renders. The settings control on the Legion view reads them.
 	Settings       map[string]json.RawMessage `json:"settings"`
 	SettingSources map[string]json.RawMessage `json:"setting_sources"`
-	// PhaseHours is every issue of the project with Legion phase work, open or closed, and its
-	// hours by phase (the board's column ids, with waiting on a person and other), counted as the
-	// metrics' phase breakdown counts them (dispatch://INFRA-979). It is at most a minute old.
-	PhaseHours map[string]map[string]float64 `json:"phase_hours"`
+	// Issues is every issue of the project with Legion phase work, open or closed, and the facts
+	// one computation gives of it (metrics.ProjectFacts): its hours by phase (the board's column
+	// ids, with waiting on a person and other), its work time, its review rounds, whether it is
+	// its tree's root and which tree it is in. It is at most a minute old. An issue has an entry
+	// whatever its hours are, so "has an entry" is the one rule for "Legion worked it".
+	Issues     map[string]metrics.IssueFacts `json:"issues"`
 	ComputedAt time.Time                     `json:"computed_at"`
 }
 
@@ -194,8 +197,14 @@ type legionBoardCard struct {
 	ChecksVerdict *string          `json:"checks_verdict"`
 	BlockedBy     []string         `json:"blocked_by"`
 	WaitingOn     *legionBoardWait `json:"waiting_on"`
-	Tree          string           `json:"tree"`
-	Children      int              `json:"children"`
+	// SlotUse is what the slot this issue holds of its own is used for (legionSlotUse); null for
+	// an issue holding no slot of its own.
+	SlotUse *string `json:"slot_use"`
+	// Waiting is why the issue waits, since when, and the issues a blocker link holds it on
+	// (legionCardWaiting); null for an issue that waits for nothing.
+	Waiting  *legionBoardWaiting `json:"waiting"`
+	Tree     string              `json:"tree"`
+	Children int                 `json:"children"`
 }
 
 // legionBoardWait is what a root in `awaiting_person` waits on, as the daemon recorded it: the
@@ -206,6 +215,112 @@ type legionBoardWait struct {
 	Kind       string     `json:"kind"`
 	Since      *time.Time `json:"since"`
 	AnsweredAt *time.Time `json:"answered_at"`
+}
+
+// What the slot an issue holds of its own is used for: a worker of it is in a turn, nobody of it
+// is in a turn in a phase of its own, it waits on a person, or it holds the slot for its
+// children, who either work or do not.
+const (
+	legionSlotUseWorking      = "working"
+	legionSlotUseBetweenTurns = "between_turns"
+	legionSlotUseHeldChildren = "held_children"
+	legionSlotUseHeldPerson   = "held_person"
+	legionSlotUseHeldIdle     = "held_idle"
+)
+
+// legionHeldForChildren are the phases in which a slot holder holds its slot for its children
+// alone: its own work is done until they answer.
+var legionHeldForChildren = map[string]bool{
+	legion.PhaseAccepting:      true,
+	legion.PhaseAwaitingMerge:  true,
+	legion.PhaseAwaitingPerson: true,
+}
+
+// legionChildWork are the phases of a child that keep its root's held slot busy.
+var legionChildWork = map[string]bool{
+	legion.PhaseImplementing: true,
+	legion.PhaseTesting:      true,
+	legion.PhaseReviewing:    true,
+}
+
+// legionSlotUse is what the slot a card's issue holds of its own is used for, and null for an
+// issue holding no slot of its own. It is the one rule: the Legion tab worked this out itself
+// until dispatch://INFRA-979's contract moved it here, and now reads the field.
+//
+// A worker in a turn (an architect's included) makes the slot working, since a turn is the work
+// the slot was given for. With no worker in a turn, a root waiting on a person holds it for the
+// person; a root in a phase of its own holds it between turns; and a root in a phase it can only
+// leave once its children answer (legionHeldForChildren) holds it for them — busy where a child
+// of its tree works (childWorks), idle where none does.
+func legionSlotUse(card legionBoardCard, childWorks bool) *string {
+	if card.Slot == nil {
+		return nil
+	}
+	var use string
+	switch {
+	case len(card.Roles) > 0:
+		use = legionSlotUseWorking
+	case card.Phase == legion.PhaseAwaitingPerson:
+		use = legionSlotUseHeldPerson
+	case !legionHeldForChildren[card.Phase]:
+		use = legionSlotUseBetweenTurns
+	case childWorks:
+		use = legionSlotUseHeldChildren
+	default:
+		use = legionSlotUseHeldIdle
+	}
+	return &use
+}
+
+// Why an issue waits: it is ready for the daemon to start it, it works nothing while it waits
+// for a slot to come back, a blocker link holds it, or a person has not answered it.
+const (
+	legionWaitingReady   = "ready"
+	legionWaitingSlot    = "slot"
+	legionWaitingBlocked = "blocked"
+	legionWaitingPerson  = "person"
+)
+
+// legionBoardWaiting is why one card's issue waits, since when, and the issues a blocker link
+// holds it on. Since is when the wait began: when the person was asked for a wait on a person,
+// and the phase entry otherwise; null where neither was recorded.
+type legionBoardWaiting struct {
+	Reason    string     `json:"reason"`
+	Since     *time.Time `json:"since"`
+	BlockedBy []string   `json:"blocked_by"`
+}
+
+// legionCardWaiting is why the card's issue waits, and null for an issue that waits for nothing.
+// It is the one rule, which the Legion tab's waiting line reads rather than working out again.
+//
+// An issue waits when the daemon's line names it (WaitingPlace), when it is in the Queue column,
+// or when it waits on a person. Of those, a blocker link holds the ones it names; an issue the
+// line names that is on a column of its own has started its work and waits for a slot to come
+// back; an issue whose wait on a person no answer has ended waits for the person; and the rest
+// are ready for the daemon to start them.
+func legionCardWaiting(card legionBoardCard, column string) *legionBoardWaiting {
+	placed := card.WaitingPlace != nil || column == legionColumnQueue
+	if !placed && column != legionColumnAwaiting {
+		return nil
+	}
+	// An issue out of the line that is on the awaiting-a-person column waits for the person
+	// whatever the daemon recorded of the wait; an issue in the line waits for one while its own
+	// wait stands unanswered.
+	onPerson := !placed || (card.WaitingOn != nil && card.WaitingOn.AnsweredAt == nil)
+	waiting := legionBoardWaiting{Reason: legionWaitingReady, BlockedBy: card.BlockedBy}
+	switch {
+	case placed && len(card.BlockedBy) > 0:
+		waiting.Reason = legionWaitingBlocked
+	case placed && column != legionColumnQueue && card.Phase != legion.PhaseAwaitingPerson:
+		waiting.Reason = legionWaitingSlot
+	case onPerson:
+		waiting.Reason = legionWaitingPerson
+	}
+	waiting.Since = card.PhaseSince
+	if onPerson && card.WaitingOn != nil && card.WaitingOn.Since != nil {
+		waiting.Since = card.WaitingOn.Since
+	}
+	return &waiting
 }
 
 // getLegionBoard answers GET /api/v1/legion/board. Its one parameter is `project`; with none it
@@ -232,7 +347,7 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	board := legionBoardCompute(population, now)
-	if board.PhaseHours, err = s.legionPhaseHours(r.Context(), project, now); err != nil {
+	if board.Issues, err = s.legionIssueFacts(r.Context(), project, now); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -690,6 +805,24 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		}
 		for index := range made {
 			made[index].Children = uncarded[made[index].Key]
+		}
+	}
+
+	// What each slot is used for and why each card waits: both read the whole board — a held
+	// slot is idle until a child of its tree works, and a wait reads the card's place and its
+	// column — so both are taken once every card is made and numbered.
+	childWorks := map[string]bool{}
+	for _, made := range cards {
+		for _, card := range made {
+			if card.Tree != card.Key && legionChildWork[card.Phase] {
+				childWorks[card.Tree] = true
+			}
+		}
+	}
+	for column, made := range cards {
+		for index := range made {
+			made[index].SlotUse = legionSlotUse(made[index], childWorks[made[index].Key])
+			made[index].Waiting = legionCardWaiting(made[index], column)
 		}
 	}
 

@@ -4657,6 +4657,16 @@ export interface components {
       code: string;
       error: string;
     };
+    IssueFacts: {
+      phase_hours: {
+        [key: string]: number;
+      } | null;
+      review_rounds: number;
+      root: boolean;
+      tree: string;
+      /** Format: double */
+      work_hours: number;
+    };
     IssueOpenAsk: {
       anchor: components["schemas"]["Anchor"] | null;
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
@@ -4823,9 +4833,11 @@ export interface components {
       slot: null | number;
       /** Format: date-time */
       slot_since: null | string;
+      slot_use: null | string;
       title: string;
       tree: string;
       tree_slot: null | number;
+      waiting: components["schemas"]["LegionBoardWaiting"] | null;
       waiting_on: components["schemas"]["LegionBoardWait"] | null;
       waiting_place: null | number;
     };
@@ -4849,10 +4861,8 @@ export interface components {
       /** Format: date-time */
       computed_at: string;
       header: components["schemas"]["LegionBoardHeader"];
-      phase_hours: {
-        [key: string]: {
-          [key: string]: number;
-        };
+      issues: {
+        [key: string]: components["schemas"]["IssueFacts"];
       } | null;
       project: string;
       setting_sources: {
@@ -4866,6 +4876,12 @@ export interface components {
       /** Format: date-time */
       answered_at: null | string;
       kind: string;
+      /** Format: date-time */
+      since: null | string;
+    };
+    LegionBoardWaiting: {
+      blocked_by: string[] | null;
+      reason: string;
       /** Format: date-time */
       since: null | string;
     };
@@ -13178,6 +13194,7 @@ export type IssueCoverage = components["schemas"]["IssueCoverage"];
 export type IssueDecisions = components["schemas"]["IssueDecisions"];
 export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
+export type IssueFacts = components["schemas"]["IssueFacts"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
 export type IssueProgress = components["schemas"]["IssueProgress"];
 export type IssueRankInput = components["schemas"]["IssueRankInput"];
@@ -13200,6 +13217,7 @@ export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionBoardWaiting = components["schemas"]["LegionBoardWaiting"];
 export type LegionEventsInput = components["schemas"]["LegionEventsInput"];
 export type LegionEventsResponse = components["schemas"]["LegionEventsResponse"];
 export type LegionSettingInput = components["schemas"]["LegionSettingInput"];

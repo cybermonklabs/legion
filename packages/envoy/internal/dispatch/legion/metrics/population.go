@@ -177,7 +177,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 }
 
 // ReadProject is the population of every issue of the project, open or closed, up to now: what
-// the per-issue phase hours of the board route read (PhaseHours).
+// the per-issue facts of the board route read (ProjectFacts).
 func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, now time.Time) (*Population, error) {
 	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
 		return p.Keys

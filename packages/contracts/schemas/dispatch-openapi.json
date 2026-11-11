@@ -19668,6 +19668,41 @@
         ],
         "type": "object"
       },
+      "IssueFacts": {
+        "properties": {
+          "phase_hours": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "review_rounds": {
+            "type": "integer"
+          },
+          "root": {
+            "type": "boolean"
+          },
+          "tree": {
+            "type": "string"
+          },
+          "work_hours": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "phase_hours",
+          "work_hours",
+          "review_rounds",
+          "root",
+          "tree"
+        ],
+        "type": "object"
+      },
       "IssueOpenAsk": {
         "properties": {
           "anchor": {
@@ -20436,6 +20471,12 @@
               "string"
             ]
           },
+          "slot_use": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "title": {
             "type": "string"
           },
@@ -20446,6 +20487,16 @@
             "type": [
               "null",
               "integer"
+            ]
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionBoardWaiting"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "waiting_on": {
@@ -20479,6 +20530,8 @@
           "checks_verdict",
           "blocked_by",
           "waiting_on",
+          "slot_use",
+          "waiting",
           "tree",
           "children"
         ],
@@ -20572,13 +20625,9 @@
           "header": {
             "$ref": "#/components/schemas/LegionBoardHeader"
           },
-          "phase_hours": {
+          "issues": {
             "additionalProperties": {
-              "additionalProperties": {
-                "format": "double",
-                "type": "number"
-              },
-              "type": "object"
+              "$ref": "#/components/schemas/IssueFacts"
             },
             "type": [
               "object",
@@ -20609,7 +20658,7 @@
           "columns",
           "settings",
           "setting_sources",
-          "phase_hours",
+          "issues",
           "computed_at"
         ],
         "type": "object"
@@ -20638,6 +20687,35 @@
           "kind",
           "since",
           "answered_at"
+        ],
+        "type": "object"
+      },
+      "LegionBoardWaiting": {
+        "properties": {
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "reason",
+          "since",
+          "blocked_by"
         ],
         "type": "object"
       },

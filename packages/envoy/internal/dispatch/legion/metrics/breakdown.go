@@ -98,10 +98,26 @@ func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.D
 	return spent, children
 }
 
-// PhaseHours is every issue of the population with Legion phase work, open or closed, and its
-// hours by breakdown part (the board's column ids), counted as the phase breakdown counts them:
-// an open issue's hours run to the population's end. A part with no hours is left out.
-func PhaseHours(population *Population) map[string]map[string]float64 {
+// IssueFacts is one issue's Legion facts: the hours by breakdown part (the board's column ids),
+// the work time those hours are shared out of, the review rounds, whether the issue is its tree's
+// root and which tree it is in. One issue with Legion phase work, open or closed, has one of
+// these, whatever its hours are.
+type IssueFacts struct {
+	PhaseHours   map[string]float64 `json:"phase_hours"`
+	WorkHours    float64            `json:"work_hours"`
+	ReviewRounds int                `json:"review_rounds"`
+	Root         bool               `json:"root"`
+	Tree         string             `json:"tree"`
+}
+
+// ProjectFacts is every issue of the population with Legion phase work, open or closed, and its
+// facts, counted as the metrics count them: an open issue's hours run to the population's end.
+// It is the one computation of the per-issue facts — the board route's `issues` map and every
+// later reader of the same numbers call this and keep no rule of their own, so a number can never
+// differ between two views of it. A part with no hours is left out of PhaseHours, which is `{}`
+// for an issue whose work took no measured time; the entry itself is there, so "has an entry" is
+// the same question as "Legion worked it" (Population.hasPhaseWork).
+func ProjectFacts(population *Population) map[string]IssueFacts {
 	c := &computation{
 		population: population,
 		scope:      ScopeAll,
@@ -110,7 +126,7 @@ func PhaseHours(population *Population) map[string]map[string]float64 {
 		roots:      map[string]string{},
 		workTimes:  map[string]workTimeRow{},
 	}
-	out := map[string]map[string]float64{}
+	out := map[string]IssueFacts{}
 	for _, key := range population.Keys {
 		issue := population.Issues[key]
 		if issue == nil || !population.hasPhaseWork(issue) {
@@ -123,8 +139,12 @@ func PhaseHours(population *Population) map[string]map[string]float64 {
 				parts[id] = hours(here)
 			}
 		}
-		if len(parts) > 0 {
-			out[key] = parts
+		out[key] = IssueFacts{
+			PhaseHours:   parts,
+			WorkHours:    c.workedOf(issue).row.Hours,
+			ReviewRounds: reviewRounds(issue, c.timelineOf(issue)),
+			Root:         c.isRoot(issue),
+			Tree:         c.treeRoot(issue.Key),
 		}
 	}
 	return out

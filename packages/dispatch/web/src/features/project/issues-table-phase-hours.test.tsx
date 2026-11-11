@@ -65,6 +65,8 @@ function card(key: string): LegionBoardCard {
     priority: 1,
     roles: [],
     slot: null,
+    slot_use: null,
+    waiting: null,
     title: `Work ${key}`,
     tree: key,
     tree_slot: null,
@@ -92,9 +94,21 @@ const BOARD: LegionBoardResponse = {
     slots_in_use: 1,
     trees: 1,
   },
-  phase_hours: {
-    "ACME-1": { implementing: 6, planning: 2 },
-    "ACME-2": { implementing: 1, planning: 1 },
+  issues: {
+    "ACME-1": {
+      phase_hours: { implementing: 6, planning: 2 },
+      work_hours: 8,
+      review_rounds: 1,
+      root: true,
+      tree: "ACME-1",
+    },
+    "ACME-2": {
+      phase_hours: { implementing: 1, planning: 1 },
+      work_hours: 2,
+      review_rounds: 0,
+      root: false,
+      tree: "ACME-1",
+    },
   },
   project: "ACME",
   setting_sources: {},
