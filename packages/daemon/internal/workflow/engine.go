@@ -273,18 +273,19 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq || fact.Status == issue.Status {
 		return intake.Result{}, nil
 	}
-	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the ten
+	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the eleven
 	// points that write that mark, and the rule every one of them follows is written here.
 	//
 	// The mark is written where the record changes, never from a list of fact kinds. A list would
 	// silently miss a kind a later change adds — the mark would stop being written for it, with
 	// nothing failing to say so — and three of the six movements are no fact of their own anyway:
 	// a phase change, a start and a recorded handoff are consequences several different facts
-	// reach. So each site sits at the write it is about. Seven are in this package: this one, the
+	// reach. So each site sits at the write it is about. Eight are in this package: this one, the
 	// Dispatch event of the issue; the pull request's row (Engine.putPullRequest); the phase
-	// write (Engine.transition and Engine.retryPhase); the handoff's phase row and the completion
-	// that records it (Engine.handoff); the wait on a person a root enters (enterAwaiting); and
-	// the start (StartOrOwe).
+	// write (Engine.transition and Engine.retryPhase); the hold a failed claim writes
+	// (Engine.claimFailed); the handoff's phase row and the completion that records it
+	// (Engine.handoff); the wait on a person a root enters (enterAwaiting); and the start
+	// (StartOrOwe).
 	//
 	// The other three are the admission pass's own writes of a phase and of a start, which no
 	// fact of the issue carries and which this package therefore never sees: the re-admission
@@ -798,6 +799,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	from := issue.Phase
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from}
 	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+		return intake.Result{}, err
+	}
+	// A claim that failed takes its issue into held, which is a phase change and so a movement
+	// (the rule in dispatchIssue). The early return above is what keeps it honest: an issue
+	// already held writes nothing here, so a second report of the same dead claim moves the
+	// tree nowhere. It matters for the measure rather than for the record: a tree stops at the
+	// moment its worker dies, and marking the movement here is what makes the quiet time run
+	// from that moment instead of from whatever last touched the issue before it.
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from}); err != nil {
