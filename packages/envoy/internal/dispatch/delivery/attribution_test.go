@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -118,6 +119,30 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 	}{
 		{"bare reference in the same repository", "Fixes #77.", "ATTR-111"},
 		{"full URL to another repository", "See https://github.com/acme/other/issues/5 for context.", "ATTR-112"},
+		// A citation is the whole path of a URL whose host is github.com: a URL at the very start
+		// of the body is one, scheme or none, and a host whose name merely ends in github.com is
+		// not.
+		{"full URL at the start of the body", "https://github.com/acme/other/issues/5 is the context.", "ATTR-112"},
+		{"scheme-less citation at the start of the body", "github.com/acme/other/issues/5 is the context.", "ATTR-112"},
+		{"a lookalike host is not github.com", "See https://evilgithub.com/acme/widgets/issues/77 for context.", ""},
+		{"a subdomain of github.com is not github.com", "See https://pages.github.com/acme/widgets/issues/77 for context.", ""},
+		// www.github.com serves the same pages as github.com, so a reader writing a citation by
+		// hand is likelier to type it than any other lookalike. What the parse does with it is
+		// pinned here rather than left to be rediscovered: it is a subdomain, and another host.
+		{"www.github.com is a subdomain too", "See https://www.github.com/acme/widgets/issues/77 for context.", ""},
+		// The same string standing inside another URL is credited through the store as the parser
+		// credits it, which is what the default branch does: the authority the issue path hangs
+		// off is github.com, and what stands to its left decides nothing.
+		{"github.com in another host's path", "See https://example.test/github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
+		{"github.com in another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
+		{"github.com in another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
+		// Userinfo before the host is a citation, because the host after it is github.com and
+		// that is where the reader goes; the host of `github.com@evil.test` is evil.test, which
+		// citation_boundary_test.go holds.
+		{"userinfo before github.com", "See https://user@github.com/acme/widgets/issues/77 for context.", "ATTR-111"},
+		// An issue path with no host is the path of no URL at all: the finder matches the path
+		// rather than the host, so this is the row that says so.
+		{"an issue path with no host", "See /acme/widgets/issues/77 for context.", ""},
 		{"first linked citation in body order", "Unlinked #12, then #88, then https://github.com/acme/other/issues/5.", "ATTR-113"},
 		{"a pull request URL is not an issue", "Reverts https://github.com/acme/widgets/pull/77.", ""},
 	} {
@@ -132,6 +157,114 @@ func TestAttributionFallsBackToACitedGitHubIssue(t *testing.T) {
 				t.Fatalf("source = %q, want %q", source, sourceGitHubIssueLink)
 			}
 		})
+	}
+}
+
+// TestCitedIssuesCreditsTheURLsOwnPath drives citedIssues, which needs no database, over the
+// shapes that tell a citation from the same bytes standing inside another URL. Each row names
+// what the body cites, whole: an extra citation is a defect of its own, which a membership test
+// would pass over.
+func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
+	const cited = "https://github.com/acme/widgets/issues/7"
+	const citedAB = "https://github.com/a/b/issues/7"
+	const citedCD = "https://github.com/c/d/issues/9"
+	const cited12 = "https://github.com/acme/widgets/issues/12"
+	for _, row := range []struct {
+		name string
+		body string
+		want []string
+	}{
+		// The matched path must be the URL's own path from its start. A host check alone credits
+		// any path a github.com URL carries, which is how /blob/, /tree/ and /wiki/ URLs were
+		// read as citations of an issue nobody wrote.
+		{"a blob URL deep in a repository", "See https://github.com/acme/widgets/blob/main/docs/issues/12 here.", nil},
+		{"a tree URL", "See https://github.com/acme/widgets/tree/fix/issues/123 here.", nil},
+		{"a wiki URL", "See https://github.com/acme/widgets/wiki/issues/3 here.", nil},
+		{"an issue path repeated inside a longer path", "See https://github.com/acme/widgets/issues/7/x/y/issues/8 here.", []string{cited}},
+		// A citation the prose wraps is still a citation: the host opens a word of its own,
+		// whatever stands beside it, and a space is not the only thing that can end a word.
+		{"in parentheses", "See (github.com/acme/widgets/issues/7) here.", []string{cited}},
+		{"in backticks", "See `github.com/acme/widgets/issues/7` here.", []string{cited}},
+		{"in a Markdown link", "See [the issue](github.com/acme/widgets/issues/7) here.", []string{cited}},
+		{"between bold markers", "See **github.com/acme/widgets/issues/7** here.", []string{cited}},
+		{"after a non-breaking space", "See\u00a0github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"after a line separator", "See\u2028github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"in text with no spaces at all", "参照github.com/acme/widgets/issues/7です", []string{cited}},
+		{"after a key and a colon", "Refs:github.com/acme/widgets/issues/7", []string{cited}},
+		// A separator or a closing bracket left of the host ends whatever stood before it, so the
+		// host opens a URL of its own even where that earlier text carries a `/` or a `#`: a
+		// citation before this one, a bare #N, or a Markdown link's own text.
+		{"two citations joined by a comma", "github.com/a/b/issues/7,github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations joined by a semicolon", "github.com/a/b/issues/7;github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations joined by an ampersand", "github.com/a/b/issues/7&github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations joined by a plus", "github.com/a/b/issues/7+github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"a schemed citation before a bare one", "https://github.com/a/b/issues/7,github.com/c/d/issues/9", []string{citedAB, citedCD}},
+		{"two citations each in parentheses", "(github.com/a/b/issues/7)(github.com/c/d/issues/9)", []string{citedAB, citedCD}},
+		{"after a bare reference and a comma", "#12,github.com/acme/widgets/issues/7", []string{cited12, cited}},
+		{"after a bare reference and a colon", "#12:github.com/acme/widgets/issues/7", []string{cited12, cited}},
+		{"after a bracketed bare reference", "Fixes (#12)github.com/acme/widgets/issues/7", []string{cited12, cited}},
+		{"in a Markdown link whose text names the issue", "See [acme/widgets#7](github.com/acme/widgets/issues/7)", []string{cited}},
+		{"in a Markdown link whose text is a bare reference", "See [#7](github.com/acme/widgets/issues/7)", []string{cited}},
+		{"after bold markers and a colon", "**#7**:github.com/acme/widgets/issues/7", []string{cited}},
+		{"after a word of prose carrying a slash", "Related issues/PRs:github.com/acme/widgets/issues/7", []string{cited}},
+		{"a scheme-relative URL in parentheses", "(//github.com/acme/widgets/issues/7)", []string{cited}},
+		{"a scheme-relative URL in brackets", "[//github.com/acme/widgets/issues/7]", []string{cited}},
+		// What stands to the left of the authority decides nothing, here as on the default
+		// branch: a github.com issue path inside another URL's query, fragment or path is
+		// credited, because the bytes the path hangs off name github.com. Whether such a URL
+		// ought to credit at all is a question of its own, asked of the person this work is for
+		// and not answered by this change, whose subject is a host that is not github.com.
+		{"inside another host's query", "See https://example.test/r?u=github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"inside another host's fragment", "See https://example.test/r#github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"inside another host's path behind a tilde", "See https://example.test/~github.com/acme/widgets/issues/7 here.", []string{cited}},
+		{"inside another host's path behind a bracket", "See https://example.test/(github.com/acme/widgets/issues/7) here.", []string{cited}},
+		// An `@` before the host leaves github.com the authority the path hangs off, so the
+		// citation is credited; `github.com@evil.test` is the other way round, with evil.test the
+		// authority, and is credited to nobody (citation_boundary_test.go holds that pair).
+		{"userinfo carrying another host's name", "See https://example.test/x@github.com/acme/widgets/issues/7 here.", []string{cited}},
+		// Whatever digits stand between a colon and the path are read as the port, however many:
+		// they name no host, so a port no URL may carry leaves the citation where it was rather
+		// than dropping it for a typo. Past a host name's length the digits are no port, and what
+		// then runs into the path is no host name either.
+		{"a port no URL may carry", "See https://github.com:99999/acme/widgets/issues/7 here.", []string{cited}},
+		{"digits where a port should be", "See https://github.com:443443443/acme/widgets/issues/7 here.", []string{cited}},
+		{"more digits than a host name is long", "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here.", nil},
+		// The host is the run of host bytes before the path and nothing further, so a long run of
+		// bytes no host name may hold leaves the citation where it was, while a run of host bytes
+		// longer than a host name is no host at all.
+		{"a citation after a long run of bytes no host holds", strings.Repeat("~", 2100) + "github.com/acme/widgets/issues/7", []string{cited}},
+		{"a host-byte run longer than a host name", strings.Repeat("a", 300) + ".github.com/acme/widgets/issues/7", nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := citedIssues("acme/widgets", row.body); !slices.Equal(got, row.want) {
+				t.Errorf("citedIssues(%q) = %v, want %v", row.body, got, row.want)
+			}
+		})
+	}
+}
+
+// TestCitedIssuesCostsNoMoreThanTheBodyIsLong holds that the reading is linear in the body: the
+// finder walks it once, and each match reads at most a host name's length of digits and host
+// bytes before its path. The body is 1 MiB with no whitespace in it and an issue path every
+// thirteen bytes, which is the shape a reading that walks back to the nearest space pays the
+// square of: such a walk costs about 1.5 s at 64 KiB and so about 380 s at 1 MiB, where this one
+// costs about a third of a second, nearly all of it the finder's own pass. The deadline is some
+// thirty times that, so a loaded machine stays green and a walking reader cannot pass.
+func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
+	const cited = "https://github.com/acme/widgets/issues/7"
+	const deadline = 10 * time.Second
+	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
+	began := time.Now()
+	got := citedIssues("acme/widgets", body)
+	if took := time.Since(began); took > deadline {
+		t.Errorf("citedIssues over %d bytes took %s, want under %s", len(body), took, deadline)
+	}
+	if !slices.Equal(got, []string{cited}) {
+		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
+	}
+	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
+	if got := citedIssues("acme/widgets", whole); len(got) != 0 {
+		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
 	}
 }
 

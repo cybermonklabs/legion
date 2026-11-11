@@ -1,8 +1,6 @@
-import { expect, test } from "@playwright/test";
-
 import { getAsk, setAgentStreamResponder } from "./api";
 import { attachShot, drawer, seedAsk } from "./inbox-drawer";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -11,10 +9,6 @@ import { asUser } from "./users";
  * answer read back from the server and the draft still there afterwards. Where the drawer opens
  * from, what it covers and the key that toggles it are in `inbox-drawer.stub.e2e.ts`.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("a half-typed message in a live conversation survives opening the drawer, answering an ask in it and closing it", async ({
   browser,

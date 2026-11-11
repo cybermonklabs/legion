@@ -36,7 +36,7 @@
 //	agent-secrets whoami [--json]
 //	agent-secrets sign --method M --url U [--enrollment E]
 //	agent-secrets secret list|show|create|set|retag|delete|restore ...
-//	agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] -- <command> [args...]
+//	agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] [--github-token] -- <command> [args...]
 //
 // Environment: AGENT_SECRETS_URL (the broker's base URL) and, for every session-authenticated
 // subcommand, either AGENT_SECRETS_KEY_DIR (an agent box or pod's key.pem and enrollment, the
@@ -165,8 +165,8 @@ var commands = []command{
 		"Print this session's enrollment as the broker's JSON, as self --json does."},
 	{"sign", "agent-secrets sign --method M --url U [--enrollment E]",
 		"Print the proof this session would sign for one broker call, without making the call."},
-	{"", "agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] -- <command> [args...]",
-		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing."},
+	{"", "agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] [--github-token] -- <command> [args...]",
+		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing. Each GitHub App secret's NAME holds the JSON object of installations\nthe release makes; with --github-token it holds that one installation's token alone, which is\nthe form a command that sends the token to GitHub needs. --github-token needs --github-owner,\nand nothing runs when a release holds other than one installation, or when the grant releases\nno GitHub App token at all."},
 }
 
 // usageEnvironment closes usage: the variables every form reads, and the exit codes.
@@ -1165,6 +1165,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return nil
 	})
 	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents: read, metadata: read, pull_requests: read and actions: read")
+	githubToken := flags.Bool("github-token", false, "hand over each GitHub App token alone, in place of the JSON object of installations the release carries: the form a command that sends the token to GitHub needs, and it needs --github-owner")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1173,7 +1174,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
 		return exitUsageError
 	}
-	narrowing, err := githubNarrowing(*githubOwner, flagGiven(flags, "github-owner"), githubRepos, *githubReadOnly)
+	narrowing, err := githubNarrowing(*githubOwner, flagGiven(flags, "github-owner"), githubRepos, *githubReadOnly, *githubToken)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
 		return exitUsageError
@@ -1272,6 +1273,19 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	if len(missing) > 0 {
 		fmt.Fprintf(stderr, "agent-secrets: the grant from %s released no value for %s; nothing was run\n", src(), strings.Join(missing, ", "))
 		return 1
+	}
+
+	// --github-token: each released GitHub App token is handed over alone, in place of the JSON
+	// object of installations it is released in (narrow.go). It is settled here, with every name
+	// released and before the airlock writes a file, so a refusal leaves nothing behind and runs
+	// nothing. A name the broker holds behind its airlock is in no released value at all, so a
+	// grant of such a name alone is refused rather than run with a document GitHub reads as no
+	// token.
+	if *githubToken {
+		if err := githubTokensAlone(values.Values); err != nil {
+			fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
+			return 1
+		}
 	}
 
 	// The airlock's two files are written before anything is said or run: without the trust

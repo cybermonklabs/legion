@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject } from "./api";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // Check k3 of dispatch://INFRA-1042/artifact/verification-md, serving R3: an issue key finds its
@@ -34,10 +32,6 @@ async function openSearch(page: Page): Promise<void> {
   await page.keyboard.press("/");
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two seeded projects of two issues each, and four searches of them - one per form
 // of the key, each its own request behind the bar's debounce.
