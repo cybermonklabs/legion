@@ -23,8 +23,10 @@
 # DATABASE_URL, a loopback PostgreSQL database of this run's own, starts a Dispatch of its own
 # with `bun run dispatch:local` (packages/dispatch/e2e/local-instance.ts) and stops it again from
 # this script's trap, however the run ends. That command truncates and reseeds the database it is
-# given, so the database must be one nothing else holds: a DATABASE_URL naming the database of
-# LEGION_TEST_PG_DSN is refused. It builds the dashboard, builds the server and seeds before it
+# given, so the database must be one nothing else holds: the run reads the database the connection
+# string names — its path, a `dbname=` keyword in its query, or PGDATABASE where it names neither
+# — and refuses the database LEGION_TEST_PG_DSN names and a string whose database it cannot read
+# (database_name). It builds the dashboard, builds the server and seeds before it
 # prints anything, so the wait for it is minutes long and bounded (instance_seconds); it refuses
 # to start at all when PLAYWRIGHT_BASE_URL or DISPATCH_E2E_PROCESSES is set, which is refused here
 # first, by name. The instance prints no bare base URL, so the base URL is cut out of its
@@ -88,11 +90,45 @@ readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
 # two-core pod, four minutes with the Go build cache cold and two minutes with it warm.
 readonly instance_seconds=900
 
-# database_name URL: the database a postgres:// URL names — its path, with the leading slash and
-# any query taken off.
+# database_name STRING: the database a libpq connection string names, read from the string alone:
+# the path of a postgres:// URL, and a `dbname=` keyword in its query, which libpq reads after the
+# path and so takes over it. It prints nothing for a string whose database it cannot read — one
+# that is no postgres:// URL, one that names no database, one whose name carries a percent escape
+# or any other character a database name does not — and the caller refuses what it cannot read.
+#
+# It reads the name alone and never the host and port beside it, so it also refuses a database of
+# the shared name on another server. That is the safe side of this guard: a refusal costs a
+# `createdb`, and a run let through truncates and reseeds whatever it reaches.
 database_name() {
-  local path="${1%%\?*}"
-  printf '%s\n' "${path##*/}"
+  local rest query name field
+  [[ "$1" =~ ^postgres(ql)?:// ]] || return 0
+  rest="${1#*://}"
+  query=""
+  if [[ "$rest" == *\?* ]]; then
+    query="${rest#*\?}"
+  fi
+  rest="${rest%%\?*}"
+  name=""
+  if [[ "$rest" == */* ]]; then
+    name="${rest#*/}"
+  fi
+  local -a fields=()
+  IFS='&' read -ra fields <<<"$query"
+  for field in "${fields[@]}"; do
+    if [[ "$field" == dbname=* ]]; then
+      name="${field#dbname=}"
+    fi
+  done
+  [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_$-]*$ ]] || return 0
+  printf '%s\n' "$name"
+}
+
+# unreadable_dsn NAME VALUE: refuses a connection string whose database this run cannot read.
+unreadable_dsn() {
+  printf '%s does not name a database this run can read (%s): give it as postgres://user@host:port/<database>. The dispatch:local command truncates and reseeds the database it is given, so this run refuses every connection string whose database it cannot read.\n' \
+    "$1" "$2" >&2
+  usage
+  exit 2
 }
 
 readonly database_url="${DATABASE_URL:-}"
@@ -108,24 +144,42 @@ if [[ -n "$database_url" ]]; then
   shared_dsn="${LEGION_TEST_PG_DSN-}"
   shared_dsn="${shared_dsn#[\"\']}"
   shared_dsn="${shared_dsn%[\"\']}"
-  if [[ -n "$shared_dsn" && "$(database_name "$database_url")" == "$(database_name "$shared_dsn")" ]]; then
-    printf 'DATABASE_URL names the database %s, which LEGION_TEST_PG_DSN names too: the dispatch:local command truncates and reseeds the database it is given, so give this run a database of its own (createdb)\n' \
-      "$(database_name "$database_url")" >&2
+  shared_name=""
+  if [[ -n "$shared_dsn" ]]; then
+    shared_name="$(database_name "$shared_dsn")"
+    [[ -n "$shared_name" ]] || unreadable_dsn LEGION_TEST_PG_DSN "$shared_dsn"
+  fi
+  # The database this run would reach: the one DATABASE_URL names, else the one PGDATABASE names,
+  # which libpq reads when the string names none. PGDATABASE is read here, before the scrub below
+  # unsets it, so a run that means the shared database by that route is refused by name too.
+  own_name="$(database_name "$database_url")"
+  reached="$own_name"
+  if [[ -z "$reached" ]]; then
+    reached="${PGDATABASE:-}"
+  fi
+  if [[ -n "$shared_name" && "$reached" == "$shared_name" ]]; then
+    printf 'this run would reach the database %s, which LEGION_TEST_PG_DSN names: the dispatch:local command truncates and reseeds the database it is given, and that one holds every other check of this pod. Make a database of this run'"'"'s own with createdb and name it in the path of DATABASE_URL.\n' \
+      "$reached" >&2
     usage
     exit 2
   fi
+  # A DATABASE_URL that names no database of its own leaves the instance nothing to read: the
+  # scrub below unsets PGDATABASE and every other PG* variable, and libpq would then open the
+  # database named after the connecting user.
+  [[ -n "$own_name" ]] || unreadable_dsn DATABASE_URL "$database_url"
   require_commands setsid ps tail
   # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
   if [[ -n "${DISPATCH_URL:-}" ]]; then
     printf 'replace-blocks.sh: DATABASE_URL names the Dispatch to start, so the DISPATCH_URL in the environment is left alone.\n'
   fi
   # Nothing this run starts reads the Dispatch, Envoy, NATS or libpq settings a Legion pane
-  # exports: the instance serves a Dispatch of its own, on a database of its own, and its psql
-  # must reach the host its URL names.
+  # exports: the instance serves a Dispatch of its own, on a database of its own, and it is given
+  # that connection string in full, so every PG* variable goes rather than the few a wrong one
+  # would be read from.
   mapfile -t inherited < <(compgen -e)
   for name in "${inherited[@]}"; do
     case "$name" in
-      DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
+      DISPATCH_* | ENVOY_* | NATS_* | PG*) unset "$name" ;;
     esac
   done
   token=e2e-token

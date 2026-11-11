@@ -4,13 +4,27 @@
 // holds; and each block a `dispatch doc-edit` retypes into an ask. `dispatch edit-ask`, `comment`,
 // `message` and `request-approval` open no new ask.
 //
-// A `replace`'s `with` is read as an `insert`'s markdown is, with no front matter read in it:
-// `newAsks` cannot know whether the match sits at the document's start, which is what the server's
-// front-matter reading needs, and reading front matter where there is none would hide an ask block
-// the server opens. The gate fails closed, as `refuseRemovingOpenDecisionBlocks` does: it
-// over-reports where the server would refuse the operation (a match in a heading, in a table cell,
-// or in a typed block whose rule cannot hold the blocks) or write the text as literal code (a
-// match in a code block).
+// A `replace`'s `with` is read with no front matter read in it: `newAsks` cannot know whether the
+// match sits at the document's start, which is what the server's front-matter reading needs, and
+// reading front matter where there is none would hide an ask block the server opens. The gate
+// fails closed, as `refuseRemovingOpenDecisionBlocks` does: it over-reports where the server
+// would refuse the operation (a match in a heading, in a table cell, or in a typed block whose
+// rule cannot hold the blocks) or write the text as literal code (a match in a code block).
+//
+// A `with` is read as every string the server might parse, never as the caller sent it alone.
+// The server does not parse that string: `replacementMarkdown` cuts the matched list item's own
+// marker off the first line, and a leading `[x] ` or `[ ] ` over a task item's text, and
+// `pmdoc.ParseFragment` parses what is left
+// (packages/envoy/internal/dispatch/docs/edits.go). The gate reads the call's arguments before
+// the call goes out (packages/envoy-client/src/dispatch-cli.ts:386, and
+// packages/pi-envoy/extensions/askgate/breaker.ts:66), so the server's own answer does not exist
+// yet and cannot be read. The client therefore scans every string the server might parse and
+// takes the union: the `with` as sent, and the `with` with a leading block marker or task
+// checkbox taken off its first line. The gate already fails closed and over-reports deliberately;
+// a reading that is not the server's can only add an ask to review, never hide one. A later strip
+// adds one more candidate reading rather than a server rule to keep in step. When the server
+// strips is not read here: that needs the document, which the client does not have, so the strip
+// is lexical and both readings are scanned.
 //
 // The Dispatch server decides which lines of markdown are ask blocks, so the scan reads markdown as
 // its parser does: goldmark's block structure (`parseBlocks`, `openBlocks` and the default block
@@ -73,10 +87,11 @@ export function newAsks(toolName: string, input: Readonly<Record<string, unknown
           const { before, after } = op as Record<string, unknown>;
           return scanAsks(markdown, before === "start" || after === "start");
         }
-        // A `with` is the same markdown, read with its front matter unread: the module comment
-        // says why the scan reads it that way and what that over-reports.
+        // A `with` is read as an `insert`'s markdown is, over each string the server might parse
+        // it as: the module comment says why the scan reads it that way and what that
+        // over-reports.
         if (kind === "replace" && typeof replacement === "string") {
-          return scanAsks(replacement, false);
+          return replacementAsks(replacement);
         }
         if (kind === "retype" && type === "ask" && typeof block === "string") {
           return [{ kind: "retype", id: block, text: "", opening: "" }];
@@ -157,6 +172,47 @@ function scanAsks(markdown: string, frontMatter: boolean): NewAsk[] {
     return { kind: "block", ...(id === undefined ? {} : { id }), text, opening: openingOf(text) };
   });
 }
+
+/**
+ * The ask blocks a `replace`'s `with` opens, over every string the server might parse it as
+ * (replacementReadings), merged: an ask is its own `#id` where it has one and its text where it
+ * has none, and the reading that carries the question wins over one that carries none, since the
+ * rules model matches on the ask's words and an empty one reviews nothing. The order is the order
+ * the readings opened them in, which for the `with` as sent is document order.
+ */
+function replacementAsks(replacement: string): NewAsk[] {
+  const found = new Map<string, NewAsk>();
+  for (const reading of replacementReadings(replacement)) {
+    for (const ask of scanAsks(reading, false)) {
+      const key = ask.id === undefined ? `text ${ask.text}` : `id ${ask.id}`;
+      const held = found.get(key);
+      if (held === undefined || (held.text === "" && ask.text !== "")) found.set(key, ask);
+    }
+  }
+  return [...found.values()];
+}
+
+/**
+ * Every string the server might parse a `with` as: the `with` as sent, then what each strip of a
+ * leading block marker or task checkbox off its first line leaves. Each strip takes at least two
+ * characters, so the readings are few and the loop ends.
+ */
+function replacementReadings(replacement: string): string[] {
+  const readings = [replacement];
+  let text = replacement;
+  for (let strip = LEADING_STRIP.exec(text); strip !== null; strip = LEADING_STRIP.exec(text)) {
+    text = text.slice(strip[0].length);
+    readings.push(text);
+  }
+  return readings;
+}
+
+/**
+ * A leading list or heading marker (pmdoc's `LeadingBlockMarker`, whose leading spaces and tabs
+ * belong to the marker) or a leading task checkbox (pmdoc's `LeadingTaskCheckbox`), which the
+ * server cuts off a `with` whose first line carries the matched block's own.
+ */
+const LEADING_STRIP = /^(?:[ \t]*(?:#{1,6}|[0-9]{1,9}[.)]|[-*+])[ \t]+|\[[ xX]\][ \t]+)/u;
 
 /** An ask block the scan has opened: its id, and the lines of its body as written in it. */
 interface Draft {

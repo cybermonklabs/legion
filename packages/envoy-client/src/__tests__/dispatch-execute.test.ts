@@ -9147,9 +9147,10 @@ describe("executeDispatchTool", () => {
   });
 
   // `Applied 1 ops (version 3)` reads the same whether the edit wrote a list or a paragraph of
-  // dashes, so the server reads back what it wrote and the command prints it under that line
-  // (INFRA-1520 R6).
-  test("prints the markdown the edit wrote under its Applied line", async () => {
+  // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
+  // prints under the decision-block lines: the tool description promises those come after the
+  // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
+  test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;
       if (path === "/api/v1/issues/DSP-42") {
@@ -9168,6 +9169,15 @@ describe("executeDispatchTool", () => {
           lost_ops: [],
           token: "sha256:after-edit",
           written: "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed",
+          advice: {
+            decision_block_checks: [
+              {
+                block_id: "ask-block-1",
+                question: "Which window?",
+                suggestions: { outcome: "none", related: [] },
+              },
+            ],
+          },
         });
       }
       throw new Error(`unexpected request: ${path}`);
@@ -9191,6 +9201,8 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toBe(
       "Applied 1 ops (version 3)\n" +
+        "Decision block ask-block-1:\n" +
+        "Related-item check searched and found nothing.\n" +
         "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed\n" +
         "Document token: sha256:after-edit"
     );

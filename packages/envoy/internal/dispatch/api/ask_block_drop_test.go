@@ -9,8 +9,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// openAsksQueryText is the statement refuseDroppedAskBlocks sends, by a run of its text no other
-// statement holds, so a counter says whether a batch read the open asks of a document at all.
+// openAsksQueryText is the statement the dropped-ask refusals read the open asks with
+// (docs.openAskBlocks), by a run of its text no other statement holds, so a counter says whether a
+// batch read the open asks of a document at all.
 const openAsksQueryText = "block_artifact_id = $1 and state = 'open'"
 
 // refuseEdit sends ops to the document and returns the refusal's body, failing the test when the
