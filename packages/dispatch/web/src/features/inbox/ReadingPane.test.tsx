@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
@@ -649,6 +649,62 @@ test("a request the reader comes back to opens at the start of the column again"
     expect(screen.getByTestId("inbox-pane-scroller")).toBe(scroller);
   } finally {
     view.unmount();
+  }
+});
+
+test("a later version of the document under approval leaves the column where the reader is", async () => {
+  await warmMarkdownRenderer();
+  const four = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const five = "# Plan\n\nThe plan ships behind a canary today, and the flag is gone.\n";
+  // The version read is answered here rather than seeded, so version 5 is pending for a render
+  // and the request's own answer goes and lands again, which is what moves the write's key.
+  const landing = Promise.withResolvers<void>();
+  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockImplementation(
+    async (_artifactId: string, number: number) => {
+      if (number === 5) {
+        await landing.promise;
+      }
+      return versionText(number, number === 5 ? five : four);
+    }
+  );
+  const { client, view } = renderPane({
+    ask: approvalAsk(),
+    seed: (seeded) =>
+      seedDocument(
+        seeded,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] })
+      ),
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    // Where this reader has read down to in the version the request is about.
+    scroller.scrollTop = 240;
+
+    // A new version of the document under approval: the version read moves to another key, so
+    // its answer is undefined for a render and lands again, for the one request. The column is
+    // written when the request changes and not when the version does (R2), so it is written
+    // once and the reader keeps the text they were on.
+    act(() => {
+      client.setQueryData(
+        ["artifact", "artifact-1"],
+        document({
+          approval: { latest_version: 5, state: "awaiting" },
+          versions: [version(4), version(5)],
+        })
+      );
+    });
+    landing.resolve();
+
+    expect(await screen.findByLabelText("Document version 5")).toBeDefined();
+    expect(scroller.scrollTop).toBe(240);
+    // The same element throughout: nothing rebuilt the column under the reader.
+    expect(screen.getByTestId("inbox-pane-scroller")).toBe(scroller);
+  } finally {
+    view.unmount();
+    getArtifactVersion.mockRestore();
   }
 });
 
