@@ -55,7 +55,7 @@ func deniedForWantOfAReason(t *testing.T, m *Machine, req Request, secret string
 func withholdFromSession(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, name string) {
 	t.Helper()
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "to withhold it again", name), "")
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "to withhold it again", name), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want the automatic grant the operator then revokes", name, auto, err)
 	}
@@ -90,7 +90,7 @@ func TestAReasonlessRequestOfANameThatWouldWaitIsDenied(t *testing.T) {
 			}
 
 			want := tc.secret + ": " + policy.ReasonNoReason
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "", tc.secret), "")
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "", tc.secret), "", nil)
 			if err != nil {
 				t.Fatalf("Create(%s) with no reason: %v", tc.secret, err)
 			}
@@ -103,7 +103,7 @@ func TestAReasonlessRequestOfANameThatWouldWaitIsDenied(t *testing.T) {
 				t.Fatalf("Get = %+v, %v; want the row's decision_detail to read %q", got, err, want)
 			}
 
-			waiting, err := m.Create(ctx, enr, signRequest(t, m, key, "rotating the key", tc.secret), "")
+			waiting, err := m.Create(ctx, enr, signRequest(t, m, key, "rotating the key", tc.secret), "", nil)
 			if err != nil || waiting.State != "pending" || waiting.RecordID == nil {
 				t.Fatalf("Create(%s) with a reason = %+v, %v; want it to wait for its approver", tc.secret, waiting, err)
 			}
@@ -122,7 +122,7 @@ func TestAReasonlessRequestIsDeniedByTheOneNameThatWouldWait(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 
-	denied, err := m.Create(ctx, enr, signRequest(t, m, key, "", "AUTO_TOKEN", "DEEL_API_KEY"), "")
+	denied, err := m.Create(ctx, enr, signRequest(t, m, key, "", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) with no reason: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestAReasonlessRequestIsDeniedByTheOneNameThatWouldWait(t *testing.T) {
 		t.Fatalf("decisions = %+v; want AUTO_TOKEN %s and DEEL_API_KEY %s", denied.Secrets, policy.Automatic, policy.Deny)
 	}
 
-	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "", "AUTO_TOKEN"), "")
+	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "", "AUTO_TOKEN"), "", nil)
 	if err != nil || granted.State != "granted" || granted.GrantID == nil || granted.Detail != nil {
 		t.Fatalf("Create(AUTO_TOKEN) with no reason = %+v, %v; want it granted at once: no name waits, so none needs a reason", granted, err)
 	}
@@ -150,7 +150,7 @@ func TestADenialTheRuleAndThePolicyBothSpeakToSaysBoth(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "", "SERVICE_KEY", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "", "SERVICE_KEY", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create(SERVICE_KEY, DEEL_API_KEY) with no reason: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestWhatCountsAsAReasonIsWhatIsLeftOfItTrimmed(t *testing.T) {
 			ctx := context.Background()
 			m, enr, key, _ := newFixture(t)
 
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, tc.reason, "DEEL_API_KEY"), "")
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, tc.reason, "DEEL_API_KEY"), "", nil)
 			if err != nil {
 				t.Fatalf("Create(DEEL_API_KEY) with reason %q: %v", tc.reason, err)
 			}

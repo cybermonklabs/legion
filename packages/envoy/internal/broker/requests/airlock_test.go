@@ -82,7 +82,7 @@ func recordedDigests(t *testing.T, m *Machine, requestID string) map[string]stri
 func TestARequestRecordsEachNamesAirlockDigest(t *testing.T) {
 	digests := map[string]string{"AUTO_TOKEN": "entry-one"}
 	m, enr, key := newAirlockFixture(t, digests)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read both", "AUTO_TOKEN", "DEEL_API_KEY"), "")
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read both", "AUTO_TOKEN", "DEEL_API_KEY"), "", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -103,12 +103,12 @@ func TestARequestRecordsEachNamesAirlockDigest(t *testing.T) {
 func TestAChangedAirlockEntryEndsTheGrantsItAffects(t *testing.T) {
 	digests := map[string]string{"AUTO_TOKEN": "entry-one", "SHARED_KEY": "shared-one"}
 	m, enr, key := newAirlockFixture(t, digests)
-	moved, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the token", "AUTO_TOKEN"), "")
+	moved, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the token", "AUTO_TOKEN"), "", nil)
 	if err != nil || moved.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", moved, err)
 	}
 	// SHARED_KEY is human tier, so its grant comes of an approval; its entry never moves.
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "")
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", pending, err)
 	}
@@ -157,7 +157,7 @@ func TestARequestApprovedAcrossARulesChangeIsReleasedUnderTheEntryItWasDecidedUn
 	digests := map[string]string{"SHARED_KEY": "entry-one"}
 	m, enr, key := newAirlockFixture(t, digests)
 	// SHARED_KEY is shared and human tier, so its grant comes of a person's approval.
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "")
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", pending, err)
 	}

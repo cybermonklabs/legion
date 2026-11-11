@@ -74,7 +74,7 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
 	}
-	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""))
+	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""), nil)
 	switch {
 	case errors.Is(err, record.ErrRequestInvalid):
 		writeError(w, http.StatusBadRequest, "REQUEST_INVALID", err.Error())

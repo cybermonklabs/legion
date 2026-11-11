@@ -19,7 +19,7 @@ import (
 func TestGrantsForApproverNamesWhoApproved(t *testing.T) {
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "ALICE_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "ALICE_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(pending) = %+v, %v", pending, err)
 	}
@@ -55,7 +55,7 @@ func TestEachSlotOfAPodSignsItsOwnRecordAndListsItsOwnGrant(t *testing.T) {
 		if _, err := m.Store.Pool.Exec(ctx, `update enrollments set slot=$2 where id=$1`, id, slot); err != nil {
 			t.Fatalf("set slot %q: %v", slot, err)
 		}
-		req, err := m.Create(ctx, id, signRequest(t, m, key, "role "+slot, "DEEL_API_KEY"), "")
+		req, err := m.Create(ctx, id, signRequest(t, m, key, "role "+slot, "DEEL_API_KEY"), "", nil)
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(slot %q) = %+v, %v", slot, req, err)
 		}
@@ -178,7 +178,7 @@ func TestReadRecordAndPendingNameBothSessionIDsWhenTheyDiffer(t *testing.T) {
 	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set session_id=$2 where id=$1`, enr, "sess-enrollment-1"); err != nil {
 		t.Fatalf("set enrollment session_id: %v", err)
 	}
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "sess-request-2")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "sess-request-2", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create = %+v, %v", pending, err)
 	}
@@ -204,7 +204,7 @@ func TestReadRecordKeepsTheEnrollmentSessionIDAfterRevocation(t *testing.T) {
 	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set session_id=$2 where id=$1`, enr, "sess-enrollment-revoked"); err != nil {
 		t.Fatalf("set enrollment session_id: %v", err)
 	}
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create = %+v, %v", pending, err)
 	}

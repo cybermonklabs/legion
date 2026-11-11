@@ -397,7 +397,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 //
 // A request it writes pending is handed to Machine.Judge once the transaction has committed, and
 // one it coalesced onto a pending request is not, so the model judge sees each record once.
-func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string) (Request, error) {
+//
+// narrowing is the GitHub App narrowing the caller will release this request's grant with, nil
+// when it asks for none. A later step of Create checks it before the request reaches a person, so
+// a narrowing the broker would refuse costs nobody an approval.
+func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string, narrowing *secrets.GitHubNarrowing) (Request, error) {
 	if !validSessionID(sessionID) {
 		return Request{}, ErrSessionIDInvalid
 	}

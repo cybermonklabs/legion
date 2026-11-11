@@ -28,11 +28,11 @@ func TestAPodsAutomaticGrantIsOnEveryPersonsGrantList(t *testing.T) {
 
 	const podUID = "pod-uid-hand-launched"
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, handLaunchedAccount, podUID)
-	auto, err := m.Create(ctx, pod, signRequest(t, m, podKey, "the pod needs it", sharedToken), "")
+	auto, err := m.Create(ctx, pod, signRequest(t, m, podKey, "the pod needs it", sharedToken), "", nil)
 	if err != nil || auto.State != "granted" || auto.GrantID == nil || auto.RecordID != nil {
 		t.Fatalf("Create(the pod's request) = %+v, %v; want an automatic grant", auto, err)
 	}
-	own, err := m.Create(ctx, session, signRequest(t, m, sessionKey, "the session needs it", "AUTO_TOKEN"), "")
+	own, err := m.Create(ctx, session, signRequest(t, m, sessionKey, "the session needs it", "AUTO_TOKEN"), "", nil)
 	if err != nil || own.State != "granted" || own.GrantID == nil {
 		t.Fatalf("Create(the operator's own request) = %+v, %v; want an automatic grant", own, err)
 	}
@@ -80,14 +80,14 @@ func TestAGrantUnderNoServicesLoginStaysOffEveryoneElsesList(t *testing.T) {
 	// A pod no service's launcher enrolled: no operator on the enrollment, no service on the
 	// credential, and the policy gives it the shared agent-tier secret without asking.
 	plain, plainKey := insertEnrollment(t, m.Store, "pod", "plain-pod-"+t.Name(), nil, nil, new(handLaunchedAccount))
-	orphan, err := m.Create(ctx, plain, signRequest(t, m, plainKey, "need it", sharedToken), "")
+	orphan, err := m.Create(ctx, plain, signRequest(t, m, plainKey, "need it", sharedToken), "", nil)
 	if err != nil || orphan.GrantID == nil {
 		t.Fatalf("Create(a pod no service's launcher enrolled) = %+v, %v; want an automatic grant", orphan, err)
 	}
 
 	// A box session of the operator's own machine: its credential names no service either.
 	box, key := newEnrollment(t, m.Store, "session", "box-c-"+t.Name(), new(fixtureOperator), nil)
-	auto, err := m.Create(ctx, box, signRequest(t, m, key, "need it", sharedToken), "")
+	auto, err := m.Create(ctx, box, signRequest(t, m, key, "need it", sharedToken), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(the operator's session) = %+v, %v; want an automatic grant", auto, err)
 	}

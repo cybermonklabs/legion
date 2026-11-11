@@ -29,14 +29,14 @@ func TestAKindSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 	const other = "bob@example.com"
 	otherEnr, otherKey := newEnrollment(t, machine.Store, "session", "box-other-"+t.Name(), new(other), nil)
 
-	theirs, err := machine.Create(t.Context(), otherEnr, signRequest(t, machine, otherKey, "read the App key", "OWNERS_APP_KEY"), "")
+	theirs, err := machine.Create(t.Context(), otherEnr, signRequest(t, machine, otherKey, "read the App key", "OWNERS_APP_KEY"), "", nil)
 	if err != nil || theirs.State != "pending" || theirs.GrantID != nil || theirs.RecordID == nil {
 		t.Fatalf("Create by %s = %+v, %v; want pending on its owner's approval", other, theirs, err)
 	}
 	if decision, err := machine.ApplyDecision(t.Context(), *theirs.RecordID, true, other); !errors.Is(err, record.ErrNotApprover) || decision.GrantID != "" {
 		t.Fatalf("ApplyDecision by %s = %+v, %v; want ErrNotApprover", other, decision, err)
 	}
-	owners, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "OWNERS_APP_KEY"), "")
+	owners, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "OWNERS_APP_KEY"), "", nil)
 	if err != nil || owners.GrantID == nil {
 		t.Fatalf("Create by the owner = %+v, %v; want a grant", owners, err)
 	}
@@ -61,7 +61,7 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 			return secrets.Minted{Value: "minted-token"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "HUMAN_APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "HUMAN_APP_KEY"), "", nil)
 	if err != nil || request.State != "pending" || request.GrantID != nil || request.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want pending", request, err)
 	}
@@ -89,7 +89,7 @@ func TestConcurrentReleasesOfOneKindSecretAllMint(t *testing.T) {
 			return secrets.Minted{Value: fmt.Sprintf("minted-token-%d", calls.Add(1))}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "BUSY_APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read the App key", "BUSY_APP_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", request, err)
 	}

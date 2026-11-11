@@ -71,7 +71,7 @@ func TestRequestersARefusalNamesTheSecretAndTheRule(t *testing.T) {
 	} {
 		t.Run(who.name, func(t *testing.T) {
 			const want = "LISTED_KEY: " + policy.ReasonRequesterNotListed
-			req, err := m.Create(ctx, who.enrollment, signRequestFor(t, m, who.key, anHour, "LISTED_KEY"), "")
+			req, err := m.Create(ctx, who.enrollment, signRequestFor(t, m, who.key, anHour, "LISTED_KEY"), "", nil)
 			if err != nil || req.State != "denied" || req.GrantID != nil {
 				t.Fatalf("Create(%s, LISTED_KEY) = %+v, %v; want it denied with no grant", who.name, req, err)
 			}
@@ -109,7 +109,7 @@ func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
 			ctx := context.Background()
 			m, enr, key, _ := newFixture(t)
 			retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
-			granted, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+			granted, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 			if err != nil || granted.State != "granted" || granted.GrantID == nil {
 				t.Fatalf("Create(LISTED_KEY) = %+v, %v; want it granted at once to the person it lists", granted, err)
 			}
@@ -146,7 +146,7 @@ func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
 			if by, audits := endedForGood(t, m, *granted.GrantID); by != GrantEndedActor || audits != 1 {
 				t.Fatalf("after the person is listed again: revoked_by %q with %d grant.revoked rows; want the one end", by, audits)
 			}
-			again, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+			again, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 			if err != nil || again.GrantID == nil || *again.GrantID == *granted.GrantID {
 				t.Fatalf("Create once the person is listed again = %+v, %v; want a grant of its own", again, err)
 			}
@@ -163,18 +163,18 @@ func TestRequestersTheNextRequestEndsTheGrantTheListDropped(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
-	granted, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+	granted, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 	if err != nil || granted.GrantID == nil {
 		t.Fatalf("Create(LISTED_KEY) = %+v, %v; want a grant", granted, err)
 	}
-	reused, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+	reused, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 	if err != nil || reused.ID != granted.ID {
 		t.Fatalf("a second request while the list names the person = %+v, %v; want the live grant of %s reused", reused, err, granted.ID)
 	}
 
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, otherPerson))
 	const want = "LISTED_KEY: " + policy.ReasonRequesterNotListed
-	denied, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+	denied, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 	if err != nil || denied.State != "denied" || denied.ID == granted.ID || denied.GrantID != nil {
 		t.Fatalf("Create after the list dropped the person = %+v, %v; want a denied request of its own", denied, err)
 	}
@@ -206,7 +206,7 @@ func TestRequestersAnApprovalAfterTheDropIsRecordedAsADenial(t *testing.T) {
 			ctx := context.Background()
 			m, enr, key, approver := newFixture(t)
 			retag(t, m, listedSecret("LISTED_HUMAN_KEY", fixtureOperator, policy.TierHuman, fixtureOperator))
-			req, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_HUMAN_KEY"), "")
+			req, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_HUMAN_KEY"), "", nil)
 			if err != nil || req.State != "pending" || req.RecordID == nil {
 				t.Fatalf("Create(LISTED_HUMAN_KEY) = %+v, %v; want it pending on its owner", req, err)
 			}
@@ -266,10 +266,10 @@ func TestRequestersAListedSecretGrantsForNoLongerThanItsOwnMaxGrant(t *testing.T
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
 
-	if req, err := m.Create(ctx, enr, signRequestFor(t, m, key, 2*anHour, "LISTED_KEY"), ""); !errors.Is(err, ErrGrantRequiresLifetime) {
+	if req, err := m.Create(ctx, enr, signRequestFor(t, m, key, 2*anHour, "LISTED_KEY"), "", nil); !errors.Is(err, ErrGrantRequiresLifetime) {
 		t.Fatalf("Create(LISTED_KEY, 2h) = %+v, %v; want ErrGrantRequiresLifetime", req, err)
 	}
-	granted, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+	granted, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 	if err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("Create(LISTED_KEY, 1h) = %+v, %v; want it granted", granted, err)
 	}
@@ -302,7 +302,7 @@ func TestRequestersAPodsGrantEndsWhenItsAccountStopsProvingItsService(t *testing
 			m, _, _, _ := newFixture(t)
 			retag(t, m, listedSecret("LISTED_POD_KEY", policy.OwnerShared, policy.TierAgent, fixtureService))
 			pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
-			granted, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "LISTED_POD_KEY"), "")
+			granted, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "LISTED_POD_KEY"), "", nil)
 			if err != nil || granted.State != "granted" || granted.GrantID == nil {
 				t.Fatalf("Create(LISTED_POD_KEY) = %+v, %v; want it granted at once to the pod the list names", granted, err)
 			}
@@ -350,7 +350,7 @@ func TestReuseRefusesAPodWhoseServiceIsNoLongerListed(t *testing.T) {
 	m, _, _, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_POD_KEY", policy.OwnerShared, policy.TierAgent, fixtureService))
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
-	granted, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "LISTED_POD_KEY"), "")
+	granted, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "LISTED_POD_KEY"), "", nil)
 	if err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("Create(LISTED_POD_KEY) = %+v, %v; want it granted at once to the pod the list names", granted, err)
 	}
@@ -358,7 +358,7 @@ func TestReuseRefusesAPodWhoseServiceIsNoLongerListed(t *testing.T) {
 
 	m.ServicesByAccount = map[string]string{}
 	const want = "LISTED_POD_KEY: " + policy.ReasonRequesterNotListed
-	denied, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "LISTED_POD_KEY"), "")
+	denied, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "LISTED_POD_KEY"), "", nil)
 	if now := m.Policy.Get().Version; now != version {
 		t.Fatalf("the policy moved from version %s to %s; this case turns on the version standing still, so that the requesters tag is the only term that can open the re-check", version, now)
 	}
@@ -384,7 +384,7 @@ func TestRequestersADroppedNameIsDeniedBeforeAnEarlierNameRefusesTheApprover(t *
 	retag(t, m,
 		policytest.Secret("ALPHA_HUMAN_KEY", fixtureOperator, policy.TierHuman, "alpha-v1"),
 		listedSecret("ZETA_LISTED_KEY", fixtureOperator, policy.TierHuman, fixtureOperator))
-	req, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "ALPHA_HUMAN_KEY", "ZETA_LISTED_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "ALPHA_HUMAN_KEY", "ZETA_LISTED_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(ALPHA_HUMAN_KEY, ZETA_LISTED_KEY) = %+v, %v; want one card pending on their owner", req, err)
 	}
@@ -424,14 +424,14 @@ func TestRequestersAWithheldNameTheListDropsIsDeniedRatherThanRefused(t *testing
 	ctx := context.Background()
 	m, enr, key, approver := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
-	auto, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+	auto, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(LISTED_KEY) = %+v, %v; want the automatic grant the list allows", auto, err)
 	}
 	if err := m.RevokeByApprover(ctx, *auto.GrantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
-	pending, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequestFor(t, m, key, anHour, "LISTED_KEY"), "", nil)
 	if err != nil || pending.State != "pending" || pending.RecordID == nil {
 		t.Fatalf("Create(LISTED_KEY) once it is withheld = %+v, %v; want a card pending on its owner", pending, err)
 	}
@@ -471,7 +471,7 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 	retag(t, m, account)
 
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
-	pending, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "GCLOUD_ACCOUNT_KEY"), "")
+	pending, err := m.Create(ctx, pod, signRequestFor(t, m, podKey, anHour, "GCLOUD_ACCOUNT_KEY"), "", nil)
 	if err != nil || pending.State != "pending" || pending.RecordID == nil || pending.GrantID != nil {
 		t.Fatalf("Create(GCLOUD_ACCOUNT_KEY) by a pod of the listed service = %+v, %v; want it pending with no grant", pending, err)
 	}
@@ -485,7 +485,7 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 
 	other, otherKey := newEnrollment(t, m.Store, "session", "box-other-"+t.Name(), new(otherPerson), nil)
 	const want = "GCLOUD_ACCOUNT_KEY: " + policy.ReasonRequesterNotListed
-	denied, err := m.Create(ctx, other, signRequestFor(t, m, otherKey, anHour, "GCLOUD_ACCOUNT_KEY"), "")
+	denied, err := m.Create(ctx, other, signRequestFor(t, m, otherKey, anHour, "GCLOUD_ACCOUNT_KEY"), "", nil)
 	if err != nil || denied.State != "denied" || denied.GrantID != nil || denied.RecordID != nil {
 		t.Fatalf("Create(GCLOUD_ACCOUNT_KEY) by another person's session = %+v, %v; want it denied with no grant and no card", denied, err)
 	}
@@ -522,7 +522,7 @@ func TestUncappedListedLoginAwaitsOwner(t *testing.T) {
 	}
 
 	const eightHours = 8 * anHour
-	req, err := m.Create(ctx, enr, signRequestFor(t, m, key, eightHours, "UNCAPPED_LOGIN_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequestFor(t, m, key, eightHours, "UNCAPPED_LOGIN_KEY"), "", nil)
 	if errors.Is(err, ErrGrantRequiresLifetime) {
 		t.Fatalf("Create(UNCAPPED_LOGIN_KEY, 8h) = %v; want no refusal over the grant's length from a secret that bounds none", err)
 	}

@@ -50,7 +50,7 @@ func grantHolder(t *testing.T, m *Machine, grantID string) string {
 func TestAnApprovalWhileTheEnrollmentIsDormantGrantsOntoTheDormantRow(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -85,7 +85,7 @@ func TestAnApprovalWhileTheEnrollmentIsDormantGrantsOntoTheDormantRow(t *testing
 func TestAnApprovalAfterTheEnrollmentEndedForGoodIsStillDenied(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -128,7 +128,7 @@ func TestAnApprovalAfterTheEnrollmentEndedForGoodIsStillDenied(t *testing.T) {
 func TestAnApprovalRacingTheAdoptionGrantsToTheEnrollmentTheRequestNamesNow(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -248,7 +248,7 @@ func TestAnApprovalOnALapsedRowTheSweepHasNotEndedGrantsAndTheSweepThenCarriesIt
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	nameTheSession(t, m, first, "sess-lapsed-carry", exchange.PersonPrincipal(fixtureOperator))
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -302,11 +302,11 @@ func TestAnApprovalOnALapsedRowWithNoPrincipalIsStillDenied(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	nameTheSession(t, m, enr, "sess-lapsed-no-principal", "")
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
-	undecided, err := m.Create(ctx, enr, signRequest(t, m, key, "this one too", "SHARED_KEY"), "")
+	undecided, err := m.Create(ctx, enr, signRequest(t, m, key, "this one too", "SHARED_KEY"), "", nil)
 	if err != nil || undecided.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want a second pending request nobody answers", undecided, err)
 	}
@@ -366,13 +366,13 @@ func TestTheLapsedRowGrantRuleAnswersWhatTheEndThatFollowsDoes(t *testing.T) {
 	}{
 		{"holding nothing", false, func(*testing.T, string, *ecdsa.PrivateKey) {}},
 		{"holding a pending request", true, func(t *testing.T, id string, key *ecdsa.PrivateKey) {
-			req, err := m.Create(ctx, id, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+			req, err := m.Create(ctx, id, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 			if err != nil || req.State != "pending" {
 				t.Fatalf("Create a pending request on %s = %+v, %v", id, req, err)
 			}
 		}},
 		{"holding a live grant", true, func(t *testing.T, id string, key *ecdsa.PrivateKey) {
-			req, err := m.Create(ctx, id, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+			req, err := m.Create(ctx, id, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 			if err != nil || req.GrantID == nil {
 				t.Fatalf("Create an automatic grant on %s = %+v, %v", id, req, err)
 			}

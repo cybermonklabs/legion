@@ -60,7 +60,7 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 			return secrets.Minted{Value: "owner-wide-token"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "APP_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
@@ -109,7 +109,7 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 	}
 	narrowing := &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}
 	for _, names := range [][]string{{"PLAIN_KEY"}, {"LOGIN_KEY"}, {"LOGIN_KEY", "PLAIN_KEY"}} {
-		request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", names...), "")
+		request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", names...), "", nil)
 		if err != nil || request.GrantID == nil {
 			t.Fatalf("Create(%v) = %+v, %v; want a grant", names, request, err)
 		}
@@ -121,7 +121,7 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 		t.Fatalf("the Google login minter ran %d times for refused releases, want none", len(googleNarrowings))
 	}
 
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "LOGIN_KEY", "PLAIN_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "LOGIN_KEY", "PLAIN_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(APP_KEY, LOGIN_KEY, PLAIN_KEY) = %+v, %v; want a grant", request, err)
 	}
@@ -153,7 +153,7 @@ func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 			return secrets.Minted{Value: "token"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "PLAIN_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "PLAIN_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
@@ -185,7 +185,7 @@ func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 			return secrets.Minted{}, fmt.Errorf("%w: GitHub answered HTTP 422", secrets.ErrMintNarrowingRefused)
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
