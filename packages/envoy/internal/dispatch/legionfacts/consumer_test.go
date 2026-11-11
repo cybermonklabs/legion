@@ -419,9 +419,11 @@ func TestASecondPassRewritesAnOpenRowAndLeavesAClosedOneAlone(t *testing.T) {
 		len(changed), len(after), open, before[open].WorkHours, after[open].WorkHours, closed, after[closed].UpdatedAt.UTC())
 }
 
-// TestABackfillOverAnEmptiedTableRestoresEveryRow: a project with no stored row has never been
-// computed, which the pass answers with ComputeProject over the whole project. An emptied table
-// is that case, and the rows it restores are the rows it held.
+// TestABackfillOverAnEmptiedTableRestoresEveryRow: a project whose last whole computation
+// answered rows and which holds none now has lost them to something this loop did not do, and
+// no narrow pass can name a row that is not there, so the pass reads the project whole
+// (legionProjects, over the mark that whole read wrote). An emptied table is that case, and the
+// rows it restores are the rows it held.
 func TestABackfillOverAnEmptiedTableRestoresEveryRow(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
@@ -585,7 +587,7 @@ func TestTheSweepsPaceHoldsTheFreshnessRequirement(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compute the project's facts: %v", err)
 			}
-			written, err := Write(t.Context(), run.database.Pool, rows)
+			written, err := WriteProject(t.Context(), run.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true})
 			if err != nil {
 				t.Fatalf("write the facts: %v", err)
 			}
@@ -604,10 +606,10 @@ func TestTheSweepsPaceHoldsTheFreshnessRequirement(t *testing.T) {
 					len(run.fixture.Keys), sweep.Round(time.Millisecond), budget.Round(time.Millisecond))
 			}
 			if whole >= budget {
-				t.Errorf("at %d issues one ComputeProject and Write pass takes %s, above the %s a pass has to run in",
+				t.Errorf("at %d issues one ComputeProject and WriteProject pass takes %s, above the %s a pass has to run in",
 					len(run.fixture.Keys), whole.Round(time.Millisecond), budget.Round(time.Millisecond))
 			}
-			t.Logf("over %d issues, %d of them with Legion phase work: one ComputeProject and Write pass took %s and wrote %d rows; one sweep pass that finds nothing new took %s and changed %d rows",
+			t.Logf("over %d issues, %d of them with Legion phase work: one ComputeProject and WriteProject pass took %s and wrote %d rows; one sweep pass that finds nothing new took %s and changed %d rows",
 				len(run.fixture.Keys), len(run.fixture.PhaseWork), whole.Round(time.Millisecond), len(written),
 				sweep.Round(time.Millisecond), len(changed))
 			t.Logf("a stored row therefore stands at most SweepEvery (%s) plus a pass (%s) behind the clock, against the %s Freshness allows: the sweep pass leaves %s of the %s a pass has",

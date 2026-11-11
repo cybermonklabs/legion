@@ -182,18 +182,19 @@ func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client
 
 // ReadIssues is the population the facts of the named issues are recomputed from, so a consumer
 // can recompute one issue without reading a whole project's event history. Its scope is wider
-// than the keys asked for: it is every issue the trees of those keys reach, because an issue's
-// own hours read its ancestors and its descendants (segments.go measures a root's waiting on
-// children from its children's spans). It reads none of the window's filings, whose one reader
-// is metric 4 (Splitting), and no facts computation calls that. The project's own reads stay,
-// because they are what places an issue in a tree and they are cheap.
+// than the keys asked for: it is every issue the trees of those keys reach by the one tree rule
+// (treeScopeKeys), because an issue's own hours read the issues above it and the issues below it
+// (segments.go measures a root's waiting on children from its children's spans). It reads none
+// of the window's filings, whose one reader is metric 4 (Splitting), and no facts computation
+// calls that. The project's own reads stay, because they are what places an issue in a tree and
+// they are cheap.
 func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, keys []string, now time.Time) (*Population, error) {
 	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
 		return p.treeScopeKeys(keys)
 	}, false)
 }
 
-// read is the body the three readers share. scope names which issues the eight detail reads
+// read is the body the three readers share. scope names which issues the seven detail reads
 // cover, and filed says whether the window's filings are read.
 func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, scope func(*Population) []string, filed bool) (*Population, error) {
 	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}, reported: map[string]string{}}
@@ -205,11 +206,21 @@ func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 			return nil, err
 		}
 	}
+	// readReported runs here, before the scope is chosen, and not in the group below. It takes
+	// no keys — it reads what the daemon reports of every issue of the project — and the scope
+	// is chosen from its answer: the rule that places an issue in a tree reads the daemon's
+	// `tree` first and the parent chain only where no daemon named one (legion.TreeChain), so a
+	// scope chosen before this read would hold a seed's parent chain and not the tree a `tree`
+	// observation names. fillReportedTrees follows it at once, because Issue.Tree is where the
+	// walk and the scope both read that answer.
+	if err := population.readReported(ctx, pool, project); err != nil {
+		return nil, err
+	}
+	population.fillReportedTrees()
 	keys := scope(population)
-	// The eight reads below write disjoint fields — six take the keys above and write fields of
-	// those issues, the other two the project's reported set with its trees and the project's
-	// phase-work keys — so they run together rather than one after another, as the delivery
-	// population's independent reads do
+	// The seven reads below write disjoint fields — six take the keys above and write fields of
+	// those issues, the seventh the project's phase-work keys — so they run together rather
+	// than one after another, as the delivery population's independent reads do
 	// (api/delivery.go). errgroup answers the first error recorded, so which of two failing
 	// reads names the failure is no longer fixed.
 	independent := []func(ctx context.Context) error{
@@ -218,7 +229,6 @@ func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readObservations(ctx, pool, project, keys) },
-		func(ctx context.Context) error { return population.readReported(ctx, pool, project) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, github, keys) },
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
 	}
@@ -240,7 +250,6 @@ func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 	if err := reads.Wait(); err != nil {
 		return nil, err
 	}
-	population.fillReportedTrees()
 	population.linkTrees()
 	population.keepTreeAsks()
 	return population, nil
@@ -334,9 +343,9 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 }
 
 // scopeKeys is every issue the event, handoff and observation reads cover: the issues that could
-// have finished in the window, every issue each one shares a tree with (its ancestors, since a
-// child's root is a tree of its own, and their descendants), and the issues the window's filings
-// name as their filer, whose phase at the filing metric 4 reports.
+// have finished in the window, every issue each one shares a tree with by the one tree rule
+// (treeScopeKeys), and the issues the window's filings name as their filer, whose phase at the
+// filing metric 4 reports.
 func (p *Population) scopeKeys(from, to time.Time) []string {
 	seeds := make([]string, 0, len(p.Keys)+len(p.Filed))
 	for _, key := range p.Keys {
@@ -353,9 +362,22 @@ func (p *Population) scopeKeys(from, to time.Time) []string {
 	return p.treeScopeKeys(seeds)
 }
 
-// treeScopeKeys is the scope the seeds reach: each seed, its ancestors, since a child's root is
-// a tree of its own, and every descendant of a reached issue, however deep. A seed the project
-// does not hold reaches nothing.
+// treeScopeKeys is the scope the seeds reach, by the one rule that places an issue in a tree
+// (legion.TreeChain): each seed, every issue above it — the `tree` the daemon reported for an
+// issue, and the parent Dispatch records where the daemon reported none — and every issue below
+// a reached issue by that same rule, however deep, which is what the children of a root and a
+// root's wait on its children read. A seed the project does not hold reaches nothing.
+//
+// It climbs the daemon's `tree` and not the parent chain alone, because the walk does: a scope
+// that climbed parents alone would leave out the tree a `tree` observation names, and the rules
+// that read a tree would then answer a narrow pass from a part of it and a whole-project pass
+// from the whole. It reads Issue.Tree, which read fills before it chooses the scope.
+//
+// The reach is wider than the walk: the walk stops below an issue that is no Legion issue and
+// at an issue that reports itself, and this climbs through the first and holds the second's
+// descendants. Wider is the right side to err on. The rules read the tree out of this scope, so
+// a scope holding more than they read costs a row of a detail table, and a scope holding less
+// answers a rule from a part of the tree.
 func (p *Population) treeScopeKeys(seeds []string) []string {
 	wanted := map[string]bool{}
 	var reach func(key string)
@@ -365,20 +387,20 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 			return
 		}
 		wanted[key] = true
-		if issue.Parent != "" {
-			reach(issue.Parent)
+		if above := p.treeAbove(issue); above != "" {
+			reach(above)
 		}
 	}
 	for _, key := range seeds {
 		reach(key)
 	}
-	// Every descendant of a reached issue, however deep: the roots reached above carry their
+	// Every issue below a reached issue, however deep: the roots reached above carry their
 	// trees, which segment 4 and metric 4's children-per-root read.
 	for added := true; added; {
 		added = false
 		for _, key := range p.Keys {
-			issue := p.Issues[key]
-			if !wanted[key] && issue.Parent != "" && wanted[issue.Parent] {
+			above := p.treeAbove(p.Issues[key])
+			if !wanted[key] && above != "" && wanted[above] {
 				wanted[key], added = true, true
 			}
 		}
@@ -390,6 +412,20 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 		}
 	}
 	return keys
+}
+
+// treeAbove is the issue the tree walk climbs to from this one, and "" where the walk stops:
+// the `tree` the daemon reported for the issue, which legion.TreeChain reads before any parent
+// link, and the parent Dispatch records where the daemon reported none. An issue the daemon
+// reports as its own tree is a root, so nothing stands above it.
+func (p *Population) treeAbove(issue *Issue) string {
+	if issue.Tree != "" {
+		if issue.Tree == issue.Key {
+			return ""
+		}
+		return issue.Tree
+	}
+	return issue.Parent
 }
 
 // readRoleEvents reads the first event each session wrote on each of the issues, and keeps the
@@ -694,8 +730,8 @@ func (p *Population) readReported(ctx context.Context, pool *store.Pool, project
 // is the only writer of Issue.Tree: the window's own observation read carries the same rows for
 // the issues it covers, and a second writer taking the newest non-empty one of those answered a
 // tree where the newest row is empty — a daemon that stopped naming one — while this read
-// answered none. An issue the daemon named no tree for keeps none. It runs before linkTrees,
-// which is the first reader of a tree.
+// answered none. An issue the daemon named no tree for keeps none. It runs before the scope is
+// chosen, which is the first reader of a tree (treeScopeKeys), and so before linkTrees too.
 func (p *Population) fillReportedTrees() {
 	for _, key := range p.Keys {
 		p.Issues[key].Tree = p.reported[key]
@@ -810,13 +846,20 @@ func (p *Population) linkTrees() {
 // is no Legion issue is a root of its own, which is what keeps a Legion tree from climbing into
 // the tracking issues above it.
 func (p *Population) TreeRoot(key string) string {
-	return legion.TreeRoot(key, func(key string) (legion.TreeNode, bool) {
-		issue := p.Issues[key]
-		if issue == nil {
-			return legion.TreeNode{}, false
-		}
-		return legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent, Legion: p.isLegionIssue(issue)}, true
-	})
+	return legion.TreeRoot(key, p.TreeNode)
+}
+
+// TreeNode is what the tree walk reads of one issue of this population (legion.TreeNode): the
+// `tree` the daemon named for it, the parent Dispatch records, and whether the issue is Legion's
+// (isLegionIssue). It is false for a key this population does not hold. A reader that must place
+// something on the nearest issue above another walks the chain itself (legion.TreeChain), as the
+// waiting line does for an unstarted child, and it climbs this read.
+func (p *Population) TreeNode(key string) (legion.TreeNode, bool) {
+	issue := p.Issues[key]
+	if issue == nil {
+		return legion.TreeNode{}, false
+	}
+	return legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent, Legion: p.isLegionIssue(issue)}, true
 }
 
 // isLegionIssue answers legion.TreeNode's Legion for this population, which states the rule: the

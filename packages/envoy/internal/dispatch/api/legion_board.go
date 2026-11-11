@@ -59,14 +59,6 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legion.ColumnHeld, "Held"},
 }
 
-// legionBoardQueued is whether the issue stands in the Queue column, for what the read knows of
-// the daemon's waiting line (legion.Queued). The rule is the legion package's, which takes plain
-// values because the stored per-issue facts answer the same column with no card to hand
-// (legion.Column); the board calls it here alone.
-func legionBoardQueued(issue *legionBoardIssue, queued legion.Queued) bool {
-	return legion.Column(issue.phase, issue.slot, queued) == legion.ColumnQueue
-}
-
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
 // Legion daemon gets, whichever route or live view asked (getLegionBoard,
 // putLegionProjectSettings, the live hub's worker).
@@ -288,8 +280,8 @@ type legionBoardPopulation struct {
 	// cursorAge is how long ago the facts consumer's oldest cursor last moved, in seconds,
 	// measured when this population was read; nil where the consumer holds no cursor row.
 	cursorAge *int
-	// ranked is the project's issue keys in Dispatch's rank order, which is the Queue column's
-	// order when no read has recorded a waiting line.
+	// ranked is the project's issue keys in Dispatch's rank order, read in that order, which is
+	// the order sortByRank puts any set of this project's keys in.
 	ranked []string
 }
 
@@ -556,56 +548,15 @@ func (p *legionBoardPopulation) treeNode(key string) (legion.TreeNode, bool) {
 	return node, true
 }
 
-// legionBoardCards answers which issues carry a card and, for an issue that carries none, the
-// nearest issue above it in its tree that does. The two answers are worked out together, since
-// the one card that depends on the chain is an `admitted` issue holding no slot: it is an
-// unstarted child where a card stands above it, and a card of its own where none does.
-type legionBoardCards struct {
-	population *legionBoardPopulation
-	// queued is the issues the daemon's own state put in the Queue column, which carry a card
-	// whatever their phase; carded keeps each answer once it is known.
-	queued map[string]bool
-	carded map[string]bool
-}
-
-// has is whether the issue carries a card.
-func (c *legionBoardCards) has(key string) bool {
-	if held, known := c.carded[key]; known {
-		return held
-	}
-	// A chain that loops reads false for the issue being worked out, so the walk ends.
-	c.carded[key] = false
-	issue := c.population.issues[key]
+// lineIssue is what the waiting line reads of one issue the daemon reports (legion.LineIssue),
+// and false for an issue the daemon reports nothing of, which is an issue the board draws no
+// card for.
+func (p *legionBoardPopulation) lineIssue(key string) (legion.LineIssue, bool) {
+	issue := p.issues[key]
 	if issue == nil {
-		return false
+		return legion.LineIssue{}, false
 	}
-	_, named := legion.PhaseColumns[issue.phase]
-	held := false
-	switch {
-	case c.queued[key]:
-		held = true
-	case !named:
-		held = false
-	case issue.phase == legion.PhaseAdmitted && issue.slot == nil:
-		held = c.nearestCard(key) == ""
-	default:
-		held = true
-	}
-	c.carded[key] = held
-	return held
-}
-
-// nearestCard is the nearest issue above key in its tree that carries a card, and "" where none
-// does. It climbs the one chain the tree rule names (legion.TreeChain), so a count never leaves
-// the tree the walk puts the issue in.
-func (c *legionBoardCards) nearestCard(key string) string {
-	chain := legion.TreeChain(key, c.population.treeNode)
-	for _, above := range chain[1:] {
-		if c.has(above) {
-			return above
-		}
-	}
-	return ""
+	return legion.LineIssue{Phase: issue.phase, Slot: issue.slot}, true
 }
 
 // legionBoardCompute is GET /api/v1/projects/{key}/legion/board's body for a population read for
@@ -616,68 +567,31 @@ func (c *legionBoardCards) nearestCard(key string) string {
 // A card's column is the first of these that holds: the daemon's waiting line, in its own order,
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
 // first, then follows Dispatch's rank); the issues a blocker link holds, after them in the Queue
-// column — of both lists only the issues that have not started work (legionBoardQueued), since
-// an issue that has started keeps the column of its phase and carries its place in the line on
-// its card; and otherwise the column its phase falls in. An issue the daemon reports in
-// `admitted` that holds no slot and that neither list names is a child its tree has not started:
-// it is on no card, and the nearest card above it in its tree counts it. Where no issue above it
-// carries a card — its tree climbs through issues the daemon reports nothing of, or through
-// issues whose phase is on no column — it is a card of its own, since a count on an issue the
-// board shows nothing of is a count no reader can see. Where no read has recorded an admission
-// block the waiting line is the same rule read for a reader that knows no line
-// (legion.QueuedUnread), over Dispatch's rank order, which is the order the daemon's own line
-// follows once a root's wait is answered.
+// column — of both lists only the issues that have not started work, since an issue that has
+// started keeps the column of its phase and carries its place in the line on its card; and
+// otherwise the column its phase falls in. An issue the daemon reports in `admitted` that holds
+// no slot and that neither list names is a child its tree has not started: it is on no card, and
+// the nearest card above it in its tree counts it. Where no issue above it carries a card — its
+// tree climbs through issues the daemon reports nothing of, or through issues whose phase is on
+// no column — it is a card of its own, since a count on an issue the board shows nothing of is a
+// count no reader can see. Where no read has recorded an admission block the waiting line is the
+// same rule read for a reader that knows no line (legion.QueuedUnread), over Dispatch's rank
+// order, which is the order the daemon's own line follows once a root's wait is answered.
+//
+// Every one of those answers is the waiting line's (legion.WaitingLine), which the stored
+// per-issue facts read as well: the card and the stored row of one issue cannot disagree about
+// the column it stands in or about why it waits.
 func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResponse {
 	cards := map[string][]legionBoardCard{}
 	placed := map[string]bool{}
-	blockers := map[string][]string{}
-	var waiting []string
-	if p.admission != nil {
-		waiting = p.admission.Waiting
-		for _, blocked := range p.admission.Blocked {
-			blockers[blocked.Issue] = blocked.BlockedBy
-		}
-	}
-
-	// The queue: the daemon's waiting line in its own order, then the issues a blocker link holds
-	// that the line does not already name, of the issues that have not started work
-	// (legionBoardQueued). Each issue the line names keeps its place in it, on whichever column
-	// its card is.
-	queued := make([]string, 0, len(waiting)+len(blockers))
-	seen := map[string]bool{}
-	places := map[string]int{}
-	for _, key := range waiting {
-		if p.issues[key] == nil || seen[key] {
-			continue
-		}
-		seen[key] = true
-		places[key] = len(places) + 1
-		if legionBoardQueued(p.issues[key], legion.QueuedYes) {
-			queued = append(queued, key)
-		}
-	}
-	blocked := make([]string, 0, len(blockers))
-	for key := range blockers {
-		if p.issues[key] != nil && !seen[key] && legionBoardQueued(p.issues[key], legion.QueuedYes) {
-			blocked = append(blocked, key)
-		}
-	}
-	p.sortByRank(blocked)
-	queued = append(queued, blocked...)
-	// Which issues carry a card: the queue the daemon's state named, and the rest by phase. The
-	// fallback queue below and the unstarted-child count both read it, so no card is lost to the
-	// tree walk and no count lands on an issue the board shows nothing of.
-	board := &legionBoardCards{population: p, queued: seen, carded: map[string]bool{}}
-	if p.admission == nil {
-		// No read has recorded a waiting line: the issues the one column rule queues for a
-		// reader that knows none, of those no card above them holds, in Dispatch's rank order.
-		for _, key := range p.ranked {
-			issue := p.issues[key]
-			if issue != nil && legionBoardQueued(issue, legion.QueuedUnread) && board.has(key) {
-				queued = append(queued, key)
-			}
-		}
-	}
+	line := legion.NewWaitingLine(legion.WaitingLineInput{
+		Admission: p.admission, Issue: p.lineIssue, Tree: p.treeNode,
+	})
+	// The board's keys in the order it draws them, which is Dispatch's rank order, and the Queue
+	// column's cards: the line's own order first, then the rest of the issues the column rule
+	// queues, by rank.
+	keys := p.sortedKeys()
+	queued := line.Queue(keys)
 	for _, key := range queued {
 		placed[key] = true
 	}
@@ -686,32 +600,25 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	// the queue does not name has not been started: it is counted on the nearest card above it,
 	// and carries one of its own where there is none.
 	uncarded := map[string]int{}
-	for _, key := range p.sortedKeys() {
-		issue := p.issues[key]
+	for _, key := range keys {
 		if placed[key] {
 			continue
 		}
-		column, named := legion.PhaseColumns[issue.phase]
-		if !named {
+		column := line.Column(key)
+		if column == "" {
+			if above := line.CountedOn(key); above != "" {
+				uncarded[above]++
+			}
 			continue
 		}
-		if issue.phase == legion.PhaseAdmitted && issue.slot == nil {
-			if above := board.nearestCard(key); above != "" {
-				uncarded[above]++
-				continue
-			}
-		}
-		placed[key] = true
-		cards[column] = append(cards[column], p.card(issue, blockers[key], 0))
+		cards[column] = append(cards[column], p.card(p.issues[key], line.BlockedBy(key), 0))
 	}
 	for _, key := range queued {
-		cards[legion.ColumnQueue] = append(cards[legion.ColumnQueue], p.card(p.issues[key], blockers[key], uncarded[key]))
+		cards[legion.ColumnQueue] = append(cards[legion.ColumnQueue], p.card(p.issues[key], line.BlockedBy(key), uncarded[key]))
 	}
 	for _, made := range cards {
 		for index := range made {
-			if place, named := places[made[index].Key]; named {
-				made[index].WaitingPlace = &place
-			}
+			made[index].WaitingPlace = line.Place(made[index].Key)
 		}
 	}
 	// A root's count is known only once every issue has been placed, so the cards already made

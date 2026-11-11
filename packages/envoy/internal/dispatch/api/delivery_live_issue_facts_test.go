@@ -186,8 +186,8 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 // logs one delivery change for each (migration 20261111093100).
 const sweepRows = 210
 
-// writeFactsSweep writes count rows of the project in one Write, as one sweep pass does, giving
-// every row the work hours named. It answers the keys Write says it changed. The rows are
+// writeFactsSweep writes count rows of the project in one write, as one sweep pass does, giving
+// every row the work hours named. It answers the keys WriteProject says it changed. The rows are
 // written by hand rather than computed, so the batch a measurement counts is the batch this
 // states.
 func writeFactsSweep(t *testing.T, database *store.Store, project string, count int, hours float64, at time.Time) []string {
@@ -203,7 +203,8 @@ func writeFactsSweep(t *testing.T, database *store.Store, project string, count 
 			UpdatedAt: at,
 		})
 	}
-	changed, err := legionfacts.Write(t.Context(), database.Pool, rows)
+	changed, err := legionfacts.WriteProject(t.Context(), database.Pool,
+		legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true})
 	if err != nil {
 		t.Fatalf("write %d stored facts rows of %s: %v", count, project, err)
 	}

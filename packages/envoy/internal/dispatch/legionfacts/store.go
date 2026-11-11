@@ -7,11 +7,26 @@ import (
 	"time"
 )
 
-// Write writes the whole of one project's computed facts: it upserts the rows the computation
-// answered (Upsert) and deletes the stored rows of that project the computation answered none
-// for (DeleteStaleProjectRows). It answers every key whose stored row moved, the keys it deleted
-// after the keys it wrote, because a row that went is a change of the stored facts as much as a
-// row that moved.
+// ProjectWrite is one project's computed facts and the set the pass that computed them stated:
+// what WriteProject writes in one call. The project stands beside the rows rather than being
+// read out of them, because a project whose rows are all stale answers no row at all and still
+// owes its deletion.
+//
+// Stated is the set of keys the pass computed over, inside which it may delete a stale row, and
+// Whole says the pass read the project whole (ComputeProject), whose stated set is every issue
+// the project has and whose Stated is therefore empty.
+type ProjectWrite struct {
+	Project string
+	Rows    []Row
+	Stated  []string
+	Whole   bool
+}
+
+// WriteProject writes one project's computed facts: it upserts the rows the computation answered
+// (upsert) and deletes the stored rows inside the stated set the computation answered none for
+// (deleteStaleRows, or deleteStaleProjectRows for a pass that read the project whole). It answers
+// every key whose stored row moved, the keys it deleted after the keys it wrote, because a row
+// that went is a change of the stored facts as much as a row that moved.
 //
 // A stored row means Legion worked the issue (dispatch://INFRA-2915), and an issue loses its
 // phase work as well as gains it: a session's newest title decides which issue that session's
@@ -19,21 +34,21 @@ import (
 // that issue's title takes the work with it, and the issue it left carries none. The deletion
 // is what takes that issue's row away; an upsert alone leaves it standing for ever.
 //
-// A call with no rows names no project, so it has no set to delete inside and writes nothing.
-//
-// It is the write of a computation of a whole project and of no other: a caller holding the
-// rows of some issues of a project calls Upsert and then DeleteStaleRows over the set it
-// computed, since this one would read every row the caller did not name as a row to delete.
-func Write(ctx context.Context, q Querier, rows []Row) ([]string, error) {
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	keys := computedKeys(rows)
-	written, err := Upsert(ctx, q, rows, keys)
+// It is the one write of the facts: the consumer's pass makes it for each project of the pass,
+// inside the transaction that moves the cursors (consumer.go's writePass), and a caller that
+// holds one project's rows makes it alone.
+func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string, error) {
+	written, err := upsert(ctx, q, write.Project, write.Rows)
 	if err != nil {
 		return nil, err
 	}
-	deleted, err := DeleteStaleProjectRows(ctx, q, rows[0].Project, keys)
+	kept := computedKeys(write.Rows)
+	deleted := []string{}
+	if write.Whole {
+		deleted, err = deleteStaleProjectRows(ctx, q, write.Project, kept)
+	} else {
+		deleted, err = deleteStaleRows(ctx, q, write.Project, write.Stated, kept)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +56,7 @@ func Write(ctx context.Context, q Querier, rows []Row) ([]string, error) {
 }
 
 // computedKeys is the issue of each row: the keys the computation answered a row for, which the
-// upsert writes and the deletion keeps. One build serves both.
+// deletion keeps.
 func computedKeys(rows []Row) []string {
 	keys := make([]string, len(rows))
 	for index, row := range rows {
@@ -50,11 +65,14 @@ func computedKeys(rows []Row) []string {
 	return keys
 }
 
-// Upsert writes the rows and answers which issues it changed, by key, in the order Postgres
-// wrote them. It deletes nothing, so it is the write of a pass that computed some issues of a
-// project: that pass takes its own stale rows away with DeleteStaleRows over the set it stated. A row whose stored values already match is left alone: a sweep that finds nothing
-// new rewrites nothing, and a check can count what moved. keys is each row's issue key, which
-// the caller already holds (computedKeys).
+// upsert writes the rows of the project and answers which issues it changed, by key, in the
+// order Postgres wrote them. It deletes nothing, so its caller takes the stale rows away
+// (WriteProject). A row whose stored values already match is left alone: a sweep that finds
+// nothing new rewrites nothing, and a check can count what moved.
+//
+// The project is the caller's and not the first row's: a write of no row still belongs to a
+// project, and the loop below refuses a row of any other project, so the rows and the project
+// this writes into cannot disagree.
 //
 // One statement, so a sweep of hundreds of issues is one round trip. The rows go in as arrays
 // unnested into a row each, as the sampler's own write does (legion/store.go's
@@ -68,12 +86,12 @@ func computedKeys(rows []Row) []string {
 // carries none takes the moment this write started. A waiting reason of "" is stored as null, the
 // column's "waits on nothing": the rule never answers an empty reason, so the two cannot be
 // confused.
-func Upsert(ctx context.Context, q Querier, rows []Row, keys []string) ([]string, error) {
+func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	started := time.Now().UTC()
-	project := rows[0].Project
+	keys := computedKeys(rows)
 	openedAt := make([]time.Time, len(rows))
 	closedAt := make([]*time.Time, len(rows))
 	hoursByPhase := make([]string, len(rows))
@@ -177,11 +195,11 @@ func Upsert(ctx context.Context, q Querier, rows []Row, keys []string) ([]string
 // answered no row for is a row to delete. A stored row outside the stated set is a row this
 // pass knows nothing of: the pass that states it computes it, and until then it stands.
 
-// DeleteStaleRows deletes the stored rows of the stated keys that computed holds no row for, and
+// deleteStaleRows deletes the stored rows of the stated keys that computed holds no row for, and
 // answers the keys it deleted. It is the deletion of a pass that computed a set of keys: stated
 // is the set the pass considered, computed is the keys its computation answered rows for, and no
 // row outside stated is read at all.
-func DeleteStaleRows(ctx context.Context, q Querier, project string, stated, computed []string) ([]string, error) {
+func deleteStaleRows(ctx context.Context, q Querier, project string, stated, computed []string) ([]string, error) {
 	if len(stated) == 0 {
 		return nil, nil
 	}
@@ -192,13 +210,13 @@ func DeleteStaleRows(ctx context.Context, q Querier, project string, stated, com
 	`, project, stated, computed)
 }
 
-// DeleteStaleProjectRows deletes the stored rows of the project that computed holds no row for,
+// deleteStaleProjectRows deletes the stored rows of the project that computed holds no row for,
 // and answers the keys it deleted. It is the deletion of a pass that computed the project whole
 // (ComputeProject), whose stated set is every issue the project has, because that is the
 // population such a computation reads (metrics.ReadProject). A stored row whose key names no
 // issue of the project was therefore computed by nothing, and this deletion leaves it where it
 // stands.
-func DeleteStaleProjectRows(ctx context.Context, q Querier, project string, computed []string) ([]string, error) {
+func deleteStaleProjectRows(ctx context.Context, q Querier, project string, computed []string) ([]string, error) {
 	return deleteRows(ctx, q, project, `
 		delete from issue_facts
 		where project_key = $1 and not (issue_key = any($2))

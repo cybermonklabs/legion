@@ -118,11 +118,19 @@ func Column(phase string, slot *int, queued Queued) string {
 			return ColumnQueue
 		}
 	case QueuedUnread:
-		if phase == PhaseAdmitted && slot == nil {
+		if waitingForASlot(phase, slot) {
 			return ColumnQueue
 		}
 	}
 	return column
+}
+
+// waitingForASlot is whether the issue is waiting for an admission slot: the daemon reports it
+// `admitted` and it holds no slot of its own. Such an issue has not started its work, which both
+// the Queue's fallback above and the waiting line's count of an unstarted child read
+// (WaitingLine's unstarted), so the two cannot answer one issue differently.
+func waitingForASlot(phase string, slot *int) bool {
+	return phase == PhaseAdmitted && slot == nil
 }
 
 // What the slot an issue holds of its own is used for: a worker of it is in a turn, nobody of it

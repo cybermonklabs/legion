@@ -42,7 +42,8 @@ func writeLegionFacts(t *testing.T, database *store.Store, project string, now t
 		ClosedAt: &closed, HoursByPhase: map[string]float64{}, WorkHours: 0, RootKey: project + "-7",
 		UpdatedAt: now.Add(-3 * time.Minute),
 	}}
-	if _, err := legionfacts.Write(t.Context(), database.Pool, rows); err != nil {
+	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
+		legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the stored facts of %s: %v", project, err)
 	}
 	return oldest
@@ -74,7 +75,8 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
-	if _, err := legionfacts.Write(t.Context(), database.Pool, rows); err != nil {
+	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
+		legionfacts.ProjectWrite{Project: fixture.Project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the project's facts: %v", err)
 	}
 	stored, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project)
@@ -266,16 +268,40 @@ func ageSeconds(age *int) string {
 	return strconv.Itoa(*age)
 }
 
+// legionCardHeld is the card for key and whether the board holds one at all, which the unstarted
+// child below turns on: an issue the board draws no card for is on no column.
+func legionCardHeld(board legionBoardResponse, key string) (legionBoardCard, bool) {
+	for _, column := range board.Columns {
+		for _, card := range column.Cards {
+			if card.Key == key {
+				return card, true
+			}
+		}
+	}
+	return legionBoardCard{}, false
+}
+
 // TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock: one issue's card and
-// one issue's stored row answer the same reason, because both read the one column rule
-// (legion.Column) and the one card rule (legion.CardWaiting).
+// one issue's stored row answer the same reason, because both read the one waiting line
+// (legion.WaitingLine), the one column rule (legion.Column) and the one card rule
+// (legion.CardWaiting).
 //
 // The case that broke is a project whose daemon recorded no admission block: the board queues
 // every carded `admitted` issue holding no slot in Dispatch's rank order, so its card reads
 // `ready`, while the stored row read no waiting line at all. The fallback is in the column rule
 // now (legion.QueuedUnread), so both readers answer it. The second project has a block, which is
 // what holds the first case to a rule rather than to a coincidence of two empty answers.
+//
+// The fourth issue is the case the two readers answered differently after that: an `admitted`
+// child holding no slot that stands under a card. The board draws it no card and counts it on
+// the card above it, so it waits for nothing, while the stored row read the fallback for an
+// issue of its own and said `ready`. One line answers both now, with a block recorded and
+// without one.
 func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t *testing.T) {
+	// child is the key of the unstarted child, which carries no card and whose stored row must
+	// say it waits for nothing, and above is the card that counts it. They are the same two
+	// issues in both cases below, because neither admission block names either of them.
+	const child, above = "INFRA-4", "INFRA-3"
 	for _, test := range []struct {
 		what      string
 		admission string
@@ -300,16 +326,18 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 			hourAgo := now.Add(-time.Hour)
 			// Three roots the daemon reports, each with a handoff, which is what gives an issue
 			// a stored row (legion/metrics/population.go's hasPhaseWork). Two wait for a slot
-			// and the third works.
+			// and the third works. The fourth issue is a child of the third, which the daemon
+			// reports `admitted` with no slot of its own: its tree has not started it.
 			for _, issue := range []struct {
-				number      int
-				rank, phase string
+				number              int
+				rank, phase, parent string
 			}{
-				{1, "a", legion.PhaseAdmitted},
-				{2, "b", legion.PhaseAdmitted},
-				{3, "c", legion.PhaseImplementing},
+				{1, "a", legion.PhaseAdmitted, ""},
+				{2, "b", legion.PhaseAdmitted, ""},
+				{3, "c", legion.PhaseImplementing, ""},
+				{4, "d", legion.PhaseAdmitted, "INFRA-3"},
 			} {
-				key := seedLegionIssue(t, database, "INFRA", issue.number, "A root in "+issue.phase, issue.rank, nil, "")
+				key := seedLegionIssue(t, database, "INFRA", issue.number, "An issue in "+issue.phase, issue.rank, nil, issue.parent)
 				seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+issue.phase+`"`, hourAgo)
 				seedLegionHandoff(t, database, key, "plan", hourAgo)
 			}
@@ -324,7 +352,8 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 			if err != nil {
 				t.Fatalf("compute the project's facts: %v", err)
 			}
-			if _, err := legionfacts.Write(t.Context(), database.Pool, rows); err != nil {
+			if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
+				legionfacts.ProjectWrite{Project: "INFRA", Rows: rows, Whole: true}); err != nil {
 				t.Fatalf("write the facts: %v", err)
 			}
 
@@ -346,7 +375,28 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 					t.Errorf("%s waits for %q on its card, want %q", key, reason, test.want[key])
 				}
 			}
-			t.Logf("%s: the card and the stored row of each of INFRA-1, INFRA-2 and INFRA-3 answer the same reason", test.what)
+
+			// The unstarted child: the board draws it no card and counts it on the card above
+			// it, so the one line answers that it waits for nothing, and its stored row says so
+			// too.
+			if card, held := legionCardHeld(board, child); held {
+				t.Errorf("%s stands under %s and the board draws it a card of its own, in the %s phase",
+					child, above, card.Phase)
+			}
+			row, held := board.Issues[child]
+			if !held {
+				t.Fatalf("%s has no stored row on the board, and Legion worked it", child)
+			}
+			if row.WaitingReason != "" {
+				t.Errorf("%s is on no card and its stored row says it waits for %q, want nothing",
+					child, row.WaitingReason)
+			}
+			counting := legionCard(t, board, above)
+			if counting.Children != 1 {
+				t.Errorf("%s counts %d unstarted children, want the one %s is", above, counting.Children, child)
+			}
+			t.Logf("%s: the card and the stored row of each of INFRA-1, INFRA-2 and INFRA-3 answer the same reason, and %s, which stands under %s's card on no card of its own, waits for nothing on both sides while %s counts %d unstarted child",
+				test.what, child, above, above, counting.Children)
 		})
 	}
 }

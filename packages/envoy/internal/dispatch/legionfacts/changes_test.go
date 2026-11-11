@@ -89,7 +89,9 @@ func TestOneFactsWriteLogsOneIssueFactsChange(t *testing.T) {
 	first, last := workedAt(4, 9), workedAt(4, 17)
 	head := changeLogHead(t, pool)
 
-	written, err := Write(t.Context(), pool, []Row{workedRow("LEGION-1", &first, &last)})
+	written, err := WriteProject(t.Context(), pool, ProjectWrite{
+		Project: factsProject, Rows: []Row{workedRow("LEGION-1", &first, &last)}, Whole: true,
+	})
 	if err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
@@ -109,24 +111,24 @@ func TestOneFactsWriteLogsOneIssueFactsChange(t *testing.T) {
 }
 
 // TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange: a sweep that found nothing new logs
-// nothing. Write leaves a row whose facts already match alone, and a rewrite of updated_at by
-// itself moves the one column the trigger ignores.
+// nothing. WriteProject leaves a row whose facts already match alone, and a rewrite of updated_at
+// by itself moves the one column the trigger ignores.
 func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {
 	pool := factsDatabase(t)
 	first, last := workedAt(4, 9), workedAt(4, 17)
 	row := workedRow("LEGION-2", &first, &last)
-	if _, err := Write(t.Context(), pool, []Row{row}); err != nil {
+	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Rows: []Row{row}, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
 	head := changeLogHead(t, pool)
 
 	row.UpdatedAt = factsOpened.Add(48 * time.Hour)
-	rewritten, err := Write(t.Context(), pool, []Row{row})
+	rewritten, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Rows: []Row{row}, Whole: true})
 	if err != nil {
 		t.Fatalf("write the same facts again: %v", err)
 	}
 	if len(rewritten) != 0 {
-		t.Errorf("Write rewrote %v, want nothing: the row's facts already match", rewritten)
+		t.Errorf("WriteProject rewrote %v, want nothing: the row's facts already match", rewritten)
 	}
 	moved, err := pool.Exec(t.Context(), `update issue_facts set updated_at = updated_at + interval '1 hour'`)
 	if err != nil {
@@ -140,7 +142,7 @@ func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {
 	if len(changes) != 0 {
 		t.Fatalf("a pass that moved only the row's time logged %+v, want nothing", changes)
 	}
-	t.Logf("%d rows rewritten by Write, %d row's updated_at moved, %d changes logged",
+	t.Logf("%d rows rewritten by WriteProject, %d row's updated_at moved, %d changes logged",
 		len(rewritten), moved.RowsAffected(), len(changes))
 }
 
@@ -158,7 +160,9 @@ func TestAFactsChangesSpanNamesTheDaysTheWorkFallsIn(t *testing.T) {
 		{"LEGION-4", workedAt(6, 1), workedAt(6, 23), []string{"2026-11-06"}},
 	} {
 		head := changeLogHead(t, pool)
-		if _, err := Write(t.Context(), pool, []Row{workedRow(test.issue, &test.first, &test.last)}); err != nil {
+		if _, err := WriteProject(t.Context(), pool, ProjectWrite{
+			Project: factsProject, Rows: []Row{workedRow(test.issue, &test.first, &test.last)}, Whole: true,
+		}); err != nil {
 			t.Fatalf("write the facts of %s: %v", test.issue, err)
 		}
 		changes := changesLogged(t, pool, head)
@@ -182,18 +186,18 @@ func TestAFactsUpdateThatMovesTheWorkCoversBothDays(t *testing.T) {
 	pool := factsDatabase(t)
 	wasFirst, wasLast := workedAt(4, 9), workedAt(4, 17)
 	nowFirst, nowLast := workedAt(5, 9), workedAt(5, 17)
-	if _, err := Write(t.Context(), pool, []Row{
+	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Whole: true, Rows: []Row{
 		workedRow("LEGION-5", &wasFirst, &wasLast),
 		workedRow("LEGION-6", nil, nil),
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
 	head := changeLogHead(t, pool)
 
-	written, err := Write(t.Context(), pool, []Row{
+	written, err := WriteProject(t.Context(), pool, ProjectWrite{Project: factsProject, Whole: true, Rows: []Row{
 		workedRow("LEGION-5", &nowFirst, &nowLast),
 		workedRow("LEGION-6", &nowFirst, &nowLast),
-	})
+	}})
 	if err != nil {
 		t.Fatalf("move the work of both issues: %v", err)
 	}

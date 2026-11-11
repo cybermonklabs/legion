@@ -4,9 +4,9 @@
 // and the evals read them under dispatch://INFRA-2916.
 //
 // The computation holds no loop and no lease: facts.go answers the rows of a key set (Compute)
-// or of a whole project (ComputeProject), and store.go writes them (Write). Run is the loop
-// that decides when to call either, under one lease and woken by the feeds a row is computed
-// from (consumer.go).
+// or of a whole project (ComputeProject), and store.go writes them (WriteProject). Run is the
+// loop that decides when to call either, under one lease and woken by the feeds a row is
+// computed from (consumer.go).
 //
 // The numbers are the metrics package's: Compute and ComputeProject read a population and call
 // metrics.ProjectFacts, which is the one computation of the per-issue facts. Nothing here states
@@ -96,15 +96,20 @@ func ComputeProject(ctx context.Context, pool *store.Pool, project string, now t
 // rowsOf turns the population's facts into rows, in key order. wanted names the issues to keep,
 // and a nil wanted keeps every issue with facts.
 //
-// The waiting reason is the one card rule (legion.CardWaiting), which reads the daemon's own
-// admission block: the block is read once per computation, because it is one row of the project
-// rather than a fact of any issue.
+// The waiting reason is the one card rule (legion.CardWaiting), read through the one waiting
+// line (legion.WaitingLine), which the board builds from its own cards. The daemon's admission
+// block is read once per computation, because it is one row of the project rather than a fact of
+// any issue.
 func rowsOf(ctx context.Context, q Querier, population *metrics.Population, project string, wanted map[string]bool, now time.Time) ([]Row, error) {
 	admission, err := readAdmission(ctx, q, project)
 	if err != nil {
 		return nil, err
 	}
-	waits := newWaitingLine(population, admission)
+	line := legion.NewWaitingLine(legion.WaitingLineInput{
+		Admission: admission,
+		Issue:     func(key string) (legion.LineIssue, bool) { return lineIssue(population, key) },
+		Tree:      population.TreeNode,
+	})
 	facts := metrics.ProjectFacts(population)
 	rows := make([]Row, 0, len(facts))
 	for _, key := range slices.Sorted(maps.Keys(facts)) {
@@ -123,7 +128,7 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 			RootKey:       fact.Tree,
 			TreeDepth:     fact.TreeDepth,
 			SlotHours:     fact.SlotHours,
-			WaitingReason: waits.reasonOf(population.Issues[key]),
+			WaitingReason: reasonOf(line, population.Issues[key]),
 			WorkFirstAt:   fact.WorkFirstAt,
 			WorkLastAt:    fact.WorkLastAt,
 			UpdatedAt:     now,
@@ -132,76 +137,40 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 	return rows, nil
 }
 
-// waitingLine is what the daemon's admission block says of each issue: its place in the waiting
-// line from 1, and the issues a blocker link holds it on. read is whether a block was recorded
-// at all, which the column rule answers differently from a block that names the issue nowhere
-// (legion.Queued): a project whose daemon has never answered has no admission row, and the board
-// queues its unstarted issues by Dispatch's rank.
-type waitingLine struct {
-	read     bool
-	places   map[string]int
-	blockers map[string][]string
-}
-
-// newWaitingLine numbers the waiting line and takes the blocker links, as the board numbers them
-// (api/legion_board.go's legionBoardCompute): each key once, in the daemon's own order, and a key
-// the population does not hold is numbered by neither reader.
-func newWaitingLine(population *metrics.Population, admission *legion.Admission) *waitingLine {
-	line := &waitingLine{places: map[string]int{}, blockers: map[string][]string{}}
-	if admission == nil {
-		return line
+// lineIssue is what the waiting line reads of one issue the daemon reports (legion.LineIssue):
+// the phase of its newest `phase` observation and the slot of its newest `slot` one. An issue the
+// sampler recorded no observation of is an issue the daemon reports nothing of, which is the set
+// the board's own line reads (api/legion_board.go's issues map), and the line numbers it in no
+// place and draws it no card.
+func lineIssue(population *metrics.Population, key string) (legion.LineIssue, bool) {
+	issue := population.Issues[key]
+	if issue == nil || len(issue.Observed) == 0 {
+		return legion.LineIssue{}, false
 	}
-	line.read = true
-	for _, key := range admission.Waiting {
-		if population.Issues[key] == nil {
-			continue
-		}
-		if _, numbered := line.places[key]; numbered {
-			continue
-		}
-		line.places[key] = len(line.places) + 1
-	}
-	for _, blocked := range admission.Blocked {
-		line.blockers[blocked.Issue] = blocked.BlockedBy
-	}
-	return line
-}
-
-// queuedBy is what this line knows of one issue, in the shape the column rule reads
-// (legion.Queued): nothing at all where no read recorded an admission block, and otherwise
-// whether the line names the issue or a blocker link holds it.
-func (l *waitingLine) queuedBy(key string, blockedBy []string) legion.Queued {
-	switch {
-	case !l.read:
-		return legion.QueuedUnread
-	case l.places[key] > 0 || len(blockedBy) > 0:
-		return legion.QueuedYes
-	default:
-		return legion.QueuedNo
-	}
+	phase, _ := newestPhase(issue)
+	return legion.LineIssue{Phase: phase, Slot: newestSlot(issue)}, true
 }
 
 // reasonOf is why the issue waits, by the one card rule (legion.CardWaiting), and "" where the
 // rule answers that it waits for nothing. The rule reads the issue's phase, the column it stands
-// in (legion.Column, the column the board draws it in), its place in the daemon's waiting line,
-// the issues a blocker link holds it on, when it entered its phase, and the wait the daemon
-// recorded. The first five come from the newest observations of the issue, which the population
-// already holds, and from what the line knows of the issue (queuedBy).
-func (l *waitingLine) reasonOf(issue *metrics.Issue) string {
+// in, its place in the daemon's waiting line, the issues a blocker link holds it on, when it
+// entered its phase, and the wait the daemon recorded. The line answers the middle three, as it
+// answers them for the card the board draws of the same issue. The phase and the wait come from
+// the newest observations of the issue, which the population already holds.
+//
+// An issue the board draws no card for stands in no column, and the rule then answers that it
+// waits for nothing: a child its tree has not started is counted on the card above it, and the
+// stored row of it says what that card says of it, which is nothing.
+func reasonOf(line *legion.WaitingLine, issue *metrics.Issue) string {
 	if issue == nil {
 		return ""
 	}
 	phase, phaseSince := newestPhase(issue)
-	blockedBy := l.blockers[issue.Key]
-	var place *int
-	if numbered, named := l.places[issue.Key]; named {
-		place = &numbered
-	}
 	waiting := legion.CardWaiting(legion.WaitingInput{
 		Phase:        phase,
-		Column:       legion.Column(phase, newestSlot(issue), l.queuedBy(issue.Key, blockedBy)),
-		WaitingPlace: place,
-		BlockedBy:    blockedBy,
+		Column:       line.Column(issue.Key),
+		WaitingPlace: line.Place(issue.Key),
+		BlockedBy:    line.BlockedBy(issue.Key),
 		PhaseSince:   phaseSince,
 		WaitingOn:    newestWait(issue),
 	})

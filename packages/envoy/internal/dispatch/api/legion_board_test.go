@@ -143,18 +143,16 @@ func legionColumnKeys(t *testing.T, board legionBoardResponse, id string) []stri
 	return nil
 }
 
-// legionCard is the card for key, wherever it is.
+// legionCard is the card for key, wherever it is, and a failure where the board draws it none.
+// A caller that means to state that the board draws no card for an issue reads legionCardHeld
+// (legion_board_facts_test.go), which this is the asserting form of.
 func legionCard(t *testing.T, board legionBoardResponse, key string) legionBoardCard {
 	t.Helper()
-	for _, column := range board.Columns {
-		for _, card := range column.Cards {
-			if card.Key == key {
-				return card
-			}
-		}
+	card, held := legionCardHeld(board, key)
+	if !held {
+		t.Fatalf("the board holds no card for %s", key)
 	}
-	t.Fatalf("the board holds no card for %s", key)
-	return legionBoardCard{}
+	return card
 }
 
 // TestTheLegionBoardPutsEachIssueInOneColumn: the Queue column is the daemon's own waiting line,

@@ -37,11 +37,11 @@ const Freshness = time.Minute
 // A row is computed as of the start of the pass that writes it, so a row's age when the next
 // pass rewrites it is SweepEvery plus that pass's own length. Thirty seconds holds Freshness
 // while a pass runs under thirty seconds. Measured against a real Postgres over the 252 issues
-// of the facts' own rig, 210 of them with Legion phase work: one ComputeProject and Write of
-// the whole project takes 115 ms to 205 ms, and one sweep pass that finds nothing new 45 ms to
-// 80 ms (TestTheSweepsPaceHoldsTheFreshnessRequirement prints both, over five runs). A pass
-// may therefore grow to about 380 times its measured length before a stored row can stand a
-// minute old.
+// of the facts' own rig, 210 of them with Legion phase work: one ComputeProject and one
+// WriteProject of the whole project take 115 ms to 205 ms, and one sweep pass that finds nothing
+// new 45 ms to 80 ms (TestTheSweepsPaceHoldsTheFreshnessRequirement prints both, over five
+// runs). A pass may therefore grow to about 380 times its measured length before a stored row
+// can stand a minute old.
 //
 // The sweep also reads the rows whose issue lost its Legion phase work (staleStoredRows), which
 // it did not read before dispatch://INFRA-2915's fourth round. That read costs a sweep pass
@@ -127,7 +127,7 @@ var serverSchedule = schedule{
 //
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // rows again. Every pass is safe to run twice: a row whose values did not move is not rewritten
-// (Write), and a cursor moves only in the transaction that wrote the rows it covers (passPage).
+// (Upsert), and a cursor moves only in the transaction that wrote the rows it covers (passPage).
 func Run(ctx context.Context, deps Deps) {
 	run(ctx, deps, serverSchedule)
 }
@@ -248,6 +248,13 @@ func safeHorizon(ctx context.Context, horizon *events.Horizon) (int64, error) {
 // of a project a feed cannot answer for. Only the first page of a pass carries it, because all
 // three read the whole of what they cover.
 //
+// A page that acted on a lost change cursor leaves that cursor at the head of the change log
+// rather than where it stood, and that feed is then not full however much of it the page read.
+// The loss is answered by computing every project whole, which covers every change the log ever
+// held, so the cursor has nothing left to read below the head; a cursor left where it stood
+// would read lost again on the next pass and compute every project whole every SweepEvery for
+// as long as no change commits.
+//
 // The rows are computed before the transaction opens and written inside it, so no connection is
 // held open while a whole project is read. The cursor moves in the transaction that wrote the
 // rows it covers, so a crash between the two cannot lose a change: the next pass reads the same
@@ -257,17 +264,19 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	if err != nil {
 		return nil, false, err
 	}
-	eventPage, err := readEventPage(ctx, deps.Pool, cursors[eventsCursor], safe, sched.page)
+	read, err := readPages(ctx, deps.Pool, cursors, safe, sched.page)
 	if err != nil {
 		return nil, false, err
 	}
-	observationPage, err := readObservationPage(ctx, deps.Pool, cursors[observationsCursor], sched.page)
-	if err != nil {
-		return nil, false, err
-	}
-	changePage, lost, err := readChangePage(ctx, deps.Pool, cursors[changesCursor], sched.page)
-	if err != nil {
-		return nil, false, err
+	// Only a sweep page acts on a loss: the backfill a loss calls for is set under the sweep
+	// below, so a loss a page of any other kind meets is answered by the next pass's first page.
+	lost := sweep && read.lost
+	if lost {
+		head, err := delivery.LatestChangeSeq(ctx, deps.Pool)
+		if err != nil {
+			return nil, false, fmt.Errorf("read the head of the delivery changes: %w", err)
+		}
+		read.changes.position, read.changes.full = head, false
 	}
 	projects, err := legionProjects(ctx, deps.Pool, lost)
 	if err != nil {
@@ -284,7 +293,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		}
 		return work[project]
 	}
-	for _, page := range []feed{eventPage, observationPage, changePage} {
+	for _, page := range []feed{read.events, read.observations, read.changes} {
 		for _, touched := range page.touches {
 			if project := needed(touched.project); project != nil {
 				project.keys[touched.issue] = true
@@ -299,21 +308,16 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		if err != nil {
 			return nil, false, err
 		}
-		for project, keys := range open {
-			if work := needed(project); work != nil {
-				for _, key := range keys {
-					work.keys[key] = true
-				}
-			}
-		}
 		stale, err := staleStoredRows(ctx, deps.Pool)
 		if err != nil {
 			return nil, false, err
 		}
-		for project, keys := range stale {
-			if work := needed(project); work != nil {
-				for _, key := range keys {
-					work.keys[key] = true
+		for _, swept := range []map[string][]string{open, stale} {
+			for project, keys := range swept {
+				if work := needed(project); work != nil {
+					for _, key := range keys {
+						work.keys[key] = true
+					}
 				}
 			}
 		}
@@ -331,7 +335,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	// project whose issues have all lost their Legion phase work answers no row at all and
 	// still owes the deletion of the stale rows its stated set holds, which is the one pass
 	// that takes those rows away.
-	computed := []projectRows{}
+	computed := []ProjectWrite{}
 	for _, project := range slices.Sorted(maps.Keys(work)) {
 		rows, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
 		if err != nil {
@@ -341,15 +345,72 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	}
 
 	positions := map[string]int64{
-		eventsCursor:       eventPage.position,
-		observationsCursor: observationPage.position,
-		changesCursor:      changePage.position,
+		eventsCursor:       read.events.position,
+		observationsCursor: read.observations.position,
+		changesCursor:      read.changes.position,
 	}
 	changed, err := writePass(ctx, deps.Pool, computed, positions, now)
 	if err != nil {
 		return changed, false, err
 	}
-	return changed, eventPage.full || observationPage.full || changePage.full, nil
+	return changed, read.events.full || read.observations.full || read.changes.full, nil
+}
+
+// pages is what one page of a pass read of the three feeds, and whether the change cursor had
+// fallen below the oldest change the log still holds.
+type pages struct {
+	events       feed
+	observations feed
+	changes      feed
+	lost         bool
+}
+
+// readPages is one page of each of the three feeds, read from where each cursor stands.
+//
+// A database holding no cursor row at all has committed no pass, because every pass writes the
+// three together (advanceCursors), so every feed would be read from its start. It is read from
+// its head instead (readFeedHeads): the first page of such a pass computes every project whole,
+// because no project has a stored row, and a whole project is computed from the history itself
+// rather than from the feeds, so the pages below that head hold nothing the backfill has not
+// already answered. Reading them would recompute every project once per page - about 813 pages
+// of a log the size of INFRA's - and no sweep runs until the pass ends, so the open rows would
+// stand still while it replayed.
+func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe int64, limit int) (pages, error) {
+	if len(cursors) == 0 {
+		return readFeedHeads(ctx, q, safe)
+	}
+	read := pages{}
+	var err error
+	if read.events, err = readEventPage(ctx, q, cursors[eventsCursor], safe, limit); err != nil {
+		return pages{}, err
+	}
+	if read.observations, err = readObservationPage(ctx, q, cursors[observationsCursor], limit); err != nil {
+		return pages{}, err
+	}
+	if read.changes, read.lost, err = readChangePage(ctx, q, cursors[changesCursor], limit); err != nil {
+		return pages{}, err
+	}
+	return read, nil
+}
+
+// readFeedHeads is the three feeds standing at their heads and naming no issue: where the
+// cursors of a database no pass has committed on start. The events feed's head is the safe
+// horizon rather than the newest id, because an event above the horizon may still be committing
+// and a later pass reads it (readEventPage).
+func readFeedHeads(ctx context.Context, q Querier, safe int64) (pages, error) {
+	var observations int64
+	if err := q.QueryRow(ctx, `select coalesce(max(id), 0) from legion_observations`).Scan(&observations); err != nil {
+		return pages{}, fmt.Errorf("read the head of the Legion observations: %w", err)
+	}
+	changes, err := delivery.LatestChangeSeq(ctx, q)
+	if err != nil {
+		return pages{}, fmt.Errorf("read the head of the delivery changes: %w", err)
+	}
+	return pages{
+		events:       feed{position: safe},
+		observations: feed{position: observations},
+		changes:      feed{position: changes},
+	}, nil
 }
 
 // projectWork is what one page owes one project: the issues its feeds named, those of them whose
@@ -360,61 +421,42 @@ type projectWork struct {
 	backfill bool
 }
 
-// projectRows is one project's computed rows and the set its pass stated, kept with its project
-// because Write writes the rows of one project in one statement. The stated set reaches the
-// write because the write is where the deletion of the stale rows belongs, inside the one
-// transaction: stated is the keys the pass computed over, and whole says the pass read the
-// project whole, whose stated set is every issue the project has.
-type projectRows struct {
-	project string
-	stated  []string
-	whole   bool
-	rows    []Row
-}
-
-// deleteStale deletes the stored rows of the set this pass stated that its computation answered
-// no row for, and no row outside that set. kept is the keys the computation answered a row for.
-func (p projectRows) deleteStale(ctx context.Context, tx pgx.Tx, kept []string) ([]string, error) {
-	if p.whole {
-		return DeleteStaleProjectRows(ctx, tx, p.project, kept)
-	}
-	return DeleteStaleRows(ctx, tx, p.project, p.stated, kept)
-}
-
-// computeProjectWork computes the rows one project owes and answers them with the set the pass
-// stated for that project. A backfill reads the whole project (ComputeProject) and the keys its
+// computeProjectWork computes the rows one project owes and answers them as the write of that
+// project (ProjectWrite): the rows, the set the pass stated for them, and whether the pass read
+// the project whole. A backfill reads the whole project (ComputeProject) and the keys its
 // feeds named are left out of the call, because the whole project already holds them: its
 // stated set is the project itself. Every other project is computed over the rows its changes
 // touch (rowsToCompute), and no row outside that set is written or deleted.
-func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectRows, error) {
+func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (ProjectWrite, error) {
 	if work.backfill {
 		rows, err := ComputeProject(ctx, pool, project, now)
 		if err != nil {
-			return projectRows{}, err
+			return ProjectWrite{}, err
 		}
-		return projectRows{project: project, whole: true, rows: rows}, nil
+		return ProjectWrite{Project: project, Whole: true, Rows: rows}, nil
 	}
 	parents, err := parentLinks(ctx, pool, project)
 	if err != nil {
-		return projectRows{}, err
+		return ProjectWrite{}, err
 	}
 	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, parents)
 	if err != nil {
-		return projectRows{}, err
+		return ProjectWrite{}, err
 	}
 	rows, err := Compute(ctx, pool, project, keys, now)
 	if err != nil {
-		return projectRows{}, err
+		return ProjectWrite{}, err
 	}
-	return projectRows{project: project, stated: keys, rows: rows}, nil
+	return ProjectWrite{Project: project, Stated: keys, Rows: rows}, nil
 }
 
 // writePass writes every project's rows, deletes the stale rows inside the set each project's
-// pass stated, and moves the three cursors, all in one transaction. It answers the keys whose
-// stored rows changed, the deleted keys among them, because a row that went is a change of the
-// stored facts as much as a row that moved. A failure leaves the cursors where they were, so the
-// next pass reads the same rows again.
-func writePass(ctx context.Context, pool *store.Pool, computed []projectRows, positions map[string]int64, now time.Time) ([]string, error) {
+// pass stated, records the projects it computed whole and moves the three cursors, all in one
+// transaction. It answers the keys whose stored rows changed, the deleted keys among them,
+// because a row that went is a change of the stored facts as much as a row that moved. A
+// failure leaves the cursors and the marks where they were, so the next pass reads the same
+// rows again.
+func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, positions map[string]int64, now time.Time) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -422,17 +464,14 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectRows, po
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	changed := []string{}
 	for _, project := range computed {
-		kept := computedKeys(project.rows)
-		written, err := Upsert(ctx, tx, project.rows, kept)
+		written, err := WriteProject(ctx, tx, project)
 		if err != nil {
 			return nil, err
 		}
 		changed = append(changed, written...)
-		deleted, err := project.deleteStale(ctx, tx, kept)
-		if err != nil {
-			return nil, err
-		}
-		changed = append(changed, deleted...)
+	}
+	if err := markComputedWhole(ctx, tx, computed, now); err != nil {
+		return nil, err
 	}
 	if err := advanceCursors(ctx, tx, positions, now); err != nil {
 		return nil, err
@@ -441,6 +480,45 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectRows, po
 		return nil, fmt.Errorf("commit the Legion facts: %w", err)
 	}
 	return changed, nil
+}
+
+// markComputedWhole records that each project this write read whole was computed whole as of now
+// and how many rows that computation answered, which is what legionProjects reads a project's
+// backfill from. It runs in the transaction that wrote those rows (writePass), so a pass that
+// failed leaves no mark and the next pass reads the project whole again.
+//
+// It takes the writes themselves and reads Whole off each one, rather than the projects and the
+// counts as two arrays its caller filled: the rows a project answered stand beside the project
+// in one value, so nothing has to hold two lists in step.
+//
+// The mark is a record rather than the absence of a stored row, because a project whose issues
+// carry no Legion phase work is computed whole and answers no row at all: read from an absence,
+// such a project would be computed whole again every SweepEvery for ever. The count is what
+// still answers for the rows of a project going missing under the consumer, which is the other
+// thing an absence used to say (migration 20261111153000).
+func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []ProjectWrite, now time.Time) error {
+	projects := []string{}
+	answered := []int32{}
+	for _, write := range computed {
+		if !write.Whole {
+			continue
+		}
+		projects = append(projects, write.Project)
+		answered = append(answered, int32(len(write.Rows)))
+	}
+	if len(projects) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		insert into issue_facts_computed (project_key, computed_at, computed_rows)
+		select project, $3, rows from unnest($1::text[], $2::integer[]) as given(project, rows)
+		on conflict (project_key) do update
+		set computed_at = excluded.computed_at, computed_rows = excluded.computed_rows
+	`, projects, answered, now)
+	if err != nil {
+		return fmt.Errorf("record the %d projects computed whole: %w", len(projects), err)
+	}
+	return nil
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named and
@@ -460,7 +538,8 @@ type touch struct {
 }
 
 // readEventPage is the page of events after the cursor: up to limit events above after and at or
-// below safe, with each event's project and whether it says the issue's parent moved.
+// below safe, with the issues those events name and the issues the sessions those events name
+// have written on (sessionIssues).
 //
 // The page stops at safe because events.id is not commit order. An event draws its id when its
 // write inserts the row, and two writes that wait on nothing commit out of id order, so a cursor
@@ -471,12 +550,20 @@ type touch struct {
 // `changed` holds the fields an issue write moved (api's issueChangedFields), so an event naming
 // `parent` is the parent link moving. That is what widens the set a change touches from the
 // issue and its ancestors to the issue's whole subtree (rowsTouchedBy).
+//
+// An event that is on no issue at all is kept where its actor is a session, because such an
+// event carries that session's title as much as an event on an issue does, and a session's
+// newest title decides which issues every event of that session works (legion.PhaseWork). A
+// session that writes on a project or on an artifact therefore moves the facts of the issues it
+// wrote on, and no issue of its own names it. The event's own project is not the work: the
+// issues are read from the session (sessionIssues).
 func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
-		select event.id, issue.project_key, event.issue_key,
-		       coalesce(event.payload -> 'changed' @> '["parent"]', false)
+		select event.id, coalesce(issue.project_key, ''), coalesce(event.issue_key, ''),
+		       coalesce(event.payload -> 'changed' @> '["parent"]', false),
+		       case when event.actor ->> 'kind' = 'session' then coalesce(event.actor ->> 'id', '') else '' end
 		from events event
-		join issues issue on issue.key = event.issue_key
+		left join issues issue on issue.key = event.issue_key
 		where event.id > $1 and event.id <= $2
 		order by event.id
 		limit $3
@@ -486,18 +573,83 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	}
 	defer rows.Close()
 	page := feed{position: after}
+	count := 0
+	sessions := map[string]bool{}
 	for rows.Next() {
 		var touched touch
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved); err != nil {
+		var session string
+		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session); err != nil {
 			return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 		}
-		page.touches = append(page.touches, touched)
+		count++
+		if session != "" {
+			sessions[session] = true
+		}
+		if touched.project != "" {
+			page.touches = append(page.touches, touched)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 	}
-	page.full = len(page.touches) == limit
+	page.full = count == limit
+	worked, err := sessionIssues(ctx, q, slices.Sorted(maps.Keys(sessions)))
+	if err != nil {
+		return feed{}, err
+	}
+	page.touches = append(page.touches, worked...)
 	return page, nil
+}
+
+// sessionIssues is every issue the named sessions have written an event on, with the project of
+// each: the issues one page of events can have moved the facts of through the titles its
+// sessions carry.
+//
+// A session's newest title decides which of the issues it wrote on carry its work
+// (legion.PhaseWork), so one write anywhere by one session can take the work off one issue and
+// give it to another. Both issues are in this answer, and neither is named by the event itself:
+// the issue that lost the work has no event of its own, and the issue that gained it is named
+// by a title rather than by a key. They join the keys the pass computes, and nothing downstream
+// treats them differently - a row is written or deleted only because the computation of that
+// issue said so.
+//
+// It reads events_session_actor_created_at_idx (migration 0026), the partial index on
+// ((actor->>'id'), created_at desc) for a session actor: one scan of that index for each session
+// the page named, over every event that session ever wrote, because the read has no order and no
+// limit and keeps every issue it finds. The index bounds it to the sessions the page named and
+// not to the events the page read, which is the trap delivery/agents.go documents of the same
+// index. The set the pass then computes is therefore every issue those sessions ever wrote on,
+// not the issues of this page: a session that moved its title through ten issues names all ten,
+// and the computation of each decides whether its row is written, deleted or left alone.
+// legion.PhaseWorkKeys would answer the same pairs and reads the session half of the whole log
+// to do it, which is why a page does not call it.
+func sessionIssues(ctx context.Context, q Querier, sessions []string) ([]touch, error) {
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select distinct issue.project_key, event.issue_key
+		from events event
+		join issues issue on issue.key = event.issue_key
+		where event.actor ->> 'id' = any($1::text[])
+		  and event.actor ->> 'kind' = 'session'
+	`, sessions)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues %d sessions wrote on: %w", len(sessions), err)
+	}
+	defer rows.Close()
+	worked := []touch{}
+	for rows.Next() {
+		var touched touch
+		if err := rows.Scan(&touched.project, &touched.issue); err != nil {
+			return nil, fmt.Errorf("read the issues %d sessions wrote on: %w", len(sessions), err)
+		}
+		worked = append(worked, touched)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the issues %d sessions wrote on: %w", len(sessions), err)
+	}
+	return worked, nil
 }
 
 // readObservationPage is the page of the daemon's observations after the cursor: up to limit
@@ -607,14 +759,33 @@ func changesLost(ctx context.Context, q Querier, cursor int64) (bool, error) {
 // answers for is no work of this loop: its first observation brings the project in, and the
 // backfill then computes it.
 //
-// A project with no stored row has never been computed, and every project at all has lost its
-// delivery changes when lost says the change cursor fell below the log. Either is a backfill: a
-// pass of this same loop that runs ComputeProject over the project rather than Compute over a
-// key set. The first run on an empty table is that case and needs no second code path.
+// A project is a backfill - a pass of this same loop that runs ComputeProject over the project
+// rather than Compute over a key set - where its mark says it was never computed whole, where
+// the rows that mark counted have gone, or where lost says the change cursor fell below the
+// log, which loses the changes of every project at once. The first run on an empty table is
+// the first of those cases and needs no second code path.
+//
+// The mark is a row of issue_facts_computed, which the pass that read the project whole writes
+// (markComputedWhole). "Never computed" is read from that record and not from "this project
+// holds no stored row", because a project whose issues carry no Legion phase work is computed
+// whole and answers no row: read from the absence of a row, such a project would be computed
+// whole on every pass for as long as it held no worked issue, which is the whole-project read
+// this loop exists to make rare.
+//
+// The count the mark carries is what still answers for a project whose stored rows went
+// missing under the consumer, an emptied table among them: a project whose last whole read
+// answered rows and which now holds none has lost them to something this loop did not do, and
+// no narrow pass can name rows that are not there. It costs one whole read, because that read
+// writes the count it answered: a project that truly holds no row any more is marked with none
+// and is left alone from then on.
 func legionProjects(ctx context.Context, q Querier, lost bool) (map[string]bool, error) {
 	rows, err := q.Query(ctx, `
-		select project.key, not exists (select 1 from issue_facts where project_key = project.key)
+		select project.key,
+		       mark.project_key is null
+		       or (mark.computed_rows > 0
+		           and not exists (select 1 from issue_facts where project_key = project.key))
 		from projects project
+		left join issue_facts_computed mark on mark.project_key = project.key
 		where exists (select 1 from legion_observations where project = project.key)
 		   or exists (select 1 from issue_facts where project_key = project.key)
 	`)
@@ -639,7 +810,7 @@ func legionProjects(ctx context.Context, q Querier, lost bool) (map[string]bool,
 
 // openStoredRows is the stored row of every open issue, by project: what the sweep recomputes,
 // because an open issue's hours grow with the clock while no input moves. A closed issue's facts
-// stand still, so the sweep passes over it and Write leaves its row alone.
+// stand still, so the sweep passes over it and WriteProject leaves its row alone.
 //
 // It reads the rows rather than the issues: an open issue with no stored row carries no Legion
 // phase work yet, or has never been computed, and its own event or the backfill answers for it.
@@ -681,7 +852,7 @@ func openStoredRows(ctx context.Context, q Querier) (map[string][]string, error)
 // A row whose issue no session ever wrote on is left where it stands. Such a row is no row this
 // loop can have written, because the computation answers a row for an issue a handoff names or
 // a role session worked, and a handoff is never taken back. The whole-project pass is what
-// answers for a row of that kind (DeleteStaleProjectRows), as it does for a row whose key names
+// answers for a row of that kind (deleteStaleProjectRows), as it does for a row whose key names
 // no issue at all.
 //
 // Both reads are of the whole deployment and run once a sweep, which is what their cost is
@@ -749,7 +920,7 @@ func parentLinks(ctx context.Context, q Querier, project string) (map[string]str
 // outside it.
 func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, parent map[string]string) ([]string, error) {
 	touched := rowsTouchedBy(keys, moved, parent)
-	left, err := leftTrees(ctx, q, project, keys, moved, parent)
+	left, err := leftTrees(ctx, q, project, keys, moved)
 	if err != nil {
 		return nil, err
 	}
@@ -773,10 +944,18 @@ func rowsToCompute(ctx context.Context, q Querier, project string, keys []string
 // alone, so a pass that left the old tree out would leave that row wrong for good.
 //
 // The old tree is the tree as the last computation recorded it: the moved issue's stored
-// root_key, where it differs from the root its links give now (rootOf), and every issue the
-// table holds under that root. Nothing else can name it, because the links the pass reads are
-// the links after the move. It is one query, and only where an issue moved, which is rare.
-func leftTrees(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, parent map[string]string) ([]string, error) {
+// root_key, and every issue the table holds under that root. Nothing else can name it, because
+// the links the pass reads are the links after the move. It is one query, and only where an
+// issue moved, which is rare.
+//
+// The stored root is taken whether or not the links now give another one. There is one root
+// rule, legion.TreeChain, which is what wrote that root_key, and a walk of the raw parent links
+// is a second rule that can answer differently: it reads neither the daemon's tree nor the stop
+// at a parent with no Legion work. Comparing the two to skip a read would be a guess between
+// them. Taking the stored root always states a superset of the rows a comparison would state,
+// which the scope rule allows: the set is stated before anything is written, and a row inside
+// it is written or deleted only because the computation of that issue said so.
+func leftTrees(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool) ([]string, error) {
 	wasMoved := make([]string, 0, len(moved))
 	for _, key := range keys {
 		if moved[key] {
@@ -787,21 +966,20 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 		return nil, nil
 	}
 	stored, err := q.Query(ctx, `
-		select issue_key, root_key from issue_facts where project_key = $1 and issue_key = any($2::text[])
+		select root_key from issue_facts
+		where project_key = $1 and issue_key = any($2::text[]) and root_key <> ''
 	`, project, wasMoved)
 	if err != nil {
 		return nil, fmt.Errorf("read the stored roots of %d moved issues of %s: %w", len(wasMoved), project, err)
 	}
 	roots := []string{}
 	for stored.Next() {
-		var key, root string
-		if err := stored.Scan(&key, &root); err != nil {
+		var root string
+		if err := stored.Scan(&root); err != nil {
 			stored.Close()
 			return nil, fmt.Errorf("read the stored roots of %d moved issues of %s: %w", len(wasMoved), project, err)
 		}
-		if root != "" && root != rootOf(key, parent) {
-			roots = append(roots, root)
-		}
+		roots = append(roots, root)
 	}
 	stored.Close()
 	if err := stored.Err(); err != nil {
@@ -831,17 +1009,6 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 	}
 	slices.Sort(left)
 	return left, nil
-}
-
-// rootOf is the top of the issue's parent chain as the links stand now, and the issue itself
-// where it has no parent. The walk keeps the keys it has visited, so a chain that loops stops.
-func rootOf(key string, parent map[string]string) string {
-	climbed := map[string]bool{key: true}
-	for above := parent[key]; above != "" && !climbed[above]; above = parent[above] {
-		climbed[above] = true
-		key = above
-	}
-	return key
 }
 
 // rowsTouchedBy is every issue whose stored row a change to one of keys can move, sorted: the
@@ -900,8 +1067,9 @@ func rowsTouchedBy(keys []string, moved map[string]bool, parent map[string]strin
 	return slices.Sorted(maps.Keys(touched))
 }
 
-// readCursors is where each feed stands, by cursor name. A name with no row stands at 0, which
-// is a feed this database has read nothing of.
+// readCursors is where each feed stands, by cursor name. A name with no row stands at 0, which is
+// a feed this database has read nothing of, and no row at all is a database no pass has committed
+// on, which is what readPages reads its feeds' heads for.
 func readCursors(ctx context.Context, q Querier) (map[string]int64, error) {
 	rows, err := q.Query(ctx, `select name, position from issue_facts_cursor where name = any($1::text[])`, cursorNames)
 	if err != nil {

@@ -13,8 +13,8 @@ import (
 // takes the work with it (legion.PhaseWork, and api/legion_phase_work.go, which states the same
 // rule for the board). The issue it left then carries no phase work, and its row must go.
 //
-// It does not. Write only ever upserts and no pass deletes, so the row stands for ever and the
-// board serves it. Measured against a real Dispatch server of this head on 2026-11-11: one
+// It did not. The write only upserted and no pass deleted, so the row stood for ever and the
+// board served it. Measured against a real Dispatch server of this head on 2026-11-11: one
 // session wrote a comment on WIDGETS-1 titled for that issue, and the board answered one entry
 // with legion_issues 1; the same session then wrote on WIDGETS-2 titled for WIDGETS-2, and the
 // board answered two entries with legion_issues 1 — its own header counting one issue of Legion
@@ -45,7 +45,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
-	if _, err := Write(t.Context(), pool, rows); err != nil {
+	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
 	stored, err := Read(t.Context(), pool, project)
@@ -68,7 +68,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 			t.Fatalf("%s still carries Legion phase work after its session moved, so this test examined nothing", worked)
 		}
 	}
-	if _, err := Write(t.Context(), pool, moved); err != nil {
+	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: project, Rows: moved, Whole: true}); err != nil {
 		t.Fatalf("write the facts again: %v", err)
 	}
 

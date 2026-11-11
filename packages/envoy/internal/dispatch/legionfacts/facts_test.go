@@ -46,7 +46,7 @@ func TestEveryIssueLegionWorkedGetsAStoredRowAndNoOtherIssueDoes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
-	if _, err := Write(t.Context(), seeded.database.Pool, rows); err != nil {
+	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
 	stored, err := Read(t.Context(), seeded.database.Pool, project)
@@ -93,7 +93,7 @@ func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
-	if _, err := Write(t.Context(), seeded.database.Pool, rows); err != nil {
+	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
 	stored, err := Read(t.Context(), seeded.database.Pool, project)
@@ -148,7 +148,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
-	first, err := Write(t.Context(), seeded.database.Pool, rows)
+	first, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true})
 	if err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	for index := range rows {
 		rows[index].UpdatedAt = later
 	}
-	again, err := Write(t.Context(), seeded.database.Pool, rows)
+	again, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true})
 	if err != nil {
 		t.Fatalf("write the facts again: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 
 	moved := rows[len(rows)/2]
 	rows[len(rows)/2].ReviewRounds = moved.ReviewRounds + 1
-	changed, err := Write(t.Context(), seeded.database.Pool, rows)
+	changed, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true})
 	if err != nil {
 		t.Fatalf("write the moved row: %v", err)
 	}
@@ -203,8 +203,8 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	}
 }
 
-// TestTheStoredRowsReadBackFieldByField: Read and ReadIssues answer what Write wrote, every field
-// of every row.
+// TestTheStoredRowsReadBackFieldByField: Read and ReadIssues answer what WriteProject wrote,
+// every field of every row.
 func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
@@ -213,7 +213,7 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
-	if _, err := Write(t.Context(), seeded.database.Pool, rows); err != nil {
+	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
 	whole, err := Read(t.Context(), seeded.database.Pool, project)
@@ -251,14 +251,44 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times
 // by their instant, since a read answers them in the database's own zone.
 func sameRow(got, want Row) bool {
-	return got.Project == want.Project && got.Issue == want.Issue &&
-		got.OpenedAt.Equal(want.OpenedAt) && sameTime(got.ClosedAt, want.ClosedAt) &&
-		maps.Equal(got.HoursByPhase, storedHours(want.HoursByPhase)) &&
-		got.WorkHours == want.WorkHours && got.ReviewRounds == want.ReviewRounds &&
-		got.RootKey == want.RootKey && got.TreeDepth == want.TreeDepth &&
-		got.SlotHours == want.SlotHours && got.WaitingReason == want.WaitingReason &&
-		sameTime(got.WorkFirstAt, want.WorkFirstAt) && sameTime(got.WorkLastAt, want.WorkLastAt) &&
-		got.UpdatedAt.Equal(want.UpdatedAt)
+	return rowDifference(got, want) == ""
+}
+
+// rowDifference names the first field two rows hold different values of, with both values, and ""
+// where they hold the same facts. It is where the field list is stated, so a check that counts
+// differing rows and a check that prints one read the same comparison.
+//
+// The hours of want are read as the table stores them (storedHours), because the one caller that
+// compares a computed row to a stored one answers an empty map where the computation answered a
+// nil one.
+func rowDifference(got, want Row) string {
+	fields := []struct {
+		name string
+		same bool
+		got  any
+		want any
+	}{
+		{"the project", got.Project == want.Project, got.Project, want.Project},
+		{"the issue", got.Issue == want.Issue, got.Issue, want.Issue},
+		{"opened_at", got.OpenedAt.Equal(want.OpenedAt), got.OpenedAt.UTC(), want.OpenedAt.UTC()},
+		{"closed_at", sameTime(got.ClosedAt, want.ClosedAt), utc(got.ClosedAt), utc(want.ClosedAt)},
+		{"hours_by_phase", maps.Equal(got.HoursByPhase, storedHours(want.HoursByPhase)), got.HoursByPhase, want.HoursByPhase},
+		{"work_hours", got.WorkHours == want.WorkHours, got.WorkHours, want.WorkHours},
+		{"review_rounds", got.ReviewRounds == want.ReviewRounds, got.ReviewRounds, want.ReviewRounds},
+		{"root_key", got.RootKey == want.RootKey, got.RootKey, want.RootKey},
+		{"tree_depth", got.TreeDepth == want.TreeDepth, got.TreeDepth, want.TreeDepth},
+		{"slot_hours", got.SlotHours == want.SlotHours, got.SlotHours, want.SlotHours},
+		{"waiting_reason", got.WaitingReason == want.WaitingReason, got.WaitingReason, want.WaitingReason},
+		{"work_first_at", sameTime(got.WorkFirstAt, want.WorkFirstAt), utc(got.WorkFirstAt), utc(want.WorkFirstAt)},
+		{"work_last_at", sameTime(got.WorkLastAt, want.WorkLastAt), utc(got.WorkLastAt), utc(want.WorkLastAt)},
+		{"updated_at", got.UpdatedAt.Equal(want.UpdatedAt), got.UpdatedAt.UTC(), want.UpdatedAt.UTC()},
+	}
+	for _, field := range fields {
+		if !field.same {
+			return fmt.Sprintf("%s is %v and %v", field.name, field.got, field.want)
+		}
+	}
+	return ""
 }
 
 // sameTime is whether two optional moments are the same moment, or both absent.
