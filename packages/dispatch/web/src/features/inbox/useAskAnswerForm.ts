@@ -1,8 +1,8 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
-import { inboxQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
   Ask,
@@ -22,6 +22,7 @@ import {
   hasPendingAskThreadInvalidation,
 } from "./ask-thread-freshness";
 import { markAnswerOutstanding } from "./outstanding-answers";
+import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
@@ -97,31 +98,6 @@ function answerFailure(error: Error): AskAnswerFailure {
     }
   }
   return { message: "Could not save your answer.", retryable: true };
-}
-
-/**
- * The reads that carry an ask besides its own thread: the Inbox and its owner's lists. Every
- * write of an ask refreshes the same five - the answer and the question back here, and the
- * decline in `AskCard` - so one function says which they are.
- *
- * A document ask the server sent no `artifact_id` on loses that one invalidation instead of
- * throwing for it. This runs in a write's `onSuccess`, where query-core catches a throw as a
- * failure of the write the server has already taken: the reader would be told their answer was
- * refused, and the lists below the throw would go unrefreshed. The write paths that need the id
- * throw for it (`documentArtifactId`), where nothing has been written yet.
- */
-export function invalidateAskReads(queryClient: QueryClient, ask: Ask): void {
-  void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-  if (ask.issue_key === null) {
-    if (ask.artifact_id !== null && ask.artifact_id !== undefined) {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", ask.artifact_id] });
-    }
-    void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
-    return;
-  }
-  void queryClient.invalidateQueries({ queryKey: ["asks", ask.issue_key] });
-  void queryClient.invalidateQueries({ queryKey: ["issue", ask.issue_key] });
-  void queryClient.invalidateQueries({ queryKey: ["issues"] });
 }
 
 export function useAskAnswerForm({
@@ -254,7 +230,7 @@ export function useAskAnswerForm({
         void queryClient.invalidateQueries({ queryKey: ["me", "answers"] });
       }
       if (!changed) onAnswered?.(ask.id);
-      invalidateAskReads(queryClient, ask);
+      invalidateOwnerReads(queryClient, ask);
     },
   });
   // How long the Inbox's reading column keeps the question: while this answer is the reader's to
@@ -274,7 +250,7 @@ export function useAskAnswerForm({
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {
         return api.createArtifactComment(
-          documentArtifactId(),
+          askArtifactId(ask),
           { ask_id: ask.id, body: text },
           bounds
         );
@@ -291,17 +267,9 @@ export function useAskAnswerForm({
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,
       // not just the Inbox.
-      invalidateAskReads(queryClient, ask);
+      invalidateOwnerReads(queryClient, ask);
     },
   });
-
-  /** A document ask's artifact; the server always sets it, so its absence is a contract error. */
-  function documentArtifactId(): string {
-    if (ask.artifact_id === null || ask.artifact_id === undefined) {
-      throw new Error("document ask is missing its artifact id");
-    }
-    return ask.artifact_id;
-  }
 
   // The thread read is the truth once the question changed under the draft, and once the ask
   // was answered or resolved elsewhere while this card still holds its open row (an Inbox row

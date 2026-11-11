@@ -45,6 +45,10 @@ export const realStackReasons: Record<string, string> = {
     "decision answers the server records, and pastes in the live document editor",
   "ask-concurrent-edit.e2e.ts": "two editors crossing in one `/ws/doc` room",
   "ask-part-references.e2e.ts": "the reference and backlink index the server builds from the write",
+  "asked-of-cli.e2e.ts":
+    "runs the real `dispatch open-asks` against the server and reads the person it names, which the server's own expression answers, before and after a hand-on made in a browser",
+  "asked-of.e2e.ts":
+    "hands an ask on and re-reads the write on every surface that draws it; whose Inbox the row sits in is the server's own expression, and each move arrives over the live socket with no reload",
   "attention.e2e.ts":
     "the new card arrives over the live socket; a read-mark write moves under the reader",
   "bare-references.e2e.ts": "opens the spec's live editor and its margin for every assertion",

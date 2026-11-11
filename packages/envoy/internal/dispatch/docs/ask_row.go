@@ -13,7 +13,7 @@ import (
 
 // AskColumns selects one ask row, aliased a, in the order ScanAsk reads it.
 const AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, a.block_artifact_id::text, a.author, a.question, a.options, a.multiple, a.urgency,
-		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval`
+		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval, a.asked_of, a.asked_of_by, a.asked_of_at`
 
 // ScanAsk decodes one AskColumns row. extra receives, in order, any columns the query
 // selects after AskColumns.
@@ -23,7 +23,7 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 	var editedAt *time.Time
 	targets := append([]any{
 		&ask.ID, &ask.IssueKey, &ask.ArtifactID, &ask.BlockID, &ask.BlockArtifactID, &author, &ask.Question, &options, &ask.Multiple, &ask.Urgency,
-		&anchor, &ask.State, &answer, &resolution, &ask.CreatedAt, &editedAt, &ask.Kind, &approval,
+		&anchor, &ask.State, &answer, &resolution, &ask.CreatedAt, &editedAt, &ask.Kind, &approval, &ask.AskedOf, &ask.AskedOfBy, &ask.AskedOfAt,
 	}, extra...)
 	if err := row.Scan(targets...); err != nil {
 		return model.Ask{}, err

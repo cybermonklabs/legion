@@ -1,13 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import type { FakeGrant } from "./fake-broker";
 import { setCredentialGrants } from "./fake-broker-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { withAlice } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The judge as the broker records it: `requests.decided_by` and the approval event's own audit
  *  actor are both `judge:` and the id of the model that decided it. */

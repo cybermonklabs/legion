@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `DISPATCH_TEST_HORIZON_STALL_AFTER` sets how long a pending event-horizon observation waits before the Dispatch server warns that an open transaction is holding the horizon back, in place of the five seconds a deployment waits, and `DISPATCH_TEST_HORIZON_WARN_EVERY` how often each of that horizon's three warnings repeats — the stall warning, the failed-observation warning and the failed-persist warning — in place of thirty seconds, so an end-to-end test whose own wait keys on the stall warning sees it inside its patience. Both are test-only settings: each needs `DISPATCH_TEST_HOOKS=1`, takes a positive Go duration, and a deployment sets neither.

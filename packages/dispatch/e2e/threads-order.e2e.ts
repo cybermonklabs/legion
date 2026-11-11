@@ -1,6 +1,4 @@
-import { expect, test } from "@playwright/test";
-
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import {
   DECISION_BLOCK,
   expand,
@@ -25,10 +23,6 @@ import { asUser } from "./users";
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("a document block's thread folds and places its box by the chosen order", async ({
   browser,

@@ -1,7 +1,5 @@
-import { expect, test } from "@playwright/test";
-
 import { createAsk, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -12,10 +10,6 @@ import { asUser } from "./users";
  */
 
 const session = { actor: { id: "e2e-nav", kind: "session" as const }, as: "agent" as const };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, and Settings — never an issue row — on desktop and in the phone drawer @phone", async ({
   browser,

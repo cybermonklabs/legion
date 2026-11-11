@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, search as searchByApi } from "./api";
 import { embeddedQueries, forgetEmbedCalls, setEmbedMarkers } from "./fake-embedder-helpers";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The bar's two tiers, read from the embeddings each costs (dispatch://INFRA-1042): a keystroke
@@ -57,10 +55,6 @@ async function openBarOnFixture(page: Page, fixture: TiersFixture): Promise<void
   await page.keyboard.press("Control+k");
   await expect(page.getByRole("combobox", { name: "Search" })).toBeFocused();
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): three seeded issues, the wait for the queue to embed them, and the two searches
 // one query makes.

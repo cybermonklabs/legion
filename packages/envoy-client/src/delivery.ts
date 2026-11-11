@@ -648,9 +648,10 @@ export function replyWith(envelope: DeliveryEnvelope): ReplyHint | undefined {
 }
 
 // Dispatch event payloads follow the wire contract: issue.* carries the Issue,
-// ask.opened/anchor_refreshed/handed_back/answered/resolved the Ask, ask.edited the edited Ask plus
-// its prior fields and editor, message.created the Message, comment.*/suggestion.* the Comment plus
-// artifact_name, artifact.created {artifact}, artifact.version {artifact_id, name, version, diff?},
+// ask.opened/anchor_refreshed/handed_back/asked_of/answered/resolved the Ask, ask.edited the
+// edited Ask plus its prior fields and editor, message.created the Message,
+// comment.*/suggestion.* the Comment plus artifact_name, artifact.created {artifact},
+// artifact.version {artifact_id, name, version, diff?},
 // artifact.human_edited {artifact_id, name, from_version, to_version, editors, diff, diff_truncated},
 // and child.status {child_key, from, to}.
 // Bus frames are untrusted, so each schema below declares exactly the fields
@@ -670,6 +671,7 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "ask.anchor_refreshed": AskPayloadSchema,
   "ask.edited": AskEditedPayloadSchema,
   "ask.handed_back": AskPayloadSchema,
+  "ask.asked_of": AskPayloadSchema,
   "ask.answered": AskPayloadSchema,
   "ask.resolved": AskPayloadSchema,
   "comment.created": CommentPayloadSchema,
@@ -836,6 +838,20 @@ function dispatchCompact(
         ...(previousAnswer === null || previousAnswer === undefined
           ? {}
           : { previous_answer: askAnswerText(previousAnswer) }),
+      };
+      break;
+    }
+    case "ask.asked_of": {
+      // Whom the ask waits on from now on, and who handed it there. An empty `asked_of` is a
+      // hand-on to the assignee of the ask's own issue: the ask follows that issue again, and
+      // the payload names no login for the person, so the line says where it went instead.
+      const handedOnBy = ask.data.asked_of_by;
+      record = {
+        ...record,
+        asked_of: ask.data.asked_of ?? "the assignee of its issue",
+        ...(handedOnBy === null || handedOnBy === undefined || handedOnBy === ""
+          ? {}
+          : { handed_on_by: handedOnBy }),
       };
       break;
     }

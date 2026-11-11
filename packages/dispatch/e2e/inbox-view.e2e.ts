@@ -1,9 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import { createIssue, createProject, listMyReplies, patchIssue } from "./api";
 import { holdReadMarks, replyRowId, seedBulkReplyThreads, unreadThreadRows } from "./inbox-threads";
 import { drawnIds, openField } from "./inbox-view";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -15,10 +13,6 @@ import { asUser } from "./users";
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // ---------------------------------------------------------------------------
 // A11: a hundred and twenty threads.
