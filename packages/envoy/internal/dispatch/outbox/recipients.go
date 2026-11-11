@@ -211,6 +211,25 @@ func takesPrimaryAuthors(event model.Event, routing routing) bool {
 	return routing.route == nil || *routing.route == ""
 }
 
+// takesClaimantRoute reports whether an event reaches the session that holds its issue's claim on
+// that session's own topic (addClaimantRoute): it names an issue, its actor is a person, the
+// batch read a session claimant, and its type is one of the answers, comments and messages a
+// claimant is told about. addAuthorRoutes reads the same predicate for its claimed test, so the
+// credits of a document are left out exactly where the claimant was added.
+func takesClaimantRoute(event model.Event, claimant string) bool {
+	// A project document's event names no issue, so there is no claim to read.
+	if event.IssueKey == nil || event.Actor.Kind != "user" || claimant == "" {
+		return false
+	}
+	switch event.Type {
+	case "ask.answered", "ask.handed_back", "ask.resolved",
+		"comment.created", "comment.edited", "comment.resolved", "comment.reopened",
+		"message.created", "message.answered":
+		return true
+	}
+	return false
+}
+
 // recipientFilter keeps, of the sessions one route of a notifying event reaches on their own
 // topics, each one once, and none that is the event's actor. Whether a session is left to its
 // own mention of a new comment is the destination build's own rule, asked of the comment's

@@ -300,14 +300,9 @@ func mergedIDs(ids, more []string) []string {
 	if len(ids) == 0 {
 		return more
 	}
-	both := make(map[string]struct{}, len(ids)+len(more))
-	for _, id := range ids {
-		both[id] = struct{}{}
-	}
-	for _, id := range more {
-		both[id] = struct{}{}
-	}
-	return slices.Sorted(maps.Keys(both))
+	both := slices.Concat(ids, more)
+	slices.Sort(both)
+	return slices.Compact(both)
 }
 
 // keepFailedMentions moves the reading of every comment only an edit asked for - one of
@@ -630,11 +625,13 @@ func (m settledMention) beats(current settledMention) bool {
 }
 
 // loadMentionDeliveries reads what the mentions of every comment in ids did and which of their
-// destinations fallback rows own (mentionDeliveries), in two statements. Only a comment.created
-// that names a mentioned session, or suppresses its route by a mention's target, asks
-// (eventDestinations): every other event, edits, resolutions and reopenings included, suppresses
-// nothing. A comment no attempt was recorded for answers empty sets, so it suppresses nothing
-// either.
+// destinations fallback rows own (mentionDeliveries), in two statements. Two events ask for a
+// comment: a comment.created that names a mentioned session, which takes the whole reading, both
+// the destinations it adds and the routes a mention's target suppresses (eventDestinations), and
+// a comment.edited whose payload names a mention, which takes that reading's failed mentions
+// alone (keepFailedMentions, lookup.mentionFallbackKeys). Every other event, resolutions and
+// reopenings included, asks for no comment and suppresses nothing. A comment no attempt was
+// recorded for answers empty sets, so it suppresses nothing either.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
 // its target's role is recorded beside it with the state the attempt is in

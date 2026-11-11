@@ -22,7 +22,7 @@ func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string) (
 	if len(sessionIDs) == 0 {
 		return titles, nil
 	}
-	// One sessionIDs lookup table joined against the index, rather than one query per id: a
+	// One statement for every id of the read, over that index, rather than one query per id: a
 	// Delivery timeline page can name hundreds of distinct sessions across its window.
 	rows, err := q.Query(ctx, `
 		select distinct on (actor->>'id')

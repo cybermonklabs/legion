@@ -499,7 +499,7 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 // where the mention rule would be asked of that session (destinations.addSession). So a mention
 // of the comment to it that is still being sent holds nothing back: the event publishes in the
 // pass that reads it, to its issue topic and the claimant, with no attempt counted and no
-// fallback row kept, rather than waiting the mentionPendingDelay
+// fallback row kept, rather than waiting the mentionPendingDelay that
 // TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent measures for a copy that does stay in
 // the list.
 func TestACreditedSessionsPendingMentionDefersNoEventOfAClaimedIssue(t *testing.T) {

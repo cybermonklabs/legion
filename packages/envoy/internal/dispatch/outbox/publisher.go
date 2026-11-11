@@ -1136,16 +1136,10 @@ func addRoute(d *destinations, route *string) error {
 // author gets one copy: destinations adds a subject once per event. The claimant's subject is an
 // ordinary agent subject, so its sends share the chain of every other route to that session
 // (destinationKey).
+// Whether the route applies at all - a person's event, on an issue a session claims, of a type a
+// claimant is told about - is takesClaimantRoute, the one predicate addAuthorRoutes reads too.
 func addClaimantRoute(event model.Event, claimant string, d *destinations) {
-	// A project document's event names no issue, so there is no claim to read.
-	if event.IssueKey == nil || event.Actor.Kind != "user" || claimant == "" {
-		return
-	}
-	switch event.Type {
-	case "ask.answered", "ask.handed_back", "ask.resolved",
-		"comment.created", "comment.edited", "comment.resolved", "comment.reopened",
-		"message.created", "message.answered":
-	default:
+	if !takesClaimantRoute(event, claimant) {
 		return
 	}
 	d.addWorkingSession(claimant, "publish claimant route to", claimant)
@@ -1284,8 +1278,9 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // A session the read names as a credit of a document alone is left out where a person's comment,
 // or its edit, is on an issue a session claims: the credits of a document are
 // not a second reason to deliver what the claimant already hears on its own topic. The conditions
-// are exactly those under which that claimant was added (addClaimantRoute) - the event names an
-// issue, its actor is a person, and routing holds a session claimant - so no comment loses every
+// are exactly those under which that claimant was added: both read the one predicate
+// (takesClaimantRoute) - the event names an issue, its actor is a person, routing holds a session
+// claimant, and the event's type is one a claimant is told about - so no comment loses every
 // destination. Those credits are the rows of the thread read the thread itself does not name
 // (threadRecipient.fromThread) and the whole of a document's credits under a comment at the head
 // of a thread anchored on it. The read is made all the same, so a credit read that failed still
@@ -1302,9 +1297,8 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 	filter := newRecipientFilter(event)
 	// claimed is whether the claimant of this event's issue was added above (addClaimantRoute),
 	// which is where the credits of a document are left out.
-	claimed := event.IssueKey != nil && event.Actor.Kind == "user" && routing.claimant != ""
+	claimed := takesClaimantRoute(event, routing.claimant)
 	var failedMentions map[string]string
-	asked := false
 	var targets []string
 	consider := func(sessionID string) {
 		if filter.keep(sessionID) {
@@ -1327,10 +1321,6 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 	// edit whose payload names no mention can exempt nobody, so it asks nothing. A read that
 	// failed ends the event's destinations, as every other lookup here does.
 	askFailedMentions := func() error {
-		if asked {
-			return nil
-		}
-		asked = true
 		switch {
 		case event.Type == "comment.created":
 			failedMentions = d.mentions.fallbackKeys
