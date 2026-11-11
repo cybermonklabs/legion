@@ -49,17 +49,20 @@ if [ ! -x "$tool" ]; then
   # loop is allowed. So the helper is sourced where it exists and the call is bare where the
   # caller retries it. This file is `#!/bin/sh`: no bashism here, since the image's shell is not
   # bash and a `${BASH_SOURCE[0]}` here died as `bad substitution` inside the image build.
+  # `env` and not a shell function: ci-retry.sh runs what it is given under `timeout`, which
+  # executes a program directly and cannot see a function of this shell - a call that gives it
+  # one exits 127 five times over, which is what the first shape of this fix did in
+  # envoy-go-checks (run 42949700792).
   retry_helper=$(dirname -- "$0")/../.github/scripts/ci-retry.sh
-  install_go_licenses() {
-    (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
-      "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
-  }
+  go_licenses_module="github.com/google/go-licenses/v2@$GO_LICENSES_VERSION"
   if [ -r "$retry_helper" ]; then
     # shellcheck source=.github/scripts/ci-retry.sh
     . "$retry_helper"
-    retry_fetch "go-licenses $GO_LICENSES_VERSION" 180 -- install_go_licenses
+    (cd / && retry_fetch "go-licenses $GO_LICENSES_VERSION" 180 -- \
+      env GOOS= GOARCH= GOFLAGS= GOBIN="$tool_dir" "$go_cmd" install "$go_licenses_module")
   else
-    install_go_licenses
+    (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
+      "$go_cmd" install "$go_licenses_module")
   fi
 fi
 if [ "$1" = --install ]; then
