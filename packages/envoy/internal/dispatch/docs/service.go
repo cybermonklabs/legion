@@ -3104,7 +3104,9 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 
 // residentArtifactsStatement reads which of the documents in $1 still have an artifacts row. It
 // reads no kind: a row whose kind changed is no removal, and only a row that has gone is one
-// (recheckRemovedRooms).
+// (recheckRemovedRooms). $1 holds canonical uuid spellings, the ones its caller parsed the
+// resident rooms into: every element is cast to uuid here, and one Postgres cannot read as a
+// uuid errors the whole statement, taking the answer for every other room with it.
 const residentArtifactsStatement = `select id::text from artifacts where id = any($1::uuid[])`
 
 // recheckRemovedRooms is the removal lane's work after each LISTEN stands: a removal notified
@@ -3112,9 +3114,26 @@ const residentArtifactsStatement = `select id::text from artifacts where id = an
 // is sent once, and the row it named has gone, so no later read of that document brings it
 // back. This reads the rows of the rooms this process holds, in one statement, and every room
 // the answer leaves out is a document that has gone: it is closed through the lane's own
-// handler (documentRemoved, which reads residence again and logs the close it makes). A room
-// left open over a deleted row takes a person's typing that no append can store, the
-// doc_updates foreign key refusing it.
+// handler (documentRemoved), which reads residence again and logs only a close that failed.
+// A close that succeeds writes no line at all (Evict, evictRoom, forgetEvicted write none), so
+// a room this pass took is a room that left nothing in the log to find. A room left open over a
+// deleted row takes a person's typing that no append can store, the doc_updates foreign key
+// refusing it.
+//
+// The match is made on each room's parsed id and the close on the room's own key, because a
+// room's name is whatever the browser's URL spelled: the admission parses the name and keeps
+// the caller's spelling (ServeHTTP), while id::text comes back in Postgres's canonical one,
+// lower case and hyphenated. Comparing the two read a room resident under another spelling of
+// its own id - an upper-case one, which is what a link in upper case gives a person - as a row
+// that had gone, and closed a live room under the person in it whenever any other document was
+// really removed. Sending the parsed spellings is also what keeps the statement castable, since
+// a name Postgres cannot read as a uuid would error the read and leave this pass doing nothing
+// for as long as such a room stood. Two keys can spell one document, so each canonical spelling
+// keeps every key this process holds under it and a removal closes them all; a key uuid.Parse
+// refuses is passed over, as recheckResidentIssues passes over a room the database answered
+// nothing for - no such room can be admitted today, the admission parsing the name and the
+// issue read behind it casting it, so this is the pass refusing to act on a room it cannot
+// identify rather than a case anyone can reach.
 //
 // The catch-up's sweep after the same LISTEN closes such a room too, where the room holds
 // stored updates: the removal took them with the document, so the room stands above the head
@@ -3123,11 +3142,23 @@ const residentArtifactsStatement = `select id::text from artifacts where id = an
 // for what it is, and it is the only one that closes a room holding nothing stored, which
 // stands at that empty history's head and reads as current.
 func (s *Service) recheckRemovedRooms(ctx context.Context) {
-	rooms := s.residentLoadedRooms()
-	if len(rooms) == 0 {
+	keys := make(map[string][]string)
+	var documents []string
+	for _, room := range s.residentLoadedRooms() {
+		id, err := uuid.Parse(room)
+		if err != nil {
+			continue
+		}
+		canonical := id.String()
+		if _, asked := keys[canonical]; !asked {
+			documents = append(documents, canonical)
+		}
+		keys[canonical] = append(keys[canonical], room)
+	}
+	if len(documents) == 0 {
 		return
 	}
-	rows, err := s.store.Pool.Query(ctx, residentArtifactsStatement, rooms)
+	rows, err := s.store.Pool.Query(ctx, residentArtifactsStatement, documents)
 	var held []string
 	if err == nil {
 		held, err = pgx.CollectRows(rows, pgx.RowTo[string])
@@ -3136,20 +3167,21 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 		// Every room stays as it is until the next LISTEN reads again, as a failed read of
 		// the resident rooms' issues leaves them (recheckResidentIssues).
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read which of the resident documents still exist", "rooms", len(rooms), "error", err)
+			slog.Error("dispatch: read which of the resident documents still exist", "documents", len(documents), "error", err)
 		}
 		return
 	}
-	// The usual answer holds every room, each id once, and builds no set to read itself by.
-	if len(held) == len(rooms) {
+	// The usual answer holds every document asked for and builds nothing to read itself by:
+	// id is the artifacts primary key and each document is asked about once, so a row count
+	// that matches is every document still there.
+	if len(held) == len(documents) {
 		return
 	}
-	stands := make(map[string]struct{}, len(held))
-	for _, room := range held {
-		stands[room] = struct{}{}
+	for _, document := range held {
+		delete(keys, document)
 	}
-	for _, room := range rooms {
-		if _, there := stands[room]; !there {
+	for _, rooms := range keys {
+		for _, room := range rooms {
 			s.documentRemoved(ctx, room)
 		}
 	}

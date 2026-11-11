@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -201,4 +202,96 @@ func TestTheRoomSyncSenderReachesTheOtherProcessFromInsideATransaction(t *testin
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("roll back the request's transaction: %v", err)
 	}
+}
+
+// removeArtifactRow deletes artifactID's artifacts row, as a removal's transaction does
+// (api.removeArtifact). The rows that reference it go first - neither doc_updates nor
+// artifact_versions cascades, so the foreign key refuses the delete while one of them stands -
+// and nothing here announces the removal: the pass under test is the one that reads the rows
+// itself, for the removals whose announcement reached nobody.
+func removeArtifactRow(t *testing.T, database *store.Store, artifactID string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, statement := range []string{
+		`delete from doc_updates where artifact_id = $1`,
+		`delete from artifact_versions where artifact_id = $1`,
+		`delete from artifacts where id = $1`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement, artifactID); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+}
+
+// A room is resident under the name the browser's URL spelled, which the admission parses and
+// keeps as it stands (ServeHTTP), and a uuid has more spellings than one: a person who opens
+// /ws/doc/<the id in upper case> holds a room named in upper case over a row whose id::text
+// Postgres always writes in lower case. The removal lane's pass after a LISTEN has to read that
+// room as the document it is. Matching the rooms' own names against id::text read it as a row
+// that had gone and closed a live room under the person in it, and only when some other document
+// was really removed: with every row still there the pass returns on the count of the answer,
+// comparing nothing, which is why the harm needs the removed document here beside the kept one.
+func TestTheRemovalPassKeepsARoomHeldUnderAnotherSpellingOfItsId(t *testing.T) {
+	database := storetest.Open(t)
+	removed := createDocument(t, database, "Removed.")
+	kept := createDocument(t, database, "Kept.")
+	service, server := newTestServiceInstance(t, database)
+	seedServiceText(t, service, removed, "Removed.")
+	seedServiceText(t, service, kept, "Kept.")
+	waitForLandedAppends(t, service, removed)
+	waitForLandedAppends(t, service, kept)
+	upper := strings.ToUpper(kept)
+	// Each room stands under the name its browser's URL spelled: bob's under the removed
+	// document's canonical id, alice's under the kept document's id in upper case.
+	bob := connectWithScope(t, server.URL, removed, "bob", "read-write", storedMarkdown(t, database, removed))
+	alice := connectWithScope(t, server.URL, upper, "alice", "read-write", storedMarkdown(t, database, kept))
+	if !roomResident(service, removed) || !roomResident(service, upper) {
+		t.Fatalf("the process holds the rooms %v, want one named %s and one named %s", service.ResidentRooms(), removed, upper)
+	}
+
+	removeArtifactRow(t, database, removed)
+	service.recheckRemovedRooms(context.Background())
+
+	if roomResident(service, removed) {
+		t.Fatalf("the pass left the room %s standing, whose artifacts row has gone: bob types into it what no append can store", removed)
+	}
+	requireEnds(t, bob, "the removal of "+removed+" left bob's browser on its room connected")
+	if !roomResident(service, upper) {
+		t.Fatalf("the pass closed the room %s, alice's live room of a document that is still there: a room resident under another spelling of its own id read as removed", upper)
+	}
+	select {
+	case <-alice.Ended:
+		t.Fatalf("the pass ended alice's browser on the room %s, whose document is still there", upper)
+	default:
+	}
+}
+
+// Two rooms of one document, held under two spellings of its id, both close when that document
+// is removed: the pass closes every key it holds under a canonical spelling, not the first of
+// them. A key left behind would be exactly the room this pass exists to take - one standing over
+// a deleted row, whose person types what the doc_updates foreign key refuses.
+func TestTheRemovalPassClosesEverySpellingOfARemovedDocumentsRoom(t *testing.T) {
+	database := storetest.Open(t)
+	removed := createDocument(t, database, "Removed.")
+	service, server := newTestServiceInstance(t, database)
+	seedServiceText(t, service, removed, "Removed.")
+	waitForLandedAppends(t, service, removed)
+	upper := strings.ToUpper(removed)
+	stored := storedMarkdown(t, database, removed)
+	alice := connectWithScope(t, server.URL, removed, "alice", "read-write", stored)
+	bob := connectWithScope(t, server.URL, upper, "bob", "read-write", stored)
+	if !roomResident(service, removed) || !roomResident(service, upper) {
+		t.Fatalf("the process holds the rooms %v, want one named %s and one named %s", service.ResidentRooms(), removed, upper)
+	}
+
+	removeArtifactRow(t, database, removed)
+	service.recheckRemovedRooms(context.Background())
+
+	for _, room := range []string{removed, upper} {
+		if roomResident(service, room) {
+			t.Fatalf("the pass left the room %s standing over the removed document %s: every room of it has to go, whatever it is named", room, removed)
+		}
+	}
+	requireEnds(t, alice, "the document's removal left alice's browser on the room "+removed+" connected")
+	requireEnds(t, bob, "the document's removal left bob's browser on the room "+upper+" connected")
 }
