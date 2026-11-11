@@ -16,9 +16,9 @@ A path you did not write in the first list:
     jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @-
     jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>
 
-No `jj new` first: it puts that path in a parent and the push is refused for it. This split is
-the one exception to "never split the commit you found at the turn's start", and the metaedit is
-why. Always `-m`: without it the commit carries no message of yours.
+No `jj new` first: the push carries that path unless its parent has no description. This split is
+the one exception to "Never `jj describe` or `jj split` the working-copy commit you found at the
+turn's start", and the metaedit is why. Always `-m`, or your commit has no message of yours.
 The remainder keeps that path, and the push above moves the bookmark's commit alone, so it stays
 out of the branch. Never put the bookmark on the remainder, described or not: measured, that
 pushes the other role's file. Read the first list again, then tell the architect what it held.
