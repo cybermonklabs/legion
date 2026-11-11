@@ -1715,6 +1715,22 @@
     ]
   },
   {
+    "body": "Where to ask\n============\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "[^who]: who to ask\n\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
     "body": "Type \\` for a backtick, ask dispatch://role/reviewer, then run `dispatch status`.",
     "refs": [
       "dispatch://role/reviewer"

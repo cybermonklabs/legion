@@ -46,24 +46,37 @@
  * those containers open; any other line closes the containers it does not carry. A thematic
  * break is read too, since a line of `-`, `_` or `*` would otherwise open a list item.
  *
- * What it deliberately does not read, each because the server does not and a markdown parse is
- * what either would cost:
+ * What it deliberately does not read. Each of these was measured on 2026-11-11 against three
+ * parsers - goldmark 1.8.6 with the footnote, table and linkify extensions; this editor's own
+ * parse (`proof.parseMarkdown`, remark and Milkdown's commonmark preset); and `pmdoc.Parse`,
+ * the server's Milkdown-matched goldmark - on a body holding one reference, and what each
+ * answered is written beside it. The reason none of them is read here is that no parse settles
+ * them: the three disagree with each other, and pmdoc refuses bodies that are no Proof document
+ * at all (INFRA-1702).
  *
- *   - A line that is no paragraph's and opens none: a setext heading's underline, a table's
- *     rows, a block of HTML, a link reference definition. An indented line right under one is
- *     read as that paragraph's text, so a code block opening there is read as prose and the
- *     party it holds is delivered to, where no reader of the record sees one named. An ATX
- *     heading is not one of them: it is read, and ends the paragraph above it.
- *   - A footnote definition's container. Its content, four columns in, is read as an indented
- *     code block where a blank line stands between it and the `[^id]:` line - a party written
- *     there is delivered to nobody, which is the silent half of being wrong.
+ *   - A table's rows, with an indented line under them: this reader and goldmark read that line
+ *     as the paragraph's own text, this editor's parse reads it as a code block, and pmdoc
+ *     refuses the body, naming that disagreement. So the two parses available answer
+ *     differently, and the party written there is delivered to while the editor draws it as
+ *     code.
+ *   - A block of HTML or a link reference definition, with an indented line under it: this
+ *     reader, goldmark and the editor all read that line as prose, and pmdoc refuses the body.
+ *     Nothing is measurably wrong here today; it stays unread because the construct above it
+ *     is.
  *   - Tab stops a container's marker splits. A tab is measured to the next four-column stop, but
  *     one straddling a container's own content column is taken whole by that container, so a tab
- *     after a list marker is the item's indentation rather than indented code inside it: code
- *     read as prose again.
- *   - A code span crossing a construct only a real parse resolves. The paragraph a line of the
- *     first kind ends carries on for this reader, so a run opened before a setext heading's
- *     underline, a table's rows or a block of HTML can be closed by a run after it.
+ *     after a list marker is the item's indentation rather than indented code inside it. All
+ *     four readers answer alike on the body measured; the shapes where they part are unmeasured.
+ *   - A code span crossing a construct only a real parse resolves. The paragraph a table's rows
+ *     or a block of HTML ends carries on for this reader, so a run opened before one can be
+ *     closed by a run after it.
+ *
+ * Two shapes that were in this list are now read, because every one of the three parsers
+ * disagreed with this reader on them and they are defects rather than residue: a setext
+ * heading's underline, which ends the paragraph above it so an indented line under it opens a
+ * code block, and a footnote definition's container, whose content four columns in is the
+ * note's own text rather than an indented code block. Both are rows of
+ * `DISPATCH_TEXT_REFERENCES`, so both readers are held to them.
  *
  * `codeSpans` is also the one reading of where a code span begins on this side: the snippet
  * cutter reads it from here (`markdown-fragment.ts`) rather than keeping a second copy of the
@@ -111,6 +124,11 @@ const PERIOD = 0x2e;
 const CLOSE_PAREN = 0x29;
 const DIGIT_ZERO = 0x30;
 const DIGIT_NINE = 0x39;
+const EQUALS = 0x3d;
+const OPEN_BRACKET = 0x5b;
+const CLOSE_BRACKET = 0x5d;
+const CARET = 0x5e;
+const COLON = 0x3a;
 
 /** The stop a tab advances the column to, as CommonMark measures indentation. */
 const TAB_WIDTH = 4;
@@ -333,6 +351,42 @@ function isATXHeading(text: string, from: number, end: number): boolean {
   return character === SPACE || character === TAB;
 }
 
+/** Whether the content of a line at `from`, past its containers and its own indentation, is a
+ *  run of `=` and nothing else but trailing spaces and tabs: the underline that makes the
+ *  paragraph above it a heading. Its caller reads it only while a paragraph is open, which is
+ *  the whole of what makes such a line an underline rather than a paragraph of its own. */
+function isSetextUnderline(text: string, from: number, end: number): boolean {
+  const at = runEnd(text, from, end, EQUALS);
+  return at !== from && isBlank(text, at, end);
+}
+
+/** Where the content of a footnote definition opening at `from` begins - `[^label]:` with a
+ *  label of at least one character holding no bracket, no space and no tab, then the one space
+ *  or tab that may follow the colon - or `undefined` where the line opens none. */
+function footnoteDefinition(text: string, from: number, end: number): number | undefined {
+  if (
+    from + 1 >= end ||
+    text.charCodeAt(from) !== OPEN_BRACKET ||
+    text.charCodeAt(from + 1) !== CARET
+  ) {
+    return undefined;
+  }
+  let at = from + 2;
+  while (at < end && text.charCodeAt(at) !== CLOSE_BRACKET) {
+    const character = text.charCodeAt(at);
+    if (character === OPEN_BRACKET || character === SPACE || character === TAB) {
+      return undefined;
+    }
+    at += 1;
+  }
+  if (at >= end || at === from + 2 || at + 1 >= end || text.charCodeAt(at + 1) !== COLON) {
+    return undefined;
+  }
+  at += 2;
+  const after = at < end ? text.charCodeAt(at) : 0;
+  return after === SPACE || after === TAB ? at + 1 : at;
+}
+
 /** How many of `stack`'s containers, in order, hold the line `[at, end)`, with `scan` reading
  *  where the content of the innermost of those begins and the column there. A block quote holds
  *  a line carrying its `>` under four columns of indentation, the marker and one space or tab
@@ -510,6 +564,23 @@ function codeBlocks(text: string): Blocks {
         thematic = true;
         break;
       }
+      const note = footnoteDefinition(text, indent, end);
+      if (note !== undefined) {
+        // A footnote definition is a container whose content stands four columns in, so the
+        // indented lines under it are the note's own text rather than an indented code block:
+        // a party written there is named to every reader of the record, and every parser
+        // measured for INFRA-1702 reads those lines as prose.
+        stack.length = depth;
+        stack.push({ content: reached + 4, quote: false });
+        depth += 1;
+        content = note;
+        column = reached + (note - indent);
+        paragraph = false;
+        indentEnd(text, content, end, column, scan);
+        indent = scan.at;
+        reached = scan.column;
+        continue;
+      }
       if (!listMarker(text, indent, end, reached, paragraph, scan)) {
         break;
       }
@@ -548,6 +619,13 @@ function codeBlocks(text: string): Blocks {
         // An ATX heading is no paragraph's line and opens none: it ends the paragraph above it,
         // and a break on the line under it leaves the heading's own text to itself, where a
         // span of its own may stand.
+        ends = true;
+        heading = true;
+      } else if (paragraph && isSetextUnderline(text, indent, end)) {
+        // A run of `=` under an open paragraph is that paragraph's setext underline, so it ends
+        // the paragraph and an indented line under it opens a code block, as every parser
+        // measured for INFRA-1702 reads it. A `-` run is read as a thematic break above, which
+        // ends the paragraph too, so both underlines do.
         ends = true;
         heading = true;
       } else {

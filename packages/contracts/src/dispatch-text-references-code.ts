@@ -267,6 +267,24 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
     links: [],
     inCode: ["dispatch://role/reviewer"],
   },
+  // A setext heading's underline ends the paragraph above it, so the indented line under the
+  // underline opens a code block. goldmark, the browser editor's parser and the server's own
+  // pmdoc each read this body that way (measured 2026-11-11, INFRA-1702): a party written there
+  // is named to no reader of the record, so it is delivered to nobody.
+  {
+    body: "Where to ask\n============\n    dispatch://role/reviewer\n",
+    refs: ["dispatch://role/reviewer"],
+    links: [],
+    inCode: ["dispatch://role/reviewer"],
+  },
+  // A footnote definition is a container whose content stands four columns in, so the indented
+  // line under it is the note's own text and not a code block. goldmark, the browser editor's
+  // parser and pmdoc each read this body that way (measured 2026-11-11, INFRA-1702): every
+  // reader of the record sees the party named there, so it is delivered to.
+  {
+    body: "[^who]: who to ask\n\n    dispatch://role/reviewer\n",
+    refs: ["dispatch://role/reviewer"],
+  },
   // A backslash takes the backtick after it as a literal character, which opens no span, so the
   // party stands in prose and the span is the one the author wrote.
   {

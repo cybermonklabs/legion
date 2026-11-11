@@ -76,24 +76,37 @@ const (
 // those containers open; any other line closes the containers it does not carry. A thematic
 // break is read too, since a line of `-`, `_` or `*` would otherwise open a list item.
 //
-// What it deliberately does not read, because the dashboard's reader must agree with it on every
-// row of DISPATCH_TEXT_REFERENCES and each of these would cost both readers a markdown parse:
+// What it deliberately does not read. Each of these was measured on 2026-11-11 against three
+// parsers - goldmark 1.8.6 with the footnote, table and linkify extensions; the browser
+// editor's own parse (`proof.parseMarkdown`, remark and Milkdown's commonmark preset); and
+// pmdoc.Parse, this repository's Milkdown-matched goldmark - on a body holding one reference,
+// and what each answered is written beside it. The reason none of them is read here is that no
+// parse settles them: the three disagree with each other, and pmdoc refuses bodies that are no
+// Proof document at all (INFRA-1702).
 //
-//   - A line that is no paragraph's and opens none: a setext heading's underline, a table's
-//     rows, a block of HTML, a link reference definition. An indented line right under one is
-//     read as that paragraph's text, so a code block opening there is read as prose and the
-//     party it holds is delivered to, where no reader of the record sees one named. An ATX
-//     heading is not one of them: it is read, and ends the paragraph above it.
-//   - A footnote definition's container. Its content, four columns in, is read as an indented
-//     code block where a blank line stands between it and the `[^id]:` line - a party written
-//     there is delivered to nobody, which is the silent half of being wrong.
+//   - A table's rows, with an indented line under them: this reader and goldmark read that line
+//     as the paragraph's own text, the browser editor reads it as a code block, and pmdoc
+//     refuses the body, naming this very disagreement. So the two parses available here answer
+//     differently, and a party written there is delivered to while the dashboard's own editor
+//     would draw it as code.
+//   - A block of HTML or a link reference definition, with an indented line under it: this
+//     reader, goldmark and the editor all read that line as prose, and pmdoc refuses the body
+//     (block HTML and a link reference definition are outside Proof's schema). Nothing is
+//     measurably wrong here today; it stays unread because the construct above it is.
 //   - Tab stops a container's marker splits. A tab is measured to the next four-column stop, but
 //     one straddling a container's own content column is taken whole by that container, so a tab
-//     after a list marker is the item's indentation rather than indented code inside it: code
-//     read as prose again.
-//   - A code span crossing a construct only a real parse resolves. The paragraph a line of the
-//     first kind ends carries on for this reader, so a run opened before a setext heading's
-//     underline, a table's rows or a block of HTML can be closed by a run after it.
+//     after a list marker is the item's indentation rather than indented code inside it. All
+//     four readers answer alike on the body measured; the shapes where they part are unmeasured.
+//   - A code span crossing a construct only a real parse resolves. The paragraph a table's rows
+//     or a block of HTML ends carries on for this reader, so a run opened before one can be
+//     closed by a run after it.
+//
+// Two shapes that were in this list are now read, because every one of the three parsers
+// disagreed with the scanner on them and they are defects rather than residue: a setext
+// heading's underline, which ends the paragraph above it so an indented line under it opens a
+// code block, and a footnote definition's container, whose content four columns in is the
+// note's own text rather than an indented code block. Both are rows of DISPATCH_TEXT_REFERENCES
+// now, so both readers are held to them.
 func codeRanges(body string) []codeRange {
 	blocks, breaks := codeBlocks(body)
 	if len(blocks) == 0 {
@@ -195,6 +208,18 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				thematic = true
 				break
 			}
+			if past, ok := footnoteDefinition(body, indent, end); ok {
+				// A footnote definition is a container whose content stands four columns in, so
+				// the indented lines under it are the note's own text rather than an indented
+				// code block: a party written there is named to every reader of the record, and
+				// every parser measured for INFRA-1702 reads those lines as prose.
+				stack = append(stack[:depth], container{content: column + 4})
+				depth++
+				content, col = past, column+(past-indent)
+				paragraph = false
+				indent, column = indentEnd(body, content, end, col)
+				continue
+			}
 			itemContent, itemColumn, itemIndent, ok := listMarker(body, indent, end, column, paragraph)
 			if !ok {
 				break
@@ -227,6 +252,12 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				// An ATX heading is no paragraph's line and opens none: it ends the paragraph
 				// above it, and a break on the line under it leaves the heading's own text to
 				// itself, where a span of its own may stand.
+				ends, heading = true, true
+			case paragraph && isSetextUnderline(body, indent, end):
+				// A run of `=` under an open paragraph is that paragraph's setext underline, so
+				// it ends the paragraph and an indented line under it opens a code block, as
+				// every parser measured for INFRA-1702 reads it. A `-` run is read as a
+				// thematic break above, which ends the paragraph too, so both underlines do.
 				ends, heading = true, true
 			default:
 				prose = true
@@ -385,6 +416,52 @@ func isATXHeading(body string, from, end int) bool {
 		return false
 	}
 	return at >= end || body[at] == ' ' || body[at] == '\t'
+}
+
+// isSetextUnderline answers whether the line beginning at from, past its indentation, is a run
+// of `=` and nothing else but trailing spaces and tabs: the underline that makes the paragraph
+// above it a heading. Its caller reads it only while a paragraph is open, which is the whole of
+// what makes such a line an underline rather than a paragraph of its own.
+func isSetextUnderline(body string, from, end int) bool {
+	at := from
+	for at < end && body[at] == '=' {
+		at++
+	}
+	if at == from {
+		return false
+	}
+	for ; at < end; at++ {
+		if body[at] != ' ' && body[at] != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+// footnoteDefinition answers whether the line beginning at from, past its indentation, opens a
+// footnote definition - `[^label]:` with a label of at least one character that holds no
+// bracket, no space and no tab - and where its own content begins, past the colon and the one
+// space or tab that may follow it.
+func footnoteDefinition(body string, from, end int) (int, bool) {
+	if from+1 >= end || body[from] != '[' || body[from+1] != '^' {
+		return from, false
+	}
+	at := from + 2
+	for at < end && body[at] != ']' {
+		char := body[at]
+		if char == '[' || char == ' ' || char == '\t' {
+			return from, false
+		}
+		at++
+	}
+	if at >= end || at == from+2 || at+1 >= end || body[at+1] != ':' {
+		return from, false
+	}
+	at += 2
+	if at < end && (body[at] == ' ' || body[at] == '\t') {
+		at++
+	}
+	return at, true
 }
 
 // indentEnd is past the spaces and tabs starting at at, within [at, end), and the column there,
