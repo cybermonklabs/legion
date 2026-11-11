@@ -1255,6 +1255,25 @@ type Store interface {
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.
 	SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error)
+	// ProjectClaims is every claim of the project that stands on an issue, as the quiet measure
+	// reads one (TreeClaim): the issue, the claim's state and its two step times, in no order. It
+	// is what the admission pass's own measure reads (admit's quietTrees) — one read of what the
+	// agents of every tree are doing, for a pass that judges every tree of the project and may
+	// make no read per tree.
+	//
+	// It exists because no read of this shape does. The claims of a whole project are read in
+	// exactly one other place, the claim store's ClaimsTx (internal/store), which reads every
+	// claim of the database with no `where` clause at all and decodes every column of each,
+	// locators included — the state report's read, shared with it by the daemon alone. Every
+	// other claim read of this record is by token (RoleClaims) or by issue, and a pass that asked
+	// one of them per issue would make a query per issue of the project.
+	//
+	// project is the claim project token (claim.ProjectToken): `claims.project` holds the token,
+	// lowercased and alphanumeric, not the Dispatch project key the issue records carry (the
+	// claim store's IssueRunsElsewhere reads the same column the same way), so the caller
+	// converts. A claim on no issue — the project's own controller holds one — is left out by the
+	// query, since it stands in no tree and the measure could place it nowhere.
+	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the

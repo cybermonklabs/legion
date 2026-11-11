@@ -1493,6 +1493,36 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	return admitted, released, nil
 }
 
+// quietTrees is the pass's measure of its trees: how long each tree of the project has been
+// still and whether any claim of it is at work (record.QuietTrees), over the records the pass
+// has already read and one read of the claims of the project (record.Store.ProjectClaims). It
+// is one query for the whole pass, like the issues and the slots beside it: a pass that judges
+// every tree of the project may make no read per tree.
+//
+// issues are the pass's own live records, and now is taken here rather than passed in, so the
+// quiet of every tree is measured from one instant. The claim read is keyed by the claim
+// project token, which `claims.project` holds, not by the Dispatch project key the issue
+// records carry.
+//
+// Where it is called from: after blockers.JudgeLine and the releases, where the pass holds the
+// facts it judges from and has given back every slot it is going to. No caller is there yet —
+// the rule that acts on the measure is the tree-stalled notice of dispatch://INFRA-2560, which
+// lands after this — and the measure is behind this method rather than in the pass so that the
+// rule and its read arrive together. The state's projection answers the same question from the
+// same statement over the claims it already holds (projection's quietTrees), so the pass and
+// the state cannot say different things about one tree.
+func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[string]record.TreeQuiet, error) {
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := a.store.ProjectClaims(ctx, tx, project)
+	if err != nil {
+		return nil, err
+	}
+	return record.QuietTrees(issues, claims, a.now()), nil
+}
+
 // reread takes this pass's shared reads again, after the pass has itself written something that
 // makes them stale: the project's live records, the slots, and the facts the line, the release
 // and the repair passes are all judged from.

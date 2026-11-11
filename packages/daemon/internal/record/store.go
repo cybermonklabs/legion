@@ -751,6 +751,45 @@ func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session
 	return claims, nil
 }
 
+// ProjectClaims reads the claims of one project as the quiet measure reads them, in one
+// statement and no order: the four columns TreeClaim holds, for every claim of the project that
+// stands on an issue. The two step columns are nullable — a claim whose agent has made no call
+// has no step_at, one whose agent has begun no turn has no turn_started_at — and each reads back
+// as the zero time, which moves no tree (QuietTrees).
+//
+// project is the claim project token, the spelling `claims.project` holds, which the caller
+// converts to (the interface's own doc).
+func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error) {
+	rows, err := tx.Query(ctx, "select issue, state, step_at, turn_started_at from claims where project = $1 and issue <> ''", project)
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
+	}
+	defer rows.Close()
+	var claims []TreeClaim
+	for rows.Next() {
+		var (
+			held                TreeClaim
+			state               string
+			stepAt, turnStarted *time.Time
+		)
+		if err := rows.Scan(&held.Issue, &state, &stepAt, &turnStarted); err != nil {
+			return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
+		}
+		held.State = supervise.ClaimState(state)
+		if stepAt != nil {
+			held.StepAt = *stepAt
+		}
+		if turnStarted != nil {
+			held.TurnStartedAt = *turnStarted
+		}
+		claims = append(claims, held)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
+	}
+	return claims, nil
+}
+
 // keptCounts is the validity rule as SQL: the claim and the hold a kept row carries count only
 // while they stand in the same tree as the row's own issue. row is the kept row's alias and owner
 // the alias of the issues row of its issue, which is where the tree it is owed to is read. A void

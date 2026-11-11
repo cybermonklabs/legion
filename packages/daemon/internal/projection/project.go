@@ -320,6 +320,25 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	return projected, nil
 }
 
+// quietTrees is the state's measure of its trees: how long each tree the state's own records
+// name has been still and whether any claim of it is at work (record.QuietTrees). It makes no
+// query of its own. own is the project's records, the same list the waiting line and the live
+// roots are judged from; claims are the claims Project was handed, read in its one snapshot
+// with those records, which carry each agent's state and step times already
+// (record.TreeClaimsOf), so the state never reads the claims a second time; now is the instant
+// the rest of the state is measured at.
+//
+// Where it is called from: Project, beside `trees := record.LiveRoots(own, facts)`, whose roots
+// the measure answers for. No caller is there yet — the state keys that report a tree's quiet
+// time are the slice that follows this one (dispatch://INFRA-2560) — and it is a function of
+// its own rather than a line of Project so that those keys and the measure behind them land
+// together. The admission pass measures the same thing with the same statement, over the claims
+// its own read gives it (admit's quietTrees), so the state and the pass cannot say different
+// things about one tree.
+func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
+	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
+}
+
 // memoryDraw is one tree's memory draw as its root's record holds it (record.Issue.MemoryGroup,
 // MemoryDrawMode, MemoryDrawnAt): the group the draw gave the tree, the project's mode it was
 // drawn under, and when.
