@@ -345,6 +345,21 @@ func writeCostPaths() []writeCostPath {
 // request over its own bound. The failure says which of the two bounds it broke, and an absolute
 // failure with the relative one passing says so in as many words, because that case is the
 // architect's to decide and not the implementer's to fix.
+//
+// A breakdown of one of these requests, part by part, is read the same way and never from two or
+// three readings. Go charges a collection to whichever goroutine is allocating while it runs, so
+// a part's wall time is its own work plus whatever the collector did inside it, and the part
+// that allocates most collects most. The parse of the 1,999-block upload
+// (upload.ReplaceText's startTree+markdown: the live tree read, rendered, and the upload parsed)
+// is that part: it allocates about 24 MB on either arm, of the 82.0 MB this child's whole
+// request allocates and the 48.2 MB the commit before it allocates. Measured inside both servers
+// over 20 interleaved readings of the edit shape, that parse read 109.5 ms here against 85.3 ms
+// there - but it carried a collection in 14 of the 20 readings here and in 1 of the 20 there,
+// and over the readings that carried none it read 82.0 ms here against 85.3 ms there. The parse
+// does the same work at both commits; what this child changed is that its request makes 1.7
+// times the garbage, almost all of it outside the parse, so the collector runs inside nearly
+// every request rather than one in five. A part read over three readings states where the
+// collector fell, not what the part does.
 func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 	t.Log(costGVisorNote)
 	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
