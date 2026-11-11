@@ -494,6 +494,58 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 	}
 }
 
+// A session a person's comment reaches only as a credit of the document it is anchored on, on an
+// issue a session claims, is left out before any copy of it is built (addAuthorRoutes) - which is
+// where the mention rule would be asked of that session (destinations.addSession). So a mention
+// of the comment to it that is still being sent holds nothing back: the event publishes in the
+// pass that reads it, to its issue topic and the claimant, with no attempt counted and no
+// fallback row kept, rather than waiting the mentionPendingDelay
+// TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent measures for a copy that does stay in
+// the list.
+func TestACreditedSessionsPendingMentionDefersNoEventOfAClaimedIssue(t *testing.T) {
+	const (
+		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"
+		claimantTopic = "notifications.agent.session-claimant"
+	)
+	ctx := store.WithTransactionTracking(context.Background())
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
+	claimIssue(t, database, "T-1", claimant)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	writer := model.Actor{Kind: "session", ID: "session-writer"}
+	notes := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer})
+	commentID := seedThreadComment(t, database, "T-1", notes, alice, nil)
+	event := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{
+		ID: commentID, Anchor: &model.Anchor{ArtifactID: notes}, Body: "@session-writer look at this.",
+	}, writer.ID)
+	// A send a sender claimed just now, which is the state that holds a session's own copy back
+	// and blocks its event while it lasts (destinations.leftTo, mentionSending).
+	seedMentionDelivery(t, database, commentID, writer.ID, "pending")
+
+	publisher := &recordingPublisher{}
+	outbox := holding(t, Deps{Store: database, Publisher: publisher})
+	outbox.scan(ctx, unfenced{})
+
+	want := []string{issueTopic, claimantTopic}
+	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("topics = %#v, want %#v: the document's writer is no recipient of this comment, so nothing of it waits on that mention", got, want)
+	}
+	if publishedAt(t, database, event.ID) == nil {
+		t.Fatalf("published_at is null, want the event published: no copy of it is the writer's to hold")
+	}
+	if attempts, _ := nextAttempt(t, database, event.ID); attempts != 0 {
+		t.Fatalf("attempt_count = %d, want 0", attempts)
+	}
+	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
+		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
+	}
+	if rows := heldDestinations(t, database, commentID); len(rows) != 0 {
+		t.Fatalf("the comment holds fallback rows %v, want none: no copy of it was kept for the writer", rows)
+	}
+}
+
 // TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere drives the scan itself: a new
 // comment whose claimant copy is held back for its mention still being sent is deferred only when
 // that is all that kept the attempt from finishing. When NATS denies another destination of the
