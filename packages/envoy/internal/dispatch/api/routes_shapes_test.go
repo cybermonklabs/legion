@@ -5,16 +5,15 @@ import (
 	"testing"
 )
 
-// The shape map is the table's sixth column: every mounted row has one, every entry names a row,
-// and the count only moves when a route is deliberately added or removed, as
-// testdata/routes.txt pins the table itself.
+// The shape map is the table's sixth column: every mounted row has a shape, and every shape
+// names a mounted row, so routeShapes and the table the server mounts are the same set.
+//
+// No count is pinned, for the reason routes_table_test.go gives above
+// TestRoutesTablePinsEveryRegisteredRoute: a count is one number two branches cannot both be
+// right about. What catches a route added or removed by accident is the committed index
+// testdata/routes.txt, which TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the
+// table against.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
-	// 182 production rows, the count testdata/routes.txt pins (routes_table_test.go), plus the
-	// 13 rows Deps.TestHooksEnabled adds.
-	const shapedRoutes = 195
-	if len(routeShapes) != shapedRoutes {
-		t.Fatalf("routeShapes has %d entries, want %d (update the pin when adding a route)", len(routeShapes), shapedRoutes)
-	}
 	if shapeless := shapelessRoutes((&server{deps: Deps{TestHooksEnabled: true}}).routes()); len(shapeless) > 0 {
 		t.Fatalf("mounted rows with no shape: %v", shapeless)
 	}

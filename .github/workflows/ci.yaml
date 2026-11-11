@@ -1589,6 +1589,11 @@ jobs:
               - 'packages/envoy/internal/dispatch/architecture/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
+              # The API's CI-reconcile passes route reads cireconcile's own record, so the soak's
+              # Dispatch server compiles that package too (go list -deps ./cmd/listener).
+              - 'packages/envoy/internal/dispatch/cireconcile/*'
+              # cireconcile's capture_test.go replays answers captured from GitHub itself.
+              - 'packages/envoy/internal/dispatch/cireconcile/testdata/**'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
