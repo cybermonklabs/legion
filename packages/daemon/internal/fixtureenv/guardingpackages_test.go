@@ -34,6 +34,7 @@ var guardingPackages = []string{
 	"internal/daemon",
 	"internal/fixtureenv",
 	"internal/launcher",
+	"internal/leakguard",
 	"internal/repocache",
 	"internal/rescue",
 	"internal/runtime/sandbox",

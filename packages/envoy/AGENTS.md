@@ -2416,7 +2416,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
 - Every issue has a nullable `assignee`:
-  the **lowercase** email of the person who answers its asks (`issues.assignee`, migration `0034`, indexed on open issues).
+  the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
@@ -2439,7 +2439,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - Every issue has a nullable claim: the session that intends to implement it (`issues.claimed_by` — the actor JSON
   — and `issues.claimed_at`, migration `0045`, both set or both null by `issues_claim_complete`).
-  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the human who answers the asks).
+  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on).
   The whole rule lives in `api/issue_claim.go`.
   `POST /api/v1/issues/{key}/claim` (any authenticated actor) claims it:
   the claimant is the request's own actor, the same identity every other write carries
@@ -2755,10 +2755,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `thread_logins` is every login whose Inbox the write can have moved, sorted and never nil:
   on `comment.created` and `comment.answered` the logins with a Replies row (`user_threads`) on the thread its trigger files it under (`events.ThreadLogins`:
   its ask, else the root it replies to, else itself), on an issue message's `message.created` and `message.answered` the logins with a row on its root up `in_reply_to`, and on `ask.opened`, `ask.answered` and `ask.resolved` the logins with a row on the ask's own thread.
+  `ask.asked_of` names two people instead, the person the ask waited on and the person it waits on now (`api/ask_asked_of.go`, over `api/thread_logins.go`'s `movedLogins`, the fold an assignee move's two logins go through as well), since a hand-on moves the ask between their lists and changes nothing for a reader of its thread.
   A direct (issue-less) conversation keeps no `user_threads` row, so its `message.created` and `message.answered` name the thread root's author instead, the one person whose Inbox holds that conversation's Agent row (`api/thread_logins.go`, `directThreadLogins`), and `[]` when no person opened the thread.
   An `issue.updated` or `issue.closed` that moved the status or the assignee carries it too (`issueWriteThreadLogins`), as the sorted union of two sets:
-  for a close or a reopen `events.IssueThreadLogins`, the logins with a row on one of the issue's open asks, which the Replies list leaves out while the issue is open and assigned to them, and `[]` for any other status move;
-  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves those rows out of one Inbox and into the other.
+  for a close or a reopen `events.IssueThreadLogins`, the logins with a row on one of the issue's open asks, which the Replies list leaves out while the issue is open and the ask waits on them, and `[]` for any other status move;
+  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other.
   A login in both sets is named once, and a write that moved neither carries no `thread_logins` at all.
   `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved from the row it read (`api/state.go`), or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`askSnoozeEvent`, `api/ask_snooze.go`), whose payload is exactly `{login, changed: ["snoozed"]}`:
   the stream has no per-viewer filter, so every signed-in person and agent replays it, and it names no ask and no `state` of the writer's (the writer's tabs refetch their whole Inbox);
@@ -2795,16 +2796,16 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `GET /api/v1/issues/{key}` carries the same `last_reply` and `waiting_on` on every `open_asks` row (`issueOpenAsk`, `issue_queries.go`), so the issue header applies the inbox's whose-turn rule without the inbox the `person` scope opens.
   A `comment.created` payload that replies to an ask carries `ask_state` (the ask's state at posting time) beside `ask_question`, so an agent can tell a clarification request on its open ask from discussion after the answer.
 
-- `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the owning issue's assignee (`inboxAssigneeFilter`, `api/inbox.go`):
+- `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the person each ask waits on (`inboxAssigneeFilter`, `api/inbox.go`):
   `me` is the caller's lowercase email; an `<email>` is canonicalised (`strings.ToLower(strings.TrimSpace(...))`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
-  `me` / `<email>` keep issue-owned asks with `i.assignee = $login`, `unassigned` keeps asks on unassigned issues **and every project-document ask** (a document has no assignee, so it is unassigned by definition); no value returns everything.
+  `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee)` is that login — the asks handed to them, and the asks on the issues assigned to them that nobody has handed on (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks nobody waits on, so an ask nobody was handed on an issue nobody holds **and every project-document ask nobody was handed** (a document has no assignee to fall back to); no value returns everything.
   This is the contract for shareable links and humans' scripts: the SPA asks for no assignee at all.
   It fetches the unfiltered inbox once (the one `["inbox"]` query every surface shares) and splits it client-side by the reader's own `?assignee=` filter, whose values are repeated on the page's URL and are a lowercase login or the literal `unassigned` (`features/refs/routes.ts`, `inAssigneeFilter` in `features/inbox/sections.ts`):
   no `assignee` at all is the reader's own work, every visit and nothing remembered, and the single value `everyone` is the cleared filter.
   The two `?assignee=` vocabularies spell their default the opposite way round on purpose
   — absent means everybody here and the reader alone there
   — because the page must keep reading the whole list: its counts stay about the reader while the list on screen widens.
-  A row's `Assign to me` PATCH is offered wherever an issue-owned row with no assignee is listed, and a project-document row never carries one.
+  A row's `Assign to me` PATCH is offered wherever an issue-owned row nobody waits on is listed, and a project-document row never carries one.
 
 - `GET /api/v1/asks/open` takes exactly one scope selector.
   `?author_session=<session-id>` lists every active open ask authored by that session across open issues and unlinked project documents;
@@ -2989,7 +2990,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
     The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
 
   - A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
-    that is an open ask on an open issue assigned to the caller alone (`myRepliesOwner`), so an open ask on a project document, on an unassigned issue or on another person's issue is a Reply row here.
+    that is an open ask on an open issue that waits on the caller alone (`myRepliesOwner`, over `askedOfPersonExpression`: the person the ask was handed to, and the assignee of its issue until somebody hands it on), so an open ask on a project document, on an issue nobody holds, or on another person's issue and handed to nobody, is a Reply row here.
     A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
     its row stays, since the Inbox hides it.
 

@@ -462,6 +462,9 @@ test("models answer changes, ask answer history, and the answers page", () => {
     opened_event_id: 7,
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   } satisfies Ask;
   const input = {
     selected: ["Hold"],
@@ -758,6 +761,9 @@ test("models full orphaned anchor refresh events without a notification", () => 
     question: "The release is ready, but the revised plan needs review. How should we proceed?",
     state: "open",
     urgency: "med",
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   };
   const comment: Comment = {
     anchor,
@@ -837,6 +843,9 @@ test("accepts an artifact-owned ask edit event", () => {
       opened_event_id: 3,
       created_at: "2026-09-11T04:00:00Z",
       edited_at: "2026-09-11T04:05:29Z",
+      asked_of: null,
+      asked_of_by: null,
+      asked_of_at: null,
       previous: {
         question: "The document needs a publication decision. How should we proceed?",
         options: [{ label: "Publish for readers" }],

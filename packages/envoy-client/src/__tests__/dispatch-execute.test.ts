@@ -1966,7 +1966,10 @@ describe("executeDispatchTool", () => {
     expect(result.details).toEqual({ projects: [] });
   });
 
-  test("dispatch_open_asks renders active asks by whose reply is due", async () => {
+  // Both groups name the person the ask waits on, the server's `waiting_on_person`: the issue
+  // ask is the assignee's, and the document ask, which the server answers no person for, waits
+  // on nobody.
+  test("dispatch_open_asks renders active asks by whose reply is due and names who waits", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
@@ -1992,6 +1995,7 @@ describe("executeDispatchTool", () => {
             human_replied: false,
             last_reply: null,
             waiting_on: "human",
+            waiting_on_person: "alice@theorem.dev",
           },
           {
             id: "ask-2",
@@ -2031,10 +2035,10 @@ describe("executeDispatchTool", () => {
         "2 unanswered asks you authored on active issues and project documents.",
         "",
         "Waiting on human (1):",
-        `- 1m 5s · P0 · LEGION-1: Reminder · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
+        `- 1m 5s · P0 · LEGION-1: Reminder · asked of alice@theorem.dev · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
         "",
         "Waiting on agent (1):",
-        "- 2h · OPS / Runbook · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
+        "- 2h · OPS / Runbook · asked of nobody · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
       ].join("\n"),
       details: {
         session_id: "session-1",

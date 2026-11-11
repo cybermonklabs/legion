@@ -41,6 +41,7 @@ const knownEventTypes: Record<EventType, true> = {
   "ask.anchor_refreshed": true,
   "ask.edited": true,
   "ask.handed_back": true,
+  "ask.asked_of": true,
   "ask.answered": true,
   "ask.resolved": true,
   "ask.follower_added": true,

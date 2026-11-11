@@ -411,7 +411,9 @@ export type IssueEventPayload = Issue & ReferenceChangesPayload & IssueEventChan
  *  anything new. A restore the release before Dispatch kept the mark writes - every one already in
  *  the event log, and one written during a rollout or an image rollback - carries no mark, so a
  *  missing `restored` does not prove an event is a new answer. `thread_logins` (the ask's own
- *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`. */
+ *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`; on `ask.asked_of` it
+ *  is the two people the hand-on moved the ask between instead, since no reader of the thread
+ *  changes list there. */
 export type AskEventPayload = Ask &
   ReferenceChangesPayload &
   ThreadLoginsPayload & { readonly restored?: boolean };
@@ -1273,6 +1275,14 @@ export type DispatchEvent =
       readonly type: "ask.handed_back";
       readonly payload: AskEventPayload;
     })
+  /** One person handed an open ask to another: `asked_of` is whom it waits on from now on, empty
+   *  where that is the assignee of its own issue, and `asked_of_by` who handed it on. The ask
+   *  keeps its question, its thread and its followers; only whose list it sits in moves, so
+   *  `thread_logins` names those two people and nobody else. */
+  | (DispatchEventBase & {
+      readonly type: "ask.asked_of";
+      readonly payload: AskEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "ask.answered";
       readonly payload: AskAnsweredEventPayload;
@@ -1755,6 +1765,14 @@ const askEventPayloadFields = {
       at: z.string().optional(),
     })
     .nullish(),
+  // The three stored fields of a hand-on, carried by every ask payload as the row carries them:
+  // whom the ask waits on, who handed it there and when. `waiting_on_person` is deliberately
+  // absent: it is read-time only (the ask row never stores it), as `waiting_on` is, and this
+  // object strips any field it does not declare, so a payload that somehow carried it would
+  // reach no reader with it.
+  asked_of: z.string().nullish(),
+  asked_of_by: z.string().nullish(),
+  asked_of_at: z.string().nullish(),
   thread_logins: z.array(z.string()).optional(),
 };
 
