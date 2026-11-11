@@ -42,7 +42,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays) and each message, once however it arrived. It reads the ask.answered, comment.created, message.created and message.answered events a person wrote whose published_destinations hold the session's own topic, the session's sent message deliveries (targeted and broadcast messages) and its sent comment deliveries (mentions); it never lists an agent's or the system's words, an ask's resolution or hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer), the ask and its whole question on an answer and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose text takes the running sum of text lengths (UTF-16 units) past it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
+    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's sent message deliveries (targeted and broadcast messages) and its sent comment deliveries (mentions); of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer; declined_your_ask for a decline), the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
     get: operations["getApiV1AgentsBySessionIdAnswers"];
     put?: never;
     post?: never;
@@ -620,6 +620,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/asks/{id}/decline": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Decline to answer an ask: the person closes it with no answer, and Dispatch writes beside their note the words that tell the asking agent to decide without one. The note is optional, and at most the event body limit (400 CAP_EXCEEDED); the ask resolves with the kind declined, a block ask's block records it as every other resolution does, and an approval request is 409 ASK_NOT_DECLINABLE, being answered with Approve or Request changes. */
+    post: operations["postApiV1AsksByIdDecline"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/asks/{id}/followers": {
     parameters: {
       query?: never;
@@ -664,7 +681,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too. */
+    /** @description Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too. A person who will not answer declines instead, on a route of their own, POST /api/v1/asks/{id}/decline. */
     post: operations["postApiV1AsksByIdResolve"];
     delete?: never;
     options?: never;
@@ -1531,6 +1548,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/design-gates": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyDesignGates"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/events": {
     parameters: {
       query?: never;
@@ -1848,7 +1882,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's per-agent conversation state: cleared_before, read_through, and unread_replies (the session's replies to the caller's direct messages newer than both and not read by id). */
+    /** @description The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list). */
     get: operations["getApiV1MeAgentsState"];
     put?: never;
     post?: never;
@@ -1866,7 +1900,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), and/or mark some of its replies read by id (read_replies, the session's own messages); answers the session's state. */
+    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), mark some of its replies read by id (read_replies, the session's own messages), and/or pin it to the caller's sidebar (pinned: true pins it, false unpins it, and neither touches the Clear); answers the session's state. */
     put: operations["putApiV1MeAgentsBySessionIdState"];
     post?: never;
     delete?: never;
@@ -2844,6 +2878,11 @@ export interface components {
       id: string;
       question: string;
     };
+    AdviceDeclinedAsk: {
+      id: string;
+      note: string;
+      question: string;
+    };
     Agent: {
       capabilities: string[] | null;
       dir: string;
@@ -3228,6 +3267,7 @@ export interface components {
       actor: components["schemas"]["Actor"];
       /** Format: date-time */
       at: string;
+      dispatch_words?: string;
       kind: string;
       reason: string;
     };
@@ -3697,6 +3737,10 @@ export interface components {
       credential_id: null | string;
       /** @enum {string} */
       state: "approved";
+    };
+    DeclineAskInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      note?: null | string;
     };
     DeliveryComponent: {
       parent: null | string;
@@ -4505,6 +4549,19 @@ export interface components {
       document: null | string;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
+    IssueDesignGate: {
+      artifact_id: string;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
+    };
+    IssueDesignGates: {
+      gates: components["schemas"]["IssueDesignGate"][] | null;
+      issue: string;
+    };
+    IssueDesignGatesInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      gates: null | components["schemas"]["IssueDesignGate"][];
+    };
     IssueDetails: {
       artifacts: components["schemas"]["Artifact"][] | null;
       assignee: null | string;
@@ -4518,6 +4575,7 @@ export interface components {
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
       decisions_artifact_id: string;
+      design_gates: components["schemas"]["IssueDesignGate"][] | null;
       external_links: components["schemas"]["ExternalLink"][] | null;
       holder_state: null | string;
       key: string;
@@ -5238,6 +5296,7 @@ export interface components {
       /** Format: date-time */
       at: string;
       author: components["schemas"]["Actor"];
+      dispatch_words?: string;
       /** Format: date-time */
       edited_at?: string;
       href: string;
@@ -5301,7 +5360,13 @@ export interface components {
     SupersededApproval: {
       approved_by: string;
       approved_version: number;
+      design_gates?: components["schemas"]["SupersededApprovalGate"][];
       version: number;
+    };
+    SupersededApprovalGate: {
+      issue: string;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
     };
     TablePosition: {
       cells: string[] | null;
@@ -5378,11 +5443,13 @@ export interface components {
     };
     UserAgentState: {
       cleared_before?: string;
+      pinned_at?: string;
       read_through?: string;
       unread_replies: number;
     };
     UserAgentStateInput: {
       cleared_before?: null | string;
+      pinned?: null | boolean;
       read_replies?: string[] | null;
       read_through?: null | string;
     };
@@ -5441,6 +5508,7 @@ export interface components {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
       decision_blocks: number;
       decision_blocks_added: number;
+      declined_asks?: components["schemas"]["AdviceDeclinedAsk"][];
       issue_status: string;
       legion_managed_status?: boolean;
       session_writes_since_human: number;
@@ -7022,6 +7090,44 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["AskAskedOfInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Ask"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1AsksByIdDecline: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DeclineAskInput"];
       };
     };
     responses: {
@@ -9373,6 +9479,44 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["IssueDecisions"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyDesignGates: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IssueDesignGatesInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueDesignGates"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12418,6 +12562,7 @@ export type ActorAct = components["schemas"]["ActorAct"];
 export type ActorInput = components["schemas"]["ActorInput"];
 export type ActorOrigin = components["schemas"]["ActorOrigin"];
 export type AdviceAsk = components["schemas"]["AdviceAsk"];
+export type AdviceDeclinedAsk = components["schemas"]["AdviceDeclinedAsk"];
 export type Agent = components["schemas"]["Agent"];
 export type AgentToken = components["schemas"]["AgentToken"];
 export type AmbiguousTargetError = components["schemas"]["AmbiguousTargetError"];
@@ -12523,6 +12668,7 @@ export type DecisionBlockCheck = components["schemas"]["DecisionBlockCheck"];
 export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
+export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
 export type DeliveryDailyPoint = components["schemas"]["DeliveryDailyPoint"];
 export type DeliveryDeployFlagCounts = components["schemas"]["DeliveryDeployFlagCounts"];
@@ -12615,6 +12761,9 @@ export type IssueComponents = components["schemas"]["IssueComponents"];
 export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"];
 export type IssueCoverage = components["schemas"]["IssueCoverage"];
 export type IssueDecisions = components["schemas"]["IssueDecisions"];
+export type IssueDesignGate = components["schemas"]["IssueDesignGate"];
+export type IssueDesignGates = components["schemas"]["IssueDesignGates"];
+export type IssueDesignGatesInput = components["schemas"]["IssueDesignGatesInput"];
 export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
@@ -12713,6 +12862,7 @@ export type Subscriber = components["schemas"]["Subscriber"];
 export type Suggestion = components["schemas"]["Suggestion"];
 export type Suggestions = components["schemas"]["Suggestions"];
 export type SupersededApproval = components["schemas"]["SupersededApproval"];
+export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGate"];
 export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
