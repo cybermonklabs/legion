@@ -87,13 +87,14 @@ func TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone(t *testing
 
 // The same rule under a role mention the read can name no holder for. The filter keeps a session
 // whose copy of the comment a mention still decides (mentionDeliveries.decidesCopyFor), and it
-// asks that of mentionHolds.state, which folds unpinnedRoleMentions.resendingUnnamed into every
-// key rather than into the keys that attempt could be pinned to. So once such an attempt is past
-// the lease the outbox waits a send out for, every credit of the document reads a state other
-// than mentionFailed, is kept, and takes a comment_fallback_copies row of its own, which the
-// pass that publishes those rows sends once nothing decides it: the person's one comment on an
-// issue a session claims is answered by the claimant and by the session that wrote the document,
-// which is what dispatch://INFRA-1368 is about.
+// asks that of mentionHolds.named: the session's own attempts and the attempts this read resolved
+// to it. It does not ask mentionHolds.state, which folds unpinnedRoleMentions.resendingUnnamed
+// into every key rather than into the keys that attempt could be pinned to. A filter that asked
+// state would keep every credit of the document once such an attempt is past the lease the
+// outbox waits a send out for, each with a comment_fallback_copies row of its own that the pass
+// publishing those rows sends: the person's one comment on an issue a session claims would be
+// answered by the claimant and by the session that wrote the document, which is what
+// dispatch://INFRA-1368 is about. This test fails on that mutation.
 //
 // The copies are counted wherever this pass left them - sent now, or held as a row for that
 // later pass - because a copy held is a copy that goes.

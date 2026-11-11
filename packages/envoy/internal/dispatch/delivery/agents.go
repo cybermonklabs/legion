@@ -17,8 +17,9 @@ import "context"
 // This statement's own measurement is the plan test of this package
 // (session_titles_plan_test.go): over a fixture of 14 events across three listed sessions, the
 // one node that reads events runs one loop a session -- three -- and touches no more of those 14
-// rows than stopping at each session's newest titled row costs, which is 8 here, where the
-// `distinct on` it replaced ran a single loop over all 14.
+// rows than stopping at each session's newest titled row costs, which is 8 here. The `distinct
+// on` it replaced was measured once on the same fixture when this change was made, not by that
+// test: a single loop over all 14.
 //
 // The lateral repeats actor->>'kind' = 'session' because that index is partial on it, and it is
 // joined with `cross join`, not a left join: a session with no titled event must answer no row,

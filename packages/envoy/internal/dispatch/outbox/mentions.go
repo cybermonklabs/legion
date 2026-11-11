@@ -263,8 +263,11 @@ func (d mentionDeliveries) liveFor(sessionID string) bool {
 // filter asks: whose copy a mention decides.
 //
 // What that costs, in the ruling that took it: a credit-only session an unnamed role attempt is
-// later pinned to is dropped here, although leftTo, reading state, would have held the event for
-// it. That narrow case is traded for the broad one. leftTo keeps reading state: the conservative
+// later pinned to is dropped here, although leftTo, reading state, would have kept a
+// comment_fallback_copies row for it (its mentionResending arm), which the pass that publishes
+// those rows sends should that attempt's send fail. It would not have held the event: a credit
+// reaches leftTo with unnamed false, so a live unnamed attempt holds no credit's copy. That
+// narrow case is traded for the broad one. leftTo keeps reading state: the conservative
 // comment-wide fold belongs where a copy that exists is held back, not where a copy is decided
 // to exist at all.
 //
@@ -363,8 +366,9 @@ const (
 // row's, which the read fills from the rows that stand (loadMentionDeliveries,
 // mentionFallbackHoldsQuery), and leftTo answers copyLeftToTheMention for it before it reads any
 // state. So at mentionFailed with such a row the two part - this says no mention decides the
-// copy, where leftTo says the copy is the row's - and nothing is lost by it: the credits filter
-// drops that session, and leftTo would have given it no copy either, the fallback pass being the
+// copy, where leftTo says the copy is the row's - and nothing is lost by it. The credits filter
+// keeps such a session when its own mention failed (fallbackKeys names it) and drops it
+// otherwise, and either way leftTo gives this pass no copy of it, the fallback pass being the
 // one that publishes or settles that row.
 func mentionDecidesTheCopy(state mentionState) bool {
 	return state != mentionFailed

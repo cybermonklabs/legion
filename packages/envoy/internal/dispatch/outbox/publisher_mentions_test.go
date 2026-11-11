@@ -503,11 +503,10 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 // mentionPendingDelay with nothing counted, rather than publishing while that send is in flight
 // and leaving the session with neither the mention nor a copy should the send fail.
 //
-// This is the rule, not a test edited until it passed: the credits filter runs before any copy
-// is built, which is where the mention rule would be asked of this session
-// (destinations.addSession), so a session dropped there is a session no safety net of the
-// mention rule can reach - neither the hold this case measures nor the fallback row a resending
-// mention is kept as.
+// The credits filter runs before any copy is built, which is where the mention rule would be
+// asked of this session (destinations.addSession), so a session dropped there is a session no
+// safety net of the mention rule can reach - neither the hold this case measures nor the
+// fallback row a resending mention is kept as.
 func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing.T) {
 	const (
 		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"

@@ -42,13 +42,17 @@ type creditMentionFixture struct {
 // (checkSessionRecipients), the comment_fallback_copies rows it wrote, the attempts it settled,
 // and the event it held back - and never by asking the filter what it would answer: the filter
 // calls decidesCopyFor, so a row that compared the two would pass with the rule wrong in both
-// places, which is the failure this round exists to stop. That is also this table's job: one
-// decision has two readings on purpose (leftTo reads mentionHolds.state, decidesCopyFor reads
-// mentionHolds.named), and the moment a third reading of the decision appears, in either place,
-// a row here stops agreeing with the state it names.
+// places. One decision has two readings on purpose (leftTo reads mentionHolds.state,
+// decidesCopyFor reads mentionHolds.named). The rows that seed mentionFailed with no attempt,
+// mentionSending, mentionResending and mentionAbandoned each fail when mentionDecidesTheCopy
+// answers that state wrongly, in either reading. The row whose mention settled failed pins
+// fallbackKeys, the row a fallback row owns pins held, and the mentionSent row pins only that
+// keeping costs nothing, for the reason its own comment gives.
 //
-// The one place the two readings differ is a row of its own: mentionDeliveries.held, which leftTo
-// answers before any state and the predicate does not read at all.
+// The two readings differ by one fold, unpinnedRoleMentions.resendingUnnamed, which
+// TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut pins. The predicate
+// and leftTo differ by one input, mentionDeliveries.held, which leftTo answers before any state
+// and the predicate does not read at all; that is a row of its own here.
 func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testing.T) {
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
@@ -152,8 +156,10 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 		{
 			// mentionSent: the mention delivered the comment, so the session is kept by the
 			// filter and given no copy by the mention rule - two roads to "no copy", and the
-			// keeping costs nothing. A rule that published a copy at mentionSent would show this
-			// session the comment twice, under a key its host never claimed.
+			// keeping costs nothing. This row pins that cost and nothing more: a predicate that
+			// answered no at mentionSent would make the filter drop this session and pass the
+			// row, and TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent is what catches
+			// that.
 			name: "a credit the mention reached takes no copy of its own, mentionSent deciding the copy",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker, notes string) creditMentionFixture {
 				head := seedThreadComment(t, database, "T-1", notes, sami, nil)
@@ -186,14 +192,15 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 			},
 		},
 		{
-			// The one place the two readings of the decision differ, and the row that says so.
-			// The mention failed, as in the row above, so the filter keeps this session and
-			// builds its copy - and leftTo answers mentionDeliveries.held before it reads any
-			// state, that destination being a row's already (loadMentionDeliveries), so the copy
-			// is left to the pass that publishes or settles that row and this pass sends none.
-			// Nothing is lost by the predicate reading no held: at mentionFailed with such a row
-			// it says drop, where leftTo says the copy is the row's, and neither gives this pass
-			// a copy to send.
+			// The one input leftTo has that the predicate does not read, and the row that says
+			// so. The mention failed, as in the row whose mention settled failed, so the filter
+			// keeps this session through fallbackKeys and builds its copy - and leftTo answers
+			// mentionDeliveries.held before it reads any state, that destination being a row's
+			// already (loadMentionDeliveries), so the copy is left to the pass that publishes or
+			// settles that row and this pass sends none. Nothing is lost by the predicate reading
+			// no held: at mentionFailed with such a row it answers that no mention decides the
+			// copy, where leftTo says the copy is the row's, and neither gives this pass a copy
+			// to send.
 			name: "a credit a fallback row already owns takes no copy from the event, the row owning it",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker, notes string) creditMentionFixture {
 				head := seedThreadComment(t, database, "T-1", notes, sami, nil)
@@ -287,7 +294,8 @@ func checkEventHeldForItsMention(t *testing.T, database *store.Store, event mode
 // The mutation it fails on is mentionHolds.named simplified to mentionOutcomes.state: with the
 // key's own attempts alone the credits filter drops this session, no row is held for it, and the
 // comment the mention was on its way to it with reaches it by neither road should that send fail.
-// The tester's case fails on the other mutation, mentionHolds.state in place of named.
+// TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut fails on the other
+// mutation, mentionHolds.state in place of named.
 //
 // The attempt is past the lease the outbox waits a send out for, so the copy it decides is a
 // comment_fallback_copies row rather than a wait of the event's: the pass that publishes those
