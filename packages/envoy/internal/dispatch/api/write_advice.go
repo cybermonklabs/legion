@@ -68,6 +68,9 @@ type writeAdvice struct {
 	// SupersededApproval is set by a document write that stored a version replacing the one a
 	// person had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
+	// MovedApprovalRequest is set by a document write that took an open approval request back
+	// from the person it waits on; nil (omitted) everywhere else.
+	MovedApprovalRequest *movedApprovalRequest `json:"moved_approval_request,omitempty"`
 	// DeclinedAsks is each ask of this issue a person declined to answer, so a session about to
 	// ask does not ask one of them again. Set only on a write that opens a question (the
 	// opensAQuestion its caller passes writeAdvice) and omitted when empty, so a write with
@@ -592,14 +595,191 @@ func newestReviewAsApproval(ctx context.Context, q docs.Queryer, artifactID stri
 	}, nil
 }
 
+// movedApprovalRequest is what a document write reports when the version it stored moved an
+// open approval request of that document onto its agent's turn (docs.MoveApprovalAsk): the
+// person who was asked no longer sees the request in Waiting on you, and nothing but the
+// agent's own hand-back puts it back in front of them. The write is the moment that happened
+// and its author the only one who can act on it, so its own answer carries the request rather
+// than leaving the agent to read the ask list and notice.
+//
+// Issue and Project are one pair, taken from the request's first document: a document of an
+// issue carries the issue, a document of a project carries the project, and no document carries
+// both. They are what a reader needs to name the request's own place, which the ask id alone
+// does not say.
+type movedApprovalRequest struct {
+	AskID     string                  `json:"ask_id"`
+	Issue     string                  `json:"issue,omitempty"`
+	Project   string                  `json:"project,omitempty"`
+	Documents []movedApprovalDocument `json:"documents"`
+}
+
+// movedApprovalDocument is one document the moved request names: the document as the artifacts
+// row has it now - its name, whether it is its owner's primary document, and the part it plays -
+// with the two versions the request carries for it. RequestedVersion is the version its agent
+// last handed to the human and Version the version the request names now, so the pair is what
+// says this document is the one the write moved.
+type movedApprovalDocument struct {
+	ArtifactID       string `json:"artifact_id"`
+	Name             string `json:"name"`
+	Primary          bool   `json:"primary"`
+	Role             string `json:"role,omitempty"`
+	RequestedVersion int    `json:"requested_version"`
+	Version          int    `json:"version"`
+}
+
+// movedApprovalRoles are the three roles a document can play, in the order
+// movedApprovalDocumentRole asks them: roleSlugs holds the same three, but it is a map, whose
+// range order Go randomises, and a report must answer the same thing twice.
+var movedApprovalRoles = [...]string{
+	model.ArtifactRoleVerification,
+	model.ArtifactRolePlan,
+	model.ArtifactRoleDecisions,
+}
+
+// movedApprovalRequestAdvice reports the open approval request the write just took back from the
+// person, or nil when it took none: a document with no open request, and a request still at the
+// version its agent handed over, which is what a write whose own carry answered the request
+// leaves. It runs inside the write's own transaction, after the version row, the request's move
+// (docs.MoveApprovalAsk) and the approval carry, so it reads the state the write left and not
+// the state it found.
+//
+// The rule is docs.ApprovalAwaitsHandBack, the same one the quiet move and the SQL approvalMoved
+// (ask_rows.go) apply, asked here of the request as this write left it.
+//
+// Like every other advice query this runs behind a savepoint, because a failed statement aborts
+// the transaction it ran in and this must never fail the write it describes. It writes nothing,
+// so the savepoint is always rolled back, which also restores the statement_timeout it set and
+// releases the row lock the ask read took. A failure costs the report alone: the write commits
+// as it always does, and the agent is left where it is today, with the request unnamed.
+func (s *server) movedApprovalRequestAdvice(
+	ctx context.Context,
+	tx pgx.Tx,
+	route string,
+	issueKey string,
+	artifactID string,
+) *movedApprovalRequest {
+	adviceTx, err := tx.Begin(ctx)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "moved_approval_request", err)
+		return nil
+	}
+	defer func() { _ = adviceTx.Rollback(ctx) }()
+	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
+		s.logAdviceError(route, issueKey, "moved_approval_request", err)
+		return nil
+	}
+	ask, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "moved_approval_request", err)
+		return nil
+	}
+	if ask == nil || ask.Approval == nil {
+		return nil
+	}
+	if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
+		// The request still waits on the person, so this write took nothing back from them.
+		return nil
+	}
+	rows, err := movedApprovalArtifacts(ctx, adviceTx, ask.Approval.Documents)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "moved_approval_request", err)
+		return nil
+	}
+	moved := &movedApprovalRequest{
+		AskID:     ask.ID,
+		Documents: make([]movedApprovalDocument, 0, len(ask.Approval.Documents)),
+	}
+	// The owner is the first document's, because that is the document the request was opened on
+	// and the one a hand-back command names. A document whose row this read did not return
+	// leaves the request unplaced rather than placing it wrongly.
+	if lead, ok := rows[ask.Approval.Documents[0].ArtifactID]; ok {
+		if lead.IssueKey != nil {
+			moved.Issue = *lead.IssueKey
+		} else {
+			moved.Project = lead.Project
+		}
+	}
+	for _, document := range ask.Approval.Documents {
+		// The request's own order, because the client's hand-back command names its first
+		// document, and the request's own record for a document whose row is gone or was not
+		// returned: the report never drops a document the request names.
+		entry := movedApprovalDocument{
+			ArtifactID:       document.ArtifactID,
+			Name:             document.Name,
+			RequestedVersion: document.RequestedVersion,
+			Version:          document.Version,
+		}
+		if artifact, ok := rows[document.ArtifactID]; ok {
+			entry.Name = artifact.Name
+			entry.Primary = artifact.Primary
+			entry.Role = movedApprovalDocumentRole(artifact)
+		}
+		moved.Documents = append(moved.Documents, entry)
+	}
+	return moved
+}
+
+// movedApprovalArtifacts reads the artifacts rows of every document the request names, keyed by
+// id: one statement on the savepoint its caller holds, rather than one read per document, since
+// a request names one document or two and either way this is a single round trip. A document
+// whose row is missing is simply absent from the map, which is what the caller reports it as.
+func movedApprovalArtifacts(
+	ctx context.Context,
+	q docs.Queryer,
+	documents []model.AskApprovalDocument,
+) (map[string]model.Artifact, error) {
+	ids := make([]string, len(documents))
+	for index, document := range documents {
+		ids[index] = document.ArtifactID
+	}
+	// The ids are compared as text, as the graph's own artifact read compares them
+	// (refs.loadArtifactNodes): an approval's stored id that is not a uuid would fail the cast
+	// and cost the whole report, where this read simply returns no row for it.
+	rows, err := q.Query(ctx, `
+		select `+artifactColumns+`
+		from artifacts where id::text = any($1::text[])
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the documents an approval request names: %w", err)
+	}
+	artifacts, err := collectArtifacts(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the documents an approval request names: %w", err)
+	}
+	byID := make(map[string]model.Artifact, len(artifacts))
+	for _, artifact := range artifacts {
+		byID[artifact.ID] = artifact
+	}
+	return byID, nil
+}
+
+// movedApprovalDocumentRole is the part a document plays, asked of the row as every other reader
+// asks it (documentPlays), in the fixed order of movedApprovalRoles. Asking documentPlays rather
+// than reading artifacts.role is what gives a row whose role column is still null the role its
+// slug decides, which is the state a rolling deploy leaves behind. A document that plays none of
+// the three answers "", which omits the field.
+func movedApprovalDocumentRole(artifact model.Artifact) string {
+	for _, role := range movedApprovalRoles {
+		if documentPlays(artifact, role) {
+			return role
+		}
+	}
+	return ""
+}
+
 // documentWriteAdvice is the whole advice of a document write with no issue state to report: a
 // project document's write, or an issue document's whose bounded issue-advice read failed. It
-// carries the document half of writeAdvice - the block report its route produces, and the
-// approval the write superseded - so neither depends on the issue advice beside it.
+// carries the document half of writeAdvice - the block report its route produces, the approval
+// the write superseded, and the approval request it took back from a person - so none of them
+// depends on the issue advice beside it.
 type documentWriteAdvice struct {
 	*documentBlocks
 	*editBlocks
+	// SupersededApproval is the approval this write made stale; nil (omitted) when it made none.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
+	// MovedApprovalRequest is the open approval request this write took back from the person it
+	// waits on; nil (omitted) when it took none.
+	MovedApprovalRequest *movedApprovalRequest `json:"moved_approval_request,omitempty"`
 }
 
 const (
