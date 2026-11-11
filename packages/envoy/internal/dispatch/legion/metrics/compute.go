@@ -150,7 +150,9 @@ type ReworkIssue struct {
 }
 
 // Splitting is metric 4: what Legion sessions filed in the window, by class and week, against the
-// issues that finished per week.
+// issues that finished per week. The rows and the weeks' class counts are narrowed to the scope
+// by the issue each filing created, as the finished population is narrowed by the issue that
+// finished (inScope); the four root figures below are the project's whatever the toggle says.
 type Splitting struct {
 	Weeks []SplittingWeek `json:"weeks"`
 	Filed []FiledIssue    `json:"filed"`
@@ -251,18 +253,8 @@ func (c *computation) finished() []*Issue {
 	var finished []*Issue
 	for _, key := range c.population.Keys {
 		issue := c.population.Issues[key]
-		if !c.finishedInWindow(issue) {
+		if !c.finishedInWindow(issue) || !c.inScope(issue.Key) {
 			continue
-		}
-		switch c.scope {
-		case ScopeRoots:
-			if !c.isRoot(issue) {
-				continue
-			}
-		case ScopeChildren:
-			if c.isRoot(issue) {
-				continue
-			}
 		}
 		finished = append(finished, issue)
 	}
@@ -291,8 +283,28 @@ func (c *computation) treeRoot(key string) string {
 	return root
 }
 
-func (c *computation) isRoot(issue *Issue) bool {
-	return c.treeRoot(issue.Key) == issue.Key
+// isRoot is whether the issue is the root of its own tree, by the walk every rule of this
+// computation places an issue with (treeRoot).
+func (c *computation) isRoot(key string) bool {
+	return c.treeRoot(key) == key
+}
+
+// inScope is the scope toggle itself, written once because two rules read it: the finished
+// population (finished) and the filings of the splitting table (splitting) are narrowed the same
+// way, so a reader of either number is reading the same rule. In `roots` an issue that is a root
+// of its tree counts, in `children` one that is not, and in `all` every issue.
+//
+// It takes a key rather than an issue because the row of the splitting table is the issue that
+// was filed: a filing is read by the tree the new issue is in, not by the filer's, so one filer's
+// filings can fall on either side of the toggle.
+func (c *computation) inScope(key string) bool {
+	switch c.scope {
+	case ScopeRoots:
+		return c.isRoot(key)
+	case ScopeChildren:
+		return !c.isRoot(key)
+	}
+	return true
 }
 
 // timelineOf is the issue's phase timeline with where it came from, computed once.
@@ -420,7 +432,7 @@ func (c *computation) computeWorkTime(issue *Issue) workTimeRow {
 	worked := subtract(subtract(life, parked), queued)
 	return workTimeRow{
 		row: WorkTimeIssue{
-			Key: issue.Key, Title: issue.Title, Priority: issue.Priority, Root: c.isRoot(issue),
+			Key: issue.Key, Title: issue.Title, Priority: issue.Priority, Root: c.isRoot(issue.Key),
 			StartedAt: start, ClosedAt: end, MergedAt: issue.MergedAt,
 			Hours:       hours(totalOf(worked)),
 			ParkedHours: hours(totalOf(parked)),
@@ -595,7 +607,9 @@ func firstReview(issue *Issue, timeline phaseTimeline) (time.Time, bool) {
 }
 
 // splitting is metric 4: each issue a Legion session created in the window, by the parent it had
-// at its `issue.created` event, counted per week against the issues that finished per week.
+// at its `issue.created` event, counted per week against the issues that finished per week. The
+// rows and each week's four class counts are the filings the scope keeps, read by the issue the
+// filing created (inScope); each week's finished count is the scoped population it is passed.
 func (c *computation) splitting(finished []*Issue) Splitting {
 	metric := Splitting{Filed: make([]FiledIssue, 0, len(c.population.Filed))}
 	weeks := map[time.Time]*SplittingWeek{}
@@ -612,6 +626,9 @@ func (c *computation) splitting(finished []*Issue) Splitting {
 		return fresh
 	}
 	for _, filed := range c.population.Filed {
+		if !c.inScope(filed.Key) {
+			continue
+		}
 		row := c.classify(filed)
 		metric.Filed = append(metric.Filed, row)
 		week(filed.At).Filed[row.Class]++
@@ -631,7 +648,7 @@ func (c *computation) splitting(finished []*Issue) Splitting {
 	var children int
 	for _, key := range c.population.Keys {
 		issue := c.population.Issues[key]
-		if !c.finishedInWindow(issue) || !c.isRoot(issue) {
+		if !c.finishedInWindow(issue) || !c.isRoot(issue.Key) {
 			continue
 		}
 		metric.FinishedRoots++

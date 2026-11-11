@@ -689,6 +689,80 @@ func TestEachClassOfFiledIssue(t *testing.T) {
 	}
 }
 
+// TestTheScopeToggleNarrowsTheFilingsByTheIssueFiled: the splitting table's rows and each week's
+// four class counts follow the scope toggle, read by the issue each filing created — the one
+// implementer files a child of its own tree and a follow-up that is a root, and the toggle keeps
+// one or the other, whichever session filed them. That week's finished count and the table's root
+// figures stand where they are: "These root figures count the project's finished roots whatever
+// the all, roots or children toggle says, since they describe roots, while the weekly counts
+// follow the toggle" (the spec's metric 4).
+func TestTheScopeToggleNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
+	// The root and its two children finish in the window's second week, so the week the filings
+	// fall in has no finished issue of either kind and its finished count is the same under every
+	// scope, while the filings in it are not.
+	root := newIssue("INFRA-1").
+		worked("architect", hour(0)).
+		worked("implementer", hour(5)).
+		closedAt(hour(100))
+	inTree := newIssue("INFRA-2").under("INFRA-1")
+	// Filed under no parent at all: an issue of its own tree, and so a root.
+	followUp := newIssue("INFRA-7")
+	finishedChild := newIssue("INFRA-3").under("INFRA-1").worked("implementer", hour(50)).closedAt(hour(101))
+	population := fixture(hour(-24), hour(120), root, inTree, followUp, finishedChild)
+	population.Filed = []Filed{
+		{Key: "INFRA-2", At: hour(6), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
+		{Key: "INFRA-7", At: hour(7), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}},
+	}
+	filingsWeek := weekStart(hour(6))
+	for _, one := range []struct {
+		scope  Scope
+		filed  []string
+		counts map[string]int
+	}{
+		{ScopeAll, []string{"INFRA-2", "INFRA-7"}, map[string]int{ClassInTreeLater: 1, ClassOutOfTree: 1}},
+		{ScopeRoots, []string{"INFRA-7"}, map[string]int{ClassOutOfTree: 1}},
+		{ScopeChildren, []string{"INFRA-2"}, map[string]int{ClassInTreeLater: 1}},
+	} {
+		t.Run(string(one.scope), func(t *testing.T) {
+			report := Compute(population, one.scope, hour(120))
+			var filed []string
+			for _, row := range report.Splitting.Filed {
+				filed = append(filed, row.Key)
+			}
+			if !reflect.DeepEqual(filed, one.filed) {
+				t.Fatalf("scope %s holds the filings %v, want %v: a filing is read by the tree of the issue it created, not by the filer's",
+					one.scope, filed, one.filed)
+			}
+			var week SplittingWeek
+			for _, row := range report.Splitting.Weeks {
+				if row.Week.Equal(filingsWeek) {
+					week = row
+				}
+			}
+			want := map[string]int{ClassInTreeAtDesign: 0, ClassInTreeLater: 0, ClassOutOfTree: 0, ClassByTheController: 0}
+			for class, count := range one.counts {
+				want[class] = count
+			}
+			if !reflect.DeepEqual(week.Filed, want) {
+				t.Fatalf("scope %s counts the filings' week %v, want %v: the week counts hold the rows of the same table",
+					one.scope, week.Filed, want)
+			}
+			if week.Finished != 0 {
+				t.Errorf("scope %s finished %d issues in the filings' week, want none: nothing closed in it under any scope",
+					one.scope, week.Finished)
+			}
+			if report.Splitting.FinishedRoots != 1 || report.Splitting.ChildrenPerRoot != 2 {
+				t.Errorf("scope %s answers %d finished roots with %g children each, want the one root with its two children: the root figures are the project's whatever the toggle says",
+					one.scope, report.Splitting.FinishedRoots, report.Splitting.ChildrenPerRoot)
+			}
+			if report.Splitting.MedianHoursRootsWithChildren != 100 || report.Splitting.MedianHoursRootsNoChildren != 0 {
+				t.Errorf("scope %s answers medians of %g with children and %g without, want the root's 100 hours and no root without children",
+					one.scope, report.Splitting.MedianHoursRootsWithChildren, report.Splitting.MedianHoursRootsNoChildren)
+			}
+		})
+	}
+}
+
 // A table names a phase by the bar it falls on (spec version 18, "Phase words in tables"). The
 // merger's bar holds three of the daemon's phases, so a filer in `retro` — which the merger's
 // first event starts — is named merging, while a filer in a phase of its own bar keeps its own
