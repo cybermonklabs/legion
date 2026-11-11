@@ -220,17 +220,46 @@ func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role
 	if err != nil {
 		return err
 	}
-	// Nothing to clear is nothing to write. The row is read field by field rather than compared
-	// whole: PhaseRow carries the map of its backward moves (record.PhaseRow.BackwardMoves), and
-	// no == compares a struct that holds a map.
-	if row.HandoffCommit == "" && row.HandoffRecord == "" && row.HandoffVersion == 0 && row.Verdict == "" &&
-		row.Summary == "" && row.Decision == nil && row.CompletedAt.IsZero() && row.MergeNote == "" {
+	// Nothing to clear is nothing to write.
+	if handoffOf(row) == (phaseHandoff{}) {
 		return nil
 	}
-	cleared := row
-	cleared.HandoffCommit, cleared.HandoffRecord, cleared.HandoffVersion = "", "", 0
-	cleared.Verdict, cleared.Summary, cleared.Decision, cleared.CompletedAt, cleared.MergeNote = "", "", nil, time.Time{}, ""
-	return e.store.PutPhase(ctx, tx, cleared)
+	return e.store.PutPhase(ctx, tx, phaseHandoff{}.onto(row))
+}
+
+// phaseHandoff is the handoff a role reported for one phase, which is the one list of the fields
+// clearHandoff empties. Both halves of that clear are derived from this list: the write is the
+// empty handoff put back on the row (onto), and the decision to write compares the handoff the
+// row carries with that same empty one, so the fields cleared and the fields the decision stands
+// on cannot drift apart. It is a struct of its own, and not record.PhaseRow, because the decision
+// is a comparison and a phase row cannot be compared: the row holds the map of its backward moves
+// (record.PhaseRow.BackwardMoves), and Go refuses == on a struct type that holds a map whatever
+// its values are, two nil maps included.
+type phaseHandoff struct {
+	commit         string
+	dispatchRecord string
+	version        int
+	verdict        string
+	summary        string
+	decision       *record.ReviewDecision
+	completedAt    time.Time
+	mergeNote      string
+}
+
+// handoffOf is the handoff row carries.
+func handoffOf(row record.PhaseRow) phaseHandoff {
+	return phaseHandoff{commit: row.HandoffCommit, dispatchRecord: row.HandoffRecord, version: row.HandoffVersion,
+		verdict: row.Verdict, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
+		mergeNote: row.MergeNote}
+}
+
+// onto is row carrying h, with every other field of the row — its claim, the record it last
+// named, its rounds and their counts — left as it stands.
+func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
+	row.HandoffCommit, row.HandoffRecord, row.HandoffVersion = h.commit, h.dispatchRecord, h.version
+	row.Verdict, row.Summary, row.Decision = h.verdict, h.summary, h.decision
+	row.CompletedAt, row.MergeNote = h.completedAt, h.mergeNote
+	return row
 }
 
 // suspend stops role's worker on issue, for reason, which the suspended claim logs.

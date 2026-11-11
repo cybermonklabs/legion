@@ -75,7 +75,7 @@ func BackwardPairs() []string {
 
 // ParsePair reads one "<from>-<to>" pair and answers ok only for a pair BackwardPairs holds. The
 // check is against that set, not against MovesBack alone, because the set is the smaller of the
-// two: MovesBack is true for pairs such as merging-awaiting_merge that no backward row and no
+// two: MovesBack is true for pairs such as awaiting_merge-merging that no backward row and no
 // count know. Phase words hold "_" and never "-", so the one "-" of a pair in the set splits it.
 func ParsePair(text string) (from, to Phase, ok bool) {
 	if !backwardPairSet[text] {

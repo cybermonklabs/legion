@@ -695,17 +695,18 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, from,
 		return err
 	}
 	row.Rounds++
-	conflict := pr != nil && classify.ConflictRound(*pr)
-	if conflict {
+	if pr != nil && classify.ConflictRound(*pr) {
+		// A conflict round ends here: it raises no pair, tells nobody and fires nothing, so the
+		// write of the two counts is all it has to do.
 		row.ConflictRounds++
-	} else {
-		if row.BackwardMoves == nil {
-			row.BackwardMoves = make(map[string]int, 1)
-		}
-		row.BackwardMoves[phase.Pair(from, to)]++
+		return e.store.PutPhase(ctx, tx, row)
 	}
+	if row.BackwardMoves == nil {
+		row.BackwardMoves = make(map[string]int, 1)
+	}
+	row.BackwardMoves[phase.Pair(from, to)]++
 	counted := row.Rounds - row.ConflictRounds
-	tell := !conflict && counted >= e.cfg.ReviewRoundCap && row.CapTold != e.cfg.ReviewRoundCap
+	tell := counted >= e.cfg.ReviewRoundCap && row.CapTold != e.cfg.ReviewRoundCap
 	if tell {
 		row.CapTold = e.cfg.ReviewRoundCap
 	}
@@ -721,9 +722,6 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, from,
 		if err := e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message}); err != nil {
 			return err
 		}
-	}
-	if conflict {
-		return nil
 	}
 	return e.fireWorkBackHooks(ctx, tx, issue, from, to, row.BackwardMoves, pr)
 }
