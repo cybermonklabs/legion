@@ -50,6 +50,13 @@
 # as the last word on that option. It bounds the sleep and changes nothing else. A .curlrc cannot
 # do it, because curl reads its configuration file before the command line and the helper's own
 # bound would win. A CI runner sees neither, so the pinned ladder is what runs there.
+# That curl has a second job: before it appends the bound, it writes down the arguments it was
+# handed, one per line, and the ladder case below reads the pinned flags off that record. Those
+# flags are the ladder ci_tools_curl holds every fetch to, and before that case no assertion
+# here or anywhere else held them to a shape, so an edit of one of them reached a runner unseen.
+# The case prints no recorded argument, whether it passes or fails: this helper is handed a pull
+# token with `-u` and a blob's `Authorization: Bearer …` with `-H`, and it takes both as
+# arguments exactly so that they reach no log line, which a test that printed them would undo.
 #
 # THE MKTEMP ON THESE CASES' PATH: the write-error cases must name the file a fetch writes into,
 # and that file is a mktemp the helper makes under RUNNER_TEMP. Those cases put an mktemp of
@@ -84,11 +91,18 @@ manifest="$work/ci-tools.yaml"
 runner_temp="$work/runner-temp"
 mkdir -p "$runner_temp" "$work/payloads" "$work/dest" "$work/bin"
 
-# The curl the cases run, first on their PATH: the real one with `--retry-max-time 1` after the
-# arguments the helper wrote, which is the bound the header above explains.
+# What the stand-in curl below writes the arguments of a call down in, one per line, so that an
+# argument holding a space stays one record. Each call overwrites it, so it holds the arguments
+# of the call that ran last.
+curl_arguments="$work/curl-arguments"
+
+# The curl the cases run, first on their PATH: the record of what it was handed, then the real
+# one with `--retry-max-time 1` after the arguments the helper wrote, which is the bound the
+# header above explains.
 real_curl=$(command -v curl)
 cat > "$work/bin/curl" <<SH
 #!/usr/bin/env bash
+printf '%s\n' "\$@" > "$curl_arguments"
 exec "$real_curl" "\$@" --retry-max-time 1
 SH
 chmod 0755 "$work/bin/curl"
@@ -437,7 +451,10 @@ tools:
     second_source: pulumi-releases
     second_url: https://releases.example.com/plugins/plugin-v8.0.0-linux-amd64.tar.gz
     second_member: ""
-    max_time: 7
+    # The one row whose bound is not the 7 every other row carries. The ladder case fetches
+    # this row after a row of 7 and holds the `--max-time` each call was handed to that row's
+    # own value, which is what shows the bound follows the row and is no constant.
+    max_time: 11
   # A row whose second source serves a .tar.gz it names a member of, which is the member rule on
   # an archive that is no wheel. A third party fetches its primary bytes, as jj's does.
   - name: tarmembered
@@ -574,6 +591,40 @@ nothing_at() { [ -e "$1" ] && echo false || echo true; }
 # temporary_files: what the helper left under RUNNER_TEMP, which is nothing on every path.
 temporary_files() { find "$runner_temp" -mindepth 1 | sort; }
 
+# What `recorded_ladder` writes in place of the tenth argument, which is the file this run's own
+# mktemp named. That one word is the only word of the record this file cannot write down, since
+# it is another on every run; every other word is pinned by the helper, the manifest or the seam.
+RECORDED_TEMPORARY_FILE='<the temporary file this run named>'
+
+# recorded_ladder: every argument the stand-in curl was handed by the call that ran last, one per
+# line, with the tenth replaced by that placeholder. The whole record is held, and so is its
+# length, which is what catches a word appended anywhere, after the URL included: curl reads the
+# last word on --retry-max-time, so one appended word there takes the bound off every fetch this
+# repository makes. It is read inside `is` and never printed: a call carries credentials among
+# its arguments, and the helper passes them that way so that they reach no log line.
+recorded_ladder() {
+  local argument number=0
+  while IFS= read -r argument; do
+    number=$((number + 1))
+    [ "$number" -ne 10 ] || argument=$RECORDED_TEMPORARY_FILE
+    printf '%s\n' "$argument"
+  done < "$curl_arguments"
+}
+
+# pinned_ladder <max_time>: the nine words ci_tools_curl pins before the file it writes, with
+# that row's own bound in place.
+pinned_ladder() {
+  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$1" -o
+}
+
+# whole_record <max_time> <url>: the eleven words ci_tools_curl hands curl for a row whose fetch
+# carries no argument of its own — those nine, then the temporary file the placeholder above
+# stands in for, then the URL the seam built.
+whole_record() {
+  pinned_ladder "$1"
+  printf '%s\n' "$RECORDED_TEMPORARY_FILE" "$2"
+}
+
 echo "case: github-release — the primary serves the bytes"
 origin primary-serves
 dest="$work/dest/primary-serves"
@@ -585,6 +636,38 @@ check "names the source that served them" \
 check "read the release asset" "$(is "$(asked_for "$log" "/github/")" true)"
 check "and read no second source" "$(is "$(asked_for "$log" "/ghcr/")" false)"
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: the retry ladder every fetch is made under"
+# The flags of that one fetch are what ci_tools_curl pins, and .github/scripts/mirror-ci-tools.sh
+# fetches through the same function, so this holds the ladder both callers read bytes under. The
+# fetch below serves the row from its release asset, so it makes one call and the record is the
+# primary's own. The bound is read off the row rather than written here, so the assertion follows
+# the manifest.
+origin curl-ladder
+dest="$work/dest/curl-ladder"
+run ci_tools_fetch tarred "$dest"
+ladder=$(recorded_ladder)
+check "the fetch exits 0, so the record is that primary's own call" "$(is "$status" 0)"
+run ci_tools_field tarred max_time
+bound=$out
+# Eleven words, because the tenth is the temporary file a mktemp of this run named and the
+# eleventh is the URL the seam built from the row's own `primary`. The record is held whole, with
+# that one unpredictable word standing in for itself, so that a changed flag, a changed bound, a
+# changed URL and a word appended anywhere — after the URL as well — each fail here.
+check "the whole record is the pinned ladder with the row's own bound, this run's temporary file and the URL the seam built" \
+  "$(is "$ladder" "$(whole_record "$bound" "$base/$ASSET_PATH")")"
+dest="$work/dest/curl-ladder-other-bound"
+run ci_tools_fetch plugin "$dest"
+other_ladder=$(recorded_ladder)
+check "a second row, whose bound the manifest writes another value of, exits 0 too" \
+  "$(is "$status" 0)"
+run ci_tools_field plugin max_time
+other_bound=$out
+check "that row's bound is another than the first row's" \
+  "$(is "$(is "$other_bound" "$bound")" false)"
+check "and its record carries that bound and that row's own URL, so --max-time follows the row" \
+  "$(is "$other_ladder" "$(whole_record "$other_bound" "$base/$PLUGIN_ASSET_PATH")")"
+check "and neither fetch left a temporary file" "$(is "$(temporary_files)" "")"
 
 echo "case: ghcr-mirror — the primary refuses and the copy serves the bytes"
 origin primary-refuses

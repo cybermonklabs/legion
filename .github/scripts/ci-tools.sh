@@ -559,6 +559,11 @@ ci_tools__tempfile() {
 # at 119 s when that attempt ended and the next retry was decided, which is what "just under
 # two minutes" above means.
 #
+# Main's #3470 measured this ladder at the `--retry-max-time 60` this file carried before
+# dispatch://INFRA-1545 raised it: 7 attempts and 63 s against a source that refuses at once,
+# where at 120 the eighth attempt is made and the ladder is 127 s. Its figures are of that
+# bound and are kept here as history rather than as the ladder this file now writes.
+#
 # A failing fetch of a ghcr-mirror row runs three of these — the asset, the pull token, the
 # blob — which .github/scripts/check-download-retry.sh's DECLARED_LOOPS entry for this file
 # sums into the one figure rule 8 prices, reading this block for the per-ladder term rather
