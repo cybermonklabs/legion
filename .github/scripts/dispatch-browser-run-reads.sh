@@ -62,9 +62,9 @@
 # status on record, which is an attempt whose status file was never written.
 #
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
-# GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the merge job's `run:` body
-# exports the token - and never from a step `env:` key, for the reason the shard job's head
-# gives.
+# GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as
+# .github/scripts/dispatch-browser-reading-rows.sh, the script that step runs, exports the token
+# - and never from a step `env:` key, for the reason the shard job's head gives.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, or
 # .github/scripts/dispatch-browser-run-reads.sh blobs-refused

@@ -1220,16 +1220,20 @@ jobs:
               # the script the merge job runs to take each leg's newest attempt, and the script
               # that makes the merge job's two reads of its own run, which reads this run's own
               # attempt's jobs and says a refused blob download was a refused read. Beside them,
-              # the six bodies the shard, the alone and the visual jobs carried inline until this
-              # file grew too large for GitHub to start it (dispatch://INFRA-2507): the shard
-              # job's wait for the file store it starts, its browser step and the record of what
-              # that run left behind, the alone job's browser step and its own record step, whose
-              # text differs from the shard job's because no file store runs on that machine, and
-              # the visual job's run against the baselines. The Playwright install both jobs ran
-              # stood here too, with the pinned apt list it installed, the key their apt archive
-              # cache was read under and the check that the list had not fallen behind Playwright:
-              # those two jobs run in the image this repository builds now, which carries the
-              # browsers and their host packages, so all four files are gone (dispatch://INFRA-1443).
+              # the twelve bodies the shard, the alone, the visual and the merge jobs carried
+              # inline until this file grew too large for GitHub to start it
+              # (dispatch://INFRA-2507): the shard job's wait for the file store it starts, its
+              # browser step and the record of what that run left behind, the alone job's
+              # browser step and its own record step, whose text differs from the shard job's
+              # because no file store runs on that machine, the visual job's run against the
+              # baselines, and the merge job's merge of the legs' blob reports, its four
+              # readings - the rows, the flake rate, the leg exits and the row durations - and
+              # the verdict that fails the job on a red leg or a failed row. The Playwright
+              # install both jobs ran stood here too, with the pinned apt list it installed, the
+              # key their apt archive cache was read under and the check that the list had not
+              # fallen behind Playwright: those two jobs run in the image this repository builds
+              # now, which carries the browsers and their host packages, so all four files are
+              # gone (dispatch://INFRA-1443).
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-postgres.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
@@ -1240,6 +1244,12 @@ jobs:
               - '.github/scripts/dispatch-browser-alone-suite.sh'
               - '.github/scripts/dispatch-browser-alone-record.sh'
               - '.github/scripts/dispatch-browser-visual-suite.sh'
+              - '.github/scripts/dispatch-browser-merge-reports.sh'
+              - '.github/scripts/dispatch-browser-reading-rows.sh'
+              - '.github/scripts/dispatch-browser-reading-flake-rate.sh'
+              - '.github/scripts/dispatch-browser-reading-leg-exits.sh'
+              - '.github/scripts/dispatch-browser-reading-row-durations.sh'
+              - '.github/scripts/dispatch-browser-verdict.sh'
               # The container image the shard and alone jobs run in and everything that decides
               # which bytes it is: the row that pins its digest, the Dockerfile it is built from
               # and the workflow that builds it. A change to any of them changes what those jobs

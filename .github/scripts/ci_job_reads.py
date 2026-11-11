@@ -780,6 +780,11 @@ BROWSER_CONTRACTS = "Build contracts for dispatch e2e"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
+# The merge job's three other readings and its verdict, each a step running a script of its own.
+BROWSER_READ_TWO_STEP = "Reading two, the flake rate"
+BROWSER_READ_THREE_STEP = "Reading three, the leg exits with no failed row"
+BROWSER_READ_FOUR_STEP = "Reading four, the row durations"
+BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a failed row"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
@@ -1196,6 +1201,26 @@ GATES = [
         (".github/scripts/dispatch-browser-visual-suite.sh",
          f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} runs it for the stack and the "
          "e2e/visual-run.sh the comparison against the baselines needs"),
+        (".github/scripts/dispatch-browser-merge-reports.sh",
+         f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} runs it to join the legs' blob "
+         "reports into the one HTML and JSON report of the run"),
+        (".github/scripts/dispatch-browser-reading-rows.sh",
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs it for the rows each leg's "
+         "log printed against the rows the merged report holds, and for the legs that owed a "
+         "blob report and uploaded none"),
+        (".github/scripts/dispatch-browser-reading-flake-rate.sh",
+         f"{at_browser(BROWSER_READ_TWO_STEP, BROWSER_MERGE)} runs it for the count and the "
+         "percentage of the rows that passed on a retry"),
+        (".github/scripts/dispatch-browser-reading-leg-exits.sh",
+         f"{at_browser(BROWSER_READ_THREE_STEP, BROWSER_MERGE)} runs it to name every leg that "
+         "concluded anything but success beside what its own blob report holds"),
+        (".github/scripts/dispatch-browser-reading-row-durations.sh",
+         f"{at_browser(BROWSER_READ_FOUR_STEP, BROWSER_MERGE)} runs it for the row count, the "
+         "median and the 95th percentile of each layer's passing rows"),
+        (".github/scripts/dispatch-browser-verdict.sh",
+         f"{at_browser(BROWSER_VERDICT_STEP, BROWSER_MERGE)} runs it to fail the job on an "
+         "upstream result that is neither success nor skipped and on a failed row in the "
+         "merged report"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs")
