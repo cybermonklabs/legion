@@ -293,6 +293,16 @@ Each item below names a script, then what it proves.
   and a fresh session starts the phase worker on its issue's current phase task and the root architect on its catch-up.
   Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
 
+- `role-prompt-rule.sh`
+
+  a role process is launched with the pod memory rule in the system prompt it carries, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two real `omp --mode rpc` panes under the real `legion worker-shim`, each answered by a model stand-in of the driver's own:
+  one tree is seeded, so the daemon starts the two roles of one issue, its root architect and its planner;
+  once both panes have registered and reported ready, each process's own command line is read from `/proc/<pid>/cmdline`, at the pid that claim's locator carries, and the word after `--append-system-prompt` is taken from it;
+  the phase worker's eight sentences of the rule and the root architect's six are each held in that word, and a sentence that is not there fails the proof naming the role, the pid and the sentence.
+  That command line is the only place this proof reads.
+  The composer, the role prompt files below the state directory and the recorded launch specification each hold the rule before any process took it, and the unit tests already read it there, so none of the three says a role was launched with it.
+  Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
+
 - `refusal-fallback-omp.sh`
 
   a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1), measured on three real Legion panes of the pinned Oh My Pi, each the root architect of an issue of its own, each with this checkout's two plugins, an OpenAI-shaped model stand-in of its own and a chain that carries `retry.fallbackRevertPolicy: never`:
