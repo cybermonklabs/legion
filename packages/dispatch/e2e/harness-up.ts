@@ -42,7 +42,7 @@ for (const [variable, value] of Object.entries(stack.env)) {
 }
 console.log("export DISPATCH_E2E_REUSE_SERVERS=1");
 
-// Until the caller stops it. SIGINT is Playwright's and this script's own: the pool hands that
+// Until the caller stops it. SIGINT is this script's own: the pool hands that
 // signal back once its stacks are up (`e2e/harness-pool.ts`, `unwatchInterrupt`), so from here
 // on nothing else handles it, and the stack's processes are this process's children, which a
 // Ctrl-C would otherwise leave serving loopback ports.

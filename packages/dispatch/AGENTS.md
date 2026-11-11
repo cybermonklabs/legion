@@ -1636,8 +1636,8 @@ Playwright's UI mode starts this suite's stacks itself. The UI server runs no
 `globalSetup` when it begins listening; it runs one when a client connects
 (`runGlobalSetup`, playwright 1.64.1 `lib/runner/index.js:6896-6915`), so a
 session opened on the listening URL starts its own stacks, runs rows against
-them, and stops them when the session ends. Measured at `162de706` on
-playwright 1.64.1: with nothing
+them, and stops them when the session ends. Measured on playwright 1.64.1
+(dispatch://INFRA-1410): with nothing
 up, the UI listened and started nothing; a browser opened on that URL made one
 run directory and listed the file's rows; Run all passed the row; a second Run
 all passed it again and made no second set of stacks; closing the session left
@@ -2137,7 +2137,7 @@ reaches, `/agents` with both folds, the broadcast page, an issue's Conversation)
 `seedWorkspace()` expects an empty database and returns the ids it made;
 it waits for the spec's decision block to be indexed, so `inboxRows` is exact when it resolves.
 
-Every real-stack spec takes its `test` from `e2e/test.ts`, and 146 of them do: it is
+Every real-stack spec takes its `test` from `e2e/test.ts`: it is
 Playwright's own `test` with an automatic fixture that empties the database before each row
 (`resetDatabase`, below) and a default `context` signed in as `alice`. A file opts out of the
 sign-in with `test.use({ signedIn: false })`, or changes it with
@@ -2251,7 +2251,8 @@ as at the end of a run.
 A signal stops the stacks this suite starts, and a SIGTERM stops no more than those. A run that
 holds a stubbed row also starts Playwright's own `webServer` (`e2e/stub/static-server.ts`,
 `e2e/playwright.config.ts`), which Playwright stops on a SIGINT and leaves running on a SIGTERM:
-measured at `162de706`, a mixed run signalled mid-row exited 143 with every stack of this suite
+measured on playwright 1.64.1 (dispatch://INFRA-1410), a mixed run signalled mid-row exited 143
+with every stack of this suite
 gone - no Postgres, no server, no run directory - and the static server still serving on its
 fixed port, so the next run holding a stubbed row was refused by name
 (`http://127.0.0.1:4319/index.html is already used, make sure that nothing is running on the

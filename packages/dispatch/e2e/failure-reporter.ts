@@ -32,9 +32,7 @@ import { recordError, recordRow } from "./run-outcome";
  *  An `afterAll` that throws AFTER THE LAST ROW of its file is NOT one of them, however it
  *  reads: at 1.64.1 it runs inside that last row and `onTestEnd` reports it. Measured twice,
  *  with a throwing `afterAll` and with a worker that `process.exit(1)`s in one test: both were
- *  reported on the last row. `lib/runner/index.js:267-281` is not one of them either - that is
- *  `TeleReporterReceiver._onError`, which replays a report a `--reporter=blob` leg wrote, not
- *  the path a CLI run takes. */
+ *  reported on the last row. */
 export default class FailureReporter implements Reporter {
   onError(): void {
     recordError();

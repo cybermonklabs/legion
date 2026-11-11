@@ -1,5 +1,5 @@
 /** The `test` every row of the real-stack browser suite takes: Playwright's own, with the two
- *  things every one of those rows needs put on it once rather than written out 146 times.
+ *  things every one of those rows needs put on it once rather than written out in every file.
  *
  *  **The reset runs as an automatic fixture, not as a hook each file copies.** A row of this
  *  suite seeds what it reads and must read nothing the row before it left, so it starts from an
@@ -10,8 +10,9 @@
  *        await resetDatabase();
  *      });
  *
- *  - 146 copies of one hook: 146 places to read it, and one chance to forget it in every spec
- *  written since. As an automatic fixture it runs for every row of every file that imports this
+ *  - one copy of one hook in each spec file: as many places to read it, and one chance to
+ *  forget it in every spec written since. As an automatic fixture it runs for every row of
+ *  every file that imports this
  *  `test`, so a new spec resets by importing from here and a row cannot be written without one.
  *  A file whose setup does more than the reset still writes a hook, for that extra work alone.
  *

@@ -47,7 +47,7 @@
  *
  *  A NON-DASH target, measured in ANOTHER CHECKOUT: the INFRA-1280 tree, against that tree's
  *  own suite, where the target is a spec path and the reading is the listing it produced. This
- *  checkout cannot reproduce either row - its own suite lists 1,346 tests in 179 files - and
+ *  checkout cannot reproduce either row, since its own suite is another set of files, and
  *  they are kept because they are the evidence for the half of the OPTIONAL rule that this
  *  tree's reader never exercises: what such an option does with a token that does NOT begin
  *  with a dash (dispatch://INFRA-1280).
@@ -128,9 +128,7 @@ export const optionValueClasses: Readonly<Record<OptionValueClass, ReadonlySet<s
  *  A required-value option takes the next token whatever it looks like. An optional-value one
  *  takes it only when it does not begin with a dash. A variadic one takes its first value like a
  *  required option and then every further token up to the next dash token. Anything else - a flag,
- *  a `--name=value` token, which is self-contained, a positional, a bare `--` - takes nothing.
- *
- *  A caller that has only an option and one token asks `valuesTakenAt([option, token], 0) > 0`. */
+ *  a `--name=value` token, which is self-contained, a positional, a bare `--` - takes nothing. */
 export function valuesTakenAt(argv: readonly string[], index: number): number {
   const option = argv[index] ?? "";
   const next = argv[index + 1];
