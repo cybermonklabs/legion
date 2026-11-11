@@ -400,3 +400,77 @@ the issue's own row because its key and title are the only text Dispatch indexes
 (`migrations/0088_issues_title_lexemes.up.sql`), and each query shares no lexeme with them. Each
 query does share lexemes with its issue's spec, so a hit on a document the issue owns would be a
 keyword match, not meaning search.
+
+## Moved approval request check
+
+`moved-approval-production-check.ts` is a production check of the report a document version
+write carries when it takes an open approval request back from the person it was waiting on
+(`moved_approval_request`), and anyone can run it again. It proves, on the running build, that
+such a write names that request in its own answer: the ask the request stands on, the issue it
+was opened in, and every document it names with the version it asks about beside the version
+that document stands at now. It also proves the other half: a write of a document no open
+request names carries no report at all.
+
+```bash
+bun scripts/dispatch/moved-approval-production-check.ts --project ACME
+```
+
+`--project` is required and takes one project key. **The check writes in production**, in the
+project that key names: it makes a scratch issue of its own with a spec, uploads
+`verification.md` and `notes.md` to it, requests approval of the spec with its Verification
+document, writes the versions that move that request, and closes the scratch issue in a
+`finally`, with a reason naming INFRA-3096, so a step that fails leaves no open approval request
+in production. It touches no issue it did not itself create: an answer that is not the 201 of an
+issue of the named project stops the run before a request is opened. Dispatch is resolved as for
+the census above (`sessionDispatchSettings` over the envoy.json `command` reads, `DISPATCH_URL`
+and `DISPATCH_TOKEN_FILE` or `DISPATCH_TOKEN` first). With Dispatch off it prints
+`unavailable: config` and exits 2; it never prints the resolution's notices, which name files.
+
+The steps print one line each, in this order:
+
+- **Build**, always: `GET /healthz`, sent no token, read on 200 and on 503. It prints
+  `build commit=<sha|null> schema=<n|null> ok=<true|false>`. This is no assertion of its own,
+  since whether that commit carries a given merge is decided outside the script, with
+  `gh api repos/cybermonklabs/legion/compare/<merge>...<commit> --jq .status` (`ahead` or
+  `identical`). An unreadable `/healthz` makes the run unavailable.
+- **Scratch**: the issue and its three documents, `scratch issue=<KEY>
+  documents=spec.md,verification.md,notes.md pass`.
+- **Request**: `POST /api/v1/artifacts/{id}/approval-requests` with `include_verification`,
+  `request ask=<uuid> include-verification=yes pass`.
+- **Moved**, an assertion: `POST /api/v1/artifacts/{id}/edits` writes a new version of
+  `verification.md`, and its own answer must carry the report. It prints
+  `moved ask=<uuid|other> issue=<KEY|other> documents=<name>:<requested>/<version>,… pass|fail`:
+  the ask id when it is the one the request opened, the issue key when it is the scratch issue's
+  and no project stands beside it, and each document the report names with the version the
+  request asks about and the version that document stands at now. It passes when all three hold
+  and the entry for `verification.md` carries the version the request asks about beside the
+  version this write stored. An answer with no report prints `moved report=none fail`.
+- **Observed**: the same edit again, run through the pod's own `dispatch doc-edit` (`dispatch` on
+  `PATH`, resolving Dispatch from this process's environment), `observed cli-line=yes|no
+  exit=<status|none>`. This is an observation and no assertion, because a pod prints the line
+  only once the `@sjawhar/pi-envoy` pin of the worker image carries this change. `exit=none` says
+  the command could not be run at all.
+- **Control**, an assertion: the same edit on `notes.md`, the document of that issue no open
+  approval request names, whose answer must carry no report:
+  `control document=notes.md report=none|present pass|fail`.
+- **Close**, an assertion, in a `finally`: the closing reason as a message, then the close
+  itself, `close issue=<KEY> status=done|other pass|fail`.
+
+A step that could not be carried out prints `<step> unavailable: <category>`
+(`auth|refused|transport|malformed|not-found`) instead of its verdict and is never a pass. A
+failed scratch or request stops the steps after it, and the close still runs for an issue the
+run made.
+
+The last two lines are `result pass|fail|unavailable exit=<code>` and the count of the
+assertions, `all 3 assertions passed` or `assertions passed <n> of 3`, so a reader can tell a
+whole run from a cut one. Exit 0: every assertion passed. Exit 1: an assertion failed and no step
+was unavailable. Exit 2: a step was unavailable, or a usage error.
+
+Output is allowlisted on stdout and stderr alike: the issue key the run made (checked against
+the key pattern and the project the flag named), the names of the documents it uploaded, version
+numbers, the ask id of the request it opened (checked as a uuid), a verdict word, a fixed failure
+category and the build commit. Anything the server answers that is none of these is printed as
+`other`, so a key, a name or an id of someone else's issue never appears. The script never prints
+a URL, the token, a response body, an exception's text, an issue title, or the output of the
+`dispatch` command it runs, of which only the exit status and whether the line appeared leave the
+run. This repository is public, and such a line carries private hosts and names.
