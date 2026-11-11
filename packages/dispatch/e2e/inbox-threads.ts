@@ -18,6 +18,7 @@ import {
   requestApproval,
 } from "./api";
 import { sql } from "./psql";
+import { sqlLiteral } from "./seed";
 import { sessionIds } from "./session-ids";
 
 /**
@@ -199,9 +200,10 @@ export async function unreadThreadRows(login = "alice"): Promise<number> {
   return Number(counted);
 }
 
-/** A jsonb author literal for a SQL seed. */
-function authorLiteral(author: Actor): string {
-  return `jsonb_build_object('kind', '${author.kind}', 'id', '${author.id}')`;
+/** A jsonb author literal for a SQL seed, each member quoted as a literal (`sqlLiteral`), so an
+ *  id or a kind carrying a quote of its own reaches Postgres as written. */
+export function authorLiteral(author: Actor): string {
+  return `jsonb_build_object('kind', ${sqlLiteral(author.kind)}, 'id', ${sqlLiteral(author.id)})`;
 }
 
 /**

@@ -1559,6 +1559,18 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *listener_command
+              # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
+              # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
+              - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
+              - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
+              # The documents cmd/listener/grace_margin_doc_test.go:18-20 read: each states the
+              # margin a listener pod grants, held to listenerGraceMargin.
+              - 'packages/envoy/AGENTS.md'
+              - 'packages/envoy/infra/README.md'
+              - 'packages/envoy/infra/docs/nats-hub.md'
+              # The infra module's copy of the stop budget, which
+              # cmd/listener/infra_stop_budget_test.go:18 reads and holds to stopBudget.
+              - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
               - 'packages/envoy/internal/broker/helper/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
@@ -5248,7 +5260,7 @@ jobs:
           # API package's build, with nothing running beside it (run 42307926510,
           # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
           # so running them at the same time changes no number any of them asserts on.
-          go test -json -count=1 -timeout 8m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          go test -json -count=1 -timeout 8m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
           # internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds
           # scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
