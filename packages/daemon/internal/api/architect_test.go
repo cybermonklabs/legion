@@ -1188,35 +1188,66 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	}
 }
 
+// theDecisionBlock is a decision block as a writer writes one into a text the daemon posts: a
+// question and its options inside an `ask` directive, which the reader draws a decision card for
+// and nobody can answer where it stands.
+const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
+	"Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n:::"
+
 // The outbox posts a close reason as the row's message with the row's own marker after it
-// (record.MessagePost.Posted), so the route measures that post and not the reason alone. Two
-// reasons Dispatch takes on their own make a post it refuses: one of exactly as many lines as
-// Dispatch holds a body to blocks, where the marker is one block more, and one ending inside an
-// open code fence, where the marker is code inside the last block and carries it over the unit
-// bound. Each is refused at the call, naming the bound, and records nothing: no fact and no
-// outbox row, so the architect's shortened close is applied.
-func TestAnArchitectsCloseIsRefusedWhereTheOutboxsMarkerPassesTheBound(t *testing.T) {
+// (record.MessagePost.Posted), so the route measures the bounds over that post and not over the
+// reason alone, and it answers the code the reason earns. Two reasons Dispatch takes on their own
+// make a post it refuses: one of exactly as many lines as Dispatch holds a body to blocks, where
+// the marker is one block more, and one ending inside an open code fence, where the marker is
+// code inside the last block and carries it over the unit bound; each is CLOSE_REASON_TOO_LONG,
+// naming the bound. A reason holding a decision block is CLOSE_REASON_DECISION_BLOCK however
+// short it is, since a question in a message is one nobody can answer; that refusal names the
+// block and where the question belongs, and asks neither for a shorter reason nor for less of
+// what the reason quotes (INFRA-1201). The block is read from the reason's own message, which is
+// why its post reads clean here: the marker is an HTML comment, which the document parser
+// refuses, so a post parses to no tree at all. Each refusal records nothing: no fact and no
+// outbox row, so the architect's corrected close is applied.
+func TestAnArchitectsCloseIsRefusedForWhatItsPostHolds(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	for _, tc := range []struct{ name, reason, want string }{
-		{"a reason of as many lines with text in them as Dispatch holds a body to blocks",
-			strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"),
-			fmt.Sprintf("body is 1 blocks over the %d-block limit", dispatchbody.ItemBlocks)},
-		{"a reason that ends inside an open code fence",
-			"see log\n\n```\n" + strings.Repeat("y", 31980),
-			fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)},
+	for _, tc := range []struct {
+		name, reason, code    string
+		takenAlone, postTaken bool
+		want, absent          []string
+	}{
+		{name: "a reason of as many lines with text in them as Dispatch holds a body to blocks",
+			reason: strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"), code: "CLOSE_REASON_TOO_LONG", takenAlone: true,
+			want: []string{fmt.Sprintf("body is 1 blocks over the %d-block limit", dispatchbody.ItemBlocks)}},
+		{name: "a reason that ends inside an open code fence",
+			reason: "see log\n\n```\n" + strings.Repeat("y", 31980), code: "CLOSE_REASON_TOO_LONG", takenAlone: true,
+			want: []string{fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)}},
+		{name: "a reason holding a decision block",
+			reason: "The transport is still open.\n\n" + theDecisionBlock + "\n", code: "CLOSE_REASON_DECISION_BLOCK", postTaken: true,
+			want: []string{"the reason holds a decision block", "body block 2 (ask) holds a decision block, which nobody can answer where it stands",
+				"ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`"},
+			absent: []string{"shorten", "quot"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fact := intake.CloseRoot{Issue: "LEGION-208", Reason: tc.reason}
-			if over := dispatchbody.Check(fact.Message()); over != nil {
-				t.Fatalf("the reason on its own = %v, want a body Dispatch takes: the post is what passes the bound", over)
+			if onItsOwn := dispatchbody.Check(fact.Message()); (onItsOwn == nil) != tc.takenAlone {
+				t.Fatalf("the reason on its own = %v, want Dispatch taking it alone %t", onItsOwn, tc.takenAlone)
+			}
+			if post := dispatchbody.Check(record.LongestPost(fact.Message())); (post == nil) != tc.postTaken {
+				t.Fatalf("the post of the reason = %v, want Dispatch taking the post %t", post, tc.postTaken)
 			}
 			refusal := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 				"grantId": architect.grant(t), "issue": "LEGION-208", "reason": tc.reason,
-			}, nil), http.StatusBadRequest, "CLOSE_REASON_TOO_LONG")
-			if !strings.Contains(refusal, tc.want) {
-				t.Fatalf("refusal = %q, want it naming %q", refusal, tc.want)
+			}, nil), http.StatusBadRequest, tc.code)
+			for _, want := range tc.want {
+				if !strings.Contains(refusal, want) {
+					t.Fatalf("refusal = %q, want it naming %q", refusal, want)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(refusal, absent) {
+					t.Fatalf("refusal = %q, want no word of %q: the reason is refused for what it holds, not for its length", refusal, absent)
+				}
 			}
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("the refused close applied %#v, want nothing recorded", got)

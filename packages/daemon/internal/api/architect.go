@@ -1299,8 +1299,17 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 	// be on no issue, and the daemon's record would read done while the Dispatch issue kept the
 	// status it had. The text measured is the post the outbox makes, not the reason alone
 	// (record.LongestPost), and the reader is the server's own, so the daemon refuses exactly
-	// what Dispatch refuses (dispatchbody.Check).
-	if over := dispatchbody.Check(record.LongestPost(fact.Message())); over != nil {
+	// what Dispatch refuses (outboxBodyRefusal, over dispatchbody.Check).
+	if over := outboxBodyRefusal(fact.Message()); over != nil {
+		// What the reason is refused for decides what the architect does about it. A decision
+		// block is refused however short the reason is, since a question in a message is one
+		// nobody can answer, so the refusal names the block as the cause and where the question
+		// belongs rather than asking for a shorter reason.
+		if dispatchbody.IsDecisionBlock(over) {
+			writeFailure(w, http.StatusBadRequest, "CLOSE_REASON_DECISION_BLOCK",
+				fmt.Sprintf("the reason holds a decision block, and the close posts the reason on the issue as a message, where nobody can answer one: %s; the close was not applied, so close again with a reason that states the decision rather than asking for it", over))
+			return
+		}
 		writeFailure(w, http.StatusBadRequest, "CLOSE_REASON_TOO_LONG",
 			fmt.Sprintf("the reason makes a message Dispatch refuses: %s; shorten it", over))
 		return
@@ -1310,6 +1319,23 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("roots-close"), fact, EmptyResponse{})
+}
+
+// outboxBodyRefusal is what the daemon refuses a text it posts through the outbox for, or nil
+// where Dispatch takes it (dispatchbody.Check, the server's own reader). The bounds are measured
+// over the post the runner makes, the row's marker and all (record.LongestPost), since that post
+// is the body Dispatch receives. The decision block is read from the body itself instead: the
+// marker is an HTML comment, which the document parser refuses, so a post parses to no tree and
+// no decision block can be read from one, while the block its writer wrote stands in the body
+// either way — and the body goes out without a marker too, to the merge queue role the daemon
+// publishes a READY packet to. A post within both bounds holds every block its body holds, so
+// the second read can answer nothing but the decision block, and the bounds keep the precedence
+// Dispatch gives them.
+func outboxBodyRefusal(body string) error {
+	if over := dispatchbody.Check(record.LongestPost(body)); over != nil {
+		return over
+	}
+	return dispatchbody.Check(body)
 }
 
 // rootRoute is a route an architect takes only on its tree's root: its refusal code, and its two
