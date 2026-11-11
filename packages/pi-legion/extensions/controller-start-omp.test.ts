@@ -72,14 +72,13 @@ type NoticeArm = (typeof NOTICE_ARMS)[number];
 const noticeArm: NoticeArm | undefined = ((): NoticeArm | undefined => {
   const given = process.env.LEGION_TEST_CONTROLLER_NOTICE;
   if (given === undefined) return undefined;
-  const arm = NOTICE_ARMS.find((candidate) => candidate === given);
-  if (arm === undefined) {
+  if (!(NOTICE_ARMS as readonly string[]).includes(given)) {
     throw new Error(
       `LEGION_TEST_CONTROLLER_NOTICE is ${JSON.stringify(given)}, which is none of ` +
         `${NOTICE_ARMS.join(", ")}; leave it unset for the shipped shape`
     );
   }
-  return arm;
+  return given as NoticeArm;
 })();
 
 /** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
@@ -281,12 +280,14 @@ interface StandinHooks {
    */
   readonly ready?: Hold;
   /**
-   * An error a stand-in callback recorded, which every wait of the session throws
-   * (`startController`'s `until`). A callback cannot fail the case by throwing: `serveStandin`
-   * answers a throw with 500 and envoy-client sends the call again
-   * (packages/envoy-client/src/transport.ts, `LISTENER_CALL_ATTEMPTS = 2`), so the failure never
-   * reaches the case and the case dies at its own deadline carrying the wait's text instead of
-   * the failure's. A case keeps the error in a box of its own and gives this hook to read it.
+   * An error a stand-in callback recorded, which every wait of `startController`'s session throws
+   * (its `until`; `startDaemonController`'s own `until` does not read it, since no case of that
+   * controller sets it). A callback cannot fail the case by throwing: `serveStandin` answers a
+   * throw with 500 and envoy-client sends the call again (@legion/contracts,
+   * packages/contracts/src/envoy-session.ts:72, `LISTENER_CALL_ATTEMPTS = 2`), so the failure
+   * never reaches the case and the case dies at its own deadline carrying the wait's text
+   * instead of the failure's. A case keeps the error in a box of its own and gives this hook to
+   * read it.
    */
   readonly fault?: () => Error | undefined;
 }
@@ -767,6 +768,8 @@ interface ControllerInbound {
    * shows that the session's NATS connection has taken everything published before it.
    */
   repeat(sid: string, card: Card): Promise<unknown>;
+  /** The controller topic of the project, which a notice goes on and a case derives from. */
+  readonly noticeSubject: string;
   /**
    * Publishes one triage notice on the controller topic and returns its summary (`triage on
    * <issue>`, the daemon's `noticeSummary`), whose issue key no other notice shares.
@@ -825,6 +828,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     return { text, frame };
   };
   return {
+    noticeSubject,
     card(sid, label) {
       const summary = `CARD-${label}-${randomUUID().slice(0, 8)}`;
       const key = `${label}-${randomUUID()}`;
@@ -993,10 +997,9 @@ test.skipIf(skip)(
 // queued: the first request carries the start message, and each of them reaches the model after
 // it, as a steer into the start turn or in a later turn. The card's lane receipt shows the session
 // took it, and the repeat's receipt that its connection took the notice published before it.
-// The notice is published on the server's word that something holds the controller topic
-// (`ControllerInbound.noticeOnceHeld`), because a publish into a subject nobody holds yet is
-// dropped and this case would then wait out its bound for a notice no turn can carry; the arms
-// of LEGION_TEST_CONTROLLER_NOTICE above drive it with that proof moved or taken away.
+// The notice goes through `ControllerInbound.noticeOnceHeld`, which publishes it only on the
+// server's word that something holds the controller topic; the arms of
+// LEGION_TEST_CONTROLLER_NOTICE above move that proof or take it away.
 test.skipIf(skip)(
   "a card published as soon as the role is claimed comes after the start turn",
   async () => {
@@ -1008,24 +1011,20 @@ test.skipIf(skip)(
     // the probe throws nowhere: whatever it raises goes in this box, which `fault` below hands to
     // every wait of the session, and the case ends on the probe's own message.
     let probeFault: Error | undefined;
-    // The four arms in one place, as LEGION_TEST_CONTROLLER_NOTICE picked one: which stand-in
-    // hook publishes the notice, whether the publish waits on the server's word that something
-    // holds the subject, and the subject the frame goes on. `dead-subject`'s subject is the
-    // project's controller topic with one segment more, which no subscription of a run matches: a
-    // session subscribes to the exact subject (packages/pi-legion/src/controller-session.ts:336)
-    // and `expandSubscriptionTopics` (packages/envoy-client/src/transport.ts:475-493) widens only
-    // a topic that ends in `.>`, so nothing holds it and the probe runs to its cap.
-    const arm = {
-      from: noticeArm === "at-claim" || noticeArm === "at-claim-unproven" ? "claim" : "interest",
-      proven: noticeArm !== "at-claim-unproven",
-      subject:
-        noticeArm === "dead-subject"
-          ? `${legionControllerNoticeSubject(PROJECT)}.unheld`
-          : undefined,
-    } as const;
+    // The three arms LEGION_TEST_CONTROLLER_NOTICE takes, and the shipped shape it leaves unset,
+    // in one place: which stand-in hook publishes the notice, whether that publish waits on the
+    // server's word that something holds the subject, and the subject the frame goes on.
+    // `dead-subject`'s subject is the project's controller topic with one segment more, which no
+    // subscription of a run matches: a session subscribes to the exact subject
+    // (packages/pi-legion/src/controller-session.ts:336) and `expandSubscriptionTopics`
+    // (packages/envoy-client/src/transport.ts:475-493) widens only a topic that ends in `.>`, so
+    // nothing holds it and the probe runs to its cap.
+    const atClaim = noticeArm === "at-claim" || noticeArm === "at-claim-unproven";
+    const proven = noticeArm !== "at-claim-unproven";
+    const subject = noticeArm === "dead-subject" ? `${inbound.noticeSubject}.unheld` : undefined;
     const publish = async (): Promise<void> => {
       try {
-        notice = arm.proven ? await inbound.noticeOnceHeld(arm.subject) : inbound.notice();
+        notice = proven ? await inbound.noticeOnceHeld(subject) : inbound.notice();
       } catch (error) {
         probeFault = error instanceof Error ? error : new Error(String(error));
       }
@@ -1034,13 +1033,16 @@ test.skipIf(skip)(
       onRoleClaim: (claimed) => {
         sid = claimed;
         sent = inbound.card(claimed, "role-claim");
-        // Started, not awaited: this hook is `(sid: string) => void`, which `serveController`
-        // calls fire-and-forget through `setImmediate`, and awaiting the probe here would hold
-        // `/v1/roles/set` for every other case that uses the hook.
-        if (arm.from === "claim") void publish();
+        // Started, not awaited: this hook is `(sid: string) => void`, whose result
+        // `serveController` drops inside `setImmediate`, so there is nothing here to await, and
+        // an awaited seam would hold `/v1/roles/set` for every other case that uses the hook.
+        if (atClaim) void publish();
       },
       onNoticeInterest: async () => {
-        if (arm.from === "interest") await publish();
+        // Awaited: the registration that follows the controller topic's subscription is answered
+        // only once the server has taken the notice, which is the hold `NOTICE_PROBE_HOLD_MS`
+        // keeps under the listener's call timeout.
+        if (!atClaim) await publish();
       },
       fault: () => probeFault,
     });
