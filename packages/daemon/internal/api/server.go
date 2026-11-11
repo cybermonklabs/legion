@@ -767,7 +767,7 @@ const waitingLineContract = 58
 const backwardMovesContract = 62
 
 // quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
-// time to the state (version.go's 65): `treeMovedAt`, the newest movement the daemon has seen
+// time to the state (version.go's 70): `treeMovedAt`, the newest movement the daemon has seen
 // anywhere in that tree, and `quietHours`, how long it has been still. A plugin before it is
 // served the state without the two keys: one built before sjawhar/legion#2788 reads it with a
 // strict schema and would refuse the whole body for a key it does not name, and one built after
@@ -775,7 +775,7 @@ const backwardMovesContract = 62
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said.
-const quietTimeContract = 65
+const quietTimeContract = 70
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

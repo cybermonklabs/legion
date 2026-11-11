@@ -924,12 +924,12 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 65: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
+// 70: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
 // live tree gains that tree's quiet time: `treeMovedAt`, the newest movement the daemon has
 // seen anywhere in the tree, and `quietHours`, how long the tree has been still at this read,
 // as a number of hours. The pair is the tree's and not the issue's, so every issue of one tree
 // carries the same two values — the root, a child past its own review, which holds no admission
-// slot since 65's first slice, and a done child recorded under the tree alike — and a reader
+// slot since 70's first slice, and a done child recorded under the tree alike — and a reader
 // that wants to know whether a tree has stopped asks any one of its issues. The measure behind
 // the keys is `record.QuietTrees`, the one statement of the question the admission pass reads
 // too, so the state and the pass can never say different things about one tree: the movement is
@@ -942,14 +942,14 @@ package api
 // would print hundreds of them on a live deployment, so the two values are in `--json` and in
 // the one issue a pane prints, which is where the memory keys and the waiting line each landed.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 65 is served the issues without the two keys (api's stateFor,
+// contract below 70 is served the issues without the two keys (api's stateFor,
 // withoutQuietTime), as a caller below 62 is served the workers with no `backwardMoves`, one
 // below 58 the issues with no `waitingLine`, one below 57 the claim views with no `step`, one
 // below 56 the stranded report without its retired entries, one below 55 the issues without the
 // gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without the
 // admission's trees and each issue's tree, one below 49 without the memory draw and one below
-// 46 without the claim views' update rounds; the ten compose, and every reader from 65 on takes
-// both keys as optional (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 64 does
+// 46 without the claim views' update rounds; the ten compose, and every reader from 70 on takes
+// both keys as optional (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 69 does
 // not refuse them, as a plugin before one of the earlier contracts above refuses its own: every
 // answer-side schema of `packages/contracts` has stripped a key it does not name since
 // sjawhar/legion#2788. The strip is still what serves such a caller: a reader that did not ask
@@ -969,13 +969,16 @@ package api
 // migration moves the daemon's own record, and the shape a caller reads is the two keys above.
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
-// as 64 (#3521), the entry above, so this change takes a number above both. Read at the forward
-// merge of 2026-11-11 that brought main in at 5f5b18f8: main declares 64, and the open pull
-// requests that declare a number above the base are cybermonklabs/legion#2731 with 63, so 65 is
-// the lowest number above main's that no open pull request declares, which is the free number
-// `.github/scripts/check-daemon-api-contract.sh` asks for, as
+// as 64 (#3521), the entry above, so this change takes a number above both. Read again on
+// 2026-11-11 at 10:13Z, in each head's own copy of this file: main declares 64, and the open
+// branches declare 65 (legion/INFRA-2009 and legion/INFRA-1282), 66 (legion/INFRA-1578) and 59
+// (legion/INFRA-1522), with INFRA-2009 having published a move to 67. 65 was a four-way
+// collision there, where the first of the four to land refuses the other three, so this change
+// takes 70: above every open declaration, and leaving 68 and 69 free for the two trees that
+// have not chosen. It holds 70 through every forward merge, and renumbers only if main's own
+// `DaemonAPIVersion` reaches 70, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. That reading is of this file at refs/pull/<n>/head for every open pull request, never of
-// a file list, which GitHub cuts short. Read main's own number, and every open branch's, again
-// at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 65
+// says. That reading is of this file at each head, never of a file list, which GitHub cuts
+// short. Read main's own number, and every open branch's, again at the next forward merge
+// rather than from this line.)
+const DaemonAPIVersion = 70

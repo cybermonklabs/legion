@@ -209,7 +209,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `step` gone, the record contract 57 added (withoutStallRecord), with the
 			// places in the admission line gone, the field contract 58 added, and with the
 			// workers' counts of the moves back gone, the field contract 62 added
-			// (withoutBackwardMoves). The two keys contract 65 added are in no body here, served
+			// (withoutBackwardMoves). The two keys contract 70 added are in no body here, served
 			// or stripped: the fixture's issues stand in no tree this state measures.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
