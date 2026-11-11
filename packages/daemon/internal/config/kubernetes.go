@@ -813,12 +813,9 @@ func unfilledPlaceholder(key, value, put string) error {
 //
 // One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
 // the operator's own resource attributes, which the runtime appends the launch's issue and role
-// to. The agent's OpenTelemetry detector throws on ONE malformed member and its caller catches
-// that with an empty hand, so the pod then carries no attribute of the variable at all — the
-// operator's own, which the spend report splits by, among them. runtime.SpendAttributesRefusal
-// holds the detector's measured rules, and what it refuses is refused here, where a person reads
-// the refusal, rather than at a launch nobody watches. `legion start --check-config` reads the
-// same file as boot, so the operator meets it before a restart rather than after one.
+// to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
+// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// — rather than at a launch nobody watches.
 func readPodEnv(value *yaml.Node) (map[string]string, error) {
 	const key = podKey + ".env"
 	if value == nil {
@@ -847,8 +844,7 @@ func readPodEnv(value *yaml.Node) (map[string]string, error) {
 		}
 		if name == runtime.SpendAttributesVariable {
 			if why := runtime.SpendAttributesRefusal(text); why != "" {
-				return nil, fmt.Errorf("%s sets %s to a value the agent's OpenTelemetry detector would throw on, which costs the launch every attribute of the variable, the operator's own among them: %s",
-					key, name, why)
+				return nil, fmt.Errorf("%s sets %s to %s: %s", key, name, spendAttributesRule, why)
 			}
 		}
 		env[name] = text

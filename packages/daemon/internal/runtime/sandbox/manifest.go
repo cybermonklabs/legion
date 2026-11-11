@@ -977,9 +977,11 @@ func (r *Runtime) operatorEnv() []corev1.EnvVar {
 // and a role's own overlays extend (roleOperatorEnv).
 const settingsOverlays = "PI_CONFIG_FILES"
 
-// roleOperatorEnv is operatorEnv as the launch's role is told it: the composed names (composed)
-// carry the operator's own value with this launch's share of it written in, and every other entry
-// is the operator's as the operator wrote it. There are two such names.
+// roleOperatorEnv is operatorEnv as the launch's role is told it: two names carry the operator's
+// own value with this launch's share of it written in — settingsOverlays and
+// runtime.SpendAttributesVariable — and every other entry is the operator's as the operator wrote
+// it. The `composed` set is the subset of those two a launch spec is refused for naming: the
+// spend attributes alone, since no spec has ever been refused for naming PI_CONFIG_FILES.
 //
 // PI_CONFIG_FILES carries the launch's own overlays (launch.overlays, the role's from
 // Options.RoleConfigFiles and then a memory-group launch's from Options.MemoryConfigFiles) after

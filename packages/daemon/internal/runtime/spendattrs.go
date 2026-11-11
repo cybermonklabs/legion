@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -60,10 +61,12 @@ const spendHex = "0123456789ABCDEF"
 // gateEnvironment) has neither, since it serves no issue and runs in no role, and carries the
 // operator's value alone, with no legion pair and no stray comma.
 //
-// The result never holds an empty member or a leading comma: trailing commas and spaces of the
-// operator's value are dropped, and an operator value that is empty, or only commas and spaces,
-// contributes nothing at all. The detector would drop such a member itself, but an operator who
-// reads a pod's environment should find a value no stranger than the one they wrote.
+// Trailing commas and spaces of the operator's value are dropped, so the daemon's pairs never
+// follow an empty member, and an operator value that is empty, or only commas and spaces,
+// contributes nothing at all. An empty member the operator wrote elsewhere — a leading comma, an
+// interior `,,` — is kept as written: the detector drops such a member itself, and
+// SpendAttributesRefusal lets it through, so the value an operator reads back out of a pod's
+// environment is no stranger than the one they wrote.
 //
 // Every value the daemon writes is percent-encoded — RFC 3986's unreserved characters (letters,
 // digits, `-`, `.`, `_`, `~`) pass through, every other byte becomes %XX — so that the detector's
@@ -248,14 +251,15 @@ func spendUnhex(c byte) (byte, bool) {
 }
 
 // spendUTF16Len is the length the detector's `.length` reads: JavaScript counts UTF-16 code
-// units, so every rune above the basic plane counts twice.
+// units, so a rune outside the Basic Multilingual Plane counts as the two units its surrogate
+// pair takes (unicode/utf16.RuneLen, as packages/envoy/internal/dispatch/itemblocks/bounds.go's
+// Units16 counts the same thing). RuneLen answers -1 for a surrogate code point and for a rune
+// out of range, and a range over a string yields neither: a byte that is not valid UTF-8 yields
+// U+FFFD, one unit, as the JSON encoder would write it.
 func spendUTF16Len(s string) int {
 	n := 0
 	for _, r := range s {
-		n++
-		if r > 0xffff {
-			n++
-		}
+		n += utf16.RuneLen(r)
 	}
 	return n
 }

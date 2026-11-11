@@ -10,14 +10,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// liveValue is the value the live deployment's operator writes, one per project
+// operatorSpendAttributesFor is the value the live deployment's operator writes, one per project
 // (legion/Pulumi.prod.yaml of theorem-labs/agent-infra), with the project's own lane.
-func liveValue(lane string) string {
+func operatorSpendAttributesFor(lane string) string {
 	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@theorem.dev"
 }
 
-// liveAttributes is what the detector reads out of liveValue("legion-infra"), with the pairs a
-// case expects on top of it.
+// liveAttributes is what the detector reads out of operatorSpendAttributesFor("legion-infra"),
+// with the pairs a case expects on top of it.
 func liveAttributes(pairs ...string) map[string]string {
 	attrs := map[string]string{
 		"theorem.project":    "legion",
@@ -70,14 +70,11 @@ func detectorAttributes(t *testing.T, value string) map[string]string {
 // of the boot gate's.
 func TestSpendResourceAttributesAppendsTheLaunchAfterTheOperatorsOwn(t *testing.T) {
 	const (
-		live       = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
 		issue      = "INFRA-312"
-		issuePair  = "legion.issue=INFRA-312"
+		issuePair  = SpendIssueAttribute + "=" + issue
 		launchOnly = issuePair + ",legion.role=implementer"
 	)
-	if live != liveValue("legion-infra") {
-		t.Fatalf("liveValue(legion-infra) = %q, want %q", liveValue("legion-infra"), live)
-	}
+	live := operatorSpendAttributesFor("legion-infra")
 	for _, tc := range []struct {
 		name     string
 		operator string
@@ -230,11 +227,11 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 	for _, tc := range []struct {
 		name, value, want string
 	}{
-		{"the smoke project's value", liveValue("legion-smoke"), ""},
-		{"the linux project's value", liveValue("legion-linux"), ""},
-		{"the bet project's value", liveValue("legion-bet"), ""},
-		{"the infra project's value", liveValue("legion-infra"), ""},
-		{"the ossv project's value", liveValue("legion-ossv"), ""},
+		{"the smoke project's value", operatorSpendAttributesFor("legion-smoke"), ""},
+		{"the linux project's value", operatorSpendAttributesFor("legion-linux"), ""},
+		{"the bet project's value", operatorSpendAttributesFor("legion-bet"), ""},
+		{"the infra project's value", operatorSpendAttributesFor("legion-infra"), ""},
+		{"the ossv project's value", operatorSpendAttributesFor("legion-ossv"), ""},
 		{"an empty operator value", "", ""},
 		{"only commas and spaces", " , , ", ""},
 		{"a member with two =", "theorem.project=legion,a=b=c", `its member "a=b=c" does not split on = into exactly one key and one value`},
@@ -258,7 +255,7 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 
 // The reason names the one member it refuses, never the rest of the operator's attributes.
 func TestSpendAttributesRefusalNamesOnlyTheMemberItRefuses(t *testing.T) {
-	got := SpendAttributesRefusal(liveValue("legion-infra") + ",a=b=c")
+	got := SpendAttributesRefusal(operatorSpendAttributesFor("legion-infra") + ",a=b=c")
 	if got == "" {
 		t.Fatal("SpendAttributesRefusal refuses nothing for a member with two =")
 	}

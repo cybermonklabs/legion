@@ -8,10 +8,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// liveSpendAttributes is the value the live deployment writes into the operator's
+// operatorSpendAttributesFor is the value the live deployment writes into the operator's
 // OTEL_RESOURCE_ATTRIBUTES for one lane: legion/Pulumi.prod.yaml of theorem-labs/agent-infra
 // writes one per project, differing in the lane alone.
-func liveSpendAttributes(lane string) string {
+func operatorSpendAttributesFor(lane string) string {
 	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@theorem.dev"
 }
 
@@ -65,7 +65,7 @@ func TestBothReadersAcceptTheLiveSpendAttributes(t *testing.T) {
 	for _, reader := range spendAttributesReaders {
 		for _, lane := range liveSpendLanes {
 			t.Run(reader.key+" "+lane, func(t *testing.T) {
-				value := liveSpendAttributes(lane)
+				value := operatorSpendAttributesFor(lane)
 				cfg, err := LoadForValidation(writeConfigFile(t, reader.file(value)), noEnv)
 				if err != nil {
 					t.Fatalf("LoadForValidation: %v", err)

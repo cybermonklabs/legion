@@ -503,8 +503,11 @@ What each part is for:
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
 - **`runtime.kubernetes.pod.env`** (and **`runtime.tmux.pane_env`** under the tmux runtime) holds
-  your own variables for every agent, and one name in it is composed rather than refused:
-  `OTEL_RESOURCE_ATTRIBUTES`. Set the OpenTelemetry resource attributes your deployment's spend is
+  your own variables for every agent, and `OTEL_RESOURCE_ATTRIBUTES` is composed rather than
+  refused. Under Kubernetes it is the second such name beside `PI_CONFIG_FILES`, whose overlays
+  each role's own are added after; under tmux `PI_CONFIG_FILES` is the runtime's own and refused
+  in `pane_env` — the overlays there are `runtime.tmux.pi_config_files` — so the attributes are
+  the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
   billed under (`theorem.project=widgets`), and each launch carries them with its own
   `legion.issue` and `legion.role` after them, so a pod's spend splits by the issue it was spent
   on. The agent takes the last value a key is given, which is why Legion's two pairs come last.
