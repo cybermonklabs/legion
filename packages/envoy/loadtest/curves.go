@@ -190,7 +190,7 @@ func readCurveStep(se *curveSeries, dir string) (*curveStep, error) {
 		if cs.stepData, err = readStep(dir); err != nil {
 			return nil, err
 		}
-		cs.factor = se.stepFactor(cs.name, cs.sum.Config)
+		cs.factor = se.stepFactor(cs.sum.Config)
 	}
 	if cs.cloudsql, err = readCloudSQLCPUFile(dir); err != nil {
 		return nil, err
@@ -245,24 +245,25 @@ func configFactor(c summaryConfig) float64 {
 	return c.EventsPerS / 4
 }
 
-// stepFactor is the load factor this series reads a step at, from its name and its configuration.
-// The loop factor its run was given is first for every series. For a series whose steps each
-// offer their own rates (ownFactorsOnly) the step's own name is next — the series' own steps are
-// named "<f>x" — and a step with neither drove no load of that series at all and reads 0: it is a
+// stepFactor is the load factor this series reads a step's configuration at. The loop factor its
+// run was given is first for every series. For a series whose steps each offer their own rates
+// (ownFactorsOnly) a step without one drove no load of that series at all and reads 0: it is a
 // control row, and borrowing configFactor's requests-over-60 rule labelled such a step "factor 1"
 // in CURVES.md and curves.csv, in the same table as a 1x step that failed at that factor
-// (INFRA-988, read off a baseline offering exactly 60 requests a second). Every other series
-// reads configFactor as it always has, which the cluster series needs: there every step is scaled
-// against a 1x baseline of 60 requests a second, so that division is how a cluster step's factor
-// is known at all.
-func (se *curveSeries) stepFactor(name string, c summaryConfig) float64 {
-	if c.LoopFactor > 0 {
-		return c.LoopFactor
-	}
-	if se.ownFactorsOnly {
-		if f, ok := nameFactor(name); ok {
-			return f
-		}
+// (INFRA-988, read off a baseline offering exactly 60 requests a second).
+//
+// It reads no factor out of the step's name, though the series' own steps are named "<f>x":
+// measured over INFRA-988's run, 28 of its 30 step directories with a summary carry
+// config.loop_factor and the two without it are its baselines, so no real file needs the name
+// read — and a tree that parses "diag-1x-writepath" or "2x-rerun" for a number would eventually
+// give a step a factor its run never drove. A directory with no summary.json at all is the one
+// place a name is read, where there is nothing else to read (readCurveStep).
+//
+// Every other series reads configFactor as it always has, which the cluster series needs: there
+// every step is scaled against a 1x baseline of 60 requests a second, so that division is how a
+// cluster step's factor is known at all.
+func (se *curveSeries) stepFactor(c summaryConfig) float64 {
+	if se.ownFactorsOnly && c.LoopFactor <= 0 {
 		return 0
 	}
 	return configFactor(c)

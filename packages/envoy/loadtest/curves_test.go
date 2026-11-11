@@ -91,7 +91,12 @@ func goodSummary(f float64) summary {
 	sent := int(req * dur)
 	committed := int(ev * dur)
 	return summary{
-		Config: summaryConfig{EventsPerS: ev, RequestsPerS: req, DurationS: dur},
+		// Every real step a series drives carries the factor its run was given: 28 of the 30
+		// step directories of INFRA-988's run hold config.loop_factor, and the two that do not
+		// are its baselines, which drove no load of the series at all. A fixture without one
+		// would stand for a file no run writes, so this one carries it (a fixture that means to
+		// be a baseline sets it back to 0).
+		Config: summaryConfig{LoopFactor: f, EventsPerS: ev, RequestsPerS: req, DurationS: dur},
 		Events: eventsSummary{
 			Offered: committed, OfferedPerS: ev, Committed: committed, CommittedPerS: ev,
 			DeliveryMsFromArrival: stat{N: committed * 4, P50: 40, P90: 90, P99: 180, Max: 400},
@@ -763,21 +768,18 @@ func TestCurvesTakeTheLoopFactorOfAStepThatCarriesOne(t *testing.T) {
 	}
 	// The two series read a step with no loop factor differently, and the difference is the
 	// defect this pair pins: the cluster series needs the requests-over-60 division, since that
-	// is how a cluster step's factor is known at all, while the loop series reads its own steps'
-	// names and a step with neither as no load of its own. Before this, a loop-series baseline
+	// is how a cluster step's factor is known at all, while the loop series has to read such a
+	// step as no load of its own. Before this, a loop-series baseline
 	// offering exactly 60 requests a second read as "factor 1" in CURVES.md and curves.csv, in
 	// the same table as a 1x step that failed at that factor (INFRA-988).
 	noLoop := summaryConfig{RequestsPerS: 60, EventsPerS: 4}
-	if got := clusterSeries.stepFactor("baseline", noLoop); got != 1 {
+	if got := clusterSeries.stepFactor(noLoop); got != 1 {
 		t.Errorf("the cluster series reads a step with no loop factor at %v, want 1: its steps are scaled against a 1x baseline of 60 requests a second", got)
 	}
-	if got := loopSeries.stepFactor("baseline", noLoop); got != 0 {
+	if got := loopSeries.stepFactor(noLoop); got != 0 {
 		t.Errorf("the loop series reads a baseline with no loop factor at %v, want 0: it drove no load of that series at all", got)
 	}
-	if got := loopSeries.stepFactor("4x-loop", noLoop); got != 4 {
-		t.Errorf("the loop series reads a step named 4x with no loop factor at %v, want 4: its own steps carry their factor in their name", got)
-	}
-	if got := loopSeries.stepFactor("anything", summaryConfig{LoopFactor: 2, RequestsPerS: 60}); got != 2 {
+	if got := loopSeries.stepFactor(summaryConfig{LoopFactor: 2, RequestsPerS: 60}); got != 2 {
 		t.Errorf("the loop series reads a step carrying a loop factor at %v, want 2", got)
 	}
 	baseline := goodSummary(1)
