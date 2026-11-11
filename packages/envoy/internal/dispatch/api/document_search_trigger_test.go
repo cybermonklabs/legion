@@ -15,7 +15,8 @@ import (
 
 // documentSearchTriggerFixture is one issue and one document with two versions, which migration
 // 20261101182454's trigger has written into document_search: version 1 holds triggerOldWord and
-// version 2 triggerWord. Each test below writes on from there.
+// version 2 triggerWord, and the uploads that wrote them have settled, so the only writer of a
+// further version is the test. Each test below writes on from there.
 type documentSearchTriggerFixture struct {
 	handler  http.Handler
 	database *store.Store
@@ -30,10 +31,37 @@ const (
 
 func newDocumentSearchTriggerFixture(t *testing.T) documentSearchTriggerFixture {
 	t.Helper()
-	handler, database := newTestHandlerWithStore(t)
+	// The hour-long settle window arms the uploads' settlements without firing them: the
+	// fixture runs them itself below, on this goroutine, rather than racing their timers.
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TRIG", "Range survey", "The herd crosses in spring.")
 	document := uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nQuagga sightings in the north.\n")
 	uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nZebra sightings in the north.\n")
+	// What writes a version after an upload has answered: the upload's transaction seeds or
+	// replaces the document's live text and queues the document closer (storeArtifact's
+	// s.deps.Docs.ScheduleSettlement, artifacts.go), whose settlement writes a version of its
+	// own - numbered one above the document's highest (docs.Service.settleRoomWithin, through
+	// docs.Service.writeVersionTx) - whenever the live text differs from the latest stored
+	// version. Run after a test below has written versions of its own, it numbers itself above
+	// them all and carries the upload's words, which is what CI read in document_search.
+	//
+	// The wait is the settlement's own rule rather than a delay: SettleIssueDocuments takes the
+	// armed timer and runs the owed settlement on this goroutine, and a settlement's commit is
+	// what deletes the document's pending-settlement row (docs.clearSettlementPending, which it
+	// deletes whether or not it wrote a version), which that call reads back before it returns.
+	// So on return the document's own writes have settled and none of them is left to land.
+	var owed bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select exists(select 1 from doc_settlements_pending where artifact_id = $1)
+	`, document.ID).Scan(&owed); err != nil {
+		t.Fatalf("read the document's pending settlement: %v", err)
+	}
+	if !owed {
+		t.Fatal("the document owes no settlement, want the uploads' still owed")
+	}
+	if err := deps.Docs.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the issue's documents: %v", err)
+	}
 	return documentSearchTriggerFixture{handler: handler, database: database, issueKey: issue.Key, document: document.ID}
 }
 
