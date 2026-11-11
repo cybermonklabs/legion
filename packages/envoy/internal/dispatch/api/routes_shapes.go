@@ -389,6 +389,16 @@ type artifactAsksQuery struct {
 	State string `query:"state"`
 }
 
+// artifactTextQuery is the query the three document text reads share: GET
+// /api/v1/artifacts/{id}/text, GET /api/v1/issues/{key}/artifacts/{slug}/text and
+// GET /api/v1/projects/{key}/artifacts/{slug}/text.
+type artifactTextQuery struct {
+	// Blocks, `true`, carries the document's blocks beside the markdown, the token and the
+	// version, every one of them rendered from the one tree, so no write by another session
+	// splits a listing. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
+}
+
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
 type openAsksQuery struct {
 	// AuthorSession lists the open asks one session authored.
@@ -748,7 +758,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {
 		Status: http.StatusOK, Response: model.DecisionKeep{}, Request: keepDecisionInput{},
 	},
-	"GET /api/v1/artifacts/{id}/text": {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/artifacts/{id}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/artifacts/{id}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
 		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
@@ -765,8 +777,10 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusConflict, Body: ambiguousTargetError{}},
 		},
 	},
-	"GET /api/v1/issues/{key}/artifacts/{slug}":        {Status: http.StatusOK, Response: model.Artifact{}},
-	"GET /api/v1/issues/{key}/artifacts/{slug}/text":   {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/issues/{key}/artifacts/{slug}": {Status: http.StatusOK, Response: model.Artifact{}},
+	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks": {Status: http.StatusOK, Response: []model.ArtifactBlock{}},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
@@ -786,7 +800,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}":         {Status: http.StatusOK, Response: model.Artifact{}},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/summary": {Status: http.StatusOK, Response: documentSummary{}},
-	"GET /api/v1/projects/{key}/artifacts/{slug}/text":    {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/projects/{key}/artifacts/{slug}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
 		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",

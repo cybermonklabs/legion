@@ -234,11 +234,8 @@ const olderServerIssue = {
   labels: [],
 };
 
-/** How the DSP-2 routes answer: a Dispatch older than the table listing omits `table`, and a
- *  document a browser edits between the CLI's two reads of its text answers the second with other
- *  text and another token. */
-let blocksServer = { tableRows: true, editedBetweenReads: false };
-let textReads = 0;
+/** How the DSP-2 routes answer: a Dispatch older than the table listing omits `table`. */
+let blocksServer = { tableRows: true };
 /** DSP-4's event log: the issue reads `last_seq` `last`, and the events route serves seq 1 to
  *  `served` (past `last` once events were written after the issue was read), each a message, by
  *  `after` and `limit` as Dispatch pages them. `queries` records each events request's query. */
@@ -291,18 +288,17 @@ const server = Bun.serve({
       return Response.json(blocksIssue);
     }
     if (pathname === "/api/v1/artifacts/doc-2/text") {
-      textReads++;
-      const edited = blocksServer.editedBetweenReads && textReads > 1;
+      const listed = blocksServer.tableRows
+        ? specBlocks
+        : specBlocks.map(({ table: _, ...block }) => block);
       return Response.json({
-        markdown: edited ? `${spec}\nTyped in the browser.\n` : spec,
+        markdown: spec,
         version: 3,
-        token: edited ? "sha256:edited" : "sha256:doc",
+        token: "sha256:doc",
+        // The blocks come from the same answer as the markdown they index, as Dispatch serves
+        // them: `?blocks=true` is the one read `doc-read --blocks` makes.
+        ...(searchParams.get("blocks") === "true" ? { blocks: listed } : {}),
       });
-    }
-    if (pathname === "/api/v1/artifacts/doc-2/blocks") {
-      return Response.json(
-        blocksServer.tableRows ? specBlocks : specBlocks.map(({ table: _, ...block }) => block)
-      );
     }
     if (pathname === "/api/v1/issues/DSP-5" && request.method === "GET") {
       return Response.json(codeIssue);
@@ -498,8 +494,7 @@ let stateDir = "";
 beforeEach(() => {
   requests.length = 0;
   triage = false;
-  blocksServer = { tableRows: true, editedBetweenReads: false };
-  textReads = 0;
+  blocksServer = { tableRows: true };
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
@@ -1350,12 +1345,9 @@ describe("the dispatch CLI", () => {
       "  i-2 list_item (sha256:i2; 0 comments, 0 asks): - Second item",
       "t-1 table (sha256:t; 0 comments, 1 ask): | # | Line | | | --- | --- | --- | | 1 | Backfill | extra |",
     ];
-    const reads = [
-      "/api/v1/issues/DSP-2",
-      "/api/v1/artifacts/doc-2/text",
-      "/api/v1/artifacts/doc-2/blocks",
-      "/api/v1/artifacts/doc-2/text",
-    ];
+    // One read: the text route carries the blocks, so no write between two reads can split the
+    // listing. The recorder keeps each request's path without its query.
+    const reads = ["/api/v1/issues/DSP-2", "/api/v1/artifacts/doc-2/text"];
 
     test("lists every block's id, type, token, anchors and opening words, and each table's rows and cells", async () => {
       const { code, stdout } = await run(["doc-read", "--issue", "DSP-2", "--blocks"], omp);
@@ -1373,6 +1365,7 @@ describe("the dispatch CLI", () => {
           "    row 1 column 2, id c-1-2: extra",
           "",
           "Document token: sha256:doc",
+          "Document version: 3",
           "",
         ].join("\n")
       );
@@ -1389,6 +1382,7 @@ describe("the dispatch CLI", () => {
           "  This Dispatch does not report table rows yet, so no row or column index is listed.",
           "",
           "Document token: sha256:doc",
+          "Document version: 3",
           "",
         ].join("\n")
       );
@@ -1431,15 +1425,6 @@ describe("the dispatch CLI", () => {
         "- blocks lists the live document, the one dispatch doc-edit changes; name no version"
       );
       expect(requests).toEqual([]);
-    });
-
-    test("refuses a document that changed between its reads, listing nothing", async () => {
-      blocksServer.editedBetweenReads = true;
-      const { code, stdout } = await run(["doc-read", "--issue", "DSP-2", "--blocks"], omp);
-      expect(code).toBe(1);
-      expect(stdout).toBe(
-        "spec.md changed while dispatch doc-read --blocks read it, so the opening words could name the wrong text; nothing is listed. Run it again.\n"
-      );
     });
   });
 

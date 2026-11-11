@@ -1485,6 +1485,14 @@ export class DispatchClient {
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
   }
 
+  /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
+   *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
+   *  by another session between two reads cannot leave the blocks indexing markdown they were not
+   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
+  async docReadWithBlocks(id: string): Promise<ArtifactText> {
+    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
+  }
+
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
    * answers a file with its bytes under its own MIME type, never a JSON envelope. */
   async fileVersion(id: string, version: number): Promise<ArtifactFileVersion> {

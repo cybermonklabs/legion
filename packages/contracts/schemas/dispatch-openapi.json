@@ -2007,7 +2007,7 @@
     },
     "/api/v1/artifacts/{id}/text": {
       "get": {
-        "description": "A document's canonical markdown and whole-document token.",
+        "description": "A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write.",
         "operationId": "getApiV1ArtifactsByIdText",
         "parameters": [
           {
@@ -2016,6 +2016,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -5384,7 +5391,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "An issue document's canonical markdown and whole-document token, by slug or unambiguous filename.",
+        "description": "An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree.",
         "operationId": "getApiV1IssuesByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -5401,6 +5408,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -9269,7 +9283,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "A project document's canonical markdown and whole-document token, by slug or unambiguous filename.",
+        "description": "A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree.",
         "operationId": "getApiV1ProjectsByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -9286,6 +9300,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -12345,6 +12366,12 @@
       },
       "ArtifactText": {
         "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": "array"
+          },
           "markdown": {
             "type": "string"
           },

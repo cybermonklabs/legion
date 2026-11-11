@@ -3168,43 +3168,45 @@ describe("executeDispatchTool", () => {
         });
       }
       if (pathname === "/api/v1/artifacts/artifact-8/text") {
-        return response({ markdown, token: "sha256:doc" });
-      }
-      if (pathname === "/api/v1/artifacts/artifact-8/blocks") {
-        return response([
-          {
-            id: "t2",
-            type: "plan_task",
-            from: 0,
-            to: taskBytes,
-            token: "sha256:t2",
-            references: { comments: 0, asks: 0 },
-            attributes: [
-              { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
-              {
-                name: "needs",
-                value: "dispatch://DSP-8/artifact/plan-md#b-t1",
-                kind: "block[]",
-              },
-            ],
-          },
-          {
-            id: "k1",
-            type: "check",
-            from: taskBytes + 2,
-            to: documentBytes,
-            token: "sha256:k1",
-            references: { comments: 0, asks: 0 },
-            attributes: [
-              { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
-              {
-                name: "run",
-                value: "dispatch read --ref dispatch://DSP-8/spec#b-r1",
-                kind: "string",
-              },
-            ],
-          },
-        ]);
+        return response({
+          markdown,
+          token: "sha256:doc",
+          version: 4,
+          blocks: [
+            {
+              id: "t2",
+              type: "plan_task",
+              from: 0,
+              to: taskBytes,
+              token: "sha256:t2",
+              references: { comments: 0, asks: 0 },
+              attributes: [
+                { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
+                {
+                  name: "needs",
+                  value: "dispatch://DSP-8/artifact/plan-md#b-t1",
+                  kind: "block[]",
+                },
+              ],
+            },
+            {
+              id: "k1",
+              type: "check",
+              from: taskBytes + 2,
+              to: documentBytes,
+              token: "sha256:k1",
+              references: { comments: 0, asks: 0 },
+              attributes: [
+                { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
+                {
+                  name: "run",
+                  value: "dispatch read --ref dispatch://DSP-8/spec#b-r1",
+                  kind: "string",
+                },
+              ],
+            },
+          ],
+        });
       }
       throw new Error(`unexpected request: ${pathname}`);
     };

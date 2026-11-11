@@ -507,7 +507,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's canonical markdown and whole-document token. */
+    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
     get: operations["getApiV1ArtifactsByIdText"];
     put?: never;
     post?: never;
@@ -1348,7 +1348,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's canonical markdown and whole-document token, by slug or unambiguous filename. */
+    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -2312,7 +2312,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's canonical markdown and whole-document token, by slug or unambiguous filename. */
+    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -3071,6 +3071,7 @@ export interface components {
       version: number;
     };
     ArtifactText: {
+      blocks?: components["schemas"]["ArtifactBlock"][];
       markdown: string;
       token: string;
       version: null | number;
@@ -6730,6 +6731,7 @@ export interface operations {
   getApiV1ArtifactsByIdText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8834,6 +8836,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifactsBySlugText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11329,6 +11332,7 @@ export interface operations {
   getApiV1ProjectsByKeyArtifactsBySlugText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
