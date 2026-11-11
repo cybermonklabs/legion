@@ -1,0 +1,5 @@
+kind: Added
+body: Every ask carries the person it waits on, and, once somebody has handed it on, whom it was handed to, who handed it and when; a new ask.asked_of event records each hand-on. The dispatch issue-update tool now takes an assignee, and the text an agent reads says an ask is a question for a person.
+time: 2026-11-10T06:23:44.2620647Z
+custom:
+    Issue: pr3429

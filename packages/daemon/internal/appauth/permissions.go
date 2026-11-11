@@ -42,9 +42,25 @@ import (
 // hold them: Legion writes no GitHub issue and no project, and a comment on a pull request needs
 // Issues write or Pull requests write (GitHub's own documentation of the create-comment endpoint,
 // read 2026-11-06), which both sets hold.
+//
+// security_events is the code-scanning alerts of the repository, and it differs by App as checks
+// does: the review App's set asks for write and the implement App's for read, its roles reading
+// which alerts stand on a head. The write is what a dismissal of an alert whose code is right
+// needs, and the set is keyed by App rather than by workflow role, so the token serves every role
+// the review App mints for — architect, planner, tester and reviewer (AppRoleFor, identity.go) —
+// and each of them can dismiss an alert, upload SARIF or delete an analysis. A dismissal names
+// the App in its dismissed_by, whichever of those roles made it, so which role acted is readable
+// only where the comment the dismissal carries says so; an upload or a deletion leaves neither.
+//
+// It is here because, in key mode, a token minted without it is refused those reads whatever the
+// installation holds: measured on 2026-11-10, every code-scanning read of both role Apps answered
+// 403 with `X-Accepted-Github-Permissions: security_events=read` while the accounts' grants of
+// 2026-11-08 stood, because this file named the permission in neither set and GitHub mints a
+// token carrying what the request names. A deployment in token mode asks its command for no
+// permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
 var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"},
-	Review:    {"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write"},
+	Implement: {"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
+	Review:    {"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
 }
 
 // accessOrder ranks GitHub's three accesses, each holding every one below it: a permission

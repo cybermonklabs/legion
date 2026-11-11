@@ -19,6 +19,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { completeLines, endsWhole, writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { connect, ErrorCode, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -188,6 +189,10 @@ interface ControllerSession {
   nextTurn(what: string): Promise<Turn>;
   /** The one transcript's lines, raw; none until Oh My Pi writes the file. */
   transcriptLines(): Promise<string[]>;
+  /** Waits until the transcript ends on a finished line, which a read that proves an absence
+   * does first: `transcriptLines` withholds a line the host has not finished, so an empty
+   * result taken mid-write would be the absence of that line and not of the record. */
+  transcriptWhole(): Promise<void>;
   /** The transcript's message entries, in order. */
   messages(): Promise<MessageEntry[]>;
   /**
@@ -516,16 +521,35 @@ async function startController(
     }
   };
 
-  const transcriptLines = async (): Promise<string[]> => {
+  /** The transcript's text, and `""` before Oh My Pi has written one. */
+  const transcriptText = async (): Promise<string> => {
     const files = (await readdir(sessions, { recursive: true })).filter((file) =>
       file.endsWith(".jsonl")
     );
-    if (files.length === 0) return [];
+    if (files.length === 0) return "";
     if (files.length !== 1)
       throw new Error(`want one transcript under ${sessions}, found ${files}`);
-    return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
-      .split("\n")
-      .filter(Boolean);
+    return await readFile(path.join(sessions, files[0] ?? ""), "utf8");
+  };
+
+  // The pane appends to its transcript as this polls it, so a read can land between a line's
+  // bytes and its newline; `writtenLines` withholds that fragment until the write has finished
+  // it, rather than handing `JSON.parse` half an object (dispatch://INFRA-2188). Once Oh My Pi
+  // has exited nothing will finish it, so every line is parsed and a fragment throws. Which of
+  // the two holds is read before the file and never after, or a read that caught half a line
+  // while Oh My Pi then exited would be parsed and its error would stand in for the real
+  // failure, which is that omp exited.
+  const transcriptLines = async (): Promise<string[]> => {
+    const writer = exitCode === undefined ? "alive" : "gone";
+    return writtenLines(await transcriptText(), writer);
+  };
+
+  // What a read that proves an absence waits for: with the transcript ending on a finished line,
+  // an empty result is the absence of the record rather than of a line still being written.
+  const transcriptWhole = async (): Promise<void> => {
+    await until("the transcript to end on a finished line", async () =>
+      endsWhole(await transcriptText()) ? true : undefined
+    );
   };
 
   let taken = 0;
@@ -538,6 +562,7 @@ async function startController(
       return turn;
     },
     transcriptLines,
+    transcriptWhole,
     async messages() {
       return (await transcriptLines()).flatMap((line) => {
         const entry = MessageEntrySchema.safeParse(JSON.parse(line));
@@ -819,13 +844,35 @@ interface ControllerInbound {
   noticeOnceHeld(subject?: string): Promise<string>;
 }
 
+/**
+ * How long a card's lane receipt is waited for.
+ *
+ * Measured at 0d7edbdb over 20 runs of this file's eight card cases under six busy loops on a
+ * 2-CPU pod: 358 requests, 354 answered with a mean of 125 ms and a worst of 4,752 ms, and four
+ * that reached the old 5,000 ms bound and failed their run. So the bound was below the worst call
+ * it has to allow, and this one is three times that worst call (dispatch://INFRA-2188).
+ *
+ * It is not a NATS round trip that takes seconds: every slow call and every timeout was the first
+ * or second request to a pane that had just started, so what is waited for is an Oh My Pi still
+ * coming up. Waiting for a readiness signal first would be the better fix and there is none left
+ * to wait for: the cases already await the subscription's own registration, the role claim that
+ * follows it and, at the second site, the start turn's model request (the comment above "a card
+ * and a Legion notice that arrive while the start command's claim runs" states that order). Two
+ * of the four timeouts were a repeat sent after a receipt of that same pane had already been
+ * answered, and the other two were the first request a case makes, one of them sent from inside
+ * the role-claim handler, the moment that case exists to test. The wait is a hang guard over a
+ * busy pane, so it is sized from the measurement and the case still fails when no receipt ever
+ * comes, which the case below holds it to.
+ */
+const RECEIPT_TIMEOUT_MS = 15_000;
+
 async function controllerInbound(nats: string): Promise<ControllerInbound> {
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
   const codec = StringCodec();
   const noticeSubject = legionControllerNoticeSubject(PROJECT);
   const receipt = (sid: string, frame: Uint8Array): Promise<unknown> =>
-    connection.request(`notifications.agent.${sid}`, frame, { timeout: 5_000 });
+    connection.request(`notifications.agent.${sid}`, frame, { timeout: RECEIPT_TIMEOUT_MS });
   /**
    * One daemon notice frame for `subject`, with the summary it carries (`triage on <issue>`, the
    * daemon's `noticeSummary`), whose issue key no other notice shares. A probe that sends its
@@ -915,6 +962,37 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
   };
 }
 
+// The control for the bound above: `await receipt` is what a case reads as "the session took the
+// frame", so it has to fail when the session took nothing. Both ways of taking nothing are held
+// here — nobody subscribed to the agent subject at all, which NATS answers at once with no
+// responders, and a subscriber that takes the frame and never replies, which runs the bound out.
+// This case needs the NATS server and not the binary, so it runs wherever one is configured. Its
+// name holds no "card", so the `-t card` measurement of the bound does not run it: it fails two
+// requests deliberately, which that measurement counts.
+test.skipIf(natsUrl === undefined && !onActions)(
+  "a lane receipt nobody answers fails, so awaiting one proves the session took the frame",
+  async () => {
+    const inbound = await controllerInbound(natsUrl ?? "");
+    const unheard = inbound.card(`nobody-${randomUUID()}`, "control");
+    await expect(unheard.receipt).rejects.toThrow(NatsError);
+
+    const silent = await connect({ servers: natsUrl ?? "" });
+    cleanup.push(() => silent.close());
+    const sid = `silent-${randomUUID()}`;
+    const subscription = silent.subscribe(`notifications.agent.${sid}`);
+    void (async () => {
+      for await (const _message of subscription) {
+        // Taken and never answered, which is the shape the bound exists for.
+      }
+    })();
+    await silent.flush();
+    const started = Date.now();
+    await expect(inbound.card(sid, "control").receipt).rejects.toThrow("TIMEOUT");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(RECEIPT_TIMEOUT_MS);
+  },
+  RECEIPT_TIMEOUT_MS + 60_000
+);
+
 test.skipIf(skip)(
   "the start turn runs after startup and the TUI shows it",
   async () => {
@@ -1000,6 +1078,10 @@ test.skipIf(skip)(
     for (const turn of session.turns) {
       expect(JSON.stringify(turn.request.body)).not.toContain(START_COMMAND);
     }
+    // An absence read: the start command's word must be nowhere in the transcript. It waits for
+    // the transcript to end on a finished line first, since a line the host had not finished
+    // would be withheld and read as the absence this asserts.
+    await session.transcriptWhole();
     const lines = await session.transcriptLines();
     expect(lines.filter((line) => line.includes(START_COMMAND))).toEqual([]);
     const userMessages = (await session.messages())
@@ -1123,6 +1205,9 @@ test.skipIf(skip)(
         }
       }
     }
+    // An exact count read through a reader that withholds a line the host has not finished, so
+    // the transcript has to end on a finished line first or the count could be one short.
+    await session.transcriptWhole();
     const userMessages = (await session.messages())
       .filter(({ message }) => message.role === "user")
       .map((entry) => JSON.stringify(entry));
@@ -1261,20 +1346,19 @@ test.skipIf(skip)(
     await session.shows("the start turn's reply", "Start procedure done.");
 
     // The start message is the new session's first user message, and the replaced session has none.
+    // Both files belong to the one live process, so an unfinished last line is withheld
+    // (`completeLines`, dispatch://INFRA-2188) rather than parsed half-written.
     const [replacedUsers, newUsers] = await session.until(
       "the new session's transcript to hold the start message",
       async () => {
         const users = await Promise.all(
           [first.ompSessionFile, reclaimed.ompSessionFile].map(async (file) =>
-            (await readFile(String(file), "utf8"))
-              .split("\n")
-              .filter(Boolean)
-              .flatMap((line) => {
-                const entry = MessageEntrySchema.safeParse(JSON.parse(line));
-                return entry.success && entry.data.message.role === "user"
-                  ? [JSON.stringify(entry.data)]
-                  : [];
-              })
+            completeLines(await readFile(String(file), "utf8")).flatMap((line) => {
+              const entry = MessageEntrySchema.safeParse(JSON.parse(line));
+              return entry.success && entry.data.message.role === "user"
+                ? [JSON.stringify(entry.data)]
+                : [];
+            })
           )
         );
         return (users[1]?.length ?? 0) > 0 ? users : undefined;
@@ -1632,6 +1716,7 @@ test.skipIf(skip)(
     wake.reply("Read the startup card.");
     await settledOn(session, "Read the startup card.");
     expect(session.turns).toHaveLength(2);
+    await session.transcriptWhole();
     const delivered = (await session.transcriptLines()).filter(
       (line) => line.includes('"custom_message"') && line.includes(card.summary)
     );

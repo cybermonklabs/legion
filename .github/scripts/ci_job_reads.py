@@ -980,8 +980,9 @@ GATES = [
 
     gate("broker_client", "broker-client", reads=reads(
         ("packages/broker-client/**", f"{at('broker-client', 'Lint the broker client')}, typecheck and test in "
-                                      "packages/broker-client; its modules import only one another, node:, bun: and "
-                                      "the third-party packages its manifest names"),
+                                      "packages/broker-client; its modules import one another, node:, bun:, the "
+                                      "third-party packages its manifest names and @legion/contracts"),
+        (CONTRACTS_SRC, "packages/broker-client/src/token-client.ts imports @legion/contracts/trailing-slash"),
         (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
     ) + biome(at("broker-client", "Lint the broker client")) + bun_job("broker-client") + CI_SELF),
 
@@ -993,6 +994,7 @@ GATES = [
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:14-21 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:683-690 reads skills/<skill>/SKILL.md for every skill a notice cites"),
+        ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md, and its ALLOWED names lines of four of them, so rewording one of those lines fails that test"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:23-29 reads the Go package's own corpus by relative path - that file itself, never a copy, so the two clients are held to one wire"),
     ) + biome(at("envoy-client", "Lint Envoy client")) + bun_job("envoy-client") + CI_SELF),
