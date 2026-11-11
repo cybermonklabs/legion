@@ -188,6 +188,16 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 			wantAgents: []string{"notifications.agent.session-writer"},
 		},
 		{
+			name: "a person's delete of their comment on a passage reaches the document's writer",
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				doc := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer})
+				return model.Event{IssueKey: new("T-1"), Type: "comment.deleted", Actor: alice, Payload: map[string]any{
+					"id": "00000000-0000-0000-0000-000000000016", "anchor": anchorOn(doc),
+				}}, ""
+			},
+			wantAgents: []string{"notifications.agent.session-writer"},
+		},
+		{
 			name: "an author the comment mentions is left to the mention that reached it, the other authors reached",
 			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
 				doc := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer, editor})

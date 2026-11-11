@@ -46,8 +46,10 @@ import (
 //
 // Each source names a row by its id, and each kind's ids are a set, so an item reached several ways
 // is one row. Every row is then read at its current words: an ask's current answer (asks.answer)
-// when that answer's own time is in the window, a comment's current body, a message's body. A
-// comment or message an agent or the system wrote is left out by its author; an answer is a
+// when that answer's own time is in the window, a comment's current body, a message's body, each
+// with the time of its edit and the mark of its delete, so a reader meets a post its author
+// withdrew as deleted and not as an empty line. A comment or message an agent or the system
+// wrote is left out by its author; an answer is a
 // person's by construction. The ids are compared as text, through the asks_id_text, comments_id_text
 // and messages_id_text indexes, so a payload id that is not a uuid cannot fail the read.
 //
@@ -92,7 +94,8 @@ const query = `
 		where md.session_id = $1 and md.state = 'sent' and md.created_at >= $2 - interval '1 hour'
 	)
 	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,
-	       null::timestamptz as edited_at, null::jsonb as author, null::text as body, a.answer,
+	       null::timestamptz as edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by,
+	       null::jsonb as author, null::text as body, a.answer,
 	       (select count(distinct ae.answer->>'at') from answer_events ae
 	         where ae.id = x.id and ae.actor->>'kind' = 'user' and ae.actor->>'id' = ae.answer->>'user') > 1 as replaced,
 	       a.id::text as ask_id, a.question as ask_question,
@@ -105,7 +108,7 @@ const query = `
 	left join artifacts ar on ar.id = a.artifact_id
 	where a.answer is not null and (a.answer->>'at')::timestamptz >= $2
 	union all
-	select 'comment', c.id::text, c.created_at, c.edited_at, c.author, c.body, null, false,
+	select 'comment', c.id::text, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.author, c.body, null, false,
 	       q.id::text, q.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       x.mentioned,
@@ -119,7 +122,7 @@ const query = `
 	left join artifacts ar on ar.id = c.artifact_id
 	where c.author->>'kind' = 'user' and c.created_at >= $2
 	union all
-	select 'message', m.id::text, m.created_at, null, m.author, m.body, null, false,
+	select 'message', m.id::text, m.created_at, m.edited_at, m.deleted_at, m.deleted_by, m.author, m.body, null, false,
 	       null, null,
 	       i.key, i.title, null, null, null,
 	       false, false, false, false,
@@ -132,8 +135,8 @@ const query = `
 	order by at desc, id desc`
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
-// time, then by id descending: an ask's current answer, a comment at its current body, or a
-// message, each (kind, id) once (query).
+// time, then by id descending: an ask's current answer, or a comment or a message at its current
+// body with the mark of a delete, each (kind, id) once (query).
 //
 // An item reached several ways carries one relation, the most specific to the session, in this
 // order of precedence: a comment is mentioned_you when a mention delivered it to the session (it
@@ -164,18 +167,26 @@ func List(ctx context.Context, pool *store.Pool, session string, since time.Time
 func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	var (
 		item                                                model.SessionAnswer
-		author, answer                                      []byte
+		author, answer, deletedBy                           []byte
 		body, askID, askQuestion                            *string
 		issueKey, issueTitle, docProject, docSlug, docName  *string
 		mentioned, inAskThread, inCommentThread, onDocument bool
 		repliesToSession                                    bool
 	)
 	if err := row.Scan(
-		&item.Kind, &item.ID, &item.At, &item.EditedAt, &author, &body, &answer, &item.Replaced,
+		&item.Kind, &item.ID, &item.At, &item.EditedAt, &item.DeletedAt, &deletedBy,
+		&author, &body, &answer, &item.Replaced,
 		&askID, &askQuestion, &issueKey, &issueTitle, &docProject, &docSlug, &docName,
 		&mentioned, &inAskThread, &inCommentThread, &onDocument, &repliesToSession,
 	); err != nil {
 		return model.SessionAnswer{}, err
+	}
+	if deletedBy != nil {
+		var actor model.Actor
+		if err := json.Unmarshal(deletedBy, &actor); err != nil {
+			return model.SessionAnswer{}, fmt.Errorf("decode the actor that deleted %s %s: %w", item.Kind, item.ID, err)
+		}
+		item.DeletedBy = &actor
 	}
 	switch item.Kind {
 	case model.SessionAnswerKindAnswer:
@@ -220,6 +231,10 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	if item.EditedAt != nil {
 		edited := item.EditedAt.UTC()
 		item.EditedAt = &edited
+	}
+	if item.DeletedAt != nil {
+		deleted := item.DeletedAt.UTC()
+		item.DeletedAt = &deleted
 	}
 	if askID != nil {
 		item.Ask = &model.SessionAnswerAsk{ID: *askID, Question: *askQuestion}

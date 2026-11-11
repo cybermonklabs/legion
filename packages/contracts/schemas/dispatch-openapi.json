@@ -20535,6 +20535,13 @@
           "body": {
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "id": {
             "type": "string"
           }
@@ -20677,6 +20684,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "first_line": {
             "type": "string"
           },
@@ -20700,6 +20714,13 @@
         "properties": {
           "anchor": {
             "$ref": "#/components/schemas/Anchor"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
           },
           "dismissed_at": {
             "format": "date-time",
@@ -22367,6 +22388,13 @@
             "type": "string"
           },
           "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
             "$ref": "#/components/schemas/Actor"
           },
           "edited_at": {

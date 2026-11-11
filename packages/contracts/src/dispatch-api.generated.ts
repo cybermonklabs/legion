@@ -4774,6 +4774,9 @@ export interface components {
     };
     MyAnswerReply: {
       body: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       id: string;
     };
     MyAnswerRow: {
@@ -4810,12 +4813,18 @@ export interface components {
       author: components["schemas"]["Actor"];
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       first_line: string;
       id: string;
       kind: string;
     };
     MyReplyRow: {
       anchor?: components["schemas"]["Anchor"];
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       /** Format: date-time */
       dismissed_at?: string;
       document?: components["schemas"]["OpenAskDocument"];
@@ -5222,6 +5231,9 @@ export interface components {
       /** Format: date-time */
       at: string;
       author: components["schemas"]["Actor"];
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       /** Format: date-time */
       edited_at?: string;
       href: string;

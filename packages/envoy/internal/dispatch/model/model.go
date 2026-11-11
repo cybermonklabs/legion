@@ -1651,10 +1651,14 @@ type OpenAskDocument struct {
 	Name    string `json:"name"`
 }
 
-// MyAnswerReply is the reply carried by a row in a person's answer history.
+// MyAnswerReply is the reply carried by a row in a person's answer history. DeletedAt and
+// DeletedBy mark a reply its author deleted: Body is then empty, and the row says that the post
+// is deleted rather than showing an empty line.
 type MyAnswerReply struct {
-	ID   string `json:"id"`
-	Body string `json:"body"`
+	ID        string     `json:"id"`
+	Body      string     `json:"body"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 }
 
 // MyAnswerRow is one answer or reply written by the caller, newest first.
@@ -1683,13 +1687,16 @@ type MyAnswersResponse struct {
 
 // MyReplyReply is the newest write someone else made in a thread on the Replies page: a reply (a
 // comment or a message), or the ask's answer, whose ID is the ask's, whose author is the answerer
-// and whose first line is the answer's options and text.
+// and whose first line is the answer's options and text. DeletedAt and DeletedBy mark a reply
+// its author deleted, whose FirstLine is then empty.
 type MyReplyReply struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	Author    Actor     `json:"author"`
-	FirstLine string    `json:"first_line"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`
+	Author    Actor      `json:"author"`
+	FirstLine string     `json:"first_line"`
+	CreatedAt time.Time  `json:"created_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 }
 
 // MyReplySession is the agent session an Agent row's thread was sent to: the session's id and the
@@ -1715,9 +1722,14 @@ type MyReplyRow struct {
 	// Priority is the owning issue's coarse priority, absent on a row with no issue or none set.
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
-	Project *string      `json:"project,omitempty"`
-	Subject string       `json:"subject"`
-	Reply   MyReplyReply `json:"reply"`
+	Project *string `json:"project,omitempty"`
+	Subject string  `json:"subject"`
+	// DeletedAt and DeletedBy mark a thread whose root post its author deleted: Subject is then
+	// empty, and the row says that the post is deleted rather than showing an empty line. An
+	// ask's thread has no such root and never carries them.
+	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
+	DeletedBy *Actor       `json:"deleted_by,omitempty"`
+	Reply     MyReplyReply `json:"reply"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`
@@ -1794,23 +1806,28 @@ type SessionAnswerAsk struct {
 // GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
 // body, or a message, each (Kind, ID) once. Author is always a user. Text is the person's words in
 // full ("" for an answer that chose options only). Selected and Replaced are an answer's, each
-// omitted when empty or false; EditedAt is an edited comment's; Ask is set on an answer and on a
+// omitted when empty or false; EditedAt is an edited comment's or message's, and DeletedAt with
+// DeletedBy mark a post its author deleted, whose Text is then empty; Ask is set on an answer and on a
 // reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue and
 // has no dispatch:// address; Href is then /agents/<session>/live.
 type SessionAnswer struct {
-	Kind     string            `json:"kind"`
-	Relation string            `json:"relation"`
-	ID       string            `json:"id"`
-	At       time.Time         `json:"at"`
-	EditedAt *time.Time        `json:"edited_at,omitempty"`
-	Author   Actor             `json:"author"`
-	Text     string            `json:"text"`
-	Selected []string          `json:"selected,omitempty"`
-	Replaced bool              `json:"replaced,omitempty"`
-	Ask      *SessionAnswerAsk `json:"ask,omitempty"`
-	Owner    *OpenAskOwner     `json:"owner"`
-	Ref      *string           `json:"ref"`
-	Href     string            `json:"href"`
+	Kind     string     `json:"kind"`
+	Relation string     `json:"relation"`
+	ID       string     `json:"id"`
+	At       time.Time  `json:"at"`
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy are the mark of a deleted comment or message: Text is then empty,
+	// and a reader meets the post as deleted rather than as an empty line.
+	DeletedAt *time.Time        `json:"deleted_at,omitempty"`
+	DeletedBy *Actor            `json:"deleted_by,omitempty"`
+	Author    Actor             `json:"author"`
+	Text      string            `json:"text"`
+	Selected  []string          `json:"selected,omitempty"`
+	Replaced  bool              `json:"replaced,omitempty"`
+	Ask       *SessionAnswerAsk `json:"ask,omitempty"`
+	Owner     *OpenAskOwner     `json:"owner"`
+	Ref       *string           `json:"ref"`
+	Href      string            `json:"href"`
 }
 
 // SessionAnswersResponse is what people wrote to one session since Since, newest first by At,

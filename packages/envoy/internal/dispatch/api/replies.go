@@ -192,10 +192,12 @@ const myRepliesPageRest = `
 	       end,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       coalesce(a.question, root.body, mroot.body, ''),
+	       coalesce(root.deleted_at, mroot.deleted_at), coalesce(root.deleted_by, mroot.deleted_by),
 	       p.last_reply_id::text, answered.id is not null,
 	       coalesce(rc.author, rm.author,
 	         case when answered.id is not null then jsonb_build_object('kind', 'user', 'id', answered.answer->>'user') end),
 	       coalesce(rc.body, rm.body, answered.text, ''),
+	       coalesce(rc.deleted_at, rm.deleted_at), coalesce(rc.deleted_by, rm.deleted_by),
 	       coalesce(rc.created_at, rm.created_at, p.replied_at),
 	       i.priority, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
@@ -212,22 +214,22 @@ const myRepliesPageRest = `
 		offset 0
 	) a on true
 	left join lateral (
-		select root.body, root.anchor
+		select root.body, root.anchor, root.deleted_at, root.deleted_by
 		from comments root where p.kind = 'comment' and root.id = p.thread_id
 		offset 0
 	) root on true
 	left join lateral (
-		select mroot.body
+		select mroot.body, mroot.deleted_at, mroot.deleted_by
 		from messages mroot where p.kind = 'message' and mroot.id = p.thread_id
 		offset 0
 	) mroot on true
 	left join lateral (
-		select rc.author, rc.body, rc.created_at
+		select rc.author, rc.body, rc.created_at, rc.deleted_at, rc.deleted_by
 		from comments rc where p.kind <> 'message' and rc.id = p.last_reply_id
 		offset 0
 	) rc on true
 	left join lateral (
-		select rm.author, rm.body, rm.created_at
+		select rm.author, rm.body, rm.created_at, rm.deleted_at, rm.deleted_by
 		from messages rm where p.kind = 'message' and rm.id = p.last_reply_id
 		offset 0
 	) rm on true
@@ -667,7 +669,8 @@ func (s *server) readMyReplyRows(
 		var row model.MyReplyRow
 		var issueKey, issueTitle, project, slug, name, replyID *string
 		var subject, body string
-		var author, anchor []byte
+		var author, anchor, subjectDeletedBy, replyDeletedBy []byte
+		var subjectDeletedAt, replyDeletedAt *time.Time
 		var isAnswer bool
 		var readThrough time.Time
 		var projectKey string
@@ -677,11 +680,21 @@ func (s *server) readMyReplyRows(
 		if err := rows.Scan(
 			&row.ThreadID, &row.Kind, &row.Ref,
 			&issueKey, &issueTitle, &project, &slug, &name,
-			&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
+			&subject, &subjectDeletedAt, &subjectDeletedBy,
+			&replyID, &isAnswer, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
 			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
 			&row.DismissedAt, &version,
 		); err != nil {
 			return nil, fmt.Errorf("scan my reply: %w", err)
+		}
+		// The thread's root post and the reply the row shows each carry the mark of a delete, so
+		// a row whose text a delete cleared says that the post is deleted and not an empty line.
+		var err error
+		if row.DeletedAt, row.DeletedBy, err = deletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
+			return nil, err
+		}
+		if row.Reply.DeletedAt, row.Reply.DeletedBy, err = deletedPostMark(replyDeletedAt, replyDeletedBy); err != nil {
+			return nil, err
 		}
 		row.Reply.Kind = "reply"
 		if isAnswer {
@@ -718,6 +731,24 @@ func (s *server) readMyReplyRows(
 		return nil, fmt.Errorf("list my replies: %w", err)
 	}
 	return read, nil
+}
+
+// deletedPostMark reads a post's deleted_at and deleted_by columns into the mark a read that
+// gives one line of the post carries (model.MyReplyRow, model.MyReplyReply): both are nil for a
+// post that stands, and an author that deleted it is read as the actor it was stored as.
+func deletedPostMark(at *time.Time, by []byte) (*time.Time, *model.Actor, error) {
+	if at == nil {
+		return nil, nil, nil
+	}
+	deleted := at.UTC()
+	if by == nil {
+		return &deleted, nil, nil
+	}
+	var actor model.Actor
+	if err := json.Unmarshal(by, &actor); err != nil {
+		return nil, nil, fmt.Errorf("decode the actor that deleted a post: %w", err)
+	}
+	return &deleted, &actor, nil
 }
 
 // threadReadInput is the body of PUT /api/v1/me/threads/{id}/read.

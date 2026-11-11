@@ -68,6 +68,20 @@ func commentSearchVector(t *testing.T, database *store.Store, commentID string) 
 	return vector
 }
 
+// postEmbeddingWindows counts the embedding windows of one post, whose ids all begin with the
+// owner key `<kind>/<uuid>` (refs.ItemKind.WindowOwnerKey): the rows a meaning search matches a
+// post by.
+func postEmbeddingWindows(t *testing.T, database *store.Store, ownerKey string) int {
+	t.Helper()
+	var windows int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from embeddings where split_part(id, '#', 1) = $1
+	`, ownerKey).Scan(&windows); err != nil {
+		t.Fatalf("count the embedding windows of %s: %v", ownerKey, err)
+	}
+	return windows
+}
+
 // A delete clears the body and every copy of the body that does not follow the cleared column:
 // the search vector, each block row with its stored excerpt, the document margin mark, and a
 // suggestion's replacement text.
@@ -83,6 +97,9 @@ func TestDeleteCommentClearsEveryCopyOfItsBody(t *testing.T) {
 	}
 	if vector := commentSearchVector(t, database, comment.ID); vector == "" {
 		t.Fatalf("the comment's search vector is empty before the delete")
+	}
+	if windows := postEmbeddingWindows(t, database, "comment/"+comment.ID); windows == 0 {
+		t.Fatalf("the comment holds no embedding window before the delete, so dropping them proves nothing")
 	}
 
 	deleted := deleteThreadComment(t, handler, comment.ID, "alice")
@@ -111,6 +128,12 @@ func TestDeleteCommentClearsEveryCopyOfItsBody(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(commentEventTypes(t, handler, issue.Key), ","), "comment.deleted") {
 		t.Fatalf("the event log is missing comment.deleted")
+	}
+	// A deleted post is reachable by no meaning search: the re-index with the empty body leaves
+	// the comment with no block, and an owner left with no block loses every window it had
+	// (refs/blocks.go, writeWindows).
+	if windows := postEmbeddingWindows(t, database, "comment/"+comment.ID); windows != 0 {
+		t.Fatalf("the deleted comment keeps %d embedding windows, want none: a meaning search would reach it", windows)
 	}
 }
 

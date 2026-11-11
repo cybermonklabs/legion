@@ -275,7 +275,168 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 	if err := s.attachAskEventFields(ctx, events); err != nil {
 		return nil, err
 	}
+	if err := s.attachDeletedPostFields(ctx, events); err != nil {
+		return nil, err
+	}
 	return events, nil
+}
+
+// commentBodyEventKinds and messageBodyEventKinds are the event kinds whose payload carries the
+// post's own body under `body`, keyed by the table the payload's `id` names. They are what
+// attachDeletedPostFields marks: every other kind of either post either carries no body
+// (comment.delivery, message.delivery, message.accepted, whose payload names the message under
+// message_id and holds no text of it) or carries the body of another post, which the event log
+// keeps (a reply's reply_body and reply_block.text).
+var commentBodyEventKinds = map[string]bool{
+	"comment.created":          true,
+	"comment.edited":           true,
+	"comment.answered":         true,
+	"comment.resolved":         true,
+	"comment.reopened":         true,
+	"comment.anchor_refreshed": true,
+	// The two suggestion kinds are a comment's own events under another name
+	// (comment_actions.go, commentAction).
+	"suggestion.accepted": true,
+	"suggestion.rejected": true,
+}
+
+var messageBodyEventKinds = map[string]bool{
+	"message.created":  true,
+	"message.edited":   true,
+	"message.answered": true,
+}
+
+// deletedPost is the mark a post's author left on it: when it was deleted and by whom
+// (comments.deleted_at, messages.deleted_at).
+type deletedPost struct {
+	at time.Time
+	by model.Actor
+}
+
+// attachDeletedPostFields gives every event of a deleted comment or message the mark the post
+// itself reads with, and takes the body out of its payload: a read of the event log says that
+// the post is deleted and gives no part of what it said. The stored row is never rewritten -
+// the log is the record of what happened - so the mark is read here, at every read, which is
+// why readEventRows calls it for readEvents and readEventsAfterID alike.
+//
+// It is this file's own way of filling what a payload cannot carry from the write that appended
+// it (attachAskEventFields): the events table holds no comment id and no message id, so there is
+// nothing for eventSelect to join on, and a column joined onto the row could not remove the
+// payload's body anyway.
+//
+// The two frozen previews of another post stay, as the delete leaves them: the reply_body of a
+// reply's own message.created payload, and the reply_block.text of a reply's comment.created.
+// Each is part of the event of the post that quoted it, and only the quoted post's own events
+// are marked here.
+func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Event) error {
+	commentIDs, messageIDs := []string{}, []string{}
+	postIDs := make([]string, len(events))
+	for index := range events {
+		comment := commentBodyEventKinds[events[index].Type]
+		if !comment && !messageBodyEventKinds[events[index].Type] {
+			continue
+		}
+		raw, ok := events[index].Payload.(json.RawMessage)
+		if !ok {
+			return fmt.Errorf("decode %s payload: expected raw JSON", events[index].Type)
+		}
+		// A payload this server did not write - an older build's, a test's - need name no post:
+		// one that names none is passed through as the database returned it.
+		var header struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &header); err != nil || header.ID == "" {
+			continue
+		}
+		postIDs[index] = header.ID
+		if comment {
+			commentIDs = append(commentIDs, header.ID)
+		} else {
+			messageIDs = append(messageIDs, header.ID)
+		}
+	}
+	comments, err := s.readDeletedPosts(ctx, `
+		select id::text, deleted_at, deleted_by from comments
+		where id::text = any($1::text[]) and deleted_at is not null
+	`, commentIDs)
+	if err != nil {
+		return err
+	}
+	messages, err := s.readDeletedPosts(ctx, `
+		select id::text, deleted_at, deleted_by from messages
+		where id::text = any($1::text[]) and deleted_at is not null
+	`, messageIDs)
+	if err != nil {
+		return err
+	}
+	if len(comments) == 0 && len(messages) == 0 {
+		return nil
+	}
+	for index := range events {
+		if postIDs[index] == "" {
+			continue
+		}
+		// Each kind's id names its own table, so a comment event reads the comments' marks and
+		// a message event the messages'.
+		marks := messages
+		if commentBodyEventKinds[events[index].Type] {
+			marks = comments
+		}
+		deleted, found := marks[postIDs[index]]
+		if !found {
+			continue
+		}
+		raw := events[index].Payload.(json.RawMessage)
+		payload := map[string]any{}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return fmt.Errorf("decode %s payload: %w", events[index].Type, err)
+		}
+		// The body, the mark that it was cut short, and a suggestion's replacement text, which
+		// is the comment's text too and which the delete clears with the body.
+		delete(payload, "body")
+		delete(payload, "body_truncated")
+		delete(payload, "suggestion")
+		payload["deleted_at"] = deleted.at
+		payload["deleted_by"] = deleted.by
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode %s payload: %w", events[index].Type, err)
+		}
+		events[index].Payload = json.RawMessage(encoded)
+	}
+	return nil
+}
+
+// readDeletedPosts reads the mark of each post of ids that is deleted, by its id as text, through
+// the comments_id_text and messages_id_text indexes: a payload id that is not a uuid cannot fail
+// the read, as it would under a cast of the parameter.
+func (s *server) readDeletedPosts(ctx context.Context, query string, ids []string) (map[string]deletedPost, error) {
+	marks := map[string]deletedPost{}
+	if len(ids) == 0 {
+		return marks, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, query, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var at time.Time
+		var by []byte
+		if err := rows.Scan(&id, &at, &by); err != nil {
+			return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
+		}
+		mark := deletedPost{at: at.UTC()}
+		if err := json.Unmarshal(by, &mark.by); err != nil {
+			return nil, fmt.Errorf("decode the actor that deleted post %s: %w", id, err)
+		}
+		marks[id] = mark
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the deleted posts of an event page: %w", err)
+	}
+	return marks, nil
 }
 
 // decodedAskEventPayload is the ask payload that needs read-time fields added before it is written
