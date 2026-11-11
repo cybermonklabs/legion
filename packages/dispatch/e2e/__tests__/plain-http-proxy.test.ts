@@ -18,7 +18,7 @@ import { plainHttpHost } from "../plain-http-origin";
 // packages/envoy/internal/dispatch/routes/devsignin_test.go:278-291.
 //
 // The proxy runs as the harness runs it, a `bun` process of its own, with the plain-HTTP port
-// unset under every name this lane carries it under so it binds a port the OS chooses, and
+// unset under every name this stack carries it under so it binds a port the OS chooses, and
 // `PLAYWRIGHT_BASE_URL` naming the stand-in as the server under test. The stand-in answers with
 // the global `Response`, which is Bun's own here: this half loads no preload and registers no DOM,
 // so nothing replaces it.

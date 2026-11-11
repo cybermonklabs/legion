@@ -411,7 +411,9 @@ export type IssueEventPayload = Issue & ReferenceChangesPayload & IssueEventChan
  *  anything new. A restore the release before Dispatch kept the mark writes - every one already in
  *  the event log, and one written during a rollout or an image rollback - carries no mark, so a
  *  missing `restored` does not prove an event is a new answer. `thread_logins` (the ask's own
- *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`. */
+ *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`; on `ask.asked_of` it
+ *  is the two people the hand-on moved the ask between instead, since no reader of the thread
+ *  changes list there. */
 export type AskEventPayload = Ask &
   ReferenceChangesPayload &
   ThreadLoginsPayload & { readonly restored?: boolean };
@@ -817,6 +819,47 @@ export type SearchResultsPageAbsentAs<V> = { readonly [K in keyof SearchResultsP
  * `contracts.SearchDegradedEmbedderUnavailable` so the string Dispatch writes and the string
  * `search-answer.ts` compares against cannot drift apart. */
 export const SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE = "embedder_unavailable";
+
+/** The operator forms `GET /api/v1/search` reads in the words a person wrote: a `"phrase"` in
+ *  quotes, the `OR` between two words, and a `-word` the search leaves out. Each is generated
+ *  into Go as `contracts.SearchOperatorPhrase`, `SearchOperatorOr` and `SearchOperatorExclude`,
+ *  so the string Dispatch answers and the string a client reads it by cannot drift apart. */
+export const SEARCH_OPERATOR_PHRASE = "phrase";
+export const SEARCH_OPERATOR_OR = "or";
+export const SEARCH_OPERATOR_EXCLUDE = "exclude";
+export const SEARCH_OPERATORS = [
+  SEARCH_OPERATOR_PHRASE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_EXCLUDE,
+] as const;
+export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
+
+/** The members `GET /api/v1/search` carried before `GET /api/v1/search/results` was added.
+ *  `session` is among them because `openapi.go` declares it on every operation of every build
+ *  and `actingPerson` reads it on every route, so a request carrying it is one an older build
+ *  serves correctly and must not be sent to a path that build refuses. */
+export const SEARCH_MEMBERS_EVERY_BUILD_READS = [
+  "q",
+  "project",
+  "limit",
+  "offset",
+  "session",
+] as const;
+
+/** Whether every member a search request carries is one of `SEARCH_MEMBERS_EVERY_BUILD_READS`,
+ *  which is the one rule that picks a search's path: a request carrying anything beyond them
+ *  goes to `GET /api/v1/search/results`. A Dispatch released before that route answers the
+ *  new path `404 no route`, which is a refusal, where it answers `GET /api/v1/search` `200` with
+ *  the member dropped, which is unnarrowed rows under the filters a person chose. A key whose
+ *  value is `undefined` is not carried, which is how both clients build a request out of
+ *  optional filters, and the keys are read from the request itself, so a member added later
+ *  routes itself. */
+export function everyBuildReadsSearch(request: object): boolean {
+  const read: readonly string[] = SEARCH_MEMBERS_EVERY_BUILD_READS;
+  return Object.entries(request).every(
+    ([member, value]) => value === undefined || read.includes(member)
+  );
+}
 
 // GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
 // `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block
@@ -1232,6 +1275,14 @@ export type DispatchEvent =
       readonly type: "ask.handed_back";
       readonly payload: AskEventPayload;
     })
+  /** One person handed an open ask to another: `asked_of` is whom it waits on from now on, empty
+   *  where that is the assignee of its own issue, and `asked_of_by` who handed it on. The ask
+   *  keeps its question, its thread and its followers; only whose list it sits in moves, so
+   *  `thread_logins` names those two people and nobody else. */
+  | (DispatchEventBase & {
+      readonly type: "ask.asked_of";
+      readonly payload: AskEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "ask.answered";
       readonly payload: AskAnsweredEventPayload;
@@ -1597,6 +1648,14 @@ const askEventPayloadFields = {
       at: z.string().optional(),
     })
     .nullish(),
+  // The three stored fields of a hand-on, carried by every ask payload as the row carries them:
+  // whom the ask waits on, who handed it there and when. `waiting_on_person` is deliberately
+  // absent: it is read-time only (the ask row never stores it), as `waiting_on` is, and this
+  // object strips any field it does not declare, so a payload that somehow carried it would
+  // reach no reader with it.
+  asked_of: z.string().nullish(),
+  asked_of_by: z.string().nullish(),
+  asked_of_at: z.string().nullish(),
   thread_logins: z.array(z.string()).optional(),
 };
 

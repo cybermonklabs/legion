@@ -297,12 +297,46 @@ type myRepliesQuery struct {
 }
 
 // searchRouteQuery is GET /api/v1/search's query. The name carries `route` because search.go
-// already has a searchQuery of its own, the parsed query a search runs on.
+// already has a searchQuery of its own, the parsed query a search runs on. It names the four
+// members every build of the server has served. The handler still reads the other five on this
+// route, for a page served by a release before this one, and those five are declared on
+// GET /api/v1/search/results (searchResultsRouteQuery), the path a caller asks them of.
 type searchRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
 	Q string `query:"q"`
-	// Project searches within one project; empty searches every project.
+	// Project searches within one project; empty searches every project. It narrows every leg
+	// of the search rather than striking rows out of the page it answers.
 	Project string `query:"project"`
+	// Limit is the page size, 1 to 50, default 20.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all nine members: the four
+// searchRouteQuery names and the five a build released before them does not serve, which is why
+// that path exists. The nine are written out rather than embedded because the emitter reads a
+// query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
+type searchResultsRouteQuery struct {
+	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
+	Q string `query:"q"`
+	// Project searches within one project; empty searches every project. It narrows every leg
+	// of the search rather than striking rows out of the page it answers.
+	Project string `query:"project"`
+	// NumberProject narrows nothing: it is the project of the page the search was made from,
+	// which a query that is a bare issue number is read in. A request naming Project too reads
+	// the number in that project instead.
+	NumberProject string `query:"number_project"`
+	// Status searches the items of issues in one status; a row with no issue belongs to none
+	// and is left out.
+	Status string `query:"status"`
+	// Author searches the items one actor wrote, by actor id: a person's login or a session id.
+	Author string `query:"author"`
+	// UpdatedSince searches the items last written at or after one RFC3339 time.
+	UpdatedSince string `query:"updated_since"`
+	// KeywordsOnly runs the keyword leg alone and makes no embedding call, whatever embedder
+	// the deployment configured, which is what the bar sends behind a keystroke.
+	KeywordsOnly bool `query:"keywords_only"`
 	// Limit is the page size, 1 to 50, default 20.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
@@ -461,6 +495,10 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/settings/delivery": {
 		Status: http.StatusOK, Response: delivery.DeliverySettings{}, Request: deliverySettingsInput{},
 	},
+	"GET /api/v1/settings/new-issue": {Status: http.StatusOK, Response: newIssueSettings{}},
+	"POST /api/v1/settings/new-issue/_test": {
+		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
+	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
 	},
@@ -583,7 +621,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/me/inbox/dismiss": {
 		Status: http.StatusOK, Response: inboxDismissResponse{}, Request: inboxDismissRequest{},
 	},
-	"GET /api/v1/search":          {Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
+	"GET /api/v1/search": {Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
+	"GET /api/v1/search/results": {
+		Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchResultsRouteQuery{},
+	},
 	"GET /api/v1/search/coverage": {Status: http.StatusOK, Response: model.SearchCoverage{}},
 	"GET /api/v1/related-checks": {
 		Status: http.StatusOK, Response: model.RelatedChecksReport{}, Params: relatedChecksQuery{},
@@ -597,6 +638,7 @@ var routeShapes = map[string]routeShape{
 		OpaqueContentType: "text/event-stream",
 	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
+	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
 	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
@@ -634,6 +676,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: model.Ask{}, Request: editAskInput{}},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {

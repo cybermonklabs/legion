@@ -1,25 +1,19 @@
-import { expect, test } from "@playwright/test";
-
 import { shownAgentRows } from "./agents";
 import { getInbox } from "./api";
 import { askCard, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 import { seedWorkspace } from "./workspace";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // Every surface the `person` scope opens has to come up non-empty from this one seed: an empty
 // Inbox, Agents page or broadcast would prove nothing about a change to it.
 // SLOW(>=2s): the whole workspace seed, the four surfaces it has to fill and three full-page
 // screenshots of them.
-test("the seeded workspace fills every surface the person scope opens", async ({
+// @pr: The seeded workspace every other row builds on: each surface the person scope opens has to come up non-empty.
+test("the seeded workspace fills every surface the person scope opens @pr", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the seeded workspace");
   const seeded = await seedWorkspace();
   expect(await getInbox({ login: "alice" })).toHaveLength(seeded.inboxRows);
 

@@ -1271,6 +1271,11 @@ const dispatchTestAgentToken = "shutdown-test-token"
 type dispatchProcess struct {
 	*cmdtest.Process
 	port int
+	// database is the Postgres database the test gave the process (DATABASE_URL's). The wait
+	// for the event feed's events_start needs it to tell a horizon stall held by this
+	// process's own write transaction from one held by a foreign transaction
+	// (live_events_wait_test.go).
+	database string
 }
 
 // dispatchOptions is what a test varies about the Dispatch process it starts. Its zero value is
@@ -1315,12 +1320,23 @@ func startDispatchProcessWithSettleDelay(t *testing.T, databaseURL string, settl
 	return startDispatchProcessWith(t, databaseURL, dispatchOptions{SettleDelay: settleDelay})
 }
 
+// testHorizonStallWarning is the stall and repeat threshold every process these tests start runs
+// the event horizon's warning at. A wait in these tests keys on that warning, so the signal must
+// arrive inside a test's own patience rather than at the production five and thirty seconds.
+const testHorizonStallWarning = 250 * time.Millisecond
+
 // startDispatchProcessWith starts Dispatch under options: a home of its own, nothing from the
 // caller's environment, and a loopback port the kernel chose and the test holds from that moment,
 // which the process inherits as DISPATCH_LISTEN_FD and serves on, so no other program can take the
 // port before it serves. DISPATCH_PORT names the same port, which Dispatch checks against the socket.
 func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatchOptions) *dispatchProcess {
 	t.Helper()
+	// The process's own database, for the events_start wait; a URL it cannot serve against is
+	// the test's own mistake, not a stall to wait out.
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the database URL the process is given: %v", err)
+	}
 	home := t.TempDir()
 	binary := options.Binary
 	if binary == "" {
@@ -1341,6 +1357,9 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 		"DISPATCH_PORT":                    strconv.Itoa(held.Port),
 		"DISPATCH_WEB_DIST":                home,
 		"DISPATCH_TEST_HOOKS":              "1",
+		// Both thresholds, so the stall warning arrives and repeats inside a test's patience.
+		"DISPATCH_TEST_HORIZON_STALL_AFTER": testHorizonStallWarning.String(),
+		"DISPATCH_TEST_HORIZON_WARN_EVERY":  testHorizonStallWarning.String(),
 	}
 	if options.NATSURL == "" {
 		environment["DISPATCH_NATS_DISABLED"] = "1"
@@ -1368,7 +1387,7 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	if options.OwnProcessGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
-	return &dispatchProcess{Process: cmdtest.Start(t, "Dispatch", cmd), port: held.Port}
+	return &dispatchProcess{Process: cmdtest.Start(t, "Dispatch", cmd), port: held.Port, database: config.Database}
 }
 
 func (p *dispatchProcess) url(path string) string {
@@ -1567,7 +1586,9 @@ type streamEnd struct {
 
 // openLiveEvents opens GET /ws/live as a signed-in tab does and subscribes it to the event feed,
 // from the head, returning once Dispatch has started the subscription (its events_start frame) with
-// the socket the feed's frames arrive on. The socket closes when the test ends.
+// the socket the feed's frames arrive on. The frame is behind the event horizon, so the wait for it
+// is the server's own stall warning rather than a deadline (live_events_wait_test.go). The socket
+// closes when the test ends.
 func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	t.Helper()
 	conn, response, err := gws.DefaultDialer.Dial("ws://127.0.0.1:"+strconv.Itoa(p.port)+"/ws/live", http.Header{
@@ -1584,20 +1605,7 @@ func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "events", "view": map[string]string{"kind": "events"}}); err != nil {
 		t.Fatalf("subscribe the live socket to the event feed: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	for {
-		var frame struct{ Type, Sub string }
-		if err := conn.ReadJSON(&frame); err != nil {
-			t.Fatalf("read the event feed's events_start: %v\n%s", err, p.Output.String())
-		}
-		if frame.Type == "events_start" && frame.Sub == "events" {
-			break
-		}
-		if frame.Type != "heartbeat" {
-			t.Fatalf("the live socket answered the event feed's subscribe with a %s frame, want its events_start", frame.Type)
-		}
-	}
-	_ = conn.SetReadDeadline(time.Time{})
+	p.waitEventsStart(t, conn, "events")
 	return conn
 }
 

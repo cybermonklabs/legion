@@ -1,9 +1,7 @@
-import { expect, test } from "@playwright/test";
-
 import type { Actor } from "../web/src/api/types";
 import { createIssue, createProject, patchIssue } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // The server admits a document socket read-only for a closed issue exactly as it does for a
@@ -12,10 +10,6 @@ import { asUser } from "./users";
 // disagree - an admission that came while the page still held the issue closed, on a page that
 // then learns the issue is open - and the page must name the reload that makes the document
 // editable again.
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The session that reopens the issue behind the page's back. */
 const reopener = {
@@ -29,7 +23,8 @@ const reopener = {
 // would answer the question the row asks.
 // @webkit @firefox: the socket the engine reconnects and the paint that follows it, which decide
 // whether a read-only admission landing before the issue read leaves a reader with no way out.
-test("a reconnect admitted read-only before the issue read names the reload @webkit @firefox", async ({
+// @pr: The live document's admission: a reconnect admitted read-only before the issue read must name the reload, or the reader has no way out.
+test("a reconnect admitted read-only before the issue read names the reload @webkit @firefox @pr", async ({
   browser,
 }) => {
   await createProject({ key: "DOC", name: "Doc reload" });

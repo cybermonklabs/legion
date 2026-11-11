@@ -18,7 +18,7 @@ Each row is one agent session. It shows:
   running; point at the dot to see when the session was last seen,
 - the session's title and when it was last active in Dispatch, with a link beside the title,
   **↗**, that opens its [live view](#the-live-view),
-- **Needs you N** when it has asks waiting on your answer — the ones on issues assigned to you —
+- **Needs you N** when it has open asks whose next move is yours — the ones that wait on you —
   which opens your Inbox filtered to them,
 - **Waiting on agent N** when it has asks whose next move is its own, on anybody's issue; it
   opens the Inbox with the assignee filter cleared — that session's whole open list, both

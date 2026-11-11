@@ -130,6 +130,7 @@ const validCalls = {
     replace_with: "new wording",
   },
   dispatch_message: { issue: "DSP-1", body: "Implementation started." },
+  dispatch_send_to_agent: specFor("dispatch_send_to_agent").example,
   dispatch_doc_edit: {
     issue: "DSP-1",
     artifact: "spec",
@@ -171,7 +172,7 @@ function schemaFor(name: keyof typeof validCalls) {
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -243,6 +244,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_comment",
       "dispatch_suggest",
       "dispatch_message",
+      "dispatch_send_to_agent",
       "dispatch_doc_edit",
       "dispatch_doc_read",
       "dispatch_request_approval",
@@ -504,6 +506,23 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
+  test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {
+    const schema = schemaFor("dispatch_send_to_agent");
+    const call = { session: "sess-1", body: "DSP-1: please take this.", delivery: "aside" };
+
+    expect(schema.safeParse(call).success).toBe(true);
+    expect(schema.safeParse({ ...call, in_reply_to: "message-1" }).success).toBe(true);
+    // The route is issue-less: a session, not an issue, is what it addresses.
+    expect(schema.safeParse({ ...call, issue: "DSP-1" }).success).toBe(false);
+    for (const missing of ["session", "body", "delivery"] as const) {
+      const { [missing]: _left, ...rest } = call;
+      expect(schema.safeParse(rest).success, missing).toBe(false);
+    }
+    expect(schema.safeParse({ ...call, delivery: "shout" }).success).toBe(false);
+    expect(schema.safeParse({ ...call, session: "" }).success).toBe(false);
+    expect(schema.safeParse({ ...call, body: "" }).success).toBe(false);
+  });
+
   test("dispatch_read reads a direct-message conversation by message id alone", () => {
     const schema = schemaFor("dispatch_read");
     const message = "6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c";
@@ -676,6 +695,8 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
+      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },
       { issue: "DSP-1", parent: "DSP-2" },

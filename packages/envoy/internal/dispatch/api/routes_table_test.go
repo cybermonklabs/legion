@@ -204,8 +204,8 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+12 {
-		t.Fatalf("test hooks add twelve routes: got %d, want %d", got, len(routes)+12)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+13 {
+		t.Fatalf("test hooks add thirteen routes: got %d, want %d", got, len(routes)+13)
 	}
 }
 
@@ -519,6 +519,10 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/broadcasts",
 		"GET /api/v1/broadcasts/{id}",
 		"POST /api/v1/asks/{id}/answer",
+		// Handing an ask to another person is this change's own row, and it is the person's as
+		// the answer above it is: Dispatch takes who hands the question on from the credential,
+		// and a credential the deployment configured is nobody to hand one on.
+		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
 		"PATCH /api/v1/comments/{id}",
