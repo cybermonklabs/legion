@@ -9,7 +9,33 @@ const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as cons
  *  of a large document's build rather than a second or two, because such a document goes quiet
  *  between its diagrams and the next one moves the target just as far; a reader who moves on in
  *  the meantime stops the watch themselves. */
-const LIMIT_MS = 30_000;
+export const LIMIT_MS = 30_000;
+
+/** How long a drawing must hold still to be read as settled: long enough that a run of cards
+ *  landing one after another is waited out once rather than chased, short enough that a reader
+ *  who followed a link sees the target without reading somewhere else first. This watch waits
+ *  out no quiet of its own - it corrects in the frame after each movement, which is what a
+ *  large document's diagrams need - so the one correction reading it is the Inbox column's own
+ *  hold on the document it opened (`holdSection`, `features/inbox/pane-placement.ts`). That
+ *  hold reads this rather than a number of its own, so the two cannot drift apart. */
+export const QUIET_MS = 200;
+
+/** How long the Inbox's reading column may go on putting the document it opened back at its
+ *  section. The bound is the column's own, and not `LIMIT_MS` above, because a bound says how
+ *  long a surface may re-place itself and the two surfaces draw different things: the page's
+ *  correction must outlive the build of the largest document this branch measures, tens of
+ *  seconds of it, while the column's need only outlive the longest draw the pane itself serves.
+ *
+ *  That draw was measured rather than taken on faith: the heaviest document a reading pane
+ *  hosts - the AHXV6-1-shaped one, about 81,000 characters and 28 diagrams
+ *  (`e2e/large-documents.ts`) - drew for 7.15 s, 6.26 s and 6.05 s from the row change to its
+ *  last block, on a two-processor pod under the 4x CPU throttle the phone rows run with. Ten
+ *  seconds is the worst of those with about two fifths over it. The five-times-larger document
+ *  drew for 40 s, and once for 136 s, on the same pod: no placement's bound covers that, since
+ *  a column still being written ten seconds after the reader opened it is one they have long
+ *  since taken over - which ends the placement itself, as their first press, scroll, touch or
+ *  key always does. */
+export const COLUMN_LIMIT_MS = 10_000;
 
 /** How long the movement a correction started is still that correction's own. A scroll this
  *  watch makes is instant (`FOCUS_SCROLL`, `@legion/proof-editor`, and no `scroll-behavior:

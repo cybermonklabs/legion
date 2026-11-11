@@ -1,0 +1,5 @@
+kind: Fixed
+body: Dispatch now names a session by the newest title that session stamped on anything it wrote. Before, it read the title on the session's newest write, so one write that carries none, such as a reply to a message, made the session nameless on the Inbox agents band, the delivery groups, the drill-down, the parent agent, the live delivery view and the collaborators of an issue. A session that never stamped a title is still shown by its id.
+time: 2026-11-11T01:29:43.835688134Z
+custom:
+    Issue: pr3517

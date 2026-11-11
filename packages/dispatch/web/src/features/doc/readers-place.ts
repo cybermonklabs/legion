@@ -25,21 +25,39 @@ export interface ReadersBlock {
   readonly top: number;
 }
 
+/** The top of the scrollport carrying `drawn`, in the page's own coordinates: the top edge of
+ *  the box that scrolls it - the Inbox's reading column - or the top of the page where the page
+ *  itself scrolls it. It is the first line of the document the reader can see, and every
+ *  reading below is taken from it: read against the page in a column, the block a reader is on
+ *  is one that scrolled out of the column above them, and a growth inside that block moves
+ *  everything they are looking at while this module answers nothing. */
+function scrollportTop(drawn: HTMLElement): number {
+  const scroller = whatScrolls(drawn);
+  return scroller === null ? 0 : scroller.getBoundingClientRect().top;
+}
+
+/** How tall that scrollport is: the column's own height, or the window's where the page is the
+ *  scrollport. */
+function scrollportHeight(drawn: HTMLElement): number {
+  const scroller = whatScrolls(drawn);
+  return scroller === null ? window.innerHeight : scroller.clientHeight;
+}
+
 /**
  * The first child of `drawn` the top of the scrollport is in or above, by a binary search over
- * the children rather than a scan of them: the run is in document order, so `bottom > 0` is
+ * the children rather than a scan of them: the run is in document order, so `bottom > edge` is
  * false for every block above the scrollport and true from the reader's own block on, and the
  * document this is asked about holds thousands of blocks. `undefined` where every block is
  * above the scrollport, which is a reader past the end of the document.
  */
-function firstBlockOnScreen(drawn: HTMLElement): number | undefined {
+function firstBlockOnScreen(drawn: HTMLElement, edge: number): number | undefined {
   const blocks = drawn.children;
   let low = 0;
   let high = blocks.length - 1;
   let found: number | undefined;
   while (low <= high) {
     const middle = (low + high) >> 1;
-    if (blocks[middle].getBoundingClientRect().bottom > 0) {
+    if (blocks[middle].getBoundingClientRect().bottom > edge) {
       found = middle;
       high = middle - 1;
     } else {
@@ -53,11 +71,12 @@ export function readersBlock(drawn: HTMLElement | null): ReadersBlock | undefine
   if (drawn === null) {
     return undefined;
   }
-  const index = firstBlockOnScreen(drawn);
+  const edge = scrollportTop(drawn);
+  const index = firstBlockOnScreen(drawn, edge);
   if (index === undefined) {
     return undefined;
   }
-  const { top } = drawn.children[index].getBoundingClientRect();
+  const top = drawn.children[index].getBoundingClientRect().top - edge;
   return index === 0 && top >= 0 ? undefined : { index, top };
 }
 
@@ -98,6 +117,22 @@ export function thePageLeftItThere(scroller: HTMLElement | null): boolean {
   return left !== undefined && left === (scroller === null ? window.scrollY : scroller.scrollTop);
 }
 
+/** Scrolls `scroller` itself by `moved` pixels, recording where that left it as the page's own
+ *  doing (above). It is `moveTheScroll` for a caller that names the box rather than what it is
+ *  holding still in it: the Inbox's reading column is one box drawn in one place, and its
+ *  placement writes it while the document in it is still drawing - the section it was opened
+ *  at put back at the top on every pass, and the start of the column written for an approval
+ *  request - so that writing is the page holding the reader's place, and every landing
+ *  correction watching the same column reads it as such rather than as the reader taking the
+ *  column over (`refocus-when-settled.ts`). */
+export function moveTheBox(scroller: HTMLElement, moved: number): void {
+  if (moved === 0) {
+    return;
+  }
+  scroller.scrollTop += moved;
+  thePageLeftBoxesAt.set(scroller, scroller.scrollTop);
+}
+
 /** Scrolls whatever carries `within` by `moved` pixels, so what the reader is looking at stays
  *  on the same line of their screen while the page changes above it. Where it leaves that box
  *  is recorded as the page's own doing (above). */
@@ -111,8 +146,7 @@ export function moveTheScroll(within: HTMLElement, moved: number): void {
     thePageLeftTheWindowAt = window.scrollY;
     return;
   }
-  scroller.scrollTop += moved;
-  thePageLeftBoxesAt.set(scroller, scroller.scrollTop);
+  moveTheBox(scroller, moved);
 }
 
 /** Puts the reader back where `place` left them, in a document `drawn` draws the same blocks of
@@ -124,7 +158,7 @@ export function putTheReaderBack(drawn: HTMLElement, place: ReadersBlock | undef
   if (block === undefined || place === undefined) {
     return;
   }
-  moveTheScroll(drawn, block.getBoundingClientRect().top - place.top);
+  moveTheScroll(drawn, block.getBoundingClientRect().top - scrollportTop(drawn) - place.top);
 }
 
 /** The block the reader is on and where its top sits on their screen: the element rather than
@@ -184,7 +218,7 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
       take();
       return;
     }
-    const moved = kept.block.getBoundingClientRect().top - kept.top;
+    const moved = kept.block.getBoundingClientRect().top - scrollportTop(drawn) - kept.top;
     if (moved !== 0) {
       moveTheScroll(drawn, moved);
       left = scrollOffset(drawn);
@@ -203,12 +237,15 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
       take();
       return;
     }
+    // The scrollport the reader reads the document in: the column in a reading pane, the page
+    // on a document page. A block that has left it, above or below, is no longer theirs.
+    const edge = scrollportTop(drawn);
     const { bottom, top } = kept.block.getBoundingClientRect();
-    if (bottom <= 0 || top >= window.innerHeight) {
+    if (bottom <= edge || top >= edge + scrollportHeight(drawn)) {
       take();
       return;
     }
-    place = { block: kept.block, top };
+    place = { block: kept.block, top: top - edge };
     left = scrollOffset(drawn);
   };
   // Every growth is answered where it is seen, never a frame later. A mutation is answered in

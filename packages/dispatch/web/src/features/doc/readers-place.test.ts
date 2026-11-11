@@ -21,6 +21,9 @@ interface Page {
 const observers = new Set<() => void>();
 let restoreObserver: (() => void) | undefined;
 let scrollListeners: ((event: Event) => void)[] = [];
+/** What a row put on the page, taken off it again when the row ends: the drawn document on a
+ *  document page, the column carrying it in a reading pane. */
+let mounted: HTMLElement | undefined;
 
 function pageOf(blocks: number, documentTop: number): Page {
   let scrollY = 0;
@@ -65,6 +68,79 @@ function pageOf(blocks: number, documentTop: number): Page {
     scrollY: () => scrollY,
   };
   installTheBrowser(page);
+  mounted = page.drawn;
+  return page;
+}
+
+/** Where the Inbox's reading column stands on the page, and how tall it is: the column is a box
+ *  of its own, so the first line of the document a reader can see is its top edge and not the
+ *  window's. */
+const COLUMN_TOP = 200;
+const COLUMN_HEIGHT = 600;
+
+interface Column extends Page {
+  /** How far down the column the reader is, which is what the column scrolls by. */
+  readonly scrollTop: () => number;
+}
+
+/** The same run of blocks drawn in that column. happy-dom lays nothing out, computes no
+ *  overflow and scrolls nothing, so what `whatScrolls` reads to find the box - its overflow and
+ *  its content standing taller than it does - is stated here, as are the rectangles. */
+function columnOf(blocks: number, documentTop: number): Column {
+  let scrolled = 0;
+  const grown = new Map<number, number>();
+  const topOf = (index: number) => {
+    let top = COLUMN_TOP + documentTop;
+    for (let above = 0; above < index; above += 1) {
+      top += BLOCK_HEIGHT + (grown.get(above) ?? 0);
+    }
+    return top - scrolled;
+  };
+  const column = document.createElement("div");
+  column.style.overflowY = "auto";
+  column.getBoundingClientRect = () =>
+    ({ bottom: COLUMN_TOP + COLUMN_HEIGHT, height: COLUMN_HEIGHT, top: COLUMN_TOP }) as DOMRect;
+  Object.defineProperty(column, "clientHeight", { configurable: true, get: () => COLUMN_HEIGHT });
+  Object.defineProperty(column, "scrollHeight", {
+    configurable: true,
+    get: () => topOf(blocks) + scrolled - COLUMN_TOP,
+  });
+  const drawn = document.createElement("div");
+  for (let index = 0; index < blocks; index += 1) {
+    const block = document.createElement("section");
+    block.getBoundingClientRect = () =>
+      ({
+        bottom: topOf(index) + BLOCK_HEIGHT + (grown.get(index) ?? 0),
+        top: topOf(index),
+      }) as DOMRect;
+    drawn.append(block);
+  }
+  column.append(drawn);
+  document.body.append(column);
+  const page: Column = {
+    drawn,
+    grow(index, pixels) {
+      grown.set(index, (grown.get(index) ?? 0) + pixels);
+    },
+    resized() {
+      for (const fire of [...observers]) fire();
+    },
+    scrollTo(top) {
+      scrolled = top;
+      for (const listener of scrollListeners) listener(new Event("scroll"));
+    },
+    scrollTop: () => scrolled,
+    scrollY: () => 0,
+  };
+  // The column's own scroll, which is what the keeper writes (`moveTheBox`): the browser tells
+  // the listeners after the write, and this harness tells them as the page's own does.
+  Object.defineProperty(column, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => page.scrollTo(next),
+  });
+  installTheBrowser(page);
+  mounted = column;
   return page;
 }
 
@@ -104,7 +180,8 @@ function installTheBrowser(page: Page): void {
     window.addEventListener = addListener;
     window.removeEventListener = removeListener;
     if (scrollY !== undefined) Object.defineProperty(window, "scrollY", scrollY);
-    page.drawn.remove();
+    (mounted ?? page.drawn).remove();
+    mounted = undefined;
   };
 }
 
@@ -218,4 +295,38 @@ test("the page is left alone once the document has gone", () => {
   page.resized();
 
   expect(page.scrollY()).toBe(1_250);
+});
+
+// The Inbox's reading pane draws the document in a column of its own, whose top is not the top
+// of the window. Read against the window, the block a reader is on in that column is one that
+// scrolled out of it above them - every block between the window's top and the column's - and a
+// growth inside that block moves every word they can see while this module answers nothing.
+test("the reader's block in a reading column is read from the column's own top", () => {
+  const column = columnOf(40, 0);
+  column.scrollTo(1_250);
+
+  expect(readersBlock(column.drawn)).toEqual({ index: 12, top: -50 });
+});
+
+test("a card landing above the reader in a reading column leaves their words where they were", () => {
+  const column = columnOf(40, 0);
+  column.scrollTo(1_250);
+  const release = keepTheReadersPlace(column.drawn);
+  try {
+    // A decision card drawn into its block's shell, which is the growth the Inbox's column
+    // meets: the block the reader scrolled past grows under them as its card lands.
+    column.grow(3, 332);
+    column.resized();
+
+    expect(column.scrollTop()).toBe(1_582);
+    expect(readersBlock(column.drawn)).toEqual({ index: 12, top: -50 });
+  } finally {
+    release();
+  }
+});
+
+test("a reader still above a reading column's first block has no place to keep", () => {
+  const column = columnOf(40, 80);
+
+  expect(readersBlock(column.drawn)).toBeUndefined();
 });

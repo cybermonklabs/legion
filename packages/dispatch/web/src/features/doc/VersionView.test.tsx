@@ -1,11 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
 import { changingEachHandle, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import type { AuthenticatedUser } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { changeMarksAgainst } from "./change-marks";
 import type { EditorHandle } from "./editor";
@@ -18,11 +20,15 @@ function createQueryClient(): QueryClient {
   });
 }
 
+/** The signed-in person the view draws the editor for, as `/auth/whoami` answers. */
+const signedIn: AuthenticatedUser = { event_head: "7", kind: "user", login: "alice" };
+
 function renderVersionView({
   changeBaseline,
   highlight,
   markdown,
   whenBound,
+  whoAmI = signedIn,
 }: {
   changeBaseline?: string;
   highlight: { by: string; id: string; quote: string } | undefined;
@@ -30,6 +36,9 @@ function renderVersionView({
   /** Given each handle as the version's editor binds it, for a row that reads or replaces
    *  what that editor answers. */
   whenBound?: (handle: EditorHandle) => void;
+  /** The answer `/auth/whoami` holds before the first render; `null` leaves the key unset, for a
+   *  row where the person arrives after the version's text. */
+  whoAmI?: AuthenticatedUser | null;
 }) {
   const runtime = fakeDocumentRuntime();
   if (whenBound !== undefined) {
@@ -39,7 +48,9 @@ function renderVersionView({
     };
   }
   const queryClient = createQueryClient();
-  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  if (whoAmI !== null) {
+    queryClient.setQueryData<AuthenticatedUser>(["whoami"], whoAmI);
+  }
   queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
@@ -76,13 +87,20 @@ function renderVersionView({
   /** Renders the view again with `shown`, as its parent does on every render of its own. */
   const rerender = (shown: { by: string; id: string; quote: string } | undefined) =>
     view.rerender(tree(shown));
-  return { ...runtime, blockSchema, rerender, view };
+  /** Answers the signed-in person again, as a re-read of `/auth/whoami` does. */
+  const setWhoAmI = (user: AuthenticatedUser) => {
+    act(() => {
+      queryClient.setQueryData<AuthenticatedUser>(["whoami"], user);
+    });
+  };
+  return { ...runtime, blockSchema, rerender, setWhoAmI, view };
 }
 
 // The parent builds `highlight` afresh on every render. An editor rebuilt for each such render
 // collapsed the page and scrolled again, and its last scroll could run before the last editor had
 // laid out, leaving the reader at the top of the page; a browser row catches that only sometimes.
 test("VersionView keeps its editor when the parent renders again with an equal highlight, and builds a new one for another comment", async () => {
+  jest.useFakeTimers();
   const markdown = "Read the current specification and the older note";
   const { editors, rerender, view } = renderVersionView({
     highlight: { by: "user:alice", id: "comment-1", quote: "current" },
@@ -93,7 +111,7 @@ test("VersionView keeps its editor when the parent renders again with an equal h
     await waitFor(() => expect(editors).toHaveLength(1));
     rerender({ by: "user:alice", id: "comment-1", quote: "current" });
     rerender({ by: "user:alice", id: "comment-1", quote: "current" });
-    await Bun.sleep(20);
+    await tick(20);
     expect(editors).toHaveLength(1);
     expect(editors[0]?.destroyed).toBe(false);
     expect(editors[0]?.focused).toEqual(["comment-1"]);
@@ -102,6 +120,51 @@ test("VersionView keeps its editor when the parent renders again with an equal h
     await waitFor(() => expect(editors).toHaveLength(2));
     expect(editors[0]?.destroyed).toBe(true);
     expect(editors[1]?.focused).toEqual(["comment-2"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// `/auth/whoami` answers the signed-in person with `event_head`, which moves with every committed
+// event, so each re-read of that answer is a new object. The editor is built from the login in
+// it, and the same person read again must leave the reader where they were reading.
+test("VersionView keeps its editor when the signed-in person is read again with a later event head", async () => {
+  const { editors, setWhoAmI, view } = renderVersionView({
+    highlight: undefined,
+    markdown: "Read the current specification",
+  });
+
+  try {
+    await waitFor(() => expect(editors).toHaveLength(1));
+    setWhoAmI({ ...signedIn, event_head: "12" });
+    setWhoAmI({ ...signedIn, event_head: "13" });
+    await Bun.sleep(20);
+    expect(editors).toHaveLength(1);
+    expect(editors[0]?.destroyed).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("VersionView builds its editor when the signed-in person arrives after the version's text", async () => {
+  const { editors, setWhoAmI, view } = renderVersionView({
+    highlight: undefined,
+    markdown: "Read the current specification",
+    whoAmI: null,
+  });
+
+  try {
+    await waitFor(() =>
+      expect(
+        within(view.container).getByRole("region", { name: "Document version 1" })
+      ).toBeDefined()
+    );
+    expect(editors).toHaveLength(0);
+
+    setWhoAmI(signedIn);
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.user.name).toBe("alice");
   } finally {
     view.unmount();
   }
@@ -234,6 +297,7 @@ test("VersionView draws the marks its baseline computes over the version it rend
 
 test("VersionView draws nothing when it is given no baseline", async () => {
   await warmMarkdownRenderer();
+  jest.useFakeTimers();
   const markdown = "# Plan\n\nThe plan ships behind a canary today.\n";
   const drawn: ChangeDecorations[] = [];
   const { editors, view } = renderVersionView({
@@ -244,10 +308,11 @@ test("VersionView draws nothing when it is given no baseline", async () => {
 
   try {
     await waitFor(() => expect(editors).toHaveLength(1));
-    await Bun.sleep(20);
+    await tick(20);
     expect(editors[0]?.markdown).toBe(markdown);
     expect(drawn).toEqual([]);
   } finally {
+    realClock();
     view.unmount();
   }
 });

@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 
+// This watch's own windows are read on the real clock: the correction it makes is made in an
+// animation frame, and the window in which the movement that correction started is still its own
+// is a `setTimeout` it arms itself, with nothing of either exposed for a row to drive
+// (`CORRECTION_SCROLL_MS`, `refocus-when-settled.ts`). So the rows below wait those windows out
+// rather than moving a fake clock across them.
 import { moveTheScroll } from "./readers-place";
 import { refocusWhenSettled } from "./refocus-when-settled";
+import { scrollElementToTop } from "./scroll-block";
 
 /** The observers the rows below fire by hand: happy-dom lays nothing out and watches no size, so
  *  a drawn root grows only when its test says it did. */
@@ -107,6 +113,60 @@ function pageScroll(): { to(top: number): Promise<void> } {
     },
   };
 }
+
+/** The Inbox's reading column: the box that scrolls the document drawn in it, and the heading
+ *  of the section the column was opened at, standing `HEADING_BELOW_PX` down that document.
+ *  happy-dom lays nothing out and scrolls nothing, so what `whatScrolls` reads to find the box
+ *  - its overflow, and its content standing taller than it does - is stated here, as are the
+ *  rects the placement measures its move against. Writing `scrollTop` tells the listeners as a
+ *  browser does, in a later turn than the line that moved the box. */
+function readingColumn(): {
+  column: HTMLElement;
+  drawn: { element: HTMLElement; grow(by: number): void };
+  heading: HTMLElement;
+} {
+  let scrolled = 0;
+  let height = 100;
+  const column = document.createElement("div");
+  column.style.overflowY = "auto";
+  Object.defineProperty(column, "scrollHeight", { configurable: true, get: () => 4_000 });
+  Object.defineProperty(column, "clientHeight", { configurable: true, get: () => 400 });
+  Object.defineProperty(column, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = next;
+      void toldTheListeners();
+    },
+  });
+  column.getBoundingClientRect = () => ({ height: 400, top: 0 }) as DOMRect;
+  const element = document.createElement("div");
+  // Where the document and its heading stand on the reader's screen: where they are drawn in
+  // the column, less how far down the column is scrolled.
+  element.getBoundingClientRect = () => ({ height, top: -scrolled }) as DOMRect;
+  const heading = document.createElement("section");
+  heading.getBoundingClientRect = () => ({ top: HEADING_BELOW_PX - scrolled }) as DOMRect;
+  element.append(heading);
+  column.append(element);
+  document.body.append(column);
+  return {
+    column,
+    drawn: {
+      element,
+      grow(by: number) {
+        height += by;
+        for (const observer of observers) {
+          observer([], undefined as unknown as ResizeObserver);
+        }
+      },
+    },
+    heading,
+  };
+}
+
+/** How far down the column the section's heading is drawn, which is how far the placement
+ *  scrolls the column to put it at the top. */
+const HEADING_BELOW_PX = 300;
 
 test("a document that grows under the target focuses it again, once", async () => {
   const drawn = drawnRoot();
@@ -302,5 +362,55 @@ test("a scroll answering a growth above the document leaves it watching", async 
     await waitFor(() => expect(focused).toBe(1));
   } finally {
     stop();
+  }
+});
+
+test("the reading column's own placement leaves the watch watching", async () => {
+  const { column, drawn, heading } = readingColumn();
+  let focused = 0;
+  const stop = refocusWhenSettled(() => (focused += 1), drawn.element);
+
+  try {
+    // Past the window in which the movement the arming scroll started is still its own, so the
+    // placement's scroll below is read on its own account.
+    await Bun.sleep(AFTER_THE_CORRECTION);
+    // The Inbox's reading column puts the section it was opened at back at the top of the
+    // column on every drawing pass, while the document under it is still being drawn
+    // (`features/inbox/pane-placement.ts`). That is the page placing what it draws, as much as
+    // a keeper's correction is, and the growth those passes answer moves this watch's target
+    // too - so a landing correction armed in the same column goes on watching. The placement
+    // scrolls through the one call that records where it left the box (`moveTheBox`).
+    scrollElementToTop(heading, column);
+    expect(column.scrollTop).toBe(HEADING_BELOW_PX);
+    // The browser tells the listeners after the write, so the event reaches the watch with no
+    // correction of its own pending: the record the placement left is all that saves it.
+    await Bun.sleep(0);
+    drawn.grow(300);
+    await waitFor(() => expect(focused).toBe(1));
+  } finally {
+    stop();
+    column.remove();
+  }
+});
+
+test("a reader scrolling the reading column ends the watch", async () => {
+  const { column, drawn } = readingColumn();
+  let focused = 0;
+  const stop = refocusWhenSettled(() => (focused += 1), drawn.element);
+
+  try {
+    await Bun.sleep(AFTER_THE_CORRECTION);
+    // A scrollbar drag in the column, a find-in-page jump, an assistive tool: none of them
+    // presses, wheels, touches or types, and none of them is the placement, which is the only
+    // thing that writes this box and says so. The reader is somewhere else, and where the
+    // landing put them is not where they are.
+    column.scrollTop = HEADING_BELOW_PX;
+    await Bun.sleep(0);
+    drawn.grow(300);
+    await Bun.sleep(AFTER_THE_QUIET);
+    expect(focused).toBe(0);
+  } finally {
+    stop();
+    column.remove();
   }
 });

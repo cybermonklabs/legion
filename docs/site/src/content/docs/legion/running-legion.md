@@ -500,8 +500,53 @@ What each part is for:
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
   secret.
+- **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
+  issue whose work keeps going back. Each entry carries `name`, its own and named once in the
+  file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
+  has; `every`, a positive whole number of those moves; `roles`, the roles the words are written
+  to, one or more of `implementer`, `tester`, `reviewer`, `planner` and `merger` (`architect` is
+  refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
+  key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
+  name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases
+  (`testing-implementing`, `reviewing-implementing`, `awaiting_merge-implementing`, and the 19
+  other pairs the daemon counts), or the word `any`, which is also what a hook that leaves the
+  key out takes. A hook fires when the move is one it counts and the counts of the moves it
+  counts, added up, are then a whole multiple of its `every`
+  ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
+  hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every
+  `prompt_file` at boot, as it reads `instructions`, so an edited file reaches the workers at the
+  next start of the daemon and the daemon does not come up while one of them is missing,
+  unreadable or blank. A file that names no `hooks:` key runs one shipped hook: `work-back`, over
+  any move, every 5 of them, to the implementer, the tester and the reviewer. `hooks: []` runs
+  none.
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
+- **`runtime.kubernetes.pod.env`** (and **`runtime.tmux.pane_env`** under the tmux runtime) holds
+  your own variables for every agent, and `OTEL_RESOURCE_ATTRIBUTES` is composed rather than
+  refused. Under Kubernetes it is the second such name beside `PI_CONFIG_FILES`, whose overlays
+  each role's own are added after; under tmux `PI_CONFIG_FILES` is the runtime's own and refused
+  in `pane_env` — the overlays there are `runtime.tmux.pi_config_files` — so the attributes are
+  the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
+  billed under (`theorem.project=widgets`), and each launch carries them with its own
+  `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
+  serves. The agent takes the last value a key is given, which is why Legion's two pairs come
+  last. Both keys reach the spend collector today, and its keep-list of six `theorem.*`
+  attributes drops every other key, so no spend row names an issue yet. A spend row grouped by
+  issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list.
+  The project controller serves no issue and carries the role alone. The image probe's container
+  runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
+  role either and keeps it with its trailing commas and whitespace dropped and nothing added.
+  Legion reads that value for its content as well as its name, and refuses a member the agent's
+  OpenTelemetry detector would throw on: one that does not split on `=` into one key and one
+  value, one with an empty key, one whose key or value does not percent-decode or runs past 255
+  characters once decoded, and one naming `legion.issue` or `legion.role`, which
+  Legion writes itself. The refusal names that one member and what is wrong with it, never the
+  rest of your value, and `legion start --check-config` gives boot's verdict before a restart.
+  One such member would cost a launch every attribute of the variable, your own
+  `theorem.project` among them, because the detector's caller catches the throw with an empty
+  hand. Like every other variable here, the attributes reach a role with the start command of its
+  next launch and travel in no pod specification, so no pod is replaced and a role already
+  running keeps what it started with.
 - **`runtime.kubernetes.session_store`** is required, and must name a store that keeps every
   pod's Oh My Pi conversation in a database, with that store's key. There are two:
   `postgres`, whose `session_dsn_secret` names the key of the providers Secret
@@ -926,6 +971,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    `legion stop --config legion.yaml`) and start it again. `legion restart <PROJECT>` does both in
    the shell it runs in, from the configuration the stopped daemon recorded. The new daemon probes
    the new image before it serves.
+
+   **After the first upgrade to a release that counts the moves back by kind,** every issue starts
+   at no counts: the migration fills none in from the past. An issue already in flight therefore
+   reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
+   first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
@@ -1098,7 +1148,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
-  `architect` and `workers` (each claim's `state`), `pullRequest` (`repo`, `head`, `checksVerdict`),
+  `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has made none), `pullRequest` (`repo`, `head`, `checksVerdict`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
@@ -1123,8 +1173,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and
   `unavailable`, present only when a NATS read failed),
-  `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`
-  and the rest as the daemon runs them — with every credential, credential source and credential
+  `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`,
+  `hooks` with each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file` but never its
+  words, and the rest as the daemon runs them — with every credential, credential source and credential
   file path left out, and a URL's userinfo masked as `xxxxx@`), and `agentSecretsLogin` when the
   broker is configured:
 

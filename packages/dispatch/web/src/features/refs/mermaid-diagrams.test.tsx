@@ -1,13 +1,16 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { MermaidDrawing } from "@legion/proof-editor/mermaid";
 import * as mermaidRenderer from "@legion/proof-editor/mermaid-render";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
+import { userOnFakeClock } from "../../__tests__/user";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
@@ -384,8 +387,7 @@ describe("Mermaid diagrams", () => {
    *  happy-dom gives a clicked `summary` its activation behaviour after the click's own
    *  listeners have run, so this records the click and then flips the `details`, which fires
    *  `toggle`, as a browser does; when `toggle` fires is what differs, and has a case below. */
-  const clickTheSummary = async (figure: Element): Promise<void> => {
-    const user = userEvent.setup();
+  const clickTheSummary = async (user: UserEvent, figure: Element): Promise<void> => {
     const summary = disclosureIn(figure)?.querySelector("summary");
     if (summary == null) throw new Error("The drawn block has no Mermaid source summary.");
     await user.click(summary);
@@ -395,17 +397,19 @@ describe("Mermaid diagrams", () => {
   // card all build its disclosure anew. A reader reading the source of one keeps it.
   test("a source a reader opened is open again after the body is painted anew", async () => {
     await warmMarkdownRenderer();
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
     const diagram = fence("sequenceDiagram\n  Alice->>Bob: Kept");
     const view = render(<MarkdownBody markdown={`Lead:\n\n${diagram}`} />);
     try {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
       const first = disclosureIn(figuresIn(view.container)[0]);
       expect(first?.open).toBe(false);
-      await clickTheSummary(figuresIn(view.container)[0]);
+      await clickTheSummary(user, figuresIn(view.container)[0]);
       expect(first?.open).toBe(true);
       // A whole task of the page's own timers, so a `toggle` queued as the HTML specification
       // queues it has run by the repaint below; the ordering has a case of its own below.
-      await Bun.sleep(10);
+      await tick(10);
 
       view.rerender(<MarkdownBody markdown={`Lead, and more of it:\n\n${diagram}`} />);
       const repainted = disclosureIn(figuresIn(view.container)[0]);
@@ -413,6 +417,7 @@ describe("Mermaid diagrams", () => {
       expect(repainted?.open).toBe(true);
       expect(view.container).toHaveTextContent("Lead, and more of it:");
     } finally {
+      realClock();
       view.unmount();
     }
   });
@@ -421,14 +426,17 @@ describe("Mermaid diagrams", () => {
   // so the disclosure is built inside the layout effect, from the cache. It is built open.
   test("a source a reader opened is open again after the body is mounted afresh", async () => {
     await warmMarkdownRenderer();
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
     const diagram = fence("sequenceDiagram\n  Alice->>Bob: Remounted");
     const view = render(<MarkdownBody markdown={diagram} />);
     try {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
-      await clickTheSummary(figuresIn(view.container)[0]);
+      await clickTheSummary(user, figuresIn(view.container)[0]);
       // A task, as above, so the opening is written down whenever the head runs `toggle`.
-      await Bun.sleep(10);
+      await tick(10);
     } finally {
+      realClock();
       view.unmount();
     }
     const again = render(<MarkdownBody markdown={diagram} />);
@@ -444,12 +452,13 @@ describe("Mermaid diagrams", () => {
   // opened, and the source they did open is theirs again wherever it comes back.
   test("an edited source draws closed, and the source the reader opened comes back open", async () => {
     await warmMarkdownRenderer();
+    const user = userEvent.setup();
     const first = fence("sequenceDiagram\n  Alice->>Bob: First");
     const edited = fence("sequenceDiagram\n  Alice->>Bob: Edited");
     const view = render(<MarkdownBody markdown={first} />);
     try {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
-      await clickTheSummary(figuresIn(view.container)[0]);
+      await clickTheSummary(user, figuresIn(view.container)[0]);
       expect(openIn(view.container)).toEqual([true]);
 
       view.rerender(<MarkdownBody markdown={edited} />);
@@ -476,6 +485,8 @@ describe("Mermaid diagrams", () => {
   // neither drawing the refusal open nor the reader's closing it was written down as an opening.
   test("a refused source draws open whatever the reader does, and takes no room from their openings", async () => {
     await warmMarkdownRenderer();
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
     const sources = Array.from(
       { length: 32 },
       (_, index) => `sequenceDiagram\n  A${index}->>Bob: Hi`
@@ -483,10 +494,10 @@ describe("Mermaid diagrams", () => {
     const filling = render(<MarkdownBody markdown={sources.map(fence).join("\n")} />);
     try {
       await waitFor(() => expect(figuresIn(filling.container)).toHaveLength(32));
-      for (const figure of figuresIn(filling.container)) await clickTheSummary(figure);
+      for (const figure of figuresIn(filling.container)) await clickTheSummary(user, figure);
       expect(openIn(filling.container)).toEqual(sources.map(() => true));
       // A task, as above, so every opening is written down whenever the head runs `toggle`.
-      await Bun.sleep(10);
+      await tick(10);
     } finally {
       filling.unmount();
     }
@@ -500,13 +511,14 @@ describe("Mermaid diagrams", () => {
       );
       expect(openIn(view.container)).toEqual([true, true]);
 
-      await clickTheSummary(figuresIn(view.container)[1]);
+      await clickTheSummary(user, figuresIn(view.container)[1]);
       expect(openIn(view.container)).toEqual([true, false]);
-      await Bun.sleep(10);
+      await tick(10);
       view.rerender(<MarkdownBody markdown={`Lead, and more of it:\n\n${beside}`} />);
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(2));
       expect(openIn(view.container)).toEqual([true, true]);
     } finally {
+      realClock();
       view.unmount();
     }
   });
@@ -516,6 +528,8 @@ describe("Mermaid diagrams", () => {
   // next paint draws closed again, and every later one is still the reader's.
   test("the thirty-third source a reader opens costs the first its place, and no other", async () => {
     await warmMarkdownRenderer();
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
     const sources = Array.from(
       { length: 33 },
       (_, index) => `sequenceDiagram\n  A${index}->>Bob: Hi`
@@ -524,15 +538,16 @@ describe("Mermaid diagrams", () => {
     const view = render(<MarkdownBody markdown={`Lead:\n\n${body}`} />);
     try {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(33));
-      for (const figure of figuresIn(view.container)) await clickTheSummary(figure);
+      for (const figure of figuresIn(view.container)) await clickTheSummary(user, figure);
       expect(openIn(view.container)).toEqual(sources.map(() => true));
       // A task, as above, so every opening is written down whenever the head runs `toggle`.
-      await Bun.sleep(10);
+      await tick(10);
 
       view.rerender(<MarkdownBody markdown={`Lead, and more of it:\n\n${body}`} />);
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(33));
       expect(openIn(view.container)).toEqual(sources.map((_, index) => index > 0));
     } finally {
+      realClock();
       view.unmount();
     }
   });
@@ -579,6 +594,7 @@ describe("Mermaid diagrams", () => {
   // stays beside the click's.
   test("a source the code opens, with no click of the reader's, is open in a body painted anew", async () => {
     await warmMarkdownRenderer();
+    jest.useFakeTimers();
     const diagram = fence("sequenceDiagram\n  Alice->>Bob: Opened by the code");
     const view = render(<MarkdownBody markdown={`Lead:\n\n${diagram}`} />);
     try {
@@ -588,13 +604,14 @@ describe("Mermaid diagrams", () => {
       expect(first.open).toBe(false);
       first.open = true;
       // A task, as above, so the opening is written down whenever the head runs `toggle`.
-      await Bun.sleep(10);
+      await tick(10);
 
       view.rerender(<MarkdownBody markdown={`Lead, and more of it:\n\n${diagram}`} />);
       const repainted = disclosureIn(figuresIn(view.container)[0]);
       expect(repainted).not.toBe(first);
       expect(repainted?.open).toBe(true);
     } finally {
+      realClock();
       view.unmount();
     }
   });
@@ -712,6 +729,7 @@ describe("Mermaid diagrams", () => {
   // the worker is drawing keeps its place and its draw.
   test("a body re-painted while the worker draws its source neither stops the worker nor sends the source again", async () => {
     await warmMarkdownRenderer();
+    jest.useFakeTimers();
     resetMermaidDiagrams(60_000);
     const sent: MermaidRequest[] = [];
     FakeWorker.answer = (request) => {
@@ -733,7 +751,7 @@ describe("Mermaid diagrams", () => {
       await waitFor(() => expect(sent).toHaveLength(1));
       for (const after of ["More", "More text", "More text after it"]) {
         view.rerender(<MarkdownBody markdown={`${diagram}\n${after}`} />);
-        await Bun.sleep(10);
+        await tick(10);
       }
       expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
       expect(sent).toHaveLength(1);
@@ -748,6 +766,7 @@ describe("Mermaid diagrams", () => {
       expect(view.container).toHaveTextContent("More text after it");
       expect(sent).toHaveLength(1);
     } finally {
+      realClock();
       view.unmount();
     }
   });
@@ -796,6 +815,7 @@ describe("Mermaid diagrams", () => {
 
   test("a worker that fails to start leaves every block as code, logs once, and is tried again once the window is online", async () => {
     await warmMarkdownRenderer();
+    jest.useFakeTimers();
     FakeWorker.startFails = true;
     const logged = spyOn(console, "error").mockImplementation(() => {});
     const failures = () =>
@@ -808,7 +828,7 @@ describe("Mermaid diagrams", () => {
       // A streamed turn paints again on every frame; no paint starts a worker or logs again.
       for (const word of ["Two", "Three", "Four"]) {
         view.rerender(<MarkdownBody markdown={fence(`sequenceDiagram\n  Alice->>Bob: ${word}`)} />);
-        await Bun.sleep(10);
+        await tick(10);
       }
       expect(failures()).toHaveLength(1);
       expect(FakeWorker.created).toHaveLength(1);
@@ -823,6 +843,7 @@ describe("Mermaid diagrams", () => {
       expect(FakeWorker.created).toHaveLength(2);
       expect(failures()).toHaveLength(1);
     } finally {
+      realClock();
       logged.mockRestore();
       view.unmount();
     }
@@ -970,7 +991,10 @@ describe("Mermaid diagrams", () => {
 
   describe("mermaidDrawsSettled", () => {
     /** Whether `promise` settles within `ms`, so a promise that never resolves fails the case on
-     *  its assertion rather than on the test's timeout. */
+     *  its assertion rather than on the test's timeout. This wait stays on the real clock where
+     *  the rest of the file moved to a fake one (INFRA-1505): a fake clock only moves when the
+     *  test moves it, so the losing side of the race would never come up and the race would
+     *  decide nothing. */
     const settlesWithin = (promise: Promise<void>, ms: number): Promise<boolean> =>
       Promise.race([promise.then(() => true), Bun.sleep(ms).then(() => false)]);
 

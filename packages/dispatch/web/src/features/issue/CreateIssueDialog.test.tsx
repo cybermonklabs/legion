@@ -1,11 +1,14 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the dialog form's own submit, which user-event has no form for
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { CreateIssueInput, Issue } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -45,7 +48,9 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
+/** The dialog, its project list and its related-item check answered here. */
 function renderDialog(
+  user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
   path = "/",
   onClose = () => {}
@@ -61,7 +66,6 @@ function renderDialog(
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  const user = userEvent.setup();
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
@@ -94,6 +98,7 @@ test("preselects the route's project, submits title and spec, and opens the crea
   const calls: CreateIssueInput[] = [];
   let closed = 0;
   const view = renderDialog(
+    userEvent.setup(),
     async (input) => {
       calls.push(input);
       return issue(input, "OPS-7");
@@ -130,7 +135,7 @@ test("preselects the route's project, submits title and spec, and opens the crea
 // one, so the dialog keeps the draft, says why, and Retry asks again.
 test("a refused create keeps the dialog and draft, shows the server message, and retries", async () => {
   let attempts = 0;
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     attempts += 1;
     if (attempts === 1) {
       throw new ApiError(409, { code: "PROJECT_LOCKED", error: "the project is being moved" });
@@ -164,9 +169,11 @@ test("a refused create keeps the dialog and draft, shows the server message, and
 // open, so it lets go of the draft and says what was made - and a second press, with the draft
 // gone, sends nothing, where the old draft would have made a second issue.
 test("a create answered KEY_COMMITTED drops the draft, says the issue was made, and a second press sends nothing", async () => {
+  jest.useFakeTimers();
   let attempts = 0;
   let closed = 0;
   const view = renderDialog(
+    userOnFakeClock(),
     async () => {
       attempts += 1;
       throw new ApiError(409, { code: "KEY_COMMITTED", error: "already made" });
@@ -194,17 +201,18 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
 
     // The form's own submit again, with the draft gone: user-event has no form for it.
     fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
-    await Bun.sleep(20);
+    await tick(20);
     expect(attempts).toBe(1);
     expect(closed).toBe(0);
   } finally {
+    realClock();
     view.unmount();
   }
 });
 
 test("a possible duplicate names the candidate and Create anyway forces the create", async () => {
   const calls: CreateIssueInput[] = [];
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     calls.push(input);
     if (input.force !== true) {
       throw new ApiError(409, {
@@ -238,7 +246,7 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
 // a greyed-out button would have dropped out of it, sends nothing, and says what is missing.
 test("Create refused by an empty draft keeps focus, sends nothing and says why", async () => {
   const calls: CreateIssueInput[] = [];
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     calls.push(input);
     return issue(input, "CORE-3");
   });
@@ -262,7 +270,7 @@ test("Create refused by an empty draft keeps focus, sends nothing and says why",
 // cleared after the refusal leaves nothing to file.
 test("Create anyway refused by a cleared title keeps focus, sends nothing and says why", async () => {
   const calls: CreateIssueInput[] = [];
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     calls.push(input);
     throw new ApiError(409, {
       code: "POSSIBLE_DUPLICATE",
