@@ -12,6 +12,7 @@ import { ApiError, api } from "../../api/client";
 import type {
   Anchor,
   Artifact,
+  ArtifactVersionText,
   AskSnooze,
   InboxRow,
   IssueDetails,
@@ -643,6 +644,77 @@ test("an approval whose version cannot be read leaves the column where the reade
 
     await screen.findByText("Approve spec.md at version 4, after the rewrite?");
     expect(scroller.scrollTop).toBe(240);
+  } finally {
+    view.unmount();
+    getArtifactVersion.mockRestore();
+  }
+});
+
+/** The version text the read answers with, as the server answers it. */
+function versionText(number: number, markdown: string): ArtifactVersionText {
+  return {
+    authors: [{ id: "alice", kind: "user" }],
+    created_at: "2026-10-02T00:00:00Z",
+    markdown,
+    named: false,
+    number,
+    summary: null,
+  };
+}
+
+/** An approval request whose version read is held, so a row decides when the column can be
+ *  written: the question is drawn from the first frame, and the document settles and its own
+ *  reads land before the version does. */
+function openingApproval(landing: Promise<void>) {
+  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockImplementation(async () => {
+    await landing;
+    return versionText(4, "# Plan\n\nThe plan ships behind a canary today.\n");
+  });
+  const pane = renderPane({
+    ask: approvalAsk(),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] })
+      ),
+  });
+  return { ...pane, getArtifactVersion };
+}
+
+test("an approval request the reader scrolls while it opens keeps the place they moved to", async () => {
+  const landing = Promise.withResolvers<void>();
+  const { getArtifactVersion, view } = openingApproval(landing.promise);
+
+  try {
+    // The request's own question stands while the version is read, so there is text to scroll.
+    expect(await screen.findByTestId("pane-approval-question")).toBeDefined();
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    scroller.scrollTop = 240;
+    // The reader's own wheel in the column, dispatched rather than driven: user-event has no
+    // form for a wheel, and what the hold reads is the event reaching the column.
+    scroller.dispatchEvent(new Event("wheel", { bubbles: true }));
+
+    landing.resolve();
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    expect(scroller.scrollTop).toBe(240);
+  } finally {
+    view.unmount();
+    getArtifactVersion.mockRestore();
+  }
+});
+
+test("an approval request nobody has scrolled opens at the start of the column", async () => {
+  const landing = Promise.withResolvers<void>();
+  const { getArtifactVersion, view } = openingApproval(landing.promise);
+
+  try {
+    expect(await screen.findByTestId("pane-approval-question")).toBeDefined();
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    scroller.scrollTop = 240;
+
+    landing.resolve();
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
   } finally {
     view.unmount();
     getArtifactVersion.mockRestore();

@@ -26,6 +26,7 @@ import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
 import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
+import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";
 
@@ -156,6 +157,13 @@ function ApprovalBody({
    *  the document under approval, or a read of the document that fails and recovers - would
    *  otherwise write the column a second time and take the reader off the text they were on. */
   const openedFor = useRef<string | undefined>(undefined);
+  /** This column's hold while the request opens. The write below is a placement for an opened
+   *  item, so it is the reader's to end like every other: the request's own question is drawn
+   *  from the first frame, and the column stands there while the document settles and its
+   *  artifact and version are read, which is long enough for a reader to scroll in. No
+   *  `drawing()` is ever called on it, so neither of its clocks starts and it holds until the
+   *  reader presses, scrolls, touches or types in the column. */
+  const hold = useRef<SectionHold | undefined>(undefined);
   const settled = useSettled(artifactId);
   const approvedVersion = approval.approved?.version;
 
@@ -210,12 +218,32 @@ function ApprovalBody({
    *  the question all the same. A version the column could not read, and a document it could
    *  not read, each hold no text and write nothing, which leaves the reader where they were. */
   const opened = isText(versionQuery.data) ? ask.id : undefined;
+  // One hold for each request, which is what `[ask.id]` is here for: the reader who moved this
+  // column has moved it for the request they moved it in, and the next request is placed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the request is what this effect is of; the hold it arms reads only the scroller's ref.
+  useEffect(() => {
+    const column = scroller.current;
+    if (column === null) {
+      return;
+    }
+    const held = holdSection(column);
+    hold.current = held;
+    return () => {
+      held.release();
+      hold.current = undefined;
+    };
+  }, [ask.id]);
   useEffect(() => {
     const column = scroller.current;
     if (opened === undefined || column === null || openedFor.current === opened) {
       return;
     }
+    // Once for each request, whether or not the write lands: a reader who has moved this column
+    // keeps it, and the version read landing again for the same request writes nothing either.
     openedFor.current = opened;
+    if (hold.current?.writes() !== true) {
+      return;
+    }
     // Keyed on the request and not on the version number: a later version of the same request
     // is a redraw of what the column already holds, drawn from its own start, so it is left
     // alone and a reader reading one is not pulled back up.
