@@ -716,6 +716,7 @@ var routeShapes = map[string]routeShape{
 	"PATCH /api/v1/artifacts/{id}": {
 		Status: http.StatusOK, Response: model.Artifact{}, Request: renameArtifactInput{},
 	},
+	"DELETE /api/v1/artifacts/{id}": {Status: http.StatusNoContent},
 	"POST /api/v1/artifacts/{id}/rebuild": {
 		Status: http.StatusOK, Response: docs.RebuildReport{}, Request: rebuildArtifactInput{},
 	},

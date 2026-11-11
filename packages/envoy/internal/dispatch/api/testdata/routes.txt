@@ -6,6 +6,7 @@ GET /api/v1/agents/{session_id}/artifacts/{slug} any
 GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number} any
 GET /api/v1/agents/{session_id}/messages any
 POST /api/v1/agents/{session_id}/messages any
+DELETE /api/v1/artifacts/{id} any
 GET /api/v1/artifacts/{id} any
 PATCH /api/v1/artifacts/{id} any
 POST /api/v1/artifacts/{id}/approval-requests any

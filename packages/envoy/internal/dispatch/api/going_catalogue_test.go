@@ -26,6 +26,7 @@ import (
 // bar cannot yet propose. TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a
 // write added later is named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
+	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 	"DELETE /api/v1/delivery/session-groups/{id}",
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
