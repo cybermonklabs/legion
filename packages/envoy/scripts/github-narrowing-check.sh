@@ -169,29 +169,32 @@ answered() { # <repository> <the child's output>
 	printf '%s' "${status:-nothing}"
 }
 
+# await waits for a line a process logs, and ends the run the moment that process dies: a
+# stack that never came up proves nothing, and each property below would fail for a reason
+# that is not the property's. It is the helper airlock-check.sh and judge-check.sh each carry,
+# in the same shape.
+await() { # <what> <seconds> <log> <pattern> <pid>
+	local i
+	for ((i = 0; i < $2 * 2; i++)); do
+		if grep -qE "$4" "$3" 2>/dev/null; then return 0; fi
+		if ! kill -0 "$5" 2>/dev/null; then
+			echo "github-narrowing-check: $1 exited before it was ready; see $3" >&2
+			tail -n 20 "$3" >&2 || true
+			exit 1
+		fi
+		sleep 0.5
+	done
+	echo "github-narrowing-check: $1 was not ready within $2 seconds; see $3" >&2
+	exit 1
+}
+
 # --- The stack -----------------------------------------------------------------------------------
 
 echo "github-narrowing-check: starting the stack (dev-broker.sh)..." >&2
 : >"$STACK_LOG"
 bash "$SCRIPT_DIR/dev-broker.sh" >"$STACK_LOG" 2>&1 &
 STACK_PID=$!
-ready=false
-for _ in $(seq 1 600); do
-	if grep -q '^dev-broker: ready\.$' "$STACK_LOG" 2>/dev/null; then
-		ready=true
-		break
-	fi
-	if ! kill -0 "$STACK_PID" 2>/dev/null; then
-		echo "github-narrowing-check: the stack exited before it was ready; see $STACK_LOG" >&2
-		tail -n 20 "$STACK_LOG" >&2 || true
-		exit 1
-	fi
-	sleep 0.5
-done
-if [ "$ready" != true ]; then
-	echo "github-narrowing-check: the stack was not ready within 300 seconds; see $STACK_LOG" >&2
-	exit 1
-fi
+await "the stack" 300 "$STACK_LOG" '^dev-broker: ready\.$' "$STACK_PID"
 # Everything the banner exports, which is where this check's addresses, secret names and the pod
 # and service it enrols come from.
 eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
