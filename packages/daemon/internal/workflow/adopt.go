@@ -132,7 +132,7 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 			return err
 		}
 		if member.Status == "todo" {
-			if err := e.enterChild(ctx, tx, root, RecordedFact(member), next, recordedResolution(member)); err != nil {
+			if err := e.enterChild(ctx, tx, root, RecordedFact(member), next, recordedResolution(member), false); err != nil {
 				return err
 			}
 			continue

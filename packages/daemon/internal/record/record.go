@@ -145,14 +145,14 @@ type Issue struct {
 	// write them: PutIssue keeps the stored values.
 	DeclaredSeq int64
 	DeclaredAt  time.Time
-	// MemoryGroup is the memory group of the issue's tree, `memory` or `none`, and "" exactly while
-	// nothing has drawn for it;
-	// MemoryDrawMode the project's memory mode in force when that group was drawn
-	// (config.MemoryMode's words); and MemoryDrawnAt when it was drawn, nil for a record with no
-	// draw: a tree first opened before the setting existed, or a root the draw never reached, which
-	// has no group and runs without memory. The draw is made once, when the tree's lifecycle row is
-	// first created, and only Store.DrawMemory and Store.CarryMemory write the three: PutIssue keeps
-	// the stored values, so a re-admission, a new generation and ClearTreeGeneration keep the draw.
+	// MemoryGroup is the memory group of the issue's tree, `memory` or `none`, and "" exactly
+	// while nothing has drawn for it; MemoryDrawMode the project's memory mode in force when that
+	// group was drawn (config.MemoryMode's words); and MemoryDrawnAt when it was drawn, nil for a
+	// record with no draw. Nothing writes the three any more — what a unit was drawn is an
+	// Assignment row of its own now (Store.PutAssignments) — and they stand for the readers a
+	// later task moves onto those rows, the state body's memoryGroup among them. PutIssue has
+	// never written them, so what they hold is whatever was drawn before the experiments took
+	// the draw over.
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
@@ -1396,37 +1396,11 @@ type Store interface {
 	// RestartCaughtUp sets issue's catch-up cursor back to 0, so its next catch-up reads from its
 	// last handout: a re-admission's new generation, whose old generation's events are not its own.
 	RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string) error
-	// DrawMemory records the memory group drawn for root's tree: the group (`memory` or `none`),
-	// the mode it was drawn under (a config.MemoryMode word, taken as a
-	// string because internal/config reads internal/store, whose own tests read this package, so
-	// an import of config here would close a cycle) and the time of the draw, written once and
-	// never again. It reports whether it wrote the row. Writing nothing is no error: a root that
-	// already carries a draw keeps it, whatever the project's mode says now, and a tree whose root
-	// has no issue record — an operator's spawn — records no draw at all.
-	//
-	// Nor is a root whose memory its hand-over settled: a child handed over out of a tree the
-	// daemon had opened takes that tree's answer, which CarryMemory wrote at the hand-over — the
-	// tree's draw where it had one, and no draw at all where it had none, a tree first opened
-	// before this release, which nothing draws for. The draw reads that written answer, not the
-	// old tree's state, so the order the two roots are promoted in changes nothing. A root out of
-	// a tree nothing ever opened takes no answer with it, so its own first open draws it like any
-	// other new tree.
-	DrawMemory(ctx context.Context, tx pgx.Tx, root, group, mode string, at time.Time) (bool, error)
-	// CarryMemory settles the memory of key, a child handed over as a tree of its own, from the
-	// tree it left: from's draw verbatim, the original draw time included, where that tree had one,
-	// and no draw at all where it had none, and either way DrawMemory writes nothing for key
-	// afterwards. project is the normalized runtime token tree_lifecycles is keyed by, whose row
-	// for from is the fact that the tree was opened at all: a tree with no row hands nothing over,
-	// and key's own first open draws it. It reports whether the hand-over settled key's memory,
-	// which is wider than whether a draw was copied, and writes nothing when key already carries a
-	// draw of its own or a hand-over settled it before.
-	CarryMemory(ctx context.Context, tx pgx.Tx, project, key, from string) (bool, error)
 	// PutAssignments records rows, the answers drawn for issue, and reports how many rows it
 	// wrote. Each is written once: an experiment issue already holds a row for keeps that row
 	// whatever is passed for it now, so a later pass under another mode leaves a unit on the arm
 	// it has been running under, and nothing ever updates a row. Writing nothing is no error, and
-	// an issue the daemon holds no record of — an operator's spawn — takes no row at all, as
-	// DrawMemory's own write does.
+	// an issue the daemon holds no record of — an operator's spawn — takes no row at all.
 	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error)
 	// CarryAssignments settles the assignments of key, a child handed over as a tree of its own,
 	// from the tree it left: every assignment of from's root copied verbatim — its arm, its mode
@@ -1439,7 +1413,7 @@ type Store interface {
 	//
 	// project is the normalized runtime token tree_lifecycles is keyed by, whose row for from is
 	// the fact that the old tree was opened at all: a child out of a tree the daemon never opened
-	// carries nothing, and its own first draw answers for it, as CarryMemory's hand-over does.
+	// carries nothing, and its own first draw answers for it.
 	CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []Assignment) (int, error)
 	// AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of
 	// one unit agree. An issue with no assignment gives none, which is no error.

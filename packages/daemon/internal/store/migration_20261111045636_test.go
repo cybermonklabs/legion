@@ -19,7 +19,7 @@ const experimentAssignmentsVersion = 20261111045636
 // back-fill every tree drawn before the deploy would read as having drawn nothing and the memory
 // experiment would lose its whole exposure to date.
 //
-// The rule is the pair record.Store.DrawMemory refuses to draw over: a root that holds a draw
+// The rule is the pair the old memory draw refused to draw over: a root that holds a draw
 // (memory_drawn_at is not null) or whose hand-over settled it (memory_carried) holds an answer and
 // takes a row, under the experiment `memory` and the unit `tree`, with its group as the variant,
 // its mode as the mode, its instant as the instant and its mark as the mark. A root that holds

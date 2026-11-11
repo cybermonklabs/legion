@@ -379,9 +379,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Reserve = reserve
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
-	// The project's `memory` block decides what each tree admission opens is drawn: a project the
-	// file names no entry for is the zero block, which is off.
-	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	// The project's declared experiments decide what each unit admission records is drawn for: a
+	// project whose file declares neither the `memory` block nor an `experiments` key declares
+	// nothing, and nothing is drawn for it.
+	w.admission.UseExperiments(cfg.Projects[cfg.Project].ExperimentsDeclared())
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -430,8 +431,9 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's merge_queue_role is the role the merger's READY is
-// published to, and its own project's production_check is the role that works the checks a merge
-// opens (empty, it opens none).
+// published to, its own project's production_check is the role that works the checks a merge
+// opens (empty, it opens none), and its own project's declared experiments are what each issue
+// the engine records is drawn for.
 func engineConfig(cfg config.Config, reviewAppLogin string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
@@ -440,6 +442,7 @@ func engineConfig(cfg config.Config, reviewAppLogin string) workflow.Config {
 		ProductionCheckRole: project.ProductionCheck,
 		ReviewAppLogin:      reviewAppLogin, MergeQueueRole: project.MergeQueueRole,
 		RepositoryRenames: cfg.RepositoryRenames,
+		Experiments:       project.ExperimentsDeclared(),
 	}
 }
 

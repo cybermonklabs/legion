@@ -12,6 +12,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
+// treeLifecyclesToken is the project tree_lifecycles is keyed by in these tests: the normalized
+// runtime token, where the issue records are under the Dispatch project key LEGION. The hand-over
+// is handed the token, so a lifecycle row of another project's tree of the same key is not this
+// project's.
+const treeLifecyclesToken = "legion"
+
 // assignedAs is an assignment as a reader sees it, so two rows are compared whole and a failure
 // names what each holds.
 func assignedAs(assignment Assignment) string {

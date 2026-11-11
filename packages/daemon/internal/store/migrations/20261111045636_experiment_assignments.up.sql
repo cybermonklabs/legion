@@ -34,8 +34,8 @@
 -- The foreign key is the issue record, cascading, because an assignment of an issue the record no
 -- longer holds is of nothing: the row would name a key no reader could resolve and no measurement
 -- could attribute. Both writers guard on that record themselves — their inserts select from issues
--- — so a key the daemon holds no record for writes nothing rather than raising, exactly as
--- record.Store.DrawMemory's `where key = $1` does today.
+-- — so a key the daemon holds no record for writes nothing rather than raising, exactly as the
+-- memory draw's own `where key = $1` did.
 create table experiment_assignments (
     issue_key  text not null references issues(key) on delete cascade,
     experiment text not null,
@@ -53,8 +53,8 @@ create table experiment_assignments (
 -- exposure to date rather than just its new trees.
 --
 -- The rows it copies are the rows that hold an answer: a draw (memory_drawn_at is not null) or a
--- hand-over that settled the root at no draw (memory_carried), which is the pair
--- record.Store.DrawMemory's own condition refuses to draw over. A root neither drew for nor
+-- hand-over that settled the root at no draw (memory_carried), which is the pair the memory
+-- draw's own condition refused to draw over. A root neither drew for nor
 -- handed an answer to has nothing to record and takes no row, so it is drawn by this release's
 -- own first open like any other new tree. memory_group is the variant, memory_draw_mode the mode,
 -- memory_drawn_at the instant and memory_carried the mark, each verbatim; the experiment is the

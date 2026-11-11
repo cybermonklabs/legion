@@ -237,6 +237,12 @@ type ProjectSettings struct {
 	Merge          MergeSettings  `json:"merge"`
 	SlackChannels  []string       `json:"slack_channels"`
 	Memory         MemorySettings `json:"memory"`
+	// Experiments is `projects.<KEY>.experiments` as the file writes it, in the file's order, and
+	// absent for a project that declares none, as `merge_queue_role` is for one that names none.
+	// The `memory` block is no part of it: it stands under `memory` above, as the file writes it,
+	// and the two are mapped to one list of experiments only below the loader
+	// (config.Project.ExperimentsDeclared).
+	Experiments []ExperimentSettings `json:"experiments,omitempty"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
@@ -261,6 +267,30 @@ type MemorySettings struct {
 	Mode         config.MemoryMode `json:"mode,omitempty"`
 	ConfigFiles  []string          `json:"config_files"`
 	Instructions string            `json:"instructions,omitempty"`
+}
+
+// ExperimentSettings is one `projects.<KEY>.experiments.<name>` block as the file writes it: the
+// name it is declared under, the mode each new unit it covers is drawn under, the unit one draw
+// covers, the arm `on` gives every unit (absent where the block names none), and the arms it
+// draws among in the file's order.
+type ExperimentSettings struct {
+	Name      string                `json:"name"`
+	Mode      config.ExperimentMode `json:"mode"`
+	Unit      config.ExperimentUnit `json:"unit"`
+	OnVariant string                `json:"on_variant,omitempty"`
+	Variants  []VariantSettings     `json:"variants"`
+}
+
+// VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
+// random draw gives it against its siblings, the Oh My Pi overlays every role of a unit drawn
+// into it names, `[]` for an arm that names none, and the one instructions file such a role's
+// system prompt takes, absent where the arm names none. The paths are the operator's own file
+// names, which no credential rides in, as the `memory` block's are.
+type VariantSettings struct {
+	Name         string   `json:"name"`
+	Weight       int      `json:"weight"`
+	ConfigFiles  []string `json:"config_files"`
+	Instructions string   `json:"instructions,omitempty"`
 }
 
 // DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
@@ -379,6 +409,7 @@ func SettingsOf(cfg config.Config) Settings {
 				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
 				Instructions: project.Memory.InstructionsPath,
 			},
+			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
 			Deploys:         []DeploySettings{},
 		}
@@ -499,6 +530,25 @@ func seconds(d time.Duration) int {
 // stringsOf is a copy of values that is `[]` on the wire when values is nil.
 func stringsOf(values []string) []string {
 	return append([]string{}, values...)
+}
+
+// experimentsOf is the project's declared experiments as the settings carry them, in the file's
+// order and `[]` on the wire for a project that declares none, each with its arms in the file's
+// order too: the order a draw reads the weights in, which is why neither is a mapping here.
+func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
+	declared := make([]ExperimentSettings, 0, len(experiments))
+	for _, experiment := range experiments {
+		entry := ExperimentSettings{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Variants: make([]VariantSettings, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			entry.Variants = append(entry.Variants, VariantSettings{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath})
+		}
+		declared = append(declared, entry)
+	}
+	return declared
 }
 
 // skillsRepositorySetting is repository as `<owner>/<name>`, and "" for the zero repository, which

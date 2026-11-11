@@ -23,9 +23,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -150,15 +150,15 @@ type Options struct {
 	// Trees is the store's durable tree barrier, which the operator routes open a root's tree
 	// through and reserve and finish a closed tree's cleanup through.
 	Trees TreeLifecycles
-	// Memory is the project's `memory` block (config.Project.Memory), under whose mode the
-	// operator's spawn draws the memory group of a tree it opens for the first time
-	// (memorygroup.DrawAndRecord). The zero block is a project that names none, which draws
-	// every tree `none`. MemoryCoin is the coin the `random` mode is drawn with; nil is
-	// memorygroup.CryptoCoin, and a test pins it. Now is the clock that draw's instant is read
+	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
+	// of which the operator's spawn draws every tree-unit one for a tree it opens for the first
+	// time (drawExperiments). The empty list is a project that declares none, which draws
+	// nothing. ExperimentSource is the random source a `random` mode is drawn with; nil is
+	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
 	// from; nil is time.Now, and a test pins it.
-	Memory     config.Memory
-	MemoryCoin func() (bool, error)
-	Now        func() time.Time
+	Experiments      []config.Experiment
+	ExperimentSource func(uint64) (uint64, error)
+	Now              func() time.Time
 	// GitHubAPI is GitHub's REST root, which the handoff route reads an issue branch's head, its
 	// handoff file and READY's checks under; empty, in production, is https://api.github.com, and a
 	// test points it at a stand-in.
@@ -225,7 +225,7 @@ type Options struct {
 // an operator root opens its tree's lifecycle before its claim is stored, and the tree's close
 // reserves the tree's cleanup, then finishes it once every claim of the tree has retired. The
 // open's created runs in the open's own transaction where it created the tree's row, and is where
-// the tree's memory group is drawn (store.Store.OpenOperatorTreeLifecycle).
+// the tree's experiments are drawn (store.Store.OpenOperatorTreeLifecycle).
 type TreeLifecycles interface {
 	OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
 		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
@@ -291,20 +291,21 @@ type server struct {
 	grants     *credential.Grants
 	releaser   store.TreeReleaser
 	trees      TreeLifecycles
-	// memory, coin and now are Options.Memory, Options.MemoryCoin and Options.Now: what the
-	// spawn's own draw of a tree it opens for the first time reads (drawMemory).
-	memory     config.Memory
-	coin       func() (bool, error)
-	now        func() time.Time
-	pool       *pgxpool.Pool
-	handlers   []intake.Handler
-	prepare    func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
-	unread     func(resolved string) bool
-	await      func(repo, tree, child, parent string)
-	roleFor    func(phase.Phase) claim.Role
-	records    record.Store
-	dispatch   dispatch.Client
-	claimReady func(c supervise.Claim)
+	// experiments, source and now are Options.Experiments, Options.ExperimentSource and
+	// Options.Now: what the spawn's own draw for a tree it opens for the first time reads
+	// (drawExperiments).
+	experiments []config.Experiment
+	source      func(uint64) (uint64, error)
+	now         func() time.Time
+	pool        *pgxpool.Pool
+	handlers    []intake.Handler
+	prepare     func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
+	unread      func(resolved string) bool
+	await       func(repo, tree, child, parent string)
+	roleFor     func(phase.Phase) claim.Role
+	records     record.Store
+	dispatch    dispatch.Client
+	claimReady  func(c supervise.Claim)
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
 	// releaseRecordStore Options.ReleaseRecords and claimActivity Options.ClaimActivity.
 	promptAgents       []string
@@ -357,8 +358,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		mergeRules:         opts.MergeRules,
 		releaser:           opts.Releaser,
 		trees:              opts.Trees,
-		memory:             opts.Memory,
-		coin:               opts.MemoryCoin,
+		experiments:        opts.Experiments,
+		source:             opts.ExperimentSource,
 		now:                opts.Now,
 		grants:             opts.Grants,
 		pool:               opts.Pool,
@@ -382,8 +383,8 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
 	}
-	if s.coin == nil {
-		s.coin = memorygroup.CryptoCoin
+	if s.source == nil {
+		s.source = experiment.CryptoSource
 	}
 	if s.now == nil {
 		s.now = time.Now

@@ -39,9 +39,9 @@ type specs struct {
 	// (config.WriteMemoryInstructions), the last fragment of a memory-group launch's system
 	// prompt; "" when the block names none, which `mode: on` may, and nothing is then appended.
 	memoryInstructions string
-	// memoryGroup is whether tree's root record carries the memory group (treeMemoryGroup, over
-	// the daemon's own store). Boot always sets it; it is nil only in a test whose specs literal
-	// leaves it out, and such a specs launches nothing with memory.
+	// memoryGroup is whether tree was drawn into the `memory` arm of the experiment of that name
+	// (treeMemoryGroup, over the daemon's own store). Boot always sets it; it is nil only in a
+	// test whose specs literal leaves it out, and such a specs launches nothing with memory.
 	memoryGroup func(ctx context.Context, tree string) (bool, error)
 	// designSteps is the design-gate steps the project gates (gates.design), in the order it
 	// gates them, which a tree's root architect is told after its addressing

@@ -37,7 +37,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
@@ -898,29 +897,41 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 	return nil
 }
 
-// treeMemoryGroup answers whether tree's root record carries the memory group, the word the draw
-// stored on it once and every later launch of the tree reads (record.Issue.MemoryGroup,
-// memorygroup.GroupMemory). An issue's memory group is its tree root's, and the root key is the
-// claim's own tree, so there is no ancestor walk; a tree with no record, and a root first opened
-// before the setting existed, carry no group and run without memory.
+// treeMemoryGroup answers whether tree was drawn into the `memory` arm of the experiment named
+// memory, the answer recorded for the tree when it was opened and read back at every launch of
+// its roles (record.Assignment, the experiment config.Project.ExperimentsDeclared maps the
+// `memory` block to). An issue's memory group is its tree root's, and the root key is the claim's
+// own tree, so there is no ancestor walk; a tree with no record, one no experiment was declared
+// for, and a root first opened before the experiment was declared hold no row and run without
+// memory.
+//
+// It reads one experiment by name and answers one bool because that is what its caller takes
+// today. A later task replaces it wholesale with a reader of every variant a unit was drawn, so
+// this is deliberately the smallest change that stops reading record.Issue.MemoryGroup, which
+// nothing writes any more.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
-// supervisor's predicates read a record: the operator's spawn draws a tree's group through the
-// same store with no workflow configured (api's drawMemory), and a launch that could not read
-// that draw back would run the tree against a group the daemon had already recorded for it.
+// supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
+// the same store with no workflow configured (api's drawExperiments), and a launch that could not
+// read that draw back would run the tree against an arm the daemon had already recorded for it.
 func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bool, error) {
 	records := record.NewStore()
 	return func(ctx context.Context, tree string) (bool, error) {
-		var issue *record.Issue
+		var assignments []record.Assignment
 		err := st.Tx(ctx, func(tx pgx.Tx) error {
 			var err error
-			issue, err = records.Issue(ctx, tx, tree)
+			assignments, err = records.AssignmentsOf(ctx, tx, tree)
 			return err
 		})
 		if err != nil {
 			return false, err
 		}
-		return issue != nil && issue.MemoryGroup == string(memorygroup.GroupMemory), nil
+		for _, assignment := range assignments {
+			if assignment.Experiment == "memory" {
+				return assignment.Variant == "memory", nil
+			}
+		}
+		return false, nil
 	}
 }
 
@@ -1938,7 +1949,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Grants:             grants,
 		Releaser:           s.supervisor.deps.Runtime,
 		Trees:              st,
-		Memory:             cfg.Projects[cfg.Project].Memory,
+		Experiments:        cfg.Projects[cfg.Project].ExperimentsDeclared(),
 		ClaimReady:         claimReadyHook(keeper, claimReady),
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,

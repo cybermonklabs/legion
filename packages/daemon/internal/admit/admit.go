@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -36,12 +36,14 @@ type Admission struct {
 	project string
 	log     *slog.Logger
 	now     func() time.Time
-	// memory is the project's `memory` block (UseMemory), whose mode each tree this admission
-	// opens is drawn under; the zero block is a project that names none, which draws every tree
-	// `none`. coin is the fair coin the `random` mode is drawn with, memorygroup.CryptoCoin in
-	// production and a pinned one in a test, injected as now is.
-	memory config.Memory
-	coin   func() (bool, error)
+	// experiments are the project's declared experiments (UseExperiments,
+	// config.Project.ExperimentsDeclared), drawn for each unit this admission records: every
+	// tree-unit experiment when it opens a tree for the first time, and every issue-unit
+	// experiment when it first records an issue (drawExperiments). source is the random source a
+	// `random` mode is drawn with, experiment.CryptoSource in production and a pinned one in a
+	// test, injected as now is.
+	experiments []config.Experiment
+	source      func(uint64) (uint64, error)
 
 	// mu guards pending, target and catchingUp, the only Admission state a caller outside its own
 	// transactions touches: the daemon's boot-owned poll calls Held on every tick, outside any
@@ -87,13 +89,14 @@ func (a *Admission) ReportCapabilities(open func() []string) {
 	a.openCapabilities = open
 }
 
-// UseMemory registers the project's `memory` block, under whose mode every tree this admission
-// opens for the first time is drawn (memorygroup.DrawAndRecord, promoteHolds). A project whose
-// file names no block leaves the zero value, which draws every tree `none`. It is a setter rather
-// than a parameter of New for the reason ReportCapabilities is: every test that admits anything
-// builds an admission, and none of them configures memory.
-func (a *Admission) UseMemory(memory config.Memory) {
-	a.memory = memory
+// UseExperiments registers the project's declared experiments
+// (config.Project.ExperimentsDeclared), each of which is drawn for the units this admission
+// records (drawExperiments). A project whose file declares none leaves the empty list, which
+// draws nothing at all. It is a setter rather than a parameter of New for the reason
+// ReportCapabilities is: every test that admits anything builds an admission, and none of them
+// declares an experiment.
+func (a *Admission) UseExperiments(experiments []config.Experiment) {
+	a.experiments = experiments
 }
 
 var _ intake.Handler = (*Admission)(nil)
@@ -106,7 +109,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		coin: memorygroup.CryptoCoin, pending: make(map[string]intake.DispatchIssue)}
+		source: experiment.CryptoSource, pending: make(map[string]intake.DispatchIssue)}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -566,6 +569,11 @@ func parentsFirst(summaries []intake.DispatchIssue) []intake.DispatchIssue {
 // One whose repository resolves to none, or to one Legion does not serve, is not recorded: the
 // daemon says why on the issue, once for that resolution, and the issue's next observation in
 // todo is admission's next look at it.
+//
+// This is where a root is first recorded, so it is where the issue-unit experiments the project
+// declares are drawn for it (drawExperiments): every issue the daemon records is drawn for at the
+// moment it records it, and a root is an issue like any other. Its tree's own experiments are
+// another draw, made when its tree is opened (promoteHolds).
 func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intake.DispatchIssue, logOrphan bool) error {
 	resolution, err := a.engine.ResolveRepository(observation.ResolvedRepo)
 	if err != nil {
@@ -607,10 +615,50 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
+	if err := a.drawExperiments(ctx, tx, issue.Key, config.ExperimentIssue); err != nil {
+		return err
+	}
 	if logOrphan && observation.Parent != "" {
 		a.log.Info("admission orphan", "issue", observation.Key, "parent", observation.Parent)
 	}
 	return nil
+}
+
+// drawExperiments draws every experiment the project declares over unit (UseExperiments) and
+// records the answers against key, in the caller's transaction: the tree-unit experiments of a
+// tree against its root's key when the tree's lifecycle row is created (promoteHolds), and the
+// issue-unit experiments of an issue against its own key when the daemon first records it
+// (putNewRoot). Each answer is written once, so an experiment key already holds a row for keeps
+// the arm it has been running under whatever the project's file says now, and a key the daemon
+// holds no record of takes no row at all (record.Store.PutAssignments). A project declaring no
+// experiment of this unit draws nothing and writes nothing.
+func (a *Admission) drawExperiments(ctx context.Context, tx pgx.Tx, key string, unit config.ExperimentUnit) error {
+	drawnAt := a.now()
+	rows := make([]record.Assignment, 0, len(a.experiments))
+	for _, declared := range a.experiments {
+		if declared.Unit != unit {
+			continue
+		}
+		variant, err := experiment.Draw(declared, a.source)
+		if err != nil {
+			return fmt.Errorf("draw the %s experiment of %s: %w", declared.Name, key, err)
+		}
+		rows = append(rows, record.Assignment{Experiment: declared.Name, Unit: string(declared.Unit),
+			Variant: variant, Mode: string(declared.Mode), DrawnAt: &drawnAt})
+	}
+	_, err := a.store.PutAssignments(ctx, tx, key, rows)
+	return err
+}
+
+// declaredAssignments is one row per experiment the project declares now, carrying its name and
+// its unit and nothing else: what a hand-over settles a child at for an experiment the tree it
+// left holds no answer for (record.Store.CarryAssignments, readmit).
+func (a *Admission) declaredAssignments() []record.Assignment {
+	settled := make([]record.Assignment, 0, len(a.experiments))
+	for _, declared := range a.experiments {
+		settled = append(settled, record.Assignment{Experiment: declared.Name, Unit: string(declared.Unit)})
+	}
+	return settled
 }
 
 // applySummary applies one Dispatch boot-listing summary to admission's own record of the issue
@@ -989,22 +1037,24 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	// A child leaving its old tree, carried or fresh, takes its hand-over fence with it: left behind,
 	// it would read a later daemon todo of this root (a controller's reopen) as the stale hand-over.
-	// The hand-over settles its memory too, here and not at its own first open: it takes the answer
-	// of the tree it leaves, that tree's draw verbatim with the time it was drawn where it had one,
-	// so the work goes on running under the group it has been running under, and no draw at all
-	// where that tree had been opened with none — a tree first opened before this release, which
-	// nothing draws for. A child out of a tree nothing ever opened has run under nothing, so the
-	// carry writes it nothing and its own first promotion draws it. tree_lifecycles is keyed by
-	// the normalized project token, so the carry is handed that token, as promoteHolds reads it.
+	// The hand-over settles its experiments too, here and not at its own first open: it takes the
+	// answers of the tree it leaves, each verbatim with the time it was drawn, so the work goes on
+	// running under the arms it has been running under. Every experiment declared at this moment
+	// is passed as settled, so one the old tree holds no answer for is settled here at no variant
+	// and is never drawn for later — a tree first opened before that experiment was declared,
+	// which nothing draws for. A child out of a tree nothing ever opened has run under nothing, so
+	// the carry writes it nothing and its own first promotion draws it, which the carry decides
+	// from the old tree's lifecycle row. tree_lifecycles is keyed by the normalized project token,
+	// so the carry is handed that token, as promoteHolds reads it.
 	if oldTree != stored.Key {
 		if err := a.store.DeleteHandover(ctx, tx, stored.Key); err != nil {
 			return err
 		}
 		project, err := claim.ProjectToken(a.project)
 		if err != nil {
-			return fmt.Errorf("carry the memory of re-admitted %s: %w", stored.Key, err)
+			return fmt.Errorf("carry the experiments of re-admitted %s: %w", stored.Key, err)
 		}
-		if _, err := a.store.CarryMemory(ctx, tx, project, stored.Key, oldTree); err != nil {
+		if _, err := a.store.CarryAssignments(ctx, tx, project, stored.Key, oldTree, a.declaredAssignments()); err != nil {
 			return err
 		}
 	}
@@ -1337,13 +1387,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					}
 					return admitted, released, fmt.Errorf("open admission lifecycle of %s: %w", issue.Key, err)
 				}
-				// The tree's row was created by this call, so this is the one moment its memory
-				// group is drawn, in the fact's own transaction: a crash before the commit leaves
-				// neither the lifecycle nor the draw. Every later open of the tree — its next
-				// epoch after a cleanup, and every re-admission — creates nothing and draws
-				// nothing, and the draw itself is written once (record.Store.DrawMemory).
+				// The tree's row was created by this call, so this is the one moment the tree-unit
+				// experiments the project declares are drawn for it, in the fact's own
+				// transaction: a crash before the commit leaves neither the lifecycle nor the
+				// draws. Every later open of the tree — its next epoch after a cleanup, and every
+				// re-admission — creates nothing and draws nothing, and each answer is itself
+				// written once (record.Store.PutAssignments). The answers are recorded against
+				// the tree's root issue key, which is what a tree's unit is read by.
 				if lifecycle.Created {
-					if err := memorygroup.DrawAndRecord(ctx, tx, a.store, issue.Tree, a.memory, a.coin, a.now()); err != nil {
+					if err := a.drawExperiments(ctx, tx, issue.Tree, config.ExperimentTree); err != nil {
 						return admitted, released, err
 					}
 				}

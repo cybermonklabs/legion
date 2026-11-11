@@ -233,12 +233,11 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
-	// ClearDeclared's alone, and memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
-	// and CarryMemory's, so a copy of the issue read before any of them never writes them back.
-	// That last is what makes a tree's memory group write-once: a re-admission, a new generation
-	// and ClearTreeGeneration each record the issue again from a copy read before the draw, and
-	// each keeps it. memory_carried, the hand-over's own answer, is named here no more than it is
-	// on Issue: CarryMemory writes it and DrawMemory reads it, and no other statement touches it.
+	// ClearDeclared's alone, so a copy of the issue read before any of them never writes them
+	// back. memory_group, memory_draw_mode, memory_drawn_at and memory_carried are named here no
+	// more than they are on Issue: nothing writes those four any more, since what a unit was
+	// drawn is an assignment row of its own now (PutAssignments), and this statement never wrote
+	// them.
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, ready_pending_step)
@@ -1497,59 +1496,6 @@ func (s *Postgres) RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string)
 	return nil
 }
 
-// DrawMemory writes the memory group drawn for root's tree, once: the condition is the draw
-// itself, so a root that already carries one keeps the group, the mode and the time it was drawn
-// with, and a key with no record — an operator's spawn, whose tree's root the daemon never
-// recorded — takes none. Neither writes a row, and neither is an error.
-//
-// Nor is a root whose memory a hand-over has already settled (memory_carried, which CarryMemory
-// alone writes): a child handed over out of a tree the daemon had opened takes that tree's answer,
-// which is no draw at all when the tree had none — a tree first opened before this release, whose
-// work has been running with no memory. The refusal is the hand-over's, decided in the transaction
-// that recorded the hand-over and written down there, so the draw reads nothing that moves: of the
-// two roots, whichever is promoted first, the child's answer is the one its hand-over settled.
-//
-// A root out of a tree nothing ever opened carries no such answer, so its own first open draws it
-// like any other new tree.
-func (s *Postgres) DrawMemory(ctx context.Context, tx pgx.Tx, root, group, mode string, at time.Time) (bool, error) {
-	tag, err := tx.Exec(ctx, `update issues set memory_group = $2, memory_draw_mode = $3, memory_drawn_at = $4
-		where key = $1 and memory_drawn_at is null and not memory_carried`, root, group, mode, at)
-	if err != nil {
-		return false, fmt.Errorf("draw the memory group of %s: %w", root, err)
-	}
-	return tag.RowsAffected() == 1, nil
-}
-
-// CarryMemory settles the memory of key, a child handed over as a tree of its own, from the tree
-// it left: from's draw verbatim, the original draw time included, where that tree had one, and no
-// draw at all where it had none. Either way the row is marked carried, so DrawMemory writes
-// nothing for it later. It reports whether the hand-over settled this root's memory, which is
-// wider than whether a draw was copied: a tree opened with no draw settles the child at no draw
-// and reports true.
-//
-// The driver row is the old tree's lifecycle row, under project, the normalized runtime token
-// tree_lifecycles is keyed by (issues.project is the Dispatch key). A tree with no such row was
-// never opened and hands nothing over: nothing is written, and key's own first open draws it. The
-// old tree's issue record is optional — an operator opened a tree the daemon recorded no root for
-// — so the source is joined in, not required: such a tree was opened and hands over the answer it
-// has, which is no draw. Writing nothing is no error, and a key that already carries a draw of its
-// own, or whose memory a hand-over settled before, keeps what it has.
-func (s *Postgres) CarryMemory(ctx context.Context, tx pgx.Tx, project, key, from string) (bool, error) {
-	tag, err := tx.Exec(ctx, `update issues target set
-		memory_group = coalesce(source.memory_group, ''),
-		memory_draw_mode = coalesce(source.memory_draw_mode, ''),
-		memory_drawn_at = source.memory_drawn_at,
-		memory_carried = true
-		from tree_lifecycles life
-		left join issues source on source.key = $3
-		where life.project = $1 and life.tree = $3
-		and target.key = $2 and target.memory_drawn_at is null and not target.memory_carried`, project, key, from)
-	if err != nil {
-		return false, fmt.Errorf("carry the memory group of %s to %s: %w", from, key, err)
-	}
-	return tag.RowsAffected() == 1, nil
-}
-
 const assignmentColumns = `issue_key, experiment, unit, variant, mode, drawn_at, carried`
 
 // scanAssignment reads an assignment row with the issue it is keyed by, since the readers of many
@@ -1576,9 +1522,8 @@ func scanAssignment(row scanner) (string, Assignment, error) {
 //
 // The write is guarded by the issue's own record, which it selects from: a key the daemon holds no
 // record for — an operator's spawn, whose tree's root the daemon never recorded — writes no row
-// and raises nothing, exactly as DrawMemory's `where key = $1` does. Without the guard the row's
-// foreign key would refuse such a write instead, and an operator's tree would fail its admission
-// rather than quietly run under no recorded arm.
+// and raises nothing. Without the guard the row's foreign key would refuse such a write instead,
+// and an operator's tree would fail its admission rather than quietly run under no recorded arm.
 func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error) {
 	if len(rows) == 0 {
 		return 0, nil
@@ -1620,12 +1565,11 @@ func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, 
 //
 // The driver row is the old tree's lifecycle row, under project, the normalized runtime token
 // tree_lifecycles is keyed by (issues.project is the Dispatch key). A tree with no such row was
-// never opened and hands nothing over, so key is drawn for at its own first open, which is
-// CarryMemory's rule and the same join. The old tree's root record is not required — an operator
-// opened a tree the daemon recorded no root for — since the copy reads the assignment rows
-// themselves, of which such a tree has none, and the settled rows then answer for it. key's own
-// record is required, as the target of CarryMemory's update is: a child the daemon holds no record
-// of takes no row and raises nothing.
+// never opened and hands nothing over, so key is drawn for at its own first open. The old tree's
+// root record is not required — an operator opened a tree the daemon recorded no root for —
+// since the copy reads the assignment rows themselves, of which such a tree has none, and the
+// settled rows then answer for it. key's own record is required, as PutAssignments' target is: a
+// child the daemon holds no record of takes no row and raises nothing.
 func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []Assignment) (int, error) {
 	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
 		select target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true

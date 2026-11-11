@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -564,9 +563,10 @@ func populatedState(t *testing.T) State {
 	}
 	// LEGION-208's tree was drawn into the memory group, so its root and LEGION-209, a child of
 	// that tree, both show the draw as internal/projection fills them, while every other issue of
-	// the fixture belongs to a tree no draw has reached.
+	// the fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
+	// that name (config.Project.ExperimentsDeclared), written out here as the columns hold it.
 	root := state.Issues["LEGION-208"]
-	root.MemoryGroup = string(memorygroup.GroupMemory)
+	root.MemoryGroup = "memory"
 	root.MemoryDrawMode = string(config.MemoryRandom)
 	root.MemoryDrawnAt = &memoryDrawnAt
 	state.Issues["LEGION-208"] = root
@@ -578,7 +578,7 @@ func populatedState(t *testing.T) State {
 		Repo:           "acme/widgets",
 		DefaultBranch:  "main",
 		Workers:        map[claim.Role]PhaseView{},
-		MemoryGroup:    string(memorygroup.GroupMemory),
+		MemoryGroup:    "memory",
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}

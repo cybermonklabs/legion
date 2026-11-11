@@ -12,104 +12,200 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// drawnAs is the three memory columns a record carries, as one line, so two records are compared
-// whole and a failure names what each holds. A record with no draw at all reads the same whatever
-// the other two columns say, which is the state of every tree opened before the draw existed.
-func drawnAs(group, mode string, at *time.Time) string {
+// drawnAs is one experiment's answer for a unit, as one line, so two answers are compared whole and
+// a failure names what each holds: the arm drawn, the mode it was drawn under and the instant. An
+// answer with no instant reads the same whatever the other two say, which is what a hand-over
+// settles a unit at for an experiment the tree it left never answered.
+func drawnAs(variant, mode string, at *time.Time) string {
 	when := "no draw"
 	if at != nil {
 		when = at.UTC().Format(time.RFC3339Nano)
 	}
-	return fmt.Sprintf("group %q drawn as %q at %s", group, mode, when)
+	return fmt.Sprintf("variant %q drawn as %q at %s", variant, mode, when)
 }
 
-// memoryOf is drawnAs for the record key holds now.
+// noDraw is what a unit holding no row for an experiment reads as: the state of every tree opened
+// before that experiment was declared, and of every unit of a project that declares none.
+const noDraw = "no row"
+
+// settled is what a hand-over leaves for an experiment the tree the child left held no answer for:
+// a row at no variant, under no mode and at no instant, which the child's own first open then
+// writes nothing over.
+var settled = drawnAs("", "", nil)
+
+// answerFor is the answer key holds for the experiment named name, read back from the assignment
+// row the draw writes (record.Store.AssignmentsOf), and noDraw where key holds no row for it.
+func answerFor(t *testing.T, pool *pgxpool.Pool, key, name string) string {
+	t.Helper()
+	for _, assignment := range assignments(t, pool, key) {
+		if assignment.Experiment == name {
+			return drawnAs(assignment.Variant, assignment.Mode, assignment.DrawnAt)
+		}
+	}
+	return noDraw
+}
+
+// memoryOf is answerFor the experiment the project's `memory` block declares, which is named
+// memory (config.Project.ExperimentsDeclared).
 func memoryOf(t *testing.T, pool *pgxpool.Pool, key string) string {
 	t.Helper()
-	stored := issue(t, pool, key)
-	return drawnAs(stored.MemoryGroup, stored.MemoryDrawMode, stored.MemoryDrawnAt)
+	return answerFor(t, pool, key, memoryExperiment)
 }
 
-// noDraw is what a record with no memory group of its own reads as.
-var noDraw = drawnAs("", "", nil)
+// depthOf is answerFor the twin experiment every test here declares beside the `memory` block's
+// (reviewDepth): the same facts, for an experiment that is not memory.
+func depthOf(t *testing.T, pool *pgxpool.Pool, key string) string {
+	t.Helper()
+	return answerFor(t, pool, key, depthExperiment)
+}
 
-// refusingCoin fails the test when it is flipped: the coin of a pass that must draw nothing, and of
-// a mode that decides without one.
-func refusingCoin(t *testing.T) func() (bool, error) {
-	return func() (bool, error) {
-		t.Error("admission flipped the memory coin on a pass that draws nothing")
-		return false, nil
+// assignments is every answer key holds, in experiment order.
+func assignments(t *testing.T, pool *pgxpool.Pool, key string) []record.Assignment {
+	t.Helper()
+	var held []record.Assignment
+	inTx(t, pool, func(tx pgx.Tx) {
+		var err error
+		held, err = record.NewStore().AssignmentsOf(context.Background(), tx, key)
+		if err != nil {
+			t.Fatalf("read the experiment assignments of %s: %v", key, err)
+		}
+	})
+	return held
+}
+
+// answers is every answer key holds as one line each, in experiment order: what a pass that draws
+// nothing must leave exactly as it stands.
+func answers(t *testing.T, pool *pgxpool.Pool, key string) []string {
+	t.Helper()
+	var read []string
+	for _, assignment := range assignments(t, pool, key) {
+		read = append(read, assignment.Experiment+": "+drawnAs(assignment.Variant, assignment.Mode, assignment.DrawnAt))
+	}
+	return read
+}
+
+const (
+	// memoryExperiment is the name the `memory` block's experiment is declared under, and
+	// depthExperiment the name of the twin declared beside it in every test here.
+	memoryExperiment = "memory"
+	depthExperiment  = "review-depth"
+)
+
+// declaring is the experiments a project with this `memory` block declares: the block's own, as
+// config.Project.ExperimentsDeclared maps it, and a tree experiment of the project's own beside
+// it at the same mode, so every fact below is read twice — once for the block and once for an
+// experiment that is not it. A project that names no mode writes no block and declares nothing at
+// all, neither experiment, which is a deployment that declares no experiment.
+func declaring(mode config.MemoryMode) []config.Experiment {
+	project := config.Project{Memory: config.Memory{Mode: mode}}
+	if mode == "" {
+		return project.ExperimentsDeclared()
+	}
+	return append(project.ExperimentsDeclared(), config.Experiment{
+		Name: depthExperiment, Mode: config.ExperimentMode(mode), Unit: config.ExperimentTree, OnVariant: "deep",
+		Variants: []config.Variant{{Name: "deep", Weight: 1}, {Name: "shallow", Weight: 1}},
+	})
+}
+
+// refusingSource fails the test when it is read: the source of a pass that must draw nothing, and
+// of a mode that decides without one.
+func refusingSource(t *testing.T) func(uint64) (uint64, error) {
+	return func(bound uint64) (uint64, error) {
+		t.Errorf("admission read the random source on a pass that draws nothing (bound %d)", bound)
+		return 0, nil
 	}
 }
 
-// Admission draws a tree's memory group when it opens that tree for the first time, under the mode
-// the project's `memory` block names: `off`, and a project whose file names no block, draw none;
-// `on` draws memory; and `random` draws what the coin says, both ways. The draw is the root's
-// record, written with the mode it was drawn under and the time of the draw. A later pass under a
-// changed mode leaves the whole record exactly as it stands: the tree runs under the group it was
-// drawn, for as long as it lives.
+// pinnedSource answers value below every bound: the draw of a `random` experiment is then the arm
+// whose cumulative weight value falls below, which for two arms of weight 1 is the first arm at 0
+// and the second at 1.
+func pinnedSource(value uint64) func(uint64) (uint64, error) {
+	return func(uint64) (uint64, error) { return value, nil }
+}
+
+// Admission draws a tree's experiments when it opens that tree for the first time, under the mode
+// each is declared at: `off` draws no arm at all, `on` draws the arm on_variant names, and
+// `random` draws what the source says, both ways. A project whose file declares nothing — no
+// `memory` block and no experiment of its own — is drawn for nothing, and holds no row. Each
+// answer is the tree root's own row, written with the mode it was drawn under and the time of the
+// draw. A later pass under a changed mode leaves every row exactly as it stands: the tree runs
+// under the arms it was drawn, for as long as it lives.
 func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 	const root = "LEGION-1"
 	for _, tc := range []struct {
 		name string
 		mode config.MemoryMode
-		coin bool
-		// word is the mode the draw records, which is never the empty string: a project that
-		// names no block is recorded `off`, the word an operator would have written for it
+		// value is what the pinned source answers, read only under `random`; reads says whether
+		// the pass reads the source at all, and a pass that must not reads a refusing one.
+		value uint64
+		reads bool
+		// word is the mode each answer records, which is never the empty string: a block that
+		// names no mode is recorded `off`, the word an operator would have written for it
 		// (config.Memory.Word).
-		word  config.MemoryMode
-		group memorygroup.Group
+		word                config.MemoryMode
+		memory, reviewDepth string
 	}{
-		{name: "a project with no memory block", mode: "", word: config.MemoryOff, group: memorygroup.GroupNone},
-		{name: "off", mode: config.MemoryOff, word: config.MemoryOff, group: memorygroup.GroupNone},
-		{name: "on", mode: config.MemoryOn, word: config.MemoryOn, group: memorygroup.GroupMemory},
-		{name: "random, the coin memory", mode: config.MemoryRandom, word: config.MemoryRandom, coin: true, group: memorygroup.GroupMemory},
-		{name: "random, the coin none", mode: config.MemoryRandom, word: config.MemoryRandom, coin: false, group: memorygroup.GroupNone},
+		{name: "a project that declares nothing", mode: "", memory: noDraw, reviewDepth: noDraw},
+		{name: "off", mode: config.MemoryOff, word: config.MemoryOff, memory: "", reviewDepth: ""},
+		{name: "on", mode: config.MemoryOn, word: config.MemoryOn, memory: "memory", reviewDepth: "deep"},
+		{name: "random, the source drawing the first arm", mode: config.MemoryRandom, word: config.MemoryRandom,
+			value: 0, reads: true, memory: "memory", reviewDepth: "deep"},
+		{name: "random, the source drawing the second arm", mode: config.MemoryRandom, word: config.MemoryRandom,
+			value: 1, reads: true, memory: "none", reviewDepth: "shallow"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := quiet(t, 1)
-			admission.UseMemory(config.Memory{Mode: tc.mode})
-			admission.coin = func() (bool, error) { return tc.coin, nil }
+			admission.UseExperiments(declaring(tc.mode))
+			admission.source = refusingSource(t)
+			if tc.reads {
+				admission.source = pinnedSource(tc.value)
+			}
 			seedWaiting(t, pool, root, "A")
 
 			tick(t, pool, admission, "admit")
 
-			want := drawnAs(string(tc.group), string(tc.word), &fixedNow)
-			if got := memoryOf(t, pool, root); got != want {
-				t.Fatalf("the admitted root carries %s, want %s", got, want)
+			wantMemory, wantDepth := noDraw, noDraw
+			if tc.mode != "" {
+				wantMemory = drawnAs(tc.memory, string(tc.word), &fixedNow)
+				wantDepth = drawnAs(tc.reviewDepth, string(tc.word), &fixedNow)
 			}
-			// A second pass, under a mode the operator changed and a coin that must not be
-			// flipped, writes nothing at all: not the group, and no other column either.
-			before := issue(t, pool, root)
-			admission.UseMemory(config.Memory{Mode: config.MemoryOn})
-			admission.coin = refusingCoin(t)
+			if got := memoryOf(t, pool, root); got != wantMemory {
+				t.Fatalf("the admitted root was drawn %s for the memory experiment, want %s", got, wantMemory)
+			}
+			if got := depthOf(t, pool, root); got != wantDepth {
+				t.Fatalf("the admitted root was drawn %s for the %s experiment, want %s", got, depthExperiment, wantDepth)
+			}
+			// A second pass, under modes the operator changed and a source that must not be read,
+			// writes nothing at all: not an arm, and no other column of any row either.
+			before := answers(t, pool, root)
+			admission.UseExperiments(declaring(config.MemoryOn))
+			admission.source = refusingSource(t)
 			tick(t, pool, admission, "second-pass")
-			if after := issue(t, pool, root); !reflect.DeepEqual(before, after) {
-				t.Fatalf("after a pass under a changed mode the root reads %+v, want %+v unchanged", after, before)
+			if after := answers(t, pool, root); !reflect.DeepEqual(after, before) {
+				t.Fatalf("after a pass under changed modes the root holds %v, want %v unchanged", after, before)
 			}
 		})
 	}
 }
 
-// A tree is drawn once, and everything that happens to it afterwards keeps that draw byte for
+// A tree is drawn once, and everything that happens to it afterwards keeps every answer byte for
 // byte: a re-admission of its root (a new generation), the clearing of that generation's rows
 // (record.Store.ClearTreeGeneration), and the next epoch its lifecycle opens after a cleanup
-// confirmed. Each of those passes runs under a mode the operator has since changed and a coin that
-// fails the test when it is flipped, so a second draw would be loud.
+// confirmed. Each of those passes runs under modes the operator has since changed and a source
+// that fails the test when it is read, so a second draw would be loud.
 func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	admission := quiet(t, 1)
-	admission.UseMemory(config.Memory{Mode: config.MemoryOn})
-	admission.coin = refusingCoin(t)
+	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root = "LEGION-1"
@@ -117,13 +213,17 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 
 	tick(t, pool, admission, "admit")
 
-	want := drawnAs(string(memorygroup.GroupMemory), string(config.MemoryOn), &fixedNow)
-	if got := memoryOf(t, pool, root); got != want {
-		t.Fatalf("the admitted root carries %s, want %s", got, want)
+	wantMemory := drawnAs("memory", string(config.MemoryOn), &fixedNow)
+	wantDepth := drawnAs("deep", string(config.MemoryOn), &fixedNow)
+	if got := memoryOf(t, pool, root); got != wantMemory {
+		t.Fatalf("the admitted root was drawn %s for the memory experiment, want %s", got, wantMemory)
 	}
-	// From here the project is a random one whose coin nothing may flip: every pass below opens a
-	// tree that was drawn already, so none of them draws.
-	admission.UseMemory(config.Memory{Mode: config.MemoryRandom})
+	if got := depthOf(t, pool, root); got != wantDepth {
+		t.Fatalf("the admitted root was drawn %s for the %s experiment, want %s", got, depthExperiment, wantDepth)
+	}
+	// From here the project is a random one whose source nothing may read: every pass below opens
+	// a tree that was drawn already, so none of them draws.
+	admission.UseExperiments(declaring(config.MemoryRandom))
 
 	// The root signs off, lingers, and a person hands it back to Legion: a new generation of the
 	// same tree, recorded from the copy read before the draw.
@@ -133,25 +233,25 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	if readmitted := issue(t, pool, root); readmitted.Generation != 2 {
 		t.Fatalf("the re-admitted root is generation %d, want the tree's second", readmitted.Generation)
 	}
-	if got := memoryOf(t, pool, root); got != want {
-		t.Fatalf("after a re-admission the root carries %s, want its first draw's %s", got, want)
+	if got := memoryOf(t, pool, root); got != wantMemory {
+		t.Fatalf("after a re-admission the root was drawn %s, want its first draw's %s", got, wantMemory)
 	}
 
-	// Clearing the generation's rows is not the tree's memory group's business either.
+	// Clearing the generation's rows is not the tree's experiments' business either.
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().ClearTreeGeneration(ctx, tx, root); err != nil {
 			t.Fatalf("clear the tree's generation: %v", err)
 		}
 	})
-	if got := memoryOf(t, pool, root); got != want {
-		t.Fatalf("after ClearTreeGeneration the root carries %s, want its first draw's %s", got, want)
+	if got := memoryOf(t, pool, root); got != wantMemory {
+		t.Fatalf("after ClearTreeGeneration the root was drawn %s, want its first draw's %s", got, wantMemory)
 	}
 
 	// The tree's cleanup is reserved and confirmed and the root goes back into the waiting line:
 	// its promotion opens the tree's second epoch, which creates no row and so draws nothing. The
-	// seed writes the record again from a copy that carries none of the three columns — which is
-	// what a re-admission does too (record.Store.PutIssue names none of them) — so what the tree
-	// reads afterwards is what the draw wrote and nothing else.
+	// seed writes the record again from a copy that carries no answer at all — which is what a
+	// re-admission does too, since an answer is a row of its own and record.Store.PutIssue writes
+	// none — so what the tree reads afterwards is what the draw wrote and nothing else.
 	inTx(t, pool, func(tx pgx.Tx) {
 		if _, err := treelifecycle.ReserveCleanup(ctx, tx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("reserve the tree's cleanup: %v", err)
@@ -172,21 +272,25 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	if epoch != 2 {
 		t.Fatalf("the tree's lifecycle is at epoch %d, want the second epoch its promotion opened", epoch)
 	}
-	if got := memoryOf(t, pool, root); got != want {
-		t.Fatalf("after the tree's next epoch the root carries %s, want its first draw's %s", got, want)
+	if got := memoryOf(t, pool, root); got != wantMemory {
+		t.Fatalf("after the tree's next epoch the root was drawn %s, want its first draw's %s", got, wantMemory)
+	}
+	if got := depthOf(t, pool, root); got != wantDepth {
+		t.Fatalf("after the tree's next epoch the root was drawn %s for the %s experiment, want its first draw's %s",
+			got, depthExperiment, wantDepth)
 	}
 }
 
-// A child handed over as a tree of its own keeps the group it has been running under: the carry
-// copies its old tree's three columns verbatim, the time of that tree's draw included, and the
+// A child handed over as a tree of its own keeps the arms it has been running under: the carry
+// copies every answer of its old tree verbatim, the time of that tree's draw included, and the
 // draw its own promotion would make writes nothing. The hand-over here runs an hour later under a
-// project the operator has moved to `off`, so a child that drew for itself would carry `none`,
-// drawn as `off`, at the later hour — three differences from what it must carry.
+// project the operator has moved to `off`, so a child that drew for itself would carry no arm at
+// all, drawn as `off`, at the later hour — three differences from what it must carry.
 func TestAHandedOverChildCarriesItsOldTreesMemoryGroupVerbatim(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
-	admission.UseMemory(config.Memory{Mode: config.MemoryOn})
-	admission.coin = refusingCoin(t)
+	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
@@ -194,43 +298,50 @@ func TestAHandedOverChildCarriesItsOldTreesMemoryGroupVerbatim(t *testing.T) {
 
 	tick(t, pool, admission, "admit")
 
-	want := drawnAs(string(memorygroup.GroupMemory), string(config.MemoryOn), &fixedNow)
-	if got := memoryOf(t, pool, root); got != want {
-		t.Fatalf("the admitted root carries %s, want %s", got, want)
+	wantMemory := drawnAs("memory", string(config.MemoryOn), &fixedNow)
+	wantDepth := drawnAs("deep", string(config.MemoryOn), &fixedNow)
+	if got := memoryOf(t, pool, root); got != wantMemory {
+		t.Fatalf("the admitted root was drawn %s, want %s", got, wantMemory)
 	}
 	// The root signs off and lingers; an hour later the project is off, and the child is handed to
 	// Legion as a root of its own.
 	later := fixedNow.Add(time.Hour)
-	admission.UseMemory(config.Memory{Mode: config.MemoryOff})
+	admission.UseExperiments(declaring(config.MemoryOff))
 
-	handedOver := handOverChild(t, pool, admission, engine, root, child, "B", later)
+	handOverChild(t, pool, admission, engine, root, child, "B", later)
 
-	if got := drawnAs(handedOver.MemoryGroup, handedOver.MemoryDrawMode, handedOver.MemoryDrawnAt); got != want {
-		t.Fatalf("the handed-over child carries %s, want its old tree's %s verbatim", got, want)
+	if got := memoryOf(t, pool, child); got != wantMemory {
+		t.Fatalf("the handed-over child was drawn %s, want its old tree's %s verbatim", got, wantMemory)
 	}
-	if got := memoryOf(t, pool, root); got != want {
-		t.Fatalf("after the hand-over the old root carries %s, want its own %s", got, want)
+	if got := depthOf(t, pool, child); got != wantDepth {
+		t.Fatalf("the handed-over child was drawn %s for the %s experiment, want its old tree's %s verbatim",
+			got, depthExperiment, wantDepth)
+	}
+	if got := memoryOf(t, pool, root); got != wantMemory {
+		t.Fatalf("after the hand-over the old root was drawn %s, want its own %s", got, wantMemory)
 	}
 }
 
-// A root with no memory before this release — the shape of every tree open when the draw shipped:
-// its three columns empty and its tree_lifecycles row already there — is never drawn for. Its
-// lifecycle row exists, so no later open creates one, and the project's mode says nothing about a
-// tree that is already running. It goes on being admitted, it releases a child into its tree, and
-// that child carries no group either, since only a tree's root ever carries one. Nothing here is
-// refused and nothing errors: such a tree simply runs without memory, as it has all along.
+// A root with no answer before this release — the shape of every tree open when an experiment is
+// declared: no assignment row of its own and its tree_lifecycles row already there — is never
+// drawn for. Its lifecycle row exists, so no later open creates one, and the project's modes say
+// nothing about a tree that is already running. It goes on being admitted, it releases a child
+// into its tree, and that child holds no answer either, since a tree's answers are its root's.
+// Nothing here is refused and nothing errors: such a tree simply runs without memory, as it has
+// all along.
 func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	admission := quiet(t, 2)
-	// A project that would draw every new tree `memory`: a draw of this tree would be loud.
-	admission.UseMemory(config.Memory{Mode: config.MemoryOn})
-	admission.coin = refusingCoin(t)
+	// A project that would draw every new tree `memory` and `deep`: a draw of this tree would be
+	// loud.
+	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
-	// The tree as the release found it: a lifecycle row opened before the draw existed, and a root
-	// recorded with none of the three columns set.
+	// The tree as the release found it: a lifecycle row opened before the experiments existed, and
+	// a root recorded with no answer of its own.
 	inTx(t, pool, func(tx pgx.Tx) {
 		if _, err := treelifecycle.Open(ctx, tx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the tree's lifecycle as the release found it: %v", err)
@@ -241,10 +352,14 @@ func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t 
 	tick(t, pool, admission, "admit")
 
 	if got := memoryOf(t, pool, root); got != noDraw {
-		t.Fatalf("a root whose tree was open before the draw existed carries %s, want %s", got, noDraw)
+		t.Fatalf("a root whose tree was open before the experiments existed was drawn %s, want %s", got, noDraw)
+	}
+	if got := depthOf(t, pool, root); got != noDraw {
+		t.Fatalf("a root whose tree was open before the experiments existed was drawn %s for the %s experiment, want %s",
+			got, depthExperiment, noDraw)
 	}
 	// A person makes a queued root a child of this tree: the release admission applies on its next
-	// pass (adoptQueuedRoots). The child joins the tree and carries no group of its own.
+	// pass (adoptQueuedRoots). The child joins the tree and holds no answer of its own.
 	parent := root
 	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: child, Project: testProject, Title: "child", Parent: &parent, Phase: phase.Admitted, Generation: 1,
@@ -256,8 +371,8 @@ func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t 
 	if released.Tree != root {
 		t.Fatalf("the released child is in tree %s, want %s: it never joined the tree", released.Tree, root)
 	}
-	if got := drawnAs(released.MemoryGroup, released.MemoryDrawMode, released.MemoryDrawnAt); got != noDraw {
-		t.Fatalf("the released child carries %s, want %s", got, noDraw)
+	if got := answers(t, pool, child); len(got) != 0 {
+		t.Fatalf("the released child holds %v, want no answer of its own", got)
 	}
 	// And no later pass draws for the root either: a re-admission opens the same row again.
 	linger(t, pool, root)
@@ -267,28 +382,29 @@ func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t 
 		t.Fatalf("the re-admitted root is generation %d, want the tree's second", readmitted.Generation)
 	}
 	if got := memoryOf(t, pool, root); got != noDraw {
-		t.Fatalf("after a re-admission the undrawn root carries %s, want %s", got, noDraw)
+		t.Fatalf("after a re-admission the undrawn root was drawn %s, want %s", got, noDraw)
 	}
 }
 
 // A child handed over from a tree nothing ever drew for is never drawn either: a root that leaves
-// another tree takes that tree's answer at the hand-over, and the answer of a tree opened before
-// this release is no draw at all. The carry has no draw to copy and settles the child at none,
-// which is the answer its own first promotion then writes nothing over (record.Store.CarryMemory,
-// which the lifecycle row this test seeds for the old tree is what it reads). The project here is
-// at `on` with a coin nothing may flip, so a draw would be loud: the child would carry `memory`,
-// drawn as `on`, at the hour of its hand-over, where the tree it left carries nothing at all.
+// another tree takes that tree's answers at the hand-over, and the answer of a tree opened before
+// an experiment was declared is no arm at all. The carry has nothing to copy and settles the child
+// at no arm for every experiment declared at that moment, which is the answer its own first
+// promotion then writes nothing over (record.Store.CarryAssignments, which the lifecycle row this
+// test seeds for the old tree is what it reads). The project here is at `on` with a source nothing
+// may read, so a draw would be loud: the child would carry `memory` and `deep`, drawn as `on`, at
+// the hour of its hand-over, where the tree it left holds nothing at all.
 func TestAChildHandedOverFromAnUndrawnTreeIsNeverDrawn(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	admission := quiet(t, 2)
-	admission.UseMemory(config.Memory{Mode: config.MemoryOn})
-	admission.coin = refusingCoin(t)
+	admission.UseExperiments(declaring(config.MemoryOn))
+	admission.source = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
-	// The tree as the release found it: a lifecycle row opened before the draw existed, and a root
-	// recorded with none of the three columns set.
+	// The tree as the release found it: a lifecycle row opened before the experiments existed, and
+	// a root recorded with no answer of its own.
 	inTx(t, pool, func(tx pgx.Tx) {
 		if _, err := treelifecycle.Open(ctx, tx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the tree's lifecycle as the release found it: %v", err)
@@ -299,16 +415,19 @@ func TestAChildHandedOverFromAnUndrawnTreeIsNeverDrawn(t *testing.T) {
 	tick(t, pool, admission, "admit")
 
 	if got := memoryOf(t, pool, root); got != noDraw {
-		t.Fatalf("a root whose tree was open before the draw existed carries %s, want %s", got, noDraw)
+		t.Fatalf("a root whose tree was open before the experiments existed was drawn %s, want %s", got, noDraw)
 	}
 	// The root signs off and lingers; an hour later the child is handed to Legion as a root of its
 	// own, and the hand-over records which tree it left (record.Issue.HandedOverFrom).
 	later := fixedNow.Add(time.Hour)
 
-	handedOver := handOverChild(t, pool, admission, engine, root, child, "B", later)
+	handOverChild(t, pool, admission, engine, root, child, "B", later)
 
-	if got := drawnAs(handedOver.MemoryGroup, handedOver.MemoryDrawMode, handedOver.MemoryDrawnAt); got != noDraw {
-		t.Fatalf("the handed-over child carries %s, want %s: its old tree had none to give it", got, noDraw)
+	if got := memoryOf(t, pool, child); got != settled {
+		t.Fatalf("the handed-over child was drawn %s, want %s: its old tree had no answer to give it", got, settled)
+	}
+	if got := depthOf(t, pool, child); got != settled {
+		t.Fatalf("the handed-over child was drawn %s for the %s experiment, want %s", got, depthExperiment, settled)
 	}
 
 	// And the pass that opens the child's own tree for the first time draws nothing for it: the
@@ -320,28 +439,28 @@ func TestAChildHandedOverFromAnUndrawnTreeIsNeverDrawn(t *testing.T) {
 	if err := pool.QueryRow(ctx, `select epoch from tree_lifecycles where project = 'legion' and tree = $1`, child).Scan(&epoch); err != nil {
 		t.Fatalf("read the lifecycle of the child's own tree: %v", err)
 	}
-	if got := memoryOf(t, pool, child); got != noDraw {
-		t.Fatalf("after its own tree opened at epoch %d the child carries %s, want %s", epoch, got, noDraw)
+	if got := memoryOf(t, pool, child); got != settled {
+		t.Fatalf("after its own tree opened at epoch %d the child was drawn %s, want %s", epoch, got, settled)
 	}
 	if got := memoryOf(t, pool, root); got != noDraw {
-		t.Fatalf("after the hand-over the old root carries %s, want %s", got, noDraw)
+		t.Fatalf("after the hand-over the old root was drawn %s, want %s", got, noDraw)
 	}
 }
 
 // A root that left a tree nothing ever opened is drawn at its own first open, like any other new
-// tree: the answer it takes with it is its old tree's, and a tree with no tree_lifecycles row was
-// never opened, so its work never ran under a group at all. Here the old root waits for a slot
+// tree: the answers it takes with it are its old tree's, and a tree with no tree_lifecycles row
+// was never opened, so its work never ran under an arm at all. Here the old root waits for a slot
 // this admission never gives it, a child is recorded under it, and the person takes the root out
 // of todo, which brings the child back as a root of its own (record.Issue.HandedOverFrom, whose
 // tree the carry finds no lifecycle row for, so it settles nothing). The project is at `random`
-// with the coin pinned to memory, so the pass that re-admits that child opens its own tree — the
-// one moment a lifecycle row is created — and draws it `memory`, recorded as `random` at the hour
-// of that pass.
+// with the source pinned to the first arm, so the pass that re-admits that child opens its own
+// tree — the one moment a lifecycle row is created — and draws it `memory` and `deep`, recorded as
+// `random` at the hour of that pass.
 func TestAChildHandedOverFromATreeNeverOpenedIsDrawnAtItsOwnFirstOpen(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
-	admission.UseMemory(config.Memory{Mode: config.MemoryRandom})
-	admission.coin = func() (bool, error) { return true, nil }
+	admission.UseExperiments(declaring(config.MemoryRandom))
+	admission.source = pinnedSource(0)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
@@ -361,26 +480,31 @@ func TestAChildHandedOverFromATreeNeverOpenedIsDrawnAtItsOwnFirstOpen(t *testing
 		t.Fatalf("the child's own tree has %d lifecycle rows, want the one its promotion created", rows)
 	}
 	// And the draw is made once: a later pass over the same tree creates no row and draws
-	// nothing, under a coin that fails the test when it is flipped.
-	admission.coin = refusingCoin(t)
+	// nothing, under a source that fails the test when it is read.
+	admission.source = refusingSource(t)
 
 	tick(t, pool, admission, "another-pass-over-the-childs-own-tree")
 
-	want := drawnAs(string(memorygroup.GroupMemory), string(config.MemoryRandom), &later)
-	if got := memoryOf(t, pool, child); got != want {
-		t.Fatalf("after its own tree opened the child carries %s, want %s", got, want)
+	wantMemory := drawnAs("memory", string(config.MemoryRandom), &later)
+	wantDepth := drawnAs("deep", string(config.MemoryRandom), &later)
+	if got := memoryOf(t, pool, child); got != wantMemory {
+		t.Fatalf("after its own tree opened the child was drawn %s, want %s", got, wantMemory)
+	}
+	if got := depthOf(t, pool, child); got != wantDepth {
+		t.Fatalf("after its own tree opened the child was drawn %s for the %s experiment, want %s",
+			got, depthExperiment, wantDepth)
 	}
 	if got := memoryOf(t, pool, root); got != noDraw {
-		t.Fatalf("the root it left carries %s, want %s: its own tree was never opened", got, noDraw)
+		t.Fatalf("the root it left was drawn %s, want %s: its own tree was never opened", got, noDraw)
 	}
 }
 
-// The hand-over decides a handed-over child's memory, so the order the two roots are promoted in
+// The hand-over decides a handed-over child's answers, so the order the two roots are promoted in
 // changes nothing. The tree this child leaves is one nothing ever opened at the moment of the
 // hand-over, which settles the child at no answer, so its own first open draws it like any other
 // new tree. The old root is handed back to Legion too, and one pass with slots for both takes
 // them in rank order, in one transaction: this test runs that pass both ways round — the slots
-// they take say which went first — and reads the same triple off the child in each. A draw that
+// they take say which went first — and reads the same answers off the child in each. A draw that
 // read the old tree's lifecycle rows at the child's own first open would refuse the child its
 // draw in the run where the old root goes first, and draw it in the other.
 func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing.T) {
@@ -396,10 +520,10 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			// No slot stands free while the hand-over and the hand-back run, so neither root is
-			// promoted before the one pass below, and the coin fails the test if anything draws.
+			// promoted before the one pass below, and the source fails the test if anything draws.
 			handing := quiet(t, 0)
-			handing.UseMemory(config.Memory{Mode: config.MemoryRandom})
-			handing.coin = refusingCoin(t)
+			handing.UseExperiments(declaring(config.MemoryRandom))
+			handing.source = refusingSource(t)
 			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 				Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 			// The old tree as the record holds it: a root waiting for a slot it never gets, so
@@ -409,17 +533,17 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 				t.Fatalf("the old tree has %d lifecycle rows, want none: nothing ever opened it", rows)
 			}
 
-			handedOver := handOverChild(t, pool, handing, engine, root, child, tc.childRank, later)
-			if got := drawnAs(handedOver.MemoryGroup, handedOver.MemoryDrawMode, handedOver.MemoryDrawnAt); got != noDraw {
-				t.Fatalf("the handed-over child carries %s, want %s: the tree it left was never opened", got, noDraw)
+			handOverChild(t, pool, handing, engine, root, child, tc.childRank, later)
+			if got := answers(t, pool, child); len(got) != 0 {
+				t.Fatalf("the handed-over child holds %v, want none: the tree it left was never opened", got)
 			}
 			// The person hands the old root back to Legion, so both roots wait for a slot.
 			apply(t, pool, handing, "root-handed-back", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 4,
 				Type: "issue.updated", Status: "todo", Title: root, Rank: "B", HandedOver: handed}, engine)
 
 			promoting := quiet(t, 2)
-			promoting.UseMemory(config.Memory{Mode: config.MemoryRandom})
-			promoting.coin = func() (bool, error) { return true, nil }
+			promoting.UseExperiments(declaring(config.MemoryRandom))
+			promoting.source = pinnedSource(0)
 			promoting.now = func() time.Time { return later }
 
 			tick(t, pool, promoting, "promote-both-roots")
@@ -427,12 +551,17 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 			if got := slotOrder(t, pool); !reflect.DeepEqual(got, tc.order) {
 				t.Fatalf("the pass promoted %v, want %v: this run is meant to be the other order", got, tc.order)
 			}
-			want := drawnAs(string(memorygroup.GroupMemory), string(config.MemoryRandom), &later)
-			if got := memoryOf(t, pool, child); got != want {
-				t.Fatalf("after its own first open the child carries %s, want %s", got, want)
+			wantMemory := drawnAs("memory", string(config.MemoryRandom), &later)
+			wantDepth := drawnAs("deep", string(config.MemoryRandom), &later)
+			if got := memoryOf(t, pool, child); got != wantMemory {
+				t.Fatalf("after its own first open the child was drawn %s, want %s", got, wantMemory)
 			}
-			if got := memoryOf(t, pool, root); got != want {
-				t.Fatalf("the old root carries %s, want %s: its own first open drew it", got, want)
+			if got := depthOf(t, pool, child); got != wantDepth {
+				t.Fatalf("after its own first open the child was drawn %s for the %s experiment, want %s",
+					got, depthExperiment, wantDepth)
+			}
+			if got := memoryOf(t, pool, root); got != wantMemory {
+				t.Fatalf("the old root was drawn %s, want %s: its own first open drew it", got, wantMemory)
 			}
 		})
 	}
@@ -440,21 +569,17 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 
 // handOverChild records child in root's tree, signs root off, and hands child to Legion as a tree
 // of its own at at, the hour of the hand-over, which is where every test of a hand-over above
-// starts. The child is recorded carrying no memory of its own, as every child of a tree is, since
-// only a tree's root carries the group; the record the hand-over leaves is a tree of its own
-// carrying whatever that hand-over settled, which this returns. It is checked on the tree alone:
-// the hand-over writes the tree it left (record.Issue.HandedOverFrom), and the promotion that
-// opens the new root's own tree clears that mark in the same pass, so what the mark holds here
-// turns on whether a slot was free for the child, which is no part of what a carry settles.
+// starts. The child is recorded holding no answer of its own, as every child of a tree is, since
+// a tree's answers are its root's; what the hand-over settles it at is what each caller reads.
 func handOverChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler,
-	root, child, rank string, at time.Time) record.Issue {
+	root, child, rank string, at time.Time) {
 	t.Helper()
 	parent := root
 	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: root, Project: testProject, Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1,
 		Status: "done", Rank: rank, LastDispatchSeq: 2})
-	if got := memoryOf(t, pool, child); got != noDraw {
-		t.Fatalf("a child of the tree carries %s, want %s: only a tree's root carries the group", got, noDraw)
+	if got := answers(t, pool, child); len(got) != 0 {
+		t.Fatalf("a child of the tree holds %v, want none: a tree's answers are its root's", got)
 	}
 	linger(t, pool, root)
 	admission.now = func() time.Time { return at }
@@ -464,7 +589,6 @@ func handOverChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, engin
 	if handedOver.Tree != child {
 		t.Fatalf("the handed-over child = %+v, want a tree of its own left by %s", handedOver, root)
 	}
-	return handedOver
 }
 
 // slotOrder is the issues holding admission slots, in the order a pass took them: each takes the
@@ -492,7 +616,7 @@ func slotOrder(t *testing.T, pool *pgxpool.Pool) []string {
 
 // lifecycleRows is how many tree_lifecycles rows the store holds for this project's tree, the fact
 // that says whether that tree was ever opened and the fact the hand-over reads
-// (record.Store.CarryMemory, by the project and the tree).
+// (record.Store.CarryAssignments, by the project and the tree).
 func lifecycleRows(t *testing.T, pool *pgxpool.Pool, tree string) int {
 	t.Helper()
 	var rows int
