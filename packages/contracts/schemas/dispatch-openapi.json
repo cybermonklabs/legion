@@ -6843,6 +6843,82 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/landing": {
+      "get": {
+        "description": "One page of the dashboard read cold, in one request in place of nine to twenty-one: {viewer, shell, page}. viewer is what GET /auth/whoami answers (event_head, kind, login), with that route's own refusals, 503 EVENT_HEAD_UNAVAILABLE while no event id is proven final and 503 EVENT_HEAD_READ_FAILED when the head could not be read, since the page resumes its event feed from that id. shell is what every page reads whatever its route: the inbox, the caller's pinned issues, the projects, the caller's agent state, the unread-reply count, the pending credential requests (null without a secrets broker) and the agent list. page carries what the page ?page= names reads before it draws: issue (with ?key=), board (?project=), inbox, or document (?project= and ?slug=); any other value, and a page without the parameter it needs, is 400 LANDING_INPUT naming what it takes. Every part but the viewer is null when it could not be read or does not exist - an issue key that is no issue, a slug that is no document, a listener that did not answer - and the client then reads that part from the route it stands in for.",
+        "operationId": "getApiV1Landing",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "issue",
+                "board",
+                "inbox",
+                "document"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LandingResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/limits": {
       "get": {
         "description": "The bounds a write is held to: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long its question and options are together, how long a body an event carries whole may be, and the bytes a request, a document and a handoff body may hold.",
@@ -19693,6 +19769,468 @@
         },
         "required": [
           "text_sha256"
+        ],
+        "type": "object"
+      },
+      "LandingBoardPage": {
+        "properties": {
+          "architecture_sources": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureSource"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "inbox": {
+            "items": {
+              "$ref": "#/components/schemas/InboxRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/IssueSummary"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "user_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "issues",
+          "inbox",
+          "user_state",
+          "architecture_sources"
+        ],
+        "type": "object"
+      },
+      "LandingDocumentPage": {
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Artifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "asks": {
+            "items": {
+              "$ref": "#/components/schemas/Ask"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "subscribers": {
+            "items": {
+              "$ref": "#/components/schemas/Subscriber"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "text": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "artifact",
+          "text",
+          "blocks",
+          "asks",
+          "subscribers",
+          "comments"
+        ],
+        "type": "object"
+      },
+      "LandingInboxPage": {
+        "properties": {
+          "threads": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MyRepliesResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "threads"
+        ],
+        "type": "object"
+      },
+      "LandingIssueDocument": {
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Artifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "read": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "artifact",
+          "text",
+          "blocks",
+          "read"
+        ],
+        "type": "object"
+      },
+      "LandingIssuePage": {
+        "properties": {
+          "architecture_sources": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureSource"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "asks": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAskRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decisions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueDecisions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LandingIssueDocument"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo_projects": {
+            "items": {
+              "$ref": "#/components/schemas/RepoProject"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "subscribers": {
+            "items": {
+              "$ref": "#/components/schemas/Subscriber"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "user_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "user_state",
+          "comments",
+          "asks",
+          "subscribers",
+          "decisions",
+          "coverage",
+          "repo_projects",
+          "architecture_sources",
+          "document"
+        ],
+        "type": "object"
+      },
+      "LandingPage": {
+        "properties": {
+          "board": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LandingBoardPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LandingDocumentPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inbox": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LandingInboxPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LandingIssuePage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "board",
+          "inbox",
+          "document"
+        ],
+        "type": "object"
+      },
+      "LandingResponse": {
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/LandingPage"
+          },
+          "shell": {
+            "$ref": "#/components/schemas/LandingShell"
+          },
+          "viewer": {
+            "$ref": "#/components/schemas/LandingViewer"
+          }
+        },
+        "required": [
+          "viewer",
+          "shell",
+          "page"
+        ],
+        "type": "object"
+      },
+      "LandingShell": {
+        "properties": {
+          "agent_states": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserAgentStates"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/Agent"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "credential_requests": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CredentialPendingResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inbox": {
+            "items": {
+              "$ref": "#/components/schemas/InboxRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pinned_issues": {
+            "items": {
+              "$ref": "#/components/schemas/IssueSummary"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/Project"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "unread_replies": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "inbox",
+          "pinned_issues",
+          "projects",
+          "agent_states",
+          "unread_replies",
+          "credential_requests",
+          "agents"
+        ],
+        "type": "object"
+      },
+      "LandingViewer": {
+        "properties": {
+          "event_head": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_head",
+          "kind",
+          "login"
         ],
         "type": "object"
       },

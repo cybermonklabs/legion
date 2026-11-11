@@ -315,49 +315,42 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
-	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority}
-	if pinned {
-		arguments = append(arguments, login)
+	filters := issueListRead{
+		project: project, status: status, parent: parent, updatedSince: updatedSince,
+		labels: labels, open: open, priorities: priorities, unsetPriority: unsetPriority,
+		pinnedBy: login,
 	}
 	// SQL cuts the page only when no route_status filter runs after the read: that filter needs
 	// the Envoy roster, which this read cannot reach, and total counts what is left after it.
 	inSQL := page != nil && routeStatus == ""
-	listQuery := listIssuesQuery
-	switch {
-	case pinned && inSQL:
-		listQuery = listPinnedIssuesPageQuery
-	case pinned:
-		listQuery = listPinnedIssuesQuery
-	case inSQL:
-		listQuery = listIssuesPageQuery
+	if inSQL {
+		filters.page = page
 	}
+	// A filter for a judged state cannot be answered from the shared copy of the listener's
+	// list whatever it says, so such a read takes the roster itself and refuses when it has
+	// none; every other read takes the reach loadIssueListing stamps on.
+	judged := routeStatus != "" && routeStatus != model.RouteUnknown
 	var issues []model.IssueSummary
 	total := 0
-	if inSQL {
-		arguments = append(arguments, page.limit, page.offset)
-		issues, total, err = s.scanIssuePage(r.Context(), listQuery, arguments)
+	if judged {
+		issues, total, err = s.loadIssueSummaries(r.Context(), filters)
 	} else {
-		issues, err = s.scanIssueSummaries(r.Context(), listQuery, arguments)
+		issues, total, err = s.loadIssueListing(r.Context(), filters)
 	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
-		judged := routeStatus != "" && routeStatus != model.RouteUnknown
-		var roster routeRoster
-		if judged {
-			// A filter for a judged state cannot be cut from an answer it could not read: a failed
-			// read of the stored answer is the database's failure and is answered as one, and only
-			// a listener that did not answer is the listener's.
-			if roster, err = s.readRouteRoster(r.Context()); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		} else {
-			roster = s.routeRosterOrUnknown(r.Context())
+	if judged && slices.ContainsFunc(issues, issueIsRouted) {
+		// A filter for a judged state cannot be cut from an answer it could not read: a failed
+		// read of the stored answer is the database's failure and is answered as one, and only
+		// a listener that did not answer is the listener's.
+		roster, err := s.readRouteRoster(r.Context())
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
-		if judged && !roster.answered {
+		if !roster.answered {
 			// No route can be judged, so a filter for a judged state refuses rather than answer
 			// a list that would read as "every route reaches someone" (or "nobody's does").
 			if roster.reason == model.RouteReasonRefilling {
@@ -368,9 +361,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 				"the Envoy listener did not answer, so Dispatch cannot tell which routes reach a live session; route_status=unknown lists the routed issues")
 			return
 		}
-		for index := range issues {
-			issues[index].IssueRouteReach = roster.reach(issues[index].Route)
-		}
+		applyRouteReach(issues, roster)
 	}
 	if routeStatus != "" {
 		issues = slices.DeleteFunc(issues, func(issue model.IssueSummary) bool {
@@ -388,6 +379,106 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, issues)
+}
+
+// issueListRead is one read of the issue listing as GET /api/v1/issues's query parses it: the
+// eight filters every statement of that listing binds (issueListFilters is the SQL they are
+// written as), the person whose pins narrow it, and the page SQL cuts. It is one value rather
+// than eight parameters because its two readers - that route and GET /api/v1/landing, which
+// carries the caller's pinned issues and a project's open ones - must bind the same arguments in
+// the same order as the statement they choose.
+type issueListRead struct {
+	project       string
+	status        string
+	parent        string
+	updatedSince  *time.Time
+	labels        []string
+	open          bool
+	priorities    []int16
+	unsetPriority bool
+	// pinnedBy is the person whose pinned issues the read answers (?pinned=true, the calling
+	// person), and "" for a read of every issue the other filters match.
+	pinnedBy string
+	// page is the page the statement cuts itself, and nil for a read that answers every row it
+	// matches. A page cut after the read (the route_status filter's) is no part of this: the
+	// statement must then answer every row for the filter to cut from.
+	page *issuePage
+}
+
+// statement is the listing statement these filters are bound to: the pinned form when they name
+// a person, and the paged form when SQL cuts the page.
+func (f issueListRead) statement() string {
+	switch {
+	case f.pinnedBy != "" && f.page != nil:
+		return listPinnedIssuesPageQuery
+	case f.pinnedBy != "":
+		return listPinnedIssuesQuery
+	case f.page != nil:
+		return listIssuesPageQuery
+	}
+	return listIssuesQuery
+}
+
+// arguments binds that statement's parameters in its own order: the eight filters, then the
+// person whose pins narrow it, then the page's limit and offset.
+//
+// The two list filters are bound as the empty list where the read names none. A nil slice binds
+// as SQL NULL, and every term that reads them - `$5::text[] = '{}'` for the labels and
+// `cardinality($7::smallint[]) = 0` for the priorities - answers NULL for it, which is not true,
+// so a read that named no label would match no issue at all (issueListFilters).
+func (f issueListRead) arguments() []any {
+	labels, priorities := f.labels, f.priorities
+	if labels == nil {
+		labels = []string{}
+	}
+	if priorities == nil {
+		priorities = []int16{}
+	}
+	arguments := []any{f.project, f.status, f.parent, f.updatedSince, labels, f.open, priorities, f.unsetPriority}
+	if f.pinnedBy != "" {
+		arguments = append(arguments, f.pinnedBy)
+	}
+	if f.page != nil {
+		arguments = append(arguments, f.page.limit, f.page.offset)
+	}
+	return arguments
+}
+
+// loadIssueSummaries runs one listing read: the statement the filters choose, with their own
+// arguments. total counts every issue the filters match and is 0 for an unpaged read, which read
+// every one of them.
+func (s *server) loadIssueSummaries(ctx context.Context, filters issueListRead) ([]model.IssueSummary, int, error) {
+	if filters.page != nil {
+		return s.scanIssuePage(ctx, filters.statement(), filters.arguments())
+	}
+	issues, err := s.scanIssueSummaries(ctx, filters.statement(), filters.arguments())
+	return issues, 0, err
+}
+
+// loadIssueListing is the listing a reader that narrows by no judged route_status gets: the rows
+// loadIssueSummaries reads, each routed row carrying where its route reaches now. listIssues
+// answers it, and GET /api/v1/landing carries it twice - the caller's pinned issues in its shell,
+// and a project's open issues on a board - so one function is behind all three.
+func (s *server) loadIssueListing(ctx context.Context, filters issueListRead) ([]model.IssueSummary, int, error) {
+	issues, total, err := s.loadIssueSummaries(ctx, filters)
+	if err != nil {
+		return nil, 0, err
+	}
+	if slices.ContainsFunc(issues, issueIsRouted) {
+		applyRouteReach(issues, s.routeRosterOrUnknown(ctx))
+	}
+	return issues, total, nil
+}
+
+// issueIsRouted is whether a row names a route at all. A listing of rows that name none costs no
+// listener call, since there is nothing for a roster to answer about.
+func issueIsRouted(issue model.IssueSummary) bool { return issue.Route != nil }
+
+// applyRouteReach stamps onto each row where its route reaches now, as the roster read it.
+func applyRouteReach(issues []model.IssueSummary, roster routeRoster) {
+	for index := range issues {
+		issues[index].IssueRouteReach = roster.reach(issues[index].Route)
+	}
 }
 
 // issueSummaryRow holds one listing row as the statement answers it. Scanning and resolving are
@@ -517,19 +608,31 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"))
+	read, err := s.loadIssueDetail(r.Context(), r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	WriteJSON(w, http.StatusOK, read)
+}
+
+// loadIssueDetail is the whole answer of GET /api/v1/issues/{key}: readIssue's two batches, and
+// beside them where the issue's route reaches and what state the session holding its claim is
+// in. getIssue answers it, and GET /api/v1/landing carries it on the issue page, so the two
+// cannot read one issue differently.
+func (s *server) loadIssueDetail(ctx context.Context, key string) (issueDetail, error) {
+	read, err := s.readIssue(ctx, key)
+	if err != nil {
+		return issueDetail{}, err
+	}
 	// One roster read serves both answers beside the issue: where its route reaches, and what
 	// state the session holding its claim is in. An issue with neither costs no listener call.
 	if read.Route != nil || issueClaimSession(read.Claim) != "" {
-		roster := s.routeRosterOrUnknown(r.Context())
+		roster := s.routeRosterOrUnknown(ctx)
 		read.IssueRouteReach = roster.reach(read.Route)
 		read.IssueClaimLiveness = roster.claimLiveness(read.Claim, time.Now())
 	}
-	WriteJSON(w, http.StatusOK, read)
+	return read, nil
 }
 
 // issueDetail is everything GET /api/v1/issues/{key} answers, in the shape its response carries:

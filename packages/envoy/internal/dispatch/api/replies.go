@@ -506,23 +506,58 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	response, err := s.loadMyReplies(r.Context(), caller, myRepliesRead{
+		wantReply: wantReply, wantAgent: wantAgent, state: state,
+		limit: limit, offset: offset, from: from, issue: issue, artifact: artifact,
+	})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, response)
+}
+
+// myRepliesRead is one read of the caller's Inbox threads as GET /api/v1/me/replies's query
+// parses it: which kinds it lists, in which state, which page of them, and which owner it is
+// narrowed to. It is one value rather than eight parameters because GET /api/v1/landing reads
+// the same list twice - the unread count of its shell, and the Inbox page's own rows - and both
+// must reach the loader the same way the route does.
+type myRepliesRead struct {
+	// wantReply and wantAgent are the kinds ?kind= names: the threads the caller wrote in, the
+	// caller's one-off messages to a session, or both.
+	wantReply bool
+	wantAgent bool
+	// state is ?state=: unread, inbox or dismissed.
+	state string
+	// limit is the page's size, nil for a read of every row; offset is where that page starts.
+	limit  *int
+	offset int
+	// from is the cursor a Dismissed page resumes from, nil for its first page.
+	from *myRepliesCursor
+	// issue and artifact narrow the read to one owner, "" and nil for no narrowing.
+	issue    string
+	artifact *string
+}
+
+// loadMyReplies is the read behind GET /api/v1/me/replies, which listMyReplies answers and GET
+// /api/v1/landing carries twice: the unread count every page draws its badge from (the total of
+// one row of the unread state), and the rows the Inbox page itself draws.
+func (s *server) loadMyReplies(ctx context.Context, caller model.Actor, read myRepliesRead) (model.MyRepliesResponse, error) {
 	// An Agent row has no issue and no document, so a read narrowed to one owner holds none.
-	wantAgent = wantAgent && issue == "" && artifact == nil
+	wantAgent := read.wantAgent && read.issue == "" && read.artifact == nil
 
 	login := model.CanonicalLogin(caller.ID)
-	response := model.MyRepliesResponse{Rows: []model.MyReplyRow{}, Offset: offset}
-	if limit != nil {
-		response.Limit = *limit
+	response := model.MyRepliesResponse{Rows: []model.MyReplyRow{}, Offset: read.offset}
+	if read.limit != nil {
+		response.Limit = *read.limit
 	}
-	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
-		return
+		return model.MyRepliesResponse{}, fmt.Errorf("read my replies: %w", err)
 	}
-	defer tx.Rollback(r.Context())
-	if err := tx.QueryRow(r.Context(), "select now()").Scan(&response.AsOf); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
-		return
+	defer tx.Rollback(ctx)
+	if err := tx.QueryRow(ctx, "select now()").Scan(&response.AsOf); err != nil {
+		return model.MyRepliesResponse{}, fmt.Errorf("read my replies: %w", err)
 	}
 
 	rows := []model.MyReplyRow{}
@@ -530,8 +565,8 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	// cannot be inside the merged page, so neither half reads one. An unpaged read asks for every
 	// row (null).
 	var reach *int
-	if limit != nil {
-		through := offset + *limit
+	if read.limit != nil {
+		through := read.offset + *read.limit
 		reach = &through
 	}
 	// Every state but the Dismissed view counts its rows when the read is paged, since the page it
@@ -540,78 +575,73 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	// page follows, which is what the view reads, and a count of it is a count of every thread the
 	// person has ever dismissed - 110,000 rows at INFRA-450's a14 seed, 8 s of the 9.4 s that read
 	// took. Its total is the page it answers (contracts' MyRepliesResponse).
-	counted := limit != nil && state != myRepliesStateDismissed
-	if wantReply {
-		countQuery, pageQuery := myRepliesQueries(state, from)
-		countArgs := []any{login, issue, artifact}
+	counted := read.limit != nil && read.state != myRepliesStateDismissed
+	if read.wantReply {
+		countQuery, pageQuery := myRepliesQueries(read.state, read.from)
+		countArgs := []any{login, read.issue, read.artifact}
 		if counted {
 			var total int
-			if err := tx.QueryRow(r.Context(), countQuery, countArgs...).Scan(&total); err != nil {
-				s.writeHandlerError(w, fmt.Errorf("count my replies: %w", err))
-				return
+			if err := tx.QueryRow(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+				return model.MyRepliesResponse{}, fmt.Errorf("count my replies: %w", err)
 			}
 			response.Total += total
 		}
-		read, err := s.readMyReplyRows(r.Context(), tx, pageQuery, myRepliesPageArgs(countArgs, reach, from))
+		replyRows, err := s.readMyReplyRows(ctx, tx, pageQuery, myRepliesPageArgs(countArgs, reach, read.from))
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return model.MyRepliesResponse{}, err
 		}
-		rows = append(rows, read...)
+		rows = append(rows, replyRows...)
 	}
 	if wantAgent {
 		// The Agent half answers its own total beside its rows when the read is counted, rather
 		// than in a second statement: it reads every root the state holds either way.
 		args := unreadDirectRepliesArgs(caller.ID, nil)
-		read, total, err := s.readMyAgentRows(r.Context(), tx,
-			myAgentPageQuery(state, from, counted), myRepliesPageArgs(args, reach, from), counted)
+		agentRows, total, err := s.readMyAgentRows(ctx, tx,
+			myAgentPageQuery(read.state, read.from, counted), myRepliesPageArgs(args, reach, read.from), counted)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return model.MyRepliesResponse{}, err
 		}
 		response.Total += total
-		rows = append(rows, read...)
+		rows = append(rows, agentRows...)
 	}
 	// An unpaged read of either kind read every matching row, so the rows in hand are the total,
 	// taken before the offset cut below throws any away. The Dismissed view's total is the page it
 	// answers, so it is taken after that cut, below.
-	if limit == nil {
+	if read.limit == nil {
 		response.Total = len(rows)
 	}
 
 	slices.SortFunc(rows, func(left, right model.MyReplyRow) int {
-		if order := myRepliesOrderOf(state, right).Compare(myRepliesOrderOf(state, left)); order != 0 {
+		if order := myRepliesOrderOf(read.state, right).Compare(myRepliesOrderOf(read.state, left)); order != 0 {
 			return order
 		}
 		return strings.Compare(right.ThreadID, left.ThreadID)
 	})
-	if offset < len(rows) {
-		rows = rows[offset:]
+	if read.offset < len(rows) {
+		rows = rows[read.offset:]
 	} else {
 		rows = nil
 	}
-	if limit != nil && *limit < len(rows) {
-		rows = rows[:*limit]
+	if read.limit != nil && *read.limit < len(rows) {
+		rows = rows[:*read.limit]
 	}
 	// The Dismissed view's own total: the page it answers, counted once the cut has taken it.
-	if state == myRepliesStateDismissed {
+	if read.state == myRepliesStateDismissed {
 		response.Total = len(rows)
 	}
 	// A Dismissed page that filled answers the cursor the next one resumes from. A page that did
 	// not fill is the last one, and following a cursor off the end of the list answers no row.
-	if state == myRepliesStateDismissed && limit != nil && len(rows) == *limit {
+	if read.state == myRepliesStateDismissed && read.limit != nil && len(rows) == *read.limit {
 		response.NextCursor = myRepliesCursorOf(rows[len(rows)-1])
 	}
-	if err := nameAgentSessions(r.Context(), tx, rows); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := nameAgentSessions(ctx, tx, rows); err != nil {
+		return model.MyRepliesResponse{}, err
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return model.MyRepliesResponse{}, fmt.Errorf("read my replies: %w", err)
 	}
 	response.Rows = append(response.Rows, rows...)
-	WriteJSON(w, http.StatusOK, response)
+	return response, nil
 }
 
 // myRepliesQueries is the statements one state reads its Reply rows through: the page itself,

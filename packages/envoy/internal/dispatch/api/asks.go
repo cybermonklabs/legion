@@ -752,10 +752,22 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, issueOwner(r.PathValue("key")), state)
+	rows, err := s.loadIssueAskRows(r.Context(), issueOwner(r.PathValue("key")), state, withThread)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, rows)
+}
+
+// loadIssueAskRows is the read behind GET /api/v1/issues/{key}/asks: every ask of one issue in
+// the state ?state= names, each with its newest reply, and with the thread a card draws when the
+// caller asked for one. listIssueAsks answers it, and GET /api/v1/landing carries the same rows
+// on its issue page, which draws those cards.
+func (s *server) loadIssueAskRows(ctx context.Context, owner owner, state string, withThread bool) ([]issueAskRow, error) {
+	asks, lastReplies, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, owner, state)
+	if err != nil {
+		return nil, err
 	}
 	rows := make([]issueAskRow, len(asks))
 	for index := range asks {
@@ -765,12 +777,11 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), rows); err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if err := s.attachIssueAskThreads(ctx, rows); err != nil {
+			return nil, err
 		}
 	}
-	WriteJSON(w, http.StatusOK, rows)
+	return rows, nil
 }
 
 // attachIssueAskThreads hangs each row's thread off it. loadAskThreads leaves `answers` empty -

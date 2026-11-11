@@ -42,19 +42,34 @@ func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.R
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	key := r.PathValue("key")
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id`, key)
+	sources, err := s.loadProjectArchitectureSources(r.Context(), r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	WriteJSON(w, http.StatusOK, sources)
+}
+
+// loadProjectArchitectureSources is the read behind GET
+// /api/v1/projects/{key}/architecture-sources. listProjectArchitectureSources answers it, and
+// GET /api/v1/landing carries the same list on its board page and on its issue page, where the
+// components line reads the sources of the issue's own project.
+//
+// A project that does not exist is the no-rows error the handler above answers its 404 from,
+// which is why the existence check is here and not in the handler: the landing leaves its part
+// null for that error, as it does for every other failure, and the dashboard then reads the
+// route itself and draws the same 404 it drew before.
+func (s *server) loadProjectArchitectureSources(ctx context.Context, key string) ([]model.ArchitectureSource, error) {
+	sources, err := querySources(ctx, s.deps.Store.Pool, `where project_key = $1 order by id`, key)
+	if err != nil {
+		return nil, err
+	}
 	if len(sources) == 0 {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if err := s.deps.Store.Pool.QueryRow(ctx, "select key from projects where key = $1", key).Scan(new(string)); err != nil {
+			return nil, err
 		}
 	}
-	WriteJSON(w, http.StatusOK, sources)
+	return sources, nil
 }
 
 // getArchitectureSource answers the singular read that dispatch clients older than this release

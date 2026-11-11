@@ -264,6 +264,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/keyed-writes.e2e.ts` | idempotency keys, 409 KEY_IN_FLIGHT, reload resumption, sign-out races |
 | `e2e/labels-escape-focus.e2e.ts` | the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again |
 | `e2e/labels.e2e.ts` | label writes and a server-filtered list; writes labels, then reloads and measures |
+| `e2e/landing-reads.e2e.ts` | it measures the reads and waves of a cold landing against the real server, whose answers decide when each read can start, which a recording cannot answer for |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |
 | `e2e/machine-login.e2e.ts` | device grants decided on the real broker |

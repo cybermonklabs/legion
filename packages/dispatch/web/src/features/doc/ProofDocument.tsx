@@ -786,7 +786,10 @@ export function ProofDocument({
     // only an admission opens anything, so a later refetch that fails - an outage during an
     // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
     // A blocked admission waits for the next successful read of the text, which a repair upload
-    // or a rebuild brings about, and is admitted again (`readmitRef`).
+    // or a rebuild brings about, and is admitted again (`readmitRef`). `staleTime: 0` is what
+    // makes it this admission's own read: the landing seed puts the document's text in that key
+    // before any of this mounts (`api/queries.ts`, `seedDocument`), and this read goes out all
+    // the same.
     const admit = () => {
       const textRead = queryClient
         .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })

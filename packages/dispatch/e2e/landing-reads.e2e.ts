@@ -289,6 +289,22 @@ async function seedWorld(): Promise<World> {
   return { document: rollout.artifact.slug, issue: issue.key };
 }
 
+/** The landing route, which answers one page's whole cold read: the viewer, the shell, and the
+ *  part of the answer the page named by `?page=` draws (`web/src/api/queries.ts`). */
+const LANDING_PATH = "/api/v1/landing";
+
+/** Whether `read` is the landing read that carries `page`'s own data.
+ *
+ *  A page's own data is whatever answers what that page shows, whichever route answered it. It
+ *  used to be one per-resource read the page gated on; the landing carries those same rows now,
+ *  so a landing asked for this page is that page's own data as much as the read it stands in
+ *  for. Each `ownData` below accepts either, so this row measures the waves before a page can
+ *  draw whether its rows came from the one route or from the many.
+ */
+function landingFor(read: Read, page: "issue" | "board" | "inbox" | "document"): boolean {
+  return read.pathname === LANDING_PATH && new URLSearchParams(read.search).get("page") === page;
+}
+
 function landingsOf(world: World): Landing[] {
   return [
     {
@@ -299,7 +315,8 @@ function landingsOf(world: World): Landing[] {
       content: (page) => documentEditor(page).locator("[data-block-id]").first(),
       bounds: { reads: ISSUE_READ_BOUND, waves: WAVE_BOUND },
       name: "issue page",
-      ownData: (read) => read.pathname === `/api/v1/issues/${world.issue}`,
+      ownData: (read) =>
+        read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
     },
     {
       address: "/projects/CORE/issues",
@@ -310,8 +327,9 @@ function landingsOf(world: World): Landing[] {
         page.getByTestId("issues-table-scroll").locator("[data-issue-row]").first(),
       name: "board",
       ownData: (read) =>
-        read.pathname === "/api/v1/issues" &&
-        new URLSearchParams(read.search).get("project") === "CORE",
+        (read.pathname === "/api/v1/issues" &&
+          new URLSearchParams(read.search).get("project") === "CORE") ||
+        landingFor(read, "board"),
     },
     {
       address: "/",
@@ -322,7 +340,7 @@ function landingsOf(world: World): Landing[] {
       // it opens, so the card is drawn by the landing itself and by no click of this row's.
       content: (page) => inboxPane(page).locator("[data-inbox-thread-body]").first(),
       name: "inbox",
-      ownData: (read) => read.pathname === "/api/v1/inbox",
+      ownData: (read) => read.pathname === "/api/v1/inbox" || landingFor(read, "inbox"),
     },
     {
       address: `/projects/CORE/documents/${world.document}`,
@@ -338,7 +356,9 @@ function landingsOf(world: World): Landing[] {
       // `["artifact-ref", "CORE/<slug>"]` answers with the document's id
       // (`web/src/features/document/DocumentPage.tsx`, `web/src/api/useProjectArtifact.ts`), and
       // the subscribers, text, blocks and asks reads all name that id.
-      ownData: (read) => read.pathname === `/api/v1/projects/CORE/artifacts/${world.document}`,
+      ownData: (read) =>
+        read.pathname === `/api/v1/projects/CORE/artifacts/${world.document}` ||
+        landingFor(read, "document"),
     },
   ];
 }

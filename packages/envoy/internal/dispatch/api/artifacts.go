@@ -748,25 +748,35 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
-		return
-	}
-	markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifact.ID)
+	text, err := s.loadArtifactText(r.Context(), artifact)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, text)
+}
+
+// loadArtifactText is the read behind the three text routes: a document's canonical markdown with
+// the token a write holds it to, and the number of its latest version. A file is 400 NOT_DOCUMENT,
+// as it was when the check stood in the handler. getArtifactText answers it, and GET
+// /api/v1/landing carries it beside the document a page opens.
+func (s *server) loadArtifactText(ctx context.Context, artifact model.Artifact) (artifactText, error) {
+	if artifact.Kind != "doc" {
+		return artifactText{}, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "artifact is not a document")
+	}
+	markdown, token, err := s.deps.Docs.TextWithToken(ctx, artifact.ID)
+	if err != nil {
+		return artifactText{}, err
 	}
 	// The markdown and the version are two unsynchronised reads, in both directions: the live
 	// markdown can be ahead of the version while browser text is unsettled, and a version minted
 	// between the two reads can be ahead of the markdown. `token` is the route's concurrency
 	// primitive; `version` says which version the document has, not which one this markdown is.
-	version, err := latestVersionNumber(r.Context(), s.deps.Store.Pool, artifact.ID)
+	version, err := latestVersionNumber(ctx, s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return artifactText{}, err
 	}
-	WriteJSON(w, http.StatusOK, artifactText{Markdown: markdown, Token: token, Version: version})
+	return artifactText{Markdown: markdown, Token: token, Version: version}, nil
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
@@ -778,28 +788,37 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	blocks, err := s.loadArtifactBlocks(r.Context(), artifact)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, blocks)
+}
+
+// loadArtifactBlocks is the read behind the three blocks routes: a document's blocks, each with
+// the references it carries and where meaning search stands on it. A file is 400 NOT_DOCUMENT, as
+// it was when the check stood in the handler. getArtifactBlocks answers it, and GET
+// /api/v1/landing carries it beside the document a page opens.
+func (s *server) loadArtifactBlocks(ctx context.Context, artifact model.Artifact) ([]model.ArtifactBlock, error) {
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
-		return
+		return nil, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "artifact is not a document")
 	}
-	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
+	blocks, err := s.deps.Docs.Blocks(ctx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
-	references, err := s.blockReferences(r.Context(), artifact.ID)
+	references, err := s.blockReferences(ctx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	// The windows of a document's blocks are written under the artifact id; a block the live
 	// document holds and no window covers - a block inside another, whose text its parent's
 	// window already holds, and every block of a version the indexer has not windowed yet -
 	// reads as model.BlockNotEmbedded.
-	embedding, err := refs.BlockEmbeddingStates(r.Context(), s.deps.Store.Pool, refs.DocumentWindowKind, artifact.ID)
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	for index := range blocks {
 		counts := references[blocks[index].ID]
@@ -811,7 +830,7 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		blocks[index].References = counts
 		blocks[index].Embedding = blockEmbedding(embedding, blocks[index].ID)
 	}
-	WriteJSON(w, http.StatusOK, blocks)
+	return blocks, nil
 }
 
 func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {

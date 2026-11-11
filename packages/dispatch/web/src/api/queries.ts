@@ -3,35 +3,58 @@ import { INBOX_THREAD_KINDS } from "@legion/contracts";
 import {
   infiniteQueryOptions,
   keepPreviousData,
+  type QueryClient,
   type QueryFunctionContext,
   queryOptions,
   replaceEqualDeep,
 } from "@tanstack/react-query";
 
+import { credentialPendingQuery } from "../features/credentials/pending";
+import { issueDecisionsQuery } from "../features/doc/spec-marks";
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
+import { agentsQuery } from "../features/refs/agent-registry";
+import { parseIssuePath, parseProjectPath } from "../features/refs/routes";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { api } from "./client";
+import { ApiError, api, isEventHeadUnavailable, isUnauthorized } from "./client";
 import { liveSocketFor } from "./live-socket";
+import type { Query } from "./paths";
 import type {
+  Artifact,
+  ArtifactBlock,
+  ArtifactText,
+  AuthenticatedUser,
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
+  LandingBoardPage,
+  LandingDocumentPage,
+  LandingIssueDocument,
+  LandingIssuePage,
+  LandingResponse,
+  LandingShell,
   MyRepliesResponse,
 } from "./types";
 
-/** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
- *  names the person by lowercase email, the form issue assignees carry. While it answers
- *  `EVENT_HEAD_UNAVAILABLE` it is asked again for as long as that lasts (`queryRetry`), so the
- *  shell shows its skeleton, never the error page. */
+/** The signed-in principal, which every surface reads under this one key; it names the person by
+ *  lowercase email, the form issue assignees carry. While it answers `EVENT_HEAD_UNAVAILABLE` it
+ *  is asked again for as long as that lasts (`queryRetry`), so the shell shows its skeleton,
+ *  never the error page.
+ *
+ *  The read itself is the landing (at the end of this file): one request that answers the
+ *  viewer, the shell and the page the browser is loading, and seeds each part under the key its
+ *  own route already uses. `AuthGate` holds the tree behind this one pending query, so that read
+ *  is the page's first wave and whatever the answer does not carry is its second. A Dispatch
+ *  older than that route answers 404, and the read falls back to `/auth/whoami` and seeds
+ *  nothing, which leaves every page reading as it read before. */
 export const whoAmIQuery = () =>
   queryOptions({
     queryKey: ["whoami"],
-    queryFn: () => api.whoAmI(),
+    queryFn: ({ client }) => readLanding(client),
   });
 
 /** Every ask the viewer can see, as the Inbox lists them. */
@@ -405,3 +428,245 @@ export const deliverySettingsQuery = () =>
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
   });
+
+// ---------------------------------------------------------------------------------------------
+// The landing: the one read a cold page makes, and the seed of every key above that it answers.
+//
+// Why it is here and not beside each query: the seed writes into the keys this file declares, so
+// a reader who changes a key below sees, in the same file, what else writes it. It is a cache
+// seed and never a second data path - each part is written under the key the route it stands in
+// for already uses, and the client's default `staleTime` is 30,000 ms (`main.tsx`), so a
+// component that mounts with its key seeded reads the cache and sends no request of its own. A
+// part the answer leaves null is left unseeded, and its own query runs as it ran before.
+// ---------------------------------------------------------------------------------------------
+
+/** What the landing route is asked for: the page, and the names that page is about. */
+export type LandingRead = Query<"/api/v1/landing", "get">;
+
+/**
+ * Which page the entry asks the landing for, read from the address the browser is loading.
+ *
+ * The shapes are the router's own, parsed by the functions that already parse them
+ * (`features/refs/routes.ts`), so this cannot drift from what `app.tsx` draws at that address:
+ * `/issues/<key>` and every tab, document and item under it are one issue page; a project's
+ * `/documents/<slug>` is a document page; every other `/projects/<key>` address - the board and
+ * its Issues, Documents and Architecture tabs - is a board.
+ *
+ * Any other address - the Inbox at `/`, and the Agents, Settings, Delivery and machine pages
+ * too - asks for the Inbox. The route needs a page, and the Inbox is the only arm that needs no
+ * name from the address, so it is the only one such an address can ask for at all. It costs
+ * those pages nothing they cannot use: the threads it carries are the rows the Inbox drawer
+ * draws, and that drawer is mounted on every page of the shell (`app.tsx`,
+ * `features/inbox/InboxDrawer.tsx`), so a reader who opens it there has them already.
+ */
+export function landingReadOf(pathname: string): LandingRead {
+  const issue = parseIssuePath(pathname);
+  if (issue !== undefined) {
+    return { page: "issue", key: issue.key };
+  }
+  const project = parseProjectPath(pathname);
+  if (project !== undefined) {
+    return project.kind === "document"
+      ? { page: "document", project: project.project, slug: project.slug }
+      : { page: "board", project: project.project };
+  }
+  return { page: "inbox" };
+}
+
+/**
+ * The refusals that are the answer itself, which no fallback may swallow: the 401 `AuthGate`
+ * draws its sign-in page from, and the two 503s about the event log's head, which the query
+ * client asks again by their codes (`api/query-client.ts`) - the first ends on its own, the
+ * second ends at the page's error and its Retry. A page drawn without a head has no position
+ * for its event feed to resume from, so neither may be answered with a viewer read some other
+ * way.
+ *
+ * Every other failure - the 404 of a Dispatch older than this route, which a rolling deploy puts
+ * in front of a browser, a dropped connection, a 5xx - says only that this one read did not
+ * happen, and the page falls back to reading as it read before.
+ */
+function refusalIsTheAnswer(error: unknown): boolean {
+  return (
+    isUnauthorized(error) ||
+    isEventHeadUnavailable(error) ||
+    (error instanceof ApiError && error.status === 503 && error.code === "EVENT_HEAD_READ_FAILED")
+  );
+}
+
+/**
+ * Reads the landing for the address the browser is loading, seeds every part of the answer, and
+ * answers the viewer, which is what `["whoami"]` has always held.
+ *
+ * `pathname` is the browser's own, read before React renders anything: `AuthGate` holds the
+ * whole tree - the router included - behind this one read, and the router reads the same address
+ * (`BrowserRouter` in `main.tsx`).
+ */
+export async function readLanding(
+  client: QueryClient,
+  pathname: string = window.location.pathname
+): Promise<AuthenticatedUser> {
+  const read = landingReadOf(pathname);
+  let answer: LandingResponse;
+  try {
+    answer = await api.getLanding(read);
+  } catch (error) {
+    if (refusalIsTheAnswer(error)) throw error;
+    return api.whoAmI();
+  }
+  // The viewer, in the shape `GET /auth/whoami` answers: this route resolves its caller as that
+  // one does, and answers a person or refuses, so the kind is the kind whoami names.
+  //
+  // The event feed resumes from this `event_head` (`api/event-feed.ts`), and that is sound only
+  // while every read of the page holds the events at or below it. One answer carries the head
+  // and the page's data together, so the data cannot be newer than the head it is seeded beside.
+  const viewer: AuthenticatedUser = {
+    event_head: answer.viewer.event_head,
+    kind: "user",
+    login: answer.viewer.login,
+  };
+  seedShell(client, answer.shell);
+  const { board, document, inbox, issue } = answer.page;
+  if (issue !== null && read.key !== undefined) seedIssuePage(client, read.key, issue);
+  if (board !== null && read.project !== undefined) seedBoardPage(client, read.project, board);
+  if (inbox !== null && inbox.threads !== null) {
+    client.setQueryData(inboxThreadsQuery().queryKey, inbox.threads);
+  }
+  if (document !== null && read.project !== undefined && read.slug !== undefined) {
+    seedDocumentPage(client, `${read.project}/${read.slug}`, document);
+  }
+  return viewer;
+}
+
+/** What every page draws, whatever its address. */
+function seedShell(client: QueryClient, shell: LandingShell): void {
+  // The asks the navigation counts and the Inbox lists (`inboxQuery`).
+  if (shell.inbox !== null) client.setQueryData(inboxQuery().queryKey, shell.inbox);
+  // The reader's pinned issues, under the key the sidebar reads them by
+  // (`features/sidebar/Sidebar.tsx`).
+  if (shell.pinned_issues !== null) client.setQueryData(["issues", "pinned"], shell.pinned_issues);
+  if (shell.projects !== null) client.setQueryData(projectsQuery().queryKey, shell.projects);
+  if (shell.agent_states !== null) {
+    client.setQueryData(userAgentStateQuery().queryKey, shell.agent_states);
+  }
+  // The badge's count query keeps the `total` of its one-row page and throws the row away
+  // (`myRepliesCountQuery`), so the number is what that key holds, and the number is what the
+  // landing carries.
+  if (shell.unread_replies !== null) {
+    client.setQueryData(myRepliesCountQuery().queryKey, shell.unread_replies);
+  }
+  // A deployment with no secrets broker answers null here, as that route itself answers null
+  // (`features/credentials/pending.ts`). It is left unseeded all the same: a part is null when
+  // Dispatch could not read it as well as when there is nothing to read, and nothing here tells
+  // the two apart, so the list is read from its own route - which does tell them apart - rather
+  // than held at null on this answer's word.
+  if (shell.credential_requests !== null) {
+    client.setQueryData(credentialPendingQuery().queryKey, shell.credential_requests);
+  }
+  // The agent registry every surface shares (`features/refs/agent-registry.ts`); null where this
+  // Dispatch has no Envoy listener to read it from.
+  if (shell.agents !== null) client.setQueryData(agentsQuery().queryKey, shell.agents);
+}
+
+/** One issue's page, under the keys `features/issue` and the margin read it by. */
+function seedIssuePage(client: QueryClient, key: string, page: LandingIssuePage): void {
+  if (page.issue !== null) client.setQueryData(issueQuery(key).queryKey, page.issue);
+  if (page.user_state !== null) client.setQueryData(userStateQuery().queryKey, page.user_state);
+  // The issue's whole comment list, which is what the margin and the Conversation read
+  // (`features/margin/useMarginItems.ts`, `features/conversation/ConversationTab.tsx`). The
+  // document's `["comments", key, artifact]` is a narrower list - the comments anchored in that
+  // one document - which this answer does not carry, so that key keeps its own read.
+  if (page.comments !== null) client.setQueryData(["comments", key], page.comments);
+  // The issue's asks in every state, as the document's own reader asks for them
+  // (`features/doc/ProofDocument.tsx`).
+  if (page.asks !== null) client.setQueryData(["asks", key], page.asks);
+  // Who follows this issue (`features/issue/IssueSubscribers.tsx`).
+  if (page.subscribers !== null) client.setQueryData(["subscribers", key], page.subscribers);
+  if (page.decisions !== null) {
+    client.setQueryData(issueDecisionsQuery(key, true).queryKey, page.decisions);
+  }
+  // What each requirement of the spec lacks, which the Spec tab draws beside the requirement
+  // (`features/issue/SpecRequirements.tsx`).
+  if (page.coverage !== null) {
+    client.setQueryData(issueCoverageQuery(key).queryKey, page.coverage);
+  }
+  // Every repository mapped to a project, out of which the header's repository control picks
+  // this project's (`features/issue/RepoControl.tsx`, which writes the key by hand).
+  if (page.repo_projects !== null) {
+    client.setQueryData(["repo-projects"], page.repo_projects);
+  }
+  // The sources of the issue's own project, which the components line reads
+  // (`features/issue/IssueComponentsLine.tsx`). The project is the one the issue carries, and
+  // the landing reads the sources of that project and of no other, so an answer that carries no
+  // issue carries no sources to put under a project's key either.
+  if (page.issue !== null && page.architecture_sources !== null) {
+    client.setQueryData(
+      projectArchitectureSourcesQuery(page.issue.project).queryKey,
+      page.architecture_sources
+    );
+  }
+  const document: LandingIssueDocument | null = page.document;
+  if (document === null || document.artifact === null) return;
+  const id = document.artifact.id;
+  seedDocument(client, id, document.artifact, document.text, document.blocks);
+  // Which version of this document the reader last read, which is what marks the blocks that
+  // changed since (`features/doc/spec-marks.ts`).
+  if (document.read !== null) client.setQueryData(["document-read", id], document.read);
+}
+
+/** A project's board and the tabs beside it. */
+function seedBoardPage(client: QueryClient, project: string, page: LandingBoardPage): void {
+  // The project's open issues, the read the board makes for itself (`projectIssuesQuery`, whose
+  // key `features/project/issue-filters.ts` builds).
+  if (page.issues !== null) {
+    client.setQueryData(projectIssuesQuery(project, [], true).queryKey, page.issues);
+  }
+  // The asks of this project alone (`features/project/ProjectPage.tsx`).
+  if (page.inbox !== null) client.setQueryData(["inbox", project], page.inbox);
+  if (page.user_state !== null) client.setQueryData(userStateQuery().queryKey, page.user_state);
+  // The project's architecture sources, which decide which tab the project page opens on
+  // (`features/project/ProjectPage.tsx`).
+  if (page.architecture_sources !== null) {
+    client.setQueryData(
+      projectArchitectureSourcesQuery(project).queryKey,
+      page.architecture_sources
+    );
+  }
+}
+
+/** A project's document page, named by the `project/slug` its own read is keyed by. */
+function seedDocumentPage(client: QueryClient, reference: string, page: LandingDocumentPage): void {
+  const artifact = page.artifact;
+  if (artifact === null) return;
+  // The read the page gates on: it holds everything else until this one names the document's id
+  // (`features/document/useProjectArtifact.ts`).
+  client.setQueryData(["artifact-ref", reference], artifact);
+  seedDocument(client, artifact.id, artifact, page.text, page.blocks);
+  // The document's own asks (`features/doc/ProofDocument.tsx`), its subscribers
+  // (`features/document/DocumentPage.tsx`) and its comments
+  // (`features/margin/useMarginItems.ts`).
+  if (page.asks !== null) client.setQueryData(["artifact", artifact.id, "asks"], page.asks);
+  if (page.subscribers !== null) {
+    client.setQueryData(["subscribers", artifact.id], page.subscribers);
+  }
+  if (page.comments !== null) {
+    client.setQueryData(["artifact", artifact.id, "comments"], page.comments);
+  }
+}
+
+/** One document under the three keys its readers share: the artifact itself (`ProofDocument` and
+ *  `features/inbox/PaneDocument.tsx`), its live text (`ProofDocument`'s `liveTextQueryOptions`)
+ *  and its blocks (`artifactBlocksQuery`). The live editor's admission read of that text is
+ *  deliberately not started here: it carries `staleTime: 0`, so it reads again whatever this key
+ *  holds and whatever a read started here had already answered, which measured as two requests
+ *  for one document rather than one (`features/doc/ProofDocument.tsx`, `admit`). */
+function seedDocument(
+  client: QueryClient,
+  id: string,
+  artifact: Artifact,
+  text: ArtifactText | null,
+  blocks: ArtifactBlock[] | null
+): void {
+  client.setQueryData(["artifact", id], artifact);
+  if (text !== null) client.setQueryData(["artifact", id, "text"], text);
+  if (blocks !== null) client.setQueryData(artifactBlocksQuery(id).queryKey, blocks);
+}

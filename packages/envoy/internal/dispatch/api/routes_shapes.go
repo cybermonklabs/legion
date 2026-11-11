@@ -265,6 +265,19 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
+// landingQuery is GET /api/v1/landing's query: which page is being landed on, and what that
+// page needs to be read.
+type landingQuery struct {
+	// Page is the page the answer's `page` carries; any other value is 400 LANDING_INPUT.
+	Page string `query:"page" enum:"issue,board,inbox,document"`
+	// Key is the issue the issue page opens, required for it and read by no other page.
+	Key string `query:"key"`
+	// Project is the project a board or a document page opens, required for both.
+	Project string `query:"project"`
+	// Slug is the document a document page opens, required for it.
+	Slug string `query:"slug"`
+}
+
 // myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
@@ -609,6 +622,7 @@ var routeShapes = map[string]routeShape{
 		},
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
+	"GET /api/v1/landing":              {Status: http.StatusOK, Response: landingResponse{}, Params: landingQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},

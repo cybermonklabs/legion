@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -35,26 +36,35 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), projectListQuery)
+	projects, err := s.loadProjects(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, projects)
+}
+
+// loadProjects is the read behind GET /api/v1/projects: every project with its open-ask count,
+// by key. listProjects answers it, and GET /api/v1/landing carries the same list in its shell,
+// so one statement (projectListQuery) is behind both.
+func (s *server) loadProjects(ctx context.Context) ([]model.Project, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, projectListQuery)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	projects := []model.Project{}
 	for rows.Next() {
 		var project model.Project
 		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.CreatedAt); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
-	WriteJSON(w, http.StatusOK, projects)
+	return projects, nil
 }
 
 // createProjectInput is the body of POST /api/v1/projects.

@@ -52,14 +52,21 @@ export const editorAttributes = {
 // ProseMirror's `DOMSerializer`, `Plugin` and `PluginKey`, so a page that imported them to call
 // them after the editor existed would parse a quarter of a megabyte of the editor's library
 // before its first paint - which is the very thing this `import()` is here to prevent.
-export const createEditor: CreateEditor = async (root, options) => {
-  const [{ createProofEditor }, { installTypedBlocks }] = await importWhenOnline(() =>
+/** The editor's own chunks, named once: `createEditor` below awaits them when a document mounts,
+ *  and the entry starts the same import beside the landing read of a page that draws a document
+ *  (`app.tsx`, `preloadRouteChunk`), so the chunk comes down while that read is out rather than
+ *  after its answer. Calling it twice costs one download: a module is fetched and parsed once. */
+export const loadEditorLibrary = () =>
+  importWhenOnline(() =>
     Promise.all([
       import("@legion/proof-editor"),
       import("./ask-block"),
       import("@legion/proof-editor/style.css"),
     ])
   );
+
+export const createEditor: CreateEditor = async (root, options) => {
+  const [{ createProofEditor }, { installTypedBlocks }] = await loadEditorLibrary();
   const handle = await createProofEditor(root, { ...options, drawMermaid: requestMermaidDrawing });
   for (const [name, value] of Object.entries(editorAttributes)) {
     handle.view.dom.setAttribute(name, value);

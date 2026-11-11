@@ -1686,6 +1686,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/landing": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One page of the dashboard read cold, in one request in place of nine to twenty-one: {viewer, shell, page}. viewer is what GET /auth/whoami answers (event_head, kind, login), with that route's own refusals, 503 EVENT_HEAD_UNAVAILABLE while no event id is proven final and 503 EVENT_HEAD_READ_FAILED when the head could not be read, since the page resumes its event feed from that id. shell is what every page reads whatever its route: the inbox, the caller's pinned issues, the projects, the caller's agent state, the unread-reply count, the pending credential requests (null without a secrets broker) and the agent list. page carries what the page ?page= names reads before it draws: issue (with ?key=), board (?project=), inbox, or document (?project= and ?slug=); any other value, and a page without the parameter it needs, is 400 LANDING_INPUT naming what it takes. Every part but the viewer is null when it could not be read or does not exist - an issue key that is no issue, a slug that is no document, a listener that did not answer - and the client then reads that part from the route it stands in for. */
+    get: operations["getApiV1Landing"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/limits": {
     parameters: {
       query?: never;
@@ -4624,6 +4641,66 @@ export interface components {
     };
     KeepDecisionInput: {
       text_sha256: string;
+    };
+    LandingBoardPage: {
+      architecture_sources: components["schemas"]["ArchitectureSource"][] | null;
+      inbox: components["schemas"]["InboxRow"][] | null;
+      issues: components["schemas"]["IssueSummary"][] | null;
+      user_state: components["schemas"]["UserState"] | null;
+    };
+    LandingDocumentPage: {
+      artifact: components["schemas"]["Artifact"] | null;
+      asks: components["schemas"]["Ask"][] | null;
+      blocks: components["schemas"]["ArtifactBlock"][] | null;
+      comments: components["schemas"]["Comment"][] | null;
+      subscribers: components["schemas"]["Subscriber"][] | null;
+      text: components["schemas"]["ArtifactText"] | null;
+    };
+    LandingInboxPage: {
+      threads: components["schemas"]["MyRepliesResponse"] | null;
+    };
+    LandingIssueDocument: {
+      artifact: components["schemas"]["Artifact"] | null;
+      blocks: components["schemas"]["ArtifactBlock"][] | null;
+      read: components["schemas"]["DocumentRead"] | null;
+      text: components["schemas"]["ArtifactText"] | null;
+    };
+    LandingIssuePage: {
+      architecture_sources: components["schemas"]["ArchitectureSource"][] | null;
+      asks: components["schemas"]["IssueAskRow"][] | null;
+      comments: components["schemas"]["Comment"][] | null;
+      coverage: components["schemas"]["IssueCoverage"] | null;
+      decisions: components["schemas"]["IssueDecisions"] | null;
+      document: components["schemas"]["LandingIssueDocument"] | null;
+      issue: components["schemas"]["IssueDetails"] | null;
+      repo_projects: components["schemas"]["RepoProject"][] | null;
+      subscribers: components["schemas"]["Subscriber"][] | null;
+      user_state: components["schemas"]["UserState"] | null;
+    };
+    LandingPage: {
+      board: components["schemas"]["LandingBoardPage"] | null;
+      document: components["schemas"]["LandingDocumentPage"] | null;
+      inbox: components["schemas"]["LandingInboxPage"] | null;
+      issue: components["schemas"]["LandingIssuePage"] | null;
+    };
+    LandingResponse: {
+      page: components["schemas"]["LandingPage"];
+      shell: components["schemas"]["LandingShell"];
+      viewer: components["schemas"]["LandingViewer"];
+    };
+    LandingShell: {
+      agent_states: components["schemas"]["UserAgentStates"] | null;
+      agents: components["schemas"]["Agent"][] | null;
+      credential_requests: components["schemas"]["CredentialPendingResponse"] | null;
+      inbox: components["schemas"]["InboxRow"][] | null;
+      pinned_issues: components["schemas"]["IssueSummary"][] | null;
+      projects: components["schemas"]["Project"][] | null;
+      unread_replies: null | number;
+    };
+    LandingViewer: {
+      event_head: string;
+      kind: string;
+      login: string;
     };
     LauncherCredentialResp: {
       approved_by: string;
@@ -9698,6 +9775,42 @@ export interface operations {
       };
     };
   };
+  getApiV1Landing: {
+    parameters: {
+      query?: {
+        page?: "issue" | "board" | "inbox" | "document";
+        key?: string;
+        project?: string;
+        slug?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LandingResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Limits: {
     parameters: {
       query?: {
@@ -12470,6 +12583,15 @@ export type ItemBlock = components["schemas"]["ItemBlock"];
 export type ItemBlocks = components["schemas"]["ItemBlocks"];
 export type JsonArtifactUpload = components["schemas"]["JsonArtifactUpload"];
 export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
+export type LandingBoardPage = components["schemas"]["LandingBoardPage"];
+export type LandingDocumentPage = components["schemas"]["LandingDocumentPage"];
+export type LandingInboxPage = components["schemas"]["LandingInboxPage"];
+export type LandingIssueDocument = components["schemas"]["LandingIssueDocument"];
+export type LandingIssuePage = components["schemas"]["LandingIssuePage"];
+export type LandingPage = components["schemas"]["LandingPage"];
+export type LandingResponse = components["schemas"]["LandingResponse"];
+export type LandingShell = components["schemas"]["LandingShell"];
+export type LandingViewer = components["schemas"]["LandingViewer"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];

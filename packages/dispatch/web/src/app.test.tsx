@@ -11,7 +11,7 @@ import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
-import type { AuthenticatedUser } from "./api/types";
+import type { AuthenticatedUser, LandingResponse } from "./api/types";
 import { AuthGate } from "./app";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
@@ -489,8 +489,10 @@ test("a sign-out in another tab drops that person's writes here", async () => {
 // INFRA-292's precondition. The event feed's first subscription resumes from the sign-in check's
 // `event_head`, which is sound only while every read the page makes, and its socket, wait for that
 // answer: a read made before it could miss an event committed between the read and the head, and
-// the replay from the head would not bring that event back.
-test("nothing is read and no socket opens until whoami answers, and the feed resumes from its event_head", async () => {
+// the replay from the head would not bring that event back. The read that answers the viewer is
+// the landing (`api/queries.ts`), which carries that head and the page's own data in one answer,
+// so it is the read held here.
+test("nothing is read and no socket opens until the landing answers, and the feed resumes from its event_head", async () => {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
     ({
@@ -503,13 +505,14 @@ test("nothing is read and no socket opens until whoami answers, and the feed res
       removeEventListener: () => {},
       removeListener: () => {},
     }) as MediaQueryList) as typeof window.matchMedia;
-  const signedIn = Promise.withResolvers<AuthenticatedUser>();
-  const whoAmI = spyOn(api, "whoAmI").mockReturnValue(signedIn.promise);
-  // Every other method of the client, held unanswered: one called before whoami answers is the
+  const signedIn = Promise.withResolvers<LandingResponse>();
+  const landing = spyOn(api, "getLanding").mockReturnValue(signedIn.promise);
+  // Every other method of the client, held unanswered - `whoAmI` among them, since the landing
+  // is the one read a page makes for its viewer: one called before the landing answers is the
   // failure under test, and the reads after it never answer, which nothing here waits on.
   const client = Object.getPrototypeOf(api) as Record<string, unknown>;
   const methods = Object.getOwnPropertyNames(client).filter(
-    (name) => name !== "constructor" && name !== "whoAmI" && typeof client[name] === "function"
+    (name) => name !== "constructor" && name !== "getLanding" && typeof client[name] === "function"
   );
   const held = methods.map((name) =>
     spyOn(api as unknown as Record<string, () => Promise<unknown>>, name).mockImplementation(
@@ -528,11 +531,27 @@ test("nothing is read and no socket opens until whoami answers, and the feed res
   );
 
   try {
-    await waitFor(() => expect(whoAmI).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(landing).toHaveBeenCalledTimes(1));
     expect(called()).toEqual([]);
     expect(sockets.sockets).toHaveLength(0);
 
-    await act(async () => signedIn.resolve({ event_head: "41", kind: "user", login: "alice" }));
+    // The viewer, with no part of the shell or the page: what this row holds is the order of
+    // the reads, which a seeded part would only add to.
+    await act(async () =>
+      signedIn.resolve({
+        page: { board: null, document: null, inbox: null, issue: null },
+        shell: {
+          agent_states: null,
+          agents: null,
+          credential_requests: null,
+          inbox: null,
+          pinned_issues: null,
+          projects: null,
+          unread_replies: null,
+        },
+        viewer: { event_head: "41", kind: "user", login: "alice" },
+      })
+    );
     await waitFor(() => expect(sockets.sockets).toHaveLength(1));
     const socket = sockets.latest();
     act(() => socket.open());
@@ -541,7 +560,7 @@ test("nothing is read and no socket opens until whoami answers, and the feed res
   } finally {
     view.unmount();
     window.matchMedia = originalMatchMedia;
-    whoAmI.mockRestore();
+    landing.mockRestore();
     for (const spy of held) spy.mockRestore();
     liveSocketFor(queryClient).close();
     sockets.restore();

@@ -1158,6 +1158,7 @@ test("API client reaches every remaining documented endpoint", async () => {
     { cleared_before: "2026-09-15T20:51:00.000Z" },
     keyed("put-3")
   );
+  await api.getLanding({ page: "issue", key: "CORE-1" });
   await api.whoAmI();
   await api.logout();
   await api.githubRest("repos/acme/dispatch");
@@ -1211,6 +1212,7 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["PUT", "/api/v1/me/issues/CORE-1/state"],
     ["GET", "/api/v1/me/agents/state"],
     ["PUT", "/api/v1/me/agents/planner-session/state"],
+    ["GET", "/api/v1/landing?page=issue&key=CORE-1"],
     ["GET", "/auth/whoami"],
     ["POST", "/auth/logout"],
     ["GET", "/api/github/rest/repos/acme/dispatch"],

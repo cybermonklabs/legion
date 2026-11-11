@@ -30,13 +30,24 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select issue_key, pinned, last_read_seq, dismissed, seq
-		from user_issue_state where login = $1 order by issue_key
-	`, actor.ID)
+	state, err := s.loadUserState(r.Context(), actor.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, state)
+}
+
+// loadUserState is the read behind GET /api/v1/me/state: the state one person holds for each
+// issue they hold one for. getUserState answers it, and GET /api/v1/landing carries it on the
+// issue and the board pages, which both draw from it.
+func (s *server) loadUserState(ctx context.Context, login string) (userState, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select issue_key, pinned, last_read_seq, dismissed, seq
+		from user_issue_state where login = $1 order by issue_key
+	`, login)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	state := userState{}
@@ -45,20 +56,17 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 		var value userIssueState
 		var dismissed []byte
 		if err := rows.Scan(&key, &value.Pinned, &value.LastReadSeq, &dismissed, &value.Seq); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
 		if err := json.Unmarshal(dismissed, &value.Dismissed); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
 		state[key] = value
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
-	WriteJSON(w, http.StatusOK, state)
+	return state, nil
 }
 
 // userIssueStateInput is the body of PUT /api/v1/me/issues/{key}/state.

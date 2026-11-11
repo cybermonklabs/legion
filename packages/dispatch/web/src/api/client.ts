@@ -1603,6 +1603,16 @@ export class DispatchApiClient {
     return this.json<AuthenticatedUser>("/auth/whoami");
   }
 
+  /** `GET /api/v1/landing`: one page's whole cold read - the viewer, the shell every page draws,
+   *  and the part of the answer this page needs - in place of the wave of reads each of those
+   *  parts costs on its own. `page` names which part the answer carries, and `key`, `project`
+   *  and `slug` name what that page is about; the route refuses a page it does not know and a
+   *  page whose names are absent with `400 LANDING_INPUT`. A Dispatch older than the route
+   *  answers 404, which is what the caller falls back on (`api/landing.ts`). */
+  getLanding(read: Query<"/api/v1/landing", "get">) {
+    return this.read("/api/v1/landing", {}, read);
+  }
+
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the
    *  same however often it is made, so it goes with no key. */
   logout(): Promise<{ ok: true }> {

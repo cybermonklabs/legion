@@ -5,7 +5,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-r
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
-import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { landingReadOf, userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
@@ -103,16 +103,66 @@ import {
   textTransparent,
 } from "./theme/classes";
 
-const IssuePage = lazy(() =>
-  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }))
-);
+/** The three route chunks a cold landing can need, each named once: the router's `lazy` below
+ *  and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the entry
+ *  starts cannot be another than the one the router renders. The Inbox at `/` has no chunk of
+ *  its own - the entry carries it (`InboxPage` below) - so a landing there starts none. */
+const loadIssuePage = () =>
+  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }));
+const loadProjectPage = () =>
+  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }));
+const loadDocumentPage = () =>
+  import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }));
 
-const ProjectPage = lazy(() =>
-  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }))
-);
-const DocumentPage = lazy(() =>
-  import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }))
-);
+const IssuePage = lazy(loadIssuePage);
+const ProjectPage = lazy(loadProjectPage);
+const DocumentPage = lazy(loadDocumentPage);
+
+/** The chunks the live document pulls as it renders, which the route chunk does not carry: the
+ *  editor's own library (`features/doc/editor.ts`, `loadEditorLibrary`) and the Yjs transport it
+ *  connects over (`features/doc/connection.ts`, `loadDocumentTransport`). Each is the import its
+ *  own module names for `ProofDocument`, started here rather than named again, so the preload
+ *  and the render cannot pull different chunks. A landing that draws a document always reaches
+ *  both, so this fetches no byte such a landing does not fetch anyway. */
+const loadDocumentChunks = () =>
+  Promise.all([
+    import("./features/doc/editor").then(({ loadEditorLibrary }) => loadEditorLibrary()),
+    import("./features/doc/connection").then(({ loadDocumentTransport }) =>
+      loadDocumentTransport()
+    ),
+  ]);
+
+/**
+ * Starts the chunks the address needs, beside the landing read rather than after it.
+ *
+ * `AuthGate` holds the whole tree behind the landing read, so a chunk is asked for only once
+ * that read has answered and the shell has rendered. The page's own reads then wait for those
+ * chunks to arrive and parse - the live editor's admission read of the document's text most of
+ * all (`features/doc/ProofDocument.tsx`) - which puts them in a wave of their own, after the
+ * reads that needed no chunk. Started here, they come down while the landing read is out, and
+ * the page's reads go out in the wave that follows the landing's answer.
+ *
+ * The address is read exactly as the landing read reads it (`landingReadOf`), so one parse
+ * decides both. An issue page and a project document page each draw a live document, so both
+ * take the document chunks; the board and the Inbox draw none and take none, and an address that
+ * is no page of a cold landing starts nothing. A chunk that fails here is left to the router:
+ * `lazy` asks for the same import again, and a failure there is what `DeploymentResilience`
+ * already decides about (`vite:preloadError`).
+ */
+export function preloadRouteChunk(pathname: string = window.location.pathname): void {
+  const page = landingReadOf(pathname).page;
+  const chunks =
+    page === "issue"
+      ? [loadIssuePage, loadDocumentChunks]
+      : page === "document"
+        ? [loadDocumentPage, loadDocumentChunks]
+        : page === "board"
+          ? [loadProjectPage]
+          : [];
+  // A failure is swallowed here and nowhere else: the same imports run again under the router,
+  // where the Suspense boundary and the chunk-failure recovery decide what a reader sees.
+  for (const load of chunks) void load().catch(() => undefined);
+}
 
 const AgentsPage = lazy(() =>
   import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))

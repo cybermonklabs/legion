@@ -681,7 +681,7 @@ describe("a Dispatch picture on every surface", () => {
   const testWindow = window as unknown as HappyDOMWindow;
   let pageBefore = "about:blank";
   let getIssueSummary: Mock<typeof api.getIssueSummary>;
-  let whoAmI: Mock<typeof api.whoAmI>;
+  let landing: Mock<typeof api.getLanding>;
 
   beforeEach(() => {
     pageBefore = window.location.href;
@@ -689,17 +689,18 @@ describe("a Dispatch picture on every surface", () => {
     // A picture that fell back to its reference resolves it against this issue's summary, which
     // lists no document, rather than reaching the network.
     getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
-    // This page's origin is not the suite's, so the shell's own `/auth/whoami` answer does not
-    // resolve against it: the viewer read is answered here at the api client, as it answers
-    // signed out - no identity - everywhere else in this suite.
-    whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
+    // This page's origin is not the suite's, so the shell's own `/api/v1/landing` answer does
+    // not resolve against it: the viewer read - the landing, which every page makes for its
+    // viewer (`api/queries.ts`) - is answered here at the api client, as it answers signed out,
+    // no identity, everywhere else in this suite.
+    landing = spyOn(api, "getLanding").mockRejectedValue(
       new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
     );
   });
 
   afterEach(() => {
     getIssueSummary.mockRestore();
-    whoAmI.mockRestore();
+    landing.mockRestore();
     testWindow.happyDOM.setURL(pageBefore);
   });
 
