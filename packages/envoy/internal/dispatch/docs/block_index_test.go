@@ -2161,9 +2161,13 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 
 	// An edit that no settlement has written a version for: the live text is ahead of version
 	// 1, and the document owes a settlement this service never runs.
+	// The replacement names the token of the version it replaces, which this branch's upload
+	// rule asks of every replacement of a document that exists (INFRA-1503). The case asserts
+	// nothing about the precondition itself; it needs the edit to land.
+	token := documentTokenForTest(t, service, document, stored)
 	if err := joinedWrite(service, func(ctx context.Context) error {
 		_, err := service.ReplaceText(ctx, document, stored+"\nThe live paragraph.\n",
-			model.Actor{Kind: "user", ID: "alice"}, nil)
+			model.Actor{Kind: "user", ID: "alice"}, &model.EditPrecondition{Document: token})
 		return err
 	}); err != nil {
 		t.Fatalf("edit the document past its latest version: %v", err)
