@@ -1750,6 +1750,50 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 	}
 }
 
+// A jump that never reached GitHub is not printed as one GitHub refused. The daemon falls back
+// to the plain submission for any failure of the jump's own mutation, GitHub's refusal and a
+// network failure, a timeout or a 502 alike, and the record keeps `refused` true for both
+// because the jump went ahead of nothing either way; which of the two happened is in the
+// refusal's own words, since the record keeps no column for it (`record.MergeJumpRecord`). So
+// the one line an operator reads must not assert who refused: a request Legion could not
+// deliver, printed as "refused by GitHub", tells the operator the repository's merge queue
+// answered something it never saw, and sends them to GitHub's settings for a fault in the
+// network. This is the sentence review round 1's third finding was raised about
+// (`ghautomerge.JumpFailure`, which the Dispatch post and the controller notice branch on);
+// `legion state` renders the same fact and is the reader that does not.
+func TestPlainStateDoesNotCallAJumpGitHubNeverAnsweredARefusal(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	// The record a jump GitHub never answered leaves: `refused` true, and a refusal naming the
+	// failure to deliver rather than an answer (the daemon's `jumpRefusalRecorded`).
+	undelivered := `{"repository":"zeta/tools","issue":"LEGION-209","number":77,"head":"deadbee","at":"2026-11-10T08:30:00Z",` +
+		`"reason":"the hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"refused":true,` +
+		`"refusal":"Legion could not deliver the jump to GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
+	served := "{" + daemon + `,"mergeJumps":[],"mergeJumpRecords":[` + undelivered + `]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	printed := out.String()
+	if strings.Contains(printed, "refused by GitHub") {
+		t.Fatalf("legion state printed %q: a jump GitHub never answered is named a refusal of GitHub's, which is the one thing the line must not assert", printed)
+	}
+	// The refusal's own words still reach the operator, so the line says what happened; only the
+	// assertion of who refused is gone.
+	if !strings.Contains(printed, "Legion could not deliver the jump to GitHub") {
+		t.Fatalf("legion state printed %q, want the refusal's own words, which are what tell the two apart", printed)
+	}
+}
+
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
