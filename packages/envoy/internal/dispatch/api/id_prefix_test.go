@@ -824,7 +824,10 @@ type unknownIDRouteProbe struct {
 // caller - is refused before the route reads the id, with what it takes to reach that read.
 // Every other row is driven with that default, and no row is left out of the test.
 var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
-	"PATCH /api/v1/asks/{id}":                                {body: map[string]any{"question": "Which way?"}},
+	"PATCH /api/v1/asks/{id}": {body: map[string]any{"question": "Which way?"}},
+	// The hand-on reads who it hands the ask to before it reads the ask (the pool refuses a
+	// second connection under the transaction), so its probe names a person who has signed in.
+	"PUT /api/v1/asks/{id}/asked-of":                         {body: map[string]any{"asked_of": "alice"}},
 	"POST /api/v1/asks/{id}/resolve":                         {body: map[string]any{"kind": "resolved", "reason": "Settled elsewhere."}},
 	"PUT /api/v1/me/asks/{id}/snooze":                        {body: map[string]any{"snoozed_until": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}},
 	"PATCH /api/v1/comments/{id}":                            {body: map[string]any{"body": "A remark."}},

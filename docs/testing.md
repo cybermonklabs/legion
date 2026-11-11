@@ -319,6 +319,25 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+## A Go test that opens a NATS client
+
+The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`
+hands it to one test at a time (`URL`, `JetStream`). A test that wants a client of its own takes
+it from `testnats.Connect(t, url)`, which names it after the test and closes it when the test
+ends. A test that dials the shared server itself leaves a connection nobody named.
+
+The fixture reads the server's client connections when a test takes it and again when that test
+ends, so a connection that was not there at the start and is still there at the end fails the
+test that left it, naming each one by the id the server gave it and the name its client carries
+(`packages/daemon/internal/testnats/leakcheck.go`). A client the fixture opened it also closes,
+so the next test still gets the server empty; one it never opened — a child process's, or a raw
+`nats.Connect` — it records, and the next test to take the server fails at once naming the test
+that left it, because nothing in this process can close another client's connection.
+
+The daemon's own production clients are named too: `natsauth.Connect` takes the name as a
+parameter rather than an option, so no call site can leave one empty, and an operator reading
+`/connz` on the Envoy NATS sees which process holds each connection.
+
 ## A test that reads `GET /api/v1/references?since=` reads again
 
 A since read answers only the edges at or below the event log's safe horizon (`getReferences` and
@@ -356,6 +375,37 @@ done
 
 The holder must release each transaction: one that never commits holds the horizon back for good,
 so no bounded re-read succeeds under it and the test fails after `eventFeedWait`, naming the hold.
+
+## A test that waits for the event feed's first frame
+
+The rule above bounds a *re-read*: the route answers at the horizon it has, so the test asks again.
+A test waiting for the event feed's `events_start` has nothing to ask again.
+That frame is the last thing a new subscription sends, not the first: `feedEvents` writes it only once `events.Horizon.Await` has returned
+(`packages/envoy/internal/dispatch/api/live_events.go`, `event_stream_relay.go`), and the horizon's proof is instance-wide, so the frame is as late as the longest write transaction open anywhere on the Postgres instance.
+No fixed deadline bounds that, and a deadline raised to fit the worst run anyone has seen is the same flake on the day someone holds a transaction for a minute.
+
+So the test waits on what the server says about itself.
+`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query.
+`waitEventsStart` (`packages/envoy/cmd/dispatch/live_events_wait_test.go`, which `openLiveEvents` calls) reads the frame on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout, and polls the process's output: while that warning keeps arriving the wait goes on, and it fails when the warning stops.
+Count the lines that hold the message, never `strings.Contains`: a contains check latches on the first warning and waits for ever.
+
+The wait still ends in a named failure, which is what the `eventFeedWait` rule above asks for; the bound is a signal rather than a clock.
+It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the process's own database and says that observation has been pending at least `eventsStartOwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
+Each failure names the newest warning, so the holder is in the output; the own-database failure also names that client's `application_name` and pid out of the warning, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
+The base bound and the extension window are each three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
+The other two numbers are neither: `eventsStartPoll` (250 ms) is the rate at which the wait samples the process's output, below a tenth of the extension window so it costs that window nothing, and `eventsStartDrain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
+`eventsStartOwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of that test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
+The bound is read from the warning's own `pending_for`, the age of the oldest pending observation, so the wait needs no clock of its own; a hold shorter than it extends the wait exactly as a foreign hold does.
+Short thresholds are why the Horizon runs one diagnosis at a time: at a `warnEvery` below that diagnosis bound, several scans at once would queue for the two connections of the horizon's own pool, ahead of the observation the waiting reader needs.
+
+The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.
+Prove it with a transaction held longer than that bound, and hold it so that it is still open when the socket subscribes, not merely when `go test` starts:
+the test builds its own binary inside its own clock (`cmdtest.Build`, from `startDispatchProcessWith`), which is a second on a warm build cache and minutes on a loaded machine, so a one-shot hold started before the command can be spent before the socket exists.
+A rolling hold — a new 25 s transaction every second — does not depend on that, and is the recipe to use.
+Measured in this repository's own pod on 2026-11-10, `nproc` 2, under 8 busy loops at four times `nproc`: under a rolling hold the old 10 s deadline failed all five runs it was measured over, three at one head and two at another, and the wait on the signal passed 50 of 50;
+five runs are enough against that deadline because the rolling hold keeps a transaction open whenever the socket subscribes, so what fails it is the shape of the hold rather than the weight of a sample.
+The same one-shot 90 s holder shows both answers, which is why the condition and not the duration is what the recipe names:
+started about a second before `go test` it left the test green (82.11 s on a cold build cache, 72.65 s on a warm one), and started once Dispatch was connected to its own database it failed it (82.62 s, 51 s of that run being the build), each at `main`.
 
 ## A writer a test holds
 

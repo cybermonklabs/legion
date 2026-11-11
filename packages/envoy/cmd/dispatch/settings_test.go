@@ -1889,6 +1889,48 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HORIZON_STALL_AFTER": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.HorizonStallAfter != 0 {
+				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER unset: HorizonStallAfter = %v, want 0 (the horizon's own horizonStallAfter, five seconds)", boot.HorizonStallAfter)
+			}
+			const quick = 250 * time.Millisecond
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_HORIZON_STALL_AFTER": quick.String(),
+			})
+			if boot.HorizonStallAfter != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: HorizonStallAfter = %v, want %v", boot.HorizonStallAfter, quick)
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: the router is handed HorizonStallAfter = %v, want %v", options.HorizonStallAfter, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HORIZON_STALL_AFTER": invalid},
+					fmt.Sprintf("DISPATCH_TEST_HORIZON_STALL_AFTER=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HORIZON_STALL_AFTER": "250ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HORIZON_WARN_EVERY": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.HorizonWarnEvery != 0 {
+				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY unset: HorizonWarnEvery = %v, want 0 (the horizon's own horizonWarnEvery, thirty seconds)", boot.HorizonWarnEvery)
+			}
+			const quick = 250 * time.Millisecond
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":              "1",
+				"DISPATCH_TEST_HORIZON_WARN_EVERY": quick.String(),
+			})
+			if boot.HorizonWarnEvery != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: HorizonWarnEvery = %v, want %v", boot.HorizonWarnEvery, quick)
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: the router is handed HorizonWarnEvery = %v, want %v", options.HorizonWarnEvery, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HORIZON_WARN_EVERY": invalid},
+					fmt.Sprintf("DISPATCH_TEST_HORIZON_WARN_EVERY=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HORIZON_WARN_EVERY": "250ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_EDIT_NOTICE_QUIET": func(t *testing.T) {
 			const shortQuiet = 3 * time.Second
 			boot := resolveWith(t, map[string]string{
