@@ -375,6 +375,19 @@ provider_keys:
   every process of the host, so a secret reaches a pane as a file. The loader refuses these at load
   and the runtime again at boot, naming the variable and never its value. A launch whose own
   variable or secret pointer collides with a `pane_env` name is refused.
+  `OTEL_RESOURCE_ATTRIBUTES` is not in that list, because the runtime composes it, as it composes
+  `PI_CONFIG_FILES` below. The operator sets the attributes this deployment's spend is billed
+  under, and each pane carries them with its own `legion.issue` and `legion.role` after them, so
+  a pane's spend splits by the issue it was spent on. The agent keeps the last value a key is
+  given, so the daemon's two pairs come last. A controller pane serves no issue and carries the
+  role alone, and the boot gate's probe runs no role, so it carries the operator's value as the
+  operator wrote it. The loader reads this one value for its content as well as its name: it
+  refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
+  `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
+  than 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the
+  runtime writes itself — and names that member and what is wrong with it, never the rest of the
+  value. One such member costs the pane every attribute of the variable, the operator's own among
+  them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
   Legion adds no overlay of its own to the list: it writes none, so the operator's are the whole of
   it, with a role's own (`role_config_files`) after them. The

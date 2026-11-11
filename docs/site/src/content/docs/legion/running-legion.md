@@ -502,6 +502,25 @@ What each part is for:
   secret.
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
+- **`runtime.kubernetes.pod.env`** (and **`runtime.tmux.pane_env`** under the tmux runtime) holds
+  your own variables for every agent, and one name in it is composed rather than refused:
+  `OTEL_RESOURCE_ATTRIBUTES`. Set the OpenTelemetry resource attributes your deployment's spend is
+  billed under (`theorem.project=widgets`), and each launch carries them with its own
+  `legion.issue` and `legion.role` after them, so a pod's spend splits by the issue it was spent
+  on. The agent takes the last value a key is given, which is why Legion's two pairs come last.
+  The project controller serves no issue and carries the role alone. The image probe's container
+  and the tmux boot gate's probe run no role, so each keeps your value as you wrote it.
+  Legion reads that value for its content as well as its name, and refuses a member the agent's
+  OpenTelemetry detector would throw on: one that does not split on `=` into one key and one
+  value, one with an empty key, one whose key or value does not percent-decode or runs past 255
+  characters once decoded, and one naming `legion.issue` or `legion.role`, which
+  Legion writes itself. The refusal names that one member and what is wrong with it, never the
+  rest of your value, and `legion start --check-config` gives boot's verdict before a restart.
+  One such member would cost a launch every attribute of the variable, your own
+  `theorem.project` among them, because the detector's caller catches the throw with an empty
+  hand. Like every other variable here, the attributes reach a role with the start command of its
+  next launch and travel in no pod specification, so no pod is replaced and a role already
+  running keeps what it started with.
 - **`runtime.kubernetes.session_store`** is required, and must name a store that keeps every
   pod's Oh My Pi conversation in a database, with that store's key. There are two:
   `postgres`, whose `session_dsn_secret` names the key of the providers Secret
