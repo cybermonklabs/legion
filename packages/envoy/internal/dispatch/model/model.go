@@ -710,24 +710,20 @@ type DuplicateCandidate struct {
 
 // WriteSuggestion is one item the related-item check judges like what was just filed:
 // a search hit over the same project. Ask is where an ask item stands (its latest answer, who gave
-// it, when and the options chosen; or its resolution; or open). AnsweredBy and AnsweredAt repeat
-// the answer's user and time on the ask Suggestions.Decision names, for clients built before Ask.
+// it, when and the options chosen; or its resolution; or open).
 type WriteSuggestion struct {
-	Kind       string          `json:"kind"`
-	Owner      SearchOwner     `json:"owner"`
-	Artifact   *SearchArtifact `json:"artifact,omitempty"`
-	ID         string          `json:"id"`
-	Snippet    string          `json:"snippet"`
-	Href       string          `json:"href"`
-	Ask        *SearchAsk      `json:"ask,omitempty"`
-	AnsweredBy string          `json:"answered_by,omitempty"`
-	AnsweredAt *time.Time      `json:"answered_at,omitempty"`
+	Kind     string          `json:"kind"`
+	Owner    SearchOwner     `json:"owner"`
+	Artifact *SearchArtifact `json:"artifact,omitempty"`
+	ID       string          `json:"id"`
+	Snippet  string          `json:"snippet"`
+	Href     string          `json:"href"`
+	Ask      *SearchAsk      `json:"ask,omitempty"`
 }
 
 // Suggestions is the related-item check's result on a newly created issue or ask: the
-// three items most like it (Related, one per owner) and, when an answered ask already settles the
-// same question, that decision (Decision). The check never refuses the write; it waits at most
-// five seconds, and says what it did.
+// three items most like it (Related, one per owner). The check never refuses the write; it waits
+// at most five seconds, and says what it did.
 //
 // Outcome is "found" (Related holds at least one item), "none" (it searched and found nothing) or
 // "not_made" (it did not search to the end). Search is how it searched, "meaning_and_keywords" or
@@ -748,7 +744,6 @@ type Suggestions struct {
 	SearchNote      string               `json:"search_note,omitempty"`
 	SearchQuery     string               `json:"search_query,omitempty"`
 	Related         []WriteSuggestion    `json:"related"`
-	Decision        *WriteSuggestion     `json:"decision,omitempty"`
 	Missing         string               `json:"missing,omitempty"`
 	TitleMatches    []DuplicateCandidate `json:"title_matches,omitempty"`
 	LikelyDuplicate *DuplicateCandidate  `json:"likely_duplicate,omitempty"`

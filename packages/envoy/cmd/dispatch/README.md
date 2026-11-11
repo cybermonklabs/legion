@@ -2445,8 +2445,7 @@ The result, under `advice.suggestions` (for a decision block, in `advice.decisio
 and `search_query` is two or three of the words it used, spelled as the title spells them, for a reader's own `dispatch search`.
 `related` holds the three items most like what was filed, one per issue or document, each ask item carrying `ask`, where it stands (`open`;
 `answered`, with its latest answer, who gave it, when and the options chosen;
-or `resolved`, with the resolution and the last answer a person gave before it, if any);
-`decision` names an already-answered ask that may settle the same question, with who answered and when.
+or `resolved`, with the resolution and the last answer a person gave before it, if any).
 An issue create forced past the near-copy refusal also names those issues in `title_matches`, and its `issue.created` event records them under `forced.past`; an unforced create names its likely duplicate in `likely_duplicate` instead, and never fills `title_matches`.
 The search leaves out everything the write's owner holds
 — the new issue and its spec, or the issue or project document an ask or a block sits on and everything inside it
@@ -3137,7 +3136,7 @@ Each item below names a path with its method and identity, then its purpose.
   `keywords_only=true` skips meaning search.
   GET takes the fields in the query, `exclude_issues` repeated, title and text together at most 1,000 UTF-16 units (`400 CAP_EXCEEDED` past it);
   POST takes them as a JSON body `{title, text, exclude_issue, exclude_issues, keywords_only}`, a title of at most 1,000 and a text as long as the body's 1 MiB bound.
-  It waits at most 5 seconds and answers `200` with the create's `advice.suggestions` shape (`outcome`, `search`, `search_note`, `search_query`, `related`, `decision`, `missing`), a blank title and text included (`not_made`).
+  It waits at most 5 seconds and answers `200` with the create's `advice.suggestions` shape (`outcome`, `search`, `search_note`, `search_query`, `related`, `missing`), a blank title and text included (`not_made`).
   `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for an unknown one.
 
 - `/api/v1/related-checks?project=&source_kind=&from=&to=` (GET; cookie, trusted header, or bearer)

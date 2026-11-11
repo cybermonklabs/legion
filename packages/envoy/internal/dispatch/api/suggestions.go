@@ -52,9 +52,8 @@ const (
 	relatedRecordRetryLimit = 4
 	// suggestionRelatedCount is "the three items most like what was just filed" (LEGION-550's spec).
 	suggestionRelatedCount = 3
-	// suggestionSearchDepth widens the search past suggestionRelatedCount so an answered ask a few
-	// ranks behind the top issues can still surface as Suggestions.Decision, and so three distinct
-	// owners remain once an issue and its spec collapse into one item.
+	// suggestionSearchDepth widens the search past suggestionRelatedCount so that three distinct
+	// owners remain once an issue and its document collapse into one item.
 	suggestionSearchDepth = 10
 	// relatedSearchQueryTerms is how many of the chosen terms Suggestions.SearchQuery holds: enough
 	// for a reader's own dispatch search to find what the check found, few enough that search's
@@ -295,9 +294,8 @@ type relatedPick struct {
 // request that ran it goes away first, it was not made, cancelled.
 //
 // The source's own items are left out, each owner keeps its best-ranked item, open owners come
-// before done issues, and the best three are Related; the decision is the first answered ask in
-// the search's own order. Unless record is false it then records what it offered and how it went
-// (recordRelatedChecks).
+// before done issues, and the best three are Related. Unless record is false it then records what
+// it offered and how it went (recordRelatedChecks).
 func (s *server) relatedCheck(ctx context.Context, input relatedInput) *model.Suggestions {
 	started := time.Now()
 	suggestions, record := s.runRelatedCheck(ctx, input, started)
@@ -620,19 +618,15 @@ func milliseconds(d time.Duration) *int {
 	return &ms
 }
 
-// fillRelatedItems turns the search's results into Related and Decision. Everything the input
-// excludes is left out first, as the statement that answered already left it out of the rows it
-// ranked and paged (relatedExcludedOwners): the same rule over what came back, so an item the
-// check must not offer cannot reach a reader through a statement that answered anything else.
-// The rest carry their ask state (attachAskStates). A failure to read those states leaves every
-// item's nil, and so no Decision, rather than failing the check or keeping the states read
-// before it. Each owner (an issue, or a project document) keeps one item, which the loop below
-// picks, so an issue matched through its title, its spec and a comment fills one place, not
-// three. Related then takes the best suggestionRelatedCount in
-// relatedItemRank's order, keeping the search's order within each rank;
-// Decision is the first answered ask in the search's own order, deliberately not reordered by
-// owner status: an answered question stays the best match for the question asked whether or not
-// its issue has since closed.
+// fillRelatedItems turns the search's results into Related. Everything the input excludes is
+// left out first, as the statement that answered already left it out of the rows it ranked and
+// paged (relatedExcludedOwners): the same rule over what came back, so an item the check must
+// not offer cannot reach a reader through a statement that answered anything else. The rest
+// carry their ask state (attachAskStates). A failure to read those states leaves every item's
+// nil, rather than failing the check or keeping the states read before it. Each owner (an issue,
+// or a project document) keeps one item, which the loop below picks, so an issue matched through
+// its title, its spec and a comment fills one place, not three. Related then takes the best
+// suggestionRelatedCount in relatedItemRank's order, keeping the search's order within each rank.
 func (s *server) fillRelatedItems(
 	ctx context.Context, input relatedInput, results []model.SearchResult, suggestions *model.Suggestions,
 ) {
@@ -691,16 +685,6 @@ func (s *server) fillRelatedItems(
 	})
 	for _, result := range related[:min(len(related), suggestionRelatedCount)] {
 		suggestions.Related = append(suggestions.Related, suggestionFromResult(result))
-	}
-	for _, result := range candidates {
-		if result.Ask == nil || result.Ask.State != "answered" || result.Ask.Answer == nil {
-			continue
-		}
-		item := suggestionFromResult(result)
-		at := result.Ask.Answer.At
-		item.AnsweredBy, item.AnsweredAt = result.Ask.Answer.User, &at
-		suggestions.Decision = &item
-		break
 	}
 }
 
@@ -812,7 +796,7 @@ const relatedCheckInsert = `
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
 // write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
-// so an edit's decision blocks past decisionBlockCheckLimit, however many, cost one.
+// so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
 //
 // related_checks rows the first attempt could not write for a reason a retry can cure
 // (relatedRecordRetryable) are tried once more in the background, on the server's lifetime
@@ -900,19 +884,16 @@ func relatedRecordRetryable(err error) bool {
 
 // persistSuggestions records every item a check offered, so the outcome sweep has something to
 // resolve and a later count has something to count, in one round trip (store.Pool.SendBatch):
-// up to four rows, three related plus one decision. A row that cannot be inserted is only logged.
+// up to three rows, one per related item. A row that cannot be inserted is only logged.
 func (s *server) persistSuggestions(ctx context.Context, source suggestionSource, suggestions *model.Suggestions) {
 	type row struct {
 		role string
 		rank int
 		item model.WriteSuggestion
 	}
-	rows := make([]row, 0, len(suggestions.Related)+1)
+	rows := make([]row, 0, len(suggestions.Related))
 	for i, item := range suggestions.Related {
 		rows = append(rows, row{role: "related", rank: i, item: item})
-	}
-	if suggestions.Decision != nil {
-		rows = append(rows, row{role: "decision", rank: 0, item: *suggestions.Decision})
 	}
 	if len(rows) == 0 {
 		return
