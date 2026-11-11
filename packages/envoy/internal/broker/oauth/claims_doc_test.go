@@ -232,3 +232,5 @@ func extractedClaims(t *testing.T) []string {
 	}
 	return claims
 }
+
+// INFRA-1413 selection probe, never merged.
