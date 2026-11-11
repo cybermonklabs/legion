@@ -428,9 +428,9 @@ func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
 // reserve now holds two things: the push itself, and the second run of the shared check that a
 // pod's pre-push hook makes inside it (GuardReserve, 150 s, and the gitPins comment for why the
 // hook runs at all). A workspace bound that cannot hold the reserve is refused before the guard
-// runs at all, with nothing pushed — the fail-closed answer, and the reason a workspace's own
-// bound is six minutes (WorkspaceTimeout, derived from the reserve). The minute a bound was
-// here before is now such a bound, which is what this reads.
+// runs at all, with nothing pushed — the fail-closed answer, and one of the reasons a workspace's
+// own bound is what it is (WorkspaceTimeout, derived from the reserve and from the worktree read
+// below). The minute a bound was here before is now such a bound, which is what this reads.
 func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, "feature.txt", "work a bound too small never carries\n")
@@ -447,5 +447,73 @@ func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testin
 	}
 	if after := d.RemoteBranches(); !slices.Equal(after, before) {
 		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+	}
+}
+
+// The step that finds a workspace's uncommitted files reads the whole worktree: it hashes again
+// every file whose stat data the index does not match, and in a pod the index it copies carries
+// none it can use, so it hashes all of them. Measured in pods on a 13 GB workspace, that read
+// took between 15 seconds and 25 minutes, and no refresh of the index makes it cheaper — the
+// refresh is the same read. So a workspace's bound covers it, with the guard's own run and the
+// reserve it leaves the push still in hand. A bound that does not is a pod whose replacement
+// never happens: the read runs out, the check fails the workspace, and the round waits on a
+// person.
+func TestAWorkspacesBoundCoversTheWholeWorktreeRead(t *testing.T) {
+	const measured = 25 * time.Minute
+	if left := rescue.WorkspaceTimeout - rescue.CheckRun - rescue.GuardReserve; left < measured {
+		t.Fatalf("a workspace's bound leaves its worktree read %s, want at least the %s a pod measured",
+			left, measured)
+	}
+}
+
+// A read of the workspace's files that cannot finish inside the bound loses the workspace's
+// uncommitted files, which is what the bound above exists to prevent — but it must not lose the
+// commits the check has already found as well. The read is stopped while the guard's run and the
+// push's reserve are still in hand, those commits are pushed, and the entry fails naming the step
+// that did not finish, so the pod is still not replaced and a person reads which step to run by
+// hand.
+//
+// The read is made slow here as a pod's is: a clean filter git runs over one file, which sleeps
+// longer than the bound leaves the read. Nothing else of the check is slowed.
+func TestAReadOfTheWorkspacesFilesThatRunsOutStillRescuesTheCommitsFound(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, "feature.txt", "work the remote lacks\n")
+	d.JJ("commit", "-m", "work the remote lacks")
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	d.Run(d.Workspace, "git", "config", "filter.slow.clean", "sleep 60; cat")
+	d.Write(d.Workspace, ".gitattributes", "slow.txt filter=slow\n")
+	d.Write(d.Workspace, "slow.txt", "a file in no commit, read through a filter that sleeps\n")
+	// The shape a pod's workspace is in, and why the read costs what it costs there: jj writes
+	// the colocated index with no stat data, so git reads a tracked file as changed and has to
+	// hash it again before it can say that it did not change. --no-optional-locks keeps this
+	// read from writing the refreshed index back and curing it for the check that follows.
+	if dirty := d.Git("--no-optional-locks", "diff-files", "--name-only"); dirty == "" {
+		t.Fatalf("no tracked file of the workspace reads as changed, so this case no longer stands on the index a pod's jj writes")
+	}
+
+	bound := rescue.CheckRun + rescue.GuardReserve + 10*time.Second
+	started := time.Now()
+	checked := rescue.Run(context.Background(), rescue.Request{
+		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
+		WorkspaceTimeout: bound, Deadline: time.Now().Add(bound + time.Minute),
+	})
+	took := time.Since(started)
+	w := only(t, d, checked)
+	if w.Status != rescue.Failed || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want the one commit it found rescued and the workspace failed", w)
+	}
+	if b := w.Branches[0]; b.Name != prefix+"-1" || b.Commit != commit || d.RemoteBranch(b.Name) != commit {
+		t.Errorf("the check pushed %s at %s, want %s-1 at the commit %s the workspace holds", b.Name, b.Commit, prefix, commit)
+	}
+	if !strings.Contains(w.Error, "could not be read in the time the workspace's bound left for them") || !strings.Contains(w.Error, w.Dir) {
+		t.Errorf("the entry failed with %q, want it to name the read of %s as the step that ran out", w.Error, w.Dir)
+	}
+	if !strings.Contains(w.Error, "on the remote") {
+		t.Errorf("the entry failed with %q, want it to say that what the check did find reached the remote", w.Error)
+	}
+	// The filter sleeps 60 s, so a check that did not stop its read cannot be under this: the
+	// read's own bound here is 10 s, and what is left of the time is the push's reserve.
+	if took > 30*time.Second {
+		t.Errorf("the check took %s of its %s bound, want the read stopped with the push's reserve in hand", took, bound)
 	}
 }
