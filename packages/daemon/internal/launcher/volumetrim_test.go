@@ -1969,6 +1969,41 @@ func TestASweepThatFreesLessThanAPointStartsNoSweepForTenIntervals(t *testing.T)
 	}
 }
 
+// The pause is ten intervals, written here as the number and not as the constant.
+//
+// The case above drives `volumeQuietIntervals` intervals and compares counts derived from the
+// same constant, so a copy whose pause is nought drives no interval, compares no count and
+// stays green while the trimmer sweeps on every interval of a volume it cannot bring down —
+// the listing of a 17 GiB build cache once a minute in the process that is PID 1 of the roles
+// container, which is the cost rule 2 of the design exists to stop (dispatch://INFRA-2009 spec,
+// "When the low mark cannot be reached"). Measured by the tester at
+// 2ba2c7ad44b174963ff159cc66d4bfecf9d6d300: with volumeQuietIntervals set to 0 the package's
+// own suite was green.
+//
+// So this case writes the ten out: the line the trimmer logs must name ten intervals, ten
+// intervals must pass with no second sweep, and the eleventh must sweep.
+func TestThePauseAfterASweepThatFreedUnderAPointIsTenIntervals(t *testing.T) {
+	f := newTrimFixture(t, 1) // four entries, four tenths of a point
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	f.tick("the sweep ended")
+	if f.logged("no new sweep for the next 10 intervals") != 1 {
+		t.Fatalf("the trimmer did not announce a ten-interval pause after a sweep that freed under a point; it wrote %q", f.linesWritten())
+	}
+	for at := 1; at <= 10; at++ {
+		f.tick("no sweep for another")
+		if sweeps := f.logged("sweeping"); sweeps != 1 {
+			t.Fatalf("the trimmer swept %d times by interval %d of the pause, want the one sweep before it", sweeps, at)
+		}
+	}
+	f.tick("the sweep ended")
+	if sweeps := f.logged("sweeping"); sweeps != 2 {
+		t.Errorf("the trimmer swept %d times, want the second sweep on the eleventh interval after the first", sweeps)
+	}
+}
+
 // The worst case of a volume the trimmer cannot bring under the high mark is two sweeps and
 // then one every eleven intervals: the first sweep frees what it can, the second finds nothing
 // eligible and so frees under a point, and that engages the ten-interval pause.
