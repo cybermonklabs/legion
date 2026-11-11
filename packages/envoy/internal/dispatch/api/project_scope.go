@@ -141,6 +141,8 @@ func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 		return s.projectOfComment, true
 	case addresses(pattern, "/api/v1/messages/{id}"):
 		return s.projectOfMessage, true
+	case addresses(pattern, "/api/v1/results/{id}"):
+		return s.projectOfCheckResult, true
 	}
 	return nil, false
 }
@@ -209,6 +211,20 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 		from messages m
 		left join issues i on i.key = m.issue_key
 		where m.id = $1
+	`, r.PathValue("id")))
+}
+
+// projectOfCheckResult is one hop to the project of the issue the result was recorded on,
+// since the check_results table holds no project of its own
+// (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
+// check_issue_key: a result recorded on a child against a parent's check belongs to the child,
+// and both issues are of one project anyway, since an issue's parent is of its own project.
+func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
+	return scanProjectKey(q.QueryRow(ctx, `
+		select coalesce(i.project_key, '')
+		from check_results c
+		left join issues i on i.key = c.issue_key
+		where c.id = $1
 	`, r.PathValue("id")))
 }
 

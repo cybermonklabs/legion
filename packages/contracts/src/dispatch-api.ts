@@ -962,6 +962,18 @@ export interface CheckResultEventPayload {
   readonly commit_sha: string;
 }
 
+/** `result.retracted`: one recorded result marked wrong, appended on the **check's** issue as
+ *  `result.recorded` is, and naming in `issue` the issue the result was recorded on. The result
+ *  itself is neither updated nor deleted, and `reason` is why it is wrong. */
+export interface CheckResultRetractedEventPayload {
+  readonly result_id: string;
+  readonly issue: string;
+  readonly check_issue: string;
+  readonly check_block_id: string;
+  readonly commit_sha: string;
+  readonly reason: string;
+}
+
 /** A server-owned typed-block attribute was restored from its indexed row. */
 export interface BlockRepairedEventPayload {
   readonly block_id: string;
@@ -1295,6 +1307,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "result.recorded";
       readonly payload: CheckResultEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "result.retracted";
+      readonly payload: CheckResultRetractedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "comment.created";

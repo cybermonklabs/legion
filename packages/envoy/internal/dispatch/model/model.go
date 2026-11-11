@@ -1060,6 +1060,19 @@ type CheckResult struct {
 	Currency        string    `json:"currency,omitempty"`
 }
 
+// CheckResultRetraction is the record that says one stored result is wrong
+// (check_result_retractions). It names the result and keeps the reason and the actor. The
+// result itself is neither updated nor deleted, so a reader sees both records. One result
+// takes one retraction, which the table's key holds.
+type CheckResultRetraction struct {
+	ResultID  string    `json:"result_id"`
+	Reason    string    `json:"reason"`
+	Session   string    `json:"session"`
+	Actor     Actor     `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+	EventSeq  *int64    `json:"event_seq,omitempty"`
+}
+
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
 // result recorded against it from any issue, newest first.
@@ -1119,6 +1132,19 @@ type CheckResultEventPayload struct {
 	Verdict         string `json:"verdict"`
 	Role            string `json:"role"`
 	CommitSHA       string `json:"commit_sha"`
+}
+
+// CheckResultRetractedEventPayload is the payload of result.retracted, appended on the check's
+// issue as result.recorded is: the retracted result, the issue it was recorded on (Issue, which
+// is the check's issue only when the result was recorded there), the check it claimed to prove,
+// and why it is wrong.
+type CheckResultRetractedEventPayload struct {
+	ResultID     string `json:"result_id"`
+	Issue        string `json:"issue"`
+	CheckIssue   string `json:"check_issue"`
+	CheckBlockID string `json:"check_block_id"`
+	CommitSHA    string `json:"commit_sha"`
+	Reason       string `json:"reason"`
 }
 
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends

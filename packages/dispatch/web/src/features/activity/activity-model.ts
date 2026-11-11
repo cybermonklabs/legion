@@ -202,6 +202,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
+    case "result.retracted":
+      return `retracted the result of check ${event.payload.check_block_id} at ${event.payload.commit_sha}: ${event.payload.reason}`;
   }
 }
 

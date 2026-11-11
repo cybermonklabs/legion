@@ -2459,6 +2459,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/results/{id}/retract": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Retract one recorded result, with the reason it is wrong: {reason, actor?}. {id} is the result's own id. The retraction is a record of its own: the result is neither updated nor deleted, and both records stay readable with the reason and the actor who wrote it. No surface counts a retracted result as evidence. Three callers are admitted and every other is 403 RETRACTION_FORBIDDEN: the session that recorded the result, a session holding the Dispatch claim of the issue the result was recorded on, and a caller whose credential carries a person, which is a personal token or a signed-in person's own session. A closed issue and a check of any when are retracted here, which is what recording refuses. A blank reason is 400 RETRACTION_INPUT, an id no result has is 404 RESULT_NOT_FOUND, and a result a retraction already stands against is 409 RESULT_RETRACTED. The answer is the retraction: {result_id, reason, session, actor, created_at, event_seq}. It is appended as result.retracted on the check's issue. */
+    post: operations["postApiV1ResultsByIdRetract"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/schema/blocks": {
     parameters: {
       query?: never;
@@ -3351,6 +3368,19 @@ export interface components {
     CheckResultRecorded: {
       line: string;
       result: components["schemas"]["CheckResult"];
+    };
+    CheckResultRetraction: {
+      actor: components["schemas"]["Actor"];
+      /** Format: date-time */
+      created_at: string;
+      event_seq?: number;
+      reason: string;
+      result_id: string;
+      session: string;
+    };
+    CheckResultRetractionInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      reason: string;
     };
     ClaimIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -11633,6 +11663,44 @@ export interface operations {
       };
     };
   };
+  postApiV1ResultsByIdRetract: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CheckResultRetractionInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CheckResultRetraction"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1SchemaBlocks: {
     parameters: {
       query?: {
@@ -12326,6 +12394,8 @@ export type ChangeFailureRate = components["schemas"]["ChangeFailureRate"];
 export type CheckBlock = components["schemas"]["CheckBlock"];
 export type CheckResult = components["schemas"]["CheckResult"];
 export type CheckResultRecorded = components["schemas"]["CheckResultRecorded"];
+export type CheckResultRetraction = components["schemas"]["CheckResultRetraction"];
+export type CheckResultRetractionInput = components["schemas"]["CheckResultRetractionInput"];
 export type ClaimIssueInput = components["schemas"]["ClaimIssueInput"];
 export type ClaimedIssue = components["schemas"]["ClaimedIssue"];
 export type Comment = components["schemas"]["Comment"];

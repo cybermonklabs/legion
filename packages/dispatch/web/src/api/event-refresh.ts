@@ -920,7 +920,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   // lists the results it recorded. Nothing else reads a result — no document, ask, inbox or
   // issue detail carries one — and this switch has a default, so the branch is deliberate and
   // its test pins it.
-  if (event.type === "result.recorded") {
+  //
+  // A retraction moves the same two reads: the result stays in both listings and stops counting
+  // as evidence there, so a page that did not refetch would keep showing it as proof.
+  if (event.type === "result.recorded" || event.type === "result.retracted") {
     targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     if (event.payload.issue !== key) {
       targets.push({ exact: true, queryKey: ["issue", event.payload.issue, "results"] });
