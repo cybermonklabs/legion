@@ -28,7 +28,7 @@ test("the issues table shows the daemon's phases and issue facts @legion @phone"
     await expect(table).toBeVisible();
     await expect(page.locator("[data-issues-counted]")).toHaveText("5 issues");
     await page.getByRole("button", { name: "Columns", exact: true }).click();
-    for (const name of ["Slot", "Roles", "CI"]) {
+    for (const name of ["Priority", "Slot", "Roles", "CI"]) {
       await page.getByRole("checkbox", { name, exact: true }).check();
     }
     await page.keyboard.press("Escape");
