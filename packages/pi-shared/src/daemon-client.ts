@@ -89,10 +89,20 @@ export interface LegionDaemonClient {
    * that stops waiting for a daemon that does not answer (the phase reminder's bounded record
    * check) aborts it rather than leave it open. */
   readonly state: (options?: { readonly signal?: AbortSignal }) => Promise<LegionState>;
-  readonly register: (input: RegisterInput) => Promise<LegionRegistration>;
+  /** The pane's registration. `signal` aborts the request, its answer's body included: the claim
+   * boot bounds each attempt it makes (`callWithinClaimBootBudget`), so a daemon that does not
+   * answer fails the attempt rather than holding the boot open. */
+  readonly register: (
+    input: RegisterInput,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionRegistration>;
   /** The same route, for the operator-launched controller: `bootToken` is the capability `legion
-   * controller start` fetched, and the answer is the controller's registration. */
-  readonly registerController: (input: RegisterInput) => Promise<LegionControllerRegistration>;
+   * controller start` fetched, and the answer is the controller's registration. `signal` bounds
+   * it as it bounds `register`. */
+  readonly registerController: (
+    input: RegisterInput,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionControllerRegistration>;
   /** The agent saying it can be prompted. `signal` aborts the request, its answer's body
    * included: a caller that stops waiting for a daemon that does not answer (the capability
    * schedule's bounded send) aborts it rather than leave it open. */
@@ -228,11 +238,7 @@ export async function callReadyWithRetry(label: string, call: () => Promise<void
       await call();
       return;
     } catch (error) {
-      const retryable =
-        error instanceof LegionDaemonApiError
-          ? error.status >= 500 && error.status < 600
-          : isNetworkOrTimeoutError(error);
-      if (!retryable) throw error;
+      if (!isRetryableDaemonFailure(error)) throw error;
       if (attempt === READY_RETRY_ATTEMPTS) {
         console.error(`[legion] ${label} failed after ${attempt} attempts: ${messageFor(error)}`);
         throw error;
@@ -243,6 +249,101 @@ export async function callReadyWithRetry(label: string, call: () => Promise<void
       const retryDelay = Promise.withResolvers<void>();
       setTimeout(retryDelay.resolve, READY_RETRY_DELAY_MS);
       await retryDelay.promise;
+    }
+  }
+}
+
+/**
+ * The bound of one daemon call the claim boot makes. It is above the daemon's own per-call bound
+ * — `worker_rpc_timeout_seconds`, 5 seconds at its defaults — so an answer the daemon sends at
+ * its own limit is read, and an attempt that hangs past it fails and is sent again. A deployment
+ * that raises `worker_rpc_timeout_seconds` above 6 seconds trades a late answer for a relaunch:
+ * its slow answers arrive after this bound has failed the attempt, and the boot that spends its
+ * budget ends the process for the daemon to launch again.
+ */
+export const CLAIM_BOOT_ATTEMPT_TIMEOUT_MS = 6_000;
+
+/**
+ * The one wall-clock budget of a whole claim boot, every attempt and every step of it together.
+ *
+ * The boot runs inside Oh My Pi's `session_start`, which Oh My Pi aborts at 30 000 ms (measured
+ * in this pod on 2026-11-11: the abort fired at 29 998 ms and at 30 003 ms in two runs, and left
+ * the session alive with no `legion` tool), and the Oh My Pi host bounds its whole handler at
+ * 25 000 ms. The boot must therefore decide its own ending below both, and 20 000 ms leaves room
+ * for the ending itself to be logged and the process to be ended. The Claude Code host has no
+ * such ceiling and takes the same budget: one number keeps one behaviour across the two
+ * harnesses.
+ */
+export const CLAIM_BOOT_BUDGET_MS = 20_000;
+
+/** The two bounds a claim boot runs under: the bound of one daemon attempt, and the whole boot's
+ * wall-clock budget. Production takes {@link CLAIM_BOOT_ATTEMPT_TIMEOUT_MS} and
+ * {@link CLAIM_BOOT_BUDGET_MS}; a test passes its own, since no test can wait 20 seconds. */
+export interface ClaimBootBounds {
+  readonly attemptMs: number;
+  readonly budgetMs: number;
+}
+
+/** One boot's budget while it runs: its two bounds, and how much of the budget is left. */
+export interface ClaimBootBudget extends ClaimBootBounds {
+  /** Milliseconds left of the budget; 0 or less once it is spent. */
+  readonly remainingMs: () => number;
+}
+
+/** Starts `bounds`' budget now: the clock every call and every step of one boot runs under. */
+export function claimBootBudget(bounds: ClaimBootBounds): ClaimBootBudget {
+  const deadline = Date.now() + bounds.budgetMs;
+  return { ...bounds, remainingMs: () => deadline - Date.now() };
+}
+
+/** Whether a failed daemon call can pass on its own: the daemon was not reached, the attempt
+ * timed out, or the daemon answered 5xx. Any other answer — a 4xx above all — is the daemon's
+ * decision and is handed to the caller. */
+function isRetryableDaemonFailure(error: unknown): boolean {
+  return error instanceof LegionDaemonApiError
+    ? error.status >= 500 && error.status < 600
+    : isNetworkOrTimeoutError(error);
+}
+
+/**
+ * Runs one daemon call of a claim boot until the daemon answers: each attempt under its own
+ * bound (`AbortSignal.timeout`, never longer than the budget has left), a retry on a failure
+ * that can pass on its own ({@link isRetryableDaemonFailure}), and a short wait between
+ * attempts. Every attempt and every wait comes out of `budget`, the boot's one wall-clock
+ * budget: once it is spent the call fails saying which call it was, that the budget is spent and
+ * what the last attempt failed with, and the boot ends the process on that line.
+ *
+ * It writes no line of its own. The boot writes exactly one line, at its ending, which names the
+ * failure this hands it.
+ */
+export async function callWithinClaimBootBudget<T>(
+  label: string,
+  send: (signal: AbortSignal) => Promise<T>,
+  budget: ClaimBootBudget
+): Promise<T> {
+  let lastFailure: unknown;
+  for (;;) {
+    const left = budget.remainingMs();
+    if (left <= 0) {
+      throw new Error(
+        `${label} got no answer inside the claim boot's budget of ${budget.budgetMs} ms, which is spent${lastFailure === undefined ? "" : `; the last attempt failed with: ${messageFor(lastFailure)}`}`
+      );
+    }
+    try {
+      return await send(AbortSignal.timeout(Math.min(budget.attemptMs, left)));
+    } catch (error) {
+      if (!isRetryableDaemonFailure(error)) throw error;
+      lastFailure = error;
+      // The wait is never longer than one attempt's own bound, so a boot given smaller bounds
+      // retries at their scale, and never longer than the budget has left, so it is the budget
+      // check above that ends the call rather than a wait running past it.
+      const wait = Promise.withResolvers<void>();
+      const timer = setTimeout(
+        wait.resolve,
+        Math.min(READY_RETRY_DELAY_MS, budget.attemptMs, budget.remainingMs())
+      );
+      timer.unref?.();
+      await wait.promise;
     }
   }
 }
@@ -468,9 +569,16 @@ export function createLegionDaemonClient(
   return {
     state: (options) =>
       read("GET", "/legion/v1/state", LegionStateResponse, undefined, options?.signal),
-    register: (input) => read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input),
-    registerController: (input) =>
-      read("POST", "/legion/v1/claims/register", LegionControllerRegisterResponse, input),
+    register: (input, options) =>
+      read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input, options?.signal),
+    registerController: (input, options) =>
+      read(
+        "POST",
+        "/legion/v1/claims/register",
+        LegionControllerRegisterResponse,
+        input,
+        options?.signal
+      ),
     ready: (input, options) => acknowledge("/legion/v1/claims/ready", input, options?.signal),
     readyForUpdate: (input) => acknowledge("/legion/v1/claims/ready-for-update", input),
     exit: (input) => acknowledge("/legion/v1/claims/exit", input),

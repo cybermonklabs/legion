@@ -267,6 +267,15 @@ export function startLegionClaim(deps: {
         agentId: sessionID,
         pluginContract: legion.daemonApiVersion,
       },
+      // Who the line of a boot that registers no claim names, from the pane's own environment
+      // and its daemon's address: the registration carries a boot token and no claim
+      // (`LegionClaimIdentity`).
+      identity: {
+        role: configuredValue((deps.env ?? process.env)["LEGION_ROLE"]),
+        issue: configuredValue((deps.env ?? process.env)["LEGION_ISSUE"]),
+        tree: configuredValue((deps.env ?? process.env)["LEGION_TREE"]),
+        daemonUrl: deps.pane.daemonUrl,
+      },
       setCapability: (registered) => {
         capability = registered
       },

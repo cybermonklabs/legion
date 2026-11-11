@@ -1,13 +1,33 @@
 import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
+  CLAIM_BOOT_ATTEMPT_TIMEOUT_MS,
+  CLAIM_BOOT_BUDGET_MS,
+  type ClaimBootBounds,
+  type ClaimBootBudget,
   callReadyWithRetry,
-  LegionDaemonApiError,
+  callWithinClaimBootBudget,
+  claimBootBudget,
   type LegionDaemonClient,
   type ReadyInput,
   type RegisterInput,
 } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
+
+/** Who the process booting a claim is, for the one line a boot that registers no claim writes.
+ * None of it is on `RegisterInput`, which names a boot token and a session and no claim, so each
+ * host fills it from its own environment (`LEGION_ROLE`, `LEGION_ISSUE`, `LEGION_TREE`, and the
+ * daemon's address, `LEGION_DAEMON_URL`). A value its environment does not carry, or carries
+ * blank, is written `(unset)` in the line rather than left out, so an operator reads which of
+ * the four the launch was missing. */
+export interface LegionClaimIdentity {
+  /** Each is `undefined` where the host's environment did not carry it: a host hands the value
+   * it read on, undefined and all, rather than deciding what an absent one reads as. */
+  readonly role?: string | undefined;
+  readonly issue?: string | undefined;
+  readonly tree?: string | undefined;
+  readonly daemonUrl: string;
+}
 
 /** What a host gives the claim boot: the registration it sends, and how it claims the Envoy role,
  * hears a regain, records the capability, logs and stops. */
@@ -63,6 +83,14 @@ export interface LegionClaimHost {
   readonly stopping: string;
   /** Ends the claim's agent, so the daemon launches it again. */
   readonly stop: () => void;
+  /** Who this process is and which daemon it calls, for the one line every ending that is not a
+   * registered claim writes ({@link LegionClaimIdentity}). */
+  readonly identity: LegionClaimIdentity;
+  /** The boot's two bounds: the bound of one daemon attempt and the boot's whole wall-clock
+   * budget. Production passes none and takes `CLAIM_BOOT_ATTEMPT_TIMEOUT_MS` and
+   * `CLAIM_BOOT_BUDGET_MS` (`src/daemon-client.ts`); a test passes its own, since no test can
+   * wait out the production budget. */
+  readonly bounds?: ClaimBootBounds;
 }
 
 /** What the boot answers: the claim step it left to run after it, for a caller that waits on it
@@ -78,10 +106,9 @@ export interface LegionClaimBoot {
  * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`; the
  * host's first-turn signal registered (`onFirstTurn`), which is why a turn that starts while the
  * ready below is still being retried is not lost; `afterRegister`; the capability recorded;
- * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the regain
- * listener, which re-runs that same ready each time the heartbeat regains the role; and then,
- * after this function has settled, the Envoy role claimed at the first turn the signal reported
- * or at the bound, whichever comes first.
+ * `claims/ready`; the regain listener, which re-runs that same ready each time the heartbeat
+ * regains the role; and then, after this function has settled, the Envoy role claimed at the
+ * first turn the signal reported or at the bound, whichever comes first.
  *
  * The name is taken last because the Envoy listener keeps a message published to a role no
  * session holds and hands the whole kept lane over the moment the role is claimed: claimed before
@@ -99,24 +126,38 @@ export interface LegionClaimBoot {
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
  *
- * A registration the daemon refuses (a 4xx: a spent boot token, another contract) and any failure
- * after a registration are logged and `stop` the agent, since neither changes on retry. Any other
- * refusal of the registration (a 5xx) is logged and rejects, as a request that never reached the
- * daemon does unlogged: both leave the agent to the daemon's registration deadline. A claim the
- * listener refuses is logged and stops the agent in exactly the same words, now after the daemon
- * may have delivered a task: the relaunch re-sends a delivery that is pending and unconfirmed,
- * the path a death inside a turn already takes.
+ * **Every ending that is not a registered claim writes one line and ends the agent**, and
+ * nothing throws out of this function: a refusal of any status, a request that never reached the
+ * daemon, a call that did not answer inside its bound, a spent budget, and a failure of any step
+ * after the registration. A process that runs on without a registered claim is a role with no
+ * `legion` tool, which can finish no phase and which nothing else notices
+ * (dispatch://INFRA-2883); a process that ends is one the daemon launches again.
+ *
+ * Every daemon call runs through {@link callWithinClaimBootBudget}: each attempt under its own
+ * bound, a retry while the daemon cannot answer (a transport failure, a timed-out attempt, a
+ * 5xx), and every attempt out of one wall-clock budget that starts at the first call and covers
+ * the whole of this function, `afterRegister` included — that hook spawns `jj config path
+ * --user`, whose own 10 second bound (`JJ_CONFIG_PATH_TIMEOUT_MS`, `src/jj-attribution.ts`) sits
+ * above what the boot can spare. A step that outlives the remaining budget ends the agent on the
+ * same line. Only the claim step, which runs after this function has settled, is outside the
+ * budget: it waits for the session's own first turn, which no bound of the boot's measures.
  */
 export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClaimBoot> {
   const { daemon } = host;
+  const budget = claimBootBudget(
+    host.bounds ?? { attemptMs: CLAIM_BOOT_ATTEMPT_TIMEOUT_MS, budgetMs: CLAIM_BOOT_BUDGET_MS }
+  );
   let claim: LegionRegistration;
   try {
-    claim = await daemon.register(host.registration);
+    claim = await named("claims/register", () =>
+      callWithinClaimBootBudget(
+        "claims/register",
+        (signal) => daemon.register(host.registration, { signal }),
+        budget
+      )
+    );
   } catch (error) {
-    if (!(error instanceof LegionDaemonApiError)) throw error;
-    host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
-    if (error.status < 400 || error.status >= 500) throw error;
-    host.stop();
+    endBoot(host, error, undefined);
     return { claimed: Promise.resolve() };
   }
   // The signal is heard from here, the moment the registration answered and before the ready
@@ -125,16 +166,20 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   // ready (claimRoleAtFirstTurn).
   const firstTurn = listenForFirstTurn(host);
   try {
-    await host.afterRegister?.(claim);
-    host.setCapability({
-      sessionID: host.registration.sessionId,
-      claimToken: claim.claimToken,
-      generation: claim.generation,
-      tree: claim.tree,
-      issue: claim.issue,
-      role: claim.role,
-      secret: claim.secret,
-      promptAgents: claim.promptAgents,
+    await withinBudget(budget, "afterRegister", async () => {
+      await host.afterRegister?.(claim);
+    });
+    await withinBudget(budget, "setCapability", async () => {
+      host.setCapability({
+        sessionID: host.registration.sessionId,
+        claimToken: claim.claimToken,
+        generation: claim.generation,
+        tree: claim.tree,
+        issue: claim.issue,
+        role: claim.role,
+        secret: claim.secret,
+        promptAgents: claim.promptAgents,
+      });
     });
     const ready: ReadyInput = {
       claimToken: claim.claimToken,
@@ -142,7 +187,9 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       secret: claim.secret,
       generation: claim.generation,
     };
-    await callReadyWithRetry("claims/ready", () => daemon.ready(ready));
+    await named("claims/ready", () =>
+      callWithinClaimBootBudget("claims/ready", (signal) => daemon.ready(ready, { signal }), budget)
+    );
     host.onRoleRegained(async (role, reason) => {
       if (role !== claim.claimToken) return;
       try {
@@ -155,18 +202,98 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       }
     });
   } catch (error) {
-    stopAfterRegistration(host, claim.claimToken, error);
+    endBoot(host, error, claim.claimToken);
     return { claimed: Promise.resolve() };
   }
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
 }
 
-/** The one path every failure after a registration takes, wherever it happens: the boot's own
- * steps and the deferred role claim, which runs after the boot has settled, report it in the
- * same sentence and stop the session, since neither changes on retry. */
-function stopAfterRegistration(host: LegionClaimHost, role: string, error: unknown): void {
+/** A failure of one named step of the boot, which the one log line reports as the call that
+ * failed. Every step is named: a daemon route by its path, a host's hook by its field. */
+class ClaimBootStepFailure extends Error {
+  constructor(
+    readonly call: string,
+    readonly failure: unknown
+  ) {
+    super(messageFor(failure));
+    this.name = "ClaimBootStepFailure";
+  }
+}
+
+/** Runs one step and names its failure, so the ending knows which call it was. */
+async function named<T>(call: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw new ClaimBootStepFailure(call, error);
+  }
+}
+
+/** Runs one step of the boot that is not a daemon call under what is left of the boot's budget:
+ * a step that starts with the budget spent does not run, and one that outlives it fails the boot
+ * where it stands. The step itself is not cancelled — a hook the boot cannot abort runs on in a
+ * process that is ending — but the boot stops waiting for it. */
+async function withinBudget<T>(
+  budget: ClaimBootBudget,
+  call: string,
+  run: () => Promise<T>
+): Promise<T> {
+  const left = budget.remainingMs();
+  if (left <= 0) {
+    throw new ClaimBootStepFailure(
+      call,
+      new Error(`the claim boot's budget of ${budget.budgetMs} ms was spent before it ran`)
+    );
+  }
+  const spent = Promise.withResolvers<never>();
+  const timer = setTimeout(() => {
+    spent.reject(
+      new Error(`it outlived the claim boot's budget of ${budget.budgetMs} ms, which is spent`)
+    );
+  }, left);
+  timer.unref?.();
+  try {
+    return await named(call, () => Promise.race([run(), spent.promise]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The one line every ending that is not a registered claim writes: who this process is (the
+ * role, the issue and the tree its host read from the environment), the daemon it called, the
+ * call that failed and why, the claim where one was registered and that there is none where none
+ * was, and what the process does now. It carries no boot token, no secret and no part of the
+ * registration body: the line goes to a log an operator and a controller read. */
+function claimBootFailureLine(
+  host: LegionClaimHost,
+  call: string,
+  cause: unknown,
+  claimToken: string | undefined
+): string {
+  const { role, issue, tree, daemonUrl } = host.identity;
+  const claimed =
+    claimToken === undefined ? "no claim was registered" : `the claim ${claimToken} was registered`;
+  return `claim boot failed: role ${told(role)}, issue ${told(issue)}, tree ${told(tree)}, daemon ${told(daemonUrl)}; ${call} failed: ${messageFor(cause)}; ${claimed}; ${host.stopping}`;
+}
+
+/** An identity value the host's environment did not carry, as the line shows it. */
+function told(value: string | undefined): string {
+  return value === undefined || value.trim() === "" ? "(unset)" : value;
+}
+
+/** The one ending every failure of the boot takes, wherever it happens: one line, then the
+ * agent. `claimToken` is the claim where the registration had answered, and undefined where it
+ * had not. The deferred role claim, which runs after the boot has settled, ends the same way,
+ * since a name this session cannot hold changes on no retry either. */
+function endBoot(host: LegionClaimHost, error: unknown, claimToken: string | undefined): void {
+  const failed = error instanceof ClaimBootStepFailure;
   host.log(
-    `claim boot failed after claims/register registered ${role}; ${host.stopping}: ${messageFor(error)}`
+    claimBootFailureLine(
+      host,
+      failed ? error.call : "the claim boot",
+      failed ? error.failure : error,
+      claimToken
+    )
   );
   host.stop();
 }
@@ -205,8 +332,10 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
  * hand-over and loses nothing, and the timer is unreferenced where the runtime offers it: the
  * bound is a backstop and keeps no process alive for its own sake.
  *
- * A refusal is logged and stops the session, the one failure path every other failure after a
- * registration takes. The promise answers when the step has run, either way, and never rejects.
+ * A refusal is logged and stops the session, the one ending every failure of the boot takes
+ * (`endBoot`, with the claim it registered). It runs outside the boot's budget: this step waits
+ * for the session's own first turn, which no bound of the boot's measures. The promise answers
+ * when the step has run, either way, and never rejects.
  */
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
@@ -223,7 +352,7 @@ function claimRoleAtFirstTurn(
       try {
         await host.claimRole(role);
       } catch (error) {
-        stopAfterRegistration(host, role, error);
+        endBoot(host, new ClaimBootStepFailure("claimRole", error), role);
       }
       done.resolve();
     })();

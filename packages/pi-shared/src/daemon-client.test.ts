@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
 import {
+  callWithinClaimBootBudget,
+  claimBootBudget,
   createLegionDaemonClient,
   daemonUnreachable,
   LegionDaemonApiError,
@@ -603,4 +605,85 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(retried).toMatchObject({ status: 502, code: "DISPATCH_FAILED" });
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
+});
+
+/** The budget a case drives the boot's call under: small, so no row waits out production's
+ * 6 and 20 seconds. */
+const smallBudget = (attemptMs: number, budgetMs: number) =>
+  claimBootBudget({ attemptMs, budgetMs });
+
+test("a claim boot's call bounds every attempt: a daemon that never answers is aborted at the bound, asked again, and fails once the budget is spent", async () => {
+  const handed: AbortSignal[] = [];
+  const hung = (signal: AbortSignal): Promise<void> => {
+    handed.push(signal);
+    const { promise, reject } = Promise.withResolvers<void>();
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    return promise;
+  };
+
+  const started = Date.now();
+  const failed = await callWithinClaimBootBudget(
+    "claims/register",
+    hung,
+    smallBudget(20, 120)
+  ).catch((error: unknown) => error);
+
+  // Each attempt carried its own bound and was aborted at it, so no call of the boot can hang;
+  // the budget, not an attempt count, is what ended the call.
+  expect(handed.length).toBeGreaterThan(1);
+  expect(handed.every((signal) => signal.aborted)).toBe(true);
+  expect(failed).toBeInstanceOf(Error);
+  expect((failed as Error).message).toStartWith(
+    "claims/register got no answer inside the claim boot's budget of 120 ms, which is spent; the last attempt failed with: "
+  );
+  expect((failed as Error).message).toInclude("timed out");
+  expect(Date.now() - started).toBeLessThan(2_000);
+});
+
+test("a claim boot's call retries only what can pass on its own — a transport failure, a timed-out attempt, a 5xx — and hands every other answer straight back", async () => {
+  const attemptsBefore = async (failure: () => unknown): Promise<number> => {
+    let attempts = 0;
+    await callWithinClaimBootBudget(
+      "claims/ready",
+      async () => {
+        attempts += 1;
+        throw failure();
+      },
+      smallBudget(10, 60)
+    ).catch(() => undefined);
+    return attempts;
+  };
+
+  expect(await attemptsBefore(() => new TypeError("fetch failed"))).toBeGreaterThan(1);
+  expect(
+    await attemptsBefore(() => new DOMException("The operation timed out.", "TimeoutError"))
+  ).toBeGreaterThan(1);
+  expect(
+    await attemptsBefore(
+      () =>
+        new LegionDaemonApiError("POST", "/legion/v1/claims/ready", 503, undefined, "restarting")
+    )
+  ).toBeGreaterThan(1);
+
+  // A 4xx is the daemon's decision, which no retry changes: it is asked once and handed back as
+  // it came, for the boot to end on.
+  const refusal = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/claims/ready",
+    403,
+    undefined,
+    "Invalid session secret"
+  );
+  let attempts = 0;
+  await expect(
+    callWithinClaimBootBudget(
+      "claims/ready",
+      async () => {
+        attempts += 1;
+        throw refusal;
+      },
+      smallBudget(10, 60)
+    )
+  ).rejects.toBe(refusal);
+  expect(attempts).toBe(1);
 });

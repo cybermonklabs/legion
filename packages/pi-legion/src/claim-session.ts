@@ -114,6 +114,14 @@ export function createClaimSession(deps: {
         agentId,
         pluginContract: pkg.legion.daemonApiVersion,
       },
+      // Who the line of a boot that registers no claim names, from the pane's own environment:
+      // the registration carries a boot token and no claim (`LegionClaimIdentity`).
+      identity: {
+        role: process.env.LEGION_ROLE,
+        issue: process.env.LEGION_ISSUE,
+        tree: process.env.LEGION_TREE,
+        daemonUrl: process.env.LEGION_DAEMON_URL ?? "",
+      },
       afterRegister: async () => {
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
         if (sessionId) await exportJjSessionAttribution(sessionId, stateDir, pane);
