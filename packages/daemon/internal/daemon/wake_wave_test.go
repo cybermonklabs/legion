@@ -218,6 +218,17 @@ func waveClaims(t *testing.T, cfg config.Config, role claim.Role, build func(i i
 // seeds exactly what the gate admits at once.
 func waveClaimsOf(t *testing.T, cfg config.Config, role claim.Role, count int, build func(i int, token claim.Token) supervise.Claim) []claim.Token {
 	t.Helper()
+	return waveClaimsFrom(t, cfg, role, 1, count, build)
+}
+
+// waveClaimsFrom is waveClaimsOf over the count issues counted from first rather than from one,
+// so that a test which seeds more than one wave gives each of them a range of issues of its own
+// and no tree holds a claim of two: the fleet on an earlier plugin contract and the roots whose
+// first architect launch the same boot raises are two such waves, and a root sharing a tree with
+// a stale claim would be no root of its own (dispatch://INFRA-2712 c-bound). i is the issue's own
+// number, which build reads, so a claim built from it is the same claim wherever the range starts.
+func waveClaimsFrom(t *testing.T, cfg config.Config, role claim.Role, first, count int, build func(i int, token claim.Token) supervise.Claim) []claim.Token {
+	t.Helper()
 	ctx := context.Background()
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -232,7 +243,7 @@ func waveClaimsOf(t *testing.T, cfg config.Config, role claim.Role, count int, b
 		t.Fatalf("migrate the store: %v", err)
 	}
 	tokens := make([]claim.Token, 0, count)
-	for i := 1; i <= count; i++ {
+	for i := first; i < first+count; i++ {
 		issue := fmt.Sprintf("%s-%d", cfg.Project, i)
 		token, err := claim.NewToken(project, issue, role)
 		if err != nil {
