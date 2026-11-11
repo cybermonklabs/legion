@@ -2039,8 +2039,9 @@ is the row that reads that document back in a browser, because the spec editor
 draws Go's reading (already pinned by `fixtures.json`) and a comment parses
 through the headless engine (which a web unit test runs); for the seven
 families whose shapes the corpus holds that row reads through the live editor,
-five of them from a past version. `e2e/unknown-directive.e2e.ts` is the eighth:
-no document holds its bodies, so its one row reads the Conversation instead.
+five of them from a past version. `e2e/unknown-directive.stub.e2e.ts` is the
+eighth: no document holds its bodies, so its one row reads the Conversation
+instead.
 
 Two files keep markdown of their own, each for a reason the table cannot meet.
 `packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go` spells its rows
@@ -2050,8 +2051,8 @@ not carry: `fixtures.json`'s `rendered_by_milkdown` is the browser engine's
 re-serialization of its own parse (a backslash escape) where Go stores a
 character reference, and `pmdoc/render_test.go`'s
 `TestRenderMatchesMilkdownForFixtures` compares the two only through `plain()`,
-which strips both. `e2e/unknown-directive.e2e.ts` keeps bodies of its own
-because each carries a container the block schema does not know, and the
+which strips both. `e2e/unknown-directive.stub.e2e.ts` keeps bodies of its
+own because each carries a container the block schema does not know, and the
 generator's writing parse refuses such a document outright, as the document
 service does; a Conversation body is drawn by the read-only engine instead, so
 no corpus file can hold them.
