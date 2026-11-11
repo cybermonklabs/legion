@@ -5270,11 +5270,12 @@ jobs:
           # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
           # has been blown by a sibling's clone before - so 5434 is named on this call and
           # nowhere else. The package list above skips this test by name, which is unique in the
-          # module (dispatch://INFRA-1075). -timeout 3m: the cmd/dispatch binary this call runs
-          # that one test of took 63.0 s on envoy-go's slower attempt of this change's own pair
-          # (attempt 1, run 42930887149, job 130229106742), 35.0 per cent of 3m, where 2m it
-          # would fill to 52.5 per cent.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 3m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+          # module (dispatch://INFRA-1075). -timeout 2m: the cmd/dispatch binary this call runs
+          # that one test of took 58.4 s at the larger of the final pair's two readings (attempt
+          # 2, run 42988153687), 48.7 per cent of 2m, which is the smallest whole minute it is
+          # at most half of. For context, and not as what sizes this limit, the same call read
+          # 63.0 s on an earlier head's pair, which 2m would fill to 52.5 per cent.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
           shutdown=$!
           # internal/testnats runs its server in the test process, so the package list above
           # starts no container. The two-image matrix, which proves a rendered authorization on
