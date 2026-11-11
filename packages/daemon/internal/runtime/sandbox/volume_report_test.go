@@ -50,8 +50,9 @@ func (v *volumeSeam) took(t *testing.T, what string) volumeReport {
 	}
 }
 
-// volumeLaunchers is a launchers whose volume seam is the test's, with the saved-bundle pair this
-// file never drives left nil, as testLaunchers leaves all three.
+// volumeLaunchers is a launchers whose volume seam is the test's, with the saved-bundle pair no
+// test of the launcher protocol drives left nil. It is the one constructor these tests build a
+// launchers with: testLaunchers (rig_test.go) is this one with no seam behind it.
 func volumeLaunchers(seam runtime.VolumeReported) *launchers {
 	return newLaunchers(nil, nil, seam, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }

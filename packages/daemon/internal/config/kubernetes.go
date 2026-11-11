@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Kubernetes is the settled `runtime.kubernetes` block: where the Sandbox runtime runs its pods and
@@ -199,14 +200,6 @@ type VolumeTrimConfig struct {
 	MinAgeMinutes   int
 	IntervalSeconds int
 }
-
-// maxVolumeTrimPercent is the highest a mark may be: a mark at 100 is a volume already full, the
-// one fraction no sweep can reach down from. maxVolumeTrimIntervalSeconds is an hour, the longest
-// wait between two looks that is still a trimmer: a pod's caches can fill a volume inside one.
-const (
-	maxVolumeTrimPercent         = 99
-	maxVolumeTrimIntervalSeconds = 3600
-)
 
 // defaultVolumeTrim is the trimmer when the file sets none of it: a sweep at 85% of the issue
 // volume down to 70%, touching nothing used inside the last quarter hour, looking every minute.
@@ -786,11 +779,17 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 // value that is no YAML boolean — `off` and `yes` among them, which this loader's reader tags
 // as strings, as `production_check`'s `off` reaches readProject as one — is refused rather than
 // read as a word nobody meant. Each mark is a whole percentage of the volume from 1 to
-// maxVolumeTrimPercent, and the low mark must be strictly below the high one, refused naming
+// shimwire.VolumeMarkMax, and the low mark must be strictly below the high one, refused naming
 // both: marks that met would leave the sweep no fraction to stop at. interval_seconds is bounded
-// at maxVolumeTrimIntervalSeconds and may not be 0: the trimmer arms a time.Ticker with it, which
+// at shimwire.VolumeIntervalMax and may not be 0: the trimmer arms a time.Ticker with it, which
 // panics on a non-positive period, in the process that is PID 1 of the pod's roles container,
 // taking the six live roles under it down with it.
+//
+// The maximum of a mark and of the interval are the wire's own (shimwire.VolumeMarkMax,
+// shimwire.VolumeIntervalMax), which the launcher's trimmer checks the settings against a
+// second time on its side of the connection: a maximum widened here alone would load cleanly
+// and then be refused by every pod's trimmer, which stays off for the life of its launcher
+// process.
 func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
 	const key = kubernetesKey + ".volume_trim"
 	settled := defaultVolumeTrim
@@ -816,13 +815,13 @@ func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
 		max   int
 		into  *int
 	}{
-		{"high_percent", maxVolumeTrimPercent, &settled.HighPercent},
-		{"low_percent", maxVolumeTrimPercent, &settled.LowPercent},
+		{"high_percent", shimwire.VolumeMarkMax, &settled.HighPercent},
+		{"low_percent", shimwire.VolumeMarkMax, &settled.LowPercent},
 		// An age carries no bound beyond being positive, as repository_cache's minutes do not
 		// (readRepositoryCache): an age no file in the caches reaches deletes nothing, which is
 		// the trimmer switched off, and `enabled: false` is how an operator writes that.
 		{"min_age_minutes", 0, &settled.MinAgeMinutes},
-		{"interval_seconds", maxVolumeTrimIntervalSeconds, &settled.IntervalSeconds},
+		{"interval_seconds", shimwire.VolumeIntervalMax, &settled.IntervalSeconds},
 	} {
 		read, err := readPositiveInteger(fields[number.field], key+"."+number.field, number.max)
 		if err != nil {

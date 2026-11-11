@@ -72,11 +72,7 @@ func (r *volumeRig) report(t *testing.T, sweep record.VolumeNearFull) {
 	if sweep.RaisedBy == "" {
 		sweep.RaisedBy = shimwire.VolumeEpisodeFirst
 	}
-	pod := sweep.PodUID
-	if pod == "" {
-		pod = volumePod
-	}
-	r.apply(fmt.Sprintf("volume-%d", r.reports), intake.VolumeNearFull{Issue: "LEGION-208", PodUID: pod, Report: sweep})
+	r.apply(fmt.Sprintf("volume-%d", r.reports), intake.VolumeNearFull{Issue: "LEGION-208", PodUID: volumePod, Report: sweep})
 }
 
 // notices is every volume-near-full notice the outbox holds for the issue, in order.

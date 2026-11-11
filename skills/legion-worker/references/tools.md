@@ -201,8 +201,9 @@ cache, the Go build and module caches, and uv's cache and Pythons are all on it.
 the pod is: a role's own home and `/tmp` are on the node's disk, which is small and whose limit
 evicts the whole pod. Read its free space with `df -h /legion`.
 
-A cache trimmer in the pod's launcher process holds part of it under a mark. At 85 per cent used
-it deletes, oldest first, until the volume is back under 70 per cent, and it deletes only these:
+A cache trimmer in the pod's launcher process holds part of it under a mark. At the high mark
+its deployment sets, 85 per cent used by default, it deletes, oldest first, until the volume is
+back to the low mark, 70 per cent by default, and it deletes only these:
 
 - a `go-build*` directory of `$TMPDIR`, which Go names and owns, and **nothing else of `$TMPDIR`**;
 - a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, which is what `go clean -cache`
@@ -214,9 +215,9 @@ it deletes, oldest first, until the volume is back under 70 per cent, and it del
 It deletes nothing a role put anywhere else: not your workspace, not the clone, not the feed,
 not a role's state home, not the data home, not the Go module cache, not uv's cache or its
 Pythons, and no clone, toolchain or database you wrote under `$TMPDIR`. It skips anything a
-process of the pod has open, anything touched in the last fifteen minutes, and anything that is
-not the kind of file its row names, and it follows no symbolic link. So it frees caches and it
-never frees your work.
+process of the pod has open, anything touched inside the minimum age, fifteen minutes by
+default, and anything that is not the kind of file its row names, and it follows no symbolic
+link. So it frees caches and it never frees your work.
 
 That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
 pod does and counts against the volume for every role. Delete the paths you made, each by its

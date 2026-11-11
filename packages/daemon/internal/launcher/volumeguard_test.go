@@ -153,9 +153,7 @@ func TestTheUsedPathSetReadsEveryProcEntry(t *testing.T) {
 		{"a mapped file", func(p *fixtureProcess, path string) { p.maps = []string{path} }},
 		{"a thread's working directory", func(p *fixtureProcess, path string) { p.threads = map[int]string{p.pid + 1: path} }},
 	}
-	examined := 0
 	for _, source := range sources {
-		examined++
 		t.Run(source.name, func(t *testing.T) {
 			process := fixtureProcess{pid: 101}
 			source.place(&process, held)
@@ -177,9 +175,6 @@ func TestTheUsedPathSetReadsEveryProcEntry(t *testing.T) {
 				t.Errorf("Covers(%s) = true through %s, want nothing: no process of the fixture names it", never, source.name)
 			}
 		})
-	}
-	if examined != 6 {
-		t.Fatalf("the case drove %d /proc entries, want all 6 the reader reads", examined)
 	}
 }
 
@@ -234,9 +229,7 @@ func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
 			process fixtureProcess
 		}{"a directory the kernel refuses", fixtureProcess{pid: 302, cwd: stillRead, fdRefused: true}})
 	}
-	examined := 0
 	for _, staging := range stagings {
-		examined++
 		t.Run(staging.name, func(t *testing.T) {
 			// The third process has no entry at all, which is what the kernel shows of a process
 			// that exited while the pass read it.
@@ -254,9 +247,6 @@ func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
 				t.Errorf("Covers(%s) = false, want the readable process's own handle", gone)
 			}
 		})
-	}
-	if examined == 0 {
-		t.Fatal("the case staged no refusal at all")
 	}
 }
 
@@ -378,7 +368,6 @@ func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	examined := 0
 	for _, tc := range []struct {
 		entry string
 		rule  EntryRule
@@ -396,7 +385,6 @@ func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
 		{"a-file", ImmediateChildren, false, []string{"immediate child", "a directory", "a regular file"}},
 		{"a-link", ImmediateChildren, false, []string{"a symbolic link", "never follows"}},
 	} {
-		examined++
 		path := entries[tc.entry]
 		ok, why, err := entryKindOK(path, tc.rule)
 		switch {
@@ -419,12 +407,8 @@ func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
 		t.Errorf("the workspace the link points into: %v", err)
 	}
 	// An entry that is not there at all is the caller's error to carry, not a reason.
-	examined++
 	if ok, why, err := entryKindOK(filepath.Join(dir, "absent"), ImmediateChildren); err == nil || ok || why != "" {
 		t.Errorf("entryKindOK over an absent entry = %t, %q, %v, want the read's own error", ok, why, err)
-	}
-	if examined == 0 {
-		t.Fatal("the case read no entry at all")
 	}
 }
 
@@ -549,7 +533,6 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		t.Fatalf("the reader found no path at all in this container's /proc; refused %v", used.Refused)
 	}
 	t.Logf("the container's /proc gave %d paths, and refused %d processes: %v", len(used.paths), len(used.Refused), used.Refused)
-	examined := 0
 	for _, tc := range []struct {
 		entries string
 		path    string
@@ -559,13 +542,9 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		{"exe and maps", tree.Copy},
 		{"root", tree.Root},
 	} {
-		examined++
 		if !used.Covers(tc.path) {
 			t.Errorf("Covers(%s) = false, want this container's own /proc to name it through %s; refused %v", tc.path, tc.entries, used.Refused)
 		}
-	}
-	if examined != 4 {
-		t.Fatalf("the case examined %d paths of the tree, want the 4 its processes hold", examined)
 	}
 	// The thread entry is a source of its own in this pod and not a fiction of the fixtures
 	// above: a task/<tid>/cwd link of this container's /proc names the directory the opener works

@@ -96,9 +96,8 @@ type sizeWalk struct {
 
 // run measures the directories two levels under the volume root and answers what it read.
 func (w sizeWalk) run(ctx context.Context) walkResult {
-	at := w.now()
 	targets, result := w.targets()
-	result.At = at
+	result.At = w.now()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -114,16 +113,16 @@ func (w sizeWalk) run(ctx context.Context) walkResult {
 		}
 	}()
 
-	for at, path := range targets {
+	for from, path := range targets {
 		if ctx.Err() != nil {
 			result.Partial = true
-			result.Missing = append(result.Missing, targets[at:]...)
+			result.Missing = append(result.Missing, targets[from:]...)
 			return result
 		}
 		one := w.measure(ctx, path, result.At)
 		if one.cut {
 			result.Partial = true
-			result.Missing = append(result.Missing, targets[at:]...)
+			result.Missing = append(result.Missing, targets[from:]...)
 			return result
 		}
 		result.Sizes = append(result.Sizes, one.size)

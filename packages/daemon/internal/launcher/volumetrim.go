@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -76,29 +77,24 @@ const (
 	volumeFaultLimit = 3
 )
 
-// The ranges the trimmer holds the daemon's settings to, a second time on its own side of the
-// wire. The daemon validates them too, but it is another binary across a connection this design
-// expects to carry version skew both ways, and the cost of believing a bad one here is paid by
-// the whole pod: time.NewTicker panics on a non-positive period, in the process that is PID 1 of
-// the roles container with six live roles under it, and a high mark of 0 would sweep the caches
-// of a volume that is empty.
-const (
-	volumeMarkMin     = 1
-	volumeMarkMax     = 99
-	volumeMinAgeMin   = 1
-	volumeIntervalMin = 1
-	volumeIntervalMax = 3600
-)
-
 // refusedTrimSettings is every reason the settings cannot be run, each naming the key as it is
 // written on the wire and the value that was sent, and empty when they can. A trimmer that
 // refuses its settings stays off rather than starting its ticker: there is no safe default to
 // fall back to, since every default is a guess at how full this operator's volume may get.
+//
+// This is the ranges checked a second time on the trimmer's own side of the wire. The daemon
+// validates them too, but it is another binary across a connection this design expects to carry
+// version skew both ways, and the cost of believing a bad one here is paid by the whole pod:
+// time.NewTicker panics on a non-positive period, in the process that is PID 1 of the roles
+// container with six live roles under it, and a high mark of 0 would sweep the caches of a
+// volume that is empty. The ranges themselves are the wire's own (shimwire.VolumeMarkMin and
+// the four beside it), which the daemon's loader reads too: the second check is deliberate, two
+// values that could disagree are not.
 func refusedTrimSettings(set shimwire.LauncherVolumeTrim) []string {
 	var refused []string
 	mark := func(key string, value int) {
-		if value < volumeMarkMin || value > volumeMarkMax {
-			refused = append(refused, fmt.Sprintf("%s is %d, want a whole number from %d to %d", key, value, volumeMarkMin, volumeMarkMax))
+		if value < shimwire.VolumeMarkMin || value > shimwire.VolumeMarkMax {
+			refused = append(refused, fmt.Sprintf("%s is %d, want a whole number from %d to %d", key, value, shimwire.VolumeMarkMin, shimwire.VolumeMarkMax))
 		}
 	}
 	mark("high_percent", set.HighPercent)
@@ -106,11 +102,11 @@ func refusedTrimSettings(set shimwire.LauncherVolumeTrim) []string {
 	if set.LowPercent >= set.HighPercent {
 		refused = append(refused, fmt.Sprintf("low_percent is %d and high_percent is %d, want the low mark below the high one", set.LowPercent, set.HighPercent))
 	}
-	if set.MinAgeMinutes < volumeMinAgeMin {
-		refused = append(refused, fmt.Sprintf("min_age_minutes is %d, want at least %d", set.MinAgeMinutes, volumeMinAgeMin))
+	if set.MinAgeMinutes < shimwire.VolumeMinAgeMin {
+		refused = append(refused, fmt.Sprintf("min_age_minutes is %d, want at least %d", set.MinAgeMinutes, shimwire.VolumeMinAgeMin))
 	}
-	if set.IntervalSeconds < volumeIntervalMin || set.IntervalSeconds > volumeIntervalMax {
-		refused = append(refused, fmt.Sprintf("interval_seconds is %d, want a whole number from %d to %d", set.IntervalSeconds, volumeIntervalMin, volumeIntervalMax))
+	if set.IntervalSeconds < shimwire.VolumeIntervalMin || set.IntervalSeconds > shimwire.VolumeIntervalMax {
+		refused = append(refused, fmt.Sprintf("interval_seconds is %d, want a whole number from %d to %d", set.IntervalSeconds, shimwire.VolumeIntervalMin, shimwire.VolumeIntervalMax))
 	}
 	return refused
 }
@@ -125,6 +121,13 @@ type trimmer struct {
 	// trimmer: it ends a sweep in flight at its next entry boundary with its deletions
 	// standing, sends no report, and discards a report it was holding.
 	settings func() *shimwire.LauncherVolumeTrim
+	// trimming answers whether settings are in force at all, which is the whole of what a
+	// sweep asks of them (halted). It is asked once per listed entry and once per swept entry
+	// — tens of thousands of times over one sweep of the measured pod's caches — where
+	// settings takes the launcher's mutex and returns a freshly allocated copy of the struct
+	// for a pointer compared with nil and dropped. Both seams read the one field under the one
+	// lock (manager.volumeTrim, manager.volumeTrimming), so nothing of the lifecycle changes.
+	trimming func() bool
 	// send writes one report on the pod's bound connection. An error holds the report, which
 	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own.
 	send func(shimwire.LauncherVolumeReport) error
@@ -157,7 +160,6 @@ type trimmer struct {
 	consecutive int      // recovered panics in a row, which volumeFaultLimit bounds
 	held        *shimwire.LauncherVolumeReport
 	walk        walkResult // the last size walk, which a report between walks carries
-	walked      bool
 }
 
 // newTrimmer is the pod's trimmer: the volume at VolumeRoot, the container's own /proc, the four
@@ -165,12 +167,14 @@ type trimmer struct {
 // process (randomID, as the launcher mints a connection's).
 func newTrimmer(
 	settings func() *shimwire.LauncherVolumeTrim,
+	trimming func() bool,
 	send func(shimwire.LauncherVolumeReport) error,
 	logf func(format string, args ...any),
 ) *trimmer {
 	return &trimmer{
 		id:         randomID(),
 		settings:   settings,
+		trimming:   trimming,
 		send:       send,
 		now:        time.Now,
 		ticks:      tickerChannel,
@@ -473,7 +477,7 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 // which is a minute of the pod's one spare process, so a pod sweeping every interval walks once
 // an hour and sends the same numbers in between with the time they were read.
 func (t *trimmer) sizes(ctx context.Context) walkResult {
-	if t.walked && t.now().Sub(t.walk.At) < volumeWalkInterval {
+	if !t.walk.At.IsZero() && t.now().Sub(t.walk.At) < volumeWalkInterval {
 		return t.walk
 	}
 	t.walk = sizeWalk{
@@ -483,7 +487,6 @@ func (t *trimmer) sizes(ctx context.Context) walkResult {
 		budget:  volumeWalkBudget,
 		measure: t.measure,
 	}.run(ctx)
-	t.walked = true
 	if t.walk.Partial {
 		t.logf(volumeTrimLog+"the size walk ended early: it measured %d directories and left %d unmeasured (%s)",
 			len(t.walk.Sizes), len(t.walk.Missing), strings.Join(t.walk.Missing, ", "))
@@ -556,10 +559,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	// roots are listed in. The path breaks a tie so that two entries of the same second are
 	// deleted in an order a test can predict.
 	slices.SortStableFunc(entries, func(a, b sweepEntry) int {
-		if by := a.at.Compare(b.at); by != 0 {
-			return by
-		}
-		return strings.Compare(a.path, b.path)
+		return cmp.Or(a.at.Compare(b.at), strings.Compare(a.path, b.path))
 	})
 
 	previous := first
@@ -668,12 +668,13 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 //
 // The container's stop comes first so that run returns promptly on a shutdown rather than after
 // the sweep's budget, and the settings' stop is read here rather than once per sweep so that a
-// daemon turning the trimmer off reaches a sweep in flight.
+// daemon turning the trimmer off reaches a sweep in flight. It is read through trimming, which
+// answers that one question as a bool: this is the hottest read of the settings there is.
 func (t *trimmer) halted(ctx context.Context, deadline time.Time) (reason string, bySettings bool) {
 	switch {
 	case ctx.Err() != nil:
 		return "the container is stopping", false
-	case t.settings() == nil:
+	case !t.trimming():
 		return "the trimmer was stopped", true
 	case !t.now().Before(deadline):
 		return fmt.Sprintf("the sweep's %s budget ran out", volumeSweepBudget), false

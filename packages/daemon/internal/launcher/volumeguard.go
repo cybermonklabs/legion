@@ -161,24 +161,30 @@ func (p *procProcess) descriptors() {
 // the sixth field of its line and may itself hold spaces, so the five fields before it are
 // stepped over rather than the line split, and the anonymous mappings ([heap], [stack], an empty
 // field) are left out by the absolute-path rule in add.
+//
+// The body is cut line by line rather than split into one: the used-path set is read again every
+// second for the whole of a sweep, and a browser or a node process maps thousands of regions,
+// nearly all anonymous and dropped at once. Cutting leaves every line a slice of the one buffer,
+// so the pass allocates that buffer and the paths it keeps and nothing per line.
 func (p *procProcess) mapped() {
 	body, err := os.ReadFile(filepath.Join(p.dir, "maps"))
 	if err != nil {
 		p.refuse("maps", err)
 		return
 	}
-	for _, line := range strings.Split(string(body), "\n") {
-		rest := line
+	for rest := string(body); rest != ""; {
+		line, after, _ := strings.Cut(rest, "\n")
+		rest = after
 		for range 5 {
-			rest = strings.TrimLeft(rest, " \t")
-			end := strings.IndexAny(rest, " \t")
+			line = strings.TrimLeft(line, " \t")
+			end := strings.IndexAny(line, " \t")
 			if end < 0 {
-				rest = ""
+				line = ""
 				break
 			}
-			rest = rest[end:]
+			line = line[end:]
 		}
-		p.add(strings.TrimLeft(rest, " \t"))
+		p.add(strings.TrimLeft(line, " \t"))
 	}
 }
 

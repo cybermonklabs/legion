@@ -327,7 +327,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// handlers the workflow has just built, which is what turns a sweep of a filling volume
 		// into the fact that tells the issue's architect (volumeTrimReports).
 		if plan.volumeReports != nil {
-			plan.volumeReports.bind(workflow.pool, workflow.handlers, log)
+			plan.volumeReports.bind(workflow.pool, workflow.handlers)
 		}
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 	}

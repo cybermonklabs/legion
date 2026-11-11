@@ -170,7 +170,7 @@ func Run(ctx context.Context, cfg Config) error {
 // the settings in force (volumeTrim) and the trimmer sweeping, holding any report it cannot
 // write until that connection is up again (sendVolumeReport).
 func serveVolumeTrim(ctx context.Context, m *manager) <-chan struct{} {
-	trim := newTrimmer(m.volumeTrim, m.sendVolumeReport, m.logf)
+	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -516,6 +516,16 @@ func (m *manager) volumeTrim() *shimwire.LauncherVolumeTrim {
 	}
 	set := *m.volumeTrimSettings
 	return &set
+}
+
+// volumeTrimming is whether settings are in force at all, which is the whole of what a sweep
+// asks of them at every entry boundary (trimmer.halted): the same field under the same lock as
+// volumeTrim, answered as a bool so a sweep of tens of thousands of entries neither takes a
+// copy of the struct nor allocates one for an answer that is compared with nil and dropped.
+func (m *manager) volumeTrimming() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.volumeTrimSettings != nil
 }
 
 // sendVolumeReport writes one report of the pod's cache trimmer on this role's connection and no

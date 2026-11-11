@@ -28,8 +28,8 @@ func TestTheVolumeNoticeCountsArriveWith20261111090000(t *testing.T) {
 	migrateThrough(t, store, volumeNoticesVersion-1)
 
 	// The negative control: before the migration there is no table to count in.
-	const count = `insert into pod_volume_notices (project, issue, pod_uid, trimmer, episode, first_at, at)
-		values ('legion', 'LEGION-208', 'pod-uid', 'trim-1', 1, now(), now())`
+	const count = `insert into pod_volume_notices (project, issue, pod_uid, trimmer, episode, at)
+		values ('legion', 'LEGION-208', 'pod-uid', 'trim-1', 1, now())`
 	if _, err := store.Pool().Exec(ctx, count); err == nil || !strings.Contains(err.Error(), "pod_volume_notices") {
 		t.Fatalf("before the migration a volume notice count = %v, want the table to be missing", err)
 	}

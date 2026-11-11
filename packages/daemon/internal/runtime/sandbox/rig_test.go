@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -520,12 +519,9 @@ func withFailedRestore(reason string) rigOption {
 	return func(g *rig, _ *Options) { g.failRestore = reason }
 }
 
-// testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
-// carry and no volume seam behind it: the tests that build one drive the launcher protocol
-// itself.
-func testLaunchers() *launchers {
-	return newLaunchers(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
-}
+// testLaunchers is a launchers of its own, outside any rig, with no volume seam behind it: the
+// tests that build one drive the launcher protocol itself.
+func testLaunchers() *launchers { return volumeLaunchers(nil) }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation
 // carries it to the real resolver (launcherCredential.issue); "" for the project controller's

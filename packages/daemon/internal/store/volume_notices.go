@@ -45,7 +45,7 @@ func (p *PodRecords) VolumeNoticeCounts(ctx context.Context, tx pgx.Tx, issue, p
 		(select max(at) from pod_volume_notices
 			where project = $1 and issue = $2 and pod_uid = $3)`,
 		p.project, issue, podUID, trimmer, int64(episode)).Scan(&notices, &last)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err != nil {
 		return VolumeNoticeCounts{}, fmt.Errorf("read the volume notice bounds of %s: %w", issue, err)
 	}
 	if notices != nil {
@@ -70,8 +70,8 @@ func (p *PodRecords) RecordVolumeNotice(ctx context.Context, tx pgx.Tx, issue, p
 		return 0, errors.New("a volume notice record needs its issue and pod")
 	}
 	var notices int64
-	err := tx.QueryRow(ctx, `insert into pod_volume_notices (project, issue, pod_uid, trimmer, episode, notices, first_at, at)
-		values ($1, $2, $3, $4, $5, 1, $6, $6)
+	err := tx.QueryRow(ctx, `insert into pod_volume_notices (project, issue, pod_uid, trimmer, episode, notices, at)
+		values ($1, $2, $3, $4, $5, 1, $6)
 		on conflict (project, issue, pod_uid, trimmer, episode) do update
 		set notices = pod_volume_notices.notices + 1, at = greatest(pod_volume_notices.at, excluded.at)
 		returning notices`,

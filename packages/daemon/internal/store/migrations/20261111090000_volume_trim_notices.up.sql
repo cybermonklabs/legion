@@ -12,11 +12,11 @@
 --
 -- One row per project, issue, pod uid, trimmer and episode, shaped as pod_holds is
 -- (20261102002500_pod_release_records.up.sql): a counted streak rather than a row per report,
--- upserted on the key, with first_at the first notice of that line, at the newest and notices
--- counting them. The trimmer is in the key because it is what the daemon counts a restarted roles
--- container apart by: a new launcher process mints a new identifier, and its first episode is news
--- again rather than the fourth report of the episode before it. The pod uid is in the key for the
--- same reason one level up, so a replaced pod never inherits the counts of the pod it replaced.
+-- upserted on the key, with at the newest notice of that line and notices counting them. The
+-- trimmer is in the key because it is what the daemon counts a restarted roles container apart
+-- by: a new launcher process mints a new identifier, and its first episode is news again rather
+-- than the fourth report of the episode before it. The pod uid is in the key for the same reason
+-- one level up, so a replaced pod never inherits the counts of the pod it replaced.
 --
 -- The hour is read off this table too, by the newest row of (project, issue, pod_uid) whatever
 -- trimmer or episode it names, which is what makes the hour the pod's and not the episode's.
@@ -35,7 +35,6 @@ create table pod_volume_notices (
   trimmer text not null,
   episode bigint not null,
   notices bigint not null default 1,
-  first_at timestamptz not null,
   at timestamptz not null
 );
 create unique index pod_volume_notices_line on pod_volume_notices (project, issue, pod_uid, trimmer, episode);

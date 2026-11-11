@@ -115,23 +115,21 @@ type trimFixture struct {
 
 	protected  []fixtureFile
 	entries    []*fixtureEntry
-	byPath     map[string]*fixtureEntry
 	namedAfter int // how many entries the builder has made, which names and ages them
 
 	clock *fakeClock
 	ticks *fakeTicks
 
-	mu       sync.Mutex
-	set      *shimwire.LauncherVolumeTrim
-	period   time.Duration // the interval of the last settings in force (setSettings)
-	onSet    func(call int)
-	setCalls int
-	reads    int
-	reading  func(call int) volumeUsage
-	onRead   func(call int)
-	sent     []shimwire.LauncherVolumeReport
-	sendErr  error
-	lines    []string
+	mu      sync.Mutex
+	set     *shimwire.LauncherVolumeTrim
+	period  time.Duration // the interval of the last settings in force (setSettings)
+	onSet   func()
+	reads   int
+	reading func(call int) volumeUsage
+	onRead  func(call int)
+	sent    []shimwire.LauncherVolumeReport
+	sendErr error
+	lines   []string
 }
 
 // newTrimFixture builds the pod's volume: every protected path with a file in it, and perRoot
@@ -142,13 +140,12 @@ func newTrimFixture(t *testing.T, perRoot int) *trimFixture {
 	t.Helper()
 	root := t.TempDir()
 	f := &trimFixture{
-		t:      t,
-		root:   root,
-		self:   os.Getpid(),
-		roots:  rebasedRoots(root),
-		byPath: map[string]*fixtureEntry{},
-		clock:  newFakeClock(),
-		ticks:  &fakeTicks{},
+		t:     t,
+		root:  root,
+		self:  os.Getpid(),
+		roots: rebasedRoots(root),
+		clock: newFakeClock(),
+		ticks: &fakeTicks{},
 		reading: func(int) volumeUsage {
 			return volumeUsage{UsedBytes: percentBytes(50), AvailableBytes: fixtureVolumeBytes - percentBytes(50)}
 		},
@@ -286,7 +283,6 @@ func (f *trimFixture) ageOf() time.Time {
 func (f *trimFixture) record(path string, rule EntryRule, at time.Time) *fixtureEntry {
 	entry := &fixtureEntry{path: path, rule: rule, at: at, bytes: fixtureEntryBytes}
 	f.entries = append(f.entries, entry)
-	f.byPath[path] = entry
 	return entry
 }
 
@@ -396,7 +392,7 @@ func (f *trimFixture) setOnRead(hook func(call int)) {
 
 // setOnSettings installs the hook a case runs when the trimmer asks for the settings in force,
 // which a sweep does at every entry boundary.
-func (f *trimFixture) setOnSettings(hook func(call int)) {
+func (f *trimFixture) setOnSettings(hook func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onSet = hook
@@ -406,11 +402,10 @@ func (f *trimFixture) setOnSettings(hook func(call int)) {
 // middle of a sweep: the sweep asks at every entry boundary.
 func (f *trimFixture) settings() *shimwire.LauncherVolumeTrim {
 	f.mu.Lock()
-	f.setCalls++
-	call, hook := f.setCalls, f.onSet
+	hook := f.onSet
 	f.mu.Unlock()
 	if hook != nil {
-		hook(call)
+		hook()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -419,6 +414,13 @@ func (f *trimFixture) settings() *shimwire.LauncherVolumeTrim {
 	}
 	set := *f.set
 	return &set
+}
+
+// trimming is the trimmer's second settings seam, the one a sweep asks at every entry boundary:
+// it reads the same field through the same hook as settings, so a case that stops the trimmer
+// mid-sweep stops it here as the pod's own manager does (manager.volumeTrimming).
+func (f *trimFixture) trimming() bool {
+	return f.settings() != nil
 }
 
 // setSettings is what the trimmer reads from now on. The interval of the last settings that
@@ -507,7 +509,7 @@ func (f *trimFixture) assertPrefixed() {
 // trimmer is the trimmer of this case: the pod's own constructor, with the machine it reads
 // pointed at the case's tree.
 func (f *trimFixture) trimmer() *trimmer {
-	tr := newTrimmer(f.settings, f.send, f.log)
+	tr := newTrimmer(f.settings, f.trimming, f.send, f.log)
 	tr.volumeRoot, tr.procRoot, tr.self, tr.roots = f.root, f.proc, f.self, f.roots
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
 	return tr
@@ -576,8 +578,7 @@ type fakeClock struct {
 	at    time.Time
 	start time.Time
 	step  time.Duration
-	calls int
-	hook  func(clock *fakeClock, call int)
+	hook  func(clock *fakeClock)
 }
 
 func newFakeClock() *fakeClock {
@@ -587,12 +588,11 @@ func newFakeClock() *fakeClock {
 
 func (c *fakeClock) now() time.Time {
 	c.mu.Lock()
-	c.calls++
-	call, hook := c.calls, c.hook
+	hook := c.hook
 	c.at = c.at.Add(c.step)
 	c.mu.Unlock()
 	if hook != nil {
-		hook(c, call)
+		hook(c)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -612,7 +612,7 @@ func (c *fakeClock) moved() time.Duration {
 	return c.at.Sub(c.start)
 }
 
-func (c *fakeClock) setHook(hook func(clock *fakeClock, call int)) {
+func (c *fakeClock) setHook(hook func(clock *fakeClock)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.hook = hook
@@ -694,7 +694,6 @@ func trimSettings() *shimwire.LauncherVolumeTrim {
 // believing one is paid in the process that is PID 1 of the roles container: time.NewTicker
 // panics on a non-positive period, which would take six live roles down with it.
 func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
-	examined := 0
 	for _, tc := range []struct {
 		name string
 		set  shimwire.LauncherVolumeTrim
@@ -725,7 +724,6 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 			shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 0, IntervalSeconds: 30},
 			[]string{"min_age_minutes is 0"}},
 	} {
-		examined++
 		t.Run(tc.name, func(t *testing.T) {
 			f := newTrimFixture(t, 1)
 			f.useVolume(steady(99))
@@ -760,9 +758,6 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 			}
 			f.assertPrefixed()
 		})
-	}
-	if examined != 8 {
-		t.Fatalf("the case drove %d refusals, want all 8 of this table", examined)
 	}
 
 	// The control: the settings a pod runs by are accepted, so the refusals above are the
@@ -863,10 +858,10 @@ func assertTreeUnchanged(t *testing.T, root string, before map[string]fixtureFil
 // still there, with the content and the modification time it was written with. Presence alone
 // would not show it — the requirement is that the trimmer never writes to a role's work — so
 // the case reads each one back.
-func (f *trimFixture) assertProtected(want int) {
+func (f *trimFixture) assertProtected() {
 	f.t.Helper()
-	if len(f.protected) != want {
-		f.t.Fatalf("the fixture holds %d protected files, want the %d this case counts: %v", len(f.protected), want, f.protected)
+	if len(f.protected) != fixtureKeptFiles {
+		f.t.Fatalf("the fixture holds %d protected files, want the %d this case counts: %v", len(f.protected), fixtureKeptFiles, f.protected)
 	}
 	for _, file := range f.protected {
 		info, err := os.Lstat(file.path)
@@ -976,7 +971,7 @@ func TestTheSweepDeletesOldestFirstAcrossEveryRootUntilTheLowMark(t *testing.T) 
 	}
 	t.Logf("the control: a sweep ordering by name would have deleted %d entries this one left alone", wrongly)
 
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // withEmptyEnvironment runs the rest of the case with nothing in the process's environment, and
@@ -1031,7 +1026,7 @@ func TestAnEntryIsAsFreshAsTheNewestFileAnywhereInIt(t *testing.T) {
 	if out.deletions != len(f.entries) {
 		t.Errorf("the sweep deleted %d entries, want the %d eligible ones: %s", out.deletions, len(f.entries), out.reason)
 	}
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // The Go build cache rule reaches the names ending `-a` and `-d` inside a shard directory and
@@ -1090,7 +1085,7 @@ func TestTheGoCacheRuleReachesOnlyTheSuffixedNamesInsideAShard(t *testing.T) {
 			t.Errorf("the cache entry %s is still there, want every shard name ending -a or -d deleted, the directory form whole", entry.path)
 		}
 	}
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // A root that is absent and a root that is not a directory are skipped and reported, and the
@@ -1242,10 +1237,8 @@ func TestTheSweepSkipsAnEntryALiveProcessIsUsing(t *testing.T) {
 		{"a mapped file", func(p *fixtureProcess, path string) { p.maps = []string{path} }},
 		{"a thread's working directory", func(p *fixtureProcess, path string) { p.threads = map[int]string{p.pid + 1: path} }},
 	}
-	examined := 0
 	for _, source := range sources {
 		for _, held := range []string{"the entry itself", "a path under the entry"} {
-			examined++
 			t.Run(source.name+", "+held, func(t *testing.T) {
 				f := newTrimFixture(t, 3)
 				entry := f.oldestDirectory()
@@ -1268,12 +1261,9 @@ func TestTheSweepSkipsAnEntryALiveProcessIsUsing(t *testing.T) {
 				if want := len(f.entries) - 1; out.deletions != want {
 					t.Errorf("the sweep deleted %d entries, want the %d that no process holds: %s", out.deletions, want, out.reason)
 				}
-				f.assertProtected(fixtureKeptFiles)
+				f.assertProtected()
 			})
 		}
-	}
-	if examined != 12 {
-		t.Fatalf("the case drove %d stagings, want the six /proc entries held two ways each", examined)
 	}
 }
 
@@ -1333,7 +1323,7 @@ func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T)
 			t.Fatal("the fixture holds no late directory entry for the process to take hold of")
 		}
 		placed := false
-		f.clock.setHook(func(clock *fakeClock, _ int) {
+		f.clock.setHook(func(clock *fakeClock) {
 			if placed || f.exists(first.path) {
 				return
 			}
@@ -1380,10 +1370,8 @@ func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T)
 // lstat the delete needs anyway, so the case drives both. Its control is the same tree with
 // nothing written, where the entry goes.
 func TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped(t *testing.T) {
-	examined := 0
 	for _, kind := range []string{"a directory entry", "a single file entry"} {
 		for _, written := range []bool{true, false} {
-			examined++
 			t.Run(fmt.Sprintf("%s, written again %t", kind, written), func(t *testing.T) {
 				f := newTrimFixture(t, 4)
 				order := f.oldestFirst()
@@ -1403,7 +1391,7 @@ func TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped(t *testing.T) 
 					t.Fatalf("the fixture holds no late entry of the kind %q", kind)
 				}
 				touched := false
-				f.clock.setHook(func(_ *fakeClock, _ int) {
+				f.clock.setHook(func(_ *fakeClock) {
 					if touched || f.exists(first.path) {
 						return
 					}
@@ -1439,9 +1427,6 @@ func TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped(t *testing.T) 
 			})
 		}
 	}
-	if examined != 4 {
-		t.Fatalf("the case drove %d stagings, want the two kinds of entry written and left alone", examined)
-	}
 }
 
 // A /proc read the kernel refused on the first read of a sweep deletes nothing; one refused
@@ -1476,7 +1461,7 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 		f := newTrimFixture(t, 6)
 		first := f.oldestFirst()[0]
 		placed := false
-		f.clock.setHook(func(clock *fakeClock, _ int) {
+		f.clock.setHook(func(clock *fakeClock) {
 			if placed || f.exists(first.path) {
 				return
 			}
@@ -1627,7 +1612,7 @@ func TestTheSweepSkipsEveryEntryOfARootAProcessHoldsOpen(t *testing.T) {
 	if f.logged(locked.Path) == 0 {
 		t.Errorf("the locked root %s was not reported; the trimmer wrote %q", locked.Path, f.linesWritten())
 	}
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // The trimmer leaves its own process out of the used-path set: listing a root and removing an
@@ -1657,7 +1642,7 @@ func TestTheSweepLeavesItsOwnProcessOutOfTheUsedPathSet(t *testing.T) {
 		t.Errorf("the sweep deleted %d of %d entries while this process held its own handle on %s, want every one: %s",
 			out.deletions, len(f.entries), root.Path, out.reason)
 	}
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // The sweep's budget runs from its start with the listing included, so a tree whose listing
@@ -1692,7 +1677,7 @@ func TestTheSweepsBudgetRunsFromItsStartWithTheListingIncluded(t *testing.T) {
 	if report.SizesAt.IsZero() {
 		t.Error("the report carries no time for its sizes, want when they were read")
 	}
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 	f.assertNothingHalfRemoved()
 }
 
@@ -1734,7 +1719,7 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 		f.useVolume(steady(90))
 		f.setSettings(trimSettings())
 		spent := false
-		f.clock.setHook(func(clock *fakeClock, _ int) {
+		f.clock.setHook(func(clock *fakeClock) {
 			if spent || len(f.gone()) < before {
 				return
 			}
@@ -1762,7 +1747,7 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 		f.useVolume(steady(90))
 		f.setSettings(trimSettings())
 		stopped := false
-		f.setOnSettings(func(int) {
+		f.setOnSettings(func() {
 			if stopped || len(f.gone()) < before {
 				return
 			}
@@ -1795,7 +1780,7 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 		tr := f.trimmer()
 		cancel, done := f.start(tr)
 		stopped := false
-		f.clock.setHook(func(_ *fakeClock, _ int) {
+		f.clock.setHook(func(_ *fakeClock) {
 			if stopped || len(f.gone()) < before {
 				return
 			}

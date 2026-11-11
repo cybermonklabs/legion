@@ -868,11 +868,16 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // is on the volume with the two age splits that tell a working set from cold bytes. The notice's
 // own Volume member carries the same facts in a shape a reader can compute with; this is what a
 // person or an agent reads in the message.
+//
+// The opening clause of a switched-off trimmer counts nothing, and the faults it carries do the
+// counting: what stops the trimmer is three recovered panics in a row (volumeFaultLimit,
+// launcher's volumetrim.go), while Faults holds every fault since the trimmer's last report, so
+// an earlier unreported one makes four — two numbers for one event in one sentence.
 func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	var out strings.Builder
 	if report.SwitchedOff {
-		fmt.Fprintf(&out, "the cache trimmer on %s's pod %s has switched itself off after %d faults and frees nothing more until the pod's roles container restarts",
-			issue, report.PodUID, len(report.Faults))
+		fmt.Fprintf(&out, "the cache trimmer on %s's pod %s has switched itself off and frees nothing more until the pod's roles container restarts",
+			issue, report.PodUID)
 	} else {
 		fmt.Fprintf(&out, "the volume %s's roles share on pod %s is still above its low mark after a sweep",
 			issue, report.PodUID)
@@ -895,8 +900,18 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	if !report.SizesAt.IsZero() {
 		fmt.Fprintf(&out, "; measured at %s", report.SizesAt.UTC().Format(time.RFC3339))
 	}
-	for _, fault := range report.Faults {
-		fmt.Fprintf(&out, "; the trimmer recovered from a fault: %s", fault)
+	// The count and each fault's first line alone. A fault is a recovered panic with its whole
+	// stack behind it (the trimmer's recover, launcher's volumetrim.go), kilobytes of it, and
+	// Volume.Faults carries them whole already: this sentence is stored in an outbox row and
+	// published to a role topic, where a size is one this package chose rather than one a panic
+	// happened to have, as the pod end's message is bounded where it is built
+	// (runtime.PodEndRunes).
+	if len(report.Faults) > 0 {
+		fmt.Fprintf(&out, "; faults the trimmer recovered from: %d", len(report.Faults))
+		for _, fault := range report.Faults {
+			first, _, _ := strings.Cut(fault, "\n")
+			fmt.Fprintf(&out, "; %s", first)
+		}
 	}
 	return out.String()
 }

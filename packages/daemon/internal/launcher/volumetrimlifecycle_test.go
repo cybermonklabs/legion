@@ -263,7 +263,7 @@ func TestThePodsTrimmerRunsByTheFirstRolesAnswerAlone(t *testing.T) {
 	if err := report.Validate(); err != nil {
 		t.Errorf("the daemon would refuse this report: %v", err)
 	}
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 	f.assertPrefixed()
 }
 
@@ -285,7 +285,7 @@ func TestRunReturnsOnlyOnceThePodsTrimmerHasStopped(t *testing.T) {
 	releaseSweep := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseSweep)
 	blocked := false
-	f.clock.setHook(func(_ *fakeClock, _ int) {
+	f.clock.setHook(func(_ *fakeClock) {
 		if blocked || len(f.gone()) < 3 {
 			return
 		}
@@ -317,7 +317,7 @@ func TestRunReturnsOnlyOnceThePodsTrimmerHasStopped(t *testing.T) {
 	// The stop was taken at an entry boundary, as the trimmer's own cases hold it to: what it
 	// deleted stands and nothing is half removed.
 	f.assertNothingHalfRemoved()
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // No trimmer runs where none is owed: not when the bound connection's answer carries no
@@ -403,7 +403,7 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 	releaseSweep := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseSweep)
 	blocked := false
-	f.clock.setHook(func(_ *fakeClock, _ int) {
+	f.clock.setHook(func(_ *fakeClock) {
 		if blocked || len(f.gone()) < 3 {
 			return
 		}
@@ -437,7 +437,7 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 		t.Error("the trimmer is on no clock of the later answer's interval: a shortened interval must not wait the old one out")
 	}
 	assertIntervals(t, f, settingsInterval(*trimSettings()), settingsInterval(*laterTrimSettings()))
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // A connection that drops and redials leaves the settings in force: the trimmer sweeps through
@@ -488,7 +488,7 @@ func TestADroppedConnectionLeavesTheSettingsInForceAndHoldsTheReport(t *testing.
 	if err := report.Validate(); err != nil {
 		t.Errorf("the daemon would refuse this report: %v", err)
 	}
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }
 
 // An answer with no settings is a daemon rolled back to a release that does not know this work:
@@ -521,7 +521,7 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	releaseSweep := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseSweep)
 	spent, blocked := false, false
-	f.clock.setHook(func(clock *fakeClock, _ int) {
+	f.clock.setHook(func(clock *fakeClock) {
 		switch {
 		case blocked:
 		case !spent && len(f.gone()) >= 3:
@@ -565,5 +565,5 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	}
 	again.refuseVolumeReport(500 * time.Millisecond)
 	f.assertNothingHalfRemoved()
-	f.assertProtected(fixtureKeptFiles)
+	f.assertProtected()
 }

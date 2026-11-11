@@ -195,6 +195,28 @@ type LauncherVolumeTrim struct {
 	IntervalSeconds int `json:"intervalSeconds"`
 }
 
+// The ranges LauncherVolumeTrim's four numbers must be in. Both sides of the wire read them:
+// the daemon's loader refuses a file outside them (config's readVolumeTrim) and the launcher's
+// trimmer refuses a frame outside them a second time, on its own side of a connection this
+// design expects to carry version skew both ways (launcher's refusedTrimSettings). The two
+// checks are deliberate; their values are one source here, because a widening of the loader's
+// maximum the trimmer did not know would load cleanly and then be refused by every pod's
+// trimmer, which stays off for the life of its launcher process.
+//
+// A mark at 100 is a volume already full, the one fraction no sweep can reach down from.
+// VolumeIntervalMax is an hour, the longest wait between two looks that is still a trimmer: a
+// pod's caches can fill a volume inside one. The minima are what a trimmer can be armed with at
+// all: time.NewTicker panics on a non-positive period, in the process that is PID 1 of the
+// roles container with six live roles under it, and a high mark of 0 would sweep the caches of
+// a volume that is empty.
+const (
+	VolumeMarkMin     = 1
+	VolumeMarkMax     = 99
+	VolumeMinAgeMin   = 1
+	VolumeIntervalMin = 1
+	VolumeIntervalMax = 3600
+)
+
 // LauncherVolumeSize is one directory two levels under the pod's volume root as the trimmer's
 // size walk measured it: the bytes under it, and of those the bytes whose newest modification
 // time is more than an hour old and more than a day old, which are what tell a reader a working

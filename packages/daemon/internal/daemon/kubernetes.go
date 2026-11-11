@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -582,16 +582,12 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 type volumeTrimReports struct {
 	pool     *pgxpool.Pool
 	handlers []intake.Handler
-	log      *slog.Logger
-	// applied counts the reports this process has turned into facts, and is what makes each
-	// report's event id its own beside the receipt clock (report).
-	applied atomic.Uint64
 }
 
 // bind gives the holder the daemon's pool and the handlers a fact applies through, which is what
 // the workflow has and the factory does not.
-func (v *volumeTrimReports) bind(pool *pgxpool.Pool, handlers []intake.Handler, log *slog.Logger) {
-	v.pool, v.handlers, v.log = pool, handlers, log
+func (v *volumeTrimReports) bind(pool *pgxpool.Pool, handlers []intake.Handler) {
+	v.pool, v.handlers = pool, handlers
 }
 
 // report applies one sweep of issue's pod as one intake fact (runtime.VolumeReported). It runs on
@@ -603,9 +599,9 @@ func (v *volumeTrimReports) bind(pool *pgxpool.Pool, handlers []intake.Handler, 
 // sweep, but nothing in the frame numbers them, and ApplyFact applies one id exactly once — an
 // id built from the report's own contents would silently drop the second report of an episode
 // whose numbers had not moved, which is precisely the pod that is full and not changing. So the
-// id carries the daemon's own receipt: the issue, the pod, the trimmer, the episode, the moment
-// this process read the frame and the count of reports it has read, which no two reports of one
-// process share.
+// id carries the daemon's own receipt — the issue, the pod, the trimmer and the episode — with
+// the random tail every fact this daemon mints an id for carries (api.requestFactID), which is
+// unique across processes as well as within one.
 func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error {
 	if v.pool == nil || len(v.handlers) == 0 {
 		// A daemon with no workflow, which no Kubernetes deployment runs: there is no fact path
@@ -613,14 +609,13 @@ func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, re
 		return nil
 	}
 	fact := intake.VolumeNearFull{Issue: issue, PodUID: podUID, Report: record.VolumeNearFull{
-		PodUID: podUID, Trimmer: report.Trimmer, Episode: report.Episode, RaisedBy: report.RaisedBy,
+		Trimmer: report.Trimmer, Episode: report.Episode, RaisedBy: report.RaisedBy,
 		UsedBytes: report.UsedBytes, FreeBytes: report.FreeBytes, FreedBytes: report.FreedBytes,
 		StopReason: report.StopReason, RefusedReads: report.RefusedReads,
 		Sizes: volumeSizes(report.Sizes), SizesAt: report.SizesAt, SizesPartial: report.SizesPartial,
 		SizesMissing: report.SizesMissing, Faults: report.Faults, SwitchedOff: report.SwitchedOff,
 	}}
-	eventID := fmt.Sprintf("volume-near-full:%s:%s:%s:%d:%d:%d", issue, podUID, report.Trimmer, report.Episode,
-		time.Now().UTC().UnixNano(), v.applied.Add(1))
+	eventID := fmt.Sprintf("volume-near-full:%s:%s:%s:%d:%s", issue, podUID, report.Trimmer, report.Episode, rand.Text())
 	if _, err := intake.ApplyFact(ctx, v.pool, "launcher", eventID, fact, v.handlers...); err != nil {
 		return fmt.Errorf("apply the volume report of %s's pod %s: %w", issue, podUID, err)
 	}

@@ -62,7 +62,6 @@ func TestTheVolumesPercentageIsUsedOverUsedPlusAvailable(t *testing.T) {
 
 	// The two readings a sweep can meet that are not a measurement: a path nothing is mounted at,
 	// which reads 0 per cent and sweeps nothing, and a volume with nothing left, which reads 100.
-	examined := 1
 	for _, tc := range []struct {
 		name    string
 		reading volumeUsage
@@ -71,13 +70,9 @@ func TestTheVolumesPercentageIsUsedOverUsedPlusAvailable(t *testing.T) {
 		{"a volume nothing is mounted at", volumeUsage{}, 0},
 		{"a volume with no available bytes left", volumeUsage{UsedBytes: total}, 100},
 	} {
-		examined++
 		if got := tc.reading.Percent(); got != tc.want {
 			t.Errorf("Percent of %s = %.6f, want %.6f", tc.name, got, tc.want)
 		}
-	}
-	if examined != 3 {
-		t.Fatalf("the case examined %d readings, want all 3", examined)
 	}
 }
 

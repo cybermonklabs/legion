@@ -2291,7 +2291,7 @@ the same clone, the same caches, the same size, and a single pod's life is long 
 
 A cache trimmer in the pod's launcher process holds four of those directories under a mark, and leaves everything else on the volume alone.
 Every minute it reads the volume with one `statfs` and compares the used bytes over the used plus the available bytes, which is the fraction `df` prints, against two marks.
-At or above `high_percent`, 85 by default, it sweeps: it lists every eligible entry of the four roots with its time and deletes them oldest first, until a fresh reading is at or below `low_percent`, 70 by default, until no entry is eligible, or until its own five-minute budget runs out.
+At or above `high_percent`, 85 by default, it sweeps: it lists every eligible entry of the four roots with its time and deletes them oldest first, and it stops at the first fresh reading at or below `low_percent`, 70 by default, when three readings in a row show no decrease, when no entry is left eligible, when its own five-minute budget runs out, or on a `/proc` read the kernel refused or a stop from the daemon or the container.
 It deletes no entry any process of the pod has open, none whose newest modification time is inside `min_age_minutes`, 15 by default, and none whose kind is not the kind its row names below; it follows no symbolic link, and it never unlinks a root itself.
 `runtime.kubernetes.volume_trim` sets all five values, and `enabled: false` runs no trimmer at all.
 
@@ -2316,7 +2316,7 @@ The trimmer writes every line of its own behind the prefix `volume trim: ` in th
 A sweep that ends with the volume still above the low mark sends the daemon one report, and the daemon turns that into one `volume-near-full` notice to the issue's architect, naming the sizes of the directories two levels under `/legion` with the bytes of each untouched for more than an hour and for more than a day.
 A sweep that reaches the low mark sends none.
 The daemon writes one line of its own for each such report, behind the prefix `volume near full: `: one when it writes the notice and one when a bound holds it back, each naming the issue, the pod, the trimmer, the episode and the count so far.
-Those bounds are at most three notices for one trimmer and episode and at most one an hour for one pod, except a report whose episode a five-point rise raised, which is told at once, and a report that the trimmer has switched itself off after three faults, which is told whatever the counts say.
+Those bounds are at most three notices for one trimmer and episode and at most one an hour for one pod: a report whose episode a five-point rise raised skips the hour but not the three, and the report that the trimmer has switched itself off is told whatever the counts say.
 
 When the trimmer cannot bring the volume down, there are two remedies a person makes, and the quick one destroys work:
 restart the issue, and its next pod brings an empty disk of its own, taking the turn's unpushed changes and every cache the pod had built with the old one ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
