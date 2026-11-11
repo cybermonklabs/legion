@@ -462,11 +462,17 @@ func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIss
 	if err != nil {
 		return nil, err
 	}
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
+	own := ownSlots(issues, slots)
+	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil)
 	if err != nil {
 		return nil, err
 	}
-	return blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), nil
+	// The same list the state shows, judged from the same reads: what a Dispatch link and an
+	// open child hold, and what holds every other admitted issue the line does not carry
+	// (record.Unplaced). Without the last the controller was told nothing at all about an issue
+	// the line drops where its tree is not live or its design gate is not open.
+	return blockers.Blocked(rows, issues, line,
+		append(record.ChildWaitRows(facts.ChildWaits), record.Unplaced(issues, own, line, facts)...)), nil
 }
 
 // Reconcile applies the bounded Dispatch boot read to existing records, then fills newly available

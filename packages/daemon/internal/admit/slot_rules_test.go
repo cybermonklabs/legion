@@ -320,9 +320,17 @@ func TestSlotPerPhase(t *testing.T) {
 
 	assertRowHolders(t, pool, "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-7",
 		"LEGION-8", "LEGION-9", "LEGION-20", "LEGION-30", "LEGION-32")
-	if want := []record.BlockedIssue{{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
-		t.Fatalf("blocked = %#v, want %#v: the root keeps its row at admitted because an open Dispatch child holds it there",
-			blockedNow(t, pool, admission), want)
+	// LEGION-1 keeps its row at admitted because an open Dispatch child holds it there, and
+	// LEGION-31 is the unstarted child of a root waiting on a person: that wait is what holds
+	// it where it stands, and the state names it rather than leaving the issue in none of
+	// `active`, `waiting` and `blocked` (record.Unplaced). LEGION-32, the re-entered child
+	// beside it, holds a row and so stands in `active` instead.
+	want := []record.BlockedIssue{
+		{Issue: "LEGION-1", BlockedBy: []string{"LEGION-99"}},
+		{Issue: "LEGION-31", BlockedBy: []string{"LEGION-30"}},
+	}
+	if got := blockedNow(t, pool, admission); !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocked = %#v, want %#v", got, want)
 	}
 
 	// The three deletions that are left, made together and read by one pass.

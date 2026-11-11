@@ -339,10 +339,16 @@ type Admission struct {
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees"`
-	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
-	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
-	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
-	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
+	// Blocked is every issue Legion is waiting to start, by issue key, with the issue it waits
+	// on: one that waits on a Dispatch issue nobody has finished (INFRA-225) — a waiting root
+	// admission skips and a child the workflow holds at `admitted` — and one the waiting line
+	// does not carry at all, which waits on the issue that must move before it can run
+	// (record.Unplaced): the ancestor the daemon has accepted, the live root its Dispatch chain
+	// reaches, or its own tree's root, whose promotion, approval, answer, hand-over or
+	// re-admission is the one move that places it. The three lists together are a partition of
+	// the issues the record calls admitted: every one of them is in Active, in Waiting, or here,
+	// and never in none of them (dispatch://INFRA-2964). A blocked issue the line carries is in
+	// Waiting too. Never null; empty when Legion waits to start nothing.
 	Blocked []BlockedIssue `json:"blocked"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that

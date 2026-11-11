@@ -524,6 +524,89 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 	}
 }
 
+// Every issue the record calls admitted stands in exactly one of `active`, `waiting` and
+// `blocked`: the three are a partition of them, so a reader of the state can always say where
+// one stands and what moves it next.
+//
+// The waiting line drops a candidate silently at three places, and nothing else reported any of
+// them: where its tree is not live, where its tree's design gate is not open, and where its own
+// Dispatch chain reaches another live root (record.Waiting). The state's `blocked` read the
+// mirror's blocked-by links and the children-first wait and nothing more, so an issue any of
+// those three stopped stood in none of the three lists — at admitted in the daemon's own
+// records, holding no slot, in no line, with nothing naming what it waited on, and no later
+// pass looking at it again. Nineteen issues of the INFRA daemon stood there at once
+// (dispatch://INFRA-2964).
+//
+// The fixture is those three drops as that daemon showed them. LEGION-320's tree closed: its
+// root is done and its lifecycle no longer stands open, so the line passes its member over, and
+// that member carries no legion label, as a child recorded under a live tree never does
+// (workflow's recordChildUnderLiveTree). LEGION-330's gate opened once and its architect has
+// since revised the document, so the gate is shut again while the root itself works on the slot
+// it has held throughout, and the line passes its released child over at the gate. LEGION-340
+// is a root whose Dispatch chain reaches LEGION-330's live tree: it is that tree's unreleased
+// work and waits for its architect's release.
+func TestProjectPlacesEveryAdmittedIssueInActiveWaitingOrBlocked(t *testing.T) {
+	approved := 1
+	closedRoot, revisingRoot := "LEGION-320", "LEGION-330"
+	store := projectionStore{
+		issues: []record.Issue{
+			{Key: closedRoot, Project: "LEGION", Tree: closedRoot, Status: "done", Phase: phase.Done, Rank: "A", HandedOver: true},
+			{Key: "LEGION-321", Project: "LEGION", Tree: closedRoot, Parent: &closedRoot, Status: "todo", Phase: phase.Admitted, Rank: "B"},
+			{Key: revisingRoot, Project: "LEGION", Tree: revisingRoot, Status: "in_progress", Phase: phase.Admitted, Rank: "C", HandedOver: true},
+			{Key: "LEGION-331", Project: "LEGION", Tree: revisingRoot, Parent: &revisingRoot, Status: "todo", Phase: phase.Admitted, Rank: "D"},
+			{Key: "LEGION-340", Project: "LEGION", Tree: "LEGION-340", Status: "todo", Phase: phase.Admitted, Rank: "E", HandedOver: true, Ancestry: []string{revisingRoot}},
+			// A root a person has taken the legion label off is the one admitted issue none of
+			// the three lists holds, and deliberately so: Legion runs nothing for it and starts
+			// nothing for it, which is what taking the label off asks for, and there is no
+			// issue to name as what it waits on. Its todo with the label back queues it again.
+			{Key: "LEGION-350", Project: "LEGION", Tree: "LEGION-350", Status: "todo", Phase: phase.Admitted, Rank: "F"},
+		},
+		slots:      []record.Slot{{Issue: revisingRoot, Index: 0, AdmittedAt: projectedAt}},
+		lifecycles: []string{revisingRoot},
+		gates: map[string]map[record.DesignStep]record.DesignGate{
+			revisingRoot: {record.DesignStepSpec: {Issue: revisingRoot, Step: record.DesignStepSpec, LatestVersion: 2,
+				ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: projectedAt.Add(-time.Hour)}, EverOpened: true}},
+		},
+	}
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	placed := make(map[string][]string)
+	for _, key := range got.Admission.Active {
+		placed[key] = append(placed[key], "active")
+	}
+	for _, key := range got.Admission.Waiting {
+		placed[key] = append(placed[key], "waiting")
+	}
+	for _, row := range got.Admission.Blocked {
+		placed[row.Issue] = append(placed[row.Issue], "blocked")
+	}
+	for _, issue := range store.issues {
+		if issue.Phase != phase.Admitted || !record.InWorkflow(issue) {
+			continue
+		}
+		if claim.IsTreeRoot(issue.Key, issue.Tree) && !issue.HandedOver {
+			if where := placed[issue.Key]; len(where) != 0 {
+				t.Fatalf("%s carries no legion label and stands in %v, want none of them: Legion runs nothing for a root a person has paused", issue.Key, where)
+			}
+			continue
+		}
+		if where := placed[issue.Key]; len(where) != 1 {
+			t.Fatalf("%s is recorded admitted and stands in %v, want exactly one of active, waiting and blocked: in none of them nothing starts it where it stands and the state says nothing about it",
+				issue.Key, where)
+		}
+	}
+	want := []api.BlockedIssue{
+		{Issue: "LEGION-321", BlockedBy: []string{closedRoot}},
+		{Issue: "LEGION-331", BlockedBy: []string{revisingRoot}},
+		{Issue: "LEGION-340", BlockedBy: []string{revisingRoot}},
+	}
+	if !reflect.DeepEqual(got.Admission.Blocked, want) {
+		t.Fatalf("blocked = %#v, want %#v: each names the issue that must move before it can run", got.Admission.Blocked, want)
+	}
+}
+
 // lineIssue is one record of the waiting line's fixture, carrying the fields the line reads and
 // the repository fields every projected issue has. It is internal/admit's own lineIssue
 // (line_order_test.go) written for this package, so the two fixtures are read side by side.

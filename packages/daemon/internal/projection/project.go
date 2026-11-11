@@ -297,7 +297,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(waiting)}
 		projected.Issues[issue.Key] = view
 	}
-	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	// Every issue this project's records call admitted is in exactly one of `active`, `waiting`
+	// and `blocked` here: the two deciders above name what a Dispatch link and an open child
+	// hold, and record.Unplaced names what holds every other admitted issue the line does not
+	// carry — read over this pass's own records, slots, line and facts, so no issue of it is
+	// left in none of the three (dispatch://INFRA-2964).
+	projected.Admission.Blocked = blockers.Blocked(rows, own, line,
+		append(record.ChildWaitRows(facts.ChildWaits), record.Unplaced(own, slots, line, facts)...))
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {

@@ -799,10 +799,9 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		if holds && issue.HandedOverFrom == "" {
 			continue
 		}
-		if slices.ContainsFunc(issue.Ancestry, func(key string) bool {
-			_, under := live[key]
-			return under && key != issue.Key
-		}) {
+		// The ancestry hold, whose one statement is liveAncestor: the state names the live root
+		// it finds as what holds this one (Unplaced), so the hold and its name cannot differ.
+		if liveAncestor(issue, live) != "" {
 			continue
 		}
 		starting = append(starting, LineEntry{Issue: issue, Kind: LineQueuedRoot, Holds: holds})
