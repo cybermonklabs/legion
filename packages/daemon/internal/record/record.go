@@ -1510,6 +1510,18 @@ type Store interface {
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
 	EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int64, error)
+	// EnqueueStart writes a phase worker's start as a row of its own, taking out the issue's
+	// oldest supervise start that waits for the issue's admission slot
+	// (SuperviseRequest.NeedsSlot) and that no live lease holds, so two transitions before that
+	// slot leave exactly one start, the later one, in the place in the waiting line the first
+	// one took: the row written carries the earlier row's creation time, its attempts, when it
+	// is next due and the error it last recorded, and its own values where the issue owed no
+	// such row. It is never the earlier row rewritten — one outbox row is one task, which is
+	// what a claim's record of the rows it has taken a task from rests on. A row a lane holds
+	// now is not touched, including one it takes while the call waits on its row lock, and the
+	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
+	// other.
+	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// ReplaceOwedStart replaces the issue's oldest supervise start that waits for the issue's
 	// admission slot (SuperviseRequest.NeedsSlot) and that no live lease holds with row's
 	// payload, and says whether it found one, so two transitions before that slot leave exactly

@@ -2038,12 +2038,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			task, err := workflow.ResumeTask(ctx, a.store, tx, member, held.role)
-			if err != nil {
-				return err
-			}
-			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
+			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
 				return err
 			}
 		}
@@ -2056,10 +2051,10 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 // (workflow.StartFor, the pending delivery's StillWorked). That can happen where a start row was
 // finished without acting while the slot stayed — a row the outbox fenced out, a row
 // finishFencedStarts finished earlier in this pass — and nothing else would ever start that
-// worker again, so the issue would hold its slot for ever doing nothing. Each one gets the start
-// a retry of a held phase gives (workflow's restart): the assignment its phases row already
-// names, so no completion in flight is refused for an assignment the worker was never given, and
-// the phase's resume task.
+// worker again, so the issue would hold its slot for ever doing nothing. Each one is sent the
+// work its role's phase entry names (workflow's SendOwedEntry): the task that entry was raised
+// with, at that entry, so no completion in flight is refused for an entry the worker was never
+// given, and the phase's resume task where the record holds no task of that entry.
 //
 // It runs after the cap loop on every pass admission makes, over at most the cap's worth of
 // slotted issues, through one batched RoleRuns read rather than a read per slot. Running after
@@ -2164,7 +2159,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
 			continue
 		}
-		if err := a.engine.ResumeSlottedWorker(ctx, tx, held.issue, held.role); err != nil {
+		if err := a.engine.SendOwedEntry(ctx, tx, held.issue, held.role); err != nil {
 			return fmt.Errorf("start the worker of slotted issue %s again: %w", held.issue.Key, err)
 		}
 		intake.OnCommit(ctx, func() {

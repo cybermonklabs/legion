@@ -972,7 +972,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
-	// session until its issue closes (leave), and its assignment ends here, not its process. The
+	// session until its issue closes (leave), and its phase entry ends here, not its process. The
 	// workspace passes to the next role at the completion this move records, which the worker reports
 	// once its handoff is committed and pushed, so the next role's start may run while that worker's
 	// turn is still finishing (the issue's lifecycle lane runs its supervise rows one at a time,

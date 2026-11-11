@@ -1008,10 +1008,10 @@ func pushedFromTo(from, to, pusher string) intake.Fact {
 
 // phaseStartKeys is every key a phase worker's start payload carries
 // (record.SuperviseRequest): the operation, the issue's tree, the role, its task, the issue
-// generation, the phase the start serves and the assignment it hands that role. The list is
+// generation, the phase the start serves and the phase entry that task is of. The list is
 // asserted whole rather than key by key, so a start that grows a field nobody meant it to carry —
 // a role to wait for before it acts, say — fails here.
-const phaseStartKeys = "assignment,generation,needsSlot,op,phase,role,task,tree"
+const phaseStartKeys = "entry,generation,needsSlot,op,phase,role,task,tree"
 
 // implementerStart is the task of the implementer's start the outbox holds, the one row a phase
 // worker's start is (workflow.StartOrOwe); the task tells it from a start admission writes for a
