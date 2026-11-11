@@ -28,8 +28,10 @@
  *     indented lines that follow, blank lines between them included, and ends at the last of
  *     them.
  *   - A code span, as CommonMark reads one: a run of N backticks opens one and the next run of
- *     exactly N closes it, the search ending where the paragraph does, at a blank line, so a run
- *     nothing closes there is literal text. A backslash takes the backtick after it as a literal
+ *     exactly N closes it, the search ending where the paragraph does - at a blank line, at a
+ *     line blank past the containers it carries such as a bare `>` inside a quote, at a list
+ *     item's marker, at an ATX heading, at a thematic break - so a run nothing closes inside
+ *     that paragraph is literal text. A backslash takes the backtick after it as a literal
  *     character, which opens no span, while a run that closes one is read as written
  *     (`` `a\` `` closes), which is where CommonMark puts the escape too. Spans are read in the
  *     text the blocks leave, so a backtick inside a fenced block opens nothing and no span
@@ -47,10 +49,11 @@
  * What it deliberately does not read, each because the server does not and a markdown parse is
  * what either would cost:
  *
- *   - A line that is no paragraph's and opens none: an ATX or setext heading, a table's rows, a
- *     block of HTML, a link reference definition. An indented line right under one is read as
- *     that paragraph's text, so a code block opening there is read as prose and the party it
- *     holds is delivered to, where no reader of the record sees one named.
+ *   - A line that is no paragraph's and opens none: a setext heading's underline, a table's
+ *     rows, a block of HTML, a link reference definition. An indented line right under one is
+ *     read as that paragraph's text, so a code block opening there is read as prose and the
+ *     party it holds is delivered to, where no reader of the record sees one named. An ATX
+ *     heading is not one of them: it is read, and ends the paragraph above it.
  *   - A footnote definition's container. Its content, four columns in, is read as an indented
  *     code block where a blank line stands between it and the `[^id]:` line - a party written
  *     there is delivered to nobody, which is the silent half of being wrong.
@@ -58,10 +61,9 @@
  *     one straddling a container's own content column is taken whole by that container, so a tab
  *     after a list marker is the item's indentation rather than indented code inside it: code
  *     read as prose again.
- *   - A paragraph that ends at something other than a blank line: a `>` alone inside a block
- *     quote, a list item's marker interrupting one. A span's search ends at a line blank of
- *     everything, so one opened in such a paragraph can be closed by a run past the paragraph's
- *     end.
+ *   - A code span crossing a construct only a real parse resolves. The paragraph a line of the
+ *     first kind ends carries on for this reader, so a run opened before a setext heading's
+ *     underline, a table's rows or a block of HTML can be closed by a run after it.
  *
  * `codeSpans` is also the one reading of where a code span begins on this side: the snippet
  * cutter reads it from here (`markdown-fragment.ts`) rather than keeping a second copy of the
@@ -100,6 +102,7 @@ const SPACE = 0x20;
 const TAB = 0x09;
 const CARRIAGE_RETURN = 0x0d;
 const GREATER_THAN = 0x3e;
+const NUMBER_SIGN = 0x23;
 const HYPHEN = 0x2d;
 const PLUS = 0x2b;
 const ASTERISK = 0x2a;
@@ -314,6 +317,22 @@ function isThematicBreak(text: string, from: number, end: number): boolean {
   return count >= 3;
 }
 
+/** Whether the content of a line at `from`, past its containers and its own indentation, is an
+ *  ATX heading: one to six `#` and then a space, a tab or the end of the line. It is no
+ *  paragraph's line and opens none, so it ends the paragraph above it and an indented line
+ *  right under it opens a code block, as CommonMark opens one there. */
+function isATXHeading(text: string, from: number, end: number): boolean {
+  const at = runEnd(text, from, end, NUMBER_SIGN);
+  if (at === from || at - from > 6) {
+    return false;
+  }
+  if (at >= end) {
+    return true;
+  }
+  const character = text.charCodeAt(at);
+  return character === SPACE || character === TAB;
+}
+
 /** How many of `stack`'s containers, in order, hold the line `[at, end)`, with `scan` reading
  *  where the content of the innermost of those begins and the column there. A block quote holds
  *  a line carrying its `>` under four columns of indentation, the marker and one space or tab
@@ -400,14 +419,25 @@ function closesFence(
   return past - at >= width && isBlank(text, past, end);
 }
 
-/** The fenced and indented code blocks of `text`, in order, each from the first character of its
- *  opening line to the end of its last line, read in one walk of the text's lines. The walk
- *  holds the containers open at the line, whether the line before it was a paragraph's - which
- *  is what an indented line needs not to be to open a block of its own - and the code block the
- *  line stands in, if any. A block's range runs from the start of its opening line, containers'
+/** What one walk of a text's lines reads: the code blocks it holds, and where each of its
+ *  paragraphs ends. */
+interface Blocks {
+  /** The fenced and indented code blocks, in order, each from the first character of its
+   *  opening line to the end of its last line. */
+  blocks: CodeRange[];
+  /** The start of every line that ends the paragraph above it, in order, which is where a code
+   *  span's search for its closing run ends too (`appendCodeSpans`). */
+  breaks: number[];
+}
+
+/** The code blocks and paragraph breaks of `text`, read in one walk of its lines. The walk holds
+ *  the containers open at the line, whether the line before it was a paragraph's - which is what
+ *  an indented line needs not to be to open a block of its own - and the code block the line
+ *  stands in, if any. A block's range runs from the start of its opening line, containers'
  *  markers included, since nothing of a line before the code is a reference. */
-function codeBlocks(text: string): CodeRange[] {
+function codeBlocks(text: string): Blocks {
   const blocks: CodeRange[] = [];
+  const breaks: number[] = [];
   const scan: Scan = { at: 0, column: 0, content: 0 };
   const stack: Container[] = [];
   let paragraph = false;
@@ -496,9 +526,15 @@ function codeBlocks(text: string): CodeRange[] {
       reached = scan.column;
     }
 
+    // A line opening a container of its own - a list item's marker, a `>` - interrupts the
+    // paragraph above it.
+    let ends = depth > matched;
+    let heading = false;
     let prose = false;
     if (indent >= end || thematic) {
-      // A blank line and a thematic break open nothing and end the paragraph above them.
+      // A line blank past the containers it carries - a bare `>` among them - and a thematic
+      // break open nothing and end the paragraph above them.
+      ends = true;
     } else if (reached - column >= 4 && !paragraph) {
       indentedOpen = true;
       start = at;
@@ -508,12 +544,24 @@ function codeBlocks(text: string): CodeRange[] {
       if (opener !== undefined) {
         fence = opener;
         start = at;
+      } else if (isATXHeading(text, indent, end)) {
+        // An ATX heading is no paragraph's line and opens none: it ends the paragraph above it,
+        // and a break on the line under it leaves the heading's own text to itself, where a
+        // span of its own may stand.
+        ends = true;
+        heading = true;
       } else {
         prose = true;
       }
     } else {
       // Four columns or more under a paragraph are that paragraph's own text.
       prose = true;
+    }
+    if (ends) {
+      breaks.push(at);
+    }
+    if (heading) {
+      breaks.push(next);
     }
     // A line that carries none of the containers it stands in, opens nothing and continues the
     // paragraph above it is that paragraph's own text: the containers stay open for the lines
@@ -530,7 +578,7 @@ function codeBlocks(text: string): CodeRange[] {
   } else if (indentedOpen) {
     blocks.push({ end: last, start });
   }
-  return blocks;
+  return { blocks, breaks };
 }
 
 /** Where the first run of exactly `width` backticks at or after `from` starts, or -1 when
@@ -550,7 +598,7 @@ function nextBacktickRun(text: string, from: number, to: number, width: number):
   return -1;
 }
 
-/** The code spans of `[from, to)`, a stretch of `text` no blank line breaks, appended to
+/** The code spans of `[from, to)`, a stretch of `text` no paragraph break cuts, appended to
  *  `found`, in order: the run of backticks at a span's start is closed by the next run of
  *  exactly that length, a longer run being no closer, and a run with no closer is literal text
  *  that the next character is read on from. A backslash takes the character after it, so an
@@ -579,28 +627,48 @@ function appendParagraphSpans(text: string, from: number, to: number, found: Cod
   }
 }
 
-/** The code spans of `[from, to)` appended to `found`, in order, each read inside the paragraph
- *  that holds it: the search for a span's closing run ends at the blank line that ends the
- *  paragraph, as CommonMark ends it, so an unmatched backtick mutes nothing after that line. */
-function appendCodeSpans(text: string, from: number, to: number, found: CodeRange[]): void {
-  let paragraph = from;
-  for (let at = from; at < to; ) {
-    const end = lineEnd(text, at);
-    const next = nextLine(text, end);
-    if (isBlank(text, at, end)) {
-      appendParagraphSpans(text, paragraph, at, found);
-      paragraph = next;
+/** The index in `breaks` of the first paragraph break past `from`: a break on `from` itself cuts
+ *  nothing, the paragraph starting there. */
+function breakAfter(breaks: readonly number[], from: number): number {
+  let low = 0;
+  let high = breaks.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (breaks[middle] <= from) {
+      low = middle + 1;
+    } else {
+      high = middle;
     }
-    at = next;
   }
-  appendParagraphSpans(text, paragraph, to, found);
+  return low;
+}
+
+/** The code spans of `[from, to)` appended to `found`, in order, each read inside the paragraph
+ *  that holds it: the search for a span's closing run ends where that paragraph ends, at the
+ *  first of `breaks` past where the search began - a blank line, a line blank past its
+ *  containers, a list item's marker, an ATX heading, a thematic break - so an unmatched backtick
+ *  mutes nothing written past its own paragraph. */
+function appendCodeSpans(
+  text: string,
+  from: number,
+  to: number,
+  breaks: readonly number[],
+  found: CodeRange[]
+): void {
+  let start = from;
+  for (let index = breakAfter(breaks, from); index < breaks.length && breaks[index] < to; index++) {
+    appendParagraphSpans(text, start, breaks[index], found);
+    start = breaks[index];
+  }
+  appendParagraphSpans(text, start, to, found);
 }
 
 /** The code spans of `text`, in order: the one reading of where a span begins on this side,
- *  which the snippet cutter reads too (`markdown-fragment.ts`). */
+ *  which the snippet cutter reads too (`markdown-fragment.ts`). It reads the text's paragraph
+ *  breaks for itself, so a span begins where `codeRanges` begins one. */
 export function codeSpans(text: string): CodeRange[] {
   const spans: CodeRange[] = [];
-  appendCodeSpans(text, 0, text.length, spans);
+  appendCodeSpans(text, 0, text.length, codeBlocks(text).breaks, spans);
   return spans;
 }
 
@@ -609,18 +677,15 @@ export function codeSpans(text: string): CodeRange[] {
  *  pass that reading already makes (`readTextReferences`), and every reference is marked from it
  *  with `isInCode`. */
 export function codeRanges(text: string): CodeRange[] {
-  const blocks = codeBlocks(text);
-  if (blocks.length === 0) {
-    return codeSpans(text);
-  }
+  const { blocks, breaks } = codeBlocks(text);
   const ranges: CodeRange[] = [];
   let at = 0;
   for (const block of blocks) {
-    appendCodeSpans(text, at, block.start, ranges);
+    appendCodeSpans(text, at, block.start, breaks, ranges);
     ranges.push(block);
     at = block.end;
   }
-  appendCodeSpans(text, at, text.length, ranges);
+  appendCodeSpans(text, at, text.length, breaks, ranges);
   return ranges;
 }
 

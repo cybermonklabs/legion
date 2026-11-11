@@ -234,6 +234,39 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
     body: "Rename the `foo field.\n\n[Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) please check `bar` too.",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
   },
+  // A paragraph ends where CommonMark ends one without a blank line too: at the next list
+  // item's marker, at a line blank past the containers it carries (a bare `>` inside a quote),
+  // at an ATX heading and at a thematic break. The span search ends there as well, so one
+  // backtick nothing closes in a bullet, in a quote or above a heading mutes no party written
+  // under it (INFRA-1702 R2).
+  {
+    body: "- Rename `foo field\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  {
+    body: "> Rename `foo\n>\n> [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  {
+    body: "Rename `foo field\n\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  {
+    body: "Rename `foo field\n# Next up\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  {
+    body: "Rename `foo field\n***\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  // An ATX heading is no paragraph's line and opens none, so the indented line under it opens a
+  // code block, as CommonMark opens one there.
+  {
+    body: "# Where to ask\n    dispatch://role/reviewer\n",
+    refs: ["dispatch://role/reviewer"],
+    links: [],
+    inCode: ["dispatch://role/reviewer"],
+  },
   // A backslash takes the backtick after it as a literal character, which opens no span, so the
   // party stands in prose and the span is the one the author wrote.
   {
