@@ -366,9 +366,13 @@ Three probes read the pod's own loopback, two routes between them:
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
-the listener's own stop of 28 seconds fit in the pod's grace period of 35 seconds, and 35 seconds
-is under the 135-second bind deadline, so the stopping pod frees the durable before the starting
-one gives up.
+the listener's own stop of 28 seconds are 33 seconds together, inside the pod's grace period of
+40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
+kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
+and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
+A hung pod holds its durable for the whole grace, so the replacement pod's time to its first
+`/healthz` answer plus that grace has to stay under the 135-second bind deadline. At 40 seconds
+the start allowance is 95 seconds.
 
 One pod has one cost: while that pod is unready or restarting, the Tailscale Service's port
 9020 refuses connections. Port 4222 stays up through it, which is what the split is for.
@@ -443,10 +447,16 @@ keeps them), and with them the JetStream store, until
 The component creates nothing outside `namespace` and reads only the PriorityClass. Before the
 first `pulumi up`:
 
-- The cluster has nodes in three zones and enforces NetworkPolicy, as GKE Autopilot does with GKE
-  Dataplane V2: the policy is all that keeps a pod other than the hub's from joining the cluster on
-  6222, since the routes carry no credential. Google Managed Prometheus's managed collection is on,
-  so the `PodMonitoring` kind exists.
+- The cluster enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane V2, and has nodes
+  in three zones. The policy is what keeps a pod other than the hub's from joining the cluster on
+  6222, since the routes carry no credential. It is also what keeps every other pod of the cluster
+  off the session listener's `/v1` on 9020, which that listener serves with no credential at all
+  (`ENVOY_API_ALLOW_UNAUTHENTICATED=1`, and the component takes no token input for it). A caller
+  the policy admits reaches `/v1` with `Host: localhost`, so the listener's own `Host` check stops
+  a page that rebinds its own name and not such a caller. A cluster whose network plugin does not
+  enforce NetworkPolicy accepts both objects and admits every caller, and the deployment looks
+  healthy either way. Google Managed Prometheus's managed collection is on, so the `PodMonitoring`
+  kind exists.
 - `namespace` exists, and so does the PriorityClass `priorityClassName` names, if any.
 - The kubeconfig's identity may create, read (get, list, watch), update, patch and delete, in
   `namespace`: Deployments and StatefulSets (`apps`); Services, ConfigMaps, Secrets and
@@ -614,7 +624,7 @@ those is, the sandbox in the paragraph under it.
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
 | Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
-| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener have a 35-second termination grace period, a five-second pre-stop wait and the stop each is built for; the front door 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
+| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
 The ordering among them is the component's own. The Tailscale Service and the front door's
@@ -1298,16 +1308,18 @@ ready pod takes the tailnet name down and leaves their NATS traffic alone.
 A stopping app or listener pod keeps serving for five seconds after it is told to stop, which is
 the window its removal from routing has to propagate, and is what its pre-stop wait (`sleep 5`)
 is for. The kubelet runs that wait inside the pod's one `terminationGracePeriodSeconds` and
-signals the container only once it returns, so each pod asks for 35 seconds. For the app, that is
-the five of the wait added to the thirty `envoy-dispatch`'s own shutdown is built for (`stopGrace`
-in `packages/envoy/cmd/dispatch/shutdown.go`) rather than taken out of them; whoever tunes either
+signals the container only once it returns, so each pod asks for the wait plus its own stop, and
+the two ask for different numbers. The app asks for 35 seconds: the five of the wait added to
+the thirty `envoy-dispatch`'s own shutdown is built for (`stopGrace` in
+`packages/envoy/cmd/dispatch/shutdown.go`) rather than taken out of them; whoever tunes either
 number moves both, since a wait the grace period does not cover is paid for out of the server's
 shutdown, which loses first the margin its one deadline keeps for its last log lines and exit, then
-a slow write killed mid-commit. For the listener, it is the five of the wait added to its own
-stop of about 26 seconds, with a margin.
-Whether five seconds is enough to lose no request across a real release is unmeasured; the
-consuming stack's release measures it, with a poll every 250 milliseconds. The front door drains
-its node instead ([The front door](#the-front-door)).
+a slow write killed mid-commit. The listener asks for 40 seconds: the five of the wait added to its own
+stop of 28 seconds, with a margin of 7 seconds (`listenerGraceMargin`) for the kubelet's own latency
+between the pre-stop hook's return and SIGTERM, the container's teardown and a late tick on a loaded
+node. Whether five seconds is enough to lose no request across a real release is unmeasured; the
+consuming stack's release measures it, with a poll every 250 milliseconds. The front door drains its
+node instead ([The front door](#the-front-door)).
 
 Above one replica the app runs that many `envoy-dispatch` processes against one Postgres and one
 NATS, and a rolling update runs the previous build beside the new one: "Running more than one

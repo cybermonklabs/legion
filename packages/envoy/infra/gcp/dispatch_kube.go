@@ -603,10 +603,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// killed holder's lease is taken over in about six. Readiness is /healthz, which answers within
 	// 5 s, so the probe allows 6; startup and liveness only ask that the listener answers
 	// (answersProbe). The pre-stop wait keeps a stopping pod answering /v1 while its removal from
-	// the Service propagates, and the 35 s grace period covers those 5 s, the listener's own stop
-	// of about 26 s, and a margin.
+	// the Service propagates, and the 40 s grace period covers those 5 s and the listener's own
+	// stop of 28 s, with the margin listenerGraceMargin names. That 28 s is three hard deadlines
+	// the listener sets itself and holds as constants, stopHTTPGrace, stopLaneGrace and
+	// stopClientDrain, summed as stopBudget (packages/envoy/cmd/listener/main.go), whose own test
+	// holds this pod's golden to that sum and that margin. They cannot overrun, so the margin
+	// covers the kubelet's own latency between the pre-stop hook's return and SIGTERM, the
+	// container's teardown and a late tick on a loaded node, and not a listener that runs over.
+	// This pod and the clustered hub's listener pod run the same binary at the same budget, and
+	// what holds the two graces equal is
+	// TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace, which reads both.
 	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, map[string]*corev1.Secret{listenerName: listenerSecret}, corev1.PodSpecArgs{
-		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(35), EnableServiceLinks: pulumi.Bool(false),
+		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: seedMount,
