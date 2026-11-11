@@ -527,7 +527,7 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await textOnlyCard
     .getByLabel("Your answer")
     .fill("Neither option fits; going with a third path.");
-  await textOnlyCard.getByRole("button", { name: "Answer" }).click();
+  await textOnlyCard.getByRole("button", { exact: true, name: "Answer" }).click();
   await expect(textOnlyCard).toHaveCount(0);
   await expect
     .poll(() => getAsk(textOnlyAsk.id), { intervals: [50, 50, 100, 200, 500] })
@@ -661,7 +661,7 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
     // what waits for it.
     const questionCard = await askCard(page, questionShaped.id);
     await questionCard.getByLabel("Your answer").fill("How does this fit our release plan?");
-    await questionCard.getByRole("button", { name: "Answer" }).click();
+    await questionCard.getByRole("button", { exact: true, name: "Answer" }).click();
     const clarification = questionCard.getByRole("button", { name: "Ask back instead" });
     await expect(clarification).toBeFocused();
     await clarification.press("Enter");

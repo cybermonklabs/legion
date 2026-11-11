@@ -132,7 +132,10 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");
 
   await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("radio", { name: "Yes" }).check();
-  await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("button", { name: "Answer" }).click();
+  await inboxPage
+    .getByTestId(`ask-${ask.id}`)
+    .getByRole("button", { exact: true, name: "Answer" })
+    .click();
   await expect(inboxPage.getByTestId(`ask-${ask.id}`)).toHaveCount(0);
   await issuePage.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
 

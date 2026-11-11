@@ -1796,6 +1796,18 @@ test("the new page carries every element of the old one @phone", async ({ browse
         ).toHaveCount(1);
         await nodeMenuButton(page).click();
         await expect(openMenu(page)).toHaveCount(1);
+        // The menu's rows are the issue's own uncited documents (`issue-artifacts.ts`'s
+        // `uncitedArtifacts` over `issue.artifacts`), which arrive with the issue read rather
+        // than with the shell: a menu opened before that read lands draws the upload item
+        // alone, and the snapshot taken then records every document of this view as lost.
+        // Measured on this branch at 390 px, three times in two runs, each naming exactly
+        // `button "Copy reference dispatch://LAY-2/artifact/notes-md"` and each passing on the
+        // retry. So the view is not there until a document row of it is.
+        await expect(
+          openMenu(page)
+            .getByRole("button", { name: /^Copy reference/ })
+            .first()
+        ).toBeVisible();
         return true;
       },
       async () => {
