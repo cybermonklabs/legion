@@ -264,16 +264,19 @@ const messageValidation: NonNullable<DispatchToolSpec["validation"]> = {
  * dispatch_read: an issue, a project (alone, its documents; with artifact, one of them), or a ref,
  * exactly as every owned read - or a `message` alone, which addresses a conversation by any
  * message in it. A human's direct message to this session and the replies to it belong to no
- * issue or document, so the id is all there is.
+ * issue or document, so the id is all there is. `history` reads one post's replaced bodies, and
+ * a post is named by `ref` alone.
  */
 const readOwner = documentOwnerValidation(false);
 const READ_OWNER_RULE =
   "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
 const READ_MESSAGE_RULE =
   "message stands alone: it names the conversation, so name no issue, project, artifact, or ref with it.";
+const READ_HISTORY_RULE =
+  "history reads the bodies an edit or a delete of one comment or message replaced, so it goes with ref naming that post and with nothing else: message stands alone and names a whole conversation, which keeps no history of its own.";
 
 /** dispatch_read's refusal: a call with message breaks only the message rule, and a call
- *  without it only the owner rule. */
+ *  without it only the owner rule; history breaks its own rule beside either. */
 function readProblem(value: unknown): string | undefined {
   const input = value as {
     readonly message?: unknown;
@@ -281,22 +284,31 @@ function readProblem(value: unknown): string | undefined {
     readonly project?: unknown;
     readonly artifact?: unknown;
     readonly ref?: unknown;
+    readonly history?: unknown;
   };
+  const historyKept = input.history !== true || typeof input.ref === "string";
   if (typeof input.message !== "string") {
-    return readOwner.check(value) ? undefined : READ_OWNER_RULE;
+    return brokenParts([
+      [readOwner.check(value), READ_OWNER_RULE],
+      [historyKept, READ_HISTORY_RULE],
+    ]);
   }
   const alone =
     input.issue === undefined &&
     input.project === undefined &&
     input.artifact === undefined &&
     input.ref === undefined;
-  return alone ? undefined : READ_MESSAGE_RULE;
+  return brokenParts([
+    [alone, READ_MESSAGE_RULE],
+    [historyKept, READ_HISTORY_RULE],
+  ]);
 }
 
 const readValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => readProblem(value) === undefined,
-  message: `${READ_OWNER_RULE} ${READ_MESSAGE_RULE}`,
-  refusal: (value) => readProblem(value) ?? `${READ_OWNER_RULE} ${READ_MESSAGE_RULE}`,
+  message: `${READ_OWNER_RULE} ${READ_MESSAGE_RULE} ${READ_HISTORY_RULE}`,
+  refusal: (value) =>
+    readProblem(value) ?? `${READ_OWNER_RULE} ${READ_MESSAGE_RULE} ${READ_HISTORY_RULE}`,
 };
 
 /** Component attachment modes an issue write accepts. */
@@ -377,6 +389,19 @@ const BODY_BLOCK_RULE =
   `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
   `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
   "names it, and `dispatch limits` prints the bounds.";
+
+/** How dispatch_resolve_comment, dispatch_edit_comment and dispatch_delete_comment each name the
+ *  comment they act on, written once so the three say it the same way. */
+const COMMENT_ARGUMENT =
+  "Comment id (uuid), or a dispatch://KEY/comment/<id> or " +
+  "dispatch://PROJECT/artifact/<slug>/comment/<id> reference; a reference accepts an " +
+  "8+ character id prefix that is unique on its owner.";
+
+/** How dispatch_edit_message and dispatch_delete_message each name the message they act on. Both
+ *  act on an issue message alone, which is the one kind a dispatch:// reference addresses. */
+const MESSAGE_ARGUMENT =
+  "Message id (uuid), or a dispatch://KEY/message/<id> reference; a reference accepts an " +
+  "8+ character id prefix that is unique on its owner.";
 
 /** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
  *  number: the server owns the bound and `dispatch limits` prints it. */
@@ -926,13 +951,7 @@ export const dispatchToolSpecs = [
       "the person scope: a browser sign-in, or a personal token that holds it. " +
       "Not for asks: use dispatch resolve-ask.",
     arguments: (z) => ({
-      comment: z
-        .string()
-        .describe(
-          "Comment id (uuid), or a dispatch://KEY/comment/<id> or " +
-            "dispatch://PROJECT/artifact/<slug>/comment/<id> reference; a reference accepts an " +
-            "8+ character id prefix that is unique on its owner."
-        ),
+      comment: z.string().describe(COMMENT_ARGUMENT),
     }),
     strict: true,
   },
@@ -1044,6 +1063,50 @@ export const dispatchToolSpecs = [
     validation: documentOwnerValidation(true, true),
   },
   {
+    name: "dispatch_edit_comment",
+    example: {
+      comment: "01234567-0000-4000-8000-000000000001",
+      body: "Corrected: the retry window is 72 hours, not 24.",
+    },
+    description:
+      "Replace the body of a comment or a suggestion you wrote, to correct it. The author alone " +
+      "may edit a comment: every other caller is refused 403 NOT_AUTHOR. The comment keeps its " +
+      "id, its place in its thread and its anchor, and every read of it carries the time of the " +
+      "edit. Dispatch keeps the body you replace: " +
+      "dispatch read --ref dispatch://KEY/comment/<id> --history lists each earlier body with the " +
+      "actor that replaced it and the time. Use it to correct what you wrote, never to answer: a " +
+      "new point is a reply (dispatch comment --reply-to), which the thread shows in its own " +
+      "place. A comment of a closed issue is edited too, and a deleted comment is refused 409 " +
+      `POST_DELETED. ${BODY_BLOCK_RULE}`,
+    arguments: (z) => ({
+      comment: z.string().describe(COMMENT_ARGUMENT),
+      body: z
+        .string()
+        .describe(`The comment's new body, which replaces the old one whole. ${BODY_BLOCK_RULE}`),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_delete_comment",
+    example: { comment: "01234567-0000-4000-8000-000000000001" },
+    description:
+      "Withdraw a comment or a suggestion you wrote, where the text itself should not stand. The " +
+      "author alone may delete a comment: every other caller is refused 403 NOT_AUTHOR. The " +
+      "comment keeps its id and its place in its thread, and no read gives any part of its body " +
+      "again: each read marks it deleted and names who deleted it and when. Its replies keep " +
+      "their own text and their own places, a suggestion's replacement text goes with the body, " +
+      "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
+      "and search stops matching it. Dispatch keeps the body: " +
+      "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +
+      "and lists no body. Correct a wording with dispatch edit-comment instead, and close an " +
+      "addressed thread with dispatch resolve-comment. A comment of a closed issue is deleted " +
+      "too, and a second delete is refused 409 POST_DELETED.",
+    arguments: (z) => ({
+      comment: z.string().describe(COMMENT_ARGUMENT),
+    }),
+    strict: true,
+  },
+  {
     name: "dispatch_message",
     example: { issue: "DSP-1", body: "Implementation started." },
     description:
@@ -1085,6 +1148,50 @@ export const dispatchToolSpecs = [
       ),
     }),
     validation: messageValidation,
+  },
+  {
+    name: "dispatch_edit_message",
+    example: {
+      message: "01234567-0000-4000-8000-000000000001",
+      body: "Corrected: the export runs at 02:00 UTC, not 02:00 local.",
+    },
+    description:
+      "Replace the body of an issue message you wrote, to correct it. The author alone may edit a " +
+      "message: every other caller is refused 403 NOT_AUTHOR. Only a message on an issue is " +
+      "edited; a message of a direct conversation, which names no issue, is refused 409 " +
+      "NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and every read " +
+      "of it carries the time of the edit. Dispatch keeps the body you replace: " +
+      "dispatch read --ref dispatch://KEY/message/<id> --history lists each earlier body with the " +
+      "actor that replaced it and the time. Use it to correct what you wrote, never to answer: a " +
+      "new point is a reply (dispatch message --in-reply-to). The block ids follow the new text, " +
+      "so a reply that names a block of this message may name a block the edit removed. A message " +
+      `of a closed issue is edited too, and a deleted message is refused 409 POST_DELETED. ${BODY_BLOCK_RULE}`,
+    arguments: (z) => ({
+      message: z.string().describe(MESSAGE_ARGUMENT),
+      body: z
+        .string()
+        .describe(`The message's new body, which replaces the old one whole. ${BODY_BLOCK_RULE}`),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_delete_message",
+    example: { message: "01234567-0000-4000-8000-000000000001" },
+    description:
+      "Withdraw an issue message you wrote, where the text itself should not stand. The author " +
+      "alone may delete a message: every other caller is refused 403 NOT_AUTHOR. Only a message on " +
+      "an issue is deleted; a message of a direct conversation, which names no issue, is refused " +
+      "409 NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and no read " +
+      "gives any part of its body again: each read marks it deleted and names who deleted it and " +
+      "when. Its replies keep their own text, each send still waiting is failed, and search stops " +
+      "matching it. Dispatch keeps the body: dispatch read --ref dispatch://KEY/message/<id> " +
+      "--history then marks the message deleted and lists no body. Correct a wording with " +
+      "dispatch edit-message instead. A message of a closed issue is deleted too, and a second " +
+      "delete is refused 409 POST_DELETED.",
+    arguments: (z) => ({
+      message: z.string().describe(MESSAGE_ARGUMENT),
+    }),
+    strict: true,
   },
   {
     name: "dispatch_send_to_agent",
@@ -1530,6 +1637,8 @@ export const dispatchToolSpecs = [
       `An issue read, and its dispatch://KEY/log, lists the issue's last ${DEFAULT_ISSUE_READ_EVENTS} events, oldest first; ` +
       "--events N lists the last N, and --all-events every one. " +
       "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
+      "An edited post reads with the time of its edit, and a deleted one with who deleted it and when, in place of its body; " +
+      "--history, with a ref naming that comment or message, lists each body an edit or a delete replaced, newest first. " +
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
       "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries " +
@@ -1580,6 +1689,15 @@ export const dispatchToolSpecs = [
         .boolean()
         .describe(
           `List every one of the issue's events, oldest first, on an issue read or its dispatch://KEY/log, in place of the last ${DEFAULT_ISSUE_READ_EVENTS}. Name no --events with it.`
+        )
+        .optional(),
+      history: z
+        .boolean()
+        .describe(
+          "With ref naming one comment or issue message, list the bodies an edit or a delete of " +
+            "that post replaced, newest first, each with the actor that replaced it and the " +
+            "time, in place of the post itself. A post nobody edited lists nothing, and a " +
+            "deleted post is marked deleted and lists no body. Name it with ref alone."
         )
         .optional(),
     }),

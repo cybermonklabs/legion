@@ -129,7 +129,17 @@ const validCalls = {
     quote: "old wording",
     replace_with: "new wording",
   },
+  dispatch_edit_comment: {
+    comment: "dispatch://DSP-1/comment/comment-1",
+    body: "Corrected: the retry window is 72 hours.",
+  },
+  dispatch_delete_comment: { comment: "dispatch://DSP-1/comment/comment-1" },
   dispatch_message: { issue: "DSP-1", body: "Implementation started." },
+  dispatch_edit_message: {
+    message: "dispatch://DSP-1/message/message-1",
+    body: "Corrected: the export runs at 02:00 UTC.",
+  },
+  dispatch_delete_message: { message: "dispatch://DSP-1/message/message-1" },
   dispatch_send_to_agent: specFor("dispatch_send_to_agent").example,
   dispatch_doc_edit: {
     issue: "DSP-1",
@@ -243,7 +253,11 @@ describe("dispatchToolSpecs", () => {
       "dispatch_follow",
       "dispatch_comment",
       "dispatch_suggest",
+      "dispatch_edit_comment",
+      "dispatch_delete_comment",
       "dispatch_message",
+      "dispatch_edit_message",
+      "dispatch_delete_message",
       "dispatch_send_to_agent",
       "dispatch_doc_edit",
       "dispatch_doc_read",
@@ -534,6 +548,45 @@ describe("dispatchToolSpecs", () => {
       expect(schema.safeParse({ message, ...owner }).success, JSON.stringify(owner)).toBe(false);
     }
     expect(schema.safeParse({}).success).toBe(false);
+  });
+
+  // The history of a post is the bodies its edits and its delete replaced, so the call names one
+  // post. A ref names one; an issue, a document and a whole conversation do not.
+  test("dispatch_read takes history with a ref alone", () => {
+    const schema = schemaFor("dispatch_read");
+    const message = "6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c";
+
+    expect(
+      schema.safeParse({ ref: "dispatch://DSP-1/comment/comment-1", history: true }).success
+    ).toBe(true);
+    expect(schema.safeParse({ ref: "dispatch://DSP-1/comment/comment-1" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", history: true }).success).toBe(false);
+    expect(schema.safeParse({ message, history: true }).success).toBe(false);
+    // history false names no post, so it breaks nothing.
+    expect(schema.safeParse({ issue: "DSP-1", history: false }).success).toBe(true);
+  });
+
+  test("the four post corrections take the post and nothing else, and each edit takes a body", () => {
+    const id = "01234567-0000-4000-8000-000000000001";
+    for (const [name, post, edits] of [
+      ["dispatch_edit_comment", "comment", true],
+      ["dispatch_delete_comment", "comment", false],
+      ["dispatch_edit_message", "message", true],
+      ["dispatch_delete_message", "message", false],
+    ] as const) {
+      const schema = schemaFor(name);
+      const call = edits ? { [post]: id, body: "Corrected." } : { [post]: id };
+
+      expect(schema.safeParse(call).success, name).toBe(true);
+      // The post is required, and the call names no owner beside it.
+      expect(schema.safeParse(edits ? { body: "Corrected." } : {}).success, name).toBe(false);
+      expect(schema.safeParse({ ...call, issue: "DSP-1" }).success, name).toBe(false);
+      // An edit replaces the body, so it needs one; a delete clears the body and takes none.
+      expect(
+        schema.safeParse(edits ? { [post]: id } : { ...call, body: "Corrected." }).success,
+        name
+      ).toBe(false);
+    }
   });
 
   test("dispatch_whoami accepts no arguments and rejects any key", () => {

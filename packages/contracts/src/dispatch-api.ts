@@ -463,16 +463,24 @@ export interface CommentDeliveryEventPayload {
  * The payload of every `comment.*` event. It is the comment row as it stood when the event was
  * written, and events are retained verbatim, so the row's later additions are optional here:
  * `mentions` and `deliveries` were added on 2026-09-18 (#1188), and every comment event recorded
- * before that day carries neither. A read row (`Comment`) always has both. `thread_logins` (the
- * comment's ask, else its root) is carried by `comment.created` and `comment.answered`.
+ * before that day carries neither; `deleted_at` and `deleted_by` were added by the post
+ * corrections, and every comment event recorded before them carries neither. A read row
+ * (`Comment`) always has all four. `thread_logins` (the comment's ask, else its root) is carried
+ * by `comment.created` and `comment.answered`.
  */
 export interface CommentEventPayload
-  extends Omit<Comment, "mentions" | "deliveries">,
+  extends Omit<Comment, "mentions" | "deliveries" | "deleted_at" | "deleted_by">,
     CarriedBodyPayload,
     ReferenceChangesPayload,
     ThreadLoginsPayload {
   readonly mentions?: Comment["mentions"];
   readonly deliveries?: Comment["deliveries"];
+  /** When the comment's author deleted it, and who they are; both absent on a comment nobody
+   *  deleted and on every event written before the post corrections. A deleted comment's events
+   *  carry no body: the read of the event takes `body`, `body_truncated` and `suggestion` out of
+   *  the payload and stamps these two in their place. */
+  readonly deleted_at?: Comment["deleted_at"];
+  readonly deleted_by?: Comment["deleted_by"];
   readonly artifact_name: string;
   /** The document owner for an artifact comment, including direct author routes. */
   readonly project_key?: string;
@@ -747,10 +755,18 @@ export interface ChangedReference {
  *  (issue-less) conversation's message, which keeps no Replies row, the thread root author's
  *  login, the one Inbox that conversation's Agent row sits in (`[]` when no person opened it). */
 export interface MessageEventPayload
-  extends Message,
+  extends Omit<Message, "edited_at" | "deleted_at" | "deleted_by">,
     CarriedBodyPayload,
     ReferenceChangesPayload,
     ThreadLoginsPayload {
+  /** When the message's author last replaced its body, and when they deleted it with who they
+   *  are. Events are retained verbatim and the three fields were added by the post corrections,
+   *  so every message event written before them carries none; a read row (`Message`) always has
+   *  all three. A deleted message's events carry no body: the read of the event takes `body` and
+   *  `body_truncated` out of the payload and stamps the two marks in their place. */
+  readonly edited_at?: Message["edited_at"];
+  readonly deleted_at?: Message["deleted_at"];
+  readonly deleted_by?: Message["deleted_by"];
   /** First 160 characters of the reply target's body, or of the block it names (`reply_block`);
    *  empty otherwise. */
   readonly reply_body?: string;
@@ -1324,6 +1340,13 @@ export type DispatchEvent =
       readonly type: "comment.edited";
       readonly payload: CommentEventPayload;
     })
+  /** The author withdrew the comment: its body is cleared, and the payload carries the routing
+   *  fields its `comment.created` carried with `deleted_at` and `deleted_by` in place of every
+   *  body. */
+  | (DispatchEventBase & {
+      readonly type: "comment.deleted";
+      readonly payload: CommentEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "suggestion.accepted";
       readonly payload: CommentEventPayload;
@@ -1346,6 +1369,19 @@ export type DispatchEvent =
     })
   | (DispatchEventBase & {
       readonly type: "message.answered";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author replaced the body of an issue message, as `comment.edited` does for a comment.
+   *  The payload carries the new body. */
+  | (DispatchEventBase & {
+      readonly type: "message.edited";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author withdrew the issue message: its body is cleared, and the payload carries the
+   *  routing fields its `message.created` carried with `deleted_at` and `deleted_by` in place of
+   *  every body. */
+  | (DispatchEventBase & {
+      readonly type: "message.deleted";
       readonly payload: MessageEventPayload;
     })
   | (DispatchEventBase & {
@@ -1725,6 +1761,11 @@ export const CommentEventPayloadSchema = z
     suggestion: z.object({ replace_with: z.string().optional() }).nullish(),
     author: z.object({ kind: z.string(), id: z.string() }).optional(),
     created_at: z.string().optional(),
+    // The mark of a post its author deleted: absent on a live post and on every event written
+    // before the post corrections, and set on each event of a deleted one, whose body the read
+    // of the event takes out of the payload.
+    deleted_at: z.string().nullish(),
+    deleted_by: z.object({ kind: z.string(), id: z.string() }).nullish(),
     mentions: z.array(CommentMentionSchema).optional(),
     deliveries: z.array(CommentDeliverySchema).optional(),
     reply_block: ReplyBlockSchema.nullish(),
@@ -1748,6 +1789,11 @@ export const MessageEventPayloadSchema = z.object({
   in_reply_to: z.string().nullish(),
   reply_body: z.string().optional(),
   thread_target: z.string().optional(),
+  // The marks of an edited and of a deleted message: this schema strips a field it does not
+  // declare, so an edited message's event loses the time of its edit without these three.
+  edited_at: z.string().nullish(),
+  deleted_at: z.string().nullish(),
+  deleted_by: z.object({ kind: z.string(), id: z.string() }).nullish(),
   author: z.object({ kind: z.string(), id: z.string() }).optional(),
   reply_block: ReplyBlockSchema.nullish(),
   thread_logins: z.array(z.string()).optional(),
