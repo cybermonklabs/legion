@@ -6266,6 +6266,64 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/issues/{key}/design-gates": {
+      "put": {
+        "description": "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.",
+        "operationId": "putApiV1IssuesByKeyDesignGates",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueDesignGatesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueDesignGates"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/issues/{key}/events": {
       "get": {
         "description": "Page an issue's event log (after, before, ids, order, limit).",
@@ -19124,6 +19182,74 @@
         ],
         "type": "object"
       },
+      "IssueDesignGate": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "decisions",
+              "criteria",
+              "spec"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "artifact_id"
+        ],
+        "type": "object"
+      },
+      "IssueDesignGates": {
+        "properties": {
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/IssueDesignGate"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "gates"
+        ],
+        "type": "object"
+      },
+      "IssueDesignGatesInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/IssueDesignGate"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "gates"
+        ],
+        "type": "object"
+      },
       "IssueDetails": {
         "properties": {
           "artifacts": {
@@ -19195,6 +19321,15 @@
           },
           "decisions_artifact_id": {
             "type": "string"
+          },
+          "design_gates": {
+            "items": {
+              "$ref": "#/components/schemas/IssueDesignGate"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "external_links": {
             "items": {
@@ -19369,6 +19504,7 @@
           "artifacts",
           "open_asks",
           "children",
+          "design_gates",
           "referenced_by_count"
         ],
         "type": "object"
@@ -22604,6 +22740,12 @@
           "approved_version": {
             "type": "integer"
           },
+          "design_gates": {
+            "items": {
+              "$ref": "#/components/schemas/SupersededApprovalGate"
+            },
+            "type": "array"
+          },
           "version": {
             "type": "integer"
           }
@@ -22612,6 +22754,26 @@
           "approved_version",
           "version",
           "approved_by"
+        ],
+        "type": "object"
+      },
+      "SupersededApprovalGate": {
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "decisions",
+              "criteria",
+              "spec"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "step"
         ],
         "type": "object"
       },

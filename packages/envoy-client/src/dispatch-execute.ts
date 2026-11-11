@@ -352,11 +352,28 @@ function renderAdvice(
   // it stored, the approval that version replaced and how that approval comes back - rather than a
   // rule about editing a spec, because the server sends it only on the write that superseded the
   // approval.
+  //
+  // The gate clause comes from `design_gates`, the server's record of which issues' design gates
+  // name the document just written: it names those issues, and it is silent for every other
+  // document. Absent (an older Dispatch keeps no such record), empty, and anything that is not a
+  // list of gates all print no clause, which is the safe direction - a reader told nothing asks
+  // the tree's architect, a reader told a gate that is not there stops working for no reason.
   const superseded = advice.superseded_approval;
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
-    lines.push(
-      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since: a Legion design gate on this document is closed meanwhile, so every READY in its tree is refused. Meant to change the approved design? Request approval with \`dispatch request-approval\`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.`
+    const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
+    const parts = [
+      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since.`,
+    ];
+    if (gates.length > 0) {
+      const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");
+      parts.push(
+        `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`
+      );
+    }
+    parts.push(
+      "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan."
     );
+    lines.push(parts.join(" "));
   }
 
   // The cadence line comes last and opens by saying the write went through: behind `| tail -1`

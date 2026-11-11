@@ -1,7 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project, type ReporterDescription } from "@playwright/test";
 import { baseUrl } from "./api";
-import { stubProjectNames, tagged } from "./configurations";
+import {
+  clockFileOnCommandLine,
+  clockProjectNames,
+  clockSpecPattern,
+  stubProjectNames,
+  tagged,
+} from "./configurations";
 import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
@@ -126,6 +132,42 @@ const stub = stubSelection({
   projects: stubProjectNames,
 });
 
+// A command that names a wall-clock spec file as a filter while naming no project
+// (`clockFileOnCommandLine`, e2e/configurations.ts). The three wall-clock projects
+// (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so no run that
+// names no project holds a row of the file such a command named, whatever Playwright then does
+// with the rest of the line - for example, answer "No tests found", or run the whole default
+// selection, which is what a filter dropped after a `--` leaves (e2e/configurations.ts). No such
+// answer names a cure; this says the command that does run the file. Throwing as this module
+// evaluates is what puts the message on standard error and the run's status above zero, and
+// Playwright prints a config error with a stack after it, so the first line is the command and
+// nothing else.
+//
+// That line names its own worker count. The measurement a wall-clock row makes is a reading
+// only in a run one worker wide, and `refuseASharedRun` (e2e/main-thread-hold.ts) fails a
+// measuring row in any wider run, so the command printed here says `--workers=1` rather than
+// resting on this config's default (`workers: 1` below), which a `--workers` of the reader's
+// own would override without changing a word of this line.
+//
+// It stands under no guard at all, where the reuse-servers refusal above is the only other one
+// this file makes: a command line that would list nothing is as wrong in a run of the stubbed
+// layer alone as in any other.
+const clockFile = clockFileOnCommandLine(process.argv);
+if (clockFile !== undefined) {
+  throw new Error(
+    `bun run e2e -- --project=chromium-alone ${clockFile} --workers=1\n` +
+      `\nThat is how ${clockFile} is run, and this command named no project. The wall-clock ` +
+      `projects - ${clockProjectNames.join(", ")} - are out of the default selection, because ` +
+      "their rows are read from the wall clock and need the machine to themselves, so no run " +
+      "that names no project holds a row of that file, whatever Playwright then does with the " +
+      'rest of this command line - for example, answer "No tests found", or run the whole ' +
+      "default selection, which is what a filter dropped after a `--` leaves. Write the " +
+      "project as --project=<name> and never --project <name>: the option is variadic, so the " +
+      "file after it would be read as a second project name. To run every wall-clock row in " +
+      "all three engines, run `bun run e2e:clock`."
+  );
+}
+
 // The default wait for asynchronous server and rendering readiness. A spec only sets its own
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).
 const expectTimeout = 15_000;
@@ -234,20 +276,6 @@ const multiprocessProjects = [
   },
 ];
 
-// The specs whose rows are read from the wall clock: that a card's draw holds the main thread
-// for less than one second (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
-// `main-thread-hold.ts`), and what the agent surfaces cost in time - a sleeping live view of
-// an ordinary conversation comes back inside half a second on the fastest of up to five fresh
-// wakes, a sleeping view at the stream's worst case comes back inside 1.2 seconds on the
-// fastest of up to eight fresh wakes, and the Agents page paints six hundred sessions inside
-// 100 ms while holding the main thread under 150 ms, the first load inside both of those
-// bounds of up to twenty taken
-// (`agent-workspace-timing.e2e.ts`, INFRA-812's D14). Four workers on one machine leave such a
-// claim unmeasurable - the wall time of a draw holds what the other three workers took as
-// surely as the work the page did - so these files run in the `-alone` projects at the end of
-// this list, after every other project and one row at a time, and in no project above them
-// (sjawhar/legion#2612).
-const clockSpecs = /(agent-workspace-timing|heavy-bodies|nested-directive)\.e2e\.ts/;
 // The three rows of `heavy-bodies.e2e.ts` that read where a reader's place ends up once a long
 // body formats under them. The compensation they measure is layout Chromium and WebKit anchor
 // differently, and those are the two engines it was ever measured on, so `firefox-alone` below
@@ -265,21 +293,20 @@ const readersPlaceRows =
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
 
-// Every project that runs as wide as the run's own workers. The `-alone` projects below name all
-// of them, so a project added here is one more the clock rows wait for.
+// Every project that runs as wide as the run's own workers.
 const parallelProjects = [
   // The desktop half of the pair: every row of the suite except the two kinds this project is
   // not the one for. A `@phone-only` row has no desktop case to make, and the one row of
   // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
     grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -320,10 +347,13 @@ const parallelProjects = [
   // socket the engine reconnects and the paint after it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
-  // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
+  // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
+  // what keeps the three clock-read files to the `-alone` projects at the end of this list and
+  // out of every project above them (sjawhar/legion#2612), here and in the three other projects
+  // that name it.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -387,7 +417,7 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs, stubSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -427,28 +457,47 @@ const parallelProjects = [
 ] satisfies Project[];
 
 /**
- * The last projects of a run: the rows whose claim is a wall-clock time, with the machine to
+ * The projects a command names: the rows whose claim is a wall-clock time, with the machine to
  * themselves.
  *
- * Each names in `dependencies` every project before it, so Playwright starts the first of them
- * only once every parallel project has finished, and runs these three one after another rather
- * than three at a time. Ordering alone is not quiet: a project's own rows would still run four
- * at a time, so each caps its own workers at one. Playwright 1.64.1 takes that cap per project -
- * `testProject.workers`, "The maximum number of concurrent worker processes to use for
- * parallelizing tests from this project", which its dispatcher holds a project's running jobs to
- * (`_workerLimitPerProjectId`, `playwright/lib/runner/index.js`) - and the run's own `workers`
- * above stays at the worker count the run was given, so the suite ahead of these projects runs
- * as wide as ever. A worker here resolves a stack as any other worker does
- * (`TEST_PARALLEL_INDEX`, e2e/harness-ports.ts), so these rows run against one stack's harness
- * while the other stacks stand idle.
+ * Each sets `default: false`, which leaves all three out of a run that names no project and
+ * takes nothing from a run that names one. `filterProjects` answers
+ * `projects.filter(p => includeNonDefault || p.default)` where the command line named no
+ * project, and ignores `default` altogether where it named any (`function filterProjects` at
+ * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2134);
+ * `default?: boolean` is a field of `TestProject` and is `true` where it is unset
+ * (playwright/types/test.d.ts:170). So `--project=chromium-alone` selects this project as it
+ * always did, `bun run e2e:clock` selects all three, and a run that names none holds no row of
+ * theirs.
  *
- * A project whose dependency has a failing row is not run at all: in a red run these rows are
- * left unrun rather than measured beside whatever the failing row's retry is doing.
+ * That field is also what keeps a file filter cheap, and it replaced something that did not.
+ * Each of these projects named every project before it in `dependencies` until
+ * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
+ * command naming one of their three files, because a filter narrows a project it selects and
+ * never a project selected to run before it. With no dependency and no place in the default
+ * selection, such a command now selects nothing at all, so the configuration refuses it at the
+ * top of this file and prints the command that runs the file.
  *
- * A command line that names one of these files runs the whole suite, since a project's
- * dependencies are pulled in whole: a file filter narrows a project it selects, never a project
- * selected to run before it. `--no-deps` is how one of these files is run by itself, and such a
- * run is as quiet as the machine it is on.
+ * What gives these rows the quiet machine is no longer the order they run in: it is a run one
+ * worker wide. For the rows that measure through `e2e/main-thread-hold.ts` the row itself holds
+ * the run to that: its guard fails a measuring row in a run of more than one worker rather than
+ * letting it report a reading of what the other workers were running, so such a reading survives
+ * only where it was taken alone, whatever project it was taken in. The rows of
+ * `agent-workspace-timing.e2e.ts` read a clock of their own and reach that guard nowhere, so
+ * what holds them to one worker is the command: the refusal at the top of this file prints
+ * `--workers=1`, and `bun run e2e:clock` names it too.
+ *
+ * Each still caps its own workers at one, which holds a project's own rows to one at a time
+ * however wide the run is: the `workers: 1` below is this config's default, which a command
+ * line replaces, and CI names its own (.github/workflows/dispatch-browser.yaml). Playwright
+ * 1.64.1 takes that cap per project - `testProject.workers`, "The maximum number of concurrent
+ * worker processes to use for parallelizing tests from this project"
+ * (node_modules/.bun/playwright@1.64.1/node_modules/playwright/types/test.d.ts:761), which its
+ * dispatcher holds a project's running jobs to (`_workerLimitPerProjectId`,
+ * `playwright/lib/runner/index.js`) - and the run's own `workers` stays what it was given, so
+ * the rest of the suite runs as wide as ever. A worker here resolves a stack as any other
+ * worker does (`TEST_PARALLEL_INDEX`, e2e/harness-ports.ts), so these rows run against one
+ * stack's harness while the other stacks stand idle.
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
@@ -472,15 +521,15 @@ const parallelProjects = [
 const aloneProjects = [
   {
     name: "chromium-alone",
-    dependencies: parallelProjects.map((project) => project.name),
-    testMatch: clockSpecs,
+    default: false,
+    testMatch: clockSpecPattern,
     use: { ...devices["Desktop Chrome"] },
     workers: 1,
     retries: 0,
   },
   {
     name: "firefox-alone",
-    dependencies: [...parallelProjects.map((project) => project.name), "chromium-alone"],
+    default: false,
     testMatch: /heavy-bodies\.e2e\.ts/,
     grepInvert: readersPlaceRows,
     use: { ...devices["Desktop Firefox"] },
@@ -489,11 +538,7 @@ const aloneProjects = [
   },
   {
     name: "webkit-alone",
-    dependencies: [
-      ...parallelProjects.map((project) => project.name),
-      "chromium-alone",
-      "firefox-alone",
-    ],
+    default: false,
     testMatch: /heavy-bodies\.e2e\.ts/,
     use: { ...devices["Desktop Safari"] },
     workers: 1,
@@ -526,9 +571,9 @@ const aloneProjects = [
  * variable is set is invisible to that guard: its rows would never be checked for a duplicate
  * configuration while the test still read green.
  *
- * They sit after `aloneProjects` in a group of their own, so `parallelProjects` does not grow -
- * a project added there is one more the clock rows wait for - and the `-alone` projects gain no
- * dependency on a project that skips its rows on every host run.
+ * They sit after `aloneProjects` in a group of their own rather than among the parallel
+ * projects, because `parallelProjects` above is the projects that run as wide as the run's own
+ * workers and each of these caps its own workers at one, for the reason below.
  *
  * `workers: 1`, which Playwright takes per project: these rows compare images, and two of them
  * drawing at once on one machine is the contention that makes a comparison read a half-drawn
