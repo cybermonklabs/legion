@@ -1,5 +1,4 @@
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   answerAsk,
@@ -32,7 +31,7 @@ import {
   seedReferenceWorld,
   settledQuestions,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -49,10 +48,6 @@ import { asUser } from "./users";
  * becomes the same number of characters of the real record's id, so an eight-character prefix
  * stays an eight-character prefix.
  */
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 type Row = (typeof DISPATCH_TEXT_REFERENCES)[number];
 
@@ -513,7 +508,8 @@ function drawnTitlesByRow(page: Page): Promise<Record<string, string[]>> {
   });
 }
 
-test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written", async ({
+// @pr: The live document: every reference of the shared table drawn in the editor, followed, and the stored text left as written.
+test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written @pr", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);

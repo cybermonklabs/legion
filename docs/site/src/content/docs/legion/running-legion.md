@@ -108,8 +108,8 @@ implement and review Apps' permissions bound what Legion's agents can do on GitH
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues | metadata, packages |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages |
+| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages |
+| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -265,8 +265,9 @@ Dispatch read them, delete the files, then install every App from
   adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
-  under `controller: daemon`, the controller's pod are counted; `admission_cap` bounds the issues
-  at work rather than the pods, since an issue that only waits keeps its pod and holds no slot,
+  under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
+  the daemon has started rather than the pods, since an issue keeps its pod past the slot — on to
+  its own close — and an issue that only waits keeps both,
   and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
@@ -547,7 +548,7 @@ What each part is for:
   an update round runs before the controller is told it is not finishing, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
-  absent key is no limit at all, `review_round_cap` (3), `max_fix_attempts` (3),
+  absent key is no limit at all, `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
   (3), `prompt_failure_limit` (3) and `prompt_retire_limit` (2).
   `controller_wake_interval_seconds` also sets the period of the daemon's status repair, which
@@ -1022,25 +1023,25 @@ Closing the terminal leaves the project without one, and the daemon logs
   consumer legion-go-WIDGETS-wake: 0 waiting
   ```
 
-  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: a
-  slot is one issue with work, so a tree of four working issues holds four of them, and the `live
+  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
+  issue takes a slot when the daemon starts it and keeps it
+  until it is done, leaves the workflow or waits only for its merge,
+  so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
-  The `roots waiting on a person` line counts the roots that gave their admission slot back to
-  wait on a person (phase `awaiting_person`), how many of them a person answered and the
-  published line still names — each standing
+  The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
+  the slot it took when the daemon started it, how many of them a person
+  answered and the published line still names — each standing
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
   with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
   cannot see the line, and a root of another Dispatch project, whose line this daemon does not
   publish, is counted by nobody. An
-  unanswered one is in neither admission list, only among the live trees, so without this line the
-  capacity it freed looks idle.
-  While an answered root waits for its slot, its architect, while its session is live and holds its
-  Envoy role, is sent one `waiting-for-slot` notice saying what answered the wait, where the root
-  stands in the line and that the daemon starts the architect again by itself; nobody acts on it,
-  and a root whose architect the daemon released while it waited carries its place with no notice
-  behind it.
+  unanswered one is in `admission.active` and in no line; an answered one is in both lists until
+  the pass that reads the answer resumes it, so this line is where the wait itself is named.
+  While an answered root stands in the line, nothing is sent to its architect about the wait: the
+  place and the length in `waitingLine` are the whole of what is recorded, and the daemon resumes
+  the architect itself on the pass that reads the answer, taking no further slot for it.
 
   The `open production checks` line counts the closed issues whose production check is still
   open and names the oldest: its pull request, merge commit, the role working it, which look it
@@ -1097,8 +1098,8 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
-  `architect` and `workers` (each claim's `state`), `pullRequest` (`repo`, `head`, `checksVerdict`,
-  `fixAttempts`), `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
+  `architect` and `workers` (each claim's `state`), `pullRequest` (`repo`, `head`, `checksVerdict`),
+  `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
@@ -1122,7 +1123,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and
   `unavailable`, present only when a NATS read failed),
-  `settings` (the daemon's resolved `legion.yaml` — `max_fix_attempts`, `worker_boot_timeout_seconds`
+  `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`
   and the rest as the daemon runs them — with every credential, credential source and credential
   file path left out, and a URL's userinfo masked as `xxxxx@`), and `agentSecretsLogin` when the
   broker is configured:

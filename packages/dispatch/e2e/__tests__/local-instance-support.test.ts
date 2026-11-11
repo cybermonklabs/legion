@@ -54,6 +54,15 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/** The pid of a process the supervisor started. `node:child_process` types it as optional, since
+ *  a process that never started has none; one the supervisor handed back is running, so a missing
+ *  pid is this test's own failure. */
+function pidOf(running: { readonly child: { readonly pid?: number } }): number {
+  const { pid } = running.child;
+  if (pid === undefined) throw new Error("the supervisor started a process with no pid");
+  return pid;
+}
+
 /** One macrotask turn: the runtime reports an unhandled rejection only after the microtask queue
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -83,13 +92,13 @@ describe("Supervisor.stop", () => {
     );
     const quiet = made.start("quiet", ["sleep", "60"], "/");
     const grandchild = await pidFrom(pidFile);
-    expect(groupAlive(leader.child.pid)).toBe(true);
-    expect(groupAlive(quiet.child.pid)).toBe(true);
+    expect(groupAlive(pidOf(leader))).toBe(true);
+    expect(groupAlive(pidOf(quiet))).toBe(true);
 
     await made.stop();
 
-    expect(await eventually(() => !groupAlive(leader.child.pid))).toBe(true);
-    expect(await eventually(() => !groupAlive(quiet.child.pid))).toBe(true);
+    expect(await eventually(() => !groupAlive(pidOf(leader)))).toBe(true);
+    expect(await eventually(() => !groupAlive(pidOf(quiet)))).toBe(true);
     expect(await eventually(() => !processAlive(grandchild))).toBe(true);
   });
 
@@ -101,7 +110,7 @@ describe("Supervisor.stop", () => {
     // means is asserted below: the leader is gone by the time `stop` resolves, so a `stop` that
     // returned early having killed nothing fails here rather than passing on its own silence.
     await made.stop(BEYOND_THE_ROW_MS);
-    expect(groupAlive(quiet.child.pid)).toBe(false);
+    expect(groupAlive(pidOf(quiet))).toBe(false);
   });
 
   test("ends a foreground step that a stop interrupts", async () => {

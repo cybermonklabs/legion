@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
@@ -276,8 +275,10 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
-// stillClock is time that never moves: the machines' timers are armed and never fire, so a test
-// sees only what it drove.
+// stillClock is a clock whose timers never fire: the machines arm them and nothing calls them
+// back, and a Sleep returns at once, so a test sees only what it drove. Its Now is the wall
+// clock, so what is due by the time of day — an outbox row's next_at — still comes due as the
+// run goes on.
 type stillClock struct{}
 
 func (stillClock) Now() time.Time { return time.Now() }
@@ -501,7 +502,7 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 	const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
 	cfg := testConfig(t)
-	cfg.MaxFixAttempts = 5
+	cfg.ReviewRoundCap = 5
 	cfg.GitHubApps = config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1001", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2001"}},
 		Review:    config.GitHubApp{AppID: "1002", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2002"}},
@@ -517,9 +518,9 @@ func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
 	settings := state.Settings
-	if settings.MaxFixAttempts != 5 || settings.WorkerBootTimeoutSeconds != 120 || settings.Runtime.Name != "tmux" {
-		t.Errorf("settings max_fix_attempts %d, worker_boot_timeout_seconds %d, runtime.name %q; want the configured 5, 120, tmux",
-			settings.MaxFixAttempts, settings.WorkerBootTimeoutSeconds, settings.Runtime.Name)
+	if settings.ReviewRoundCap != 5 || settings.WorkerBootTimeoutSeconds != 120 || settings.Runtime.Name != "tmux" {
+		t.Errorf("settings review_round_cap %d, worker_boot_timeout_seconds %d, runtime.name %q; want the configured 5, 120, tmux",
+			settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds, settings.Runtime.Name)
 	}
 	if settings.GitHubApps == nil || settings.GitHubApps.Implement.AppID != "1001" || settings.GitHubApps.Review.AppID != "1002" {
 		t.Errorf("settings.github_apps = %+v, want both configured Apps by id", settings.GitHubApps)
@@ -581,9 +582,9 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the retry = %+v, %v; want it accepted", result.Refusal, err)
 	}
-	// A phase worker's start is two outbox rows (workflow.StartOrOwe): the relaunch, which brings
-	// the held role's session back carrying no task, and the row that carries its task. Both are
-	// lifecycle rows of the issue, so the suspend under a live lease holds both of them.
+	// A phase worker's start is one outbox row, which brings the held role's session back and
+	// carries its task (workflow.StartOrOwe). It is a lifecycle row of the issue, so the suspend
+	// under a live lease holds it.
 	var starts []int64
 	rows, err := st.Pool().Query(ctx, "select id from outbox where issue = $1 and kind = $2 and payload->>'op' = 'start' order by id", issue, string(record.OutboxKindSupervise))
 	if err != nil {
@@ -600,14 +601,14 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the retry's start rows: %v", err)
 	}
-	if len(starts) != 2 {
-		t.Fatalf("the retry queued %d start rows, want its relaunch and its task", len(starts))
+	if len(starts) != 1 {
+		t.Fatalf("the retry queued %d start rows, want the one that carries its task", len(starts))
 	}
 
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	got := d.state().HeldOutboxRows
 	if len(got) != len(starts) {
-		t.Fatalf("heldOutboxRows = %+v, want the retry's two start rows alone", got)
+		t.Fatalf("heldOutboxRows = %+v, want the retry's one start row alone", got)
 	}
 	for i, id := range starts {
 		if got[i].WaitedSeconds < 0 {
@@ -912,7 +913,13 @@ func repositoriesGitHub(t *testing.T) string {
 	}})
 }
 
-// stop cancels the daemon and requires it to return cleanly.
+// stop cancels the daemon and requires it to return cleanly. What it waits for is a run that
+// never returns, not a measurement of how long the stop took: no row of its callers reads the
+// elapsed time, so the wait is stopHangGuard(stopBudget) rather than the contract itself,
+// stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
+// bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
+// few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
+// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -926,7 +933,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stopHangGuard(stopBudget)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }
@@ -1615,11 +1622,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
-	conn, err := nats.Connect(natsURL, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, natsURL)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -1722,11 +1725,7 @@ func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
 func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)

@@ -1,8 +1,5 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, resolveComment } from "./api";
 import { documentEditor, marginCard, openSpec } from "./editor";
-import { resetDatabase } from "./seed";
 import {
   answeredPost,
   navigateInApp,
@@ -10,6 +7,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A margin thread's own reply holds its draft until the server answers, like every composer.
@@ -19,10 +17,6 @@ import { asUser } from "./users";
 // the thread the reply was sent from.
 const spec = "The quick brown fox";
 const refused = WRITE_REFUSED_TEXT;
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** An issue whose spec carries two comment threads, and the route a reply to either posts to. */
 async function seed(title: string) {
@@ -62,7 +56,8 @@ async function sendReply(card: Locator, body: string): Promise<{ field: Locator;
   return { field, form };
 }
 
-test("a margin thread someone else resolves while its reply is out keeps the reply's draft and refusal", async ({
+// @pr: A write on the wire: somebody else's Resolve under an open margin reply must keep that reply's draft and refusal.
+test("a margin thread someone else resolves while its reply is out keeps the reply's draft and refusal @pr", async ({
   browser,
 }) => {
   const { comments, first, issueKey } = await seed("Resolved under a margin reply");

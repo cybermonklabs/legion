@@ -1,14 +1,8 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { answerAsk, createComment, createIssue, createProject } from "./api";
 import { documentEditor, indexedBlockAsk } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { centerOf } from "./touch";
 import { withAlice } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The innermost list item in `scope` holding `text`: the task item itself, not a turn or a reply
  *  row that is a list item around it. */
@@ -276,7 +270,8 @@ for (const colorScheme of ["light", "dark"] as const) {
   });
 }
 
-test("a reply under a decision inside a document shows the checkboxes with no bullet", async ({
+// @pr: The task-item family's one row on the lane: a reply under a document's decision draws its checkboxes with no bullet.
+test("a reply under a decision inside a document shows the checkboxes with no bullet @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

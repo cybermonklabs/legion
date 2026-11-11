@@ -27,6 +27,9 @@ import { scriptFunctions } from "./script-functions";
 // a key refused costing no other session yet failing the run's teardown.
 const db = scriptFunctions(join(import.meta.dir, "session-db.sh"));
 const fn = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"));
+// The teardown's last check, which the script takes from lib/github-apps.sh rather than writing
+// itself: that library's own function, by name, as the functions above are the script's own.
+const appsFn = scriptFunctions(join(import.meta.dir, "github-apps.sh"));
 const dir = temporaryDirectory("stage4b-session-text-test");
 
 const sessions = "/home/legion/.omp/profiles/legion/agent/sessions";
@@ -928,6 +931,7 @@ ${fn("remove_run_container")}
 ${sessionCopy}
 ${fn("collect_transcripts")}
 ${fn("remove_negative_config")}
+${appsFn("app_key_left")}
 ${fn("cleanup")}
 trap cleanup EXIT
 exit ${status}`,

@@ -113,8 +113,14 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `commented on ${event.payload.artifact_name}: “${event.payload.anchor?.quote ?? ""}”`;
     case "comment.answered":
       return "answered a comment";
+    // Same rule as the issue timeline's line: a repeat the stream recognised says so first.
     case "comment.delivery":
-      return `delivered a comment mention to ${event.payload.target}`;
+      if (event.payload.duplicate === true) {
+        return `already delivered a comment mention to ${event.payload.target}`;
+      }
+      return event.payload.state === "failed"
+        ? `could not deliver a comment mention to ${event.payload.target}`
+        : `delivered a comment mention to ${event.payload.target}`;
     case "comment.resolved":
       return `resolved a comment on ${event.payload.artifact_name}`;
     case "comment.anchor_refreshed":
@@ -145,6 +151,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `edited the question "${event.payload.question}"`;
     case "ask.handed_back":
       return `handed “${event.payload.question}” back for approval`;
+    case "ask.asked_of":
+      // Who the ask waits on now. The payload names no login where it was handed to the
+      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      return `handed “${event.payload.question}” to ${event.payload.asked_of ?? "the issue's assignee"}`;
     case "ask.answered":
       return event.payload.previous_answer === undefined
         ? `answered “${event.payload.question}”`

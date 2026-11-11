@@ -1,4 +1,3 @@
-import { expect, test } from "@playwright/test";
 import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 
 import { setLiveSessions } from "./agents";
@@ -18,8 +17,8 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
-import { resetDatabase } from "./seed";
 import { holdPosts, refusePosts } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -71,11 +70,8 @@ async function seedMany(): Promise<Seeded> {
   return { issueKey: threads.key };
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("one click marks six hundred and twenty threads read, leaves every row in the list, and the counts stay down", async ({
+// @pr: A write the server settles: one Mark all read over 620 threads, with every row kept and the counts down.
+test("one click marks six hundred and twenty threads read, leaves every row in the list, and the counts stay down @pr", async ({
   browser,
 }) => {
   const seeded = await seedMany();

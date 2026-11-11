@@ -77,6 +77,10 @@
       "types": "./src/legion-claim-core.ts",
       "bun": "./src/legion-claim-core.ts"
     },
+    "./claim-first-turn-bound": {
+      "types": "./src/claim-first-turn-bound.ts",
+      "bun": "./src/claim-first-turn-bound.ts"
+    },
     "./phase-stall": {
       "types": "./src/phase-stall.ts",
       "bun": "./src/phase-stall.ts"
@@ -100,6 +104,18 @@
     "./workspace-recreated": {
       "types": "./src/workspace-recreated.ts",
       "bun": "./src/workspace-recreated.ts"
+    },
+    "./provider-refusal": {
+      "types": "./src/provider-refusal.ts",
+      "bun": "./src/provider-refusal.ts"
+    },
+    "./fallback-cooldown": {
+      "types": "./src/fallback-cooldown.ts",
+      "bun": "./src/fallback-cooldown.ts"
+    },
+    "./fallback-chain": {
+      "types": "./src/fallback-chain.ts",
+      "bun": "./src/fallback-chain.ts"
     },
     "./jj-attribution": {
       "types": "./src/jj-attribution.ts",
