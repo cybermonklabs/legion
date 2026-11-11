@@ -3,4 +3,4 @@ custom:
   Issue: pr3519
 body: |-
   The daemon API state fixture carries `settings.runtime.kubernetes.volume_trim`, the cache
-  trimmer an issue pod's launcher runs by, and the daemon API contract number it pins is 67.
+  trimmer an issue pod's launcher runs by, and the daemon API contract number it pins is 69.

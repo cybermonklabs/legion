@@ -924,7 +924,40 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 67: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 68: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
+// (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
+// any other — rather than answer it, so nobody will answer that question. The daemon then starts
+// the root's architect again, as a person's answer starts it, with a task that names the declined
+// ask and carries the four sentences Dispatch writes for the asking agent and the person's own
+// note. The value is the whole of the wire change: no field is added, no field is removed, and a
+// root nobody declined an ask of is served exactly as before.
+// `packages/contracts/src/legion-api.ts` lists the nine values in `LEGION_WAIT_ANSWERS`, and
+// that list is a `z.enum`, which refuses a value it does not name rather than stripping it like
+// an unknown key: a plugin at any earlier contract reading a declined root's state would refuse
+// the whole body, so the bump keeps the two apart from here on. It does not keep them apart on the way back: the
+// migration is forward-only and the answer stands on the root's own row, so an older daemon
+// binary put back on this schema serves `answeredBy: "declined"` from the rows this release
+// wrote, and the plugin at the earlier contract it is gated to then refuses the whole
+// `GET /legion/v1/state` body and not the one root that declined. The daemon ships store migration
+// `20261111021610_ask_declined.up.sql` with it, which adds the three columns the decline is kept
+// on (`root_asks.declined`, `declined_note`, `declined_words`) and widens the answer check to
+// the ninth value; an older daemon binary reads that schema without them and resumes such a root
+// through `resumeTask`'s default arm, so the root still starts and only Dispatch's words are
+// lost. (This entry first took 60, when the base carried 59, then 65 at the forward merge of
+// 2026-11-11 that brought main in, and 68 here. main declares 64, the entry right above this
+// one, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 126 open
+// pull requests of this repository on 2026-11-11 gives 64 (#2404, #2461, #2603, #3577), 65
+// (#2731, #3519 and this one), 66 (#3534) and 70 (#3573), so this change takes 68, which no open
+// head declares and which this tree published as its own. That reading is of this file at
+// refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds answers without
+// this path. Read the base's own number and every open pull request again at the next merge
+// rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 69: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
 // runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
 // the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
@@ -959,12 +992,13 @@ package api
 // rollback is an operator's one statement with the daemon stopped, written down where an
 // operator reads it (docs/kubernetes.md, "Rolling back below the release that trims an issue
 // pod's volume").
-// (The base carried 64 at the read that chose this number, 2026-11-11, and 65 was declared by
-// three open pull requests then and 66 by a fourth, so this change takes 67, above every open
-// declaration. It is held from here: a later forward merge keeps both sides' entries and leaves
+// (The base carried 64 at the read that first chose a number for this change, 2026-11-11, and
+// 65 was declared by three open pull requests then and 66 by a fourth, so it took 67 and held
+// that through two forward merges. main reached 68 later the same day, which is the one thing
+// the hold rule moves for, so this change now takes 69. It is held from here: a later forward merge keeps both sides' entries and leaves
 // this number alone, as it keeps both sides of validNoticeKinds, and it moves again only when
 // main's own DaemonAPIVersion reaches or passes it, because renumbering changes this branch's
 // own diff, and a renumber made after a result stands against this head costs the tester a
 // round rather than a commit. So do not re-derive a number from this line at the next merge:
-// read main's own DaemonAPIVersion alone, and move this one only when that number reaches 67.)
-const DaemonAPIVersion = 67
+// read main's own DaemonAPIVersion alone, and move this one only when that number reaches 69.)
+const DaemonAPIVersion = 69

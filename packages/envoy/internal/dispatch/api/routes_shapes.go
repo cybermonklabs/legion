@@ -679,6 +679,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
+	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: model.Ask{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
 		Status: http.StatusOK, Response: []model.Comment{}, Params: issueCommentsQuery{},
 	},

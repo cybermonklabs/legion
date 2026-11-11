@@ -325,15 +325,27 @@ func (DispatchAskRestored) isFact() {}
 // DispatchAskClosed is an answered or resolved ask (State `answered` or `resolved`), its kind and
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
 // that act (Mark).
+//
+// Decline is the person's decline to answer, set where the close carries a resolution of the one
+// kind this daemon acts on (ResolutionDeclined) and nil for every other close: an answer, a close
+// whose payload carries no resolution, and a resolution kind this daemon does not know, which is
+// no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
+// one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
+// as Dispatch recorded it.
 type DispatchAskClosed struct {
 	Key      string
 	Ask      string
 	Kind     string
 	Artifact string
 	State    string
+	Decline  *record.AskDecline
 	Actor    dispatch.Actor
 	Mark     record.EventMark
 }
+
+// ResolutionDeclined is the resolution kind of an ask a person chose not to answer
+// (DispatchAskClosed.Decline), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
+const ResolutionDeclined = "declined"
 
 func (DispatchAskClosed) isFact() {}
 
