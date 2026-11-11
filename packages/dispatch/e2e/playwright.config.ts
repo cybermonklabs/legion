@@ -140,10 +140,11 @@ const stub = stubSelection({
 // the message on standard error and the run's status above zero, and Playwright prints a config
 // error with a stack after it, so the first line is the command and nothing else.
 //
-// That line names a project and nothing else. It needs no worker count: this config runs one
-// worker by default (`workers: 1` below), each wall-clock project caps its own workers at one
-// of its own, and no refusal here reads `--workers`, so a count written on that line would say
-// nothing the run does not already do.
+// That line names its own worker count. The measurement a wall-clock row makes is a reading
+// only in a run one worker wide, and `refuseASharedRun` (e2e/main-thread-hold.ts) fails a
+// measuring row in any wider run, so the command printed here says `--workers=1` rather than
+// resting on this config's default (`workers: 1` below), which a `--workers` of the reader's
+// own would override without changing a word of this line.
 //
 // It stands under no guard at all, where the reuse-servers refusal above is the only other one
 // this file makes: a command line that would list nothing is as wrong in a run of the stubbed
@@ -151,7 +152,7 @@ const stub = stubSelection({
 const clockFile = clockFileOnCommandLine(process.argv);
 if (clockFile !== undefined) {
   throw new Error(
-    `bun run e2e -- --project=chromium-alone ${clockFile}\n` +
+    `bun run e2e -- --project=chromium-alone ${clockFile} --workers=1\n` +
       `\nThat is how ${clockFile} is run, and this command named no project. The wall-clock ` +
       `projects - ${clockProjectNames.join(", ")} - are out of the default selection, because ` +
       "their rows are read from the wall clock and need the machine to themselves, so a " +

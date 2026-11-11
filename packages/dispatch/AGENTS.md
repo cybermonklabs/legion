@@ -1636,20 +1636,21 @@ Three commands, each copied as it stands and run from this package:
 
 ```bash
 bun run e2e -- e2e/claim.e2e.ts --project=chromium
-bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts
+bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1
 bun run e2e:clock
 ```
 
 The first runs one ordinary spec file. The second runs one wall-clock file in one engine: those
 rows are read from the clock and their three projects are out of the default selection (the
-`-alone` projects, below), so a command that names such a file names its project too. Neither
-names a worker count, because the configuration's own default is one worker (`workers: 1`,
-`e2e/playwright.config.ts`) and each wall-clock project caps its own workers at one. The third
-runs every wall-clock row in all three engines: `e2e:clock` is the one script that names the
-three projects, and it names `--workers=1` beside them, so the command the whole wall-clock run
-is made of says what its readings rest on. Each of `e2e` and `e2e:clock` builds
-`@legion/contracts` and the dashboard first, so a reader running both from an unchanged tree can
-skip the second build by calling what `e2e:clock` calls:
+`-alone` projects, below), so a command that names such a file names its project too, and it
+names `--workers=1` beside it, so the command a reader copies says the one worker its reading
+rests on rather than taking it from the configuration. A wider run is refused rather than
+measured: `refuseASharedRun` (`e2e/main-thread-hold.ts`) fails every measuring row of a run of
+more than one worker. The third runs every wall-clock row in all three engines: `e2e:clock` is
+the one script that names the three projects, and it names `--workers=1` beside them, so the
+command the whole wall-clock run is made of says what its readings rest on. Each of `e2e` and
+`e2e:clock` builds `@legion/contracts` and the dashboard first, so a reader running both from an
+unchanged tree can skip the second build by calling what `e2e:clock` calls:
 `bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`.
 CI's alone legs run that same command with one `--project` each, a machine per engine
 (`.github/workflows/dispatch-browser.yaml`).

@@ -583,10 +583,10 @@ own workers at one. What holds a reading to a quiet machine is the run being one
 `e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker, since four
 workers on one machine make a second of wall clock unmeasurable. `bun run e2e:clock` is the
 command that runs all three projects, and it names `--workers=1` beside them; one file in one
-engine is `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts`, which needs no
-worker count of its own, since one worker is the configuration's default
-(`workers: 1`, `e2e/playwright.config.ts`), and which writes the project as `--project=<name>`,
-since the option is variadic and would read the file after a space as a second project name.
+engine is `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which
+names that worker count itself rather than taking the configuration's default, and which writes
+the project as `--project=<name>`, since the option is variadic and would read the file after a
+space as a second project name.
 `bun run e2e:install` installs all three browsers.
 
 ## Phone check

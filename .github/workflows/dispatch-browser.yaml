@@ -895,12 +895,13 @@ jobs:
           #
           # `--workers=1` says the thing the measurement rests on instead of leaning on a
           # default. The configuration's own default is the same one worker (`workers: 1`,
-          # e2e/playwright.config.ts:689), and a wider count is refused rather than measured:
-          # `refuseASharedRun` (e2e/main-thread-hold.ts:62) fails every row that calls
-          # `measureDraw` when `config.workers` is above one, printing the one-worker command
-          # that fixes it. So this line is not what makes the reading honest - that guard is -
-          # and it is what keeps this leg green while saying what the run is: one project, one
-          # row at a time, on a machine with nothing else on it.
+          # e2e/playwright.config.ts:690), so this leg is green with or without the flag today;
+          # what the flag adds is that the leg stays one worker wide if that default ever moves.
+          # A wider count is refused rather than measured: `refuseASharedRun`
+          # (e2e/main-thread-hold.ts:62) fails every row that calls `measureDraw` when
+          # `config.workers` is above one, printing the one-worker command that fixes it. So the
+          # guard is what makes the reading honest, and this line is what says what the run is:
+          # one project, one row at a time, on a machine with nothing else on it.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge

@@ -247,15 +247,17 @@ export function tagged(tag: string): RegExp {
  *  cannot name": the conservative answer in both directions is that such a run may hold any
  *  project, so it is given the server and its stacks alike.
  *
- *  An empty list is a run that names no project, which is every project of its mode. Every
+ *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
+ *  the three wall-clock projects below carry `default: false` and are outside it, measured at
+ *  this head as 1,299 rows in 179 files against the whole suite's 1,349 in 181. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
  *  directory and names no project at all, and a reader that took it for one answered "the
  *  stubbed layer alone" for a run holding real-stack rows, which then met no stack
- *  (dispatch://INFRA-1410). A bare `--` ends the options, so every token after it is a
- *  test-file filter and none of them is a project: `e2e/playwright-argv.ts`'s own measurements
- *  show a command line that holds one (`-- --ui --list` ran its rows). */
+ *  (dispatch://INFRA-1410). A bare `--` ends the options, so no token after it is a project,
+ *  whatever it is spelled like: `e2e/playwright-argv.ts`'s own measurements show a command
+ *  line that holds one (`-- --ui --list` ran its rows, the `--ui` naming no mode). */
 export function projectsOnCommandLine(argv: readonly string[]): string[] {
   const named: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
@@ -315,8 +317,9 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  Reading begins after the `test` command word, and a command line with no such word answers
  *  `undefined`. A worker re-evaluates this configuration with Playwright's own argv rather than
  *  the command line (`e2e/stub/selection.ts:47-49`), and `bun test` and the tools that import
- *  this module carry an argv of their own, so none of them can meet the refusal. Nothing after
- *  a `--` is read.
+ *  this module carry an argv of their own, so none of them can meet the refusal. The scan ends
+ *  at the first `--` no option took as its value; a `--` an option DID take is that option's
+ *  value, and Playwright reads what follows it as ordinary tokens, so the scan does too.
  *
  *  How far each option's value reaches is not asked here: `valuesTakenAt`
  *  (`e2e/playwright-argv.ts`) answers how many tokens the option at an index takes, and that
@@ -350,20 +353,46 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  no row at all - is false there, and the command it prints drops the `--ui` the reader asked
  *  for.
  *
- *  Measured at this head, each line driven as `bunx playwright test --config
- *  e2e/playwright.config.ts --list <rest>`. Not refused: `--ui e2e/heavy-bodies.e2e.ts` and
- *  `e2e/heavy-bodies.e2e.ts --ui` each reach the user interface's own path and exit 1 on
- *  `ProtocolError: Protocol error (Browser.getVersion): Internal server error, session
- *  closed.`, this container having no X server; `--ui-port=0 e2e/heavy-bodies.e2e.ts` and
- *  `--ui-port 0 e2e/heavy-bodies.e2e.ts` each print a listener of their own - `Listening on
- *  http://localhost:22991` and `Listening on http://localhost:54655`, the ports those runs
- *  chose - and hold it open until a 45-second `timeout` killed them, exit 124. Refused:
- *  `--grep --ui e2e/heavy-bodies.e2e.ts`, where `--ui` is `--grep`'s value, and
- *  `e2e/heavy-bodies.e2e.ts -- --ui`, where it is behind the `--` and
- *  reaches Playwright as nothing at all. Read flat over the whole argv, as this carve-out was
- *  before this round, both of those last two answered `undefined`, and each then exited 1 with
- *  Playwright's own `Error: No tests found.` above a `Listing tests:` line - the answer this
- *  refusal exists to replace.
+ *  Measured at this head from `packages/dispatch`, each line driven as `timeout 45 bunx
+ *  playwright test --config e2e/playwright.config.ts --list <rest>`.
+ *
+ *  Not refused: `--ui e2e/heavy-bodies.e2e.ts` and `e2e/heavy-bodies.e2e.ts --ui` each reach
+ *  the user interface's own path and exit 1 on `ProtocolError: Protocol error
+ *  (Browser.getVersion): Internal server error, session closed.`, this container having no X
+ *  server, and so do `e2e/claim.e2e.ts --grep -- --ui` and `e2e/heavy-bodies.e2e.ts --grep --
+ *  --ui`, where `--grep` takes the `--` as its value and the `--ui` after it is the mode the
+ *  held file yields to. `--ui-port=0 e2e/heavy-bodies.e2e.ts` and `--ui-port 0
+ *  e2e/heavy-bodies.e2e.ts` each print a listener of their own - `Listening on
+ *  http://localhost:45340` and `Listening on http://localhost:29092`, the ports those runs
+ *  chose - and hold it open until the 45-second `timeout` killed them, exit 124.
+ *
+ *  Refused, each exiting 1 with the command this file throws above its stack: `--grep --ui
+ *  e2e/heavy-bodies.e2e.ts`, where `--ui` is `--grep`'s value and no mode;
+ *  `e2e/heavy-bodies.e2e.ts -- --ui`, where it is behind the `--` and reaches Playwright as
+ *  nothing at all; and `--grep -- e2e/heavy-bodies.e2e.ts`, where the `--` is `--grep`'s value,
+ *  so the scan steps over it and goes on to the file.
+ *
+ *  That last line is refused for what the run would otherwise be, and that run is a measured
+ *  one. Playwright drops as many trailing filters as its argv holds tokens after the FIRST
+ *  `--`, whether or not an option took that token as its value: `const dashDashIndex =
+ *  process.argv.indexOf("--")`, `postDashCount`, `args.slice(0, args.length - postDashCount)`
+ *  (`playwright/lib/program.js:51-53`). So `--list --output -- e2e/claim.e2e.ts` lists the
+ *  whole default selection, 1,299 rows in 179 files, where `--list --output /tmp/o
+ *  e2e/claim.e2e.ts` lists 1 - the filter is dropped although `--output` swallowed the `--`,
+ *  which `--list --output -- --not-a-flag` shows it did, that line exiting 1 with `error:
+ *  unknown option '--not-a-flag'` rather than the `error: option '--output <dir>' argument
+ *  missing` of `--list --output`. A wall-clock file written there is the same: `--list --grep
+ *  -- e2e/heavy-bodies.e2e.ts` reached the runner with no filter and a grep of `--`, and
+ *  exited 1 with `Error: No tests found` above `Total: 0 tests in 0 files` - the answer with
+ *  no cure in it, which is what this refusal replaces, and the one the person who wrote that
+ *  file name gets however Playwright reaches it.
+ *
+ *  A reader that took any `--ui` of the whole argv for the mode would answer `undefined` for
+ *  the first two of those three, and what the person then gets is the answer this refusal
+ *  exists to replace: driven with the same two selections written as a regex this reader does
+ *  not answer for, `--list --grep --ui 'e2e/heavy.bodies.e2e.ts'` and `--list
+ *  'e2e/heavy.bodies.e2e.ts' -- --ui` each exit 1 with `Error: No tests found.` above `Make
+ *  sure that arguments are regular expressions matching test files.`
  *
  *  The carve-out gives up no measurement: a wall-clock row started from the user interface still
  *  meets `refuseASharedRun` (`e2e/main-thread-hold.ts`), which fails a measuring row whenever
@@ -374,7 +403,9 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  module; the scan meets it as an option whose values `valuesTakenAt` steps over, which is all
  *  it needs of a flag whose values, when it has any, have already answered this function above.
  *  The rule the reader follows is Playwright's own parser's: it answers the token that parser
- *  would call a positional filter, and nothing else. A reader that read more than that refuses
+ *  reads as a positional filter, and nothing else - the post-dash drop above being the one
+ *  place where such a token reaches the runner as no filter, and a command that selects
+ *  nothing there all the same. A reader that read more than that refuses
  *  commands Playwright runs - `--grep heavy-bodies`, `--reporter list e2e/claim.e2e.ts`,
  *  `--shuffle e2e/heavy-bodies.e2e.ts`, whose path is a seed - which is the one failure mode
  *  that matters here. */
@@ -382,15 +413,20 @@ export function clockFileOnCommandLine(argv: readonly string[]): string | undefi
   const command = argv.indexOf("test");
   if (command === -1) return undefined;
   if (projectsOnCommandLine(argv).length > 0) return undefined;
-  const separator = argv.indexOf("--", command + 1);
-  const end = separator === -1 ? argv.length : separator;
   let file: string | undefined;
-  for (let index = command + 1; index < end; index += 1) {
+  for (let index = command + 1; index < argv.length; index += 1) {
     const word = argv[index] ?? "";
+    // The separator, read INSIDE the scan for the reason `projectsOnCommandLine` reads it there:
+    // a `--` the loop reaches is one no option took, because the `valuesTakenAt` step below has
+    // already stepped over every option's value. A `--` found flat over the whole argv is not
+    // that one: `--grep -- <file>` hands Playwright the `--` as `--grep`'s value and goes on
+    // parsing what follows, so a scan that stopped at that `--` would read neither the file
+    // after it nor a `--ui` written past it.
+    if (word === "--") break;
     // The user-interface carve-out above, read here rather than over the whole argv: a token an
     // option swallowed is that option's value and no mode, and the scan has already stopped at
-    // the `--`. It is read before the `valuesTakenAt` step because `--ui-host` and `--ui-port`
-    // take a value of their own and are user-interface spellings all the same.
+    // the `--` above. It is read before the `valuesTakenAt` step because `--ui-host` and
+    // `--ui-port` take a value of their own and are user-interface spellings all the same.
     if (word === "--ui" || word.startsWith("--ui-")) return undefined;
     const values = valuesTakenAt(argv, index);
     if (values > 0) {

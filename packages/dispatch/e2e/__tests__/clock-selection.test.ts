@@ -15,6 +15,11 @@
  *  user-interface run and the file is refused, while a `--ui` written after the file is one and
  *  the file is left alone.
  *
+ *  A `--` is two things, and the rows hold both: the separator the scan ends at, and some
+ *  option's own value, which it steps over. `--grep -- <file>` is the second, so the scan goes
+ *  on past that `--` to the file and refuses it, and `<file> --grep -- --ui` is the second
+ *  again, so the `--ui` past that `--` is the mode and the file is left alone.
+ *
  *  Every row is a command a person or CI can type, written as the whole `process.argv` the
  *  Playwright process reads: the executable, the script, the `test` command word and the rest.
  */
@@ -75,18 +80,35 @@ const refused: readonly { title: string; argv: readonly string[]; answer: string
   {
     // `--ui` here is `--grep`'s value and no mode: a required-value option takes the token after
     // it whatever it looks like (e2e/playwright-argv.ts). Driven at this head, `--list --grep
-    // --ui e2e/heavy-bodies.e2e.ts` exits 1 with `Error: No tests found.`, which is the answer
-    // this refusal exists to replace.
+    // --ui e2e/heavy-bodies.e2e.ts` exits 1 with this refusal's own command line; the same
+    // selection written so this reader passes it - `--list --grep --ui
+    // 'e2e/heavy.bodies.e2e.ts'` - exits 1 with `Error: No tests found.` above `Make sure that
+    // arguments are regular expressions matching test files.`, which is the answer this refusal
+    // exists to replace.
     title: "a wall-clock file where the `--ui` before it is `--grep`'s value",
     argv: playwrightArgv("--grep", "--ui", "e2e/heavy-bodies.e2e.ts"),
     answer: "e2e/heavy-bodies.e2e.ts",
   },
   {
-    // Reading stops at the `--`, so the `--ui` behind it is no carve-out; Playwright reads it as
-    // nothing at all. Driven at this head, `--list e2e/heavy-bodies.e2e.ts -- --ui` exits 1 with
-    // `Error: No tests found.`
+    // The scan stops at the `--`, so the `--ui` behind it is no carve-out; Playwright reads it as
+    // no mode at all. Driven at this head, `--list e2e/heavy-bodies.e2e.ts -- --ui` exits 1 with
+    // this refusal's own command line, and `--list 'e2e/heavy.bodies.e2e.ts' -- --ui`, the same
+    // selection this reader passes, exits 1 with `Error: No tests found.` above `Make sure that
+    // arguments are regular expressions matching test files.`
     title: "a wall-clock file whose only `--ui` stands behind the `--` separator",
     argv: playwrightArgv("e2e/heavy-bodies.e2e.ts", "--", "--ui"),
+    answer: "e2e/heavy-bodies.e2e.ts",
+  },
+  {
+    // The `--` is `--grep`'s own value, so it is no separator and the scan goes on past it to the
+    // file. Driven at this head, `--list --grep -- e2e/heavy-bodies.e2e.ts` exits 1 with this
+    // refusal's own command line. A scan that stopped at that `--` read no filter and left the
+    // run to Playwright, which drops a trailing filter for every token after the first `--` of
+    // its argv (playwright/lib/program.js:51-53): `--list --grep -- 'e2e/heavy.bodies.e2e.ts'`,
+    // the same selection this reader passes, exits 1 with `Error: No tests found` above `Total:
+    // 0 tests in 0 files`.
+    title: "a wall-clock file after a `--` that is `--grep`'s value and no separator",
+    argv: playwrightArgv("--grep", "--", "e2e/heavy-bodies.e2e.ts"),
     answer: "e2e/heavy-bodies.e2e.ts",
   },
 ];
@@ -171,7 +193,7 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
     // this row holds is the carve-out, read inside the scan and before the `valuesTakenAt` step
     // (`clockFileOnCommandLine`, e2e/configurations.ts). Driven at this head, `--list --ui-port
     // 0 e2e/heavy-bodies.e2e.ts` is not refused: it printed `Listening on
-    // http://localhost:54655` and held the port open until a 45-second `timeout` killed it,
+    // http://localhost:29092` and held the port open until a 45-second `timeout` killed it,
     // exit 124.
     title: "that file under `--ui-port`, a user-interface run in another spelling",
     argv: playwrightArgv("--ui-port", "0", "e2e/heavy-bodies.e2e.ts"),
@@ -179,7 +201,7 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
   {
     // The attached spelling carries its own value, so `valuesTakenAt` takes nothing after it and
     // the carve-out is read off the token itself. Driven at this head, `--list --ui-port=0
-    // e2e/heavy-bodies.e2e.ts` is not refused: it printed `Listening on http://localhost:22991`
+    // e2e/heavy-bodies.e2e.ts` is not refused: it printed `Listening on http://localhost:45340`
     // and held the port open until a 45-second `timeout` killed it, exit 124.
     title: "that file under `--ui-port=0`, the attached spelling of the same run",
     argv: playwrightArgv("--ui-port=0", "e2e/heavy-bodies.e2e.ts"),
@@ -192,6 +214,23 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
     // no X server.
     title: "a wall-clock file with the `--ui` written after it, which is a user-interface run",
     argv: playwrightArgv("e2e/heavy-bodies.e2e.ts", "--ui"),
+  },
+  {
+    // `--grep` takes the `--` after it as its value, so the `--ui` that follows is the mode and
+    // no file is named here at all. Driven at this head, `--list e2e/claim.e2e.ts --grep --
+    // --ui` is not refused: it reaches the user interface's own path and exits 1 on
+    // `ProtocolError: Protocol error (Browser.getVersion): Internal server error, session
+    // closed.`
+    title: "an ordinary spec where a `--` is `--grep`'s value and the `--ui` after it the mode",
+    argv: playwrightArgv("e2e/claim.e2e.ts", "--grep", "--", "--ui"),
+  },
+  {
+    // The same line with the wall-clock file in it: the scan holds that file, steps over the
+    // `--` as `--grep`'s value rather than stopping at it, and gives the file up when it reaches
+    // the `--ui`. Driven at this head, `--list e2e/heavy-bodies.e2e.ts --grep -- --ui` is not
+    // refused and exits 1 on the same `ProtocolError` line.
+    title: "that line with a wall-clock file, which the `--ui` past the `--` yields",
+    argv: playwrightArgv("e2e/heavy-bodies.e2e.ts", "--grep", "--", "--ui"),
   },
   {
     // Measured at this head: `--list nested` is not refused and Playwright answers "No tests

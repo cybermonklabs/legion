@@ -73,11 +73,12 @@ function refuseASharedRun(): void {
   const commandLine = info.config.argv.join(" ");
   // The command comes first and alone, as the wall-clock refusal in `e2e/playwright.config.ts`
   // prints it, so the line a reader is shown beside the failed row is the one that fixes it. It
-  // names a project and a file and no worker count: the configuration runs one worker by
-  // default (`workers: 1`, e2e/playwright.config.ts) and each wall-clock project caps its own
-  // at one, so this line is already the one-worker run this guard asks for.
+  // names its own `--workers=1`: this run reached here with more than one worker, and a command
+  // that left the count to the configuration's default (`workers: 1`,
+  // e2e/playwright.config.ts) would be the same command this run already widened.
+  const file = relative(packageRoot, info.file);
   throw new Error(
-    `bun run e2e -- --project=${info.project.name} ${relative(packageRoot, info.file)}` +
+    `bun run e2e -- --project=${info.project.name} ${file} --workers=1` +
       `\n\nThat is how this row is measured, and this run has ${workers} workers. The hold it ` +
       "reads is the longest gap between two ticks of a heartbeat on the page's main thread, " +
       "and that gap is the page's own work only on a machine the run is not sharing: with " +
