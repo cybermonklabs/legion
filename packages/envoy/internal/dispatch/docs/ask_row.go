@@ -69,12 +69,13 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 	return ask, nil
 }
 
-// WriteAskResolution closes an open ask the caller has locked as retracted or resolved: it
-// records the kind, the reason and who closed it on the row, and returns the ask as it now
+// WriteAskResolution closes an open ask the caller has locked as retracted, resolved or
+// declined: it records the kind, the person's reason, the words Dispatch writes beside it
+// (empty where it writes none) and who closed it on the row, and returns the ask as it now
 // stands. It is the one place that says what resolving an ask stores; each caller writes a block
 // ask's own state and appends the ask.resolved event its path owns.
-func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor) (model.Ask, error) {
-	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: time.Now().UTC()}
+func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason, dispatchWords string, actor model.Actor) (model.Ask, error) {
+	resolution := model.AskResolution{Kind: kind, Reason: reason, DispatchWords: dispatchWords, Actor: actor, At: time.Now().UTC()}
 	encoded, err := json.Marshal(resolution)
 	if err != nil {
 		return model.Ask{}, fmt.Errorf("encode ask resolution: %w", err)

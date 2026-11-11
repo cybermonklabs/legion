@@ -108,7 +108,7 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	withdrawn := make([]model.Ask, 0, len(open))
 	appended := make([]model.Event, 0, len(open))
 	for _, ask := range open {
-		ask, err := docs.WriteAskResolution(ctx, tx, ask, withdrawnResolution, reason, actor)
+		ask, err := docs.WriteAskResolution(ctx, tx, ask, withdrawnResolution, reason, "", actor)
 		if err != nil {
 			return nil, nil, err
 		}

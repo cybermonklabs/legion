@@ -1822,13 +1822,23 @@ type SessionAnswersResponse struct {
 	Items     []SessionAnswer `json:"items"`
 }
 
-// AskResolution records why a question no longer needs a human answer.
+// AskResolution records why a question no longer needs a human answer. Reason holds the
+// person's own note alone and DispatchWords the words Dispatch writes beside it, so no reader
+// has to cut one out of the other.
 type AskResolution struct {
-	Kind   string    `json:"kind"`
-	Reason string    `json:"reason"`
-	Actor  Actor     `json:"actor"`
-	At     time.Time `json:"at"`
+	Kind          string    `json:"kind"`
+	Reason        string    `json:"reason"`
+	DispatchWords string    `json:"dispatch_words,omitempty"`
+	Actor         Actor     `json:"actor"`
+	At            time.Time `json:"at"`
 }
+
+// DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
+// answer: the four sentences the asking agent reads to decide what to do next.
+const DeclineDispatchWords = "The person chose not to answer this question. " +
+	"Decide the next step without an answer. " +
+	"Do not ask this question again unless the facts change. " +
+	"Write in your work what you assumed."
 
 // Comment is a collaboration comment, optionally with an edit suggestion. A comment
 // replies to at most one of another comment (ReplyTo) or an ask (AskID). Comment

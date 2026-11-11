@@ -519,6 +519,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/broadcasts",
 		"GET /api/v1/broadcasts/{id}",
 		"POST /api/v1/asks/{id}/answer",
+		// A decline is the person's own word that they will not answer, which nobody may give
+		// for them: no agent and no deployment credential declines a question on their behalf.
+		"POST /api/v1/asks/{id}/decline",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
 		"PATCH /api/v1/comments/{id}",

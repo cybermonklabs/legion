@@ -1262,7 +1262,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 			return fmt.Errorf("answer the source ask: %w", err)
 		}
 		source.State, source.Answer = "answered", answer
-	} else if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", alice); err != nil {
+	} else if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", "", alice); err != nil {
 		return fmt.Errorf("resolve the source ask: %w", err)
 	}
 	if _, err := service.events.Append(ctx, tx, documentAskEvent(
