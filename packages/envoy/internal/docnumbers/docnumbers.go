@@ -75,28 +75,31 @@ func Check(t *testing.T, root string, stated []Stated) {
 	}
 }
 
-// asAWord gives the count as a sentence that spells it writes it. A count a document would spell
-// and this table has no word for is a count this reader cannot read: it fails here, where the
-// fault is, rather than reporting a document that states its own number correctly. A count of a
-// hundred or more is never spelled in prose of this repository, which writes 109 and 218 in
-// digits, so none is wanted there.
+// asAWord gives the count as a sentence that spells it writes it, for every count below a
+// hundred, which is the range prose of this repository spells: "five", "sixty-four". A count of a
+// hundred or more it writes in digits, as the documents do with 109 and 218, so no word is wanted
+// there. A count it cannot write at all - a negative one, which no constant of this kind holds -
+// fails here, where the fault is, rather than reporting a document that states its own number
+// correctly.
 func asAWord(t *testing.T, number int) string {
 	t.Helper()
-	spelled := map[int]string{
-		1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight",
-		9: "nine", 10: "ten", 11: "eleven", 12: "twelve", 13: "thirteen", 14: "fourteen",
-		15: "fifteen", 16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen",
-		20: "twenty", 21: "twenty-one", 22: "twenty-two", 23: "twenty-three", 24: "twenty-four",
-		25: "twenty-five", 26: "twenty-six", 27: "twenty-seven", 28: "twenty-eight",
-		29: "twenty-nine", 30: "thirty",
-	}
-	if number >= 100 {
+	ones := []string{"zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+		"nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+		"seventeen", "eighteen", "nineteen"}
+	tens := []string{"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty",
+		"ninety"}
+	switch {
+	case number < 0:
+		t.Fatalf("this reader cannot write %d as a word, and no count of a document is negative: "+
+			"the entry that asks for it names the wrong constant", number)
+		return ""
+	case number >= 100:
 		return strconv.Itoa(number)
+	case number < len(ones):
+		return ones[number]
+	case number%10 == 0:
+		return tens[number/10]
+	default:
+		return tens[number/10] + "-" + ones[number%10]
 	}
-	word, ok := spelled[number]
-	if !ok {
-		t.Fatalf("this reader has no word for %d, which a sentence spelling its count would write: "+
-			"add it to docnumbers rather than reading a document as wrong", number)
-	}
-	return word
 }
